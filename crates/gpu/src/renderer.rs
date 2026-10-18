@@ -878,6 +878,8 @@ impl Renderer {
                 &self.queue,
                 (&targets.color, Some(&targets.data)),
                 (targets.width, targets.height),
+                // The first of the pixel's ssaa × ssaa samples.
+                0.5 / f64::from(targets.ssaa.max(1)),
                 &mut staging,
             )
         })?

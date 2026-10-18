@@ -166,9 +166,9 @@ fn along_the_edge() -> Camera {
 /// lines and they come out dashed. (Only lines that nothing stands in
 /// front of: the far side of the face runs behind the columns.) This one
 /// passed with the depth not yet reversed as well, because the spread of
-/// the nine pixels the test allows absorbed the coarse steps on one face;
+/// the nine pixels the test allowed then absorbed the coarse steps on one face;
 /// it holds the turning of the reversed depth back into a distance
-/// (`lines.wgsl`, `surface_at`) to the window's slack.
+/// (`depth_test.wgsl`, `surface_at`) to the window's slack.
 #[test]
 fn inside_a_building_lines_on_the_faces_stay_whole() {
     let mesh = building();

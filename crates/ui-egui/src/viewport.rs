@@ -19,7 +19,7 @@ use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::{Scene, SceneDatum, SceneDatumShape, SceneSketch};
 use craft3d_math::Vec3;
-use craft3d_render::{Frame, Highlight, RenderParams};
+use craft3d_render::{Frame, Highlight, RenderParams, SUBPIXEL_GRAIN};
 
 /// Smallest and largest side of a viewport image, in pixels.
 pub const MIN_SIDE: u32 = 16;
@@ -318,7 +318,8 @@ pub fn datum_labels(
 
 /// Fills the squares of the datum planes of `marks` into `rgb`, the
 /// picture of a frame of `width` × `height` pixels whose distances along
-/// the view are `depth`, seen with `camera`: per pixel, the ray through
+/// the view are `depth` (taken at `sample` in each pixel, [`Frame::sample`]),
+/// seen with `camera`: per pixel, the ray through
 /// its centre meets the plane inside the square, in front of the camera,
 /// and not behind a body (the test of the overlay's lines, with `slack`),
 /// and then the pixel is blended with the theme's datum colour at its
@@ -330,6 +331,7 @@ pub fn fill_datum_planes(
     width: u32,
     height: u32,
     depth: &[f64],
+    sample: f64,
     camera: &CameraState,
     marks: &Marks,
     tokens: &Tokens,
@@ -343,7 +345,7 @@ pub fn fill_datum_planes(
     else {
         return;
     };
-    let map = DepthMap::from_parts(width as usize, height as usize, depth, slack);
+    let map = DepthMap::from_parts(width as usize, height as usize, depth, sample, slack);
     let alpha = f64::from(tokens.datum_fill_opacity) / 255.0;
     let ink = tokens.datum;
     let (w, h) = (width as usize, height as usize);
@@ -508,7 +510,109 @@ struct DepthMap<'a> {
     /// Distance along the view direction per pixel, row-major; infinite
     /// where there is no body.
     depth: &'a [f64],
+    /// Where in its pixel each distance was taken ([`Frame::sample`]).
+    sample: f64,
     slack: f64,
+}
+
+/// The rule of the overlay's depth test, shared with the GPU's
+/// `depth_test.wgsl` (the lines and the datum fills of the direct path):
+/// whether a surface of the picture lies in front of a point at distance
+/// `depth` by more than `slack`, from the distances `z` of the 4 × 4
+/// samples around the point (rows top to bottom, columns left to right;
+/// the point inside the middle cell, at `fu`, `fv` across it; a sample
+/// that is not a number or infinite shows nothing, one at minus infinity
+/// is a surface right at the eye).
+///
+/// The surface under the point is reconstructed, not looked up: the
+/// distances of the four samples around it, interpolated bilinearly,
+/// which is exact on a plane (a depth buffer is affine across a triangle
+/// on the screen), so an edge any amount behind a flat face is told from
+/// one on it at any zoom. Where the surface is not one plane within the
+/// cell the reconstruction is off, and it matters where it comes out
+/// nearer than the surface: in the hollow where two faces meet, whose
+/// crease is further than the samples on either side. There the samples
+/// show it, as the *kink*: along a row or a column of the cell whose two
+/// samples lie on either side of such a crease, both second differences
+/// (at either sample, with its neighbour beyond the cell) say the sample
+/// lies further than the chord of its neighbours by more than the slack
+/// (rounding makes no hollow, and a crease nearer to a sample than that
+/// is missed by less than the slack), and the larger of the
+/// two is how far apart the two faces' planes lie at the sample across
+/// the crease from the other; the interpolation at a point misses at most
+/// the weighted sum, over the samples across the crease from it, of that
+/// (bilinear weights, summing to at most one), and a line splits the four
+/// samples so that the point's side can be taken to hold a sample next to
+/// every sample across, so the largest such pair covers it. A ridge or a
+/// change of slope the other way makes the reconstruction further than
+/// the surface, which is never strict, and a step to another body makes
+/// one second difference of the pair say the opposite: neither gets an
+/// allowance, so nothing behind a plate shows along the outline of what
+/// stands in front of it, and the allowance never reaches beyond the
+/// cell. The surface's change over [`SUBPIXEL_GRAIN`] of a pixel (the
+/// largest difference between the four, times the grain) covers how a
+/// rasteriser places the surface. The point is hidden when it lies
+/// further than the surface plus the kink, that change and the slack.
+///
+/// So an edge in a hollow, on a face or on a silhouette stays in sight,
+/// while an edge behind a thin plate is hidden however far out the view
+/// is zoomed. A sample where nothing was drawn among the four hides
+/// nothing; a second difference that needs one is left out.
+pub fn surface_hides(z: &[[f64; 4]; 4], fu: f64, fv: f64, depth: f64, slack: f64) -> bool {
+    if !(depth.is_finite() && fu.is_finite() && fv.is_finite()) {
+        return false;
+    }
+    let [_, [_, a, b, _], [_, c, d, _], _] = *z;
+    // A surface right at the eye hides everything.
+    if [a, b, c, d].contains(&f64::NEG_INFINITY) {
+        return true;
+    }
+    if !(a.is_finite() && b.is_finite() && c.is_finite() && d.is_finite()) {
+        return false;
+    }
+    let surface = (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv;
+    let at = |r: usize, k: usize| {
+        z.get(r)
+            .and_then(|row| row.get(k))
+            .copied()
+            .unwrap_or(f64::NAN)
+    };
+    // How far the middle sample lies beyond the chord of its neighbours;
+    // nothing where it lies before it or a neighbour shows nothing.
+    let beyond = |p: f64, q: f64, r: f64| {
+        if p.is_finite() && q.is_finite() && r.is_finite() {
+            (2.0 * q - p - r).max(0.0)
+        } else {
+            0.0
+        }
+    };
+    let mut kink: f64 = 0.0;
+    for n in 1..3 {
+        // Row n of the cell at its two samples, and column n at its two.
+        let pairs = [
+            (
+                beyond(at(n, 0), at(n, 1), at(n, 2)),
+                beyond(at(n, 1), at(n, 2), at(n, 3)),
+            ),
+            (
+                beyond(at(0, n), at(1, n), at(2, n)),
+                beyond(at(1, n), at(2, n), at(3, n)),
+            ),
+        ];
+        // Both by more than the slack: rounding makes no hollow, and a
+        // crease that close to a sample is missed by less than the slack.
+        for (first, second) in pairs {
+            if first > slack && second > slack {
+                kink = kink.max(first.max(second));
+            }
+        }
+    }
+    let change = (b - a)
+        .abs()
+        .max((d - c).abs())
+        .max((c - a).abs())
+        .max((d - b).abs());
+    surface + kink + change * SUBPIXEL_GRAIN + slack < depth
 }
 
 impl<'a> DepthMap<'a> {
@@ -519,51 +623,55 @@ impl<'a> DepthMap<'a> {
             frame.width as usize,
             frame.height as usize,
             &frame.depth,
+            frame.sample,
             slack,
         )
     }
 
-    fn from_parts(width: usize, height: usize, depth: &'a [f64], slack: f64) -> Option<Self> {
-        (width.checked_mul(height) == Some(depth.len()) && slack.is_finite()).then_some(Self {
-            width,
-            height,
-            depth,
-            slack,
-        })
+    fn from_parts(
+        width: usize,
+        height: usize,
+        depth: &'a [f64],
+        sample: f64,
+        slack: f64,
+    ) -> Option<Self> {
+        (width.checked_mul(height) == Some(depth.len()) && slack.is_finite() && sample.is_finite())
+            .then_some(Self {
+                width,
+                height,
+                depth,
+                sample,
+                slack,
+            })
     }
 
-    /// True when a body is in front of the point at pixel (`x`, `y`) and
-    /// `depth`. The point is compared with the surface under its own
-    /// pixel and under the eight around it, and is hidden only when all
-    /// of them are nearer: an edge on a surface that slopes away from the
-    /// viewer is further than the surface one pixel towards the viewer,
-    /// and still on it.
+    /// True when a body is in front of the point at pixel position (`x`,
+    /// `y`) and `depth`, by the rule of [`surface_hides`] on the 4 × 4
+    /// samples around the point (clamped at the border of the image).
     fn covers(&self, x: f64, y: f64, depth: f64) -> bool {
         if !(x.is_finite() && y.is_finite() && depth.is_finite()) {
             return false;
         }
-        let (px, py) = (x.floor(), y.floor());
-        if px < 0.0 || py < 0.0 || px >= self.width as f64 || py >= self.height as f64 {
+        if x < 0.0 || y < 0.0 || x >= self.width as f64 || y >= self.height as f64 {
             return false;
         }
-        // Within the image by the check above.
-        let (px, py) = (px as usize, py as usize);
-        for ny in py.saturating_sub(1)..=(py + 1).min(self.height.saturating_sub(1)) {
-            for nx in px.saturating_sub(1)..=(px + 1).min(self.width.saturating_sub(1)) {
-                let surface = self
-                    .depth
-                    .get(ny * self.width + nx)
-                    .copied()
-                    .unwrap_or(f64::INFINITY);
-                // A surface at or behind the point does not hide it; nor
-                // does a depth that is not a number.
-                let nearer = surface + self.slack < depth;
-                if !nearer {
-                    return false;
-                }
+        let (u, v) = (x - self.sample, y - self.sample);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - i0, v - j0);
+        // Within the image (give or take a sample) by the check above.
+        let (i0, j0) = (i0 as i64, j0 as i64);
+        let (wi, hi) = (self.width as i64, self.height as i64);
+        let mut z = [[f64::INFINITY; 4]; 4];
+        for (r, row) in z.iter_mut().enumerate() {
+            let y = (j0 + r as i64 - 1).clamp(0, hi - 1);
+            for (k, cell) in row.iter_mut().enumerate() {
+                let x = (i0 + k as i64 - 1).clamp(0, wi - 1);
+                // Both clamped into the image.
+                let index = y as usize * self.width + x as usize;
+                *cell = self.depth.get(index).copied().unwrap_or(f64::INFINITY);
             }
         }
-        true
+        surface_hides(&z, fu, fv, depth, self.slack)
     }
 }
 
@@ -978,6 +1086,7 @@ pub fn compose_with(
         width,
         height,
         &frame.depth,
+        frame.sample,
         camera,
         renderer.marks(),
         tokens,
@@ -1260,6 +1369,141 @@ pub fn draw_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sequence of numbers in [0, 1) from a seed, the same every run.
+    fn sequence(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// On a plane the reconstruction is exact: a point of the plane is
+    /// never hidden by it, and a point behind it by more than the grain's
+    /// share of its change and the slack is, wherever in the cell and
+    /// however steep.
+    #[test]
+    fn on_a_plane_the_depth_test_is_exact() {
+        let mut next = sequence(7);
+        for _ in 0..10_000 {
+            let base = 1.0 + next() * 1e5;
+            let (gx, gy) = ((next() - 0.5) * 2e3, (next() - 0.5) * 2e3);
+            let plane = |x: f64, y: f64| base + gx * x + gy * y;
+            let mut z = [[0.0; 4]; 4];
+            for (r, row) in z.iter_mut().enumerate() {
+                for (k, cell) in row.iter_mut().enumerate() {
+                    *cell = plane(k as f64 - 1.0, r as f64 - 1.0);
+                }
+            }
+            let (fu, fv) = (next(), next());
+            let depth = plane(fu, fv);
+            let slack = base * 1e-6;
+            let allowance = gx.abs().max(gy.abs()) * SUBPIXEL_GRAIN + slack;
+            let scale = depth.abs() * 1e-9;
+            assert!(!surface_hides(&z, fu, fv, depth + allowance - scale, slack));
+            assert!(surface_hides(&z, fu, fv, depth + allowance + scale, slack));
+        }
+    }
+
+    /// Two planes meeting in a crease through the cell, at any angle,
+    /// with any slopes on either side (a hollow, a ridge, a change of
+    /// slope): the point on the crease is never hidden, since the kink
+    /// covers what the reconstruction misses there; and a point far
+    /// behind the crease is.
+    #[test]
+    fn the_kink_covers_a_crease_between_the_samples() {
+        let mut next = sequence(11);
+        for _ in 0..20_000 {
+            let (fu, fv) = (next(), next());
+            let angle = next() * std::f64::consts::TAU;
+            let (nx, ny) = (angle.cos(), angle.sin());
+            let base = 1.0 + next() * 1e5;
+            let along = (next() - 0.5) * 2e3;
+            let (s1, s2) = ((next() - 0.5) * 4e3, (next() - 0.5) * 4e3);
+            let surface = |x: f64, y: f64| {
+                let across = (x - fu) * nx + (y - fv) * ny;
+                let beside = -(x - fu) * ny + (y - fv) * nx;
+                base + along * beside
+                    + if across < 0.0 {
+                        s1 * across
+                    } else {
+                        s2 * across
+                    }
+            };
+            let mut z = [[0.0; 4]; 4];
+            for (r, row) in z.iter_mut().enumerate() {
+                for (k, cell) in row.iter_mut().enumerate() {
+                    *cell = surface(k as f64 - 1.0, r as f64 - 1.0);
+                }
+            }
+            let slack = base * 1e-6;
+            assert!(
+                !surface_hides(&z, fu, fv, base, slack),
+                "a point of the crease at ({fu}, {fv}), slopes {s1} and {s2} at {angle}"
+            );
+            let far = base + 8.0 * (s1.abs() + s2.abs() + along.abs()) + 1.0;
+            assert!(surface_hides(&z, fu, fv, far, slack));
+        }
+    }
+
+    /// A step to a nearer body between the samples gets no allowance: a
+    /// point behind the further level is hidden right up to the step,
+    /// while the crease of a hollow of the same size is in sight.
+    #[test]
+    fn a_step_hides_what_a_hollow_shows() {
+        let mut step = [[392.0; 4]; 4];
+        for row in &mut step {
+            row[2] = 362.0;
+            row[3] = 362.0;
+        }
+        assert!(surface_hides(&step, 0.0, 0.0, 402.0, 0.0));
+        assert!(surface_hides(&step, 0.9, 0.5, 402.0, 0.0));
+        // The far level itself, at the sample on its side of the step.
+        assert!(!surface_hides(&step, 0.0, 0.0, 392.0, 0.0));
+        let mut hollow = [[0.0; 4]; 4];
+        for row in &mut hollow {
+            for (k, cell) in row.iter_mut().enumerate() {
+                // The crease at x = 1.5, between the cell's samples, both
+                // sides nearer by 30 per pixel.
+                *cell = 392.0 - 30.0 * (k as f64 - 1.5).abs();
+            }
+        }
+        assert!(!surface_hides(&hollow, 0.5, 0.5, 392.0, 0.0));
+        let allowance = 30.0 + 30.0 * SUBPIXEL_GRAIN;
+        assert!(surface_hides(
+            &hollow,
+            0.5,
+            0.5,
+            392.0 + allowance + 1e-9,
+            0.0
+        ));
+    }
+
+    /// Nothing drawn among the four samples around the point hides
+    /// nothing; a kink term that needs one is left out; a surface right
+    /// at the eye hides everything.
+    #[test]
+    fn nothing_drawn_hides_nothing() {
+        let mut z = [[5.0; 4]; 4];
+        assert!(surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        z[0][0] = f64::INFINITY;
+        assert!(surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        z[1][0] = f64::INFINITY;
+        z[1][3] = f64::INFINITY;
+        assert!(surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        z[1][1] = f64::INFINITY;
+        assert!(!surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        z[1][1] = f64::NEG_INFINITY;
+        assert!(surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        let z = [[f64::NAN; 4]; 4];
+        assert!(!surface_hides(&z, 0.5, 0.5, 6.0, 0.0));
+        let z = [[5.0; 4]; 4];
+        assert!(!surface_hides(&z, 0.5, 0.5, f64::NAN, 0.0));
+        assert!(!surface_hides(&z, f64::NAN, 0.5, 6.0, 0.0));
+    }
 
     const BLACK: Rgb = [0, 0, 0];
     const WHITE: Rgb = [255, 255, 255];

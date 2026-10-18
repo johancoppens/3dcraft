@@ -284,6 +284,7 @@ fn the_fill_covers_the_square_in_front_and_is_left_out_behind_a_body() {
             w,
             h,
             &frame.depth,
+            frame.sample,
             &camera,
             &marks,
             &tokens,

@@ -14,9 +14,10 @@
 //! 2. **Lines.** The segments of a [`GpuLines`], with `lines.wgsl`, into
 //!    the same colour target, each as a quad in screen space inked by the
 //!    distance of a pixel's centre to the segment (the CPU's `draw_line`)
-//!    and, when `tested`, hidden where the surface under the pixel and the
-//!    eight around it is nearer than the line (the CPU's `covers`), read
-//!    from the depth buffer of pass 1: a hidden edge is left out, a hidden
+//!    and, when `tested`, hidden where the surface reconstructed from the
+//!    samples around the segment's point is nearer than that point (the
+//!    CPU viewport's `surface_hides`, in `depth_test.wgsl`), read from the
+//!    depth buffer of pass 1: a hidden edge is left out, a hidden
 //!    sketch is drawn with the hidden opacity. The pass resolves the
 //!    samples into the shown texture.
 //! 3. **Capture** (only when asked): face ids and distances at one sample
@@ -724,7 +725,9 @@ impl Onscreen {
         } else {
             ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
         };
+        let depth_test = include_str!("depth_test.wgsl");
         let lines_source = include_str!("lines.wgsl")
+            .replace("{{DEPTH_TEST}}", depth_test)
             .replace("{{DEPTH}}", depth_type)
             .replace("{{LOAD}}", load);
         let lines_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -732,6 +735,7 @@ impl Onscreen {
             source: wgpu::ShaderSource::Wgsl(lines_source.into()),
         });
         let fills_source = include_str!("fills.wgsl")
+            .replace("{{DEPTH_TEST}}", depth_test)
             .replace("{{DEPTH}}", depth_type)
             .replace("{{LOAD}}", load);
         let fills_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1245,6 +1249,8 @@ impl Onscreen {
                 &self.queue,
                 (&targets.shown, data),
                 (targets.width, targets.height),
+                // The capture draws one sample per pixel, at its centre.
+                0.5,
                 &mut staging,
             )
         })??;
@@ -1865,7 +1871,7 @@ fn lines_uniforms(
         slack,
         f64::from(samples),
         f64::from(overlay.hidden_opacity) / 255.0,
-        0.0,
+        craft3d_render::SUBPIXEL_GRAIN,
         0.0,
         0.0,
         eye.x,

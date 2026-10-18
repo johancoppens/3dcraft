@@ -530,22 +530,19 @@ fn near_lines(overlay: &Overlay, width: u32, height: u32, radius: f64) -> Vec<bo
 
 /// Per pixel of `frame` (the CPU frame the oracle is drawn on): whether a
 /// datum plane of `marks` fills it, as `viewport::fill_datum_planes`
-/// decides, and whether the GPU could decide otherwise. The GPU tests the
-/// plane's point against its depth buffer like a line: hidden when the
-/// furthest of the nine surfaces around the pixel, plus the slack and the
-/// spread of the nine, is nearer; the CPU when all nine plus the slack
-/// are nearer. The GPU's nine pixels are multisampled: their samples lie
-/// within the CPU's 5 × 5 pixels around the pixel. A pixel is marginal
-/// where the plane's point lies between the lowest and the highest
-/// threshold either rule can have there, widened by the error of the GPU's point (its `f32`
-/// roundings, magnified at a grazing angle), by the slack once more
-/// (which holds the GPU depth buffer's own error) and by how far the CPU
-/// frame's screen-interpolated distance lies off the surface on the faces
-/// around the pixel: there the plane passes through a surface and either
-/// answer is right.
+/// decides, and whether the GPU could decide otherwise. Both test the
+/// plane's point at the pixel's centre with `viewport::surface_hides` on
+/// the samples around it. The GPU reads the mean of a pixel's samples
+/// where the CPU reads its centre: the same on a plane, and within the
+/// spread of the 5 × 5 pixels around where a crease, a silhouette or
+/// another body passes within two pixels (a pixel next to the background
+/// shows the GPU nothing where the CPU's centre may still see a body). A
+/// pixel is marginal where the decision turns within that, within the
+/// error of the GPU's point (its `f32` roundings, magnified at a grazing
+/// angle) and within the slack twice (which holds the GPU depth buffer's
+/// own error): there either answer is right.
 fn fill_decisions(
     frame: &Frame,
-    mesh: &craft3d_tess::Mesh,
     camera: &CameraState,
     marks: &viewport::Marks,
     slack: f64,
@@ -555,23 +552,10 @@ fn fill_decisions(
     let mut marginal = vec![false; w * h];
     let projector =
         Projector::new(&camera.to_render(), frame.width as f64, frame.height as f64).unwrap();
-    // The CPU frame's distance is interpolated evenly across the screen,
-    // where the true distance's reciprocal is: over a triangle whose
-    // corners lie at distances a to b it is off the surface by at most
-    // (a + b) / 2 - 2ab / (a + b) = (b - a)² / (2 (a + b)). Per face, the
-    // most over its triangles; the GPU tests against the true distance.
-    let mut interpolation: std::collections::BTreeMap<u32, f64> = Default::default();
-    for (triangle, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
-        let d = triangle.map(|k| projector.depth(mesh.positions[k as usize]));
-        let (a, b) = (d[0].min(d[1]).min(d[2]), d[0].max(d[1]).max(d[2]));
-        let off = if a > 0.0 {
-            (b - a).powi(2) / (2.0 * (a + b))
-        } else {
-            b - a
-        };
-        let entry = interpolation.entry(face).or_insert(0.0);
-        *entry = entry.max(off);
-    }
+    let at = |x: i64, y: i64| {
+        let (x, y) = (x.clamp(0, w as i64 - 1), y.clamp(0, h as i64 - 1));
+        frame.depth[y as usize * w + x as usize]
+    };
     for (center, u, v) in marks.datum_planes() {
         let normal = u.cross(v);
         for py in 0..h {
@@ -590,30 +574,18 @@ fn fill_decisions(
                 if (r.dot(u) / u.dot(u)).abs() > 1.0 || (r.dot(v) / v.dot(v)).abs() > 1.0 {
                     continue;
                 }
-                // The CPU's nine pixels; and the 5 × 5 around the pixel,
-                // which hold the samples of the GPU's nine (a sample lies
-                // within half a pixel of its pixel's centre).
-                let mut furthest = 0.0_f64;
-                for ny in py.saturating_sub(1)..=(py + 1).min(h - 1) {
-                    for nx in px.saturating_sub(1)..=(px + 1).min(w - 1) {
-                        furthest = furthest.max(frame.depth[ny * w + nx]);
+                // The 4 × 4 samples around the pixel's centre, which is
+                // the first corner of its cell (the samples lie at the
+                // centres), as `DepthMap::covers` takes them.
+                let (ix, iy) = (px as i64, py as i64);
+                let mut z = [[0.0; 4]; 4];
+                for (rr, row) in z.iter_mut().enumerate() {
+                    for (k, cell) in row.iter_mut().enumerate() {
+                        *cell = at(ix + k as i64 - 1, iy + rr as i64 - 1);
                     }
                 }
-                let (mut far5, mut near5, mut off) = (0.0_f64, f64::INFINITY, 0.0_f64);
-                for ny in py.saturating_sub(2)..=(py + 2).min(h - 1) {
-                    for nx in px.saturating_sub(2)..=(px + 2).min(w - 1) {
-                        let d = frame.depth[ny * w + nx];
-                        far5 = far5.max(d);
-                        near5 = near5.min(d);
-                        off = off.max(
-                            interpolation
-                                .get(&frame.ids[ny * w + nx])
-                                .copied()
-                                .unwrap_or(0.0),
-                        );
-                    }
-                }
-                let cpu_hidden = furthest + slack < t;
+                let hides = |depth: f64| viewport::surface_hides(&z, 0.0, 0.0, depth, slack);
+                let cpu_hidden = hides(t);
                 let i = py * w + px;
                 fill[i] |= !cpu_hidden;
                 // The GPU computes the point in `f32`, relative to the eye:
@@ -623,18 +595,30 @@ fn fill_decisions(
                 let grazing = direction.length() * normal.length() / along.abs();
                 let error =
                     2f64.powi(-18) * (t.abs() + r.length() + u.length() + v.length()) * grazing;
-                // The GPU hides the point beyond its furthest sample plus
-                // the slack and the spread of its samples, which lies
-                // between the nearest of the 5 × 5 plus the slack and the
-                // furthest of the 5 × 5 plus the slack and their spread;
-                // the CPU beyond its furthest plus the slack. Between the
-                // lowest and the highest of these, give or take the
-                // errors, the two may answer differently.
-                let low = near5.min(furthest) + slack - error - slack - off;
-                let high = far5 + slack + (far5 - near5) + error + slack + off;
-                // Next to the background (`far5` infinite) a sample may
-                // show nothing behind the point: the GPU keeps it.
-                if near5.is_finite() && t >= low && t <= high {
+                // The 5 × 5 around the pixel: one plane, or not.
+                let (mut far5, mut near5, mut kink5) = (0.0_f64, f64::INFINITY, 0.0_f64);
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let d = at(ix + dx, iy + dy);
+                        far5 = far5.max(d);
+                        near5 = near5.min(d);
+                        if dx > -2 && dx < 2 {
+                            kink5 = kink5.max(
+                                (at(ix + dx - 1, iy + dy) - 2.0 * d + at(ix + dx + 1, iy + dy))
+                                    .abs(),
+                            );
+                        }
+                        if dy > -2 && dy < 2 {
+                            kink5 = kink5.max(
+                                (at(ix + dx, iy + dy - 1) - 2.0 * d + at(ix + dx, iy + dy + 1))
+                                    .abs(),
+                            );
+                        }
+                    }
+                }
+                let planar = far5.is_finite() && kink5 <= far5 * 2f64.powi(-40);
+                let window = error + 2.0 * slack + if planar { 0.0 } else { far5 - near5 };
+                if !window.is_finite() || hides(t - window) != hides(t + window) {
                     marginal[i] = true;
                 }
             }
@@ -827,12 +811,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         w,
         h,
         &cpu_frame.depth,
+        cpu_frame.sample,
         &camera,
         &marks,
         &tokens,
         slack,
     );
-    let (fill, fill_marginal) = fill_decisions(&cpu_frame, &scene.mesh, &camera, &marks, slack);
+    let (fill, fill_marginal) = fill_decisions(&cpu_frame, &camera, &marks, slack);
     // The picture under the lines: the bodies with the datum planes'
     // fill (the bodies alone without datums).
     let under = filled.clone();
