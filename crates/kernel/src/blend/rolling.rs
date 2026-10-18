@@ -73,7 +73,9 @@ use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
 use crate::shared::curve_through;
-use craft3d_geom::certify::{Apart, CurveBound, SurfaceBound, curves_apart};
+use craft3d_geom::certify::{
+    Apart, CurveBound, SurfaceBound, Within, curve_on_surface, curves_apart,
+};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
@@ -1134,21 +1136,20 @@ fn proven_on(
     breaks: &[f64],
     limit: f64,
 ) -> Result<(), f64> {
-    let middle = 0.5 * (range.0 + range.1);
-    let Some(bound) = SurfaceBound::new(surface) else {
-        return Err(middle);
+    let within = Within {
+        target: limit,
+        most: PROOF_PIECES,
     };
-    bound
-        .curve_within(
-            &CurveBound::nurbs(curve),
-            range,
-            start,
-            breaks,
-            limit,
-            PROOF_PIECES,
-        )
-        .map(|_| ())
-        .map_err(|stop| stop.at)
+    curve_on_surface(
+        &CurveBound::nurbs(curve),
+        range,
+        surface,
+        Some(start),
+        breaks,
+        within,
+    )
+    .map(|_| ())
+    .map_err(|stop| stop.at)
 }
 
 /// Blends the edge of `one` (a chain of one piece, the request `item`:

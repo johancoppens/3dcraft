@@ -1041,6 +1041,45 @@ impl<'a> SurfaceBound<'a> {
     }
 }
 
+/// How a proof that a curve lies on a surface is held: every point within
+/// `target` of the surface, in at most `most` pieces
+/// ([`curve_on_surface`]). The multiple of the tolerance is the caller's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Within {
+    pub target: f64,
+    pub most: usize,
+}
+
+/// Whether `curve` over `range` lies within `within.target` of `surface`,
+/// proven, not sampled: the one answer to "this curve lies on this
+/// surface" in the kernel ([`SurfaceBound::curve_within`] for the method,
+/// and for a surface made ready once for many proofs).
+///
+/// `start` is the surface's parameters near the curve's point at
+/// `range.0`; `None` takes the projection of that point. `breaks` are
+/// where the caller knows the curve meets the surface (the points it was
+/// fitted through). A surface that cannot be made ready for proofs (a
+/// spline not split into Bézier patches), or a start that cannot be
+/// found, is not proven, at the middle of the range.
+pub fn curve_on_surface(
+    curve: &CurveBound<'_>,
+    range: (f64, f64),
+    surface: &Surface,
+    start: Option<(f64, f64)>,
+    breaks: &[f64],
+    within: Within,
+) -> Result<Proven, NotProven> {
+    let middle = NotProven {
+        at: 0.5 * (range.0 + range.1),
+    };
+    let bound = SurfaceBound::new(surface).ok_or(middle)?;
+    let start = match start {
+        Some(start) => start,
+        None => surface.project(curve.eval(range.0)).map_err(|_| middle)?,
+    };
+    bound.curve_within(curve, range, start, breaks, within.target, within.most)
+}
+
 /// How two curves lie, as far as [`curves_apart`] could tell.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Apart {
@@ -1743,6 +1782,34 @@ mod tests {
                 rt_range,
             ),
         ]
+    }
+
+    /// The one entry gives what the method on a surface made ready gives,
+    /// bit for bit, with the start its projection when none is given.
+    #[test]
+    fn curve_on_surface_is_the_method() {
+        for d in [1e-2, 1e-5] {
+            for (name, surface, curve, range) in at_distance(d) {
+                let sb = SurfaceBound::new(&surface).unwrap();
+                let cb = CurveBound::new(&curve);
+                let start = surface.project(curve.eval(range.0)).unwrap();
+                for target in [1.5 * d, 0.95 * d] {
+                    let within = Within {
+                        target,
+                        most: 1 << 12,
+                    };
+                    let method = sb.curve_within(&cb, range, start, &[], target, 1 << 12);
+                    for given in [Some(start), None] {
+                        let entry = curve_on_surface(&cb, range, &surface, given, &[], within);
+                        assert_eq!(
+                            format!("{entry:?}"),
+                            format!("{method:?}"),
+                            "{name} at {d}, target {target}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Every bound is at least the exact distance, and a target just
