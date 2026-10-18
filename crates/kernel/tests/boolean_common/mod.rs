@@ -134,10 +134,21 @@ pub fn solve_parts(a: &Body, b: &Body, op: BooleanOp, k: f64) -> (BooleanResult,
                 &tol,
                 &format!("scale {k}, not refused"),
             );
-            assert!(
-                on_parts(&result.body, at, &tol) >= 2,
-                "{op:?} at scale {k}: refused at {at:?}, which is not on two parts"
-            );
+            // Parts that are shells of their own each have the place on
+            // their boundary; a shell that touches itself has it on its
+            // boundary and touches itself there by a witness of its own.
+            if result.body.shells.len() > 1 {
+                assert!(
+                    on_parts(&result.body, at, &tol) >= 2,
+                    "{op:?} at scale {k}: refused at {at:?}, which is not on two parts"
+                );
+            } else {
+                assert!(
+                    on_parts(&result.body, at, &tol) >= 1
+                        && touches_itself_at(&result.body, at, &tol),
+                    "{op:?} at scale {k}: refused at {at:?}, where the shell does not touch itself"
+                );
+            }
             (result, Some(at))
         }
         Err(e) => panic!("{op:?} at scale {k}: {e}"),
@@ -239,6 +250,346 @@ pub fn kinds(body: &Body) -> std::collections::BTreeMap<&'static str, usize> {
         *found.entry(face.surface.kind()).or_default() += 1;
     }
     found
+}
+
+/// How the material of `body` lies around `at` on the sphere of `radius`
+/// about it: the number of pieces of material and of space
+/// (`(material, space)`), from `contains_points` at 3000 points evenly
+/// over the sphere. A point counts for its kind when all its neighbours
+/// (within one and a half times the mean spacing, about 3.3°) are of that
+/// kind, and two counted points of a kind are joined when they are
+/// neighbours: two pieces that meet in a point of the sphere (where a
+/// line along which two parts touch goes through it) are not joined
+/// through it, and a band wider than about 7° is kept. Points the rays
+/// cannot tell (on the boundary) count for nothing.
+pub fn sectors_at(body: &Body, at: Vec3, tol: &Tolerance, radius: f64) -> (usize, usize) {
+    const N: usize = 3000;
+    let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    let directions: Vec<Vec3> = (0..N)
+        .map(|i| {
+            let z = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
+            let r = (1.0 - z * z).sqrt();
+            let a = golden * i as f64;
+            Vec3::new(r * a.cos(), r * a.sin(), z)
+        })
+        .collect();
+    let points: Vec<Vec3> = directions.iter().map(|d| at + *d * radius).collect();
+    let inside = craft3d_kernel::boolean::contains_points(body, &points, tol).unwrap();
+    let spacing = (4.0 * std::f64::consts::PI / N as f64).sqrt();
+    // Neighbours by a sort along z: only points within the reach in z.
+    let reach = 1.5 * spacing;
+    let neighbours: Vec<Vec<usize>> = (0..N)
+        .map(|i| {
+            (0..N)
+                .filter(|&j| {
+                    j != i
+                        && (directions[i].z - directions[j].z).abs() < reach
+                        && directions[i].distance(directions[j]) < reach
+                })
+                .collect()
+        })
+        .collect();
+    let core: Vec<Option<bool>> = (0..N)
+        .map(|i| {
+            inside[i].filter(|&kind| {
+                neighbours[i]
+                    .iter()
+                    .all(|&j| inside[j].is_none_or(|other| other == kind))
+            })
+        })
+        .collect();
+    let mut parent: Vec<usize> = (0..N).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..N {
+        for &j in &neighbours[i] {
+            if core[i].is_some() && core[i] == core[j] {
+                let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                parent[a.max(b)] = a.min(b);
+            }
+        }
+    }
+    let mut count = |kind: bool| {
+        let mut roots: Vec<usize> = (0..N)
+            .filter(|&i| core[i] == Some(kind))
+            .map(|i| root(&mut parent, i))
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        roots.len()
+    };
+    (count(true), count(false))
+}
+
+fn diagonal(body: &Body) -> f64 {
+    body.bbox()
+        .ok()
+        .and_then(|b| b.corners())
+        .map_or(0.0, |(lo, hi)| lo.distance(hi))
+}
+
+/// Two pieces of material about `at` on a sphere a thousandth of the
+/// body's box across (200 tolerances at least) and on one of 75
+/// tolerances ([`sectors_at`]): two parts that meet there, seen near and a
+/// little further off, so that a rib or a thin plate nearby that only one
+/// sphere reaches is not taken for one.
+pub fn material_pieces_at(body: &Body, at: Vec3, tol: &Tolerance) -> bool {
+    let far = (1e-3 * diagonal(body)).max(200.0 * tol.linear);
+    let near = 75.0 * tol.linear;
+    sectors_at(body, at, tol, far).0 > 1 && sectors_at(body, at, tol, near).0 > 1
+}
+
+/// The regression net a refusal as zero thickness within one shell is
+/// held to, on the body made without the refusal: it touches itself at
+/// (or within a thousandth of its box of) `at`, by `craft3d_topo::touches`
+/// (a vertex on a vertex or an edge of the same shell, what regeneration
+/// holds every body to), by two pieces of material about it at two radii
+/// ([`material_pieces_at`]), or by two faces through it that share
+/// nothing there ([`walls_meet_at`]). None of the three asks the boolean;
+/// each is a look at a sample of the body, not a proof.
+pub fn touches_itself_at(body: &Body, at: Vec3, tol: &Tolerance) -> bool {
+    let near = (1e-3 * diagonal(body)).max(100.0 * tol.linear);
+    let by_vertex =
+        craft3d_topo::touches(body, 2.0 * tol.linear, 1024, craft3d_topo::TouchScope::All)
+            .is_ok_and(|found| found.iter().any(|t| t.at.distance(at) <= near));
+    by_vertex || material_pieces_at(body, at, tol) || walls_meet_at(body, at, tol)
+}
+
+/// The point of triangle `[a, b, c]` nearest `p` (Ericson, *Real-Time
+/// Collision Detection*, 5.1.5).
+fn nearest_on_triangle(p: Vec3, [a, b, c]: [Vec3; 3]) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
+/// The point of edge `e` nearest `p`, with the curve's tangent there (in
+/// the edge's own direction): the projection inside the edge's range, or
+/// the nearer end.
+fn nearest_on_edge(body: &Body, e: u32, p: Vec3) -> (Vec3, Vec3) {
+    let edge = &body.edges[e as usize];
+    let (t0, t1) = edge.range;
+    let mut best = t0;
+    let mut candidates = vec![t0, t1];
+    if let Ok(t) = edge.curve.project(p) {
+        let t = match edge.curve.period() {
+            Some(period) if period > 0.0 => t - ((t - t0) / period).floor() * period,
+            _ => t,
+        };
+        if t >= t0 && t <= t1 {
+            candidates.push(t);
+        }
+    }
+    // And a row of samples, for a projection that found another branch.
+    candidates.extend((1..64).map(|i| t0 + (t1 - t0) * i as f64 / 64.0));
+    let mut nearest = f64::INFINITY;
+    for t in candidates {
+        let d = edge.curve.eval(t).distance(p);
+        if d < nearest {
+            nearest = d;
+            best = t;
+        }
+    }
+    let (point, tangent) = edge.curve.derivatives(best);
+    (point, tangent)
+}
+
+/// Whether `q` (a point of face `f`'s surface) lies inside face `f` or on
+/// its boundary: within four tolerances of a boundary edge, on; else
+/// inside when the fine mesh of the face comes within its chord of `q`
+/// and, near the boundary (within twice the chord), `q` is on the face's
+/// side of its nearest boundary edge (the face lies to the left of its
+/// loops seen down its outward normal).
+fn on_face(
+    body: &Body,
+    mesh: &craft3d_tess::Mesh,
+    chord: f64,
+    f: usize,
+    q: Vec3,
+    tol: f64,
+) -> bool {
+    let face = &body.faces[f];
+    let mut nearest: Option<(f64, Vec3, Vec3)> = None;
+    for &l in &face.loops {
+        for c in &body.loops[l.0 as usize].coedges {
+            let (e, t) = nearest_on_edge(body, c.edge.0, q);
+            let t = if c.reversed { -t } else { t };
+            let d = e.distance(q);
+            if nearest.is_none_or(|(best, _, _)| d < best) {
+                nearest = Some((d, e, t));
+            }
+        }
+    }
+    if let Some((d, _, _)) = nearest
+        && d <= 4.0 * tol
+    {
+        return true;
+    }
+    let meshed = (0..mesh.triangles.len()).any(|t| {
+        mesh.face_ids[t] as usize == f
+            && mesh
+                .corners(t)
+                .is_some_and(|tri| nearest_on_triangle(q, tri).distance(q) <= chord + 4.0 * tol)
+    });
+    if !meshed {
+        return false;
+    }
+    let Some((d, e, t)) = nearest else {
+        return true;
+    };
+    if d > 2.0 * chord {
+        return true;
+    }
+    let Ok((u, v)) = face.surface.project(e) else {
+        return false;
+    };
+    let Some(n) = face.surface.normal(u, v) else {
+        return false;
+    };
+    let n = if face.reversed { -n } else { n };
+    (q - e).dot(n.cross(t)) > 0.0
+}
+
+/// Two faces of `body` through `at` (each surface within twice the
+/// tolerance of it, the nearest point of the surface inside the face or
+/// on its boundary, [`on_face`], the two nearest points within twice the
+/// tolerance of each other) that share no vertex and no edge there,
+/// with material just past each of them: two walls of the body that meet
+/// where nothing joins them, the parts behind them touching (not a wall
+/// that thins to nothing between them). A shared
+/// vertex joins within four tolerances, a shared edge within four
+/// tolerances over sin(θ/2) (θ the angle between the faces at its nearest
+/// point, so that a sharp wedge or groove is one), and no further than a
+/// tenth of the smaller face's box. A plain look at the B-rep and a mesh
+/// of it, nothing of the boolean's: the net for parts that touch
+/// tangentially (a rounded end against a flat wall), whose gap is too
+/// thin for [`sectors_at`] to see and shares no vertex for
+/// `craft3d_topo::touches`.
+pub fn walls_meet_at(body: &Body, at: Vec3, tol: &Tolerance) -> bool {
+    let t = tol.linear;
+    let chord = (1e-4 * diagonal(body)).max(10.0 * t);
+    let params = craft3d_tess::TessParams {
+        chordal_tolerance: chord,
+        ..craft3d_tess::TessParams::default()
+    };
+    let Ok(mesh) = craft3d_tess::tessellate_body(body, &params) else {
+        return false;
+    };
+    let at_face: Vec<(usize, Vec3)> = (0..body.faces.len())
+        .filter_map(|f| {
+            let surface = &body.faces[f].surface;
+            let (u, v) = surface.project(at).ok()?;
+            let q = surface.eval(u, v);
+            (q.distance(at) <= 2.0 * t && on_face(body, &mesh, chord, f, q, t)).then_some((f, q))
+        })
+        .collect();
+    let parts = |f: usize| {
+        let mut vertices = std::collections::BTreeSet::new();
+        let mut edges = std::collections::BTreeSet::new();
+        for &l in &body.faces[f].loops {
+            for c in &body.loops[l.0 as usize].coedges {
+                edges.insert(c.edge.0);
+                let e = &body.edges[c.edge.0 as usize];
+                vertices.insert(e.start.0);
+                vertices.insert(e.end.0);
+            }
+        }
+        (vertices, edges)
+    };
+    let face_size = |f: usize| {
+        body.face_bbox(craft3d_topo::FaceId(f as u32))
+            .ok()
+            .and_then(|b| b.corners())
+            .map_or(0.0, |(lo, hi)| lo.distance(hi))
+    };
+    let outward = |f: usize, x: Vec3| {
+        let face = &body.faces[f];
+        let (u, v) = face.surface.project(x).ok()?;
+        let n = face.surface.normal(u, v)?;
+        Some(if face.reversed { -n } else { n })
+    };
+    // Just past face `f` (twenty tolerances out along its outward normal,
+    // and as far again to the sides) there is material: the other part.
+    // Where the material between two walls thins to nothing (a hole whose
+    // wall touches a plate's side), past each wall is space.
+    let beyond = |f: usize| {
+        let Some(n) = outward(f, at) else {
+            return false;
+        };
+        let Some(frame) = Frame::from_z(at, n) else {
+            return false;
+        };
+        let step = 20.0 * t;
+        let points: Vec<Vec3> = std::iter::once(Vec3::new(0.0, 0.0, 0.0))
+            .chain((0..8).map(|k| {
+                let a = k as f64 * std::f64::consts::FRAC_PI_4;
+                frame.x() * a.cos() + frame.y() * a.sin()
+            }))
+            .map(|side| at + (n + side) * step)
+            .collect();
+        craft3d_kernel::boolean::contains_points(body, &points, tol)
+            .is_ok_and(|found| found.contains(&Some(true)))
+    };
+    for (i, &(f, qf)) in at_face.iter().enumerate() {
+        let (fv, fe) = parts(f);
+        for &(g, qg) in at_face.iter().skip(i + 1) {
+            // No further apart than the tolerance can tell.
+            if qf.distance(qg) > 2.0 * t {
+                continue;
+            }
+            let (gv, ge) = parts(g);
+            let most = (0.1 * face_size(f).min(face_size(g))).max(4.0 * t);
+            let by_vertex = fv
+                .intersection(&gv)
+                .any(|&v| body.vertices[v as usize].point.distance(at) <= 4.0 * t);
+            let by_edge = fe.intersection(&ge).any(|&e| {
+                let (q, _) = nearest_on_edge(body, e, at);
+                let margin = match (outward(f, q), outward(g, q)) {
+                    (Some(nf), Some(ng)) => {
+                        let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                        if half > 0.0 { 4.0 * t / half } else { most }
+                    }
+                    _ => most,
+                };
+                q.distance(at) <= margin.max(4.0 * t).min(most)
+            });
+            if !by_vertex && !by_edge && beyond(f) && beyond(g) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// On how many shells of `body` the point lies: within twice the

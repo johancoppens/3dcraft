@@ -470,7 +470,7 @@ fn volume_of(body: &Body) -> Option<f64> {
 
 /// The checks every result of a step gets.
 fn held(work: &Work, faces: &[FaceId], tolerance: &Tolerance) -> Result<(), KernelError> {
-    let defects = craft3d_topo::check(&work.body, tolerance);
+    let defects = craft3d_topo::check_remembered(&work.body, tolerance);
     if !defects.is_empty() {
         return Err(KernelError::InvalidBody {
             operation: OPERATION,

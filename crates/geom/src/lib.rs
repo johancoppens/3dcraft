@@ -19,8 +19,8 @@ mod transform;
 
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{
-    BezierSpan, CurvePiece, DerivativeBounds, MAX_CONTROL_POINTS, NurbsCurve, NurbsSurface,
-    RationalBezierPatch,
+    AtU, AtV, BezierSpan, CurvePiece, DerivativeBounds, DerivativeCache, MAX_CONTROL_POINTS,
+    NurbsCurve, NurbsSurface, RationalBezierPatch,
 };
 pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
 pub use transform::{ISOMETRY_EPSILON, MirrorRule};

@@ -28,6 +28,71 @@ pub(crate) struct ProjectGrid {
     closed_u: bool,
     closed_v: bool,
     collapsed: [bool; 4],
+    /// The projections found so far, by the bits of the point projected
+    /// ([`Surface::project`] is a function of the surface and the point):
+    /// a check of a body against itself after every feature, a mesh and a
+    /// mass integral project the points of the boundaries of the faces
+    /// that did not change again and again.
+    memo: ProjectMemo,
+}
+
+/// How many projections one surface remembers at most, and all surfaces
+/// together (about 80 bytes each); a surface that would pass either lets
+/// go of all of its own first.
+const PROJECTIONS_PER_SURFACE: usize = 1 << 15;
+#[cfg(not(target_arch = "wasm32"))]
+const PROJECTIONS: usize = 1 << 20;
+#[cfg(target_arch = "wasm32")]
+const PROJECTIONS: usize = 1 << 16;
+/// How many projections all surfaces remember now.
+static PROJECTIONS_KEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The projections a surface remembers ([`ProjectGrid::memo`]).
+#[derive(Debug, Default)]
+struct ProjectMemo(std::sync::Mutex<std::collections::BTreeMap<[u64; 3], (f64, f64)>>);
+
+impl ProjectMemo {
+    fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .copied()
+    }
+
+    fn put(&self, key: [u64; 3], found: (f64, f64)) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut map = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.contains_key(&key) {
+            return;
+        }
+        let full = map.len() >= PROJECTIONS_PER_SURFACE
+            || PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS;
+        if full {
+            PROJECTIONS_KEPT.fetch_sub(map.len(), Relaxed);
+            map.clear();
+            // Still full with this surface's own let go: the others hold
+            // the room, and this one remembers nothing.
+            if PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS {
+                return;
+            }
+        }
+        map.insert(key, found);
+        PROJECTIONS_KEPT.fetch_add(1, Relaxed);
+    }
+}
+
+impl Drop for ProjectMemo {
+    fn drop(&mut self) {
+        let held = self
+            .0
+            .get_mut()
+            .map_or_else(|poisoned| poisoned.into_inner().len(), |map| map.len());
+        PROJECTIONS_KEPT.fetch_sub(held, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Where a Bézier or NURBS surface keeps its [`ProjectGrid`] once made:
@@ -268,15 +333,24 @@ impl Surface {
     }
 
     pub fn eval(&self, u: f64, v: f64) -> Vec3 {
-        self.derivatives(u, v).0
+        // A freeform surface's point alone: the same bits as the point of
+        // its derivatives (the same sums in the same order), without them.
+        match self {
+            Surface::Bezier(b) => b.eval(u, v),
+            Surface::Nurbs(s) => s.eval(u, v),
+            _ => self.derivatives(u, v).0,
+        }
     }
 
     /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`.
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
-        let (su, cu) = u.sin_cos();
+        // The angle's sine and cosine only for the kinds that turn about an
+        // axis (a freeform surface is evaluated in its own parameters).
+        let turn = || u.sin_cos();
         match self {
             Surface::Plane(p) => (p.frame.point(u, v, 0.0), p.frame.x(), p.frame.y()),
             Surface::Cylinder(c) => {
+                let (su, cu) = turn();
                 let r = c.radius;
                 (
                     c.frame.point(r * cu, r * su, v),
@@ -285,6 +359,7 @@ impl Surface {
                 )
             }
             Surface::Cone(c) => {
+                let (su, cu) = turn();
                 let (r, slope) = (c.radius_at(v), c.half_angle.tan());
                 (
                     c.frame.point(r * cu, r * su, v),
@@ -293,6 +368,7 @@ impl Surface {
                 )
             }
             Surface::Sphere(s) => {
+                let (su, cu) = turn();
                 let (sv, cv) = v.sin_cos();
                 let r = s.radius;
                 (
@@ -302,6 +378,7 @@ impl Surface {
                 )
             }
             Surface::Torus(t) => {
+                let (su, cu) = turn();
                 let (sv, cv) = v.sin_cos();
                 let ring = t.major + t.minor * cv;
                 (
@@ -320,23 +397,29 @@ impl Surface {
     /// form, which also holds at the poles of a sphere; `None` at a cone's
     /// apex and wherever a freeform surface has no normal.
     pub fn normal(&self, u: f64, v: f64) -> Option<Vec3> {
-        let (su, cu) = u.sin_cos();
+        let turn = || u.sin_cos();
         match self {
             Surface::Plane(p) => Some(p.frame.z()),
-            Surface::Cylinder(c) => Some(c.frame.vector(cu, su, 0.0)),
+            Surface::Cylinder(c) => {
+                let (su, cu) = turn();
+                Some(c.frame.vector(cu, su, 0.0))
+            }
             Surface::Cone(c) => {
                 // At the apex, up to the rounding of `radius + v tan α`.
                 let slope = c.half_angle.tan();
                 if c.radius_at(v) <= 1e-12 * (c.radius + (v * slope).abs()) {
                     return None;
                 }
+                let (su, cu) = turn();
                 c.frame.vector(cu, su, -c.half_angle.tan()).normalized()
             }
             Surface::Sphere(s) => {
+                let (su, cu) = turn();
                 let (sv, cv) = v.sin_cos();
                 Some(s.frame.vector(cv * cu, cv * su, sv))
             }
             Surface::Torus(t) => {
+                let (su, cu) = turn();
                 let (sv, cv) = v.sin_cos();
                 Some(t.frame.vector(cv * cu, cv * su, sv))
             }
@@ -445,6 +528,19 @@ impl Surface {
     /// the domain begins at its border; one that is not finite is
     /// [`GeomError::InvalidParameter`], as is a `p` that is not.
     pub fn project_from(&self, p: Vec3, start: (f64, f64)) -> Result<(f64, f64), GeomError> {
+        self.project_from_with_derivatives(p, start)
+            .map(|(at, _)| at)
+    }
+
+    /// [`Surface::project_from`], and [`Surface::derivatives`] at the
+    /// parameters found (the walk worked them out at its last step: the
+    /// same bits as asking for them again).
+    #[allow(clippy::type_complexity)]
+    pub fn project_from_with_derivatives(
+        &self,
+        p: Vec3,
+        start: (f64, f64),
+    ) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
         if !p.is_finite() {
             return Err(GeomError::InvalidParameter(
                 "cannot project a non-finite point",
@@ -456,7 +552,8 @@ impl Surface {
             ));
         }
         if !matches!(self, Surface::Bezier(_) | Surface::Nurbs(_)) {
-            return self.project(p);
+            let (u, v) = self.project(p)?;
+            return Ok(((u, v), self.derivatives(u, v)));
         }
         let ((u0, u1), (v0, v1)) = self.domain();
         if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
@@ -465,13 +562,13 @@ impl Surface {
             ));
         }
         let start = (start.0.clamp(u0, u1), start.1.clamp(v0, v1));
-        let (_, u, v, settled) = self.descend(p, start, (false, false), [false; 4]);
+        let (_, u, v, settled, at) = self.descend(p, start, (false, false), [false; 4]);
         if !(settled && u.is_finite() && v.is_finite()) {
             return Err(GeomError::NoConvergence(
                 "the walk from the start of a projection did not settle",
             ));
         }
-        Ok((u, v))
+        Ok(((u, v), at))
     }
 
     /// The nearest point of a Bézier or NURBS surface, numerically.
@@ -519,6 +616,23 @@ impl Surface {
                 "numeric projection onto an unbounded surface",
             ));
         }
+        let grid = self.project_grid((u0, u1), (v0, v1));
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        if let Some(found) = grid.memo.get(&key) {
+            return Ok(found);
+        }
+        let found = self.project_from_grid(p, &grid, ((u0, u1), (v0, v1)))?;
+        grid.memo.put(key, found);
+        Ok(found)
+    }
+
+    /// [`Surface::project_numeric`], from the grid of samples.
+    fn project_from_grid(
+        &self,
+        p: Vec3,
+        grid: &ProjectGrid,
+        ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64)),
+    ) -> Result<(f64, f64), GeomError> {
         const N: usize = PROJECT_GRID;
         let at = |i: usize, j: usize| {
             (
@@ -526,14 +640,14 @@ impl Surface {
                 v0 + (v1 - v0) * j as f64 / N as f64,
             )
         };
-        let grid = self.project_grid((u0, u1), (v0, v1));
         let ProjectGrid {
             points,
             extent,
             closed_u,
             closed_v,
             collapsed,
-        } = &*grid;
+            memo: _,
+        } = grid;
         let (extent, closed_u, closed_v, collapsed) = (*extent, *closed_u, *closed_v, *collapsed);
         let skipped = |i: usize, j: usize| {
             (i == 0 && collapsed[0])
@@ -613,7 +727,7 @@ impl Surface {
         // common case, of points that are on the surface to begin with.
         let mut best: Option<(f64, f64, f64)> = None;
         if let Some(&(_, _, i, j)) = starts.first() {
-            let (found, u, v, _) = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
+            let (found, u, v, _, _) = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
             if found <= 16.0 * f64::EPSILON * (p.length() + extent) {
                 return Ok((u, v));
             }
@@ -694,7 +808,7 @@ impl Surface {
             if best.is_some_and(|(found, _, _)| d - reach > found) {
                 continue;
             }
-            let (found, u, v, _) = self.descend(
+            let (found, u, v, _, _) = self.descend(
                 p,
                 (
                     if closed_u {
@@ -804,6 +918,7 @@ impl Surface {
             closed_u,
             closed_v,
             collapsed,
+            memo: ProjectMemo::default(),
         }
     }
 
@@ -844,8 +959,15 @@ impl Surface {
         start: (f64, f64),
         closed: (bool, bool),
         collapsed: [bool; 4],
-    ) -> (f64, f64, f64, bool) {
+    ) -> (f64, f64, f64, bool, (Vec3, Vec3, Vec3)) {
         let ((u0, u1), (v0, v1)) = self.domain();
+        // The walk evaluates the surface at three values of each parameter
+        // around a step: the blend factors of a spline kept for them.
+        let cache = std::cell::RefCell::new(crate::DerivativeCache::default());
+        let eval = |u: f64, v: f64| match self {
+            Surface::Nurbs(s) => s.derivatives_cached(u, v, &mut cache.borrow_mut()),
+            _ => self.derivatives(u, v),
+        };
         // A parameter after a step: around a closed direction, or stopped
         // at the border of an open one.
         let place = |x: f64, (low, high): (f64, f64), closed: bool| {
@@ -865,7 +987,7 @@ impl Surface {
         // which directions are held, and the slope along the free ones as
         // a length.
         let look = |u: f64, v: f64| {
-            let (s, su, sv) = self.derivatives(u, v);
+            let (s, su, sv) = eval(u, v);
             let r = p - s;
             let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
             let (ru, rv) = (r.dot(su), r.dot(sv));
@@ -881,7 +1003,7 @@ impl Surface {
                 }
             };
             let slope = along(ru, a, hold.0).max(along(rv, c, hold.1));
-            (r, (a, b, c), (ru, rv), hold, slope)
+            (r, (a, b, c), (ru, rv), hold, slope, (s, su, sv))
         };
         // How the tangents change from `(u, v)`, by differences of them a
         // little way off each way (or one way, at a border): what the
@@ -897,10 +1019,10 @@ impl Surface {
             };
             let (ua, ub) = span(u, (u0, u1), closed.0);
             let (va, vb) = span(v, (v0, v1), closed.1);
-            let (_, su_a, sv_a) = self.derivatives(ua, v);
-            let (_, su_b, sv_b) = self.derivatives(ub, v);
-            let (_, _, sv_c) = self.derivatives(u, va);
-            let (_, _, sv_d) = self.derivatives(u, vb);
+            let (_, su_a, sv_a) = eval(ua, v);
+            let (_, su_b, sv_b) = eval(ub, v);
+            let (_, _, sv_c) = eval(u, va);
+            let (_, _, sv_d) = eval(u, vb);
             (
                 r.dot(su_b - su_a) / (ub - ua),
                 r.dot(sv_b - sv_a) / (ub - ua),
@@ -918,7 +1040,7 @@ impl Surface {
         let mut curved = false;
         let mut settled = false;
         for _ in 0..PROJECT_STEPS {
-            let (r, (a, b, c), (ru, rv), (hold_u, hold_v), slope) = here;
+            let (r, (a, b, c), (ru, rv), (hold_u, hold_v), slope, _) = here;
             let distance = r.length();
             // Not a number: nothing to follow.
             if distance.is_nan() {
@@ -1033,7 +1155,7 @@ impl Surface {
                 break;
             }
         }
-        (here.0.length(), u, v, settled)
+        (here.0.length(), u, v, settled, here.5)
     }
 }
 
@@ -1143,6 +1265,73 @@ mod tests {
             }
         }
         BezierPatch::bicubic(net).unwrap()
+    }
+
+    /// A surface remembers the projections it made, and lets go of them
+    /// when full: whatever it holds, every projection is the one a surface
+    /// that never kept anything makes, bit for bit, with more points than
+    /// it keeps asked twice over.
+    #[test]
+    fn remembered_projections_are_the_ones_made_afresh() {
+        let make = || Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(1.0)).unwrap());
+        let kept = make();
+        let count = PROJECTIONS_PER_SURFACE + 500;
+        let point = |k: usize| {
+            let t = k as f64;
+            Vec3::new(
+                (t * 0.0137).sin() * 2.0 + 1.5,
+                (t * 0.0261).cos() * 3.0 + 2.0,
+                (t * 0.0093).sin() * 1.5,
+            )
+        };
+        let fresh: Vec<(f64, f64)> = (0..count)
+            .step_by(97)
+            .map(|k| make().project(point(k)).unwrap())
+            .collect();
+        for _ in 0..2 {
+            for k in 0..count {
+                let _ = kept.project(point(k));
+            }
+            for (k, want) in (0..count).step_by(97).zip(&fresh) {
+                let got = kept.project(point(k)).unwrap();
+                assert_eq!(
+                    (got.0.to_bits(), got.1.to_bits()),
+                    (want.0.to_bits(), want.1.to_bits())
+                );
+            }
+        }
+    }
+
+    /// The derivatives a walk from a start comes back with are those of the
+    /// surface at the parameters it found, bit for bit.
+    #[test]
+    fn a_walk_gives_the_derivatives_where_it_ends() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let mut all = surfaces(scale);
+            all.push(Surface::Nurbs(
+                NurbsSurface::from_bezier(&bumpy(scale)).unwrap(),
+            ));
+            for surface in all {
+                for k in 0..30 {
+                    let t = f64::from(k);
+                    let p = Vec3::new(
+                        (t * 0.37).sin() * 2.0 + 1.5,
+                        (t * 0.61).cos() * 3.0,
+                        (t * 0.23).sin(),
+                    ) * scale;
+                    let start = (0.1 + 0.02 * t, 0.9 - 0.025 * t);
+                    let Ok(((u, v), at)) = surface.project_from_with_derivatives(p, start) else {
+                        continue;
+                    };
+                    let want = surface.derivatives(u, v);
+                    let bits = |(a, b, c): (Vec3, Vec3, Vec3)| {
+                        [a, b, c].map(|q| [q.x.to_bits(), q.y.to_bits(), q.z.to_bits()])
+                    };
+                    assert_eq!(bits(at), bits(want), "{}", surface.kind());
+                    assert_eq!(surface.project_from(p, start).ok(), Some((u, v)));
+                }
+            }
+        }
     }
 
     /// The samples a projection starts from are kept with the surface

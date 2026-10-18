@@ -2830,15 +2830,23 @@ impl PatchTree {
     /// where Gauss–Newton alone crawls.
     fn descend(&self, p: Vec3, start: (f64, f64)) -> Nearest {
         let ((u0, u1), (v0, v1)) = self.surface.domain();
+        // Each step evaluates the surface at three values of each parameter
+        // (the curvature from differences of the tangents): the blend
+        // factors of a spline kept for them, the same bits.
+        let cache = std::cell::RefCell::new(craft3d_geom::DerivativeCache::default());
+        let derivatives = |u: f64, v: f64| match &self.surface {
+            Surface::Nurbs(s) => s.derivatives_cached(u, v, &mut cache.borrow_mut()),
+            surface => surface.derivatives(u, v),
+        };
         let (mut u, mut v) = self.clamp(start.0, start.1);
-        let (mut point, _, _) = self.surface.derivatives(u, v);
+        let (mut point, _, _) = derivatives(u, v);
         let mut distance = point.distance(p);
         let mut damping = 1e-6;
         let (hu, hv) = (1e-6 * (u1 - u0), 1e-6 * (v1 - v0));
         // Whether the curvature terms are taken from the start of a step.
         let mut curved = false;
         for _ in 0..NEWTON_STEPS {
-            let (s, su, sv) = self.surface.derivatives(u, v);
+            let (s, su, sv) = derivatives(u, v);
             let r = s - p;
             let (g1, g2) = (su.dot(r), sv.dot(r));
             if !(g1.hypot(g2) > 0.0) {
@@ -2859,10 +2867,10 @@ impl PatchTree {
             let gauss = (su.dot(su), su.dot(sv), sv.dot(sv));
             let curvature = |full: &mut bool| {
                 *full = true;
-                let (_, su_up, sv_up) = self.surface.derivatives((u + hu).min(u1), v);
-                let (_, su_down, sv_down) = self.surface.derivatives((u - hu).max(u0), v);
-                let (_, _, sv_vup) = self.surface.derivatives(u, (v + hv).min(v1));
-                let (_, _, sv_vdown) = self.surface.derivatives(u, (v - hv).max(v0));
+                let (_, su_up, sv_up) = derivatives((u + hu).min(u1), v);
+                let (_, su_down, sv_down) = derivatives((u - hu).max(u0), v);
+                let (_, _, sv_vup) = derivatives(u, (v + hv).min(v1));
+                let (_, _, sv_vdown) = derivatives(u, (v - hv).max(v0));
                 let suu = (su_up - su_down) * (0.5 / hu);
                 let suv = (sv_up - sv_down) * (0.5 / hu);
                 let svv = (sv_vup - sv_vdown) * (0.5 / hv);

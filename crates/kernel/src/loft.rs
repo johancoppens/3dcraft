@@ -58,7 +58,7 @@ use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, NurbsSurface, Plane, Surface,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// Most sections of one loft.
@@ -1408,7 +1408,7 @@ pub fn loft(
     }
     b.body.add_shell(shell);
 
-    let mut defects = check(&b.body, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {

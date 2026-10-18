@@ -1,0 +1,88 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N0",
+            "position": [
+              0.0,
+              5.0,
+              0.0
+            ],
+            "radius": 7.5
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.block",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.0,
+              0.0,
+              10.0
+            ],
+            "name": "N1",
+            "position": [
+              -2.4741614602260826,
+              -2.4840230333138704,
+              -7.5
+            ],
+            "size": [
+              20.0,
+              10.0,
+              12.5
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N2",
+            "op": "union",
+            "target": "N0",
+            "tool": "N1"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 0.625,
+            "edges": [
+              [
+                "{N2}:copy(0)/{N0}:face(0)",
+                "{N2}:copy(1)/{N1}:face(1)"
+              ],
+              [
+                "{N2}:copy(0)/{N0}:face(0)",
+                "{N2}:copy(1)/{N1}:face(2)"
+              ]
+            ],
+            "name": "N3"
+          }
+        }
+      ],
+      "step": "blend"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 14211
+}

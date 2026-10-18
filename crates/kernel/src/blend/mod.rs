@@ -193,6 +193,8 @@ pub(crate) enum Reason {
     FreeJoint,
     FreeChainSize,
     FreeRunsOver,
+    /// The blend face would fold through itself.
+    FreeFolds,
     FreeGoesOn,
     FreeRollOver,
     TakenWhole,
@@ -293,6 +295,9 @@ impl Reason {
             Reason::FreeGoesOn => {
                 "the chamfer does not end cleanly: it cannot stop where the edge goes on smoothly into the next edge; chamfer the edges it continues in as well (with chain), or leave this one out"
             }
+            Reason::FreeFolds => {
+                "the chamfer face along this edge would fold through itself: its cut line on a face beside the edge goes past where the lines across the edge meet (over the top of a small cap, say): the distance is too large for that face"
+            }
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
             }
@@ -391,6 +396,9 @@ impl Reason {
             }
             Reason::FreeGoesOn => {
                 "the fillet does not end cleanly: it cannot stop where the edge goes on smoothly into the next edge; fillet the edges it continues in as well (with chain), or leave this one out"
+            }
+            Reason::FreeFolds => {
+                "the fillet face along this edge would fold through itself: where the ball touches a face beside the edge goes past where the sections across the edge meet (over the top of a small cap, say): the radius is too large for that face"
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
@@ -1729,7 +1737,7 @@ fn join(
         faces,
         shells: vec![shell],
     };
-    let mut defects = craft3d_topo::check(&joined, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&joined, tolerance);
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {

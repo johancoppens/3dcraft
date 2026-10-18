@@ -114,7 +114,7 @@ use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Ellipse, Line, NurbsCurve, NurbsSurface, Plane, Surface, Torus,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -2582,7 +2582,7 @@ pub fn sweep(
         *number = number.saturating_add(1);
     }
 
-    let mut defects = check(&b.body, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {

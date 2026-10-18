@@ -110,6 +110,7 @@ const ZERO: H = H {
 ///
 /// `N` is the room per level and must be above the degree; a shorter array
 /// only drops terms, it cannot panic.
+#[derive(Clone, Debug)]
 struct Along<const N: usize> {
     degree: usize,
     /// Index of the first of the `degree + 1` control points with influence.
@@ -290,6 +291,17 @@ fn surface_at<const N: usize>(
     let count_u = s.homogeneous.len() / count_v;
     let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, derivative);
     let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, derivative);
+    surface_with(s, &along_u, &along_v, derivative)
+}
+
+/// [`surface_at`] with the blend factors of both directions given.
+fn surface_with<const N: usize>(
+    s: &NurbsSurface,
+    along_u: &Along<N>,
+    along_v: &Along<N>,
+    derivative: bool,
+) -> (Vec3, Vec3, Vec3) {
+    let count_v = s.count_v.max(1);
     // Collapse the rows with influence along v, then work along u.
     let mut row_points = [ZERO; N];
     let mut row_derivs = [ZERO; N];
@@ -315,6 +327,48 @@ fn surface_at<const N: usize>(
     let a_v = along_u.point(row_derivs);
     let partial = |d: H| (d.p - point * d.w) * (1.0 / a.w);
     (point, partial(a_u), partial(a_v))
+}
+
+/// How many blend factors along each direction a [`DerivativeCache`]
+/// keeps.
+const CACHED_ALONG: usize = 3;
+
+/// The blend factors of the last few parameters a NURBS surface of degree
+/// three or less was evaluated at, along each direction: a walk that
+/// evaluates the surface at `(u ± h, v)` and `(u, v ± h)` around each
+/// step (the curving of the surface from differences of its tangents)
+/// works them out for three values of each parameter, not five. For one
+/// surface only (the caller's: [`NurbsSurface::derivatives_cached`]); what
+/// it keeps changes no value, only the work.
+#[derive(Clone, Debug, Default)]
+pub struct DerivativeCache {
+    u: [Option<(u64, Along<4>)>; CACHED_ALONG],
+    v: [Option<(u64, Along<4>)>; CACHED_ALONG],
+    next: [usize; 2],
+}
+
+impl DerivativeCache {
+    /// The slot of `t`'s factors along one direction, made if not kept.
+    fn slot(
+        slots: &mut [Option<(u64, Along<4>)>; CACHED_ALONG],
+        next: &mut usize,
+        t: f64,
+        make: impl FnOnce() -> Along<4>,
+    ) -> usize {
+        let bits = t.to_bits();
+        if let Some(at) = slots
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|(b, _)| *b == bits))
+        {
+            return at;
+        }
+        let at = *next % CACHED_ALONG;
+        *next = (at + 1) % CACHED_ALONG;
+        if let Some(slot) = slots.get_mut(at) {
+            *slot = Some((bits, make()));
+        }
+        at
+    }
 }
 
 /// The denominator of a NURBS surface at `(u, v)`: `Σ N_i(u) N_j(v) w_ij`,
@@ -347,6 +401,129 @@ macro_rules! sized_for {
             _ => $call::<{ MAX_DEGREE + 1 }>($($arg),*),
         }
     };
+}
+
+/// The rows of control points of a NURBS surface collapsed along v at one
+/// `v`, every one of them: what [`surface_at`] makes of the rows that have
+/// influence, for any `u` ([`NurbsSurface::at_v`]).
+fn rows_at_v<const N: usize>(s: &NurbsSurface, v: f64) -> (Vec<H>, Vec<H>) {
+    let count_v = s.count_v.max(1);
+    let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, true);
+    let rows = s.homogeneous.chunks(count_v);
+    let mut points = Vec::with_capacity(rows.len());
+    let mut derivs = Vec::with_capacity(rows.len());
+    for row in rows {
+        let d = along_v.local(row);
+        derivs.push(along_v.derivative(along_v.hodograph(&d)));
+        points.push(along_v.point(d));
+    }
+    (points, derivs)
+}
+
+/// [`surface_at`] with the rows already collapsed along v.
+fn surface_at_rows<const N: usize>(
+    s: &NurbsSurface,
+    (points, derivs): (&[H], &[H]),
+    u: f64,
+) -> (Vec3, Vec3, Vec3) {
+    let count_v = s.count_v.max(1);
+    let count_u = s.homogeneous.len() / count_v;
+    let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, true);
+    let mut row_points = [ZERO; N];
+    let mut row_derivs = [ZERO; N];
+    for ((point, deriv), (p, d)) in row_points
+        .iter_mut()
+        .zip(row_derivs.iter_mut())
+        .zip(points.iter().zip(derivs).skip(along_u.first))
+        .take(s.degree_u + 1)
+    {
+        *deriv = *d;
+        *point = *p;
+    }
+    let a = along_u.point(row_points);
+    let point = a.p * (1.0 / a.w);
+    let a_u = along_u.derivative(along_u.hodograph(&row_points));
+    let a_v = along_u.point(row_derivs);
+    let partial = |d: H| (d.p - point * d.w) * (1.0 / a.w);
+    (point, partial(a_u), partial(a_v))
+}
+
+/// [`surface_at`] with the blend factors along u worked out already.
+fn surface_at_u<const N: usize>(
+    s: &NurbsSurface,
+    along_u: &Along<N>,
+    v: f64,
+) -> (Vec3, Vec3, Vec3) {
+    let count_v = s.count_v.max(1);
+    let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, true);
+    let mut row_points = [ZERO; N];
+    let mut row_derivs = [ZERO; N];
+    for ((point, deriv), row) in row_points
+        .iter_mut()
+        .zip(row_derivs.iter_mut())
+        .zip(s.homogeneous.chunks(count_v).skip(along_u.first))
+        .take(s.degree_u + 1)
+    {
+        let d = along_v.local(row);
+        *deriv = along_v.derivative(along_v.hodograph(&d));
+        *point = along_v.point(d);
+    }
+    let a = along_u.point(row_points);
+    let point = a.p * (1.0 / a.w);
+    let a_u = along_u.derivative(along_u.hodograph(&row_points));
+    let a_v = along_u.point(row_derivs);
+    let partial = |d: H| (d.p - point * d.w) * (1.0 / a.w);
+    (point, partial(a_u), partial(a_v))
+}
+
+/// The blend factors along u at one `u`, in the working room for the
+/// surface's degree.
+// The usual degrees (to three) stay on the stack; the larger rooms are boxed.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug)]
+enum AlongAny {
+    Four(Along<4>),
+    Eight(Box<Along<8>>),
+    Sixteen(Box<Along<16>>),
+    Most(Box<Along<{ MAX_DEGREE + 1 }>>),
+}
+
+/// A NURBS surface along its line of constant `u` ([`NurbsSurface::at_u`]).
+#[derive(Clone, Debug)]
+pub struct AtU<'a> {
+    surface: &'a NurbsSurface,
+    along: AlongAny,
+}
+
+impl AtU<'_> {
+    /// [`NurbsSurface::derivatives`] at `(u, v)`, bit for bit.
+    pub fn derivatives(&self, v: f64) -> (Vec3, Vec3, Vec3) {
+        let s = self.surface;
+        match &self.along {
+            AlongAny::Four(a) => surface_at_u(s, a, v),
+            AlongAny::Eight(a) => surface_at_u(s, a, v),
+            AlongAny::Sixteen(a) => surface_at_u(s, a, v),
+            AlongAny::Most(a) => surface_at_u(s, a, v),
+        }
+    }
+}
+
+/// A NURBS surface along its line of constant `v` ([`NurbsSurface::at_v`]).
+#[derive(Clone, Debug)]
+pub struct AtV<'a> {
+    surface: &'a NurbsSurface,
+    points: Vec<H>,
+    derivs: Vec<H>,
+}
+
+impl AtV<'_> {
+    /// [`NurbsSurface::derivatives`] at `(u, v)`, bit for bit.
+    pub fn derivatives(&self, u: f64) -> (Vec3, Vec3, Vec3) {
+        let s = self.surface;
+        let degree = s.degree_u.max(s.degree_v);
+        let rows = (self.points.as_slice(), self.derivs.as_slice());
+        sized_for!(degree, surface_at_rows(s, rows, u))
+    }
 }
 
 /// A non-uniform rational B-spline curve.
@@ -788,6 +965,72 @@ impl NurbsSurface {
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
         let degree = self.degree_u.max(self.degree_v);
         sized_for!(degree, surface_at(self, u, v, true))
+    }
+
+    /// [`Self::derivatives`], the blend factors taken from `cache` where it
+    /// has them for `u` or `v` (kept there otherwise): the same bits. Only
+    /// a surface of degree three or less is cached; `cache` must serve this
+    /// surface alone.
+    pub fn derivatives_cached(
+        &self,
+        u: f64,
+        v: f64,
+        cache: &mut DerivativeCache,
+    ) -> (Vec3, Vec3, Vec3) {
+        if self.degree_u.max(self.degree_v) > 3 {
+            return self.derivatives(u, v);
+        }
+        let count_v = self.count_v.max(1);
+        let count_u = self.homogeneous.len() / count_v;
+        let DerivativeCache { u: us, v: vs, next } = cache;
+        let [next_u, next_v] = next;
+        let at_u = DerivativeCache::slot(us, next_u, u, || {
+            Along::new(&self.knots_u, self.degree_u, count_u, u, true)
+        });
+        let at_v = DerivativeCache::slot(vs, next_v, v, || {
+            Along::new(&self.knots_v, self.degree_v, count_v, v, true)
+        });
+        match (
+            us.get(at_u).and_then(Option::as_ref),
+            vs.get(at_v).and_then(Option::as_ref),
+        ) {
+            (Some((_, along_u)), Some((_, along_v))) => surface_with(self, along_u, along_v, true),
+            _ => self.derivatives(u, v),
+        }
+    }
+
+    /// The surface along its line of constant `u`, for many points of it:
+    /// the blend factors along u worked out once, so that
+    /// [`AtU::derivatives`] at each `v` does the rest. Each is the very
+    /// value [`Self::derivatives`] gives.
+    pub fn at_u(&self, u: f64) -> AtU<'_> {
+        let count_v = self.count_v.max(1);
+        let count_u = self.homogeneous.len() / count_v;
+        let (knots, degree) = (&self.knots_u, self.degree_u);
+        let along = match self.degree_u.max(self.degree_v) {
+            0..=3 => AlongAny::Four(Along::new(knots, degree, count_u, u, true)),
+            4..=7 => AlongAny::Eight(Box::new(Along::new(knots, degree, count_u, u, true))),
+            8..=15 => AlongAny::Sixteen(Box::new(Along::new(knots, degree, count_u, u, true))),
+            _ => AlongAny::Most(Box::new(Along::new(knots, degree, count_u, u, true))),
+        };
+        AtU {
+            surface: self,
+            along,
+        }
+    }
+
+    /// The surface along its line of constant `v`, for many points of it:
+    /// every row of control points collapsed along v once (half of what an
+    /// evaluation does), so that [`AtV::derivatives`] at each `u` does the
+    /// rest. Each is the very value [`Self::derivatives`] gives.
+    pub fn at_v(&self, v: f64) -> AtV<'_> {
+        let degree = self.degree_u.max(self.degree_v);
+        let (points, derivs) = sized_for!(degree, rows_at_v(self, v));
+        AtV {
+            surface: self,
+            points,
+            derivs,
+        }
     }
 
     /// The surface's denominator at `(u, v)`: `Σ N_i(u) N_j(v) w_ij`, the
@@ -2217,6 +2460,96 @@ mod tests {
 
     /// A rational surface of degrees (2, 3) with interior knots in both
     /// directions (one of them double) and varied weights.
+    /// Along a line of constant v the rows collapsed once (and along one
+    /// of constant u the blend factors worked out once) give every
+    /// point and derivative [`NurbsSurface::derivatives`] gives, bit for
+    /// bit, at degrees that take each size of working room, inside the
+    /// domain, at its ends, beyond it and at NaN; the point alone is the
+    /// point of the derivatives.
+    #[test]
+    fn a_line_of_constant_v_evaluates_as_the_surface_does() {
+        let raised = |degree_u: usize, degree_v: usize| {
+            let (count_u, count_v) = (degree_u + 3, degree_v + 2);
+            let mut ctrl = Vec::new();
+            let mut weights = Vec::new();
+            for i in 0..count_u {
+                for j in 0..count_v {
+                    let (x, y) = (i as f64, j as f64 * 0.7);
+                    ctrl.push(Vec3::new(x, y, ((i * 5 + j * 3) % 7) as f64 * 0.2));
+                    weights.push(0.5 + 0.25 * ((i * 2 + j) % 5) as f64);
+                }
+            }
+            let clamped = |degree: usize, count: usize| {
+                let mut knots = vec![0.0; degree + 1];
+                for k in 1..count - degree {
+                    knots.push(k as f64 / (count - degree) as f64);
+                }
+                knots.extend(std::iter::repeat_n(1.0, degree + 1));
+                knots
+            };
+            NurbsSurface::new(
+                degree_u,
+                degree_v,
+                clamped(degree_u, count_u),
+                clamped(degree_v, count_v),
+                count_u,
+                count_v,
+                ctrl,
+                weights,
+            )
+            .unwrap()
+        };
+        let bits = |(p, a, b): (Vec3, Vec3, Vec3)| {
+            [p, a, b].map(|q| [q.x.to_bits(), q.y.to_bits(), q.z.to_bits()])
+        };
+        for surface in [
+            lumpy(),
+            raised(1, 1),
+            raised(5, 2),
+            raised(3, 9),
+            raised(17, 2),
+        ] {
+            for v in [0.0, 0.13, 0.3, 0.6, 0.999, 1.0, -0.2, 1.4, f64::NAN] {
+                let line = surface.at_v(v);
+                for k in 0..=40 {
+                    let u = -0.25 + 1.5 * f64::from(k) / 40.0;
+                    let want = surface.derivatives(u, v);
+                    assert_eq!(bits(line.derivatives(u)), bits(want), "{u} {v}");
+                    // The same along the line of constant u through it.
+                    assert_eq!(bits(surface.at_u(u).derivatives(v)), bits(want), "{u} {v}");
+                    assert_eq!(
+                        bits((surface.eval(u, v), Vec3::ZERO, Vec3::ZERO)),
+                        bits((want.0, Vec3::ZERO, Vec3::ZERO))
+                    );
+                }
+                assert_eq!(
+                    bits(line.derivatives(f64::NAN)),
+                    bits(surface.derivatives(f64::NAN, v))
+                );
+                // Through a cache of blend factors, asked in a walk's
+                // pattern (each place, then a little either side).
+                let mut cache = DerivativeCache::default();
+                for k in 0..=20 {
+                    let u = -0.1 + 1.2 * f64::from(k) / 20.0;
+                    for (a, b) in [
+                        (u, v),
+                        (u - 1e-5, v),
+                        (u + 1e-5, v),
+                        (u, v - 1e-5),
+                        (u, v + 1e-5),
+                        (u, v),
+                    ] {
+                        assert_eq!(
+                            bits(surface.derivatives_cached(a, b, &mut cache)),
+                            bits(surface.derivatives(a, b)),
+                            "{a} {b}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn lumpy() -> NurbsSurface {
         let (count_u, count_v) = (5, 7);
         let mut ctrl = Vec::new();

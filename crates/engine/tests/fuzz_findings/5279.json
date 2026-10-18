@@ -1,0 +1,134 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.cylinder",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              0.0,
+              0.0
+            ],
+            "height": 0.01,
+            "name": "N0",
+            "position": [
+              0.0,
+              0.01,
+              0.01
+            ],
+            "radius": 0.005
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S2",
+            "offset": 0.0,
+            "plane": "xy"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                0.005
+              ],
+              [
+                0.01,
+                0.005
+              ],
+              [
+                0.01,
+                0.01
+              ],
+              [
+                0.0,
+                0.01
+              ]
+            ],
+            "sketch": "S2"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "360 deg",
+            "axis": "y",
+            "join": "N0",
+            "name": "N2",
+            "sketch": "S2"
+          }
+        }
+      ],
+      "step": "revolve"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S5",
+            "offset": 0.0,
+            "plane": "yz"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                -0.005
+              ],
+              [
+                0.01,
+                -0.005
+              ],
+              [
+                0.01,
+                0.005
+              ],
+              [
+                0.005,
+                0.005
+              ],
+              [
+                0.005,
+                0.0075
+              ],
+              [
+                0.0,
+                0.0075
+              ]
+            ],
+            "sketch": "S5"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "90 deg",
+            "axis": "y",
+            "join": "N2",
+            "name": "N5",
+            "sketch": "S5"
+          }
+        }
+      ],
+      "step": "revolve"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 5279
+}

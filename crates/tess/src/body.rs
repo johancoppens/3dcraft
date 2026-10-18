@@ -496,6 +496,14 @@ fn tessellate_some(
             let Some(face) = body.faces.get(index) else {
                 return (Vec::new(), None);
             };
+            // A face made before from the same surface, edges and points
+            // (`remembered`): its mesh, which asked for no finer chords.
+            let key = mesh
+                .then(|| crate::remembered::key(body, points, face, params, last))
+                .flatten();
+            if let Some(found) = key.as_deref().and_then(crate::remembered::find) {
+                return (Vec::new(), Some(Ok(FaceMesh::clone(&found))));
+            }
             let mut starved = false;
             let boundary = match face_boundary(body, points, face, index, params, &mut starved) {
                 Ok(boundary) => boundary,
@@ -526,6 +534,9 @@ fn tessellate_some(
             // the last round.
             if !last && !ask.is_empty() && matches!(result, Some(Err(_))) {
                 return (ask, None);
+            }
+            if let (Some(key), true, Some(Ok(made))) = (key, wanted.is_empty(), &result) {
+                crate::remembered::keep(key, made);
             }
             (wanted, result)
         };
