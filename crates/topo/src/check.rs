@@ -365,7 +365,9 @@ fn distance_to(surface: &Surface, p: craft3d_math::Vec3) -> Option<f64> {
 /// full with the tolerance it was checked with, every bit of every number
 /// (`craft3d_math::Bits`: two are the same only when every number of them
 /// is, bit for bit), the most recent last.
-static PASSED: Mutex<Vec<Vec<u64>>> = Mutex::new(Vec::new());
+///
+/// Each with the work its check took (`craft3d_geom::allowance`).
+static PASSED: Mutex<Vec<(Vec<u64>, u64)>> = Mutex::new(Vec::new());
 /// How many are remembered, and how many words all of them are at most.
 const PASSED_BODIES: usize = 8;
 const PASSED_WORDS: usize = 1 << 22;
@@ -378,37 +380,41 @@ const PASSED_WORDS: usize = 1 << 22;
 /// bits, not as text: formatting every number of a large body cost a
 /// quarter of a long row of cuts.
 pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
+    use craft3d_geom::allowance;
     let mut key = craft3d_math::bits_of(tolerance);
     body.push_bits(&mut key);
-    // Checked uncounted, remembered or not; a check charges what the body
-    // holds once per body and operation, about what checking an entity
-    // takes, the same either way (`craft3d_geom::allowance::uncounted`).
-    let entities = (body.faces.len() + body.edges.len() + body.vertices.len()) as u64;
+    // Charged by the work the check took, once per body and operation
+    // under a bound, whether it is checked now or found to have passed
+    // (`craft3d_geom::allowance::first_time`): the check is counted the
+    // first time, its count kept with the body, and a hit charges it.
     let thing = key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, w| {
         (h ^ w).wrapping_mul(0x0100_0000_01b3)
     });
-    craft3d_geom::allowance::once(thing, entities.saturating_mul(16));
-    craft3d_geom::allowance::uncounted(|| remembered_check(body, tolerance, key))
-}
-
-/// [`check_remembered`]: remembered, or checked and remembered.
-fn remembered_check(body: &Body, tolerance: &Tolerance, key: Vec<u64>) -> Vec<Defect> {
+    let first = allowance::first_time(thing);
     {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(at) = passed.iter().position(|k| *k == key) {
+        if let Some(at) = passed.iter().position(|(k, _)| *k == key) {
             let entry = passed.remove(at);
+            if first {
+                allowance::charge(entry.1);
+            }
             passed.push(entry);
             return Vec::new();
         }
     }
-    let defects = check(body, tolerance);
-    if defects.is_empty() && key.len() <= PASSED_WORDS {
+    let (defects, units) = if first {
+        allowance::measured(|| check(body, tolerance))
+    } else {
+        // Paid for already in this operation.
+        (allowance::uncounted(|| check(body, tolerance)), 0)
+    };
+    if first && allowance::counting() && defects.is_empty() && key.len() <= PASSED_WORDS {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
-        if !passed.contains(&key) {
-            passed.push(key);
+        if !passed.iter().any(|(k, _)| *k == key) {
+            passed.push((key, units));
         }
         while passed.len() > PASSED_BODIES
-            || passed.iter().map(Vec::len).sum::<usize>() > PASSED_WORDS
+            || passed.iter().map(|(k, _)| k.len()).sum::<usize>() > PASSED_WORDS
         {
             let _forgotten = passed.remove(0);
         }

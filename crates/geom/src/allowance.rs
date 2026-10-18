@@ -75,6 +75,8 @@ thread_local! {
     /// number and the things charged.
     // Asked whether it holds a thing, never walked: its order is no part
     // of any result.
+    /// What to call when the outermost bound ends ([`at_scope_end`]).
+    static SCOPE_ENDS: std::cell::RefCell<Vec<fn()>> = const { std::cell::RefCell::new(Vec::new()) };
     static ONCE: std::cell::RefCell<(u64, std::collections::HashSet<u64>)> =
         std::cell::RefCell::new((0, std::collections::HashSet::new()));
 }
@@ -85,24 +87,50 @@ thread_local! {
 /// not again within that operation: what making it once takes, whether it
 /// was made then or found made. Outside a bound, every time.
 pub fn once(thing: u64, units: u64) {
-    let Some(scope) = scope() else {
-        charge(units);
-        return;
-    };
-    let first = ONCE
-        .try_with(|once| {
-            let Ok(mut once) = once.try_borrow_mut() else {
-                return false;
-            };
-            if once.0 != scope {
-                *once = (scope, std::collections::HashSet::new());
-            }
-            once.1.insert(thing)
-        })
-        .unwrap_or(false);
-    if first {
+    if first_time(thing) {
         charge(units);
     }
+}
+
+/// Whether the operation under the outermost bound in force asks for the
+/// thing numbered `thing` for the first time, which it is then marked as
+/// having done ([`once`]). Outside a bound, always. Inside an uncounted
+/// region nothing is charged, so nothing is marked either: the first
+/// counted question for it still pays.
+pub fn first_time(thing: u64) -> bool {
+    if FROZEN.try_with(Cell::get).unwrap_or(0) > 0 {
+        return true;
+    }
+    let Some(scope) = scope() else {
+        return true;
+    };
+    ONCE.try_with(|once| {
+        let Ok(mut once) = once.try_borrow_mut() else {
+            return false;
+        };
+        if once.0 != scope {
+            *once = (scope, std::collections::HashSet::new());
+        }
+        once.1.insert(thing)
+    })
+    .unwrap_or(false)
+}
+
+/// Has `end` called when the outermost bound in force on this thread
+/// ends (once, however often it is asked for): for what an operation
+/// keeps for itself in a thread-local of another crate (the memos of
+/// `craft3d_kernel`'s patch trees), let go with it.
+pub fn at_scope_end(end: fn()) {
+    if scope().is_none() {
+        return;
+    }
+    let _ = SCOPE_ENDS.try_with(|ends| {
+        if let Ok(mut ends) = ends.try_borrow_mut()
+            && !ends.iter().any(|e| std::ptr::fn_addr_eq(*e, end))
+        {
+            ends.push(end);
+        }
+    });
 }
 
 /// FNV-1a of `text`: the same number for the same text on every run, for
@@ -162,9 +190,11 @@ pub fn pass() -> bool {
 /// before, by it, by an earlier operation, on another thread or for
 /// another document, so its count, and what a bound decides about it, is
 /// a function of its inputs alone. (Charging what the making cost on every
-/// hit would be pure too, but it counts a remembered answer asked for a
-/// thousand times a thousand times: a legitimate offset of the rotor
-/// counted 2.5 billion units.) Inside, [`exhausted`] sees the count as it
+/// hit, for a cache whose answer an operation asks for again and again,
+/// counts it every time: tried, it made a legitimate offset of the rotor
+/// count 2.5 billion units, so that is done only where an answer is asked
+/// for about once per operation, or charged once per operation with
+/// [`once`].) Inside, [`exhausted`] sees the count as it
 /// was when the region began, so a cut it makes does not depend on whether
 /// the cache was hit either.
 pub fn uncounted<R>(work: impl FnOnce() -> R) -> R {
@@ -177,6 +207,24 @@ pub fn uncounted<R>(work: impl FnOnce() -> R) -> R {
     let _ = FROZEN.try_with(|frozen| frozen.set(frozen.get().saturating_add(1)));
     let _thaw = Thaw;
     work()
+}
+
+/// Runs `work` and gives back what it returned with the work it took on
+/// this thread, measured also inside an [`uncounted`] region (where it is
+/// then not charged): for what a cache makes and keeps with its cost, so
+/// that the cost kept does not depend on where it was first made.
+pub fn cost_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
+    let frozen = FROZEN.try_with(Cell::get).unwrap_or(0);
+    let before = spent();
+    let _ = FROZEN.try_with(|f| f.set(0));
+    let made = work();
+    let units = spent().saturating_sub(before);
+    if frozen > 0 {
+        // Not counted where it ran.
+        let _ = SPENT.try_with(|spent| spent.set(before));
+    }
+    let _ = FROZEN.try_with(|f| f.set(frozen));
+    (made, units)
 }
 
 /// Whether this thread counts its work now (not in an [`uncounted`]
@@ -211,6 +259,20 @@ pub fn within<R>(units: u64, work: impl FnOnce() -> R) -> R {
         fn drop(&mut self) {
             if self.0 {
                 let _ = SCOPE.try_with(|scope| scope.set(None));
+                // What the operation kept for itself goes with it.
+                let _ = ONCE.try_with(|once| {
+                    if let Ok(mut once) = once.try_borrow_mut() {
+                        *once = (0, std::collections::HashSet::new());
+                    }
+                });
+                let ends = SCOPE_ENDS
+                    .try_with(|ends| ends.try_borrow_mut().map(|mut e| std::mem::take(&mut *e)))
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                for end in ends {
+                    end();
+                }
             }
         }
     }

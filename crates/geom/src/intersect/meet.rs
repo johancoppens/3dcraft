@@ -271,17 +271,14 @@ pub fn meet_surfaces(
 /// (written out in full, so that two questions are the same only when
 /// every number of them is, bit for bit), with how much each holds; the
 /// most recently used last.
-type Shelf = Vec<(String, Result<SurfaceMeeting, GeomError>, usize)>;
+///
+/// Each with the work marching it took (`crate::allowance`).
+type Shelf = Vec<(String, Result<SurfaceMeeting, GeomError>, usize, u64)>;
 static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 /// How many intersections are kept, and how many points of their curves
 /// all of them hold at most.
 const SHELF_SIZE: usize = 64;
 const SHELF_POINTS: usize = 1 << 18;
-
-/// What a numeric intersection charges per point it holds, once per
-/// operation (`crate::allowance::once`): about what marching to a point
-/// evaluates.
-const MEET_UNITS: u64 = 64;
 
 /// How many points an intersection holds, roughly: what it costs to keep.
 fn weight(result: &Result<SurfaceMeeting, GeomError>) -> usize {
@@ -315,49 +312,63 @@ fn remembered(
     tol: &Tolerance,
 ) -> Result<SurfaceMeeting, GeomError> {
     let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
-    // Made uncounted, found or not; the question charges what the answer
-    // holds, the same either way (`crate::allowance::uncounted`).
+    // Charged by the work the march took, once per operation under a
+    // bound, whether it is marched now or found on the shelf
+    // (`crate::allowance::first_time`): the march is counted the first
+    // time, its count kept with it, and a hit charges that count.
     let thing = crate::allowance::number_of(&key);
-    let answer = crate::allowance::uncounted(|| shelved(a, b, within, tol, key));
-    crate::allowance::once(thing, (weight(&answer) as u64).saturating_mul(MEET_UNITS));
-    answer
-}
-
-/// [`remembered`]: from the shelf, or made and put there.
-fn shelved(
-    a: &Surface,
-    b: &Surface,
-    within: &Bbox3,
-    tol: &Tolerance,
-    key: String,
-) -> Result<SurfaceMeeting, GeomError> {
-    {
-        let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
-            let entry = shelf.remove(at);
-            let result = entry.1.clone();
-            shelf.push(entry);
-            return result;
+    let first = crate::allowance::first_time(thing);
+    if let Some((result, units)) = shelf_find(&key) {
+        if first {
+            crate::allowance::charge(units);
         }
+        return result;
     }
-    let result = numeric(a, b, within, tol);
-    let size = weight(&result);
-    if size <= SHELF_POINTS {
-        let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-        if !shelf.iter().any(|(k, _, _)| *k == key) {
-            shelf.push((key, result.clone(), size));
-        }
-        while shelf.len() > SHELF_SIZE
-            || shelf
-                .iter()
-                .map(|(_, _, n)| *n)
-                .fold(0_usize, usize::saturating_add)
-                > SHELF_POINTS
-        {
-            let _forgotten = shelf.remove(0);
-        }
+    let (result, units) = if first {
+        crate::allowance::measured(|| numeric(a, b, within, tol))
+    } else {
+        // Paid for already in this operation.
+        (
+            crate::allowance::uncounted(|| numeric(a, b, within, tol)),
+            0,
+        )
+    };
+    if first && crate::allowance::counting() {
+        shelf_put(key, &result, units);
     }
     result
+}
+
+/// The intersection asked for by `key`, with the work it took, from the
+/// shelf.
+fn shelf_find(key: &str) -> Option<(Result<SurfaceMeeting, GeomError>, u64)> {
+    let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = shelf.iter().position(|(k, _, _, _)| *k == key)?;
+    let entry = shelf.remove(at);
+    let found = (entry.1.clone(), entry.3);
+    shelf.push(entry);
+    Some(found)
+}
+
+/// Puts `result` on the shelf with the work it took.
+fn shelf_put(key: String, result: &Result<SurfaceMeeting, GeomError>, units: u64) {
+    let size = weight(result);
+    if size > SHELF_POINTS {
+        return;
+    }
+    let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    if !shelf.iter().any(|(k, _, _, _)| *k == key) {
+        shelf.push((key, result.clone(), size, units));
+    }
+    while shelf.len() > SHELF_SIZE
+        || shelf
+            .iter()
+            .map(|(_, _, n, _)| *n)
+            .fold(0_usize, usize::saturating_add)
+            > SHELF_POINTS
+    {
+        let _forgotten = shelf.remove(0);
+    }
 }
 
 /// [`meet_surfaces`] without its closed forms: the numeric marcher on any

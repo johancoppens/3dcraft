@@ -90,13 +90,17 @@ pub(crate) const NO_NORMAL: &str = "the freeform face has a pole or a border or 
 /// The work every face operation may do ([`craft3d_geom::allowance`]
 /// units, about half a microsecond each in release), its tries at the
 /// whole distance and its halving for the largest that fits together;
-/// [`face_op_work`] adds what the faces moved call for. The dearest face
-/// operations of the action matrix's ratchet (an end cap of the rotor
-/// moved 0.055 mm: four points classified against its blades, 110 million
-/// units, 30 to 55 s) take half of it; a search on blend faces of a few
-/// hundred spans ran for minutes before it ended (fuzzing, 2026-10-17)
-/// and now ends at the bound.
-pub const FACE_OP_WORK: u64 = 200_000_000;
+/// [`face_op_work`] adds what the faces moved and the body classified
+/// against call for. The dearest face operations of the action matrix's
+/// rotor: a start cap of a blade moved 0.17 mm, 82 million units on the
+/// first blade and 275 and 293 million on the other two (the same
+/// geometry turned: the classification casts its rays along fixed axes
+/// and splits the pieces of the blades' surfaces where they lie at a
+/// slant, six times as many there); the bound is half as much again as
+/// the dearest, so that every copy gets the same verdict. A search on
+/// blend faces of a few hundred spans ran for minutes before it ended
+/// (fuzzing, 2026-10-17) and now ends at the bound.
+pub const FACE_OP_WORK: u64 = 450_000_000;
 
 /// What [`face_op_work`] adds per span of a freeform face that moves (its
 /// offset is proven regular and fitted span by span) and per edge on a
@@ -104,6 +108,10 @@ pub const FACE_OP_WORK: u64 = 200_000_000;
 /// classified beside it).
 pub const FACE_OP_WORK_PER_SPAN: u64 = 20_000;
 pub const FACE_OP_WORK_PER_EDGE: u64 = 1_000_000;
+/// What [`face_op_work`] adds per span of every freeform face of the body:
+/// the points beside every edge made again are classified against all of
+/// them.
+pub const FACE_OP_WORK_PER_BODY_SPAN: u64 = 50_000;
 
 pub(crate) const SPENT: &str = "it needs more work than one operation is allowed: each try of it is dear here (offsets of freeform faces of many spans, and the checks of the body they make), and the search for a size that fits did not end within the bound";
 pub(crate) const TURN_TOO_FAR: &str = "the faces are tangent here only to within an angle that, at this distance, parts their offsets by more than a quarter of the tolerance: they do not meet as tangent faces within it";
@@ -755,6 +763,7 @@ pub(crate) fn face_op_work(body: &Body, moved: &[FaceId]) -> u64 {
         .filter_map(|f| body.face(*f))
         .map(|f| spans(&f.surface))
         .sum();
+    let body_spans: u64 = body.faces.iter().map(|f| spans(&f.surface)).sum();
     let moved_edges: usize = moved
         .iter()
         .filter_map(|f| body.face(*f))
@@ -764,6 +773,7 @@ pub(crate) fn face_op_work(body: &Body, moved: &[FaceId]) -> u64 {
     FACE_OP_WORK
         .saturating_add(moved_spans.saturating_mul(FACE_OP_WORK_PER_SPAN))
         .saturating_add((moved_edges as u64).saturating_mul(FACE_OP_WORK_PER_EDGE))
+        .saturating_add(body_spans.saturating_mul(FACE_OP_WORK_PER_BODY_SPAN))
 }
 
 fn bounded_fitting(
