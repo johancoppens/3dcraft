@@ -163,8 +163,16 @@ fn a_result_whose_parts_hang_together_by_an_edge() {
         assert_mass(&again, 2.0, 12.0, k);
         assert_eq!(counts(&again), (16, 24, 12, 2));
         // Put back where it came from: the cutter and the two blocks fill
-        // each other's gaps (2 + 2 x 12 in volume) and are one body.
-        let whole = solve(&two.body, &cutter.body, Union, k);
+        // each other's gaps (2 + 2 x 12 in volume) and are one body, one
+        // shell. Within the plate's height (z from 0 to 1) the shared edge
+        // is buried; above and below it (the cutter runs from -1 to 2) the
+        // cutter's two blocks still touch along it, so the union touches
+        // itself there: refused since 2026-10-17 (a shell that touches
+        // itself, the fuzzer's seed 5279), where it was accepted before.
+        let (whole, refused) = solve_parts(&two.body, &cutter.body, Union, k);
+        let at = refused.unwrap();
+        assert!(at.distance(Vec3::new(k, k, at.z)) < 1e-9 * k);
+        assert!(at.z < 1e-9 * k || at.z > k - 1e-9 * k, "{at:?}");
         assert_close(mass(&whole.body).volume, 26.0 * k * k * k, "volume");
         assert_eq!(whole.body.shells.len(), 1);
     }
@@ -966,5 +974,281 @@ fn parts_a_few_tolerances_apart_and_a_cavity_are_not_refused() {
             mass(&plate).volume - mass(&inside).volume,
             "the block less the ball",
         );
+    }
+}
+
+/// The random-design fuzzer's seed 5279 (2026-10-17): a disc and a
+/// quarter turn of an L that overlap, and also touch along a line. A is
+/// the rectangle x 0..10, y 5..10 turned once about y: the disc
+/// x² + z² <= 100, 5 <= y <= 10. B is the L (radius 0..10 for z in
+/// -5..5, radius 0..5 for z in 5..7.5) on the yz plane turned a quarter
+/// about z, from the half plane x = 0, y >= 0 on. B's step, the cylinder
+/// x² + y² = 25 for z in 5..7.5, bulges up to y = 5 along its edge with
+/// B's start face, the line x = 0, y = 5, and lies below y = 5 everywhere
+/// else (y = 5 - x²/10 to second order): that edge lies in A's bottom,
+/// B's material below it and A's above. The union is one shell (B's lower
+/// part runs into A) that touches itself along that line: zero
+/// thickness, refused, where it used to be accepted with the line inside
+/// A's bottom face, which `document.check` then found touching. Made
+/// without the refusal it is valid, of volume V(A) + V(B) - V(A ∩ B):
+/// V(A) = 500π, V(B) = 250π + 15.625π, and A ∩ B is the half segment
+/// {x >= 0, y >= 5, x² + y² <= 100} (area 50π/3 - 12.5√3; the disc's
+/// bound x² <= 100 - z² is never the nearer for y >= 5) times the height
+/// 10 of B's lower part.
+#[test]
+fn a_union_that_overlaps_and_also_touches_along_a_line() {
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_kernel::revolve::revolve;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let polygon = |points: &[[f64; 2]], k: f64| -> Vec<SketchCurve> {
+        (0..points.len())
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: points[i].map(|c| c * k),
+                    end: points[(i + 1) % points.len()].map(|c| c * k),
+                },
+            })
+            .collect()
+    };
+    for k in SCALES {
+        let tol = tolerance(k);
+        let rectangle = polygon(&[[0.0, 5.0], [10.0, 5.0], [10.0, 10.0], [0.0, 10.0]], k);
+        let disc = revolve(
+            &detect_profiles(&rectangle, &tol).unwrap(),
+            &Frame::WORLD,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            TAU,
+            &tol,
+        )
+        .unwrap()
+        .body;
+        let ell = polygon(
+            &[
+                [0.0, -5.0],
+                [10.0, -5.0],
+                [10.0, 5.0],
+                [5.0, 5.0],
+                [5.0, 7.5],
+                [0.0, 7.5],
+            ],
+            k,
+        );
+        // The yz plane: x along y, y along z.
+        let yz = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let quarter = revolve(
+            &detect_profiles(&ell, &tol).unwrap(),
+            &yz,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            FRAC_PI_2,
+            &tol,
+        )
+        .unwrap()
+        .body;
+        for (x, y) in [(&disc, &quarter), (&quarter, &disc)] {
+            let (both, refused) = solve_parts(x, y, Union, k);
+            let at = refused.unwrap_or_else(|| panic!("not refused at scale {k}"));
+            assert!(
+                at.x.abs() < 1e-6 * k && (at.y - 5.0 * k).abs() < 1e-6 * k,
+                "{at:?} at scale {k}"
+            );
+            assert!(
+                at.z > 5.0 * k - 1e-6 * k && at.z < 7.5 * k + 1e-6 * k,
+                "{at:?}"
+            );
+            assert_eq!(both.body.shells.len(), 1);
+            let common = 10.0 * (50.0 * PI / 3.0 - 12.5 * 3.0_f64.sqrt());
+            let volume = 500.0 * PI + 265.625 * PI - common;
+            assert_close(mass(&both.body).volume, volume * k * k * k, "volume");
+            let met = solve(x, y, Intersect, k);
+            assert_close(mass(&met.body).volume, common * k * k * k, "common volume");
+        }
+    }
+}
+
+/// A square bar turned 45° about its axis (along x), its lowest edge lying
+/// on the top of a plate (z = 1, y = 1.5, x 0.5..3, inside the face) and
+/// its far end in the pillar of an L (plate x 0..4, y 0..3, z 0..1 with a
+/// pillar x 3..4 up to z = 3): one shell through the pillar that touches
+/// itself along the edge, the bar's material above it and the plate's
+/// below, with the space between in two wedges of 45° (review of the
+/// fuzzer's 5279, 2026-10-18: the bar's side faces lie under the plate's
+/// plane only past their shared edge, beyond the faces' own boundary,
+/// which `walls_apart` read as material between thinning walls). Refused
+/// along the edge, at three scales; made without the refusal its volume is
+/// 12 + 6 + 0.5 · 3 − 0.5 · 0.5 (the bar's diamond has area 0.5, and half
+/// a unit of its length is in the pillar), with two pieces of material
+/// about the place.
+#[test]
+fn a_bar_on_its_edge_along_a_plate_and_into_a_pillar() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let pillar = boxed(k, [3.0, 0.0, 1.0], [4.0, 3.0, 3.0]);
+        let ell = solve(&plate, &pillar, Union, k).body;
+        assert_eq!(ell.shells.len(), 1);
+        // The diamond in the plane x = 0.5: sketch x along y, y along z.
+        let corners = [[1.5, 1.0], [2.0, 1.5], [1.5, 2.0], [1.0, 1.5]];
+        let curves: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: corners[i].map(|c| c * k),
+                    end: corners[(i + 1) % 4].map(|c| c * k),
+                },
+            })
+            .collect();
+        let frame = Frame::new(Vec3::new(0.5 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let bar = extrude(&profiles, &frame, 0.0, 3.0 * k, &tol).unwrap().body;
+        assert_close(mass(&bar).volume, 1.5 * k * k * k, "the bar");
+        for (x, y) in [(&ell, &bar), (&bar, &ell)] {
+            let (both, refused) = solve_parts(x, y, Union, k);
+            let at = refused.unwrap_or_else(|| panic!("not refused at scale {k}"));
+            assert!(
+                (at.y - 1.5 * k).abs() < 1e-6 * k && (at.z - k).abs() < 1e-6 * k,
+                "{at:?} at scale {k}"
+            );
+            assert!(
+                at.x > 0.5 * k - 1e-6 * k && at.x < 3.0 * k + 1e-6 * k,
+                "{at:?}"
+            );
+            assert_eq!(both.body.shells.len(), 1);
+            assert!(
+                material_pieces_at(&both.body, at, &tol),
+                "two pieces of material at scale {k}"
+            );
+            assert_close(
+                mass(&both.body).volume,
+                (18.0 + 1.5 - 0.25) * k * k * k,
+                "volume",
+            );
+        }
+    }
+}
+
+/// The witness the one-shell refusals are held to (`touches_itself_at`)
+/// can say no: on a plain boundary (inside a face, on a convex and on a
+/// concave edge, at a corner of the L of
+/// `a_bar_on_its_edge_along_a_plate_and_into_a_pillar`) it finds nothing,
+/// at three scales; that test has it find the touch where the bar lies on
+/// the plate.
+#[test]
+fn the_witness_of_a_self_touch_says_no_on_a_plain_boundary() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let pillar = boxed(k, [3.0, 0.0, 1.0], [4.0, 3.0, 3.0]);
+        let ell = solve(&plate, &pillar, Union, k).body;
+        for p in [
+            [2.0, 1.5, 1.0], // inside the plate's top
+            [2.0, 0.0, 0.0], // a convex edge
+            [3.0, 1.5, 1.0], // the concave edge at the pillar's foot
+            [4.0, 3.0, 3.0], // a corner
+            [3.0, 0.0, 1.0], // where the concave edge meets the front
+        ] {
+            let at = Vec3::new(p[0] * k, p[1] * k, p[2] * k);
+            assert!(
+                !touches_itself_at(&ell, at, &tol),
+                "a touch found at {p:?} at scale {k}"
+            );
+            assert!(!material_pieces_at(&ell, at, &tol), "at {p:?} at scale {k}");
+            assert!(!walls_meet_at(&ell, at, &tol), "at {p:?} at scale {k}");
+        }
+    }
+}
+
+/// The net must say no where nothing touches, near what could fool it,
+/// at three scales (second review, 2026-10-18): a U whose slot is 2.5,
+/// 10, 300 or 1000 tolerances wide (on a wall of the slot, the middle of
+/// its floor, its inner corners); a rib 1e-3 thick standing 2e-3 from the
+/// place on a plate; plates 1e-3 and 3e-3 thick; and the wall that thins
+/// to nothing between a hole and the plate's side it touches (accepted by
+/// the boolean, D-open-12).
+#[test]
+fn the_witness_says_no_by_a_slot_a_rib_a_thin_plate_and_a_thinning_wall() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    let prism = |points: &[[f64; 2]], height: f64, k: f64, tol: &craft3d_math::Tolerance| {
+        let curves: Vec<SketchCurve> = (0..points.len())
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: points[i].map(|c| c * k),
+                    end: points[(i + 1) % points.len()].map(|c| c * k),
+                },
+            })
+            .collect();
+        let profiles = detect_profiles(&curves, tol).unwrap();
+        extrude(&profiles, &Frame::WORLD, 0.0, height * k, tol)
+            .unwrap()
+            .body
+    };
+    for k in SCALES {
+        let tol = tolerance(k);
+        let says_no = |body: &Body, p: [f64; 3], what: &str| {
+            let at = Vec3::new(p[0] * k, p[1] * k, p[2] * k);
+            assert!(
+                !touches_itself_at(body, at, &tol),
+                "{what}: a touch found at {p:?} at scale {k}"
+            );
+        };
+        for width in [2.5e-6, 1e-5, 3e-4, 1e-3] {
+            let (lo, hi) = (1.5 - 0.5 * width, 1.5 + 0.5 * width);
+            let u = prism(
+                &[
+                    [0.0, 0.0],
+                    [4.0, 0.0],
+                    [4.0, lo],
+                    [1.0, lo],
+                    [1.0, hi],
+                    [4.0, hi],
+                    [4.0, 3.0],
+                    [0.0, 3.0],
+                ],
+                1.0,
+                k,
+                &tol,
+            );
+            let what = format!("a slot {width} wide");
+            for p in [
+                [2.0, lo, 0.5],
+                [2.0, hi, 0.5],
+                [1.0, 1.5, 0.5],
+                [1.0, lo, 0.5],
+                [1.0, hi, 1.0],
+            ] {
+                says_no(&u, p, &what);
+            }
+        }
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let rib = boxed(k, [2.002, 0.0, 1.0], [2.003, 3.0, 2.0]);
+        let ribbed = solve(&plate, &rib, Union, k).body;
+        says_no(&ribbed, [2.0, 1.5, 1.0], "a rib 2e-3 off");
+        says_no(&ribbed, [2.002, 1.5, 1.0], "the rib's foot");
+        for thickness in [1e-3, 3e-3] {
+            let thin = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, thickness]);
+            says_no(&thin, [2.0, 1.5, thickness], "a thin plate's top");
+            says_no(&thin, [2.0, 0.0, 0.5 * thickness], "a thin plate's side");
+            says_no(&thin, [4.0, 3.0, thickness], "a thin plate's corner");
+        }
+        // The hole of `a_hole_that_touches_the_side_...`, its wall
+        // touching the plate's side along x = 0, y = 1.5.
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let drill = rod(k, [1.0, 1.5, -1.0], 1.0, 4.0);
+        let holed = solve(&block, &drill, Subtract, k).body;
+        says_no(&holed, [0.0, 1.5, 1.0], "a wall that thins to nothing");
+        says_no(&holed, [0.0, 1.5, 0.0], "where that wall meets the floor");
     }
 }

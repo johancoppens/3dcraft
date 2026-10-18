@@ -1210,6 +1210,10 @@ fn blend_one(
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
         let outward =
             outward_from(&solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
+        if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
+            let face = [first, second].get(side).copied();
+            return Err(refuse(edge, face, Reason::FreeFolds));
+        }
         let (blend_face, second_border) =
             splice_ring(body, edge, [first, second], surface, outward)?;
         // A border that runs off its face first (the more telling reason),
@@ -1527,6 +1531,10 @@ fn blend_open(
     let home_solver = solvers.get(home).ok_or_else(lost)?;
     let outward_hint =
         outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
+    if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
+        let face = faces.get(side).copied();
+        return Err(refuse(edge, face, Reason::FreeFolds));
+    }
     let motion = match solvers.as_slice() {
         [only] => only.moved.map(|m| m.motion),
         _ => None,
@@ -1822,6 +1830,80 @@ fn outward_from(
             if convex { e - p } else { p - e }
         }
     })
+}
+
+/// Whether the blend surface folds through itself between `params`
+/// within `range` (of the edge's own parameter; the sections past its
+/// ends are cut away), and if so on which side: 0 where the fold is
+/// nearer the border on the first face, 1 nearer the other.
+///
+/// A blend's sections are a family of segments (a chamfer's lines) or
+/// arcs (a fillet's) across the edge, one per plane across it. Where the
+/// planes are not parallel they meet (about the axis of a circular edge,
+/// in that axis), and a section that reaches past that line crosses the
+/// sections next to it: the surface folds there, its normal turning to
+/// zero and coming back the other way. On a sphere's cap smaller than
+/// the distance asked for, the cut line on the cap passes over the
+/// pole, the lines across the edge all go through one point of the axis,
+/// and the face is a double cone through itself (the fuzzer's seed
+/// 14211, 2026-10-17, which `check` passed and the mass integrator could
+/// not measure). So along every sample section, and halfway between two,
+/// the normal of the surface is held to the one in the middle of that
+/// section: a chamfer's line keeps its side (a straight section turns its
+/// normal by the twist between neighbours only, far less than a quarter
+/// turn), and a fillet's normal keeps its side of the radius from the
+/// ball's centre. A normal that vanishes counts as a fold.
+fn folds(
+    surface: &NurbsSurface,
+    params: &[f64],
+    sections: &[Section],
+    range: (f64, f64),
+) -> Option<usize> {
+    const ACROSS: u32 = 16;
+    let ((u0, _), (v0, v1)) = surface.domain();
+    let mut samples: Vec<(f64, Option<Vec3>)> = Vec::with_capacity(2 * params.len());
+    for (k, (s, section)) in params.iter().zip(sections).enumerate() {
+        samples.push((*s, section.centre));
+        if let (Some(next), Some(after)) = (params.get(k + 1), sections.get(k + 1)) {
+            let centre = section.centre.zip(after.centre).map(|(a, b)| (a + b) * 0.5);
+            samples.push((0.5 * (s + next), centre));
+        }
+    }
+    for (s, centre) in samples {
+        if !(s >= range.0 && s <= range.1) {
+            continue;
+        }
+        let u = if s < u0 { s + 1.0 } else { s };
+        let normal = |v: f64| -> Option<(Vec3, Vec3)> {
+            let (p, su, sv) = surface.derivatives(u, v);
+            let n = su.cross(sv);
+            let scale = su.length() * sv.length();
+            (n.is_finite() && scale.is_finite() && n.length() > 1e-9 * scale).then_some((p, n))
+        };
+        let reference = |p: Vec3, n: Vec3, mid: Vec3| match centre {
+            Some(c) => n.dot(p - c),
+            None => n.dot(mid),
+        };
+        let Some((pm, nm)) = normal(0.5 * (v0 + v1)) else {
+            return Some(0);
+        };
+        let middle = reference(pm, nm, nm);
+        if !(middle.abs() > 0.0) {
+            return Some(0);
+        }
+        for j in 0..=ACROSS {
+            let t = f64::from(j) / f64::from(ACROSS);
+            let v = v0 + (v1 - v0) * t;
+            let side = usize::from(t > 0.5);
+            let Some((p, n)) = normal(v) else {
+                return Some(side);
+            };
+            if !(reference(p, n, nm) * middle > 0.0) {
+                return Some(side);
+            }
+        }
+    }
+    None
 }
 
 /// The border `border` of a blend face lies on `face` and stays on it:

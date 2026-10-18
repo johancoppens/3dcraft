@@ -638,7 +638,7 @@ fn run(
             count: verified.violations.len(),
         }));
     }
-    if options.refuse_zero_thickness && result.body.shells.len() > 1 {
+    if options.refuse_zero_thickness {
         // Where the operands meet: the vertices both are at, those the
         // section made, the points where faces only touch, and a point
         // inside every stretch of curve along which faces meet.
@@ -694,16 +694,19 @@ fn run(
 /// of a face of another, not outside either face's boundary, and the
 /// nearest points of the two faces are within twice the tolerance of each
 /// other: the parts are no further apart there than the tolerance can
-/// tell, the rule of `craft3d_topo::touches` for vertices and edges. A
-/// result of one shell, and one with no such place (bodies apart, a
-/// cavity), costs the count of its shells and nothing more.
+/// tell, the rule of `craft3d_topo::touches` for vertices and edges.
+/// Every place costs a look at the faces whose boxes hold it; an outline
+/// is made only for a face that may be at a place without being joined
+/// there to the other face looked at. Two walls of one shell that touch
+/// (parts that hang together elsewhere as well) are the second half,
+/// [`within_a_shell`].
 fn zero_thickness(
     result: &BooleanResult,
     tolerance: &Tolerance,
     meetings: &[Vec3],
 ) -> Result<(), Stop> {
     let body = &result.body;
-    if body.shells.len() < 2 || meetings.is_empty() {
+    if meetings.is_empty() {
         return Ok(());
     }
     let tol = tolerance.linear;
@@ -733,7 +736,7 @@ fn zero_thickness(
     let grid = FaceGrid::new(&boxes);
     let mut outlines: BTreeMap<usize, Option<outline::Outline>> = BTreeMap::new();
     for &p in meetings {
-        if !p.is_finite() {
+        if !p.is_finite() || body.shells.len() < 2 {
             continue;
         }
         // Per shell, the faces the place is on and the nearest point of
@@ -804,6 +807,348 @@ fn zero_thickness(
                 let Some((a, b)) = pair else {
                     return Err(Stop::of(LOST));
                 };
+                return Err(Stop::Error(KernelError::ZeroThickness {
+                    operation: OPERATION,
+                    at: p,
+                    faces: [a, b],
+                }));
+            }
+        }
+    }
+    within_a_shell(
+        result,
+        tol,
+        meetings,
+        &boxes,
+        &grid,
+        &face_shell,
+        &mut outlines,
+    )
+}
+
+/// Whether face `g` (its outline, at `b`) stays on the outer side of
+/// face `f`'s surface near the place where they touch: no point of `g`
+/// within `reach` of `b` (eight directions about `b` in `g`'s tangent
+/// plane, onto `g`'s surface and inside `g`, whose foot on `f`'s surface
+/// lies inside `f`) is more than `near` inside `f`'s material, by `f`'s
+/// outward normal there.
+///
+/// Two walls of one shell that touch with opposite outward normals are
+/// one of two things. Their materials lie on their far sides and the
+/// space between them closes up (a ball resting on a plate's top, both
+/// parts of the result; an edge of one part along a face of the other):
+/// two parts of the solid touch, and each wall stays on the outer side of
+/// the other. Or the material lies between them and thins to nothing (a
+/// hole whose wall touches the plate's side along a line): each wall
+/// bends into the other's material away from the place. The first is
+/// zero thickness as refused since 2026-10-15; the second is a wall that
+/// thins out to no thickness, which the boolean has always made and its
+/// tests pin (whether it is refused too is the developer's to settle).
+/// The two differ only to second order at the place itself, hence the
+/// look a little way off. Where no point of `g` is found to look at, the
+/// walls are taken to be apart, so that the refusal errs on the side of
+/// no zero-thickness result.
+fn walls_apart(f: &outline::Outline, b: Vec3, g: &outline::Outline, near: f64, reach: f64) -> bool {
+    use outline::{Sheet, onto, outward_normal};
+    if !(reach.is_finite() && reach > near) {
+        return true;
+    }
+    let Some(normal) = outward_normal(Sheet::bare(&g.surface), g.reversed, b) else {
+        return true;
+    };
+    let Some(frame) = craft3d_math::Frame::from_z(b, normal) else {
+        return true;
+    };
+    for k in 0..8 {
+        let angle = f64::from(k) * std::f64::consts::FRAC_PI_4;
+        let off = b + (frame.x() * angle.cos() + frame.y() * angle.sin()) * reach;
+        let Some(y) = onto(Sheet::bare(&g.surface), off) else {
+            continue;
+        };
+        if y.distance(b) < 0.25 * reach || !matches!(g.side(y, near * 0.5), Ok(outline::Side::In)) {
+            continue;
+        }
+        let (Some(q), Some(outward)) = (
+            onto(Sheet::bare(&f.surface), y),
+            outward_normal(Sheet::bare(&f.surface), f.reversed, y),
+        ) else {
+            continue;
+        };
+        // Only where `f` itself is there: beyond its boundary its surface
+        // says nothing about its material (a bar's edge along a plate,
+        // whose side faces lie under the plate's surface past their own
+        // edges).
+        if !matches!(f.side(q, near * 0.5), Ok(outline::Side::In)) {
+            continue;
+        }
+        if (y - q).dot(outward) < -near {
+            return false;
+        }
+    }
+    true
+}
+
+/// The second half of [`zero_thickness`]: a shell that touches itself.
+/// Two faces of one shell that are both at a place (within twice the
+/// tolerance, not outside either boundary, their nearest points within
+/// twice the tolerance of each other) touch there unless they are joined
+/// there, by a vertex of both or an edge of both that passes within four
+/// times the tolerance of the place. In a manifold every point of a
+/// shell is inside one face, on one edge (two faces) or at one vertex
+/// (the faces around it), so two faces at one place with nothing of
+/// theirs in common there are two walls of the shell that meet: a
+/// result of zero thickness along a line or in a point, whether the
+/// parts that touch are separate shells or hang together elsewhere (the
+/// fuzzer's seed 5279, 2026-10-17: an edge of one operand lying along a
+/// face of the other, the union one shell through the volume both have
+/// in common). The margin for "joined" is twice that for "at", which
+/// covers faces that meet at an edge at 29° or more; at a sharper angle
+/// they stay within the tolerance of each other further from the edge,
+/// and the margin of a shared edge grows as 1 / sin(θ/2) (`wedged`), so
+/// that a wedge or a groove is never taken for two walls that touch.
+fn within_a_shell(
+    result: &BooleanResult,
+    tol: f64,
+    meetings: &[Vec3],
+    boxes: &[Option<(Vec3, Vec3)>],
+    grid: &FaceGrid,
+    face_shell: &[usize],
+    outlines: &mut BTreeMap<usize, Option<outline::Outline>>,
+) -> Result<(), Stop> {
+    let body = &result.body;
+    let near = 2.0 * tol;
+    let reach = 2.0 * near;
+    // Per face, its vertices and edges, each once, ascending.
+    let mut parts: BTreeMap<usize, (Vec<u32>, Vec<u32>)> = BTreeMap::new();
+    let parts_of = |f: usize| -> (Vec<u32>, Vec<u32>) {
+        let mut vertices = Vec::new();
+        let mut edges = Vec::new();
+        let coedges = body
+            .face(face_id(f))
+            .into_iter()
+            .flat_map(|face| &face.loops)
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| &l.coedges);
+        for coedge in coedges {
+            edges.push(coedge.edge.0);
+            if let Some(edge) = body.edge(coedge.edge) {
+                vertices.extend([edge.start.0, edge.end.0]);
+            }
+        }
+        for list in [&mut vertices, &mut edges] {
+            list.sort_unstable();
+            list.dedup();
+        }
+        (vertices, edges)
+    };
+    // The ids both ascending lists hold, merged in one pass.
+    let common = |a: &[u32], b: &[u32]| -> Vec<u32> {
+        let (mut i, mut j, mut out) = (0, 0, Vec::new());
+        while let (Some(&x), Some(&y)) = (a.get(i), b.get(j)) {
+            match x.cmp(&y) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    out.push(x);
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        out
+    };
+    // The point of edge `e` nearest `p`, inside its range; `Err` where the
+    // projection fails.
+    let on_edge = |e: u32, p: Vec3| -> Result<Option<Vec3>, ()> {
+        let Some(edge) = body.edge(craft3d_topo::EdgeId(e)) else {
+            return Ok(None);
+        };
+        let t = edge.curve.project(p).map_err(|_| ())?;
+        let (t0, t1) = edge.range;
+        let t = match edge.curve.period() {
+            Some(period) if period > 0.0 => t - ((t - t0) / period).floor() * period,
+            _ => t,
+        };
+        Ok((t >= t0 && t <= t1).then(|| edge.curve.eval(t)))
+    };
+    let joined = |vertices: &[u32], edges: &[u32], p: Vec3| -> bool {
+        let by_vertex = vertices.iter().any(|&v| {
+            body.vertices
+                .get(v as usize)
+                .is_some_and(|vertex| vertex.point.distance(p) <= reach)
+        });
+        by_vertex
+            || edges.iter().any(|&e| {
+                let in_box = body
+                    .edge_bbox(craft3d_topo::EdgeId(e))
+                    .is_ok_and(|b| b.contains(p, reach));
+                in_box
+                    && match on_edge(e, p) {
+                        // Not known to be apart: joined, never a refusal
+                        // made up.
+                        Err(()) => true,
+                        Ok(q) => q.is_some_and(|q| q.distance(p) <= reach),
+                    }
+            })
+    };
+    // Faces that meet at a shared edge at an angle θ (between the planes
+    // they leave it in) stay within `near` of each other for
+    // `near / (2 sin(θ/2))` from it: past `reach` below about 29°. So a
+    // shared edge joins them at the place also when the place is within
+    // `near / sin(θ/2)` of it (twice that, for margin), θ read from the
+    // outward normals at the edge's nearest point (sin(θ/2) =
+    // sqrt((1 + n_f · n_g) / 2) for faces that leave the edge on one side
+    // of each other), up to `most`: one sliver of a wedge or a groove, not
+    // two walls.
+    let wedged = |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64| -> bool {
+        let most = most.max(reach);
+        let normal = |face: &craft3d_topo::Face, x: Vec3| {
+            let (u, v) = face.surface.project(x).ok()?;
+            let n = face.surface.normal(u, v)?;
+            Some(if face.reversed { -n } else { n })
+        };
+        let faces = body.face(face_id(f)).zip(body.face(face_id(g)));
+        edges.iter().any(|&e| {
+            // An edge further than `most` joins nothing here, whatever
+            // else is known of it.
+            let within = body
+                .edge_bbox(craft3d_topo::EdgeId(e))
+                .is_ok_and(|b| b.contains(p, most));
+            if !within {
+                return false;
+            }
+            match on_edge(e, p) {
+                // Its nearest point not known: joined only as close as
+                // its box allows.
+                Err(()) => true,
+                Ok(None) => false,
+                Ok(Some(q)) => {
+                    let angle = faces.and_then(|(sf, sg)| Some((normal(sf, q)?, normal(sg, q)?)));
+                    let Some((nf, ng)) = angle else {
+                        // No normal there (an apex, a pole): the widest
+                        // margin, and no further.
+                        return q.distance(p) <= most;
+                    };
+                    let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                    let margin = if half > 0.0 {
+                        near / half
+                    } else {
+                        f64::INFINITY
+                    };
+                    q.distance(p) <= margin.max(reach).min(most)
+                }
+            }
+        })
+    };
+
+    for &p in meetings {
+        if !p.is_finite() {
+            continue;
+        }
+        let candidates: Vec<usize> = grid
+            .near(p)
+            .into_iter()
+            .filter(|&f| {
+                face_shell.get(f).is_some_and(|&s| s != usize::MAX)
+                    && boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+                        lo.x <= p.x
+                            && p.x <= hi.x
+                            && lo.y <= p.y
+                            && p.y <= hi.y
+                            && lo.z <= p.z
+                            && p.z <= hi.z
+                    })
+            })
+            .collect();
+        if candidates.len() < 2 {
+            continue;
+        }
+        for &f in &candidates {
+            parts.entry(f).or_insert_with(|| parts_of(f));
+        }
+        // The nearest point of each candidate when the place is on it,
+        // made when a pair needs it.
+        let mut feet: BTreeMap<usize, Option<Vec3>> = BTreeMap::new();
+        let mut foot =
+            |f: usize, outlines: &mut BTreeMap<usize, Option<outline::Outline>>| -> Option<Vec3> {
+                *feet.entry(f).or_insert_with(|| {
+                    let outline = outlines
+                        .entry(f)
+                        .or_insert_with(|| section::face_outline(body, f, tol).ok())
+                        .as_ref()?;
+                    let (u, v) = outline.surface.project(p).ok()?;
+                    let foot = outline.surface.eval(u, v);
+                    (foot.distance(p) <= near
+                        && matches!(
+                            outline.side(foot, tol),
+                            Ok(outline::Side::In | outline::Side::On)
+                        ))
+                    .then_some(foot)
+                })
+            };
+        for (i, &f) in candidates.iter().enumerate() {
+            for &g in candidates.iter().skip(i + 1) {
+                if face_shell.get(f) != face_shell.get(g) {
+                    // Between shells: the first half's.
+                    continue;
+                }
+                let (Some((fv, fe)), Some((gv, ge))) = (parts.get(&f), parts.get(&g)) else {
+                    return Err(Stop::of(LOST));
+                };
+                let edges = common(fe, ge);
+                if joined(&common(fv, gv), &edges, p) {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (foot(f, outlines), foot(g, outlines)) else {
+                    continue;
+                };
+                let size = |f: usize| {
+                    boxes
+                        .get(f)
+                        .copied()
+                        .flatten()
+                        .map_or(0.0, |(lo, hi)| lo.distance(hi))
+                };
+                let reach = 0.1 * size(f).min(size(g));
+                if a.distance(b) > near || wedged(f, g, &edges, p, reach) {
+                    continue;
+                }
+                let (Some(Some(of)), Some(Some(og))) = (outlines.get(&f), outlines.get(&g)) else {
+                    return Err(Stop::of(LOST));
+                };
+                if !(walls_apart(of, b, og, near, reach) && walls_apart(og, a, of, near, reach)) {
+                    // Material between them, thinning to nothing: not
+                    // two parts that touch (see `walls_apart`).
+                    continue;
+                }
+                let source = |f: usize| result.faces.get(f).map(|s| (s.operand, s.face));
+                let (Some(a), Some(mut b)) = (source(f), source(g)) else {
+                    return Err(Stop::of(LOST));
+                };
+                if a.0 == b.0 {
+                    // Both of one operand (two pieces of one face, say):
+                    // name a face of the other operand at the place where
+                    // there is one, else another face of this one.
+                    let mut other_face = None;
+                    for &h in &candidates {
+                        let Some(o) = source(h).filter(|o| *o != a) else {
+                            continue;
+                        };
+                        if foot(h, outlines).is_none() {
+                            continue;
+                        }
+                        if o.0 != a.0 {
+                            other_face = Some(o);
+                            break;
+                        }
+                        if b == a && other_face.is_none() {
+                            other_face = Some(o);
+                        }
+                    }
+                    if let Some(o) = other_face {
+                        b = o;
+                    }
+                }
                 return Err(Stop::Error(KernelError::ZeroThickness {
                     operation: OPERATION,
                     at: p,

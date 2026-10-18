@@ -85,6 +85,7 @@ fn sized(error: &BlendError) -> bool {
                 | Reason::NotTangent
                 | Reason::FreeTooLarge
                 | Reason::FreeRunsOver
+                | Reason::FreeFolds
         ),
     }
 }
@@ -102,7 +103,8 @@ fn no_room(error: &BlendError) -> bool {
                 | Reason::LostNeighbour
                 | Reason::InPieces
                 | Reason::FreeTooLarge
-                | Reason::FreeRunsOver,
+                | Reason::FreeRunsOver
+                | Reason::FreeFolds,
             ..
         }
     )
