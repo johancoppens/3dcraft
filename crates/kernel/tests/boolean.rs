@@ -908,8 +908,11 @@ fn what_is_not_supported_says_so() {
     // Faces that are neither on one plane nor safely on two: a gap or an
     // overlap between half and twice the tolerance. Closer they are the
     // same face, further they are apart.
-    // An overlap of a few tolerances is a sliver that cannot be told
-    // from nothing either: that is refused as well.
+    // An overlap of a few tolerances is a sliver the tolerance can tell
+    // (its faces are safely two): built exactly, its pieces of face too
+    // thin for a point inside them read at their boundary (refused until
+    // 2026-10-18: expectation changed, the volume and the one shell are
+    // held below as for any overlap).
     for (gap, unsure) in [
         (0.4e-6, false),
         (0.6e-6, true),
@@ -919,7 +922,7 @@ fn what_is_not_supported_says_so() {
         (-0.4e-6, false),
         (-0.6e-6, true),
         (-1.0e-6, true),
-        (-2.1e-6, true),
+        (-2.1e-6, false),
         (-20e-6, false),
     ] {
         {

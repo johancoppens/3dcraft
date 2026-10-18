@@ -821,28 +821,33 @@ fn clip(
         let mut keep = true;
         for ((outline, inside), here) in [oa, ob].into_iter().zip(inside.iter_mut()).zip(heres) {
             let side = |p: Vec3| outline.side(p, tol).map_err(|r| Stop::of(r).at(&named));
-            match here {
-                Side::Out => {
-                    keep = false;
-                    break;
-                }
-                Side::In => *inside = true,
-                Side::On => {}
+            if here == Side::Out {
+                keep = false;
+                break;
             }
-            if [side(at(0.25))?, side(at(0.75))?]
-                .iter()
-                .any(|&q| q != here)
-            {
+            let quarters = [side(at(0.25))?, side(at(0.75))?];
+            let mixed = quarters.iter().any(|&q| q != here);
+            if quarters.contains(&Side::Out) || (mixed && meeting.tangent) {
                 // A curve along which the surfaces only touch divides
                 // nothing: where it runs over a face's boundary without
                 // a cut there (it is within the tolerance of the surface
                 // well past where it leaves it), it is left out. A
-                // crossing in that state is refused.
+                // crossing that leaves the face in that state is refused.
                 if meeting.tangent {
                     keep = false;
                     break;
                 }
                 return Err(Stop::of(AMBIGUOUS).at(&named));
+            }
+            // Between its cuts a stretch crosses no edge of the face, so
+            // it is either along the boundary (within the tolerance of
+            // it everywhere) or inside the face. A place within the
+            // tolerance of the boundary says nothing by itself; one
+            // clear of it says inside: a chord that cuts a corner of the
+            // face a few tolerances from its vertex is inside, and
+            // passes within the tolerance of both edges on the way.
+            if here == Side::In || quarters.contains(&Side::In) {
+                *inside = true;
             }
         }
         if !keep {

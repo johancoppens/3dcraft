@@ -63,7 +63,7 @@ pub(super) enum Side {
     Out,
 }
 
-const SLIVER: Reason =
+pub(super) const SLIVER: Reason =
     "a piece of a face too thin to find a point inside it (at the edge of tolerance)";
 /// Where along a boundary piece [`Outline::interior_points`] steps into
 /// the face, the part of the piece's width the first step starts from (it
@@ -538,8 +538,14 @@ pub(super) fn left_of(
     // ten tolerances wide the candidate must be more than the margin (four
     // tolerances) from its piece and less than half the strip (five), a
     // window halving steps hit only by chance: where they find nothing the
-    // steps shrink by a twelfth of an octave instead.
-    for (shrink, most, margin) in passes(margin) {
+    // steps shrink by a twelfth of an octave instead. Which side of its
+    // own pieces a point is on is a question of the pieces as they are,
+    // so a loop with no room at the margin (a sliver a few tolerances
+    // wide: the corner a curve cuts off a face just past its vertex) is
+    // answered as close to it as a sixteenth of the margin, well clear of
+    // rounding; what such a sliver is next to is read at its boundary
+    // (`classify::at_boundary`), not at a point inside it.
+    for (shrink, most, margin) in passes(margin).into_iter().chain(passes(margin / 16.0)) {
         for seg in of {
             let (point, travel) = seg.travel();
             let Some(outward) = outward_normal(sheet, reversed, point) else {
