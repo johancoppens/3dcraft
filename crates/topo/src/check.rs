@@ -174,9 +174,14 @@ impl fmt::Display for Defect {
                 face,
                 edge,
                 distance,
-            } => write!(
+            } if distance.is_finite() => write!(
                 f,
                 "edge {} is {distance:e} away from the surface of face {}",
+                edge.0, face.0
+            ),
+            Defect::EdgeOffSurface { face, edge, .. } => write!(
+                f,
+                "edge {} cannot be measured against the surface of face {}: a point of it has no distance to that surface",
                 edge.0, face.0
             ),
             Defect::EdgeUses { edge, uses } => write!(

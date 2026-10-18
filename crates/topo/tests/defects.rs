@@ -463,4 +463,13 @@ fn a_point_without_a_distance_puts_the_edge_off_its_surface() {
         d,
         Defect::EdgeOffSurface { face: FaceId(0), edge: EdgeId(0), distance } if distance.is_infinite()
     )));
+    // It says the distance could not be had, not that it is infinite.
+    let text = Defect::EdgeOffSurface {
+        face: FaceId(0),
+        edge: EdgeId(0),
+        distance: f64::INFINITY,
+    }
+    .to_string();
+    assert!(text.contains("cannot be measured"), "{text}");
+    assert!(!text.contains("inf"), "{text}");
 }
