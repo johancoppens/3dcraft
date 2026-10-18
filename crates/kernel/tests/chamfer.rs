@@ -1444,9 +1444,6 @@ fn a_chamfer_wider_than_the_cap_it_cuts_into_is_refused() {
                     assert_eq!(face, Some(sphere), "at scale {k}: {reason}");
                     assert!(reason.contains("fold"), "at scale {k}: {reason}");
                 }
-                Err(KernelError::ChamferTooLarge { edge: e, face, .. }) => {
-                    assert_eq!((e, face), (edge, sphere), "at scale {k}");
-                }
                 other => panic!("at scale {k}: expected a refusal, got {other:?}"),
             }
         }

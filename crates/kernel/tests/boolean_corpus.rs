@@ -97,6 +97,17 @@ use std::path::PathBuf;
 /// each of cylinder-spline, spline-spline and torus-dome).
 const AGREEING_FLOOR: usize = 11582;
 
+/// A floor on the outcomes that agree outright (`match`, `match~`,
+/// `empty`), and a ceiling on those refused as zero thickness: the sum
+/// above counts a refusal as agreeing whenever the body made without it
+/// agrees, so a refusal that should not be there would hide in it. Set on
+/// 2026-10-18 (review of the fuzzer's 5279: a shell that touches itself
+/// refused too, 108 unions, each with a witness of its own, which took
+/// the outright agreement from 10815 to 10717 and the zero-thick count
+/// from 767 to 865); a change to either is an expectation change.
+const MATCHED_FLOOR: usize = 10717;
+const ZERO_THICK_CEILING: usize = 865;
+
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
 /// still fails for any new one. An entry that starts to agree must be
@@ -1059,11 +1070,20 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                 // The refusal is real when the point it names lies on two
                 // parts of the body made without it, by the rays of
                 // `contains_points` on each part alone; or, where that body
-                // is one shell that touches itself (since 2026-10-17), on
-                // that shell.
+                // is one shell (since 2026-10-17), when the place is on it
+                // and the shell touches itself there by a witness of its
+                // own (`touches_itself_at`).
                 zero = Some(made.as_ref().map_or((0, 2), |r| {
-                    let needed = if r.body.shells.len() > 1 { 2 } else { 1 };
-                    (boolean_common::on_parts(&r.body, at, &tolerance), needed)
+                    let on = boolean_common::on_parts(&r.body, at, &tolerance);
+                    if r.body.shells.len() > 1 {
+                        (on, 2)
+                    } else if boolean_common::touches_itself_at(&r.body, at, &tolerance) {
+                        (on, 1)
+                    } else {
+                        // One shell with no witness that it touches
+                        // itself there: not a refusal to trust.
+                        (0, 1)
+                    }
                 }));
                 made
             }
@@ -1588,6 +1608,22 @@ fn the_kernel_agrees_with_the_reference_kernel() {
         );
         if agreeing > AGREEING_FLOOR {
             println!("{agreeing} outcomes agree: raise AGREEING_FLOOR from {AGREEING_FLOOR}");
+        }
+        let matched = agreeing - zero_thick;
+        assert!(
+            matched >= MATCHED_FLOOR,
+            "{matched} outcomes agree outright, fewer than the floor of {MATCHED_FLOOR}"
+        );
+        assert!(
+            zero_thick <= ZERO_THICK_CEILING,
+            "{zero_thick} outcomes are refused as zero thickness, more than the ceiling of \
+             {ZERO_THICK_CEILING}: is each new one a body that touches itself?"
+        );
+        if matched > MATCHED_FLOOR || zero_thick < ZERO_THICK_CEILING {
+            println!(
+                "{matched} agree outright and {zero_thick} are zero thickness: \
+                 MATCHED_FLOOR {MATCHED_FLOOR}, ZERO_THICK_CEILING {ZERO_THICK_CEILING}"
+            );
         }
     }
 }

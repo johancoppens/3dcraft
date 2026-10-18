@@ -1074,3 +1074,98 @@ fn a_union_that_overlaps_and_also_touches_along_a_line() {
         }
     }
 }
+
+/// A square bar turned 45° about its axis (along x), its lowest edge lying
+/// on the top of a plate (z = 1, y = 1.5, x 0.5..3, inside the face) and
+/// its far end in the pillar of an L (plate x 0..4, y 0..3, z 0..1 with a
+/// pillar x 3..4 up to z = 3): one shell through the pillar that touches
+/// itself along the edge, the bar's material above it and the plate's
+/// below, with the space between in two wedges of 45° (review of the
+/// fuzzer's 5279, 2026-10-18: the bar's side faces lie under the plate's
+/// plane only past their shared edge, beyond the faces' own boundary,
+/// which `walls_apart` read as material between thinning walls). Refused
+/// along the edge, at three scales; made without the refusal its volume is
+/// 12 + 6 + 0.5 · 3 − 0.5 · 0.5 (the bar's diamond has area 0.5, and half
+/// a unit of its length is in the pillar), with two pieces of material
+/// about the place.
+#[test]
+fn a_bar_on_its_edge_along_a_plate_and_into_a_pillar() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let pillar = boxed(k, [3.0, 0.0, 1.0], [4.0, 3.0, 3.0]);
+        let ell = solve(&plate, &pillar, Union, k).body;
+        assert_eq!(ell.shells.len(), 1);
+        // The diamond in the plane x = 0.5: sketch x along y, y along z.
+        let corners = [[1.5, 1.0], [2.0, 1.5], [1.5, 2.0], [1.0, 1.5]];
+        let curves: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: corners[i].map(|c| c * k),
+                    end: corners[(i + 1) % 4].map(|c| c * k),
+                },
+            })
+            .collect();
+        let frame = Frame::new(Vec3::new(0.5 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let bar = extrude(&profiles, &frame, 0.0, 3.0 * k, &tol).unwrap().body;
+        assert_close(mass(&bar).volume, 1.5 * k * k * k, "the bar");
+        for (x, y) in [(&ell, &bar), (&bar, &ell)] {
+            let (both, refused) = solve_parts(x, y, Union, k);
+            let at = refused.unwrap_or_else(|| panic!("not refused at scale {k}"));
+            assert!(
+                (at.y - 1.5 * k).abs() < 1e-6 * k && (at.z - k).abs() < 1e-6 * k,
+                "{at:?} at scale {k}"
+            );
+            assert!(
+                at.x > 0.5 * k - 1e-6 * k && at.x < 3.0 * k + 1e-6 * k,
+                "{at:?}"
+            );
+            assert_eq!(both.body.shells.len(), 1);
+            assert_eq!(
+                sectors_at(&both.body, at, &tol).0,
+                2,
+                "two pieces of material at scale {k}"
+            );
+            assert_close(
+                mass(&both.body).volume,
+                (18.0 + 1.5 - 0.25) * k * k * k,
+                "volume",
+            );
+        }
+    }
+}
+
+/// The witness the one-shell refusals are held to (`touches_itself_at`)
+/// can say no: on a plain boundary (inside a face, on a convex and on a
+/// concave edge, at a corner of the L of
+/// `a_bar_on_its_edge_along_a_plate_and_into_a_pillar`) it finds nothing,
+/// at three scales; that test has it find the touch where the bar lies on
+/// the plate.
+#[test]
+fn the_witness_of_a_self_touch_says_no_on_a_plain_boundary() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let pillar = boxed(k, [3.0, 0.0, 1.0], [4.0, 3.0, 3.0]);
+        let ell = solve(&plate, &pillar, Union, k).body;
+        for p in [
+            [2.0, 1.5, 1.0], // inside the plate's top
+            [2.0, 0.0, 0.0], // a convex edge
+            [3.0, 1.5, 1.0], // the concave edge at the pillar's foot
+            [4.0, 3.0, 3.0], // a corner
+            [3.0, 0.0, 1.0], // where the concave edge meets the front
+        ] {
+            let at = Vec3::new(p[0] * k, p[1] * k, p[2] * k);
+            assert!(
+                !touches_itself_at(&ell, at, &tol),
+                "a touch found at {p:?} at scale {k}"
+            );
+            let (material, space) = sectors_at(&ell, at, &tol);
+            assert_eq!((material, space), (1, 1), "at {p:?} at scale {k}");
+        }
+    }
+}

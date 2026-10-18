@@ -829,8 +829,9 @@ fn zero_thickness(
 /// Whether face `g` (its outline, at `b`) stays on the outer side of
 /// face `f`'s surface near the place where they touch: no point of `g`
 /// within `reach` of `b` (eight directions about `b` in `g`'s tangent
-/// plane, onto `g`'s surface and inside `g`) is more than `near` inside
-/// `f`'s material, by `f`'s outward normal there.
+/// plane, onto `g`'s surface and inside `g`, whose foot on `f`'s surface
+/// lies inside `f`) is more than `near` inside `f`'s material, by `f`'s
+/// outward normal there.
 ///
 /// Two walls of one shell that touch with opposite outward normals are
 /// one of two things. Their materials lie on their far sides and the
@@ -873,6 +874,13 @@ fn walls_apart(f: &outline::Outline, b: Vec3, g: &outline::Outline, near: f64, r
         ) else {
             continue;
         };
+        // Only where `f` itself is there: beyond its boundary its surface
+        // says nothing about its material (a bar's edge along a plate,
+        // whose side faces lie under the plate's surface past their own
+        // edges).
+        if !matches!(f.side(q, near * 0.5), Ok(outline::Side::In)) {
+            continue;
+        }
         if (y - q).dot(outward) < -near {
             return false;
         }
@@ -893,9 +901,11 @@ fn walls_apart(f: &outline::Outline, b: Vec3, g: &outline::Outline, near: f64, r
 /// parts that touch are separate shells or hang together elsewhere (the
 /// fuzzer's seed 5279, 2026-10-17: an edge of one operand lying along a
 /// face of the other, the union one shell through the volume both have
-/// in common). The margin for "joined" is twice that for "at", so that
-/// faces that meet at an edge under any angle are never taken for two
-/// walls that touch near it.
+/// in common). The margin for "joined" is twice that for "at", which
+/// covers faces that meet at an edge at 29° or more; at a sharper angle
+/// they stay within the tolerance of each other further from the edge,
+/// and the margin of a shared edge grows as 1 / sin(θ/2) (`wedged`), so
+/// that a wedge or a groove is never taken for two walls that touch.
 fn within_a_shell(
     result: &BooleanResult,
     tol: f64,
@@ -910,37 +920,56 @@ fn within_a_shell(
     let reach = 2.0 * near;
     // Per face, its vertices and edges, each once, ascending.
     let mut parts: BTreeMap<usize, (Vec<u32>, Vec<u32>)> = BTreeMap::new();
-    let mut parts_of = |f: usize| -> (Vec<u32>, Vec<u32>) {
-        parts
-            .entry(f)
-            .or_insert_with(|| {
-                let mut vertices = Vec::new();
-                let mut edges = Vec::new();
-                let coedges = body
-                    .face(face_id(f))
-                    .into_iter()
-                    .flat_map(|face| &face.loops)
-                    .filter_map(|l| body.loop_(*l))
-                    .flat_map(|l| &l.coedges);
-                for coedge in coedges {
-                    edges.push(coedge.edge.0);
-                    if let Some(edge) = body.edge(coedge.edge) {
-                        vertices.extend([edge.start.0, edge.end.0]);
-                    }
-                }
-                for list in [&mut vertices, &mut edges] {
-                    list.sort_unstable();
-                    list.dedup();
-                }
-                (vertices, edges)
-            })
-            .clone()
+    let parts_of = |f: usize| -> (Vec<u32>, Vec<u32>) {
+        let mut vertices = Vec::new();
+        let mut edges = Vec::new();
+        let coedges = body
+            .face(face_id(f))
+            .into_iter()
+            .flat_map(|face| &face.loops)
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| &l.coedges);
+        for coedge in coedges {
+            edges.push(coedge.edge.0);
+            if let Some(edge) = body.edge(coedge.edge) {
+                vertices.extend([edge.start.0, edge.end.0]);
+            }
+        }
+        for list in [&mut vertices, &mut edges] {
+            list.sort_unstable();
+            list.dedup();
+        }
+        (vertices, edges)
     };
-    let shared = |a: &[u32], b: &[u32]| -> Vec<u32> {
-        a.iter()
-            .filter(|x| b.binary_search(x).is_ok())
-            .copied()
-            .collect()
+    // The ids both ascending lists hold, merged in one pass.
+    let common = |a: &[u32], b: &[u32]| -> Vec<u32> {
+        let (mut i, mut j, mut out) = (0, 0, Vec::new());
+        while let (Some(&x), Some(&y)) = (a.get(i), b.get(j)) {
+            match x.cmp(&y) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    out.push(x);
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        out
+    };
+    // The point of edge `e` nearest `p`, inside its range; `Err` where the
+    // projection fails.
+    let on_edge = |e: u32, p: Vec3| -> Result<Option<Vec3>, ()> {
+        let Some(edge) = body.edge(craft3d_topo::EdgeId(e)) else {
+            return Ok(None);
+        };
+        let t = edge.curve.project(p).map_err(|_| ())?;
+        let (t0, t1) = edge.range;
+        let t = match edge.curve.period() {
+            Some(period) if period > 0.0 => t - ((t - t0) / period).floor() * period,
+            _ => t,
+        };
+        Ok((t >= t0 && t <= t1).then(|| edge.curve.eval(t)))
     };
     let joined = |vertices: &[u32], edges: &[u32], p: Vec3| -> bool {
         let by_vertex = vertices.iter().any(|&v| {
@@ -950,27 +979,52 @@ fn within_a_shell(
         });
         by_vertex
             || edges.iter().any(|&e| {
-                let Some(edge) = body.edge(craft3d_topo::EdgeId(e)) else {
-                    return false;
-                };
                 let in_box = body
                     .edge_bbox(craft3d_topo::EdgeId(e))
                     .is_ok_and(|b| b.contains(p, reach));
-                if !in_box {
-                    return false;
-                }
-                let Ok(t) = edge.curve.project(p) else {
-                    // Not known to be apart: joined, never a refusal
-                    // made up.
+                in_box
+                    && match on_edge(e, p) {
+                        // Not known to be apart: joined, never a refusal
+                        // made up.
+                        Err(()) => true,
+                        Ok(q) => q.is_some_and(|q| q.distance(p) <= reach),
+                    }
+            })
+    };
+    // Faces that meet at a shared edge at an angle θ (between the planes
+    // they leave it in) stay within `near` of each other for
+    // `near / (2 sin(θ/2))` from it: past `reach` below about 29°. So a
+    // shared edge joins them at the place also when the place is within
+    // `near / sin(θ/2)` of it (twice that, for margin), θ read from the
+    // outward normals at the edge's nearest point (sin(θ/2) =
+    // sqrt((1 + n_f · n_g) / 2) for faces that leave the edge on one side
+    // of each other), up to `most`: one sliver of a wedge or a groove, not
+    // two walls.
+    let wedged = |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64| -> bool {
+        let (Some(sf), Some(sg)) = (body.face(face_id(f)), body.face(face_id(g))) else {
+            return true;
+        };
+        let normal = |face: &craft3d_topo::Face, x: Vec3| {
+            let (u, v) = face.surface.project(x).ok()?;
+            let n = face.surface.normal(u, v)?;
+            Some(if face.reversed { -n } else { n })
+        };
+        edges.iter().any(|&e| match on_edge(e, p) {
+            Err(()) => true,
+            Ok(None) => false,
+            Ok(Some(q)) => {
+                let (Some(nf), Some(ng)) = (normal(sf, q), normal(sg, q)) else {
                     return true;
                 };
-                let (t0, t1) = edge.range;
-                let t = match edge.curve.period() {
-                    Some(period) if period > 0.0 => t - ((t - t0) / period).floor() * period,
-                    _ => t,
+                let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                let margin = if half > 0.0 {
+                    near / half
+                } else {
+                    f64::INFINITY
                 };
-                t >= t0 && t <= t1 && edge.curve.eval(t).distance(p) <= reach
-            })
+                q.distance(p) <= margin.max(reach).min(most.max(reach))
+            }
+        })
     };
     for &p in meetings {
         if !p.is_finite() {
@@ -993,6 +1047,9 @@ fn within_a_shell(
             .collect();
         if candidates.len() < 2 {
             continue;
+        }
+        for &f in &candidates {
+            parts.entry(f).or_insert_with(|| parts_of(f));
         }
         // The nearest point of each candidate when the place is on it,
         // made when a pair needs it.
@@ -1020,17 +1077,16 @@ fn within_a_shell(
                     // Between shells: the first half's.
                     continue;
                 }
-                let (fv, fe) = parts_of(f);
-                let (gv, ge) = parts_of(g);
-                if joined(&shared(&fv, &gv), &shared(&fe, &ge), p) {
+                let (Some((fv, fe)), Some((gv, ge))) = (parts.get(&f), parts.get(&g)) else {
+                    return Err(Stop::of(LOST));
+                };
+                let edges = common(fe, ge);
+                if joined(&common(fv, gv), &edges, p) {
                     continue;
                 }
                 let (Some(a), Some(b)) = (foot(f, outlines), foot(g, outlines)) else {
                     continue;
                 };
-                if a.distance(b) > near {
-                    continue;
-                }
                 let size = |f: usize| {
                     boxes
                         .get(f)
@@ -1039,6 +1095,9 @@ fn within_a_shell(
                         .map_or(0.0, |(lo, hi)| lo.distance(hi))
                 };
                 let reach = 0.1 * size(f).min(size(g));
+                if a.distance(b) > near || wedged(f, g, &edges, p, reach) {
+                    continue;
+                }
                 let (Some(Some(of)), Some(Some(og))) = (outlines.get(&f), outlines.get(&g)) else {
                     return Err(Stop::of(LOST));
                 };
