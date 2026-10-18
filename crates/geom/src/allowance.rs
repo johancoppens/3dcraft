@@ -38,6 +38,20 @@
 //! with the [`spent`] of each), so the total after the pool is the same
 //! whatever the number of threads and however the work was shared out,
 //! and an operation's outcome under a bound does not depend on them.
+//!
+//! **Caches.** A cache whose hit skips counted work would make the count
+//! depend on what ran before. A cache that speeds up a counted search
+//! keeps what the miss cost ([`measured`]) and charges it on a hit (the
+//! projections a surface remembers, the meshes of faces kept); one whose
+//! making is not counted ([`uncounted`]) is charged by its size once per
+//! operation ([`once`]); the memos of a patch tree are kept per operation
+//! under a bound ([`scope`]). Held by the tests that count the same
+//! operation on fresh bodies cold, warm and after others.
+//!
+//! **What is bounded.** The face operations' search (`craft3d_kernel::
+//! offset_face`) and the self-check (`craft3d_tess`). Not booleans,
+//! blends, sweeps, lofts, delete face or pattern joins: they set no bound,
+//! and what polls for one does nothing outside it.
 
 use std::cell::Cell;
 
@@ -163,6 +177,14 @@ pub fn uncounted<R>(work: impl FnOnce() -> R) -> R {
     let _ = FROZEN.try_with(|frozen| frozen.set(frozen.get().saturating_add(1)));
     let _thaw = Thaw;
     work()
+}
+
+/// Whether this thread counts its work now (not in an [`uncounted`]
+/// region). A cache that keeps what a miss cost with what it keeps keeps
+/// nothing made while not counting (its cost would read nothing) or while
+/// the bound in force was reached (a search it cut short).
+pub fn counting() -> bool {
+    FROZEN.try_with(Cell::get).unwrap_or(0) == 0 && !exhausted()
 }
 
 /// Runs `work` and gives back what it returned with the units it charged

@@ -286,7 +286,6 @@ fn surface_at<const N: usize>(
     v: f64,
     derivative: bool,
 ) -> (Vec3, Vec3, Vec3) {
-    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     let count_u = s.homogeneous.len() / count_v;
     let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, derivative);
@@ -301,6 +300,9 @@ fn surface_with<const N: usize>(
     along_v: &Along<N>,
     derivative: bool,
 ) -> (Vec3, Vec3, Vec3) {
+    // One evaluation (`crate::allowance`), also with the blend factors
+    // given (`derivatives_cached`).
+    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     // Collapse the rows with influence along v, then work along u.
     let mut row_points = [ZERO; N];
@@ -426,6 +428,7 @@ fn surface_at_rows<const N: usize>(
     (points, derivs): (&[H], &[H]),
     u: f64,
 ) -> (Vec3, Vec3, Vec3) {
+    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     let count_u = s.homogeneous.len() / count_v;
     let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, true);
@@ -454,6 +457,7 @@ fn surface_at_u<const N: usize>(
     along_u: &Along<N>,
     v: f64,
 ) -> (Vec3, Vec3, Vec3) {
+    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, true);
     let mut row_points = [ZERO; N];

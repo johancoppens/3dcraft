@@ -49,18 +49,30 @@ static PROJECTIONS_KEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 
 /// The projections a surface remembers ([`ProjectGrid::memo`]).
 #[derive(Debug, Default)]
-struct ProjectMemo(std::sync::Mutex<std::collections::BTreeMap<[u64; 3], (f64, f64)>>);
+///
+/// Each with the work finding it took (`crate::allowance`), charged again
+/// when it is found here: a projection counts the same remembered or not,
+/// so what an operation counts does not depend on what was projected
+/// onto the surface before it.
+struct ProjectMemo(std::sync::Mutex<std::collections::BTreeMap<[u64; 3], Projected>>);
+
+/// A projection remembered: the parameters found and the work finding
+/// them took.
+type Projected = ((f64, f64), u64);
 
 impl ProjectMemo {
     fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
-        self.0
+        let (found, units) = self
+            .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(key)
-            .copied()
+            .copied()?;
+        crate::allowance::charge(units);
+        Some(found)
     }
 
-    fn put(&self, key: [u64; 3], found: (f64, f64)) {
+    fn put(&self, key: [u64; 3], found: (f64, f64), units: u64) {
         use std::sync::atomic::Ordering::Relaxed;
         let mut map = self
             .0
@@ -80,7 +92,7 @@ impl ProjectMemo {
                 return;
             }
         }
-        map.insert(key, found);
+        map.insert(key, (found, units));
         PROJECTIONS_KEPT.fetch_add(1, Relaxed);
     }
 }
@@ -618,11 +630,17 @@ impl Surface {
         }
         let grid = self.project_grid((u0, u1), (v0, v1));
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        // Remembered with the surface, from every projection onto it
+        // before, with what finding it took, which a hit charges again.
         if let Some(found) = grid.memo.get(&key) {
             return Ok(found);
         }
-        let found = self.project_from_grid(p, &grid, ((u0, u1), (v0, v1)))?;
-        grid.memo.put(key, found);
+        let (found, units) =
+            crate::allowance::measured(|| self.project_from_grid(p, &grid, ((u0, u1), (v0, v1))));
+        let found = found?;
+        if crate::allowance::counting() {
+            grid.memo.put(key, found, units);
+        }
         Ok(found)
     }
 

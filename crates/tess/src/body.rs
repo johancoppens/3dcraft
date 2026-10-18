@@ -504,6 +504,7 @@ fn tessellate_some(
             if let Some(found) = key.as_deref().and_then(crate::remembered::find) {
                 return (Vec::new(), Some(Ok(FaceMesh::clone(&found))));
             }
+            let before = craft3d_geom::allowance::spent();
             let mut starved = false;
             let boundary = match face_boundary(body, points, face, index, params, &mut starved) {
                 Ok(boundary) => boundary,
@@ -536,7 +537,12 @@ fn tessellate_some(
                 return (ask, None);
             }
             if let (Some(key), true, Some(Ok(made))) = (key, wanted.is_empty(), &result) {
-                crate::remembered::keep(key, made);
+                // Kept with what making it took on this thread, which
+                // finding it charges again (`craft3d_geom::allowance`).
+                let took = craft3d_geom::allowance::spent().saturating_sub(before);
+                if craft3d_geom::allowance::counting() {
+                    crate::remembered::keep(key, made, took);
+                }
             }
             (wanted, result)
         };

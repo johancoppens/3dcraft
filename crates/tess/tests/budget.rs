@@ -290,3 +290,35 @@ fn a_self_check_past_its_bound_ends_with_spent() {
     let got = allowance::within(0, || body_self_intersections(&solid.body, &params));
     assert!(matches!(got, Err(TessError::Spent)), "{got:?}");
 }
+
+/// What a self-check counts is a function of the body: the same on a body
+/// built afresh each time, with the meshes of its faces not kept yet,
+/// kept (`remembered`), and after other bodies were meshed in between;
+/// on any number of threads.
+#[test]
+fn a_self_check_counts_the_same_whatever_was_meshed_before() {
+    use craft3d_geom::allowance;
+    use craft3d_tess::{SelfCheckParams, body_self_intersections};
+    let count = || {
+        let solid = trimmed::pipe_elbow(&Frame::WORLD, 3.0, 1.0, 1.9).unwrap();
+        let mut params = SelfCheckParams::new(1e-6);
+        let mut counts = Vec::new();
+        for threads in [1, 4] {
+            params.threads = threads;
+            let (check, units) =
+                allowance::measured(|| body_self_intersections(&solid.body, &params));
+            assert!(check.unwrap().crossings.is_empty());
+            counts.push(units);
+        }
+        counts
+    };
+    let first = count();
+    let second = count();
+    for solid in fixtures() {
+        let _ = tessellate_body(&solid.body, &params(1e-3, None));
+    }
+    let third = count();
+    assert_eq!(first[0], first[1], "threads");
+    assert_eq!(first, second);
+    assert_eq!(first, third);
+}
