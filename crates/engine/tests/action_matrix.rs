@@ -729,21 +729,27 @@ fn a_blend_below_the_noise_needs_other_evidence() {
         1000.0,
         600.0,
     );
-    fillet.volume_bound = Some(1e-3);
+    fillet.volume_bound = Some(1e-8);
     let after = |volume: f64, applied: Option<bool>| plan::Measured {
         volume,
         area: 600.0,
         centroid: [5.0, 5.0, 5.0],
-        volume_bound: Some(1e-3),
+        volume_bound: Some(1e-8),
         applied,
     };
     let holds_after = |a: &plan::Action, m: plan::Measured| plan::identity(a, &m).is_ok();
-    // The noise is the two bounds, 2e-3, not 1e-9 of the body.
-    assert!((plan::noise(&fillet, &after(1000.0, None)) - 2e-3).abs() < 1e-15);
-    assert!(plan::needs_witness(&fillet, &after(999.999, None)));
-    assert!(!plan::needs_witness(&fillet, &after(999.99, None)));
+    // The noise is the two bounds, 2e-8, less than 1e-9 of the body.
+    assert!((plan::noise(&fillet, &after(1000.0, None)) - 2e-8).abs() < 1e-20);
+    assert!(plan::needs_witness(&fillet, &after(1000.0 - 1e-8, None)));
+    assert!(!plan::needs_witness(&fillet, &after(1000.0 - 1e-7, None)));
+    // Looser bounds than 1e-9 of the body leave the noise at that.
+    let mut loose = fillet.clone();
+    loose.volume_bound = Some(1.0);
+    let mut far = after(1000.0, None);
+    far.volume_bound = Some(1.0);
+    assert!((plan::noise(&loose, &far) - 1e-6).abs() < 1e-18);
     assert!(
-        holds_after(&fillet, after(999.99, None)),
+        holds_after(&fillet, after(1000.0 - 1e-7, None)),
         "a change above the noise"
     );
     // Below the noise: only with evidence.
@@ -755,13 +761,16 @@ fn a_blend_below_the_noise_needs_other_evidence() {
         !holds_after(&fillet, after(1000.0, Some(false))),
         "did nothing"
     );
-    assert!(holds_after(&fillet, after(999.999, Some(true))), "applied");
+    assert!(
+        holds_after(&fillet, after(1000.0 - 1e-8, Some(true))),
+        "applied"
+    );
     // A blend whose exact change is well above the noise must show it in
     // the volume, whatever else.
     // (A chamfer of 0.1 along 10 takes 0.05, at least 0.05 − 2 · 5.67 ·
     // 0.1 · 0.005 = 0.044 with its ends.)
     let mut chamfer = cube_blend(0.1, true);
-    chamfer.volume_bound = Some(1e-3);
+    chamfer.volume_bound = Some(1e-8);
     assert!(
         !holds_after(&chamfer, after(1000.0, Some(true))),
         "must take 0.05"

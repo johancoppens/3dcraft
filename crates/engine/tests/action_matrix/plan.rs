@@ -937,14 +937,25 @@ pub struct Measured {
     pub applied: Option<bool>,
 }
 
-/// What a change of volume after `action` must exceed to be one: the sum
-/// of the integrator's own bounds on the volume before and after, when
-/// both are known; else relative 1e-9 of the body. A change no larger
-/// decides nothing either way.
+/// What a change of volume after `action` must exceed to be one:
+/// relative 1e-9 of the body, or the sum of the integrator's own bounds
+/// on the volume before and after when both are known and that is less.
+/// A change no larger decides nothing either way. The bounds count every
+/// face of both bodies, while the faces an action leaves alone integrate
+/// to the same bits before and after and cancel from the change, so their
+/// sum overstates what the change can be off by; on freeform bodies it is
+/// far looser than 1e-9 (the impeller's: 0.36 of 3067, 1.2e-4, where its
+/// offsets change the volume by 0.08 to 0.7, in agreement with the
+/// closed-form tests of the integrator), and there 1e-9 stays the
+/// threshold. On a body the integrator measures closely (flat and
+/// cylindrical faces: a weld table, 2.7e-9 of 6.2) the bounds decide.
 pub fn noise(action: &Action, after: &Measured) -> f64 {
+    let relative = 1e-9 * action.volume.abs();
     match (action.volume_bound, after.volume_bound) {
-        (Some(b0), Some(b1)) if b0.is_finite() && b1.is_finite() => b0.abs() + b1.abs(),
-        _ => 1e-9 * action.volume.abs(),
+        (Some(b0), Some(b1)) if b0.is_finite() && b1.is_finite() => {
+            relative.min(b0.abs() + b1.abs())
+        }
+        _ => relative,
     }
 }
 

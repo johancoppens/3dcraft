@@ -208,7 +208,7 @@ The outcome of each is one of:
 | crash | a panic (caught: "internal error"), or the process died (the memory cap) |
 | timeout | a call took more than a minute |
 
-The identities, each from what the operation does, none tuned (a change no larger than the integrator's own bounds on the volume before and after, `document.measure` with `bound`, or 1e-9 of the body's volume where those are not known, is within the measure and decides nothing; it is not a change either):
+The identities, each from what the operation does, none tuned (a change no larger than 1e-9 of the body's volume, or than the sum of the integrator's own bounds on the volume before and after, `document.measure` with `bound`, where that is less, is within the measure and decides nothing; it is not a change either. The bounds count every face of both bodies, while the faces an action leaves alone cancel from the change, so on freeform bodies they are far looser than 1e-9 and 1e-9 stays the threshold there):
 
 - every result has a positive volume;
 - an offset by `d` changes the volume with the sign of `d`, so an offset that changes nothing is wrong, and by at most `|d|` times the larger area of the body before and after;
