@@ -74,6 +74,16 @@ pub const MAX_CURVES: usize = 1 << 18;
 /// Coordinates and radii beyond this are refused: their products overflow.
 const MAX_COORDINATE: f64 = 1e100;
 
+/// A profile loop without segments is refused with this reason.
+pub(crate) const NO_SEGMENTS: &str = "a loop without segments";
+/// A profile loop of one segment that is not a circle is refused with
+/// this reason.
+pub(crate) const ONE_SEGMENT_OPEN: &str =
+    "a loop of one segment that is not a circle is not closed";
+/// A circle in a profile loop of several segments is refused with this
+/// reason.
+pub(crate) const CIRCLE_NOT_ALONE: &str = "a circle is a loop on its own";
+
 type P2 = [f64; 2];
 
 fn sub(a: P2, b: P2) -> P2 {

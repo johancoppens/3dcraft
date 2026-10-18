@@ -425,7 +425,7 @@ fn outline(index: usize, section: &Section, flip: bool) -> Result<Outline, Kerne
     if let [only] = segments.as_slice() {
         let Shape::Circle { center, radius } = only.shape else {
             return Err(KernelError::InvalidProfile {
-                reason: "a loop of one segment that is not a circle is not closed",
+                reason: crate::profile::ONE_SEGMENT_OPEN,
             });
         };
         if section.start.is_some_and(|start| start != only.source) {
@@ -494,7 +494,7 @@ fn outline(index: usize, section: &Section, flip: bool) -> Result<Outline, Kerne
             }
             Shape::Circle { .. } => {
                 return Err(KernelError::InvalidProfile {
-                    reason: "a circle is a loop on its own",
+                    reason: crate::profile::CIRCLE_NOT_ALONE,
                 });
             }
             Shape::Spline(spline) => {
@@ -535,7 +535,7 @@ fn outline(index: usize, section: &Section, flip: bool) -> Result<Outline, Kerne
     }
     if pieces.is_empty() {
         return Err(KernelError::InvalidProfile {
-            reason: "a loop without segments",
+            reason: crate::profile::NO_SEGMENTS,
         });
     }
     if let Some(start) = section.start
@@ -993,7 +993,7 @@ pub fn loft(
     for (index, section) in sections.iter().enumerate() {
         if section.outline.segments.is_empty() {
             return Err(KernelError::InvalidProfile {
-                reason: "a loop without segments",
+                reason: crate::profile::NO_SEGMENTS,
             });
         }
         let region = Profile {

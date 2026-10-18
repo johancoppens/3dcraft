@@ -105,7 +105,10 @@
 
 use crate::extrude::{Origin, Role, cap_sources, each_curve_once};
 use crate::loft::{Band, pinned, skin, straight};
-use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, validate};
+use crate::profile::{
+    CIRCLE_NOT_ALONE, Curve2, NO_SEGMENTS, ONE_SEGMENT_OPEN, Profile, Segment, Shape, SketchCurve,
+    validate,
+};
 use crate::revolve::arcs_about;
 use crate::spline2::Spline2;
 use crate::{KernelError, MAX_REPORTED};
@@ -930,6 +933,51 @@ impl Element {
             Form::Line | Form::Spline { .. } => None,
         }
     }
+}
+
+/// The loops of `profile`, the outer one first, as elements laid by `map`
+/// into the plane the path carries. Seen along the path the outer loop
+/// runs counter-clockwise and the holes clockwise, whichever way the
+/// profile's plane faces. A loop without segments, a loop of one segment
+/// that is not a circle, and a circle in a loop with other segments are
+/// refused.
+pub(crate) fn profile_loops(
+    profile: &Profile,
+    map: &Map2,
+    tol: f64,
+) -> Result<Vec<Vec<Element>>, KernelError> {
+    let mut loops: Vec<Vec<Element>> = Vec::with_capacity(1 + profile.holes.len());
+    for path in std::iter::once(&profile.outer).chain(&profile.holes) {
+        let mut elements = path
+            .segments
+            .iter()
+            .map(|s| map.element(s, tol))
+            .collect::<Result<Vec<_>, _>>()?;
+        match elements.as_slice() {
+            [] => {
+                return Err(KernelError::InvalidProfile {
+                    reason: NO_SEGMENTS,
+                });
+            }
+            [only] if !only.whole() => {
+                return Err(KernelError::InvalidProfile {
+                    reason: ONE_SEGMENT_OPEN,
+                });
+            }
+            [_] => {}
+            several if several.iter().any(Element::whole) => {
+                return Err(KernelError::InvalidProfile {
+                    reason: CIRCLE_NOT_ALONE,
+                });
+            }
+            _ => {}
+        }
+        if map.mirrored {
+            elements = elements.iter().rev().map(Element::flipped).collect();
+        }
+        loops.push(elements);
+    }
+    Ok(loops)
 }
 
 /// A rigid motion of the plane, or one with a reflection: from the
@@ -2012,43 +2060,13 @@ pub fn sweep(
         return Err(leans(Some(moved)));
     }
     let follows = legs.iter().any(|l| matches!(l.track, Track::Spline(_)));
-    let mut loops: Vec<Vec<Element>> = Vec::with_capacity(1 + profile.holes.len());
-    for path in std::iter::once(&profile.outer).chain(&profile.holes) {
-        let mut elements = path
-            .segments
-            .iter()
-            .map(|s| map.element(s, tol))
-            .collect::<Result<Vec<_>, _>>()?;
-        match elements.as_slice() {
-            [] => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a loop without segments",
-                });
-            }
-            [only] if !only.whole() => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a loop of one segment that is not a circle is not closed",
-                });
-            }
-            [_] => {}
-            several if several.iter().any(Element::whole) => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a circle is a loop on its own",
-                });
-            }
-            _ => {}
+    let mut loops = profile_loops(profile, &map, tol)?;
+    // A whole circle has no seam along lines and arcs; a surface along a
+    // spline does not close on itself.
+    if follows {
+        for elements in &mut loops {
+            *elements = elements.iter().flat_map(quarters).collect();
         }
-        // Seen along the path the outer loop runs counter-clockwise and
-        // the holes clockwise, whichever way the profile's plane faces.
-        if mirrored {
-            elements = elements.iter().rev().map(Element::flipped).collect();
-        }
-        // A whole circle has no seam along lines and arcs; a surface
-        // along a spline does not close on itself.
-        if follows {
-            elements = elements.iter().flat_map(quarters).collect();
-        }
-        loops.push(elements);
     }
     let sides: usize = loops.iter().map(Vec::len).sum();
     if sides.saturating_mul(count) > MAX_SWEEP_FACES {
