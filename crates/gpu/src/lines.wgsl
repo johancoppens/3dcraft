@@ -2,14 +2,14 @@
 // sketches, the world axes and the sketch points. Each segment is a quad
 // in screen space, wide enough for the line and its feather; the fragment
 // shader inks it by the distance of the pixel's centre to the segment, as
-// `craft3d_ui_egui::viewport::draw_line` does on the CPU, and tests it
-// against the scene's depth buffer the way the CPU viewport tests its
-// overlay: a point is behind a body only when the surface under its own
-// pixel and under the eight around it is nearer than the point, with some
-// slack. A hidden edge is left out; a hidden sketch is drawn dimmed.
+// `craft3d_ui_egui::viewport::draw_line` does on the CPU, and tests the
+// point of the segment nearest to the pixel's centre against the scene's
+// depth buffer with the CPU viewport's rule (depth_test.wgsl). A hidden
+// edge is left out; a hidden sketch is drawn dimmed.
 //
-// The source is a template: `{{DEPTH}}` and `{{LOAD}}` are filled in for
-// a multisampled or a single-sampled depth texture.
+// The source is a template: depth_test.wgsl is pasted in at its marker,
+// and `{{DEPTH}}` and `{{LOAD}}` are filled in for a multisampled or a
+// single-sampled depth texture.
 
 struct Scene {
     right: vec4<f32>,
@@ -28,7 +28,8 @@ struct Lines {
     // depth test in model units. w: the number of samples of the depth
     // texture.
     size: vec4<f32>,
-    // x: the opacity of what is hidden, 0 to 1.
+    // x: the opacity of what is hidden, 0 to 1. y: the grain of the depth
+    // test, in pixels (`craft3d_render::SUBPIXEL_GRAIN`).
     look: vec4<f32>,
     // xyz: the eye, relative to the origin the line positions are stored
     // against.
@@ -58,15 +59,14 @@ struct VertexIn {
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
-    // The view distance along the segment: with the clip w set to the
-    // distance of each end, the hardware interpolates it as the CPU's
-    // `Projector::depth_between` does (evenly in its reciprocal).
-    @location(0) dist: f32,
     @location(1) @interpolate(flat) pa: vec2<f32>,
     @location(2) @interpolate(flat) pb: vec2<f32>,
     @location(3) @interpolate(flat) color: vec4<f32>,
     @location(4) @interpolate(flat) half: f32,
     @location(5) @interpolate(flat) flags: u32,
+    // The view distances of the two ends (after the cut in front of the
+    // eye), for the depth of the point of the segment under a pixel.
+    @location(6) @interpolate(flat) ends: vec2<f32>,
 }
 
 // Camera coordinates: right, up, and the distance along the view.
@@ -145,35 +145,27 @@ fn vs_main(in: VertexIn) -> VertexOut {
     } else {
         out.clip = vec4<f32>(ndc, 0.0, 1.0);
     }
-    out.dist = w;
     out.pa = pa;
     out.pb = pb;
     out.color = unpack(in.color);
     out.half = half;
     out.flags = in.flags;
+    out.ends = vec2<f32>(va.z, vb.z);
     return out;
 }
 
-// The view distance of the surface under pixel `p`: the furthest of its
-// samples, so a line on a surface is hidden only when every sample is
-// nearer; infinite where nothing was drawn.
-fn surface_at(p: vec2<i32>) -> f32 {
-    let samples = i32(lines.size.w);
-    // Reversed depth (scene.wgsl): the furthest sample has the least.
-    var z = 1.0;
-    for (var s = 0; s < samples; s = s + 1) {
-        z = min(z, {{LOAD}});
+{{DEPTH_TEST}}
+
+// The view distance at the fraction `t` of the segment: evenly in its
+// reciprocal in perspective (the CPU's `Projector::depth_between`).
+fn depth_between(ends: vec2<f32>, t: f32) -> f32 {
+    if scene.forward.w > 0.5 && ends.x > 0.0 && ends.y > 0.0 {
+        let inverse = 1.0 / ends.x + (1.0 / ends.y - 1.0 / ends.x) * t;
+        if inverse > 0.0 {
+            return 1.0 / inverse;
+        }
     }
-    // Negated, so that a depth that is not a number counts as nothing.
-    if !(z > 0.0) {
-        return 1e38;
-    }
-    if scene.forward.w > 0.5 {
-        // z = near / dist, as the scene pass writes it.
-        return scene.depth.x / z;
-    }
-    // z = (far - dist) * scale.
-    return scene.depth.x - z / scene.depth.y;
+    return ends.x + (ends.y - ends.x) * t;
 }
 
 @fragment
@@ -186,39 +178,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if l2 > 0.0 {
         t = clamp(dot(p - in.pa, ab) / l2, 0.0, 1.0);
     }
-    let distance = length(p - (in.pa + ab * t));
+    let foot = in.pa + ab * t;
+    let distance = length(p - foot);
     let alpha = clamp(in.half + 0.5 - distance, 0.0, 1.0);
     if alpha <= 0.0 {
         discard;
     }
     var opacity = 1.0;
     if (in.flags & TESTED) != 0u {
-        let size = vec2<i32>(i32(lines.size.x), i32(lines.size.y));
-        let c = vec2<i32>(floor(p));
-        let slack = lines.size.z;
-        // The surface under the pixel and under the eight around it: the
-        // point is hidden only when the furthest of them is nearer than
-        // the point by more than the slack and the spread of the nine.
-        // The spread is what the surface changes by over the
-        // neighbourhood: a line on a surface, also in the hollow where two
-        // surfaces meet, is within it; a line behind a body is beyond it.
-        // (The CPU viewport tests against its frame's distance, which is
-        // interpolated in screen space and so lies further than the true
-        // surface by about as much on a large triangle; the GPU tests
-        // against the true depth and allows the spread instead.)
-        var furthest = 0.0;
-        var nearest = 1e38;
-        for (var dy = -1; dy <= 1; dy = dy + 1) {
-            for (var dx = -1; dx <= 1; dx = dx + 1) {
-                let q = clamp(c + vec2<i32>(dx, dy), vec2<i32>(0), size - vec2<i32>(1));
-                let surface = surface_at(q);
-                furthest = max(furthest, surface);
-                nearest = min(nearest, surface);
-            }
-        }
-        // A surface at or behind the point does not hide it.
-        let hidden = furthest + slack + (furthest - nearest) < in.dist;
-        if hidden {
+        // The point of the segment nearest to the pixel's centre, at its
+        // own depth: on the line itself, as the CPU tests its pieces, so
+        // that a line on a sloping face is not tested beside itself.
+        if surface_hides(foot, depth_between(in.ends, t)) {
             if (in.flags & DIMMED) == 0u {
                 discard;
             }

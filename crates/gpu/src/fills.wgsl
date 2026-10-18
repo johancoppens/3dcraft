@@ -8,8 +8,9 @@
 // at the same pixel centres; a fragment covers every sample of its pixel,
 // so a multisampled pixel resolves to the one value the CPU computes.
 //
-// The source is a template: `{{DEPTH}}` and `{{LOAD}}` are filled in for
-// a multisampled or a single-sampled depth texture.
+// The source is a template: depth_test.wgsl is pasted in at its marker,
+// and `{{DEPTH}}` and `{{LOAD}}` are filled in for a multisampled or a
+// single-sampled depth texture.
 
 struct Scene {
     right: vec4<f32>,
@@ -28,7 +29,8 @@ struct Lines {
     // depth test in model units. w: the number of samples of the depth
     // texture.
     size: vec4<f32>,
-    // x: the opacity of what is hidden, 0 to 1.
+    // x: the opacity of what is hidden, 0 to 1. y: the grain of the depth
+    // test, in pixels (`craft3d_render::SUBPIXEL_GRAIN`).
     look: vec4<f32>,
     // xyz: the eye, relative to the origin the positions are stored
     // against.
@@ -92,25 +94,7 @@ fn vs_fill(in: FillIn) -> FillOut {
     return out;
 }
 
-// The view distance of the surface under pixel `p`, as in lines.wgsl.
-fn surface_at(p: vec2<i32>) -> f32 {
-    let samples = i32(lines.size.w);
-    // Reversed depth (scene.wgsl): the furthest sample has the least.
-    var z = 1.0;
-    for (var s = 0; s < samples; s = s + 1) {
-        z = min(z, {{LOAD}});
-    }
-    // Negated, so that a depth that is not a number counts as nothing.
-    if !(z > 0.0) {
-        return 1e38;
-    }
-    if scene.forward.w > 0.5 {
-        // z = near / dist, as the scene pass writes it.
-        return scene.depth.x / z;
-    }
-    // z = (far - dist) * scale.
-    return scene.depth.x - z / scene.depth.y;
-}
+{{DEPTH_TEST}}
 
 @fragment
 fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
@@ -141,20 +125,8 @@ fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
     if abs(dot(r, in.u) / dot(in.u, in.u)) > 1.0 || abs(dot(r, in.v) / dot(in.v, in.v)) > 1.0 {
         discard;
     }
-    // Not behind a body: the lines' test (see lines.wgsl).
-    let size = vec2<i32>(i32(lines.size.x), i32(lines.size.y));
-    let c = vec2<i32>(floor(p));
-    var furthest = 0.0;
-    var nearest = 1e38;
-    for (var dy = -1; dy <= 1; dy = dy + 1) {
-        for (var dx = -1; dx <= 1; dx = dx + 1) {
-            let q = clamp(c + vec2<i32>(dx, dy), vec2<i32>(0), size - vec2<i32>(1));
-            let surface = surface_at(q);
-            furthest = max(furthest, surface);
-            nearest = min(nearest, surface);
-        }
-    }
-    if furthest + lines.size.z + (furthest - nearest) < t {
+    // Not behind a body: the lines' test, at the pixel's centre.
+    if surface_hides(p, t) {
         discard;
     }
     return in.color;

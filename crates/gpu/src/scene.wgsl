@@ -62,15 +62,10 @@ struct VertexOut {
     @location(1) normal: vec3<f32>,
     @location(2) @interpolate(flat) flat_normal: vec3<f32>,
     @location(3) @interpolate(flat) face: u32,
-    // The view distance times the clip w. The CPU renderer interpolates the
-    // distance with screen-space weights (`wa * a.dist + wb * b.dist +
-    // wc * c.dist`), not perspective-correct ones. With screen weights b_i,
-    // a perspective-correct varying v arrives as
-    // sum(b_i v_i / w_i) / sum(b_i / w_i), and the fragment's position.w is
-    // sum(b_i / w_i); so v = dist * w, times position.w, is sum(b_i dist_i):
-    // the CPU's value. (`@interpolate(linear)` would say the same, but
-    // lavapipe interpolates such a varying wrongly on a clipped triangle.)
-    @location(4) dist_w: f32,
+    // The view distance of the surface point, interpolated
+    // perspective-correct like the position (the default for a varying):
+    // the CPU renderer's `Frame::depth`.
+    @location(4) dist: f32,
     @location(5) @interpolate(flat) color: u32,
 }
 
@@ -96,13 +91,12 @@ fn vertex(in: VertexIn) -> VertexOut {
         // z / w = near / dist: 1 at near, towards 0 at infinity (no far
         // plane), affine in 1 / dist. depth.x = near.
         out.clip = vec4<f32>(x, y, scene.depth.x, dist);
-        out.dist_w = dist * dist;
     } else {
         // (far - dist) / (far - near): 1 at near, 0 at far. depth.x = far,
         // depth.y = 1 / (far - near).
         out.clip = vec4<f32>(x, y, (scene.depth.x - dist) * scene.depth.y, 1.0);
-        out.dist_w = dist;
     }
+    out.dist = dist;
     out.rel = rel;
     out.normal = in.normal;
     out.flat_normal = in.flat_normal;
@@ -144,7 +138,7 @@ fn powi(x: f32, n: u32) -> f32 {
 
 // The face id and the bits of the view distance of a fragment.
 fn data_of(in: VertexOut) -> vec2<u32> {
-    return vec2<u32>(in.face, bitcast<u32>(in.dist_w * in.clip.w));
+    return vec2<u32>(in.face, bitcast<u32>(in.dist));
 }
 
 // True when the face is one of the highlighted ones.

@@ -70,6 +70,9 @@ impl Future for Mapped<'_> {
 pub(crate) struct Pending {
     width: u32,
     height: u32,
+    /// Where the sample of the data target lies in its pixel
+    /// ([`Frame::sample`]).
+    sample: f64,
     color: Copy,
     data: Option<Copy>,
 }
@@ -117,13 +120,15 @@ fn staging(
 }
 
 /// Copies the colour texture, and the data texture when there is one,
-/// `width` × `height` each, into the staging buffers (made, or made again
+/// `width` × `height` each (the data's sample at `sample` in its pixel,
+/// [`Frame::sample`]), into the staging buffers (made, or made again
 /// for a new image size, in `staging`) and asks for them to be mapped.
 pub(crate) fn start(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (color_texture, data_texture): (&wgpu::Texture, Option<&wgpu::Texture>),
     (width, height): (u32, u32),
+    sample: f64,
     staging: &mut Option<Staging>,
 ) -> Result<Pending, GpuError> {
     let with_data = data_texture.is_some();
@@ -190,6 +195,7 @@ pub(crate) fn start(
     Ok(Pending {
         width,
         height,
+        sample,
         color,
         data,
     })
@@ -299,6 +305,7 @@ impl Pending {
             rgb: Vec::with_capacity(pixels.saturating_mul(3)),
             ids: Vec::with_capacity(pixels),
             depth: Vec::with_capacity(pixels),
+            sample: self.sample,
         };
         self.color.pixels(width, height, |pixel| {
             if let [r, g, b, _] = *pixel {

@@ -22,6 +22,13 @@ pub const MAX_SIDE: u32 = 8192;
 pub const MAX_SSAA: u32 = 4;
 /// Largest accepted number of internal samples (width × height × ssaa²).
 pub const MAX_SAMPLES: u64 = 1 << 26;
+/// How precisely a depth buffer places a surface across the picture, in
+/// pixels: a GPU snaps the corners of a triangle to a grid of
+/// `2^-subPixelPrecisionBits` of a pixel before it rasterises, and 4 bits
+/// is the least Vulkan allows (Direct3D and Metal have 8). A test of a
+/// point against a depth buffer allows the surface's change over this
+/// distance (the viewport's overlay, on the CPU and on the GPU alike).
+pub const SUBPIXEL_GRAIN: f64 = 1.0 / 16.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RenderError {
@@ -573,9 +580,16 @@ pub struct Frame {
     pub rgb: Vec<u8>,
     /// Face id at the pixel's first sample, or [`NO_FACE`].
     pub ids: Vec<u32>,
-    /// Distance along the view direction at the pixel's first sample;
-    /// infinity where nothing was drawn.
+    /// Distance along the view direction of the surface point under the
+    /// pixel's first sample (interpolated perspective-correct, like the
+    /// position); infinity where nothing was drawn.
     pub depth: Vec<f64>,
+    /// Where the first sample lies in its pixel, along each axis, in
+    /// pixels from the pixel's top-left corner: `0.5 / ssaa`, the centre
+    /// of the first of the pixel's `ssaa` × `ssaa` samples. `ids` and
+    /// `depth` are taken there, so a depth test that reconstructs the
+    /// surface between pixels places them there.
+    pub sample: f64,
 }
 
 impl Frame {
@@ -658,6 +672,24 @@ struct Projected {
     key: f64,
     /// 1 / w for perspective-correct interpolation (1 for orthographic).
     inv_w: f64,
+}
+
+/// The distance along the view direction of the point of a triangle under
+/// a sample, from the screen-space weights `w` of its corners `p` (which
+/// sum to one): interpolated perspective-correct, like the position, so
+/// that it is the distance of that very point. In orthographic the weights
+/// are the point's own; in perspective the screen weights are divided by
+/// the corners' distances first (`Projected::inv_w`), as for any attribute.
+fn distance_at(view: &View, w: [f64; 3], p: [&Projected; 3]) -> f64 {
+    let [wa, wb, wc] = w;
+    let [a, b, c] = p;
+    match view.projection {
+        Projection::Orthographic { .. } => wa * a.dist + wb * b.dist + wc * c.dist,
+        Projection::Perspective { .. } => {
+            let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+            (qa * a.dist + qb * b.dist + qc * c.dist) / (qa + qb + qc)
+        }
+    }
 }
 
 struct View {
@@ -1148,7 +1180,7 @@ pub fn render_colored(
                     *k_slot = key;
                     *c_slot = rgb;
                     *id_slot = face;
-                    *d_slot = wa * a.dist + wb * b.dist + wc * c.dist;
+                    *d_slot = distance_at(&view, [wa, wb, wc], [&a, &b, &c]);
                 }
             }
         }
@@ -1216,6 +1248,7 @@ pub fn render_colored(
         rgb: Vec::with_capacity(ow * oh * 3),
         ids: Vec::with_capacity(ow * oh),
         depth: Vec::with_capacity(ow * oh),
+        sample: 0.5 / f64::from(ssaa),
     };
     let per_pixel = (s * s) as u32;
     for oy in 0..oh {
@@ -1290,9 +1323,8 @@ pub struct Hit {
     pub face: u32,
     /// The index of the triangle in the mesh.
     pub triangle: usize,
-    /// The value [`Frame::depth`] holds there: the distance along the view
-    /// direction interpolated across the triangle on screen, which in
-    /// perspective is close to, not exactly, the distance of `point`.
+    /// The value [`Frame::depth`] holds there: the distance of `point`
+    /// along the view direction, by the renderer's own interpolation.
     pub depth: f64,
     /// The point of the triangle under the position, in model coordinates:
     /// the one that projects onto the position.
@@ -1345,7 +1377,7 @@ pub fn pick_cut(
         let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
             continue;
         };
-        seen.hit(x, y, &mut state, None);
+        seen.hit(&sample.view, x, y, &mut state, None);
     }
     Ok(state.finish(&sample.view, sample.cut.as_ref(), x, y))
 }
@@ -1374,7 +1406,7 @@ pub fn cut_faces(
         let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
             continue;
         };
-        seen.hit(x, y, &mut state, Some(&mut faces));
+        seen.hit(&sample.view, x, y, &mut state, Some(&mut faces));
     }
     Ok(faces)
 }
@@ -1532,7 +1564,14 @@ impl Seen {
     /// `py`) and nearer than what it holds: the renderer's test of one
     /// sample. Where a section leaves the triangle out, that is counted
     /// instead, and its face is added to `left_out`.
-    fn hit(&self, px: f64, py: f64, state: &mut SampleState, left_out: Option<&mut Vec<u32>>) {
+    fn hit(
+        &self,
+        view: &View,
+        px: f64,
+        py: f64,
+        state: &mut SampleState,
+        left_out: Option<&mut Vec<u32>>,
+    ) {
         let [pa, pb, pc] = self.corners;
         let [a, b, c] = &self.projected;
         // The renderer visits the samples within the triangle's box only.
@@ -1581,7 +1620,7 @@ impl Seen {
             Hit {
                 face: self.face,
                 triangle: self.triangle,
-                depth: wa * a.dist + wb * b.dist + wc * c.dist,
+                depth: distance_at(view, [wa, wb, wc], [a, b, c]),
                 point,
             },
         ));
@@ -1688,7 +1727,7 @@ impl Neighbourhood {
         }
         let mut state = SampleState::default();
         for triangle in &self.seen {
-            triangle.hit(x, y, &mut state, None);
+            triangle.hit(&self.view, x, y, &mut state, None);
         }
         state.finish(&self.view, self.cut.as_ref(), x, y)
     }
