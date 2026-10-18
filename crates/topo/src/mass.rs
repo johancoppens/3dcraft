@@ -4078,8 +4078,26 @@ pub fn mass_properties_each_while(
     bodies: &[&Body],
     go_on: impl Fn(&MassProperties) -> bool,
 ) -> Vec<Option<Result<MassProperties, MassError>>> {
+    mass_with_shells_each_while(bodies, go_on)
+        .into_iter()
+        .map(|measured| measured.map(|(mass, _)| mass))
+        .collect()
+}
+
+/// A body's measure and its shells' ([`mass_with_shells`]).
+type Measured = (
+    Result<MassProperties, MassError>,
+    Vec<Result<ShellVolume, MassError>>,
+);
+
+/// [`mass_properties_each_while`] with each body's shells
+/// ([`mass_with_shells`]): the same faces integrated once.
+pub fn mass_with_shells_each_while(
+    bodies: &[&Body],
+    go_on: impl Fn(&MassProperties) -> bool,
+) -> Vec<Option<Measured>> {
     let rule = Rule::new(NODES);
-    let mut out: Vec<Option<Result<MassProperties, MassError>>> = Vec::with_capacity(bodies.len());
+    let mut out: Vec<Option<Measured>> = Vec::with_capacity(bodies.len());
     let mut failed = false;
     let mut start = 0_usize;
     while start < bodies.len() {
@@ -4101,7 +4119,7 @@ pub fn mass_properties_each_while(
                 out.push(None);
                 continue;
             }
-            failed = measured.as_ref().map_or(true, |m| !go_on(m));
+            failed = measured.0.as_ref().map_or(true, |m| !go_on(m));
             out.push(Some(measured));
         }
         start = end;
@@ -4111,7 +4129,7 @@ pub fn mass_properties_each_while(
 
 /// The bodies of one run of [`mass_properties_each`], every face of them
 /// as one row of work.
-fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Result<MassProperties, MassError>> {
+fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Measured> {
     let extents: Vec<(f64, Vec3)> = bodies.iter().map(|body| body_extent(body)).collect();
     let owners: Vec<(usize, usize)> = bodies
         .iter()
@@ -4125,12 +4143,16 @@ fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Result<MassProperties, Mass
         });
         match found {
             Some((body, face, index, &extent)) => {
-                face_integrals(body, face, index, rule, extent, Wanted::First).all
+                face_integrals(body, face, index, rule, extent, Wanted::First)
             }
-            None => Err(MassError::Unsupported {
-                face: k,
-                what: "a face that is not in the body",
-            }),
+            None => FaceSums {
+                first: None,
+                all: Err(MassError::Unsupported {
+                    face: k,
+                    what: "a face that is not in the body",
+                }),
+                held: [0.0; 2],
+            },
         }
     })
     .into_iter();
@@ -4138,11 +4160,81 @@ fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Result<MassProperties, Mass
         .iter()
         .zip(&extents)
         .map(|(body, &(_, middle))| {
-            let faces: Vec<Result<Sums, MassError>> =
-                per_face.by_ref().take(body.faces.len()).collect();
-            Ok(mass_from(body, total_of(body, faces)?, middle))
+            let faces: Vec<FaceSums> = per_face.by_ref().take(body.faces.len()).collect();
+            let shells = shell_sums(body, &faces);
+            let faces: Vec<Result<Sums, MassError>> = faces.into_iter().map(|f| f.all).collect();
+            (
+                total_of(body, faces).map(|total| mass_from(body, total, middle)),
+                shells,
+            )
         })
         .collect()
+}
+
+/// The volume one shell of a body encloses, taken alone (negative for a
+/// cavity, whose faces point into what it encloses), and how far it can
+/// be off by the integrator's own account (as [`MassBound::volume`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellVolume {
+    pub volume: f64,
+    pub bound: f64,
+}
+
+/// What each shell of a body encloses, from its faces' integrals summed in
+/// the order of the shell's faces: the first error of one of its faces
+/// for a shell that has one. A closed shell's volume does not depend on
+/// the point the integrals are taken about.
+fn shell_sums(body: &Body, faces: &[FaceSums]) -> Vec<Result<ShellVolume, MassError>> {
+    body.shells
+        .iter()
+        .map(|shell| {
+            let mut volume = 0.0_f64;
+            let mut held = 0.0_f64;
+            let mut largest = 0.0_f64;
+            for id in &shell.faces {
+                let index = id.0 as usize;
+                let (Some(face), Some(sums)) = (body.faces.get(index), faces.get(index)) else {
+                    return Err(MassError::Invalid { face: index });
+                };
+                let all = sums.all.clone()?;
+                let outward = if face.reversed { -1.0 } else { 1.0 };
+                volume += all.volume * outward;
+                held += sums.held[1];
+                largest += all.volume.abs();
+            }
+            if !(volume.is_finite() && held.is_finite()) {
+                return Err(MassError::Unsupported {
+                    face: shell.faces.first().map_or(0, |f| f.0 as usize),
+                    what: "geometry whose integrals are not finite",
+                });
+            }
+            let count = shell.faces.len() as f64;
+            Ok(ShellVolume {
+                volume,
+                bound: held + count * f64::EPSILON * largest,
+            })
+        })
+        .collect()
+}
+
+/// [`mass_properties`] of `body` (the very same value or error) and the
+/// volume each of its shells encloses ([`ShellVolume`]), from one
+/// integration of its faces.
+pub fn mass_with_shells(
+    body: &Body,
+) -> (
+    Result<MassProperties, MassError>,
+    Vec<Result<ShellVolume, MassError>>,
+) {
+    let (per_face, middle) = faces_of(body, Wanted::First);
+    let shells = shell_sums(body, &per_face);
+    let (all, _, middle, _) = sum_faces(body, per_face, Wanted::First, middle);
+    (all.map(|total| mass_from(body, total, middle)), shells)
+}
+
+/// The volume each shell of `body` encloses ([`mass_with_shells`]).
+pub fn shell_volumes(body: &Body) -> Vec<Result<ShellVolume, MassError>> {
+    mass_with_shells(body).1
 }
 
 /// How far [`MassProperties::area`] and [`MassProperties::volume`] can be
@@ -4217,22 +4309,27 @@ pub fn mass_and_inertia(
 /// moments are taken about: those asked for, and with [`Wanted::Both`]
 /// beside them those of [`Wanted::First`].
 #[allow(clippy::type_complexity)]
-fn integrate(
-    body: &Body,
-    sums: Wanted,
-) -> (
+/// The faces' sums of a body ([`integrate`]): all of them, the first
+/// moments alone when both were wanted, the middle they are taken about,
+/// and what area and volume were held to.
+type Integrated = (
     Result<Sums, MassError>,
     Option<Result<Sums, MassError>>,
     Vec3,
     [f64; 2],
-) {
+);
+
+fn integrate(body: &Body, sums: Wanted) -> Integrated {
+    let (per_face, middle) = faces_of(body, sums);
+    sum_faces(body, per_face, sums, middle)
+}
+
+/// Every face's integrals of `body` on their own, on several threads where
+/// there are any, in the faces' order, and the middle of the body they are
+/// taken about.
+fn faces_of(body: &Body, sums: Wanted) -> (Vec<FaceSums>, Vec3) {
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
-    // Every face's integrals on their own, on several threads where there
-    // are any; summed below in the faces' order, so the result is the same
-    // bits whatever the number of threads (AGENTS.md rule 5), and the
-    // error is the first face's that has one, as one face after another
-    // would give.
     let per_face = each_face(body.faces.len(), |index| match body.faces.get(index) {
         Some(face) => face_integrals(body, face, index, &rule, (size, middle), sums),
         None => {
@@ -4247,6 +4344,14 @@ fn integrate(
             }
         }
     });
+    (per_face, middle)
+}
+
+/// [`integrate`] of the faces' integrals: summed in the faces' order, so
+/// the result is the same bits whatever the number of threads (AGENTS.md
+/// rule 5), and the error is the first face's that has one, as one face
+/// after another would give.
+fn sum_faces(body: &Body, per_face: Vec<FaceSums>, sums: Wanted, middle: Vec3) -> Integrated {
     let mut all: Vec<Result<Sums, MassError>> = Vec::with_capacity(per_face.len());
     let mut first: Vec<Result<Sums, MassError>> = Vec::new();
     // What the faces' sums were held to, and how large they are: adding

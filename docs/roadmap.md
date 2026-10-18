@@ -51,7 +51,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
 3. ✅ 2026-10-13 **Results without scars:** faces and edges a boolean split needlessly are merged.
 4. ⬜ **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import will bring them.
-5. ⬜ **Several lumps, cavities, sheet bodies.**
+5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built, checked per shell and sorted by one rule (2026-10-17, [`design/booleans.md`](design/booleans.md) › *Lumps and cavities*); sheet bodies are owed.
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`design/regeneration.md`](design/regeneration.md) › *Never through itself*).
@@ -67,7 +67,8 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [x] Rational weights far apart measured: `topo::mass_properties` settles on weights ten thousand apart a reparametrisation evens out, and a thousand apart one cannot (2026-10-17).
 - [ ] Rational weights a thousand apart in booleans: built 2026-10-17, not meshed (the tessellator does not mesh every face skewed a hundredfold and more); ten thousand apart along a degree-one direction and the plate at ten thousand still refused ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*).
 - [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
-- [ ] Sheet bodies, several lumps and cavities (item 5).
+- [x] Several lumps and cavities (item 5): one rule for which shell is which (`kernel::lumps`), shells checked one by one, held to closed forms, genus per shell, meshes, the identities of sets and FreeCAD at three scales (2026-10-17).
+- [ ] Sheet bodies (item 5): nothing makes one yet and the boolean refuses them; and a name for the piece of a face in one lump (open decision D-open-13 on several lumps).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
 - [ ] Tolerant modelling (item 4), before STEP import.
@@ -299,6 +300,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Many lumps and faces with many edges cost work in proportion: the faces a face, a ray or a point can meet and the edges near the other face come from trees of boxes in the order of testing all, bit for bit the same (2500 lumps 5.4 s to 0.9 s; the welding table's finding W2; [`design/booleans.md`](design/booleans.md) › *Many lumps*) (2026-10-17)
 - Freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit: projection samples kept with the surface, chart speeds and lower bounds remembered, fine pieces sharing their corners, many bodies measured as one row of faces, checks not repeated by regeneration ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*) (2026-10-17)
 - Measures and the self-check's meshes faster, bit for bit: lines of a spline evaluated once per line, walks keeping their blend factors, projections and face meshes remembered, every operation's check remembered ([`design/booleans.md`](design/booleans.md) › *Second round*) (2026-10-18)
+- Several lumps and cavities proven and checked: shells one by one in `topo::check`, one rule for outsides and cavities (`kernel::lumps`, used by the STEP export and `document.check` deep), `shells` in `document.inspect` ([`design/booleans.md`](design/booleans.md) › *Lumps and cavities*) (2026-10-17)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

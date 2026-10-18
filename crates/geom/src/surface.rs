@@ -36,74 +36,248 @@ pub(crate) struct ProjectGrid {
     memo: ProjectMemo,
 }
 
-/// How many projections one surface remembers at most, and all surfaces
-/// together (about 80 bytes each); a surface that would pass either lets
-/// go of all of its own first.
-const PROJECTIONS_PER_SURFACE: usize = 1 << 15;
-#[cfg(not(target_arch = "wasm32"))]
+/// How many projections all surfaces remember together, at most, in
+/// [`SHARDS`] parts by the surface (so that threads that project onto
+/// different surfaces rarely wait for each other). Each part lets its
+/// oldest go first, whichever of its surfaces it is of: a surface keeps at
+/// most a part's share (a sixteenth of the whole), and the ones left idle
+/// make room for those in use. About 56 bytes each ([`Shard`]).
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 const PROJECTIONS: usize = 1 << 20;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 const PROJECTIONS: usize = 1 << 16;
-/// How many projections all surfaces remember now.
-static PROJECTIONS_KEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// In the unit tests, room enough that the tests running beside each other
+/// do not push out what one of them looks for.
+#[cfg(test)]
+const PROJECTIONS: usize = 1 << 14;
+const SHARDS: usize = 16;
 
-/// The projections a surface remembers ([`ProjectGrid::memo`]).
-#[derive(Debug, Default)]
-///
-/// Each with the work finding it took (`crate::allowance`), charged again
-/// when it is found here: a projection counts the same remembered or not,
-/// so what an operation counts does not depend on what was projected
-/// onto the surface before it.
-struct ProjectMemo(std::sync::Mutex<std::collections::BTreeMap<[u64; 3], Projected>>);
+/// A projection remembered: the surface's grid ([`ProjectMemo::id`]) and
+/// the bits of the point.
+type ProjectionKey = (u64, [u64; 3]);
 
-/// A projection remembered: the parameters found and the work finding
-/// them took.
+/// A projection remembered: the parameters found, and the work finding
+/// them took (`crate::allowance`), which a hit charges again, so that a
+/// projection counts the same remembered or not.
 type Projected = ((f64, f64), u64);
 
+/// No entry, in [`Shard::table`].
+const EMPTY: u32 = u32::MAX;
+
+/// One part of the projections remembered: a ring of the projections (each
+/// point's bits held once, there) in the order they came, the oldest
+/// overwritten when it is full, and a table of places in the ring by the
+/// point (open addressing, a slot after another where one is taken; a
+/// place let go of moves the ones after it back, so that no search stops
+/// short). The hash only decides where a place is looked for: what is
+/// found is compared in full.
+struct Shard {
+    ring: Vec<(ProjectionKey, Projected)>,
+    /// The ring's next place to write.
+    next: usize,
+    table: Vec<u32>,
+    /// How many projections the ring holds at most.
+    room: usize,
+}
+
+impl Shard {
+    const fn new(room: usize) -> Shard {
+        Shard {
+            ring: Vec::new(),
+            next: 0,
+            table: Vec::new(),
+            room,
+        }
+    }
+
+    /// Where `key` is looked for first in the table (`mask` its size less
+    /// one).
+    fn home(key: &ProjectionKey, mask: usize) -> usize {
+        let (id, [x, y, z]) = *key;
+        let mut h = id.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for w in [x, y, z] {
+            h = (h ^ w).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            h ^= h >> 31;
+        }
+        usize::try_from(h).unwrap_or(0) & mask
+    }
+
+    /// The table's slot that holds `key`, if any.
+    fn slot_of(&self, key: &ProjectionKey) -> Option<usize> {
+        let mask = self.table.len().checked_sub(1)?;
+        let mut at = Shard::home(key, mask);
+        for _ in 0..self.table.len() {
+            let place = *self.table.get(at)?;
+            if place == EMPTY {
+                return None;
+            }
+            if self
+                .ring
+                .get(place as usize)
+                .is_some_and(|(held, _)| held == key)
+            {
+                return Some(at);
+            }
+            at = (at + 1) & mask;
+        }
+        None
+    }
+
+    fn get(&self, key: &ProjectionKey) -> Option<Projected> {
+        let slot = self.slot_of(key)?;
+        let place = *self.table.get(slot)?;
+        self.ring.get(place as usize).map(|(_, found)| *found)
+    }
+
+    /// Lets go of the table's slot `slot`, moving back the slots after it
+    /// whose search passes over it.
+    fn vacate(&mut self, mut slot: usize) {
+        let Some(mask) = self.table.len().checked_sub(1) else {
+            return;
+        };
+        let mut next = (slot + 1) & mask;
+        for _ in 0..self.table.len() {
+            let Some(&place) = self.table.get(next) else {
+                return;
+            };
+            if place == EMPTY {
+                break;
+            }
+            let home = self
+                .ring
+                .get(place as usize)
+                .map_or(next, |(key, _)| Shard::home(key, mask));
+            // Whether the search from `home` to `next` passes `slot`.
+            let passes = if slot <= next {
+                home <= slot || home > next
+            } else {
+                home <= slot && home > next
+            };
+            if passes {
+                if let Some(cell) = self.table.get_mut(slot) {
+                    *cell = place;
+                }
+                slot = next;
+            }
+            next = (next + 1) & mask;
+        }
+        if let Some(cell) = self.table.get_mut(slot) {
+            *cell = EMPTY;
+        }
+    }
+
+    fn put(&mut self, key: ProjectionKey, found: Projected) {
+        if self.room == 0 || self.slot_of(&key).is_some() {
+            return;
+        }
+        if self.table.is_empty() {
+            let size = (2 * self.room).next_power_of_two();
+            self.table = vec![EMPTY; size];
+        }
+        let place = self.next;
+        if place < self.ring.len() {
+            // The oldest goes.
+            let oldest = self.ring.get(place).map(|(held, _)| *held);
+            if let Some(slot) = oldest.and_then(|held| self.slot_of(&held)) {
+                self.vacate(slot);
+            }
+            if let Some(cell) = self.ring.get_mut(place) {
+                *cell = (key, found);
+            }
+        } else {
+            self.ring.push((key, found));
+        }
+        self.next = (place + 1) % self.room;
+        let Some(mask) = self.table.len().checked_sub(1) else {
+            return;
+        };
+        let mut at = Shard::home(&key, mask);
+        for _ in 0..self.table.len() {
+            match self.table.get_mut(at) {
+                Some(cell) if *cell == EMPTY => {
+                    *cell = u32::try_from(place).unwrap_or(EMPTY);
+                    return;
+                }
+                _ => at = (at + 1) & mask,
+            }
+        }
+    }
+
+    /// How many projections it holds, and the bytes its ring and table take.
+    fn size(&self) -> (usize, usize) {
+        (
+            self.ring.len(),
+            self.ring.capacity() * std::mem::size_of::<(ProjectionKey, Projected)>()
+                + self.table.capacity() * std::mem::size_of::<u32>(),
+        )
+    }
+}
+
+static PROJECTIONS_KEPT: [std::sync::Mutex<Shard>; SHARDS] =
+    [const { std::sync::Mutex::new(Shard::new(PROJECTIONS / SHARDS)) }; SHARDS];
+
+/// How many projections all surfaces remember, and about how many bytes
+/// they take.
+pub fn kept_projections() -> (usize, usize) {
+    PROJECTIONS_KEPT
+        .iter()
+        .fold((0, 0), |(count, bytes), shard| {
+            let (c, b) = shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .size();
+            (count + c, bytes + b)
+        })
+}
+
+/// The next grid's number: every grid has its own, never used again, so
+/// that what is remembered of a grid let go is never taken for another's.
+static GRIDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// Projections this thread found remembered (for the tests).
+    static HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The projections a surface remembers ([`ProjectGrid::memo`]): its number
+/// in the projections all surfaces remember.
+#[derive(Debug)]
+struct ProjectMemo {
+    id: u64,
+}
+
+impl Default for ProjectMemo {
+    fn default() -> Self {
+        ProjectMemo {
+            id: GRIDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
 impl ProjectMemo {
-    fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
-        let (found, units) = self
-            .0
+    fn shard(&self) -> std::sync::MutexGuard<'static, Shard> {
+        let at = usize::try_from(self.id % SHARDS as u64).unwrap_or(0);
+        PROJECTIONS_KEPT
+            .get(at)
+            .unwrap_or(&PROJECTIONS_KEPT[0])
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .copied()?;
+    }
+
+    fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
+        let found = self.shard().get(&(self.id, *key));
+        #[cfg(test)]
+        if found.is_some() {
+            HITS.with(|hits| hits.set(hits.get() + 1));
+        }
+        let (found, units) = found?;
         crate::allowance::charge(units);
         Some(found)
     }
 
     fn put(&self, key: [u64; 3], found: (f64, f64), units: u64) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let mut map = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key(&key) {
-            return;
-        }
-        let full = map.len() >= PROJECTIONS_PER_SURFACE
-            || PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS;
-        if full {
-            PROJECTIONS_KEPT.fetch_sub(map.len(), Relaxed);
-            map.clear();
-            // Still full with this surface's own let go: the others hold
-            // the room, and this one remembers nothing.
-            if PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS {
-                return;
-            }
-        }
-        map.insert(key, (found, units));
-        PROJECTIONS_KEPT.fetch_add(1, Relaxed);
-    }
-}
-
-impl Drop for ProjectMemo {
-    fn drop(&mut self) {
-        let held = self
-            .0
-            .get_mut()
-            .map_or_else(|poisoned| poisoned.into_inner().len(), |map| map.len());
-        PROJECTIONS_KEPT.fetch_sub(held, std::sync::atomic::Ordering::Relaxed);
+        self.shard().put((self.id, key), (found, units));
     }
 }
 
@@ -630,8 +804,9 @@ impl Surface {
         }
         let grid = self.project_grid((u0, u1), (v0, v1));
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-        // Remembered with the surface, from every projection onto it
-        // before, with what finding it took, which a hit charges again.
+        // Remembered from every projection onto the surface before, with
+        // what finding it took, which a hit charges again; nothing is
+        // remembered while not counting (`crate::allowance::counting`).
         if let Some(found) = grid.memo.get(&key) {
             return Ok(found);
         }
@@ -1285,39 +1460,130 @@ mod tests {
         BezierPatch::bicubic(net).unwrap()
     }
 
-    /// A surface remembers the projections it made, and lets go of them
-    /// when full: whatever it holds, every projection is the one a surface
-    /// that never kept anything makes, bit for bit, with more points than
-    /// it keeps asked twice over.
+    /// The point of a Bézier patch alone (`Surface::eval`) is the point of
+    /// its derivatives, bit for bit, inside its square and beyond it, at
+    /// several degrees and scales.
+    #[test]
+    fn the_point_of_a_patch_is_the_point_of_its_derivatives() {
+        let raised = |m: usize, n: usize, scale: f64| {
+            let ctrl: Vec<Vec3> = (0..(m + 1) * (n + 1))
+                .map(|k| {
+                    let (i, j) = ((k / (n + 1)) as f64, (k % (n + 1)) as f64);
+                    Vec3::new(i, 1.3 * j, ((k * 7) % 5) as f64 * 0.3) * scale
+                })
+                .collect();
+            Surface::Bezier(BezierPatch::new(m, n, ctrl).unwrap())
+        };
+        for scale in [1e-3, 1.0, 1e6] {
+            for surface in [
+                Surface::Bezier(bumpy(scale)),
+                raised(1, 1, scale),
+                raised(2, 5, scale),
+                raised(7, 3, scale),
+            ] {
+                for i in 0..=24 {
+                    for j in 0..=24 {
+                        let (u, v) = (
+                            -0.2 + 1.4 * f64::from(i) / 24.0,
+                            -0.2 + 1.4 * f64::from(j) / 24.0,
+                        );
+                        let (a, b) = (surface.eval(u, v), surface.derivatives(u, v).0);
+                        assert_eq!(
+                            [a.x.to_bits(), a.y.to_bits(), a.z.to_bits()],
+                            [b.x.to_bits(), b.y.to_bits(), b.z.to_bits()],
+                            "{u} {v}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every projection remembered is the one made afresh (from the grid,
+    /// past the memo), bit for bit: surfaces project points, then project
+    /// them all again and compare each with a fresh one, and the second
+    /// round finds them remembered.
     #[test]
     fn remembered_projections_are_the_ones_made_afresh() {
-        let make = || Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(1.0)).unwrap());
-        let kept = make();
-        let count = PROJECTIONS_PER_SURFACE + 500;
+        let make = |k: usize| {
+            let scale = 1.0 + 0.01 * k as f64;
+            Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(scale)).unwrap())
+        };
         let point = |k: usize| {
             let t = k as f64;
             Vec3::new(
-                (t * 0.0137).sin() * 2.0 + 1.5,
-                (t * 0.0261).cos() * 3.0 + 2.0,
-                (t * 0.0093).sin() * 1.5,
+                (t * 0.137).sin() * 2.0 + 1.5,
+                (t * 0.261).cos() * 3.0 + 2.0,
+                (t * 0.093).sin() * 1.5,
             )
         };
-        let fresh: Vec<(f64, f64)> = (0..count)
-            .step_by(97)
-            .map(|k| make().project(point(k)).unwrap())
-            .collect();
-        for _ in 0..2 {
-            for k in 0..count {
-                let _ = kept.project(point(k));
-            }
-            for (k, want) in (0..count).step_by(97).zip(&fresh) {
-                let got = kept.project(point(k)).unwrap();
-                assert_eq!(
-                    (got.0.to_bits(), got.1.to_bits()),
-                    (want.0.to_bits(), want.1.to_bits())
-                );
+        let surfaces: Vec<Surface> = (0..8).map(make).collect();
+        let points = 60;
+        let hits_before = HITS.with(std::cell::Cell::get);
+        for round in 0..2 {
+            for surface in &surfaces {
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let grid = surface.project_grid((u0, u1), (v0, v1));
+                for k in 0..points {
+                    let got = surface.project(point(k)).unwrap();
+                    if round == 1 {
+                        let fresh = surface
+                            .project_from_grid(point(k), &grid, ((u0, u1), (v0, v1)))
+                            .unwrap();
+                        assert_eq!(
+                            (got.0.to_bits(), got.1.to_bits()),
+                            (fresh.0.to_bits(), fresh.1.to_bits())
+                        );
+                    }
+                }
             }
         }
+        // The second round found what the first left (all of it but what
+        // the tests beside this one may have pushed out).
+        let hits = HITS.with(std::cell::Cell::get) - hits_before;
+        assert!(hits >= surfaces.len() * points / 2, "{hits}");
+        assert!(kept_projections().0 > 0);
+    }
+
+    /// One part of the projections remembered, alone: it holds at most its
+    /// room, lets its oldest go first whichever surface it is of, finds
+    /// every projection it holds and none it let go of, and a surface new
+    /// to it when it is full still has what it puts.
+    #[test]
+    fn a_full_part_lets_the_oldest_go_and_finds_the_rest() {
+        let room = 64;
+        let mut shard = Shard::new(room);
+        let key = |id: u64, k: u64| (id, [k, k.wrapping_mul(7), k ^ 0x55]);
+        let value = |id: u64, k: u64| ((id as f64, k as f64 * 0.5), k);
+        let mut put: Vec<(u64, u64)> = Vec::new();
+        let mut seed = 7_u64;
+        for step in 0..2000_u64 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let (id, k) = ((seed >> 60) % 5, (seed >> 33) % 300);
+            let before = shard.get(&key(id, k));
+            shard.put(key(id, k), value(id, k));
+            if before.is_none() {
+                put.push((id, k));
+            }
+            assert!(shard.ring.len() <= room);
+            // The last `room` new ones are held, every older one is not.
+            let held = put.len().min(room);
+            let (old, new) = put.split_at(put.len() - held);
+            for &(id, k) in new {
+                assert_eq!(shard.get(&key(id, k)), Some(value(id, k)), "{step}");
+            }
+            for &(id, k) in old.iter().rev().take(room) {
+                if !new.contains(&(id, k)) {
+                    assert_eq!(shard.get(&key(id, k)), None, "{step}");
+                }
+            }
+        }
+        // A surface it has never seen, with the part full.
+        shard.put(key(99, 1), value(99, 1));
+        assert_eq!(shard.get(&key(99, 1)), Some(value(99, 1)));
+        assert_eq!(shard.ring.len(), room);
     }
 
     /// The derivatives a walk from a start comes back with are those of the

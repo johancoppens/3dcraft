@@ -90,9 +90,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -1892,6 +1892,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 "faces": body.faces.len(),
                 "edges": body.edges.len(),
                 "vertices": body.vertices.len(),
+                "shells": body.shells.len(),
             });
             crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body);
             if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
@@ -2127,6 +2128,24 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
                 }));
+            }
+            // Several shells: the outsides of lumps and their cavities,
+            // nested as they must be (craft3d_kernel::lumps).
+            // A body that is not lumps and cavities is a problem; one whose
+            // shells cannot be sorted (a volume within its bound of zero, a
+            // point no ray can place) is a doubt, counted under marginal.
+            if deep && body.kind == BodyKind::Solid && body.shells.len() > 1 {
+                let volumes = crate::mass::shells_of(body);
+                match craft3d_kernel::lumps::lumps_measured(body, &tolerance, &volumes) {
+                    Ok(_) => {}
+                    Err(error @ craft3d_kernel::KernelError::InvalidBody { .. }) => {
+                        problems.push(json!({
+                            "feature": outcome.id.to_string(), "name": name,
+                            "problem": format!("its shells are not lumps and cavities: {error}"),
+                        }));
+                    }
+                    Err(_) => marginal = marginal.saturating_add(1),
+                }
             }
             if deep {
                 let params = craft3d_tess::SelfCheckParams::new(doc.tolerance.linear);
