@@ -22,9 +22,9 @@ const SAME_ROW: f64 = 1e-9;
 /// `[false, false]` for the analytic kinds, which say how they close
 /// themselves (`Surface::period_u`).
 ///
-/// The test `craft3d_topo`'s measure (`spline_closure`) and the
-/// tessellator take, here for the booleans and the surface
-/// intersections (2026-10-14); the measure keeps its own copy.
+/// The test the booleans, the surface intersections and `craft3d_topo`'s
+/// measure (`spline_closure`) take; the tessellator keeps its own
+/// (`net_closes`), written over the control net alone.
 pub fn closes(surface: &Surface) -> [bool; 2] {
     let (points, weights, (count_u, count_v), clamped): (&[Vec3], Option<&[f64]>, _, [bool; 2]) =
         match surface {
@@ -97,8 +97,9 @@ pub fn closes(surface: &Surface) -> [bool; 2] {
 }
 
 /// Whether a knot vector is clamped: its first and its last `degree + 1`
-/// knots are one value each.
-fn clamped(knots: &[f64], degree: usize) -> bool {
+/// knots are one value each, so that the spline starts on its first row
+/// of control points and ends on its last.
+pub fn clamped(knots: &[f64], degree: usize) -> bool {
     let (Some(first), Some(last)) = (knots.first(), knots.last()) else {
         return false;
     };
