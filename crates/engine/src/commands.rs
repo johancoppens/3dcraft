@@ -1980,13 +1980,17 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let (mut volume_bound, mut area_bound) = (0.0, 0.0);
     // The total mass, while every body has one.
     let mut total_mass = Some(0.0);
-    crate::appearance_cmds::measure_all_ahead(
-        doc,
-        &regen,
-        regen
-            .bodies()
-            .filter(|(id, _)| only.is_none_or(|o| o == *id)),
-    );
+    // With the bound each body is integrated once, for its measures and
+    // their bound together; without, measured ahead and remembered.
+    if !with_bound {
+        crate::appearance_cmds::measure_all_ahead(
+            doc,
+            &regen,
+            regen
+                .bodies()
+                .filter(|(id, _)| only.is_none_or(|o| o == *id)),
+        );
+    }
     for (id, body) in regen
         .bodies()
         .filter(|(id, _)| only.is_none_or(|o| o == *id))
@@ -1994,9 +1998,16 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
-        crate::appearance_cmds::measure_ahead(doc, &regen, id, body);
-        let mass = mass_of(body)
-            .map_err(|e| CommandError::new(format!("document.measure: {name}: {e}")))?;
+        let failed = |e: craft3d_topo::MassError| {
+            CommandError::new(format!("document.measure: {name}: {e}"))
+        };
+        let (mass, bound) = if with_bound {
+            let (mass, bound) = craft3d_topo::mass_bound(body).map_err(failed)?;
+            (mass, Some(bound))
+        } else {
+            crate::appearance_cmds::measure_ahead(doc, &regen, id, body);
+            (mass_of(body).map_err(failed)?, None)
+        };
         volume += mass.volume;
         area += mass.area;
         if let Some(c) = mass.centroid {
@@ -2007,9 +2018,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
             "volume": mass.volume, "area": mass.area, "centroid": mass.centroid.map_or(Value::Null, vec3),
         });
         if let Some(map) = entry.as_object_mut() {
-            if with_bound {
-                let (_, bound) = craft3d_topo::mass_bound(body)
-                    .map_err(|e| CommandError::new(format!("document.measure: {name}: {e}")))?;
+            if let Some(bound) = bound {
                 volume_bound += bound.volume;
                 area_bound += bound.area;
                 map.insert("volumeBound".into(), bound.volume.into());
