@@ -79,6 +79,38 @@ pub(crate) fn source<'a>(
     })
 }
 
+/// What the names of the faces of `source` say of how they were made:
+/// per face whose name goes back to a fillet's face (`F3:fillet(1)`, or a
+/// copy of one), the radius that fillet was made with, so that a face
+/// operation that moves the face rebuilds the fillet between the faces
+/// it rolls along (`kernel::offset_face::Blends`). The kernel measures
+/// the radius on the face too and takes this one only when the two
+/// agree; a radius that cannot be had is left out.
+pub(crate) fn blends(
+    doc: &Document,
+    variables: &craft3d_expr::Evaluation,
+    source: &Source<'_>,
+) -> craft3d_kernel::offset_face::Blends {
+    use craft3d_doc::{FeatureKind, NameRole};
+    let mut radii = std::collections::BTreeMap::new();
+    for (index, name) in source.names.faces.iter().enumerate() {
+        let root = name.root();
+        if root.role != NameRole::Fillet {
+            continue;
+        }
+        let Some(FeatureKind::Fillet(made)) = doc.feature(root.feature).map(|f| &f.kind) else {
+            continue;
+        };
+        let Ok(radius) = crate::length(doc, variables, "radius", &made.radius) else {
+            continue;
+        };
+        if let (true, Ok(face)) = (radius.is_finite() && radius > 0.0, u32::try_from(index)) {
+            radii.insert(FaceId(face), radius);
+        }
+    }
+    craft3d_kernel::offset_face::Blends { radii }
+}
+
 /// The faces the names `faces` of parameter `param` mean in the body of
 /// `source_id`, each once, in the order of the names.
 pub(crate) fn pick(

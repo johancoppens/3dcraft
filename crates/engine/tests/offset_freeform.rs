@@ -174,23 +174,21 @@ fn a_lofted_tube_made_hollow_has_the_volume_its_wall_areas_give() {
 }
 
 /// The bike's saddle, rims rounded, at the default tolerance, shelled
-/// 2 mm: refused, with the faces, as too far. Its rolling-ball fillets are
-/// tangent to the faces beside them and to each other only to what
-/// fitting left (about 1.2e-6 in the normal at this tolerance, growing
-/// with the tolerance), and offsets of tangent faces along the normal
-/// they share may move by no more than a quarter of the tolerance
-/// (docs/design/face-operations.md); what fits is below about 0.37 mm at
-/// 1e-5 and 1e-4 mm, and at 0.3 mm the boolean that takes the hollow out
-/// refuses the skin and the hollow as nearly coincident. Building it
-/// anyway would mean taking a deviation of the distance times the
-/// mismatch as what a tangent offset is was declined by the developer
-/// (docs/decisions.md, 2026-10-16); owed: the blend rebuilt between the
-/// offset faces (radius r ± d).
+/// 2 mm: built, and checked deep. Its rolling-ball fillets are tangent to
+/// the faces beside them only to what fitting left (to 6.6e-5 at 1e-4
+/// mm), so offsetting each along its own normal parted them by more than
+/// the tolerance and was refused (docs/decisions.md, 2026-10-16); the
+/// fillets' faces of the hollow are now the fillets rebuilt between the
+/// faces of the hollow with the radius less the thickness, tangent to
+/// them by construction (docs/design/face-operations.md). The oracle is
+/// the other order, the designer's: the loft shelled first and its four
+/// rims filleted after, outside 4 and 3 mm, inside 2 and 1 mm, the same
+/// solid, within half the tolerance times its area.
 /// Minutes in release: `cargo test --release -p craft3d-engine --test
 /// offset_freeform -- --ignored`.
 #[test]
 #[ignore = "minutes: the bike's saddle with its rolling-ball fillets; run with --ignored"]
-fn the_bike_saddle_shelled_2_mm_is_refused_as_tangent_only_to_within_too_much() {
+fn the_bike_saddle_shelled_2_mm_is_the_saddle_shelled_first_and_filleted() {
     let sections = [
         (-125.0, 70.0, 40.0, 12.0),
         (-95.0, 76.0, 46.0, 4.0),
@@ -201,13 +199,49 @@ fn the_bike_saddle_shelled_2_mm_is_refused_as_tangent_only_to_within_too_much() 
     ];
     let mut s = session();
     saddle(&mut s, &sections, true, 1e-6);
-    let result = run(
+    built(
         &mut s,
         "feature.shell",
         json!({"source": "Saddle", "thickness": "2 mm", "name": "Shell"}),
     );
-    assert_eq!(result["status"], "failed", "{result}");
-    let reason = result["error"].as_str().unwrap();
-    assert!(reason.contains("tangent here only"), "{reason}");
-    assert!(reason.contains(":fillet("), "{reason}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+    let shell = body(&mut s, "Shell");
+    let (volume, area) = (
+        shell["volume"].as_f64().unwrap(),
+        shell["area"].as_f64().unwrap(),
+    );
+    // The other order.
+    let mut first = session();
+    saddle(&mut first, &sections, false, 1e-6);
+    built(
+        &mut first,
+        "feature.shell",
+        json!({"source": "Saddle", "thickness": "2 mm", "name": "Shell"}),
+    );
+    let side = "F7:side(e9,e9,e9,e9,e9,e9)";
+    for (name, skin, cap, r) in [
+        ("OuterRear", 0, "startCap", 4.0),
+        ("OuterFront", 0, "endCap", 3.0),
+        ("InnerRear", 1, "startCap", 2.0),
+        ("InnerFront", 1, "endCap", 1.0),
+    ] {
+        built(
+            &mut first,
+            "feature.fillet",
+            json!({
+                "edges": [[format!("F8:copy({skin})/F7:{cap}(e9)"), format!("F8:copy({skin})/{side}")]],
+                "radius": format!("{r} mm"),
+                "chain": true,
+                "name": name,
+            }),
+        );
+    }
+    let other = body(&mut first, "InnerFront")["volume"].as_f64().unwrap();
+    let slack = 0.5 * 1e-6 * area;
+    println!(
+        "the saddle shelled after its fillets: {volume} mm³; shelled first and filleted: {other} mm³ (off {:e}, slack {slack:e})",
+        volume - other
+    );
+    assert!((volume - other).abs() <= slack);
 }

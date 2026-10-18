@@ -281,6 +281,66 @@ fn along_borders(body: &Body, face: FaceId, tol: f64) -> BTreeMap<Border, Vec<Ed
     found
 }
 
+/// Whether an edge of `face` lies along the border `u = start` and the
+/// border `u = end` of its surface's parameters (a joint of a chain of
+/// blends does).
+pub(crate) fn u_borders_taken(body: &Body, face: FaceId, tol: f64) -> [bool; 2] {
+    let borders = along_borders(body, face, tol);
+    [false, true].map(|end| {
+        borders
+            .get(&Border {
+                along_u_fixed: true,
+                end,
+            })
+            .is_some_and(|edges| !edges.is_empty())
+    })
+}
+
+/// The faces across the edges along the borders `v = 0` and `v = 1` of
+/// `face`'s surface, when each border lies along edges to one face only
+/// (as a rolling-ball fillet's do) and no edge lies along both.
+pub(crate) fn v_border_neighbours(body: &Body, face: FaceId, tol: f64) -> Option<[FaceId; 2]> {
+    let uses = crate::tweak::edge_faces(body);
+    let borders = along_borders(body, face, tol);
+    let mut found = [None, None];
+    for (slot, end) in found.iter_mut().zip([false, true]) {
+        let edges = borders.get(&Border {
+            along_u_fixed: false,
+            end,
+        })?;
+        let mut across: Option<FaceId> = None;
+        for edge in edges {
+            let other = uses
+                .get(edge.0 as usize)?
+                .iter()
+                .find(|f| **f != face)
+                .copied()?;
+            if across.is_some_and(|a| a != other) {
+                return None;
+            }
+            across = Some(other);
+        }
+        *slot = across;
+    }
+    let [a, b] = found;
+    let (a, b) = (a?, b?);
+    let both = borders
+        .get(&Border {
+            along_u_fixed: false,
+            end: false,
+        })?
+        .iter()
+        .any(|e| {
+            borders
+                .get(&Border {
+                    along_u_fixed: false,
+                    end: true,
+                })
+                .is_some_and(|other| other.contains(e))
+        });
+    (!both).then_some([a, b])
+}
+
 /// The edges that lie along a border of the parameter range of a freeform
 /// face of `moving`, with that face and border (the first such face, in
 /// order, for an edge along borders of both its faces).
@@ -319,9 +379,15 @@ pub(crate) fn iso_edges(
 
 /// The turns of the faces of `moving` (face and distance) that need one,
 /// in the sense of `∂u × ∂v` of each face's surface.
+///
+/// The faces of `rebuilt` (fillets rebuilt between their neighbours'
+/// offsets, `crate::offset_blend`) are not turned, and are no neighbour
+/// another face is turned toward: they take their neighbours' offsets as
+/// they are, tangent by construction.
 pub(crate) fn turns(
     body: &Body,
     moving: &BTreeMap<FaceId, f64>,
+    rebuilt: &std::collections::BTreeSet<FaceId>,
     tolerance: &Tolerance,
 ) -> Result<BTreeMap<FaceId, Turn>, TooFar> {
     let bound = TURN_SHARE * tolerance.linear;
@@ -330,7 +396,7 @@ pub(crate) fn turns(
     // Per freeform face that moves, the edges along its borders.
     let borders: BTreeMap<FaceId, BTreeMap<Border, Vec<EdgeId>>> = moving
         .keys()
-        .filter(|f| body.face(**f).is_some_and(|d| freeform(&d.surface)))
+        .filter(|f| !rebuilt.contains(f) && body.face(**f).is_some_and(|d| freeform(&d.surface)))
         .map(|f| (*f, along_borders(body, *f, tol)))
         .collect();
     let lies_along = |face: FaceId, edge: EdgeId| {
@@ -362,7 +428,7 @@ pub(crate) fn turns(
             else {
                 continue;
             };
-            if moving.get(&neighbour) != Some(distance) {
+            if moving.get(&neighbour) != Some(distance) || rebuilt.contains(&neighbour) {
                 continue;
             }
             let mutual = lies_along(neighbour, *edge);

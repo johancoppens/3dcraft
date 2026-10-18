@@ -7,7 +7,7 @@ use crate::face_ops::{self, explain};
 use crate::{Contributors, FeatureResult, Kept, Names, length};
 use craft3d_doc::{Document, FeatureId, Shell};
 use craft3d_expr::Evaluation;
-use craft3d_kernel::shell::{Skin, shell};
+use craft3d_kernel::shell::{Skin, shell_with};
 use craft3d_topo::Body;
 
 const NOUN: &str = "a shell";
@@ -35,7 +35,8 @@ pub(crate) fn build(
         ));
     }
     let open = face_ops::pick(&hollowed.open, "open", NOUN, hollowed.source, &source)?;
-    let made = shell(source.body, thickness, &open, &source.tolerance)
+    let blends = face_ops::blends(doc, variables, &source);
+    let made = shell_with(source.body, thickness, &open, &blends, &source.tolerance)
         .map_err(|error| explain(error, "thickness", 1.0, unit, &source))?;
     let contributors: Contributors = made
         .faces
