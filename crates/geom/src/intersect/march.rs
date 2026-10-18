@@ -1038,9 +1038,20 @@ impl Marcher {
                     }
                     _ => None,
                 };
+                // (Judged on the valley across: the centre of a cell off a
+                // contact along a curve has a gradient of the curvature
+                // times its distance from it, which can exceed what reads
+                // as a touch while the place across, on the curve, is one.)
                 let grazing = match found {
-                    Some(s) if arms.is_none() && s.flat && self.touches(&s, finest) => {
-                        self.one_sided(&s, finest)
+                    Some(s) if arms.is_none() && s.flat => {
+                        let s = if self.touches(&s, finest) {
+                            Some(s)
+                        } else {
+                            self.onto_valley(&s)
+                                .filter(|on| on.flat && self.touches(on, finest))
+                                .filter(|on| !self.near_tacnode(on, finest))
+                        };
+                        s.and_then(|s| Some((s, self.one_sided(&s, finest)?)))
                     }
                     _ => None,
                 };
@@ -1064,7 +1075,7 @@ impl Marcher {
                     discs.push(disc);
                     patience = FIRST_LOOK;
                     self.tacnodes.push(tac);
-                } else if let (Some(found), Some(disc)) = (found, grazing) {
+                } else if let Some((found, disc)) = grazing {
                     // (On a border of the chart that lies on the other
                     // surface the border is the meeting, already reported
                     // as a curve: that the surfaces are tangent along it,
