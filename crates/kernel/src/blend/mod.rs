@@ -102,6 +102,7 @@ use std::f64::consts::{PI, TAU};
 
 mod fit;
 mod rolling;
+pub(crate) use rolling::rebuild;
 mod section;
 #[cfg(test)]
 mod tests;

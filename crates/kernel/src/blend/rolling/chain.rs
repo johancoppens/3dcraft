@@ -1039,6 +1039,7 @@ fn compute(
                 shape: p.shape,
                 scale,
                 moved: None,
+                settle: 0.0,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -1959,6 +1960,7 @@ fn along_spine(
                 shape,
                 scale,
                 moved: None,
+                settle: 0.0,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -2206,6 +2208,7 @@ fn along_spine(
             shape,
             scale,
             moved: None,
+            settle: 0.0,
         };
         // The surface starts from some of the balls, evenly along the
         // path; it is refined from there.

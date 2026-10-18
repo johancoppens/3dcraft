@@ -155,6 +155,34 @@ fn distance_near(
     (value.is_finite() && normal.is_finite()).then_some((value, normal))
 }
 
+/// [`distance_near`], with the direction the distance grows in where the
+/// nearest point lies on the surface's border, not square below the point:
+/// from that foot to the point (the unsigned distance's gradient), not the
+/// normal there.
+fn distance_toward(
+    surface: &Surface,
+    point: Vec3,
+    guess: &mut Option<(f64, f64)>,
+) -> Option<(f64, Vec3)> {
+    let (value, normal) = distance_near(surface, point, guess)?;
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        return Some((value, normal));
+    }
+    let (u, v) = (*guess)?;
+    let offset = point - surface.eval(u, v);
+    let along = offset.dot(normal);
+    let aside = (offset - normal * along).length();
+    if aside > SQUARE * offset.length() + 1e-15 * (1.0 + point.length())
+        && aside > along.abs() * 1e-3
+    {
+        let length = offset.length();
+        if length > 0.0 {
+            return Some((length, offset * (1.0 / length)));
+        }
+    }
+    Some((value, normal))
+}
+
 /// Normals nearer to each other than this sine are one direction: the
 /// faces are tangent there, and one of them says nothing the other does
 /// not.
@@ -174,12 +202,34 @@ pub(crate) const TANGENT: f64 = 1e-4;
 /// its step, the residual over the sine, sends the point away.
 const HELD: f64 = 1.0;
 
+/// The sine below which a surface meeting those before it is taken last in
+/// [`meet`]: only once the point lies on them (two fillets of a ring
+/// trimmed against each other meet at a fraction of a degree).
+const SHALLOW: f64 = 0.05;
+
 /// Most steps of the iteration for one vertex.
 const MEET_STEPS: usize = 64;
 
 /// The point nearest `start` where `surfaces` meet, within `tol` of each.
 fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
     meet_near(surfaces, start, tol, &mut vec![None; surfaces.len()])
+}
+
+/// [`meet`] next to a rebuilt fillet, from a point foreseen close to where
+/// it goes (a vertex started on the new fillet), `sideways`:
+/// - where the nearest point of a bounded freeform surface is on its
+///   border, not square below the point, the point is drawn toward that
+///   border foot (the direction the distance grows in there), not along
+///   the normal: two fillets tangent to one face and crossing each other at
+///   a fraction of a degree meet that face in a vertex that lies off one
+///   fillet's border sideways by the fits' errors over the angle, and
+///   along the normal nothing moves it there;
+/// - a surface that meets those before it at a shallow angle ([`SHALLOW`])
+///   waits until the point lies on them: its step runs along them by its
+///   residual over the sine, which from a point away from curved faces
+///   throws the point far off.
+fn meet_foreseen(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
+    meet_with(surfaces, start, tol, &mut vec![None; surfaces.len()], true)
 }
 
 /// [`meet`], with the feet on the freeform surfaces found from `guesses`
@@ -189,6 +239,17 @@ fn meet_near(
     start: Vec3,
     tol: f64,
     guesses: &mut [Option<(f64, f64)>],
+) -> Option<Vec3> {
+    meet_with(surfaces, start, tol, guesses, false)
+}
+
+/// [`meet_near`]; with `sideways`, as [`meet_foreseen`] says.
+fn meet_with(
+    surfaces: &[&Surface],
+    start: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+    sideways: bool,
 ) -> Option<Vec3> {
     let mut point = start;
     for _ in 0..MEET_STEPS {
@@ -205,7 +266,11 @@ fn meet_near(
         let mut basis: Vec<Vec3> = Vec::with_capacity(3);
         let mut solved: Vec<f64> = Vec::with_capacity(3);
         for (surface, guess) in surfaces.iter().zip(guesses.iter_mut()) {
-            let (value, normal) = distance_near(surface, point, guess)?;
+            let (value, normal) = if sideways {
+                distance_toward(surface, point, guess)?
+            } else {
+                distance_near(surface, point, guess)?
+            };
             let mut rest = normal;
             let mut right = -value;
             for (axis, c) in basis.iter().zip(&solved) {
@@ -218,6 +283,11 @@ fn meet_near(
                 || basis.len() >= 3
                 || (own <= TANGENT && right.abs() <= HELD * tol)
             {
+                continue;
+            }
+            // Sideways: a surface that meets those before it at a shallow
+            // angle waits until the point is on them.
+            if sideways && own <= SHALLOW && solved.iter().any(|c| c.abs() > HELD * tol) {
                 continue;
             }
             basis.push(rest * (1.0 / own));
@@ -298,7 +368,8 @@ fn more(a: f64, b: f64) -> bool {
 /// The edge with curve `old` over `range` made again from `start` to
 /// `end` on `surfaces`, the surfaces of its faces; `moved` says whether
 /// one of them is new, `tangent` whether its faces were tangent along it
-/// ([`tangent_along`]).
+/// ([`tangent_along`]), `sideways` whether one of them is a rebuilt fillet
+/// (its points are found as [`meet_foreseen`] finds a vertex).
 #[allow(clippy::too_many_arguments)]
 fn remake(
     old: &Curve3,
@@ -309,6 +380,7 @@ fn remake(
     surfaces: &[&Surface],
     moved: bool,
     tangent: bool,
+    sideways: bool,
     tolerance: &Tolerance,
 ) -> Remade {
     let tol = tolerance.linear;
@@ -320,7 +392,9 @@ fn remake(
     // curve of another kind: found again where the surfaces meet.
     let general = |closed_form: Remade| match closed_form {
         Remade::OffSurface if freeform || !matches!(old, Curve3::Line(_) | Curve3::Circle(_)) => {
-            fitted(old, range, start, end, surfaces, tangent, tolerance)
+            fitted(
+                old, range, start, end, surfaces, tangent, sideways, tolerance,
+            )
         }
         other => other,
     };
@@ -393,11 +467,15 @@ fn remake(
         }
         Curve3::Ellipse(_) | Curve3::Nurbs(_) => {
             if moved {
-                return fitted(old, range, start, end, surfaces, tangent, tolerance);
+                return fitted(
+                    old, range, start, end, surfaces, tangent, sideways, tolerance,
+                );
             }
             // The same curve, between the places its ends moved to.
             let (Ok(at_start), Ok(at_end)) = (old.project(start), old.project(end)) else {
-                return fitted(old, range, start, end, surfaces, tangent, tolerance);
+                return fitted(
+                    old, range, start, end, surfaces, tangent, sideways, tolerance,
+                );
             };
             let (from, to) = match old.period() {
                 Some(_) if closed => {
@@ -408,7 +486,9 @@ fn remake(
                 None => (at_start, at_end),
             };
             if old.eval(from).distance(start) > tol || old.eval(to).distance(end) > tol {
-                return fitted(old, range, start, end, surfaces, tangent, tolerance);
+                return fitted(
+                    old, range, start, end, surfaces, tangent, sideways, tolerance,
+                );
             }
             if !more(to, from) {
                 return Remade::Gone;
@@ -468,6 +548,7 @@ fn fitted(
     end: Vec3,
     surfaces: &[&Surface],
     tangent: bool,
+    sideways: bool,
     tolerance: &Tolerance,
 ) -> Remade {
     let tol = tolerance.linear;
@@ -515,7 +596,7 @@ fn fitted(
         held.push(&across);
         let mut feet: Vec<Option<(f64, f64)>> = guesses.get(..count)?.to_vec();
         feet.push(None);
-        let point = meet_near(&held, from, tol, &mut feet)?;
+        let point = meet_with(&held, from, tol, &mut feet, sideways)?;
         for (slot, foot) in guesses.iter_mut().zip(feet) {
             *slot = foot;
         }
@@ -834,10 +915,17 @@ pub(crate) struct Iso {
 /// new vertices, when that lies on its other faces; it lies exactly on
 /// the new surface, which a curve found where tangent surfaces meet
 /// cannot be told to.
+///
+/// The faces of `rebuilt` have new surfaces in the parameters of the old
+/// ones, point for point as near as the place of the new point goes (a
+/// fillet rebuilt between offset faces: the same `u` is the same section):
+/// a vertex or an edge on one is looked for from where its old points
+/// are on the new surface ([`Foreseen`]), not from where they were.
 pub(crate) fn resurface_along(
     body: &Body,
     surfaces: &BTreeMap<FaceId, Surface>,
     iso: &BTreeMap<EdgeId, Iso>,
+    rebuilt: &BTreeSet<FaceId>,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -847,9 +935,30 @@ pub(crate) fn resurface_along(
         &BTreeSet::new(),
         None,
         iso,
+        rebuilt,
         operation,
         tolerance,
     )
+}
+
+/// Where an old vertex of a face whose new surface keeps its parameters
+/// goes: the new surface at the parameters of the point on the old one.
+/// Only a vertex is carried so: an edge's points start between its ends
+/// moved, as for any edge (where it crosses another face, a point carried
+/// along the rebuilt face's normal is off the other face's offset by the
+/// distance times what the angle between them leaves).
+#[derive(Clone, Copy)]
+struct Foreseen<'a> {
+    old: &'a Surface,
+    new: &'a Surface,
+}
+
+impl Foreseen<'_> {
+    fn at(&self, point: Vec3) -> Option<Vec3> {
+        let (u, v) = self.old.project(point).ok()?;
+        let to = self.new.eval(u, v);
+        to.is_finite().then_some(to)
+    }
 }
 
 /// Steps of the search along a border for where a face crosses it.
@@ -1019,6 +1128,7 @@ pub(crate) fn resurface_at(
         also,
         None,
         &BTreeMap::new(),
+        &BTreeSet::new(),
         operation,
         tolerance,
     )
@@ -1042,21 +1152,32 @@ pub(crate) fn resurface_rigid(
         &BTreeSet::new(),
         Some(rigid),
         &BTreeMap::new(),
+        &BTreeSet::new(),
         operation,
         tolerance,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resurface_with(
     body: &Body,
     surfaces: &BTreeMap<FaceId, Surface>,
     also: &BTreeSet<VertexId>,
     rigid: Option<&Transform>,
     iso: &BTreeMap<EdgeId, Iso>,
+    rebuilt: &BTreeSet<FaceId>,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
     let tol = tolerance.linear;
+    // The first rebuilt face of a set of faces, as where its points go.
+    let foreseen = |faces: &[FaceId]| -> Option<Foreseen<'_>> {
+        let face = *faces.iter().find(|f| rebuilt.contains(f))?;
+        Some(Foreseen {
+            old: &body.face(face)?.surface,
+            new: surfaces.get(&face)?,
+        })
+    };
     // Whether every one of `faces` moves with the rigid motion.
     let carried = |faces: &[FaceId]| {
         rigid.is_some() && !faces.is_empty() && faces.iter().all(|face| surfaces.contains_key(face))
@@ -1113,7 +1234,12 @@ fn resurface_with(
             .iter()
             .filter_map(|face| made.face(*face).map(|f| &f.surface))
             .collect();
-        let Some(point) = meet(&meeting, was, tol) else {
+        let found =
+            match foreseen(&faces.iter().copied().collect::<Vec<_>>()).and_then(|f| f.at(was)) {
+                Some(from) => meet_foreseen(&meeting, from, tol),
+                None => meet(&meeting, was, tol),
+            };
+        let Some(point) = found else {
             if meeting
                 .iter()
                 .any(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)))
@@ -1242,6 +1368,7 @@ fn resurface_with(
             &on,
             moved,
             tangent,
+            faces.iter().any(|f| rebuilt.contains(f)),
             tolerance,
         ) {
             Remade::Edge(curve, range) => {

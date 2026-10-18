@@ -81,6 +81,7 @@ use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, V
 mod chain;
 mod cross;
 mod exact;
+pub(crate) mod rebuild;
 
 /// How many times a step between two sections may be halved to follow
 /// the ball from one to the other.
@@ -326,6 +327,14 @@ struct Solver<'a> {
     /// Where a motion carries the edge and both faces into themselves:
     /// every section is the first one moved by it ([`exact`]).
     moved: Option<exact::Moved>,
+    /// How little a ball's centre may still move per step and be settled,
+    /// past what rounding leaves of `scale` (`0`: rounding alone). A ball
+    /// on fitted surfaces of high degree whose feet are found only to
+    /// about 1e-12 of the part's size never settles to rounding (its
+    /// centre jitters by about 1e-8 of a part of 300 mm); one rebuilt
+    /// between offsets ([`rebuild`]) is settled at a hundredth of the
+    /// tolerance, a twenty-fifth of the share its surface is held to.
+    settle: f64,
 }
 
 impl Solver<'_> {
@@ -398,7 +407,7 @@ impl Solver<'_> {
             };
             let moved = next.distance(centre);
             centre = next;
-            if moved <= 1e-14 * self.scale {
+            if moved <= (1e-14 * self.scale).max(self.settle) {
                 settled = true;
                 break;
             }
@@ -1202,6 +1211,7 @@ fn blend_one(
         shape,
         scale,
         moved: None,
+        settle: 0.0,
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let seed = first_section(&solver, 0.5, into, edge)?;
@@ -1353,6 +1363,7 @@ fn blend_open(
             shape,
             scale,
             moved: None,
+            settle: 0.0,
         });
     }
     let home = bounds
@@ -2062,6 +2073,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
                 shape: solver.shape,
                 scale: solver.scale,
                 moved: None,
+                settle: solver.settle,
             };
             let mut params = Vec::with_capacity(at.len());
             let mut sections = Vec::with_capacity(at.len());
@@ -3419,6 +3431,7 @@ mod tests {
             },
             scale: 1.0,
             moved: None,
+            settle: 0.0,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
@@ -3730,6 +3743,7 @@ mod tests {
             },
             scale: 1.0,
             moved: None,
+            settle: 0.0,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],

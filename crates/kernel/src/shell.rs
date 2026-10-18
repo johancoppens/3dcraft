@@ -25,7 +25,7 @@
 
 use crate::KernelError;
 use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, Operand, VertexSource, boolean_with};
-use crate::offset_face::{FaceOffset, offset_for, refuse};
+use crate::offset_face::{Blends, FaceOffset, offset_for, refuse};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 
@@ -72,6 +72,20 @@ pub fn shell(
     open: &[FaceId],
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
+    shell_with(body, thickness, open, &Blends::default(), tolerance)
+}
+
+/// [`shell`], told how faces were made (`blends`: the radius each fillet
+/// face was made with); a fillet's face of the hollow is the fillet
+/// rebuilt between the faces of the hollow it rolls along
+/// (`crate::offset_blend`).
+pub fn shell_with(
+    body: &Body,
+    thickness: f64,
+    open: &[FaceId],
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Shelled, KernelError> {
     if !(thickness.is_finite() && thickness > 0.0) {
         return Err(KernelError::InvalidSize {
             name: "thickness",
@@ -115,7 +129,7 @@ pub fn shell(
             },
         })
         .collect();
-    let hollow = offset_for(body, &offsets, OPERATION, tolerance)?;
+    let hollow = offset_for(body, &offsets, blends, OPERATION, tolerance)?;
     // Both passed the checker a moment ago.
     let options = BooleanOptions {
         trust_operands: true,

@@ -23,6 +23,7 @@ pub mod helix;
 pub mod loft;
 pub mod lumps;
 pub mod move_face;
+mod offset_blend;
 pub mod offset_face;
 mod offset_normal;
 pub mod offset_profile;

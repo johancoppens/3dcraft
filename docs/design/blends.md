@@ -13,6 +13,8 @@ Chamfers and fillets: the features (`doc::Chamfer`, `doc::Fillet`, `regen::blend
 
 **Never a wrong solid.** Whether a size fits is not estimated: the blend is built and the result held against what a blend is (every blend face present, in one piece, bordering exactly its neighbours and the faces at the ends of its edge: `finish`; the boolean's own checks), a fillet's tangency is measured along its borders, `topo::check` runs, and regeneration checks near the new faces for self-intersection. A blend that does not build is searched for the largest size that does (`blend::fit`, *What fits*), every edge of that size together; refused as too large with nothing that fits only where every failure is evidence of no room from the result itself; every search is bounded (48 builds). The two constructions, the checks still sampled (*Fitted curves proven*) and the leftover `join` are structural debt (the map's §9).
 
+**A fillet's offset is the fillet rebuilt** (`blend::rebuild`, 2026-10-18): a face operation that moves a rolling-ball fillet with the two faces it rolls along rolls a ball of the radius moved by the distance between their offsets, in planes across the old fillet's border started from its old centres, refined as above, in the old face's parameters ([`face-operations.md`](face-operations.md) › *Offset of a fillet: rebuilt*).
+
 **Refused, with the reason**: vertex blends of three or more fillets in other arrangements, outside and inside blends that meet, two blends of one kind that meet where the third edge is of the other (the ball would roll over that edge), edges that end at four or more faces, a freeform edge that ends where it goes on straight into another edge (fillet the chain), blends whose border runs over a sharp edge of its face, or over a smooth one in a chain, a ring or a meet, or over more than one smooth edge from one end, or whose end runs over more than one face, creased joints, and the rows of *Remaining special cases*.
 
 ## Remaining special cases, with the general method owed
@@ -258,6 +260,14 @@ A round with no new behaviour, to fewer special cases and less code; every outpu
 **Tests:** `crates/kernel/tests/chamfer.rs` › `a_chamfer_wider_than_the_cap_it_cuts_into_is_refused` (the finding's ball and block at three scales: 0.5 and 0.625 refused naming the edge and the sphere, 0.2 and 0.45 built, valid, measured, and within the groove they fill); `crates/engine/tests/fuzz_findings.rs` replays the reproducer.
 
 **Open.** The same cap in a plate 20 wide on all sides is refused at every distance as not approximable within the tolerance; a fillet on such a cap is not pinned by a test.
+
+### A fillet's offset: rebuilt (2026-10-18)
+
+What the face operations ask of the rolling ball to rebuild a fillet between offset faces (`blend::rolling::rebuild`; the operation's side in [`face-operations.md`](face-operations.md) › *Offset of a fillet: rebuilt*):
+- **Reading a fillet off its surface** (`fillet_of`): the shape `refine` gives (three rows across, rational quadratic in `v`), the radius and its side from the exact end rows, each of 17 rows an arc of the exact ball between the two faces in its own plane, to the tolerance. Not point for point against a ball in another plane: two fits of one blend take their sections a little apart along it (the saddle's: 1.8e-6 mm at an end), which moves no point off the surface.
+- **The same `Solver`, `Spine`, `follow` and `refine`**, the spine the old border, the joints' planes the old end rows' at a chain's joints.
+- **`Solver::settle`**: how little a centre may still move per step and be settled. Zero everywhere else (rounding, as before); a hundredth of the tolerance for a rebuild, whose feet on fitted offsets of high degree are found only to about 1e-12 of the part (the saddle's rear rim jittered by 1e-8 mm).
+- **Feet on the faces** (`on_face`): past the part of the old fillet its face's edges reach, a ball is kept only while its feet lie within a thousandth of a freeform face's parameters past its border; past that the fillet would roll along a fitted offset extrapolated, or, past a smooth edge, along the wrong face.
 
 ## History
 

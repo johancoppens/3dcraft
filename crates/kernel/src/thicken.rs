@@ -29,7 +29,7 @@
 
 use crate::KernelError;
 use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, VertexSource, boolean_with};
-use crate::offset_face::{FaceOffset, offset_for, refuse, usable};
+use crate::offset_face::{Blends, FaceOffset, offset_for, refuse, usable};
 use crate::shell::{Shelled, Skin};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, FaceId};
@@ -53,6 +53,7 @@ fn moved(
     body: &Body,
     faces: &[FaceId],
     distance: f64,
+    blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
     if distance == 0.0 {
@@ -65,7 +66,7 @@ fn moved(
             distance,
         })
         .collect();
-    offset_for(body, &offsets, OPERATION, tolerance)
+    offset_for(body, &offsets, blends, OPERATION, tolerance)
 }
 
 /// A solid between `faces` of `body` and the same faces moved by
@@ -83,6 +84,19 @@ pub fn thicken(
     faces: &[FaceId],
     thickness: f64,
     side: Side,
+    tolerance: &Tolerance,
+) -> Result<Shelled, KernelError> {
+    thicken_with(body, faces, thickness, side, &Blends::default(), tolerance)
+}
+
+/// [`thicken`], told how faces were made (`blends`: the radius each
+/// fillet face was made with).
+pub fn thicken_with(
+    body: &Body,
+    faces: &[FaceId],
+    thickness: f64,
+    side: Side,
+    blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
     if !(thickness.is_finite() && thickness > 0.0) {
@@ -127,8 +141,8 @@ pub fn thicken(
         },
         (other, _) => other,
     };
-    let outer = moved(body, faces, out, tolerance).map_err(whole)?;
-    let inner = moved(body, faces, -into, tolerance).map_err(whole)?;
+    let outer = moved(body, faces, out, blends, tolerance).map_err(whole)?;
+    let inner = moved(body, faces, -into, blends, tolerance).map_err(whole)?;
     // Both passed the checker a moment ago.
     let options = BooleanOptions {
         trust_operands: true,

@@ -35,6 +35,8 @@
 //! instead.
 
 use crate::KernelError;
+use crate::blend::rebuild::NoRebuild;
+use crate::offset_blend::Fillet;
 use crate::offset_normal::Turn;
 use crate::tweak::{self, TweakError};
 use craft3d_geom::offset::OffsetError;
@@ -53,6 +55,16 @@ pub const MAX_FACES: usize = 4096;
 pub struct FaceOffset {
     pub face: FaceId,
     pub distance: f64,
+}
+
+/// What the caller knows of how faces of the body were made: per fillet
+/// face, the radius it was made with (from its name and the feature that
+/// made it). A fillet face is recognised without it, from its surface and
+/// its neighbours (`crate::offset_blend`); with it, the radius made is
+/// taken for the one measured when the two agree to the tolerance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Blends {
+    pub radii: BTreeMap<FaceId, f64>,
 }
 
 /// A body with faces moved and where each of its entities came from:
@@ -333,6 +345,7 @@ pub(crate) fn refuse(
 fn at(
     body: &Body,
     offsets: &[FaceOffset],
+    fillets: &BTreeMap<FaceId, Fillet>,
     fraction: f64,
     operation: &'static str,
     tolerance: &Tolerance,
@@ -376,7 +389,9 @@ fn at(
             Some(growth) => (reach, *growth),
             None => (0.0, [false; 4]),
         };
-        let got = surfaced(&wider, offsets, fraction, &reach_of, operation, tolerance);
+        let got = surfaced(
+            &wider, offsets, fillets, fraction, &reach_of, operation, tolerance,
+        );
         match got {
             Err(error @ (TweakError::Unsupported { .. } | TweakError::Vanishes { .. }))
                 if ends_on_freeform(&error) =>
@@ -438,43 +453,9 @@ fn borders_passed(body: &Body, moving: &BTreeMap<FaceId, f64>) -> BTreeMap<FaceI
         if !faces.iter().any(|f| moving.contains_key(f)) {
             continue;
         }
-        let at = vertex.point;
-        let mut basis: Vec<craft3d_math::Vec3> = Vec::with_capacity(3);
-        let mut solved: Vec<f64> = Vec::with_capacity(3);
-        for face in faces {
-            let Some(data) = body.face(*face) else {
-                continue;
-            };
-            let Some(normal) = data
-                .surface
-                .project(at)
-                .ok()
-                .and_then(|(u, v)| data.surface.normal(u, v))
-            else {
-                continue;
-            };
-            let normal = if data.reversed { -normal } else { normal };
-            let mut rest = normal;
-            let mut right = moving.get(face).copied().unwrap_or(0.0);
-            for (axis, c) in basis.iter().zip(&solved) {
-                let along = normal.dot(*axis);
-                right -= along * c;
-                rest = rest - *axis * along;
-            }
-            let own = rest.length();
-            if own <= tweak::TANGENT || basis.len() >= 3 {
-                continue;
-            }
-            basis.push(rest * (1.0 / own));
-            solved.push(right / own);
-        }
-        let mut to = at;
-        for (axis, c) in basis.iter().zip(&solved) {
-            to += *axis * *c;
-        }
-        if !to.is_finite() {
+        let Some(to) = foresee(body, faces, vertex.point, moving) else {
             continue;
-        }
+        };
         for face in faces.iter().filter(|f| {
             body.face(**f)
                 .is_some_and(|d| matches!(d.surface, Surface::Bezier(_) | Surface::Nurbs(_)))
@@ -506,6 +487,52 @@ fn borders_passed(body: &Body, moving: &BTreeMap<FaceId, f64>) -> BTreeMap<FaceI
     out
 }
 
+/// Where a vertex at `at` of `faces` goes when the faces of `moving` move
+/// by their distances, foreseen where the tangent planes of its faces,
+/// moved, meet: one step of [`tweak`]'s iteration on the old surfaces, a
+/// nearly tangent plane adding nothing. `None` where it cannot be had.
+pub(crate) fn foresee(
+    body: &Body,
+    faces: &BTreeSet<FaceId>,
+    at: craft3d_math::Vec3,
+    moving: &BTreeMap<FaceId, f64>,
+) -> Option<craft3d_math::Vec3> {
+    let mut basis: Vec<craft3d_math::Vec3> = Vec::with_capacity(3);
+    let mut solved: Vec<f64> = Vec::with_capacity(3);
+    for face in faces {
+        let Some(data) = body.face(*face) else {
+            continue;
+        };
+        let Some(normal) = data
+            .surface
+            .project(at)
+            .ok()
+            .and_then(|(u, v)| data.surface.normal(u, v))
+        else {
+            continue;
+        };
+        let normal = if data.reversed { -normal } else { normal };
+        let mut rest = normal;
+        let mut right = moving.get(face).copied().unwrap_or(0.0);
+        for (axis, c) in basis.iter().zip(&solved) {
+            let along = normal.dot(*axis);
+            right -= along * c;
+            rest = rest - *axis * along;
+        }
+        let own = rest.length();
+        if own <= tweak::TANGENT || basis.len() >= 3 {
+            continue;
+        }
+        basis.push(rest * (1.0 / own));
+        solved.push(right / own);
+    }
+    let mut to = at;
+    for (axis, c) in basis.iter().zip(&solved) {
+        to += *axis * *c;
+    }
+    to.is_finite().then_some(to)
+}
+
 /// Whether `error` is about freeform faces that no longer meet where one
 /// of them ends: what continuing them may mend.
 fn ends_on_freeform(error: &TweakError) -> bool {
@@ -521,6 +548,7 @@ fn ends_on_freeform(error: &TweakError) -> bool {
 fn surfaced(
     body: &Body,
     offsets: &[FaceOffset],
+    fillets: &BTreeMap<FaceId, Fillet>,
     fraction: f64,
     reach_of: &dyn Fn(FaceId) -> (f64, Growth),
     operation: &'static str,
@@ -531,7 +559,8 @@ fn surfaced(
         .iter()
         .map(|o| (o.face, o.distance * fraction))
         .collect();
-    let turns = crate::offset_normal::turns(body, &moving, tolerance).map_err(|far| {
+    let rebuilt: BTreeSet<FaceId> = fillets.keys().copied().collect();
+    let turns = crate::offset_normal::turns(body, &moving, &rebuilt, tolerance).map_err(|far| {
         TweakError::Vanishes {
             faces: far.faces,
             edge: None,
@@ -553,6 +582,10 @@ fn surfaced(
                 reason: "there is no such face in the body",
             });
         };
+        // A fillet is rebuilt between its supports' new surfaces, below.
+        if fillets.contains_key(&offset.face) {
+            continue;
+        }
         let faces = vec![offset.face];
         let surface = offset_surface(
             face,
@@ -593,8 +626,29 @@ fn surfaced(
         })?;
         surfaces.insert(offset.face, surface);
     }
+    let past = |face: FaceId| {
+        let (reach, growth) = reach_of(face);
+        let [start, end, _, _] = growth;
+        (
+            if start { reach } else { 0.0 },
+            if end { reach } else { 0.0 },
+        )
+    };
+    crate::offset_blend::rebuild_all(body, fillets, &moving, &mut surfaces, &past, tolerance)
+        .map_err(|(face, why)| match why {
+            NoRebuild::Vanishes => TweakError::Vanishes {
+                faces: vec![face],
+                edge: None,
+                reason: crate::offset_blend::VANISHES,
+            },
+            NoRebuild::Fails(reason) => TweakError::Unsupported {
+                faces: vec![face],
+                edge: None,
+                reason,
+            },
+        })?;
     let iso = crate::offset_normal::iso_edges(body, &moving, tolerance);
-    tweak::resurface_along(body, &surfaces, &iso, operation, tolerance)
+    tweak::resurface_along(body, &surfaces, &iso, &rebuilt, operation, tolerance)
 }
 
 /// [`offset_faces`] in the words of `operation`, for the operations that
@@ -602,6 +656,7 @@ fn surfaced(
 pub(crate) fn offset_for(
     body: &Body,
     offsets: &[FaceOffset],
+    blends: &Blends,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
@@ -665,27 +720,79 @@ pub(crate) fn offset_for(
             defects: defects.into_iter().take(crate::MAX_REPORTED).collect(),
         });
     }
-    let unfolded = |fraction: f64| {
-        offsets.iter().all(|offset| {
-            let Some(face) = body.face(offset.face) else {
-                return true;
-            };
-            if !matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-                return true;
-            }
-            let along = offset.distance * fraction * if face.reversed { -1.0 } else { 1.0 };
-            craft3d_geom::offset::regular(&face.surface, along).is_ok()
-        })
-    };
+    // The fillets among the faces that move are rebuilt, not offset
+    // (`crate::offset_blend`): refused before anything is built where a
+    // face one rolls along stays, too far in closed form where its radius
+    // would reach zero.
+    let moving: BTreeMap<FaceId, f64> = offsets.iter().map(|o| (o.face, o.distance)).collect();
+    let keys: BTreeSet<FaceId> = moving.keys().copied().collect();
+    let fillets = crate::offset_blend::fillets(body, &keys, &blends.radii, tolerance);
+    if let Some(faces) = crate::offset_blend::stays(&fillets, &moving) {
+        return Err(refuse(operation, faces, None, crate::offset_blend::STAYS));
+    }
+    if let Some((part, face)) = crate::offset_blend::vanishing(&fillets, &moving, tolerance)
+        && part < 1.0
+    {
+        let fits = part * largest;
+        if fits.is_nan() || fits <= tol {
+            return Err(refuse(
+                operation,
+                vec![face],
+                None,
+                crate::offset_blend::VANISHES,
+            ));
+        }
+        return Err(KernelError::FaceOpTooFar {
+            operation,
+            faces: vec![face],
+            edge: None,
+            reason: crate::offset_blend::VANISHES,
+            value: largest,
+            largest: fits,
+        });
+    }
     let moved: Vec<FaceId> = offsets.iter().map(|o| o.face).collect();
-    fitting_with(
-        |fraction| at(body, offsets, fraction, operation, tolerance),
-        Some(&unfolded),
-        largest,
-        operation,
-        tolerance,
-        face_op_work(body, &moved),
-    )
+    let search = |fillets: &BTreeMap<FaceId, Fillet>| {
+        let unfolded = |fraction: f64| {
+            offsets.iter().all(|offset| {
+                if fillets.contains_key(&offset.face) {
+                    return true;
+                }
+                let Some(face) = body.face(offset.face) else {
+                    return true;
+                };
+                if !matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+                    return true;
+                }
+                let along = offset.distance * fraction * if face.reversed { -1.0 } else { 1.0 };
+                craft3d_geom::offset::regular(&face.surface, along).is_ok()
+            })
+        };
+        fitting_with(
+            |fraction| at(body, offsets, fillets, fraction, operation, tolerance),
+            Some(&unfolded),
+            largest,
+            operation,
+            tolerance,
+            face_op_work(body, &moved),
+        )
+    };
+    // Where the rebuilt fillets do not make a body (a fillet that cannot
+    // be rebuilt, or one rebuilt that the closing of the body refuses),
+    // the fillets are offset as any freeform face instead, which holds
+    // each to its exact offset within its share of the tolerance or
+    // refuses it; the refusal said is the first one. Both searches within
+    // one bound on their work together.
+    craft3d_geom::allowance::within(face_op_work(body, &moved), || {
+        let first = search(&fillets);
+        if first.is_ok() || fillets.is_empty() {
+            return first;
+        }
+        match search(&BTreeMap::new()) {
+            Ok(made) => Ok(made),
+            Err(_) => first,
+        }
+    })
 }
 
 /// `attempt(1.0)`, the whole of an operation whose size is `largest`
@@ -862,7 +969,29 @@ pub fn offset_faces(
     offsets: &[FaceOffset],
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
-    offset_for(body, offsets, OPERATION, tolerance).map(same_numbers)
+    offset_faces_with(body, offsets, &Blends::default(), tolerance)
+}
+
+/// Which of `faces` an offset would take for rolling-ball fillets and
+/// rebuild (`crate::offset_blend`): for tests that hold the recognition to
+/// faces that are fillets and to faces that only look like them.
+#[doc(hidden)]
+pub fn fillets_recognised(body: &Body, faces: &[FaceId], tolerance: &Tolerance) -> Vec<FaceId> {
+    let keys: BTreeSet<FaceId> = faces.iter().copied().collect();
+    crate::offset_blend::fillets(body, &keys, &BTreeMap::new(), tolerance)
+        .into_keys()
+        .collect()
+}
+
+/// [`offset_faces`], told how faces were made (`blends`: the radius each
+/// fillet face was made with).
+pub fn offset_faces_with(
+    body: &Body,
+    offsets: &[FaceOffset],
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Offset, KernelError> {
+    offset_for(body, offsets, blends, OPERATION, tolerance).map(same_numbers)
 }
 
 /// What every face operation that moves faces asks of its input: a
