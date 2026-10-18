@@ -654,6 +654,10 @@ fn run(
             .map(|(p, _)| *p)
             .collect();
         meetings.extend_from_slice(&sections.touches);
+        // Where an edge of one meets the other's surface: also a contact
+        // in a point that leaves no stretch (a rim touching a ball from
+        // outside).
+        meetings.extend_from_slice(&sections.edge_meets);
         meetings.extend(on_the_other(&a, &b, tol));
         meetings.extend(on_the_other(&b, &a, tol));
         // Where an operand already touches itself (a shell meeting itself
@@ -683,7 +687,8 @@ fn run(
 /// Parts can only touch where the operands meet, or where an operand
 /// already touches itself, so only those places are looked at
 /// (`meetings`: the vertices both operands are at, the vertices the
-/// section made, the points where two faces only touch, a point inside
+/// section made, the points where two faces only touch, the points where
+/// an edge of one meets the other's surface, a point inside
 /// every stretch of curve along which faces meet, and the places where a
 /// vertex of an operand lies on a vertex or an edge of that operand
 /// not its own, `craft3d_topo::touches`). Faces of one operand that touch

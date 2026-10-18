@@ -23,8 +23,9 @@
 //!   to).
 //! - `19604.json`: a ball that touches the rim of a cone's base from
 //!   outside in a point, united and accepted as two shells that touch:
-//!   zero thickness, refused (by regeneration's `parts_touch`: the
-//!   middle of the rim's edge is the point of contact).
+//!   zero thickness, refused (by the boolean, which looks where an edge
+//!   meets the other body's surface; regeneration's `parts_touch` sees
+//!   it too, the middle of the rim's edge being the point of contact).
 //! - `21635.json`: a mirror of a body with a sphere face whose loop
 //!   passes twice through one vertex, which could not be meshed for the
 //!   self-check (the seam to the pole started from the pass that does
