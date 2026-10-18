@@ -264,7 +264,7 @@ impl<'a> Sheet<'a> {
     }
 
     /// The parameters of the point of the surface nearest to `p`.
-    fn project(self, p: Vec3) -> Option<(f64, f64)> {
+    pub(super) fn project(self, p: Vec3) -> Option<(f64, f64)> {
         match self.tree {
             Some(tree) => tree.nearest(p).map(|n| (n.u, n.v)),
             None => self.surface.project(p).ok(),
