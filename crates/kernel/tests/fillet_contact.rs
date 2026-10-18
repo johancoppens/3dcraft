@@ -641,7 +641,7 @@ fn the_tool_a_rolling_fillet_takes_away() {
             let cut = solve(&body, &tool, Subtract, k);
             // (Where the body's edge across the end of the fillet touches
             // the tool's face, the touch is placed within its reach.)
-            let reach = 2.0 * (2.0 * tol.linear * r * k).sqrt();
+            let reach = (2.0 * tol.linear * r * k).sqrt();
             same_body_but(&cut.body, &made.body, &tol, reach, &format!("{what}: cut"));
             // Put back, the body: vertices of the fillet or of the tool
             // where their ends meet the body's edges stay (the merge keeps
@@ -769,5 +769,75 @@ fn a_chain_of_arcs_that_go_on_in_each_other() {
                 &format!("{name} at {k}"),
             );
         }
+    }
+}
+
+/// A lid whose underside z = 1 + g(x) y² (g(0) = 0, g even) touches the
+/// plane z = 1 along the lines x = 0 and y = 0, lofted through three
+/// sections, sat on a rod of radius 1.
+fn lid(k: f64, a: f64) -> Body {
+    use craft3d_kernel::loft::{Options, Section, loft};
+    let tol = tolerance(k);
+    let sections: Vec<Section> = [-2.0, 0.0, 2.0]
+        .iter()
+        .map(|&x: &f64| {
+            let g = if x == 0.0 { 0.0 } else { a };
+            let curves = vec![
+                SketchCurve {
+                    id: 1,
+                    curve: Curve2::Spline(Spline2 {
+                        degree: 2,
+                        knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                        control: vec![
+                            [-2.0 * k, (1.0 + 4.0 * g) * k],
+                            [0.0, (1.0 - 4.0 * g) * k],
+                            [2.0 * k, (1.0 + 4.0 * g) * k],
+                        ],
+                    }),
+                },
+                line(2, [2.0 * k, (1.0 + 4.0 * g) * k], [2.0 * k, 3.0 * k]),
+                line(3, [2.0 * k, 3.0 * k], [-2.0 * k, 3.0 * k]),
+                line(4, [-2.0 * k, 3.0 * k], [-2.0 * k, (1.0 + 4.0 * g) * k]),
+            ];
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            craft3d_kernel::loft::Section {
+                plane: Frame::new(Vec3::new(x * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
+                outline: profiles[0].outer.clone(),
+                start: None,
+            }
+        })
+        .collect::<Vec<Section>>();
+    loft(&sections, &Options::default(), &tol).unwrap().body
+}
+
+/// The rod's top circle comes within the tolerance of the lid's underside
+/// at its quarters only (at 45° it is a twentieth of the size off): it
+/// does not lie on it, and is not imprinted there (the review's probe of
+/// 2026-10-18: five samples along it took it for lying on the surface).
+/// The lid less the rod, unmerged, is the lid's six faces; the union of
+/// bodies that only touch is refused as zero thickness.
+#[test]
+fn an_edge_that_touches_a_surface_at_places_does_not_lie_on_it() {
+    use craft3d_kernel::KernelError;
+    use craft3d_kernel::boolean::{BooleanOptions, boolean, boolean_with};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let lid = lid(k, 0.2);
+        let cylinder = rod(k, [0.0, 0.0, 0.0], 1.0, 1.0);
+        let unmerged = BooleanOptions {
+            merge: false,
+            ..BooleanOptions::default()
+        };
+        let cut = boolean_with(&lid, &cylinder, Subtract, &tol, &unmerged).unwrap();
+        assert_eq!(check(&cut.body, &tol), [], "scale {k}");
+        assert_eq!(cut.body.faces.len(), lid.faces.len(), "scale {k}");
+        assert_eq!(cut.body.edges.len(), lid.edges.len(), "scale {k}");
+        assert!(
+            matches!(
+                boolean(&cylinder, &lid, Union, &tol),
+                Err(KernelError::ZeroThickness { .. })
+            ),
+            "scale {k}"
+        );
     }
 }
