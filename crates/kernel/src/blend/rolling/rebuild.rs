@@ -23,10 +23,11 @@
 //! and the side the centres lie on are measured there, from the feet and
 //! the faces' normals (`ρ = (q₁ − q₂) · (n₁ − n₂) / |n₁ − n₂|²`; the radius
 //! the fillet was made with, when the caller knows it, is taken when the
-//! measure agrees with it); then the face is held against the exact ball
-//! of that radius between its two faces at samples along it, point for
-//! point, to the tolerance. A face that does not hold is not taken for a
-//! fillet: it is offset as any freeform face.
+//! measure agrees with it); then each of 17 rows along it is held against
+//! the exact ball of that radius between its two faces, found in the
+//! row's own plane: every point the radius from its centre and its ends
+//! on the faces, to the tolerance. A face that does not hold is not taken
+//! for a fillet: it is offset as any freeform face.
 //!
 //! **The planes the sections are taken in.** Each ball is found in the
 //! plane through the old surface's first border at `u`, square to that
@@ -36,7 +37,11 @@
 //! the ball about the same centre, so the new surface keeps the old
 //! one's parameters: the same `u` is the same place along the fillet, an
 //! iso-curve at a joint of a chain is the joint's section on both sides,
-//! and each section is started from the old centre, exact to the fit.
+//! and each section is started from the old centre, exact to the fit;
+//! at a joint the planes turn into the joint's own (the old end row,
+//! exact), so two fillets of a chain rebuilt each on its own meet in one
+//! section. Past the part of the old surface its face's edges reach, a
+//! ball is kept only while its feet stay on the faces it rolls along.
 //! The new surface is refined as every rolling-ball blend is: within a
 //! quarter of the tolerance of the exact sections between samples,
 //! tangent to both faces to `bend`, its borders proven on their faces.
@@ -81,7 +86,8 @@ pub(crate) enum NoRebuild {
 pub(crate) const UNSOLVED: &str = "the fillet could not be rebuilt between the offset faces: a ball of the new radius touching both was not found along it";
 pub(crate) const NOT_FITTED: &str = "the fillet rebuilt between the offset faces could not be approximated within the tolerance in the samples allowed";
 
-/// Samples along the face at which it is held against the exact ball.
+/// Steps along the face at whose ends (17 rows) it is held against the
+/// exact ball.
 const HELD_AT: usize = 16;
 
 /// Over how much of the old surface's parameter range (from each end) the
