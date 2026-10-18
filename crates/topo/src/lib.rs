@@ -21,6 +21,7 @@ mod bits;
 mod check;
 mod inside;
 mod mass;
+mod shells;
 mod touch;
 mod transform;
 
@@ -30,6 +31,7 @@ pub use mass::{
     Inertia, MassBound, MassError, MassProperties, inertia, mass_and_inertia, mass_bound,
     mass_properties, mass_work,
 };
+pub use shells::{face_groups, shell_alone, shell_genera};
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};
 

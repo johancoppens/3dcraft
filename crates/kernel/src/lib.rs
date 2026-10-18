@@ -21,6 +21,7 @@ pub mod extrude_to;
 pub mod fillet;
 pub mod helix;
 pub mod loft;
+pub mod lumps;
 pub mod move_face;
 pub mod offset_face;
 mod offset_normal;

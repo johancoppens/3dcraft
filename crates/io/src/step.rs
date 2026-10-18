@@ -163,7 +163,7 @@ use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_step::{Header, Param, Record, StepFile};
-use craft3d_topo::{Body, BodyKind, Coedge, Face, FaceId, LoopId, check, mass_properties};
+use craft3d_topo::{Body, BodyKind, Coedge, Face, FaceId, LoopId, check};
 use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 
@@ -541,159 +541,30 @@ fn bounds(
     Ok(Bounds { outer, vertex_loop })
 }
 
-/// The faces of one shell as a body of their own, to measure it.
-fn shell_body(body: &Body, shell: usize) -> Option<Body> {
-    let mut out = Body::new(BodyKind::Solid);
-    // Only the vertices and edges the shell uses: a solid with an edge no
-    // face uses is not a valid one.
-    let mut vertices: BTreeMap<u32, craft3d_topo::VertexId> = BTreeMap::new();
-    let mut edges: BTreeMap<u32, craft3d_topo::EdgeId> = BTreeMap::new();
-    let mut faces = Vec::new();
-    for &face_id in &body.shells.get(shell)?.faces {
-        let face = body.face(face_id)?;
-        let mut loops = Vec::new();
-        for &loop_id in &face.loops {
-            let mut coedges = Vec::new();
-            for coedge in &body.loop_(loop_id)?.coedges {
-                let edge = match edges.get(&coedge.edge.0) {
-                    Some(&edge) => edge,
-                    None => {
-                        let old = body.edge(coedge.edge)?;
-                        let mut ends = [old.start, old.end];
-                        for end in &mut ends {
-                            *end = match vertices.get(&end.0) {
-                                Some(&vertex) => vertex,
-                                None => {
-                                    let new = out.add_vertex(body.vertex(*end)?.point);
-                                    vertices.insert(end.0, new);
-                                    new
-                                }
-                            };
-                        }
-                        let [start, end] = ends;
-                        let new = out.add_edge(old.curve.clone(), old.range, start, end);
-                        edges.insert(coedge.edge.0, new);
-                        new
-                    }
-                };
-                coedges.push(Coedge {
-                    edge,
-                    reversed: coedge.reversed,
-                });
-            }
-            loops.push(out.add_loop(coedges));
-        }
-        faces.push(out.add_face(face.surface.clone(), face.reversed, loops));
-    }
-    out.add_shell(faces);
-    Some(out)
-}
-
-/// Points on a shell (given as a body of its own): vertices of it, and a
-/// point of each face without loops.
-fn shell_points(shell: &Body) -> Vec<Vec3> {
-    let mut points = Vec::new();
-    for face in &shell.faces {
-        if face.loops.is_empty() {
-            points.push(face.surface.eval(0.0, 0.0));
-        }
-    }
-    points.extend(shell.vertices.iter().take(8).map(|v| v.point));
-    points
-}
-
 /// The shells of a solid body sorted into lumps: `(outer, cavities)`, by
-/// shell index, in the order of the outer shells.
+/// shell index, in the order of the outer shells (`craft3d_kernel::lumps`:
+/// the sign of the volume each shell encloses and which shells lie inside
+/// which).
 fn lumps(
     body: &Body,
     tolerance: &Tolerance,
     name: &str,
 ) -> Result<Vec<(usize, Vec<usize>)>, IoError> {
-    if let [_] = body.shells.as_slice() {
-        // One shell is the outside; a shell that is inside out would be a
-        // solid of negative volume, which is not for the export to judge.
-        return Ok(vec![(0, Vec::new())]);
-    }
-    let mut parts = Vec::new();
-    for index in 0..body.shells.len() {
-        let part = shell_body(body, index).ok_or_else(|| {
-            unsupported(
-                name,
-                format!("shell {index} refers to a face or loop that does not exist"),
+    let found = craft3d_kernel::lumps::lumps(body, tolerance).map_err(|e| {
+        unsupported(
+            name,
+            format!("cannot sort its shells into parts and cavities: {e}"),
+        )
+    })?;
+    Ok(found
+        .into_iter()
+        .map(|lump| {
+            (
+                lump.outer.0 as usize,
+                lump.cavities.iter().map(|c| c.0 as usize).collect(),
             )
-        })?;
-        let volume = mass_properties(&part)
-            .map_err(|e| {
-                unsupported(
-                    name,
-                    format!(
-                        "cannot tell whether shell {index} is a cavity or a part of its own: {e}"
-                    ),
-                )
-            })?
-            .volume;
-        if !(volume.is_finite() && volume != 0.0) {
-            return Err(unsupported(
-                name,
-                format!("shell {index} encloses no volume, so it is neither a cavity nor a part"),
-            ));
-        }
-        parts.push((part, volume));
-    }
-    let outers: Vec<usize> = (0..parts.len())
-        .filter(|&i| parts.get(i).is_some_and(|(_, v)| *v > 0.0))
-        .collect();
-    let mut found: Vec<(usize, Vec<usize>)> = outers.iter().map(|&o| (o, Vec::new())).collect();
-    for (index, (part, _)) in parts.iter().enumerate() {
-        if outers.contains(&index) {
-            continue;
-        }
-        let owner = match outers.as_slice() {
-            [] => None,
-            [only] => Some(*only),
-            many => {
-                // The innermost lump whose outer shell has a point of the
-                // cavity inside it.
-                let points = shell_points(part);
-                let mut best: Option<(f64, usize)> = None;
-                for &outer in many {
-                    let Some((lump, volume)) = parts.get(outer) else {
-                        continue;
-                    };
-                    let inside = craft3d_kernel::boolean::contains_points(lump, &points, tolerance)
-                        .map_err(|e| {
-                            unsupported(
-                                name,
-                                format!(
-                                    "cannot tell which part the cavity of shell {index} is in: {e}"
-                                ),
-                            )
-                        })?;
-                    let (yes, no) = inside.iter().fold((0, 0), |(yes, no), found| match found {
-                        Some(true) => (yes + 1, no),
-                        Some(false) => (yes, no + 1),
-                        None => (yes, no),
-                    });
-                    if yes > no && best.is_none_or(|(least, _)| *volume < least) {
-                        best = Some((*volume, outer));
-                    }
-                }
-                best.map(|(_, outer)| outer)
-            }
-        };
-        let Some(owner) = owner else {
-            return Err(unsupported(
-                name,
-                format!(
-                    "shell {index} is a cavity (it encloses a negative volume) that lies in no part of the body"
-                ),
-            ));
-        };
-        if let Some((_, voids)) = found.iter_mut().find(|(outer, _)| *outer == owner) {
-            voids.push(index);
-        }
-    }
-    Ok(found)
+        })
+        .collect())
 }
 
 struct Writer<'a> {

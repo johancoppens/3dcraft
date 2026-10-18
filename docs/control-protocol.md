@@ -164,7 +164,7 @@ The contract that lets an agent verify its work without a picture:
   ],
   "rollback": null,
   "bodies": [
-    {"id": "B1", "kind": "solid", "valid": true, "faces": 6, "edges": 12, "vertices": 8,
+    {"id": "B1", "kind": "solid", "valid": true, "faces": 6, "edges": 12, "vertices": 8, "shells": 1,
      "volume": 8000.0, "area": 2800.0, "centroid": [20.0, 10.0, 5.0],
      "bbox": [[0, 0, 0], [40, 20, 10]]}
   ],
