@@ -21,6 +21,7 @@ mod bits;
 mod check;
 mod inside;
 mod mass;
+mod query;
 mod shells;
 mod touch;
 mod transform;
@@ -32,6 +33,7 @@ pub use mass::{
     mass_bound, mass_properties, mass_properties_each, mass_properties_each_while,
     mass_with_shells, mass_with_shells_each_while, mass_work, shell_volumes,
 };
+pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
 pub use shells::{boundary_loops, face_groups, shell_alone, shell_genera};
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};

@@ -229,10 +229,8 @@ fn freeform(surface: &Surface) -> bool {
 /// distance to its surface there.
 fn outward(body: &Body, face: FaceId, point: Vec3) -> Option<(Vec3, f64)> {
     let face = body.face(face)?;
-    let (u, v) = face.surface.project(point).ok()?;
-    let normal = face.surface.normal(u, v)?;
-    let off = face.surface.eval(u, v).distance(point);
-    Some((if face.reversed { -normal } else { normal }, off))
+    let ((u, v), normal) = face.nearest(point).ok()??;
+    Some((normal, face.surface.eval(u, v).distance(point)))
 }
 
 /// The edges of `face` that lie along a border of its surface's
@@ -300,7 +298,7 @@ pub(crate) fn u_borders_taken(body: &Body, face: FaceId, tol: f64) -> [bool; 2] 
 /// `face`'s surface, when each border lies along edges to one face only
 /// (as a rolling-ball fillet's do) and no edge lies along both.
 pub(crate) fn v_border_neighbours(body: &Body, face: FaceId, tol: f64) -> Option<[FaceId; 2]> {
-    let uses = crate::tweak::edge_faces(body);
+    let uses = craft3d_topo::edge_faces(body);
     let borders = along_borders(body, face, tol);
     let mut found = [None, None];
     for (slot, end) in found.iter_mut().zip([false, true]) {
@@ -392,7 +390,7 @@ pub(crate) fn turns(
 ) -> Result<BTreeMap<FaceId, Turn>, TooFar> {
     let bound = TURN_SHARE * tolerance.linear;
     let tol = tolerance.linear;
-    let uses = crate::tweak::edge_faces(body);
+    let uses = craft3d_topo::edge_faces(body);
     // Per freeform face that moves, the edges along its borders.
     let borders: BTreeMap<FaceId, BTreeMap<Border, Vec<EdgeId>>> = moving
         .keys()

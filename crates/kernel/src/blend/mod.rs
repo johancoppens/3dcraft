@@ -94,9 +94,10 @@ use crate::extrude::{Role, extrude};
 use crate::primitives;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use crate::revolve::revolve;
+use crate::shared::index_u32;
 use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
+use craft3d_topo::{Body, BodyKind, EdgeId, EdgeUse as Use, FaceId, VertexId, edge_uses};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
@@ -464,38 +465,6 @@ fn lost() -> BlendError {
     }
 }
 
-/// One use of an edge by a loop of a face.
-#[derive(Clone, Copy, Debug)]
-struct Use {
-    face: FaceId,
-    reversed: bool,
-}
-
-fn index_u32(index: usize) -> u32 {
-    u32::try_from(index).unwrap_or(u32::MAX)
-}
-
-/// Per edge, the faces that use it.
-fn edge_uses(body: &Body) -> Vec<Vec<Use>> {
-    let mut uses: Vec<Vec<Use>> = vec![Vec::new(); body.edges.len()];
-    for (index, face) in body.faces.iter().enumerate() {
-        for coedge in face
-            .loops
-            .iter()
-            .filter_map(|l| body.loop_(*l))
-            .flat_map(|l| &l.coedges)
-        {
-            if let Some(list) = uses.get_mut(coedge.edge.0 as usize) {
-                list.push(Use {
-                    face: FaceId(index_u32(index)),
-                    reversed: coedge.reversed,
-                });
-            }
-        }
-    }
-    uses
-}
-
 /// The two uses of `edge` by two different faces: `None` for an edge that
 /// is not between two faces (a seam, the border of a sheet, no edge).
 fn two_faces(uses: &[Vec<Use>], edge: EdgeId) -> Option<[Use; 2]> {
@@ -537,15 +506,14 @@ fn faces_at(at: &[Vec<EdgeId>], uses: &[Vec<Use>], vertex: VertexId) -> BTreeSet
 
 /// The outward normal of `face` at the point of it nearest `point`.
 fn outward(body: &Body, face: FaceId, point: Vec3) -> Result<Vec3, BlendError> {
-    let face = body.face(face).ok_or_else(lost)?;
-    let (u, v) = face.surface.project(point)?;
-    let normal = face
-        .surface
-        .normal(u, v)
-        .ok_or(GeomError::InvalidParameter(
-            "a face has no normal where an edge runs along it",
-        ))?;
-    Ok(if face.reversed { -normal } else { normal })
+    let (_, normal) =
+        body.face(face)
+            .ok_or_else(lost)?
+            .nearest(point)?
+            .ok_or(GeomError::InvalidParameter(
+                "a face has no normal where an edge runs along it",
+            ))?;
+    Ok(normal)
 }
 
 /// The unit tangent of an edge's curve at `t`, in the curve's direction.

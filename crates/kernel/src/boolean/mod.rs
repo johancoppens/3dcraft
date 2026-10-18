@@ -1130,11 +1130,6 @@ fn within_a_shell(
     // two walls.
     let wedged = |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64| -> bool {
         let most = most.max(reach);
-        let normal = |face: &craft3d_topo::Face, x: Vec3| {
-            let (u, v) = face.surface.project(x).ok()?;
-            let n = face.surface.normal(u, v)?;
-            Some(if face.reversed { -n } else { n })
-        };
         let faces = body.face(face_id(f)).zip(body.face(face_id(g)));
         edges.iter().any(|&e| {
             // An edge further than `most` joins nothing here, whatever
@@ -1151,7 +1146,7 @@ fn within_a_shell(
                 Err(()) => true,
                 Ok(None) => false,
                 Ok(Some(q)) => {
-                    let angle = faces.and_then(|(sf, sg)| Some((normal(sf, q)?, normal(sg, q)?)));
+                    let angle = faces.and_then(|(sf, sg)| Some((sf.outward(q)?, sg.outward(q)?)));
                     let Some((nf, ng)) = angle else {
                         // No normal there (an apex, a pole): the widest
                         // margin, and no further.

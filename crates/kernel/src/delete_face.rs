@@ -45,10 +45,11 @@
 
 use crate::KernelError;
 use crate::offset_face::refuse;
-use crate::tweak::{self, TweakError, edge_faces, loop_points, unwrapped};
+use crate::shared::index_u32;
+use crate::tweak::{self, TweakError, loop_points, unwrapped};
 use craft3d_geom::Surface;
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId, edge_faces};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
@@ -78,10 +79,6 @@ pub struct Deleted {
     pub faces: Vec<FaceId>,
     pub edges: Vec<Option<EdgeId>>,
     pub vertices: Vec<Option<VertexId>>,
-}
-
-fn index_u32(index: usize) -> u32 {
-    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// The body being worked on, with where its entities came from in the
@@ -312,10 +309,7 @@ fn rebuilt(work: &Work, change: &Change) -> (Work, BTreeMap<VertexId, VertexId>)
 
 /// The unit outward normal of `face` at the point of it nearest `at`.
 fn outward(body: &Body, face: FaceId, at: Vec3) -> Option<Vec3> {
-    let face = body.face(face)?;
-    let (u, v) = face.surface.project(at).ok()?;
-    let normal = face.surface.normal(u, v)?;
-    Some(if face.reversed { -normal } else { normal })
+    body.face(face)?.outward(at)
 }
 
 /// Normals nearer to each other than this sine are one direction.
