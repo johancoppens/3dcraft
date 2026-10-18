@@ -144,6 +144,31 @@ pub fn triad_side(tokens: &Tokens) -> f32 {
     2.0 * (tokens.nav_triad_arm + tokens.nav_triad_font)
 }
 
+/// Where the problem text goes in the viewport `rect` whose controls are
+/// laid out as `layout`, for a text `natural` points wide on one line: its
+/// left, the width it is wrapped to and its bottom. Right of the triad and
+/// left of the display bar when it fits there on one line; otherwise over
+/// the bar, as wide as the viewport allows. `None` when there is no room.
+pub fn problem_place(
+    rect: Rect,
+    layout: &ControlsLayout,
+    tokens: &Tokens,
+    natural: f32,
+) -> Option<[f32; 3]> {
+    let (margin, gap) = (tokens.nav_margin, tokens.nav_gap);
+    let left = layout
+        .triad
+        .map_or(rect.left() + margin, |t| t.right() + gap);
+    let bottom = rect.bottom() - margin;
+    let (right, bottom) = match layout.bar {
+        Some(bar) if bar.left() - gap - left >= natural => (bar.left() - gap, bottom),
+        Some(bar) => (rect.right() - margin, bar.top() - gap),
+        None => (rect.right() - margin, bottom),
+    };
+    let width = right - left;
+    (width.is_finite() && width > 0.0 && bottom.is_finite()).then_some([left, width, bottom])
+}
+
 /// Where the controls go in the viewport `rect`, with the section on or
 /// off (see the top of this module).
 pub fn controls_layout(
@@ -236,7 +261,7 @@ impl Nav<'_> {
     /// a row whose top is `y`.
     fn vertical(&self, x: f32, y: f32) -> [Pos2; 2] {
         let mid = x + self.tokens.nav_gap * 0.5;
-        let inset = self.h() * 0.2;
+        let inset = self.h() * self.tokens.divider_inset;
         [pos2(mid, y + inset), pos2(mid, y + self.h() - inset)]
     }
 
@@ -578,7 +603,7 @@ fn choice(
     let w = rect.width() / n;
     let mut cells = Vec::new();
     let mut clicked = None;
-    let inner = egui::CornerRadius::same(radius.saturating_sub(2));
+    let inner = egui::CornerRadius::same(tokens.nav_segment_radius);
     for (k, (icon, label)) in items.iter().enumerate() {
         let cell = Rect::from_min_size(
             pos2(rect.left() + w * k as f32, rect.top()),
@@ -592,10 +617,14 @@ fn choice(
         );
         let on = active == Some(k);
         if on {
-            painter.rect_filled(cell.shrink(2.0), inner, color(tokens.accent));
+            painter.rect_filled(
+                cell.shrink(tokens.nav_segment_inset),
+                inner,
+                color(tokens.accent),
+            );
         } else if response.hovered() {
             painter.rect_filled(
-                cell.shrink(2.0),
+                cell.shrink(tokens.nav_segment_inset),
                 inner,
                 color_alpha(tokens.glass, tokens.control_opacity),
             );
@@ -651,7 +680,10 @@ impl Shell {
         for [a, b] in layout.dividers.into_iter().flatten() {
             painter.line_segment(
                 [a, b],
-                egui::Stroke::new(1.0, color_alpha(tokens.plate_rim, tokens.divider_opacity)),
+                egui::Stroke::new(
+                    tokens.divider_width,
+                    color_alpha(tokens.plate_rim, tokens.divider_opacity),
+                ),
             );
         }
         let named = !layout.compact;
@@ -846,9 +878,16 @@ impl Shell {
                 section.flip = !section.flip;
             }
             hits.push(("flip", side));
+        } else {
+            // No Offset field: nothing is typed into it, dragged or
+            // focused.
+            self.forget_field("offset");
         }
         self.section_hits = hits;
         self.commit_section(ui, section);
+        if !self.state.section.on {
+            self.forget_field("offset");
+        }
     }
 }
 
@@ -1007,6 +1046,32 @@ mod tests {
         }
     }
 
+    /// The problem text never runs under the display bar: beside it only
+    /// when it fits there, otherwise above the bar.
+    #[test]
+    fn the_problem_text_keeps_clear_of_the_bar() {
+        let tokens = Tokens::dark();
+        let widths = ControlWidths::fallback(&tokens);
+        for viewport in viewports() {
+            for on in [false, true] {
+                let layout = controls_layout(viewport, &tokens, &widths, on);
+                let bar = layout.bar.unwrap();
+                for natural in [80.0, 300.0, 900.0, 3000.0] {
+                    let [left, width, bottom] =
+                        problem_place(viewport, &layout, &tokens, natural).unwrap();
+                    let beside = left + width <= bar.left() + 0.01;
+                    let above = bottom <= bar.top() + 0.01;
+                    assert!(beside || above, "{viewport:?} {on} {natural}");
+                    if beside {
+                        assert!(natural <= width + 0.01);
+                    }
+                    assert!(left >= layout.triad.unwrap().right());
+                    assert!(left + width <= viewport.right());
+                }
+            }
+        }
+    }
+
     /// The triad's arms are about 45 to 50 points long in the iso view,
     /// in balance with the cube.
     #[test]
@@ -1015,9 +1080,14 @@ mod tests {
         let mut camera = crate::state::CameraState::default();
         camera.set_view("iso").unwrap();
         let arms = crate::view_cube::triad(&camera).unwrap();
+        // As drawn: the reach in the place the layout gives the triad.
+        let widths = ControlWidths::fallback(&tokens);
+        let layout = controls_layout(viewports()[1], &tokens, &widths, false);
+        let reach = super::super::controls::triad_reach(&tokens, layout.triad.unwrap());
+        assert_eq!(reach, tokens.nav_triad_arm);
         let longest = arms
             .iter()
-            .map(|a| a.tip[0].hypot(a.tip[1]) as f32 * tokens.nav_triad_arm)
+            .map(|a| a.tip[0].hypot(a.tip[1]) as f32 * reach)
             .fold(0.0, f32::max);
         assert!((45.0..=50.0).contains(&longest), "{longest}");
         assert!(triad_side(&tokens) <= 1.5 * tokens.nav_cube_size);

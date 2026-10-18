@@ -34,7 +34,7 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
     let stroke = Stroke::new(tokens.nav_icon_width, ink);
     let line = |points: Vec<Pos2>| Shape::line(points, stroke);
     let closed = |points: Vec<Pos2>| Shape::closed_line(points, stroke);
-    let faint = ink.gamma_multiply(0.35);
+    let faint = ink.gamma_multiply(tokens.disabled_opacity);
     let shapes: Vec<Shape> = match icon {
         Icon::Fit => {
             let (a, b) = (0.85, 0.4);

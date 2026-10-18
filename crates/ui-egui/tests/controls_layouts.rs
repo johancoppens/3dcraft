@@ -178,6 +178,8 @@ fn every_control_is_reachable() {
             let at = hit(shell.camera_hits(), "fit");
             window.click(&mut shell, &mut session, at);
             assert!(shell.state.camera.distance < 5000.0, "{label}");
+            // None of those clicks was a pick in the viewport.
+            assert_eq!(shell.state.picked, None, "{label}");
             // The section: on, its options, an axis, and the side.
             let at = hit(shell.section_hits(), "toggle");
             window.click(&mut shell, &mut session, at);
@@ -190,6 +192,7 @@ fn every_control_is_reachable() {
             let at = hit(shell.section_hits(), "flip");
             window.click(&mut shell, &mut session, at);
             assert!(shell.state.section.flip, "{label}");
+            assert_eq!(shell.state.picked, None, "{label}");
             assert!(shell.section_hits().iter().any(|(n, _)| *n == "offset"));
             // And off again: only the toggle is left to click.
             let at = hit(shell.section_hits(), "toggle");
@@ -255,4 +258,47 @@ fn a_window_picture_needs_the_window() {
         (json!(4), json!(3))
     );
     assert_eq!(result["mime"], "image/png");
+}
+
+/// A click on a plate between its controls (its padding, the gap with a
+/// divider) is not a pick in the viewport; a click just beside the plate
+/// is.
+#[test]
+fn the_plates_take_their_clicks_and_beside_them_is_the_viewport() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window {
+        ctx: egui::Context::default(),
+        size: vec2(1280.0, 800.0),
+        time: 0.0,
+    };
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let layout = shell.controls_layout().unwrap();
+    let pad = shell.tokens.nav_padding;
+    let (bar, camera) = (layout.bar.unwrap(), layout.camera_plate.unwrap());
+    let (see, section) = (layout.see_through.unwrap(), layout.section_toggle.unwrap());
+    let (iso, projection) = (layout.iso.unwrap(), layout.projection.unwrap());
+    let on_plates = [
+        Pos2::new(bar.left() + pad * 0.5, bar.center().y),
+        Pos2::new(bar.center().x, bar.top() + pad * 0.5),
+        Pos2::new((see.right() + section.left()) * 0.5, bar.center().y),
+        Pos2::new(camera.right() - pad * 0.5, camera.center().y),
+        Pos2::new((iso.right() + projection.left()) * 0.5, camera.center().y),
+    ];
+    let before = shell.state.clone();
+    for at in on_plates {
+        window.click(&mut shell, &mut session, at);
+        assert_eq!(shell.state.picked, None, "{at:?} picked");
+        assert_eq!(shell.state.show, before.show);
+        assert_eq!(shell.state.section, before.section);
+        assert_eq!(shell.state.camera.projection, before.camera.projection);
+    }
+    let beside = Pos2::new(bar.left() - 6.0, bar.center().y);
+    window.click(&mut shell, &mut session, beside);
+    assert!(
+        shell.state.picked.is_some(),
+        "beside the bar is the viewport"
+    );
 }

@@ -141,9 +141,13 @@ pub struct Tokens {
     pub plate_glass_opacity: u8,
     pub plate_rim: Rgb,
     pub plate_rim_opacity: u8,
-    /// The opacity of a divider between two groups on a plate (0 to 255,
-    /// the colour is `plate_rim`).
+    /// A divider between two groups on a plate or in the status bar: its
+    /// opacity (0 to 255; the colour is `plate_rim`, `text_dim` in the
+    /// status bar), its width in points, and how far it stays from the top
+    /// and bottom of its row, as a fraction of the row's height.
     pub divider_opacity: u8,
+    pub divider_width: f32,
+    pub divider_inset: f32,
     /// The glass tint of plates and controls, and the accent of what is
     /// on (a switch, a chosen segment, a number field's bar).
     pub glass: Rgb,
@@ -214,6 +218,10 @@ pub struct Tokens {
     /// is the control's plus the padding, so the two curves run parallel.
     pub nav_radius: u8,
     pub nav_control_radius: u8,
+    /// The chosen segment of a choice: how far inside its cell it is
+    /// filled, in points, and its corner radius (the control's less that).
+    pub nav_segment_inset: f32,
+    pub nav_segment_radius: u8,
     /// The side of the view cube's place; the length of an arm of the
     /// axis triad seen square on, the width of its arms and the size of
     /// its letters, in points (the triad's place is as large as an arm and
@@ -237,6 +245,8 @@ pub struct Tokens {
     /// points.
     pub status_gap: f32,
     pub status_least: f32,
+    /// The size of the problem text over the viewport, in points.
+    pub problem_font: f32,
 }
 
 impl Default for Tokens {
@@ -312,6 +322,8 @@ impl Tokens {
             plate_rim: [185, 205, 245],
             plate_rim_opacity: 30,
             divider_opacity: 45,
+            divider_width: 1.0,
+            divider_inset: 0.2,
             glass: [170, 190, 230],
             accent: [92, 140, 230],
             control_opacity: 32,
@@ -350,6 +362,8 @@ impl Tokens {
             nav_spacing: 2.0,
             nav_radius: 10,
             nav_control_radius: 6,
+            nav_segment_inset: 2.0,
+            nav_segment_radius: 4,
             nav_cube_size: 108.0,
             nav_triad_arm: 54.0,
             nav_triad_width: 2.5,
@@ -361,6 +375,7 @@ impl Tokens {
             nav_on_opacity: 96,
             status_gap: 13.0,
             status_least: 48.0,
+            problem_font: 13.0,
         }
     }
 

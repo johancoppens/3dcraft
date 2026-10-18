@@ -48,7 +48,8 @@ Options:
   --autosave-interval SECONDS How long after a change a document is
                               autosaved. Default: 30
   --window-size WIDTHxHEIGHT  The window's size when it opens, in points
-                              (e.g. 1920x1080). Default: 1280x800
+                              (e.g. 1920x1080; at least 480x320).
+                              Default: 1280x800
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
@@ -90,26 +91,28 @@ pub enum Parsed {
     Version,
 }
 
-/// The smallest and the largest side of the window `--window-size` takes.
-const WINDOW_SIDES: [u32; 2] = [320, 16384];
+/// The smallest window `--window-size` takes, width and height (the
+/// window's own least size), and the largest side.
+const WINDOW_LEAST: [u32; 2] = [480, 320];
+const WINDOW_MOST: u32 = 16384;
 
 fn window_size(text: &str, from: &str) -> Result<[u32; 2], String> {
     let shown: String = text.chars().take(40).collect();
     let bad = || {
         format!(
-            "{from}: `{shown}` is not a window size (WIDTHxHEIGHT, each from {} to {})",
-            WINDOW_SIDES[0], WINDOW_SIDES[1]
+            "{from}: `{shown}` is not a window size (WIDTHxHEIGHT, at least {}x{}, at most {} each)",
+            WINDOW_LEAST[0], WINDOW_LEAST[1], WINDOW_MOST
         )
     };
     let (w, h) = text.trim().split_once(['x', 'X']).ok_or_else(bad)?;
-    let side = |t: &str| {
+    let side = |t: &str, least: u32| {
         t.trim()
             .parse::<u32>()
             .ok()
-            .filter(|n| (WINDOW_SIDES[0]..=WINDOW_SIDES[1]).contains(n))
+            .filter(|n| (least..=WINDOW_MOST).contains(n))
             .ok_or_else(bad)
     };
-    Ok([side(w)?, side(h)?])
+    Ok([side(w, WINDOW_LEAST[0])?, side(h, WINDOW_LEAST[1])?])
 }
 
 fn port(text: &str, from: &str) -> Result<u16, String> {
@@ -281,6 +284,7 @@ mod tests {
             "1920",
             "x",
             "10x10",
+            "400x600",
             "1920x99999",
             "-5x100",
             "axb",

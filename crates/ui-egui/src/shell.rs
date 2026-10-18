@@ -1827,11 +1827,11 @@ impl Shell {
                         let x = gap.center().x;
                         ui.painter().line_segment(
                             [
-                                egui::pos2(x, gap.top() + height * 0.2),
-                                egui::pos2(x, gap.bottom() - height * 0.2),
+                                egui::pos2(x, gap.top() + height * tokens.divider_inset),
+                                egui::pos2(x, gap.bottom() - height * tokens.divider_inset),
                             ],
                             egui::Stroke::new(
-                                1.0,
+                                tokens.divider_width,
                                 color_alpha(tokens.text_dim, tokens.divider_opacity),
                             ),
                         );
@@ -2163,22 +2163,6 @@ impl Shell {
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
-        if let Some(problem) = self.problem() {
-            // Right of the triad where an arrangement puts it bottom left.
-            let margin = tokens.nav_margin;
-            let at = rect.left_bottom()
-                + egui::vec2(
-                    margin + layout::triad_side(&tokens) + tokens.nav_gap,
-                    -margin,
-                );
-            painter.text(
-                at,
-                egui::Align2::LEFT_BOTTOM,
-                problem,
-                egui::FontId::proportional(13.0),
-                color(tokens.failed),
-            );
-        }
         if !self.state.notice.is_empty() {
             let galley = painter.layout_no_wrap(
                 self.state.notice.clone(),
@@ -2204,8 +2188,31 @@ impl Shell {
             self.work_plate(ui, &painter, inner, work);
         }
 
-        // The view cube and the controls around it, bottom right.
+        // The view cube, the triad and the controls over the viewport.
         self.viewport_controls(ui, rect, scene);
+        if let Some(problem) = self.problem().map(str::to_string) {
+            self.problem_text(&painter, rect, &problem);
+        }
+    }
+
+    /// What went wrong, in the bottom left corner of the viewport `rect`:
+    /// right of the triad and left of the display bar, wrapped to fit
+    /// there; above the bar when there is no room beside it.
+    fn problem_text(&self, painter: &egui::Painter, rect: egui::Rect, problem: &str) {
+        let tokens = self.tokens;
+        let layout = self.controls_layout.unwrap_or_default();
+        let font = egui::FontId::proportional(tokens.problem_font);
+        let natural = painter
+            .layout_no_wrap(problem.to_string(), font.clone(), color(tokens.failed))
+            .size()
+            .x;
+        let Some([left, width, bottom]) = layout::problem_place(rect, &layout, &tokens, natural)
+        else {
+            return;
+        };
+        let galley = painter.layout(problem.to_string(), font, color(tokens.failed), width);
+        let top = bottom - galley.size().y;
+        painter.galley(egui::pos2(left, top), galley, color(tokens.failed));
     }
 
     /// Moves the camera along the turn a click on the view cube started:

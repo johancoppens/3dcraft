@@ -327,6 +327,14 @@ pub(super) fn plate(painter: &egui::Painter, rect: Rect, tokens: &Tokens) {
     );
 }
 
+/// How long an arm of the triad in `place` is drawn when it is seen
+/// square on, in points: `nav_triad_arm`, or less in a place too small
+/// for it and its letter.
+pub(super) fn triad_reach(tokens: &Tokens, place: Rect) -> f32 {
+    let room = place.height().min(place.width()) * 0.5 - tokens.nav_triad_font * 0.7;
+    tokens.nav_triad_arm.min(room).max(0.0)
+}
+
 /// The section's base planes by the axis they are across: X, Y and Z.
 pub(super) const SECTION_PLANES: [(&str, &str); 3] = [("x", "yz"), ("y", "zx"), ("z", "xy")];
 
@@ -467,6 +475,20 @@ impl Shell {
         .show(ui, rect, &tokens, &mut self.fields, &mut self.typing);
         if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
             section.offset = value;
+        }
+    }
+
+    /// Forgets the number field `id`: what was typed into it, a drag on
+    /// it and the focus, for a field that is no longer shown.
+    pub(super) fn forget_field(&mut self, id: &str) {
+        if self.typing.as_ref().is_some_and(|t| t.field == id) {
+            self.typing = None;
+        }
+        if self.fields.drag.is_some_and(|d| d.field == id) {
+            self.fields.drag = None;
+        }
+        if self.fields.focus == Some(id) {
+            self.fields.focus = None;
         }
     }
 
@@ -654,9 +676,7 @@ impl Shell {
         // An arm seen square on is `nav_triad_arm` long; the letters sit
         // just past the tips, inside the place, which is as large as the
         // arm and a letter on either side ([`super::layout`]).
-        let reach = tokens
-            .nav_triad_arm
-            .min(place.height() * 0.5 - font.size * 0.7);
+        let reach = triad_reach(&tokens, place);
         let width = tokens.nav_triad_width;
         painter.circle_filled(origin, width * 1.4, color(tokens.text));
         for arm in arms {

@@ -378,3 +378,30 @@ fn a_pasted_page_is_cut_and_its_error_is_short() {
     assert!(error.chars().count() <= 160, "{error}");
     assert_eq!(shell.state.transparency, 0.0);
 }
+
+/// Typing into Offset and then switching the section off (here through
+/// `ui.set`, as an agent would): the field is gone, and so is what was
+/// being typed into it and its focus.
+#[test]
+fn switching_the_section_off_ends_typing_into_offset() {
+    let (mut session, mut shell, mut window) = started();
+    let toggle = shell.controls_layout().unwrap().section_toggle.unwrap();
+    window.click(&mut shell, &mut session, toggle.center());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let offset = field(&shell, "offset");
+    window.double_click(&mut shell, &mut session, offset.center());
+    assert_eq!(shell.typing().map(|t| t.field), Some("offset"));
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&serde_json::json!({"section": {"on": false}})),
+        )
+        .unwrap()
+        .unwrap();
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.typing().is_none(), "{:?}", shell.typing());
+    // The wheel over where the field was does not step anything.
+    assert!(!shell.state.section.on);
+}
