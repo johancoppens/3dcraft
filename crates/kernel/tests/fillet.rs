@@ -1430,8 +1430,30 @@ fn a_cylinder_that_goes_on_in_a_torus_touches_it_along_their_border() {
         assert_close(mass(&bar).volume, bar_volume, "the bar");
         assert_close(mass(&tool).volume, tool_volume, "the tool");
         // They lie against each other: the union is both, the difference
-        // the bar, and they have nothing in common.
-        let union = boolean(&bar, &tool, BooleanOp::Union, &tol).unwrap();
+        // the bar, and they have nothing in common. Where the tool starts
+        // (the plane x = 0) the bar and the tool touch along the arc of
+        // the round as two quarters of the disc's neighbourhood that meet
+        // in their corner (the bar inside the round and behind the plane,
+        // the tool outside it and in front): the union is one shell
+        // (through the tool's far end, flat against the bar's) that
+        // touches itself along that arc, refused as zero thickness since
+        // 2026-10-17 there, and as before made without the refusal (the
+        // blend's tool steps do so).
+        match boolean(&bar, &tool, BooleanOp::Union, &tol) {
+            Err(KernelError::ZeroThickness { at, .. }) => {
+                let centre = Vec3::new(0.0, r * k, (2.0 - r) * k);
+                assert!(at.x.abs() < 1e-6 * k, "{at:?}");
+                assert!((at.distance(centre) - r * k).abs() < 1e-6 * k, "{at:?}");
+            }
+            other => panic!("at scale {k}: {other:?}"),
+        }
+        let unrefused = craft3d_kernel::boolean::BooleanOptions {
+            refuse_zero_thickness: false,
+            ..craft3d_kernel::boolean::BooleanOptions::default()
+        };
+        let union =
+            craft3d_kernel::boolean::boolean_with(&bar, &tool, BooleanOp::Union, &tol, &unrefused)
+                .unwrap();
         assert_eq!(check(&union.body, &tol), []);
         assert_eq!(union.body.shells.len(), 1);
         let both = mass(&union.body);

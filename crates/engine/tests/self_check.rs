@@ -61,9 +61,10 @@ fn notched_plate(tip: f64) -> Session {
 }
 
 /// The notch's point on the front face: the walls of the notch touch the
-/// front along a line, in one shell. The kernel builds it and the
-/// checker passes it; the boolean is refused, naming the faces that meet
-/// there. In from the front, or open to it, it is built.
+/// front along a line, in one shell. The kernel's checker passes it; the
+/// boolean refuses it as zero thickness (since 2026-10-17; before, the
+/// check of the result did, as a shell that touches itself), naming the
+/// faces that meet there. In from the front, or open to it, it is built.
 #[test]
 fn a_cut_that_leaves_the_part_touching_itself_is_refused() {
     let mut s = notched_plate(0.0);
@@ -71,11 +72,13 @@ fn a_cut_that_leaves_the_part_touching_itself_is_refused() {
     assert_eq!(notched["status"], "failed", "{notched}");
     let why = notched["error"].as_str().unwrap();
     assert!(
-        why.starts_with("tool: the result touches itself at (20, 0, "),
+        why.starts_with("the result would have zero thickness at (20, 0, "),
         "{why}"
     );
     assert!(why.contains(" and F"), "{why}");
-    assert!(why.contains(":copy("), "{why}");
+    // A face of the plate and a wall of the notch (the tool).
+    assert!(why.contains("F1:face("), "{why}");
+    assert!(why.contains(":side("), "{why}");
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], false, "{check}");
 
@@ -93,7 +96,8 @@ fn a_cut_that_leaves_the_part_touching_itself_is_refused() {
 /// inner and outer walls touch along the line x = 200, y = 0 from
 /// z = 27 to 66: two vertices at one point, two edges along one line,
 /// one shell. The checker passed it and no closed mesh could be made of
-/// it; the subtraction is now refused, at that line.
+/// it; the subtraction is now refused, at that line (by the boolean as
+/// zero thickness since 2026-10-17, by the check of its result before).
 #[test]
 fn the_hull_whose_walls_touched_at_the_bow_is_refused() {
     let steps: Vec<(String, Value)> =
@@ -106,14 +110,14 @@ fn the_hull_whose_walls_touched_at_the_bow_is_refused() {
     assert_eq!(hull["status"], "failed", "{hull}");
     let why = hull["error"].as_str().unwrap();
     assert!(
-        why.starts_with("tool: the result touches itself at (200, 0, "),
+        why.starts_with("the result would have zero thickness at (200, 0, "),
         "{why}"
     );
     let names: Vec<&str> = why
-        .split(", where ")
+        .split("in a point, at ")
         .nth(1)
         .unwrap()
-        .split(" meet in")
+        .split(", and no solid")
         .next()
         .unwrap()
         .split(" and ")

@@ -356,8 +356,19 @@ fn a_block_on_the_tangent_plane_of_a_saddle_of_the_roof() {
                 volume - common,
                 "dome less block",
             );
+            // The union keeps the gap between the plane and the roof on
+            // the two sides where the roof dips under it: two slivers of
+            // space that meet in the touch, a vertex with two fans of
+            // faces (one shell that touches itself in a point, as
+            // `craft3d_topo::touches` sees): refused since 2026-10-17,
+            // and held to the volume as made without the refusal.
             let (united, refused) = solve_parts(&dome, &block, Union, k);
-            assert_eq!(refused, None, "scale {k}");
+            let at = refused.unwrap_or_else(|| panic!("scale {k}"));
+            assert!(
+                at.distance(Vec3::new(x0, y0, z0) * k) < 1e-6 * k,
+                "scale {k}: {at:?}"
+            );
+            assert_self_touch(&united.body, k);
             assert_close(
                 mass(&united.body).volume / k3,
                 volume + side * side * tall - common,
@@ -598,9 +609,25 @@ fn a_block_on_the_tangent_plane_where_the_roof_curves_little() {
         assert_eq!(refused, None, "scale {k}");
         let rest = mass(&rest.body).volume / k3;
         near(rest, vd - common, 1e-8, "dome less block");
+        // The union keeps the gaps between face and roof where the roof
+        // dips under the face, which meet where it touches: one shell
+        // that touches itself (refused since 2026-10-17), held to the
+        // volume as made without the refusal.
         let (united, refused) = solve_parts(&dome.body, &block, Union, k);
-        assert_eq!(refused, None, "scale {k}");
+        assert!(refused.is_some(), "scale {k}");
+        assert_self_touch(&united.body, k);
         let united = mass(&united.body).volume / k3;
         near(united, vd + vb - common, 1e-8, "dome and block");
     }
+}
+
+/// `body` is one shell that touches itself: a vertex on another vertex
+/// or on an edge of the same shell (`craft3d_topo::touches`, the check
+/// regeneration holds every body to), the independent witness of a
+/// refusal as zero thickness within one shell.
+#[track_caller]
+fn assert_self_touch(body: &Body, k: f64) {
+    assert_eq!(body.shells.len(), 1, "scale {k}");
+    let found = craft3d_topo::touches(body, 2e-6 * k, 8, craft3d_topo::TouchScope::All).unwrap();
+    assert!(!found.is_empty(), "scale {k}: no touch");
 }

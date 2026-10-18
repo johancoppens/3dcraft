@@ -1058,11 +1058,13 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                 let made = boolean_with(&a, &b, op, &tolerance, &unrefused);
                 // The refusal is real when the point it names lies on two
                 // parts of the body made without it, by the rays of
-                // `contains_points` on each part alone.
-                zero = Some(
-                    made.as_ref()
-                        .map_or(0, |r| boolean_common::on_parts(&r.body, at, &tolerance)),
-                );
+                // `contains_points` on each part alone; or, where that body
+                // is one shell that touches itself (since 2026-10-17), on
+                // that shell.
+                zero = Some(made.as_ref().map_or((0, 2), |r| {
+                    let needed = if r.body.shells.len() > 1 { 2 } else { 1 };
+                    (boolean_common::on_parts(&r.body, at, &tolerance), needed)
+                }));
                 made
             }
             other => other,
@@ -1133,7 +1135,7 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             other => other,
         };
         let outcome = match zero {
-            Some(parts) if parts < 2 => Outcome::Invalid(format!(
+            Some((parts, needed)) if parts < needed => Outcome::Invalid(format!(
                 "refused as zero thickness at a point on {parts} parts of the body made without the refusal"
             )),
             Some(_) if outcome.agrees() => Outcome::ZeroThickness,

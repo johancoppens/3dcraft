@@ -163,8 +163,16 @@ fn a_result_whose_parts_hang_together_by_an_edge() {
         assert_mass(&again, 2.0, 12.0, k);
         assert_eq!(counts(&again), (16, 24, 12, 2));
         // Put back where it came from: the cutter and the two blocks fill
-        // each other's gaps (2 + 2 x 12 in volume) and are one body.
-        let whole = solve(&two.body, &cutter.body, Union, k);
+        // each other's gaps (2 + 2 x 12 in volume) and are one body, one
+        // shell. Within the plate's height (z from 0 to 1) the shared edge
+        // is buried; above and below it (the cutter runs from -1 to 2) the
+        // cutter's two blocks still touch along it, so the union touches
+        // itself there: refused since 2026-10-17 (a shell that touches
+        // itself, the fuzzer's seed 5279), where it was accepted before.
+        let (whole, refused) = solve_parts(&two.body, &cutter.body, Union, k);
+        let at = refused.unwrap();
+        assert!(at.distance(Vec3::new(k, k, at.z)) < 1e-9 * k);
+        assert!(at.z < 1e-9 * k || at.z > k - 1e-9 * k, "{at:?}");
         assert_close(mass(&whole.body).volume, 26.0 * k * k * k, "volume");
         assert_eq!(whole.body.shells.len(), 1);
     }
@@ -966,5 +974,103 @@ fn parts_a_few_tolerances_apart_and_a_cavity_are_not_refused() {
             mass(&plate).volume - mass(&inside).volume,
             "the block less the ball",
         );
+    }
+}
+
+/// The random-design fuzzer's seed 5279 (2026-10-17): a disc and a
+/// quarter turn of an L that overlap, and also touch along a line. A is
+/// the rectangle x 0..10, y 5..10 turned once about y: the disc
+/// x² + z² <= 100, 5 <= y <= 10. B is the L (radius 0..10 for z in
+/// -5..5, radius 0..5 for z in 5..7.5) on the yz plane turned a quarter
+/// about z, from the half plane x = 0, y >= 0 on. B's step, the cylinder
+/// x² + y² = 25 for z in 5..7.5, bulges up to y = 5 along its edge with
+/// B's start face, the line x = 0, y = 5, and lies below y = 5 everywhere
+/// else (y = 5 - x²/10 to second order): that edge lies in A's bottom,
+/// B's material below it and A's above. The union is one shell (B's lower
+/// part runs into A) that touches itself along that line: zero
+/// thickness, refused, where it used to be accepted with the line inside
+/// A's bottom face, which `document.check` then found touching. Made
+/// without the refusal it is valid, of volume V(A) + V(B) - V(A ∩ B):
+/// V(A) = 500π, V(B) = 250π + 15.625π, and A ∩ B is the half segment
+/// {x >= 0, y >= 5, x² + y² <= 100} (area 50π/3 - 12.5√3; the disc's
+/// bound x² <= 100 - z² is never the nearer for y >= 5) times the height
+/// 10 of B's lower part.
+#[test]
+fn a_union_that_overlaps_and_also_touches_along_a_line() {
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_kernel::revolve::revolve;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let polygon = |points: &[[f64; 2]], k: f64| -> Vec<SketchCurve> {
+        (0..points.len())
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: points[i].map(|c| c * k),
+                    end: points[(i + 1) % points.len()].map(|c| c * k),
+                },
+            })
+            .collect()
+    };
+    for k in SCALES {
+        let tol = tolerance(k);
+        let rectangle = polygon(&[[0.0, 5.0], [10.0, 5.0], [10.0, 10.0], [0.0, 10.0]], k);
+        let disc = revolve(
+            &detect_profiles(&rectangle, &tol).unwrap(),
+            &Frame::WORLD,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            TAU,
+            &tol,
+        )
+        .unwrap()
+        .body;
+        let ell = polygon(
+            &[
+                [0.0, -5.0],
+                [10.0, -5.0],
+                [10.0, 5.0],
+                [5.0, 5.0],
+                [5.0, 7.5],
+                [0.0, 7.5],
+            ],
+            k,
+        );
+        // The yz plane: x along y, y along z.
+        let yz = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let quarter = revolve(
+            &detect_profiles(&ell, &tol).unwrap(),
+            &yz,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            FRAC_PI_2,
+            &tol,
+        )
+        .unwrap()
+        .body;
+        for (x, y) in [(&disc, &quarter), (&quarter, &disc)] {
+            let (both, refused) = solve_parts(x, y, Union, k);
+            let at = refused.unwrap_or_else(|| panic!("not refused at scale {k}"));
+            assert!(
+                at.x.abs() < 1e-6 * k && (at.y - 5.0 * k).abs() < 1e-6 * k,
+                "{at:?} at scale {k}"
+            );
+            assert!(
+                at.z > 5.0 * k - 1e-6 * k && at.z < 7.5 * k + 1e-6 * k,
+                "{at:?}"
+            );
+            assert_eq!(both.body.shells.len(), 1);
+            let common = 10.0 * (50.0 * PI / 3.0 - 12.5 * 3.0_f64.sqrt());
+            let volume = 500.0 * PI + 265.625 * PI - common;
+            assert_close(mass(&both.body).volume, volume * k * k * k, "volume");
+            let met = solve(x, y, Intersect, k);
+            assert_close(mass(&met.body).volume, common * k * k * k, "common volume");
+        }
     }
 }

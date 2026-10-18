@@ -134,9 +134,13 @@ pub fn solve_parts(a: &Body, b: &Body, op: BooleanOp, k: f64) -> (BooleanResult,
                 &tol,
                 &format!("scale {k}, not refused"),
             );
+            // Parts that are shells of their own each have the place on
+            // their boundary; a shell that touches itself (one part) has
+            // it on its boundary at least (where exactly is the test's).
+            let parts = if result.body.shells.len() > 1 { 2 } else { 1 };
             assert!(
-                on_parts(&result.body, at, &tol) >= 2,
-                "{op:?} at scale {k}: refused at {at:?}, which is not on two parts"
+                on_parts(&result.body, at, &tol) >= parts,
+                "{op:?} at scale {k}: refused at {at:?}, which is not on {parts} parts"
             );
             (result, Some(at))
         }

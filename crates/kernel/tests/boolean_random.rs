@@ -396,9 +396,12 @@ fn volume_of(
             };
             let made = boolean_with(a, b, op, &tol, &unrefused)
                 .unwrap_or_else(|e| panic!("{what}: {op:?}: refused, and without it: {e}"));
+            // On two parts, or on the one shell that touches itself
+            // there (since 2026-10-17).
+            let parts = if made.body.shells.len() > 1 { 2 } else { 1 };
             assert!(
-                on_parts(&made.body, at, &tol) >= 2,
-                "{what}: {op:?}: refused as zero thickness at {at:?}, which is not on two parts"
+                on_parts(&made.body, at, &tol) >= parts,
+                "{what}: {op:?}: refused as zero thickness at {at:?}, which is not on {parts} parts"
             );
             *zero_thickness += 1;
             refused = true;

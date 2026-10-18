@@ -1385,3 +1385,79 @@ fn edges_after_one_a_chamfer_takes_whole_keep_their_requests() {
         }
     }
 }
+
+/// The random-design fuzzer's seed 14211 (2026-10-17): a ball that pokes
+/// out of a block's underside by a sliver, a cap of height h = 0.016 and rim
+/// radius sqrt(R² - (R - h)²) ≈ 0.49 on a ball of radius R = 7.5. The cap
+/// meets the plate at 3.7°, so the rim is a concave edge between a
+/// sphere and a plane: the freeform chamfer, its lines in the planes
+/// through the cap's axis. A distance of 0.625, more than the cap is
+/// wide from rim to top, put the cut line on the cap past the top: every
+/// line went through one point of the axis and the chamfer face was a
+/// double cone through itself, which `check` passed and the mass
+/// integrator could not measure. Now refused (rolling.rs, `folds`),
+/// naming the edge and the sphere, from just past the line from rim to
+/// top on; a distance short of it is built, valid and measured, and fills
+/// part of the groove (no more than the cylinder over the rim widened by
+/// it, as high as the cap).
+#[test]
+fn a_chamfer_wider_than_the_cap_it_cuts_into_is_refused() {
+    let (radius, h): (f64, f64) = (7.5, 7.5 - 5.0 - 2.4840230333138704);
+    let rim = (radius * radius - (radius - h) * (radius - h)).sqrt();
+    for k in SCALES {
+        let tol = tolerance(k);
+        // The finding's ball and block: the cap on the block's
+        // underside, away from the ball's poles (on its z axis).
+        let (x0, y0) = (-2.4741614602260826, -2.4840230333138704);
+        let plate = boxed(k, [x0, y0, -7.5], [x0 + 20.0, y0 + 10.0, 5.0]);
+        let centre = Frame::WORLD.at(Vec3::new(0.0, 5.0 * k, 0.0)).unwrap();
+        let ball = primitives::sphere(&centre, radius * k).unwrap();
+        let united = boolean(&ball, &plate, BooleanOp::Union, &tol).unwrap().body;
+        let before = mass(&united).volume;
+        let edge = edge_at(&united, k, [rim, -2.4840230333138704, 0.0]);
+        let faces = faces_of(&united, edge);
+        let sphere = *faces
+            .iter()
+            .find(|f| united.face(**f).unwrap().surface.kind() == "sphere")
+            .unwrap();
+        let sized = |d: f64| ChamferEdge {
+            edge,
+            first: faces[0],
+            size: ChamferSize::Distances {
+                first: d * k,
+                second: d * k,
+            },
+        };
+        // The line from the rim to the top of the cap is
+        // sqrt(rim² + h²) ≈ 0.4898 long: a cut line on the cap further
+        // than that from the rim is past the top.
+        let across = (rim * rim + h * h).sqrt();
+        assert!(across > 0.45 && across < 0.5);
+        for too_far in [0.5, 0.625] {
+            match chamfer(&united, &[sized(too_far)], &tol) {
+                Err(KernelError::Chamfer {
+                    edge: e,
+                    face,
+                    reason,
+                }) => {
+                    assert_eq!(e, Some(edge), "at scale {k}: {reason}");
+                    assert_eq!(face, Some(sphere), "at scale {k}: {reason}");
+                    assert!(reason.contains("fold"), "at scale {k}: {reason}");
+                }
+                Err(KernelError::ChamferTooLarge { edge: e, face, .. }) => {
+                    assert_eq!((e, face), (edge, sphere), "at scale {k}");
+                }
+                other => panic!("at scale {k}: expected a refusal, got {other:?}"),
+            }
+        }
+        for d in [0.2, 0.45] {
+            let fits = solve(&united, &[sized(d)], k);
+            let after = mass(&fits.body).volume;
+            let most = PI * (rim + d) * (rim + d) * h * k * k * k;
+            assert!(
+                after > before && after < before + most,
+                "at scale {k}: {before} to {after}"
+            );
+        }
+    }
+}

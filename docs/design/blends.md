@@ -249,6 +249,16 @@ A round with no new behaviour, to fewer special cases and less code; every outpu
 
 **Tests:** `crates/kernel/tests/chamfer.rs` › `edges_after_one_a_chamfer_takes_whole_keep_their_requests` (the case above at three scales: the convex volume of all the planes in closed form, every chamfer face in the plane of the edge it names), `fillet.rs` › `edges_after_one_a_fillet_takes_whole_keep_their_requests` (the same as fillets: every fillet face a cylinder of its request's radius along its request's edge, the solid the same as in two features), `blend/tests.rs` › `requests_after_a_blend_in_place_follow_the_renumbering` (the renaming, the refusal and the names of a refusal).
 
+### A blend face that folds through itself (fuzzer seed 14211, 2026-10-17)
+
+**Found** (the random-design fuzzer, `wrong-unmeasurable/14211`): a ball of radius 7.5 united with a block it pokes out of by 0.016, then a chamfer of 0.625 on the rim of that cap (a concave circle between the sphere and the block's underside, built by `rolling`): accepted, valid by `check`, but `mass_properties` could not measure the chamfer face ("a boundary integral that does not settle"). **Which side was wrong: the chamfer.** The cap is sqrt(rim² + h²) ≈ 0.49 from rim to top along each section; a cut line 0.625 from the rim lies past the top on the far side, every chamfer line goes through one point of the cap's axis, and the face is a double cone through itself, its normal zero at the apex. The integrator was right to give up.
+
+**Fixed** (`folds` in `blend/rolling.rs`, a new refusal `Reason::FreeFolds`, which `fit` counts as no room). The rule: *along every sample section of a blend face, and halfway between two, the surface normal keeps the side it has in the middle of that section* (a chamfer's against its normal there, a fillet's against the radius from the ball's centre); *a normal that vanishes is a fold.* General because the sections are a family of curves across the edge, one per plane across it; where those planes are not parallel they meet in a line (the axis of a circular edge), and a section that reaches past that line crosses its neighbours, so the surface folds with its normal passing through zero. Only the sections over the edge itself are held (those past the ends are cut away). Both rolling paths, the closed ring and the open edge, and fillets as well as chamfers.
+
+**Tests:** `crates/kernel/tests/chamfer.rs` › `a_chamfer_wider_than_the_cap_it_cuts_into_is_refused` (the finding's ball and block at three scales: 0.5 and 0.625 refused naming the edge and the sphere, 0.2 and 0.45 built, valid, measured, and within the groove they fill); `crates/engine/tests/fuzz_findings.rs` replays the reproducer.
+
+**Open.** The same cap in a plate 20 wide on all sides is refused at every distance as not approximable within the tolerance; a fillet on such a cap is not pinned by a test.
+
 ## History
 
 - 2026-10-14 Chamfers, the first blend: a tool per edge and the boolean (route (b)); a local operation (route (a)) left for what tools cannot do.
