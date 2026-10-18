@@ -1001,31 +1001,46 @@ fn within_a_shell(
     // of each other), up to `most`: one sliver of a wedge or a groove, not
     // two walls.
     let wedged = |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64| -> bool {
-        let (Some(sf), Some(sg)) = (body.face(face_id(f)), body.face(face_id(g))) else {
-            return true;
-        };
+        let most = most.max(reach);
         let normal = |face: &craft3d_topo::Face, x: Vec3| {
             let (u, v) = face.surface.project(x).ok()?;
             let n = face.surface.normal(u, v)?;
             Some(if face.reversed { -n } else { n })
         };
-        edges.iter().any(|&e| match on_edge(e, p) {
-            Err(()) => true,
-            Ok(None) => false,
-            Ok(Some(q)) => {
-                let (Some(nf), Some(ng)) = (normal(sf, q), normal(sg, q)) else {
-                    return true;
-                };
-                let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
-                let margin = if half > 0.0 {
-                    near / half
-                } else {
-                    f64::INFINITY
-                };
-                q.distance(p) <= margin.max(reach).min(most.max(reach))
+        let faces = body.face(face_id(f)).zip(body.face(face_id(g)));
+        edges.iter().any(|&e| {
+            // An edge further than `most` joins nothing here, whatever
+            // else is known of it.
+            let within = body
+                .edge_bbox(craft3d_topo::EdgeId(e))
+                .is_ok_and(|b| b.contains(p, most));
+            if !within {
+                return false;
+            }
+            match on_edge(e, p) {
+                // Its nearest point not known: joined only as close as
+                // its box allows.
+                Err(()) => true,
+                Ok(None) => false,
+                Ok(Some(q)) => {
+                    let angle = faces.and_then(|(sf, sg)| Some((normal(sf, q)?, normal(sg, q)?)));
+                    let Some((nf, ng)) = angle else {
+                        // No normal there (an apex, a pole): the widest
+                        // margin, and no further.
+                        return q.distance(p) <= most;
+                    };
+                    let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                    let margin = if half > 0.0 {
+                        near / half
+                    } else {
+                        f64::INFINITY
+                    };
+                    q.distance(p) <= margin.max(reach).min(most)
+                }
             }
         })
     };
+
     for &p in meetings {
         if !p.is_finite() {
             continue;

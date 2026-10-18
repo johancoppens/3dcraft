@@ -1125,9 +1125,8 @@ fn a_bar_on_its_edge_along_a_plate_and_into_a_pillar() {
                 "{at:?}"
             );
             assert_eq!(both.body.shells.len(), 1);
-            assert_eq!(
-                sectors_at(&both.body, at, &tol).0,
-                2,
+            assert!(
+                material_pieces_at(&both.body, at, &tol),
                 "two pieces of material at scale {k}"
             );
             assert_close(
@@ -1164,8 +1163,92 @@ fn the_witness_of_a_self_touch_says_no_on_a_plain_boundary() {
                 !touches_itself_at(&ell, at, &tol),
                 "a touch found at {p:?} at scale {k}"
             );
-            let (material, space) = sectors_at(&ell, at, &tol);
-            assert_eq!((material, space), (1, 1), "at {p:?} at scale {k}");
+            assert!(!material_pieces_at(&ell, at, &tol), "at {p:?} at scale {k}");
+            assert!(!walls_meet_at(&ell, at, &tol), "at {p:?} at scale {k}");
         }
+    }
+}
+
+/// The net must say no where nothing touches, near what could fool it,
+/// at three scales (second review, 2026-10-18): a U whose slot is 2.5,
+/// 10, 300 or 1000 tolerances wide (on a wall of the slot, the middle of
+/// its floor, its inner corners); a rib 1e-3 thick standing 2e-3 from the
+/// place on a plate; plates 1e-3 and 3e-3 thick; and the wall that thins
+/// to nothing between a hole and the plate's side it touches (accepted by
+/// the boolean, D-open-12).
+#[test]
+fn the_witness_says_no_by_a_slot_a_rib_a_thin_plate_and_a_thinning_wall() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    let prism = |points: &[[f64; 2]], height: f64, k: f64, tol: &craft3d_math::Tolerance| {
+        let curves: Vec<SketchCurve> = (0..points.len())
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: points[i].map(|c| c * k),
+                    end: points[(i + 1) % points.len()].map(|c| c * k),
+                },
+            })
+            .collect();
+        let profiles = detect_profiles(&curves, tol).unwrap();
+        extrude(&profiles, &Frame::WORLD, 0.0, height * k, tol)
+            .unwrap()
+            .body
+    };
+    for k in SCALES {
+        let tol = tolerance(k);
+        let says_no = |body: &Body, p: [f64; 3], what: &str| {
+            let at = Vec3::new(p[0] * k, p[1] * k, p[2] * k);
+            assert!(
+                !touches_itself_at(body, at, &tol),
+                "{what}: a touch found at {p:?} at scale {k}"
+            );
+        };
+        for width in [2.5e-6, 1e-5, 3e-4, 1e-3] {
+            let (lo, hi) = (1.5 - 0.5 * width, 1.5 + 0.5 * width);
+            let u = prism(
+                &[
+                    [0.0, 0.0],
+                    [4.0, 0.0],
+                    [4.0, lo],
+                    [1.0, lo],
+                    [1.0, hi],
+                    [4.0, hi],
+                    [4.0, 3.0],
+                    [0.0, 3.0],
+                ],
+                1.0,
+                k,
+                &tol,
+            );
+            let what = format!("a slot {width} wide");
+            for p in [
+                [2.0, lo, 0.5],
+                [2.0, hi, 0.5],
+                [1.0, 1.5, 0.5],
+                [1.0, lo, 0.5],
+                [1.0, hi, 1.0],
+            ] {
+                says_no(&u, p, &what);
+            }
+        }
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let rib = boxed(k, [2.002, 0.0, 1.0], [2.003, 3.0, 2.0]);
+        let ribbed = solve(&plate, &rib, Union, k).body;
+        says_no(&ribbed, [2.0, 1.5, 1.0], "a rib 2e-3 off");
+        says_no(&ribbed, [2.002, 1.5, 1.0], "the rib's foot");
+        for thickness in [1e-3, 3e-3] {
+            let thin = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, thickness]);
+            says_no(&thin, [2.0, 1.5, thickness], "a thin plate's top");
+            says_no(&thin, [2.0, 0.0, 0.5 * thickness], "a thin plate's side");
+            says_no(&thin, [4.0, 3.0, thickness], "a thin plate's corner");
+        }
+        // The hole of `a_hole_that_touches_the_side_...`, its wall
+        // touching the plate's side along x = 0, y = 1.5.
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let drill = rod(k, [1.0, 1.5, -1.0], 1.0, 4.0);
+        let holed = solve(&block, &drill, Subtract, k).body;
+        says_no(&holed, [0.0, 1.5, 1.0], "a wall that thins to nothing");
+        says_no(&holed, [0.0, 1.5, 0.0], "where that wall meets the floor");
     }
 }
