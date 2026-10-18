@@ -14,7 +14,7 @@ use super::{
     Vertices, face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
-use craft3d_geom::certify::{CurveBound, SurfaceBound};
+use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{Curve3, Surface};
@@ -1285,14 +1285,14 @@ fn lying_edges(
                 if !near {
                     return false;
                 }
-                let (Some(bound), Some(start)) = (
-                    SurfaceBound::new(other.surface),
-                    other.project(edge.curve.eval(from)),
-                ) else {
+                let Some(start) = other.project(edge.curve.eval(from)) else {
                     return false;
                 };
-                bound
-                    .curve_within(&shape, (from, to), start, &[], tol, LYING_PIECES)
+                let within = Within {
+                    target: tol,
+                    most: LYING_PIECES,
+                };
+                curve_on_surface(&shape, (from, to), other.surface, Some(start), &[], within)
                     .is_ok()
             };
             // Consecutive pieces that lie on the surface, as one.
