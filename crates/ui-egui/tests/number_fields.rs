@@ -256,27 +256,28 @@ fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
 }
 
 #[test]
-fn the_section_controls_are_dimmed_and_inert_while_it_is_off() {
+fn the_section_options_are_not_there_while_it_is_off() {
     let (mut session, mut shell, mut window) = started();
     assert!(!shell.state.section.on);
     let layout = shell.controls_layout().unwrap();
-    // The plate and its controls are there, but only the switch answers.
-    assert!(layout.section_plate.is_some() && layout.offset.is_some());
+    // Only the toggle: no axis, no offset field, no flip, nothing to type
+    // into.
+    assert!(layout.section_toggle.is_some());
+    assert!(layout.axes.is_none() && layout.offset.is_none() && layout.side.is_none());
     let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["toggle"]);
-    let before = shell.state.clone();
-    for rect in [
-        layout.axes.unwrap(),
-        layout.offset.unwrap(),
-        layout.side.unwrap(),
-    ] {
-        window.click(&mut shell, &mut session, rect.center());
-        window.double_click(&mut shell, &mut session, rect.center());
-        window.drag(&mut shell, &mut session, rect.center(), 40.0);
-    }
+    // On, they are there; off again, gone, and the state keeps the plane.
+    let toggle = layout.section_toggle.unwrap().center();
+    window.click(&mut shell, &mut session, toggle);
+    window.frame(&mut shell, &mut session, Vec::new());
+    let on = shell.controls_layout().unwrap();
+    assert!(on.axes.is_some() && on.offset.is_some() && on.side.is_some());
+    window.click(&mut shell, &mut session, toggle);
+    window.frame(&mut shell, &mut session, Vec::new());
+    let off = shell.controls_layout().unwrap();
+    assert!(off.offset.is_none());
+    assert!(!shell.state.section.on && shell.state.section.plane.is_some());
     assert!(shell.typing().is_none());
-    assert_eq!(shell.state.section, before.section);
-    assert_eq!(shell.state.picked, None);
 }
 
 /// Shift pressed in the middle of a drag goes on from the value reached
@@ -376,4 +377,31 @@ fn a_pasted_page_is_cut_and_its_error_is_short() {
     let error = shell.typing().unwrap().error.clone().unwrap();
     assert!(error.chars().count() <= 160, "{error}");
     assert_eq!(shell.state.transparency, 0.0);
+}
+
+/// Typing into Offset and then switching the section off (here through
+/// `ui.set`, as an agent would): the field is gone, and so is what was
+/// being typed into it and its focus.
+#[test]
+fn switching_the_section_off_ends_typing_into_offset() {
+    let (mut session, mut shell, mut window) = started();
+    let toggle = shell.controls_layout().unwrap().section_toggle.unwrap();
+    window.click(&mut shell, &mut session, toggle.center());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let offset = field(&shell, "offset");
+    window.double_click(&mut shell, &mut session, offset.center());
+    assert_eq!(shell.typing().map(|t| t.field), Some("offset"));
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&serde_json::json!({"section": {"on": false}})),
+        )
+        .unwrap()
+        .unwrap();
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.typing().is_none(), "{:?}", shell.typing());
+    // The wheel over where the field was does not step anything.
+    assert!(!shell.state.section.on);
 }

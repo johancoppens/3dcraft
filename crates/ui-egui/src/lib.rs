@@ -42,8 +42,8 @@ pub mod viewport;
 pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{UI_METHODS, UiMethod};
 pub use shell::{
-    CloseAnswer, CommandReport, DocAction, FileAction, RecoveryAction, RenderStats, Shell, TabPart,
-    TreeRow, autosave_text, window_title,
+    CloseAnswer, CommandReport, DocAction, FileAction, RecoveryAction, RenderStats, STATUS_YIELD,
+    Shell, StatusFit, StatusSlot, TabPart, TreeRow, autosave_text, fit_status, window_title,
 };
 pub use state::{CameraState, Closing, DocTab, Panels, ProjectionKind, Show, UiState, Work};
 pub use theme::Tokens;

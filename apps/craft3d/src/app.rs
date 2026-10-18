@@ -146,7 +146,43 @@ pub struct Desk {
     /// window draw: a quick command is answered in the same turn, a slow
     /// one does not hold up a frame.
     patience: Duration,
+    /// A picture of the window asked for (`ui.screenshot {window: true}`),
+    /// while it waits for its frame; the requests after it wait with it.
+    capture: Option<Capture>,
+    /// How long a capture waits for a frame ([`CAPTURE_DEADLINE`]).
+    capture_deadline: Duration,
 }
+
+/// A request for a picture of the window: it is answered once egui hands
+/// over a frame it drew after the request came in, and the session is
+/// back on this thread (the path is written through it); or with an error
+/// when no frame came within [`CAPTURE_DEADLINE`].
+struct Capture {
+    request: Request,
+    path: Option<String>,
+    /// Frames drawn since it came in: the frame is asked for after a few,
+    /// so that what came before it (a `ui.set`) is drawn and has settled.
+    frames: u32,
+    /// The frame count when the picture was last asked for: egui drops a
+    /// request on a surface that timed out, is outdated, occluded, lost or
+    /// recreated, so it is asked again after [`CAPTURE_RETRY_FRAMES`].
+    asked: Option<u32>,
+    /// When it came in.
+    since: Instant,
+    /// The picture, once egui handed it over, waiting for the session.
+    image: Option<Arc<egui::ColorImage>>,
+}
+
+/// Frames a picture of the window waits before it is asked for.
+const CAPTURE_FRAMES: u32 = 3;
+/// Frames drawn after asking without a picture before it is asked again.
+const CAPTURE_RETRY_FRAMES: u32 = 30;
+/// How long a picture of the window waits for a frame before it is
+/// answered with an error.
+const CAPTURE_DEADLINE: Duration = Duration::from_secs(8);
+
+/// The error of a picture of the window that got no frame in time.
+const NO_FRAME: &str = "ui.screenshot: the window drew no frame in time; is it minimised, hidden or on another workspace?";
 
 /// Who waits for the task on the engine thread.
 enum Waiting {
@@ -184,6 +220,8 @@ impl Desk {
             refiner: None,
             waiting: None,
             patience: PATIENCE,
+            capture: None,
+            capture_deadline: CAPTURE_DEADLINE,
         }
     }
 
@@ -213,6 +251,14 @@ impl Desk {
         self
     }
 
+    /// How long a picture of the window waits for a frame.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_capture_deadline(mut self, deadline: Duration) -> Self {
+        self.capture_deadline = deadline;
+        self
+    }
+
     /// How long a turn waits for a task it started ([`PATIENCE`]).
     #[must_use]
     pub fn with_patience(mut self, patience: Duration) -> Self {
@@ -231,7 +277,25 @@ impl Desk {
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
         if self.worker.is_none() {
-            let answered = self.host.pump(&self.requests) > 0;
+            let mut answered = self.settle_capture();
+            while let Ok(request) = self.requests.try_recv() {
+                self.queue.push_back(request);
+            }
+            let mut served = 0;
+            while served < MAX_PER_TURN {
+                if self.capture.is_some() {
+                    self.answer_anytime_now();
+                    break;
+                }
+                let Some(request) = self.queue.pop_front() else {
+                    break;
+                };
+                served += 1;
+                answered = true;
+                if let Some(request) = self.intercept_capture(request) {
+                    self.host.answer(request);
+                }
+            }
             let filed = self.host.pump_files(&mut self.picker);
             return Turn {
                 changed: answered || filed,
@@ -239,6 +303,9 @@ impl Desk {
             };
         }
         let mut changed = self.collect();
+        if self.settle_capture() {
+            changed = true;
+        }
         let mut served = 0;
         let mut scenes = 0;
         loop {
@@ -279,9 +346,23 @@ impl Desk {
             if self.queue.front().is_some_and(|r| is_screenshot(&r.line)) && self.refining() {
                 break;
             }
+            // A picture of the window waits for its frame, and what came
+            // after it waits with it.
+            if self.capture.is_some() {
+                // `ui.get` and `ui.quit` do not wait for it, nor does what
+                // a dialog of the File menu answered.
+                self.answer_anytime_now();
+                if self.pump_files() {
+                    changed = true;
+                }
+                break;
+            }
             if let Some(request) = self.queue.pop_front() {
                 served += 1;
                 changed = true;
+                let Some(request) = self.intercept_capture(request) else {
+                    continue;
+                };
                 match route(&request.line) {
                     Route::Engine => {
                         let label = request_label(&request.line);
@@ -591,6 +672,113 @@ impl Desk {
     }
 }
 
+/// The `id` of a request, `null` when it has none.
+fn request_id(line: &str) -> Value {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| request.get("id").cloned())
+        .unwrap_or(Value::Null)
+}
+
+impl Desk {
+    /// Before a frame: asks egui for a picture of the frame once a
+    /// capture has waited its frames.
+    fn ask_capture(&mut self, ctx: &egui::Context) {
+        let Some(capture) = self.capture.as_mut() else {
+            return;
+        };
+        if capture.image.is_some() {
+            return;
+        }
+        capture.frames = capture.frames.saturating_add(1);
+        let ask = match capture.asked {
+            None => capture.frames >= CAPTURE_FRAMES,
+            Some(at) => capture.frames.saturating_sub(at) >= CAPTURE_RETRY_FRAMES,
+        };
+        if ask {
+            capture.asked = Some(capture.frames);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        }
+        ctx.request_repaint();
+    }
+
+    /// A frame egui drew, as asked for: kept for the capture, which is
+    /// answered in the next turn the session is here.
+    fn captured(&mut self, image: Arc<egui::ColorImage>) {
+        if let Some(capture) = self.capture.as_mut().filter(|c| c.image.is_none()) {
+            capture.image = Some(image);
+        }
+    }
+
+    /// Answers the capture: with its picture once there is one and the
+    /// session is here, with an error once its deadline has passed.
+    /// Returns whether it was answered.
+    fn settle_capture(&mut self) -> bool {
+        let Some(capture) = self.capture.as_ref() else {
+            return false;
+        };
+        let ready = capture.image.is_some() && !self.away();
+        let late = capture.since.elapsed() >= self.capture_deadline;
+        if !(ready || late) {
+            return false;
+        }
+        let Some(capture) = self.capture.take() else {
+            return false;
+        };
+        let id = request_id(&capture.request.line);
+        let reply = match (&capture.image, ready) {
+            (Some(image), true) => match self.host.shell.window_picture(
+                &mut self.host.session,
+                image,
+                capture.path.as_deref(),
+            ) {
+                Ok(result) => rpc::ok_reply(&id, &result),
+                Err(error) => rpc::error_reply(&id, &error),
+            },
+            _ => rpc::error_reply(&id, NO_FRAME),
+        };
+        let _ = capture.request.reply.send(Some(reply));
+        true
+    }
+
+    /// Takes `request` when it asks for a picture of the window: it becomes
+    /// the capture, or is answered with why its parameters are wrong.
+    /// Gives any other request back. Only with the session here.
+    fn intercept_capture(&mut self, request: Request) -> Option<Request> {
+        match Shell::window_picture_request(&self.host.session, &request.line) {
+            Some(Ok(path)) => {
+                self.capture = Some(Capture {
+                    request,
+                    path,
+                    frames: 0,
+                    asked: None,
+                    since: Instant::now(),
+                    image: None,
+                });
+                None
+            }
+            Some(Err(error)) => {
+                let id = request_id(&request.line);
+                let _ = request.reply.send(Some(rpc::error_reply(&id, &error)));
+                None
+            }
+            None => Some(request),
+        }
+    }
+
+    /// Answers the queued `ui.get` and `ui.quit` now, from the session
+    /// here, while the rest waits for the capture.
+    fn answer_anytime_now(&mut self) {
+        for request in std::mem::take(&mut self.queue) {
+            if route(&request.line) == Route::Anytime {
+                self.host.answer(request);
+            } else {
+                self.queue.push_back(request);
+            }
+        }
+    }
+}
+
 /// True for a `ui.screenshot` request.
 fn is_screenshot(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
@@ -652,6 +840,7 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        desk.ask_capture(ctx);
         let title = if desk.away() {
             window_title(desk.host.shell.shown_status())
         } else {
@@ -668,6 +857,15 @@ impl eframe::App for Viewer {
         let Ok(mut desk) = self.desk.try_borrow_mut() else {
             return;
         };
+        let shot = ui.input(|i| {
+            i.raw.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(Arc::clone(image)),
+                _ => None,
+            })
+        });
+        if let Some(image) = shot {
+            desk.captured(image);
+        }
         if desk.away() {
             desk.host.shell.ui_away(ui);
         } else {
@@ -832,7 +1030,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
             .with_app_id("craft3d")
-            .with_inner_size([1280.0, 800.0])
+            .with_inner_size(
+                options
+                    .window_size
+                    .map_or([1280.0, 800.0], |[w, h]| [w as f32, h as f32]),
+            )
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
@@ -1040,6 +1242,151 @@ mod tests {
         assert!(reply.contains(r#""quitting":true"#), "{reply}");
         // It stays asked for: whichever turn the event loop looks at.
         assert!(desk.turn().quit);
+    }
+
+    /// Turns until `answer` has its reply, or a few seconds have passed.
+    fn turn_until(desk: &mut Desk, answer: &Receiver<Option<String>>) -> Option<String> {
+        for _ in 0..500 {
+            desk.turn();
+            if let Ok(reply) = answer.try_recv() {
+                return reply;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// `ui.screenshot {window: true}` is answered with the frame egui hands
+    /// over after it asked for one; meanwhile the requests after it wait,
+    /// but `ui.get` does not, and parameters it does not take are refused
+    /// at once.
+    #[test]
+    fn a_window_picture_waits_for_its_frame_and_holds_what_comes_after() {
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace::none()));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let wrong = ask(
+            &requests,
+            r#"{"id":1,"method":"ui.screenshot","params":{"window":true,"width":30}}"#,
+        );
+        let reply = turn_until(&mut desk, &wrong).unwrap();
+        assert!(
+            reply.contains(r#""ok":false"#) && reply.contains("width"),
+            "{reply}"
+        );
+        let shot = ask(
+            &requests,
+            r#"{"id":2,"method":"ui.screenshot","params":{"window":true}}"#,
+        );
+        let after = ask(
+            &requests,
+            r#"{"id":3,"method":"ui.notice","params":{"text":"next"}}"#,
+        );
+        let get = ask(&requests, r#"{"id":4,"method":"ui.get"}"#);
+        assert!(turn_until(&mut desk, &get).is_some());
+        assert!(shot.try_recv().is_err() && after.try_recv().is_err());
+        // Asked for after a few frames, once.
+        let ctx = egui::Context::default();
+        for _ in 0..CAPTURE_FRAMES {
+            desk.ask_capture(&ctx);
+        }
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked.is_some()));
+        let image = egui::ColorImage::new([5, 2], vec![egui::Color32::from_rgb(1, 2, 3); 10]);
+        desk.captured(Arc::new(image));
+        let reply = turn_until(&mut desk, &shot).unwrap();
+        assert!(
+            reply.contains(r#""ok":true"#) && reply.contains(r#""width":5"#),
+            "{reply}"
+        );
+        let reply = turn_until(&mut desk, &after).unwrap();
+        assert!(reply.contains(r#""ok":true"#), "{reply}");
+    }
+
+    /// A picture that arrives while the session is on the engine thread
+    /// waits for it: the path is written through the real session, never
+    /// the stand-in the desk holds meanwhile.
+    #[test]
+    fn a_window_picture_is_answered_only_with_the_session_here() {
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace::none()));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let shot = ask(
+            &requests,
+            r#"{"id":1,"method":"ui.screenshot","params":{"window":true}}"#,
+        );
+        let get = ask(&requests, r#"{"id":2,"method":"ui.get"}"#);
+        assert!(turn_until(&mut desk, &get).is_some());
+        assert!(desk.capture.is_some());
+        // Work on the engine thread, and the picture comes meanwhile.
+        desk.start(
+            Waiting::Scene,
+            "slow".to_string(),
+            Box::new(|_| {
+                std::thread::sleep(Duration::from_millis(200));
+                Outcome::Built
+            }),
+        );
+        assert!(desk.away());
+        let image = egui::ColorImage::new([2, 2], vec![egui::Color32::from_rgb(1, 2, 3); 4]);
+        desk.captured(Arc::new(image));
+        desk.turn();
+        if desk.away() {
+            assert!(shot.try_recv().is_err(), "answered while away");
+        }
+        let reply = turn_until(&mut desk, &shot).unwrap();
+        assert!(reply.contains(r#""ok":true"#), "{reply}");
+        assert!(!desk.away());
+    }
+
+    /// A picture of the window whose frame never comes (egui dropped it:
+    /// a surface that timed out or was occluded) is asked for again after
+    /// some frames, and answered with an error once its deadline passed;
+    /// then what waited behind it is answered. Likewise without an engine
+    /// thread, where it is recognised as one too.
+    #[test]
+    fn a_window_picture_without_a_frame_ends_in_an_error_and_the_queue_drains() {
+        for engine in [true, false] {
+            let (requests, incoming) = mpsc::channel();
+            let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+            let host = Host::new(Session::new(Workspace::none()));
+            let mut desk =
+                Desk::new(host, incoming, picker).with_capture_deadline(Duration::from_millis(300));
+            if engine {
+                desk = desk.with_engine_thread(Arc::new(|| {}));
+            }
+            let shot = ask(
+                &requests,
+                r#"{"id":1,"method":"ui.screenshot","params":{"window":true}}"#,
+            );
+            let after = ask(
+                &requests,
+                r#"{"id":2,"method":"ui.notice","params":{"text":"x"}}"#,
+            );
+            desk.turn();
+            assert!(desk.capture.is_some(), "engine {engine}");
+            // Frames come, the picture is asked for, and again later.
+            let ctx = egui::Context::default();
+            for _ in 0..CAPTURE_FRAMES {
+                desk.ask_capture(&ctx);
+            }
+            let first = desk.capture.as_ref().and_then(|c| c.asked);
+            for _ in 0..CAPTURE_RETRY_FRAMES {
+                desk.ask_capture(&ctx);
+            }
+            let again = desk.capture.as_ref().and_then(|c| c.asked);
+            assert!(first.is_some() && again > first, "{first:?} {again:?}");
+            assert!(after.try_recv().is_err());
+            let reply = turn_until(&mut desk, &shot).unwrap();
+            assert!(
+                reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
+                "{reply}"
+            );
+            let reply = turn_until(&mut desk, &after).unwrap();
+            assert!(reply.contains(r#""ok":true"#), "{reply}");
+            assert!(desk.capture.is_none());
+        }
     }
 
     /// Every wake posts an event of its own to the event loop, also when
