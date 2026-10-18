@@ -195,3 +195,42 @@ fn faces_of_a_cavity_are_moved_and_deleted_by_name() {
         assert_eq!(filled["shells"], 1);
     }
 }
+
+/// A hollow block (a block of 10 shelled to walls of 1, closed) whose
+/// outer edge along the bottom of its front is chamfered. The chamfer's
+/// face is the plane at distance `d` along both faces from the edge, and
+/// the cavity's edge parallel to it lies at 1 from both faces: it is
+/// `(2 − d) / √2` from that plane, on its inner side. At `d = 2` the
+/// plane goes through the cavity's edge and the outside touches the
+/// cavity along it: zero thickness, refused (the fuzzer's seeds 17070,
+/// 18436, 18647, 23080, 25810 and 28426, 2026-10-18, chamfers on shelled
+/// bodies that were accepted with the cavity's edge on the chamfer's
+/// face, which `document.check` found as shells that meet). At `d = 1.5`
+/// a wall of `0.5 / √2` is left: two shells, of volume
+/// `1000 − 8³ − 1.5² / 2 · 10`. At three scales.
+#[test]
+fn a_chamfer_that_reaches_a_cavity_edge_is_refused_as_zero_thickness() {
+    let edge = json!([["F2:copy(0)/F1:face(0)", "F2:copy(0)/F1:face(2)"]]);
+    for k in SCALES {
+        for (d, fits) in [(2.0, false), (1.5, true)] {
+            let mut s = common::checked::session();
+            new_document(&mut s, k);
+            block(&mut s, "A", [10.0, 10.0, 10.0], [0.0; 3], k);
+            built(
+                &mut s,
+                "feature.shell",
+                json!({"source": "A", "thickness": k, "name": "Walls"}),
+            );
+            assert_solid(&mut s, "Walls", 1000.0 - 512.0, None, k);
+            let params = json!({"edges": edge, "distance": d * k, "name": "Cut"});
+            if fits {
+                built(&mut s, "feature.chamfer", params);
+                let cut = assert_solid(&mut s, "Cut", 488.0 - 0.5 * d * d * 10.0, None, k);
+                assert_eq!(cut["shells"], 2, "{cut}");
+            } else {
+                let reason = common::checked::failed(&mut s, "feature.chamfer", params);
+                assert!(reason.contains("zero thickness"), "at {k}: {reason}");
+            }
+        }
+    }
+}

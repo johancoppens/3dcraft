@@ -1,0 +1,93 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S5",
+            "offset": -5.0,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                -5.0,
+                -10.0
+              ],
+              [
+                10.0,
+                -10.0
+              ],
+              [
+                10.0,
+                10.0
+              ],
+              [
+                -5.0,
+                10.0
+              ]
+            ],
+            "sketch": "S5"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 20.0,
+            "name": "N5",
+            "sketch": "S5"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N7",
+            "open": [],
+            "source": "N5",
+            "thickness": 2.5
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 5.0,
+            "edges": [
+              [
+                "{N7}:copy(1)/{N5}:side(e5)",
+                "{N7}:copy(1)/{N5}:startCap(e5,e6,e7,e8)"
+              ],
+              [
+                "{N7}:copy(1)/{N5}:side(e7)",
+                "{N7}:copy(1)/{N5}:endCap(e5,e6,e7,e8)"
+              ],
+              [
+                "{N7}:copy(0)/{N5}:side(e8)",
+                "{N7}:copy(0)/{N5}:endCap(e5,e6,e7,e8)"
+              ]
+            ],
+            "name": "N8"
+          }
+        }
+      ],
+      "step": "blend"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 25810
+}

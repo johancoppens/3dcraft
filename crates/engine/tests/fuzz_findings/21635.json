@@ -1,0 +1,199 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N0",
+            "position": [
+              -0.01,
+              -0.005,
+              -0.005
+            ],
+            "radius": 0.0075
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S1",
+            "offset": 0.0,
+            "plane": "xy"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                -0.0025
+              ],
+              [
+                0.01,
+                -0.0025
+              ],
+              [
+                0.01,
+                0.005
+              ],
+              [
+                0.005,
+                0.005
+              ],
+              [
+                0.01,
+                0.01
+              ],
+              [
+                0.0,
+                0.01
+              ]
+            ],
+            "sketch": "S1"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "360 deg",
+            "axis": "y",
+            "cut": "N0",
+            "name": "N1",
+            "sketch": "S1"
+          }
+        }
+      ],
+      "step": "revolve"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S2",
+            "offset": 0.01,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                -0.005
+              ],
+              [
+                0.01,
+                -0.005
+              ],
+              [
+                0.01,
+                0.01
+              ],
+              [
+                0.005,
+                0.01
+              ],
+              [
+                0.005,
+                0.0
+              ],
+              [
+                0.0,
+                0.0
+              ]
+            ],
+            "sketch": "S2"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "cut": "N1",
+            "distance": -0.02,
+            "name": "N2",
+            "sketch": "S2"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "count": 2,
+            "name": "N4",
+            "source": "N2",
+            "step": [
+              0.0,
+              0.0075,
+              0.01
+            ]
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "angle": "360 deg / 6",
+            "axis": [
+              0.01,
+              0.01,
+              1.0
+            ],
+            "count": 6,
+            "name": "N8",
+            "point": [
+              -0.01749699321443777,
+              0.01,
+              0.0
+            ],
+            "source": "N4"
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.mirror",
+          "params": {
+            "keep": false,
+            "name": "N9",
+            "normal": [
+              0.01,
+              0.0,
+              0.01
+            ],
+            "point": [
+              0.01,
+              0.0,
+              0.01
+            ],
+            "source": "N8"
+          }
+        }
+      ],
+      "step": "mirror"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 21635
+}

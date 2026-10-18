@@ -1,7 +1,8 @@
 //! Designs the random-design fuzzer (`apps/craft3d-fuzz`) found wrong,
 //! each replayed from its reproducer as the fuzzer runs it: per group of
 //! commands, names in braces resolved to the ids the document gives them;
-//! a group that is refused is taken back. Each design must end valid and
+//! a group that is refused (a command says no, or a feature fails after
+//! it) is taken back. Each design must end valid and
 //! measurable with nothing touching itself (`document.check` deep finds
 //! no problem), and the groups that are refused must be refused for the
 //! reason given here.
@@ -12,6 +13,22 @@
 //! - `14211.json`: a chamfer on a sphere's small cap that went past the
 //!   cap's top and folded through itself, accepted, which could not be
 //!   measured: refused.
+//! - `17070.json`, `18436.json`, `18647.json`, `23080.json`, `25810.json`
+//!   (chamfers) and `28426.json` (an edit of a chamfer's size and of the
+//!   shell under it), second run, 2026-10-18: a closed shell (walls of
+//!   `t`) whose outer edge is chamfered by `2t`, so that the chamfer's
+//!   face passes through the cavity's edge, accepted, which
+//!   `document.check` found as shells that meet: zero thickness, refused
+//!   (`kernel::boolean::parts_touch`, which regeneration holds every body
+//!   to).
+//! - `19604.json`: a ball that touches the rim of a cone's base from
+//!   outside in a point, united and accepted as two shells that touch:
+//!   zero thickness, refused (by regeneration's `parts_touch`: the
+//!   middle of the rim's edge is the point of contact).
+//! - `21635.json`: a mirror of a body with a sphere face whose loop
+//!   passes twice through one vertex, which could not be meshed for the
+//!   self-check (the seam to the pole started from the pass that does
+//!   not open towards it): accepted and valid.
 
 #![allow(
     clippy::unwrap_used,
@@ -98,6 +115,17 @@ fn replay(file: &str) -> Vec<String> {
                 break;
             }
         }
+        // As the fuzzer: a feature that fails because of the group (an
+        // edit upstream of it) refuses the group too.
+        if refused.is_none() {
+            let inspect = session.execute("document.inspect", &json!({})).unwrap();
+            refused = inspect["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["status"] == "failed")
+                .map(|f| format!("{} failed: {}", f["name"], f["error"]));
+        }
         if let Some(reason) = refused {
             assert!(!reason.contains("internal"), "{file}: {reason}");
             refusals.push(reason);
@@ -117,6 +145,14 @@ fn the_fuzzers_findings_end_valid_or_refused_for_their_reason() {
         ("5279.json", &["zero thickness"][..]),
         ("5279-by-hand.json", &["zero thickness"][..]),
         ("14211.json", &["fold through itself"][..]),
+        ("17070.json", &["zero thickness"][..]),
+        ("18436.json", &["zero thickness"][..]),
+        ("18647.json", &["zero thickness"][..]),
+        ("19604.json", &["zero thickness"][..]),
+        ("21635.json", &[][..]),
+        ("23080.json", &["zero thickness"][..]),
+        ("25810.json", &["zero thickness"][..]),
+        ("28426.json", &["zero thickness"][..]),
     ] {
         let refused = replay(file);
         assert_eq!(refused.len(), reasons.len(), "{file}: {refused:?}");

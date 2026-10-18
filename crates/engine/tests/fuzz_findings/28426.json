@@ -1,0 +1,95 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.block",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              10.0,
+              0.0,
+              10.0
+            ],
+            "name": "N0",
+            "position": [
+              5.0,
+              5.0,
+              0.0
+            ],
+            "size": [
+              20.0,
+              10.0,
+              10.0
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N1",
+            "open": [],
+            "source": "N0",
+            "thickness": 2.5
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 5.0,
+            "edges": [
+              [
+                "{N1}:copy(0)/{N0}:face(0)",
+                "{N1}:copy(0)/{N0}:face(2)"
+              ],
+              [
+                "{N1}:copy(0)/{N0}:face(3)",
+                "{N1}:copy(0)/{N0}:face(5)"
+              ]
+            ],
+            "name": "N3",
+            "second": 0.625
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.edit",
+          "params": {
+            "distance": 0.625,
+            "feature": "N3"
+          }
+        }
+      ],
+      "step": "edit"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.edit",
+          "params": {
+            "feature": "N1",
+            "thickness": 0.3125
+          }
+        }
+      ],
+      "step": "edit"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 28426
+}
