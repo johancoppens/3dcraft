@@ -15,6 +15,7 @@ Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
                [--automation-read-root DIR] [--automation-write-root DIR]
                [--renderer auto|cpu]
                [--recovery-dir DIR|none] [--autosave-interval SECONDS]
+               [--window-size WIDTHxHEIGHT]
        craft3d --version | --help
 
 Opens FILE (a .3dcraft file) when one is given, and shows the active
@@ -46,11 +47,14 @@ Options:
                               %LOCALAPPDATA%). none turns autosave off.
   --autosave-interval SECONDS How long after a change a document is
                               autosaved. Default: 30
+  --window-size WIDTHxHEIGHT  The window's size when it opens, in points
+                              (e.g. 1920x1080; at least 480x320).
+                              Default: 1280x800
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
-CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR and CRAFT3D_AUTOSAVE_INTERVAL stand
-in for the flags of the same name.
+CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR, CRAFT3D_AUTOSAVE_INTERVAL and
+CRAFT3D_WINDOW_SIZE stand in for the flags of the same name.
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
 frame everything.
@@ -75,6 +79,8 @@ pub struct Options {
     /// How long after a change a document is autosaved; `None` for the
     /// engine's default.
     pub autosave_interval: Option<Duration>,
+    /// The window's size when it opens, in points; `None` for the default.
+    pub window_size: Option<[u32; 2]>,
 }
 
 /// What the command line asked for.
@@ -83,6 +89,30 @@ pub enum Parsed {
     Run(Options),
     Help,
     Version,
+}
+
+/// The smallest window `--window-size` takes, width and height (the
+/// window's own least size), and the largest side.
+const WINDOW_LEAST: [u32; 2] = [480, 320];
+const WINDOW_MOST: u32 = 16384;
+
+fn window_size(text: &str, from: &str) -> Result<[u32; 2], String> {
+    let shown: String = text.chars().take(40).collect();
+    let bad = || {
+        format!(
+            "{from}: `{shown}` is not a window size (WIDTHxHEIGHT, at least {}x{}, at most {} each)",
+            WINDOW_LEAST[0], WINDOW_LEAST[1], WINDOW_MOST
+        )
+    };
+    let (w, h) = text.trim().split_once(['x', 'X']).ok_or_else(bad)?;
+    let side = |t: &str, least: u32| {
+        t.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (least..=WINDOW_MOST).contains(n))
+            .ok_or_else(bad)
+    };
+    Ok([side(w, WINDOW_LEAST[0])?, side(h, WINDOW_LEAST[1])?])
 }
 
 fn port(text: &str, from: &str) -> Result<u16, String> {
@@ -138,7 +168,8 @@ pub fn parse(
             | "--automation-write-root"
             | "--renderer"
             | "--recovery-dir"
-            | "--autosave-interval" => {
+            | "--autosave-interval"
+            | "--window-size" => {
                 if seen.contains(&name) {
                     return Err(format!("`{name}` was given twice"));
                 }
@@ -150,6 +181,9 @@ pub fn parse(
                     "--control-token-file" => options.token_file = Some(PathBuf::from(value)),
                     "--automation-read-root" => options.read_root = Some(value),
                     "--recovery-dir" => recovery_dir = Some(value),
+                    "--window-size" => {
+                        options.window_size = Some(window_size(&value, "--window-size")?);
+                    }
                     "--autosave-interval" => {
                         options.autosave_interval = Some(
                             craft3d_engine::parse_autosave_interval(&value)
@@ -196,6 +230,11 @@ pub fn parse(
                 .map_err(|e| format!("CRAFT3D_AUTOSAVE_INTERVAL: {e}"))?,
         );
     }
+    if options.window_size.is_none()
+        && let Some(value) = from_env("CRAFT3D_WINDOW_SIZE")
+    {
+        options.window_size = Some(window_size(&value, "CRAFT3D_WINDOW_SIZE")?);
+    }
     // The flag, else the variable, else the platform's place; `none`
     // turns autosave off, and so does a platform that names no place.
     options.recovery_dir = match recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR")) {
@@ -232,6 +271,34 @@ mod tests {
     }
 
     #[test]
+    fn the_window_size_is_two_sides_in_range() {
+        assert_eq!(
+            options(&["--window-size", "1920x1080"]).window_size,
+            Some([1920, 1080])
+        );
+        assert_eq!(
+            options(&["--window-size=800X600"]).window_size,
+            Some([800, 600])
+        );
+        for bad in [
+            "1920",
+            "x",
+            "10x10",
+            "400x600",
+            "1920x99999",
+            "-5x100",
+            "axb",
+            "1e3x800",
+        ] {
+            let error = run(&["--window-size", bad]).unwrap_err();
+            assert!(error.contains("not a window size"), "{bad}: {error}");
+        }
+        let env = |name: &str| (name == "CRAFT3D_WINDOW_SIZE").then(|| "1000x700".to_string());
+        let parsed = parse(Vec::new(), &env).unwrap();
+        assert!(matches!(parsed, Parsed::Run(o) if o.window_size == Some([1000, 700])));
+    }
+
+    #[test]
     fn nothing_given_is_an_empty_viewer() {
         assert_eq!(options(&[]), Options::default());
     }
@@ -258,6 +325,7 @@ mod tests {
                 renderer: RendererChoice::Auto,
                 recovery_dir: None,
                 autosave_interval: None,
+                window_size: None,
             }
         );
         // Port 0 asks for a free one.

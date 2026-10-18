@@ -592,13 +592,9 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     let viewport_rect = shell.viewport_rect().unwrap();
     let toggle = hit(&shell, "toggle");
     assert!(viewport_rect.contains_rect(toggle), "{toggle:?}");
-    // Left of the view cube, above the row with the see-through field,
-    // on its grid.
-    let cube = shell.view_cube_rect().unwrap();
+    // On the display bar, right of the see-through field, on its row.
     let slider = shell.transparency_rect().unwrap();
-    assert!(toggle.right() < cube.left() && toggle.bottom() < slider.top());
-    let sketches = shell.show_hits()[0].1;
-    assert!((toggle.left() - sketches.left()).abs() < 0.5);
+    assert!(toggle.left() > slider.right() && (toggle.top() - slider.top()).abs() < 0.5);
     assert_eq!(shell.section_hits().len(), 1, "off: only the toggle");
     let camera = shell.state.camera;
 
@@ -609,7 +605,7 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(shell.state.section.offset, 10.0);
     assert!(shell.section().is_some());
     let names: Vec<&str> = shell.section_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "front", "back"]);
+    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "flip"]);
     // Turning it on did not move the toggle.
     assert!((hit(&shell, "toggle").left() - toggle.left()).abs() < 0.5);
     // They read X, Y, Z from the left.
@@ -648,9 +644,9 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert!(seen.iter().any(|&o| o > 10.0 && o < 50.0), "{seen:?}");
     assert_eq!(shell.state.section.offset, 60.0, "{seen:?}");
 
-    // Back keeps the other half.
+    // Flip keeps the other half.
     assert!(!shell.state.section.flip);
-    let flip = hit(&shell, "back").center();
+    let flip = hit(&shell, "flip").center();
     window.click(&mut shell, &mut session, flip);
     assert!(shell.state.section.flip);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));

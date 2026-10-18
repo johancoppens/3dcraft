@@ -1252,3 +1252,28 @@ fn the_witness_says_no_by_a_slot_a_rib_a_thin_plate_and_a_thinning_wall() {
         says_no(&holed, [0.0, 1.5, 0.0], "where that wall meets the floor");
     }
 }
+
+/// The random-design fuzzer's seed 19604 (2026-10-18): a ball that
+/// touches the rim of a cone's base from outside, in one point, in the
+/// plane of the base (the ball's centre 2.5 from the cone's axis, its
+/// radius 1.5, the rim's 1: the circles of the base and of the ball's
+/// equator touch at (-1, 0, 0), and every other point of the rim is
+/// further than 1.5 from the centre, `|c - rim(θ)|² = 7.25 + 5 cos θ`).
+/// No vertex of either lies there and the faces' surfaces cross
+/// elsewhere (the base's plane cuts the ball in its equator), so the
+/// only sign of the contact is where the rim meets the ball's surface:
+/// the union was accepted as two shells that touch, which
+/// `document.check` found. Zero thickness, refused; a few tolerances
+/// apart, two parts. At three scales.
+#[test]
+fn a_ball_that_touches_the_rim_of_a_cone_from_outside() {
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], 1.0, 1.0);
+        assert_only_touching(&cone, &ball(k, [-2.5, 0.0, 0.0], 1.5), k);
+        let d = 3.0 * tolerance(k).linear / k;
+        let apart = ball(k, [-2.5 - d, 0.0, 0.0], 1.5);
+        let (both, refused) = solve_parts(&cone, &apart, Union, k);
+        assert_eq!(refused, None, "{d} apart at {k}");
+        assert_eq!(both.body.shells.len(), 2);
+    }
+}

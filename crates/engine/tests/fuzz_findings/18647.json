@@ -1,0 +1,74 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.block",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              10.0,
+              10.0,
+              0.0
+            ],
+            "name": "N3",
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "size": [
+              10.0,
+              20.0,
+              10.0
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N5",
+            "open": [],
+            "source": "N3",
+            "thickness": 0.625
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 1.25,
+            "edges": [
+              [
+                "{N5}:copy(0)/{N3}:face(3)",
+                "{N5}:copy(0)/{N3}:face(4)"
+              ],
+              [
+                "{N5}:copy(0)/{N3}:face(0)",
+                "{N5}:copy(0)/{N3}:face(2)"
+              ],
+              [
+                "{N5}:copy(1)/{N3}:face(3)",
+                "{N5}:copy(1)/{N3}:face(5)"
+              ]
+            ],
+            "name": "N8"
+          }
+        }
+      ],
+      "step": "blend"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 18647
+}

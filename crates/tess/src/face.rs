@@ -884,6 +884,65 @@ impl Ring {
         sum
     }
 
+    /// The near end of the edge that ends at vertex `i`.
+    fn prev(&self, i: usize, periods: [Option<f64>; 2]) -> Option<Bv> {
+        if i > 0 {
+            self.verts.get(i - 1).copied()
+        } else {
+            let mut v = *self.verts.last()?;
+            let [ta, tb] = self.winding;
+            v.uv = shifted(v.uv, [-ta, -tb], periods);
+            Some(v)
+        }
+    }
+
+    /// Whether a way that leaves vertex `i` along `towards` goes into the
+    /// face: it lies in the corner the face has there, between the edge
+    /// that leaves the vertex and the one that comes in, on the face's
+    /// side of them (the left when `sense` is positive, as in
+    /// [`band_region`]). A loop that passes twice through one place (a
+    /// pocket of the face's outside that touches the rest of its
+    /// boundary in a point) has two vertices there, and only one of
+    /// them opens towards a given side. Along an edge, or where an edge
+    /// has no length, it is not ruled out.
+    fn opens_towards(&self, i: usize, towards: Uv, sense: f64, periods: [Option<f64>; 2]) -> bool {
+        let (Some(here), Some(next), Some(prev)) = (
+            self.verts.get(i),
+            self.next(i, periods),
+            self.prev(i, periods),
+        ) else {
+            return true;
+        };
+        let [ha, hb] = here.uv;
+        let out = (get2(next.uv, 0) - ha, get2(next.uv, 1) - hb);
+        let back = (get2(prev.uv, 0) - ha, get2(prev.uv, 1) - hb);
+        let way = tuple(towards);
+        // The angle from `x` to `y`, counter-clockwise, in [0, 2π).
+        let turn = |x: P2, y: P2| -> Option<f64> {
+            let cross = x.0 * y.1 - x.1 * y.0;
+            let dot = x.0 * y.0 + x.1 * y.1;
+            if !(cross.is_finite() && dot.is_finite()) || (cross == 0.0 && dot == 0.0) {
+                return None;
+            }
+            let angle = cross.atan2(dot);
+            Some(if angle < 0.0 {
+                angle + std::f64::consts::TAU
+            } else {
+                angle
+            })
+        };
+        // The corner runs counter-clockwise from `start` to `end`.
+        let (start, end) = if positive(sense) {
+            (out, back)
+        } else {
+            (back, out)
+        };
+        match (turn(start, way), turn(start, end)) {
+            (Some(way), Some(corner)) => way == 0.0 || way <= corner,
+            _ => true,
+        }
+    }
+
     fn mean(&self, k: usize) -> f64 {
         let sum: f64 = self.verts.iter().map(|v| get2(v.uv, k)).sum();
         sum / self.verts.len().max(1) as f64
@@ -1471,22 +1530,29 @@ fn band_region(
         let [wa, _] = ring.winding;
         Some(if wa < 0 { a - period } else { a })
     };
-    let nearest_vertex = |ring: &Ring, a: f64| -> Option<(usize, i32)> {
-        let mut best: Option<(f64, usize, i32)> = None;
-        for (j, v) in ring.verts.iter().enumerate() {
-            if v.free.is_some() {
-                continue;
+    // The vertex of `ring` nearest in `a` among those `opens` lets the
+    // seam end at (given the vertex and its turns).
+    let nearest_vertex =
+        |ring: &Ring, a: f64, opens: &dyn Fn(usize, i32) -> bool| -> Option<(usize, i32)> {
+            let mut best: Option<(f64, usize, i32)> = None;
+            for (j, v) in ring.verts.iter().enumerate() {
+                if v.free.is_some() {
+                    continue;
+                }
+                let natural = left_a(ring, j)?;
+                let turns = ((a - natural) / period).round();
+                let distance = (natural + turns * period - a).abs();
+                if turns.abs() <= 1e6
+                && best.is_none_or(|(d, _, _)| distance < d)
+                // In range by the check before.
+                && opens(j, turns as i32)
+                {
+                    // In range by the check above.
+                    best = Some((distance, j, turns as i32));
+                }
             }
-            let natural = left_a(ring, j)?;
-            let turns = ((a - natural) / period).round();
-            let distance = (natural + turns * period - a).abs();
-            if turns.abs() <= 1e6 && best.is_none_or(|(d, _, _)| distance < d) {
-                // In range by the check above.
-                best = Some((distance, j, turns as i32));
-            }
-        }
-        best.map(|(_, j, turns)| (j, turns))
-    };
+            best.map(|(_, j, turns)| (j, turns))
+        };
     let crosses_a_loop = |from: Uv, to: Uv| -> bool {
         for ring in rings {
             for (i, v) in ring.verts.iter().enumerate() {
@@ -1530,7 +1596,19 @@ fn band_region(
         let (candidate, [from, to]) = if lower.is_some() {
             match upper {
                 Some(up) => {
-                    let (j, turns) = nearest_vertex(up, a)?;
+                    // The seam goes up from the lower loop into the face,
+                    // and comes down from the upper one into it.
+                    let opens = |j: usize, turns: i32| -> bool {
+                        let (Some(end_a), Some(end)) = (left_a(up, j), up.verts.get(j)) else {
+                            return false;
+                        };
+                        let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
+                        let end_a = end_a + f64::from(turns) * period;
+                        let way = [end_a - a, end_b - b];
+                        anchor.opens_towards(s, way, sense, periods)
+                            && up.opens_towards(j, [-way[0], -way[1]], sense, periods)
+                    };
+                    let (j, turns) = nearest_vertex(up, a, &opens)?;
                     let (end_a, end) = (left_a(up, j)?, up.verts.get(j)?);
                     let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
                     let end = [end_a + f64::from(turns) * period, end_b];
@@ -1568,7 +1646,15 @@ fn band_region(
                 [[a, b_low], [a, b]],
             )
         };
-        (from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to))
+        // A seam to a pole leaves its loop into the face: up from a lower
+        // loop, down from an upper one (between two loops, the choice of
+        // the upper vertex has seen to both ends).
+        let opens = match (lower.is_some(), upper.is_some()) {
+            (true, true) => true,
+            (true, false) => anchor.opens_towards(s, [0.0, 1.0], sense, periods),
+            (false, _) => anchor.opens_towards(s, [0.0, -1.0], sense, periods),
+        };
+        (opens && from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to))
             .then_some(candidate)
     };
     let anchor = lower.or(upper);

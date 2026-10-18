@@ -294,6 +294,60 @@ impl Marcher {
         self.stationary_at(u, v)
     }
 
+    /// A Newton search that took no step because the Hessian is nearly
+    /// singular, brought onto the valley across it: the place on the line
+    /// through it along the strong direction where the derivative along
+    /// that direction vanishes (Newton's method with the strong
+    /// eigenvalue, no further than the search for a stationary point
+    /// goes). Where the surfaces touch along a curve (every point of it a
+    /// critical point of `f`), that is the point of the curve across from
+    /// where the search began. `None` where no such place is found.
+    pub(super) fn onto_valley(&mut self, s: &Stationary) -> Option<Stationary> {
+        let (ha, hb, hc) = s.h;
+        let (lambda, across) = strong(ha, hb, hc)?;
+        let k = Tacnode {
+            u: s.u,
+            v: s.v,
+            p: s.e.p,
+            lu: s.lu,
+            lv: s.lv,
+            across,
+            along: (-across.1, across.0),
+            lambda,
+            lift: 0.0,
+            radius: 0.0,
+            claim: 0.0,
+            seeds: Vec::new(),
+        };
+        let limit = 64.0 * self.hmax;
+        let mut across_by = 0.0_f64;
+        for _ in 0..48 {
+            let (_, slope, _, _) = self.tac_eval(&k, 0.0, across_by)?;
+            let step = -slope / k.lambda;
+            if !step.is_finite() {
+                return None;
+            }
+            across_by += step;
+            if !(across_by.abs() <= limit) {
+                return None;
+            }
+            if step.abs() <= 0.01 * self.on {
+                let (u, v) = Self::tac_place(&k, 0.0, across_by);
+                return self.stationary_at(u, v);
+            }
+        }
+        None
+    }
+
+    /// True when the valley through a point on it leads to a point of
+    /// contact of higher order with arms (a tacnode or a cusp): a contact
+    /// that is no curve, whose place a touch found on its valley must not
+    /// take (the arms would be marched to no vertex).
+    pub(super) fn near_tacnode(&mut self, on: &Stationary, finest: f64) -> bool {
+        let settled = self.settle_flat(on).unwrap_or(*on);
+        self.touches(&settled, finest) && self.tacnode(&settled, finest).is_some()
+    }
+
     /// The arms of a point where the surfaces touch and the Hessian of `f`
     /// has rank one: `None` where there are none (a touch, or a contact
     /// along a curve) or the model does not hold.

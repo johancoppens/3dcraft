@@ -47,8 +47,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.screenshot",
-        params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point}"#,
-        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
+        params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point, "window": boolean = false}"#,
+        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64. With window: true (the desktop window only; then only path may be given) it is instead the window's own next frame as it is drawn, panels and the controls over the viewport included, at the window's size in pixels.",
     },
     UiMethod {
         name: "ui.notice",
@@ -606,13 +606,103 @@ impl Shell {
         Ok(result)
     }
 
+    /// `ui.screenshot {window: true, path?}` as the desktop window answers
+    /// it: `image` is the window's own frame (panels, controls and all,
+    /// as egui drew it), saved as a PNG under the write root when `path`
+    /// is given, otherwise returned as base64.
+    pub fn window_picture(
+        &self,
+        session: &mut Session,
+        image: &egui::ColorImage,
+        path: Option<&str>,
+    ) -> Result<Value, String> {
+        let method = "ui.screenshot";
+        let [width, height] = image.size;
+        let mut rgb = Vec::with_capacity(image.pixels.len().saturating_mul(3));
+        for pixel in &image.pixels {
+            rgb.extend_from_slice(&[pixel.r(), pixel.g(), pixel.b()]);
+        }
+        let (w, h) = (
+            u32::try_from(width).map_err(|e| format!("{method}: {e}"))?,
+            u32::try_from(height).map_err(|e| format!("{method}: {e}"))?,
+        );
+        let png = craft3d_render::encode_png(w, h, &rgb).map_err(|e| format!("{method}: {e}"))?;
+        let mut result = json!({
+            "width": width,
+            "height": height,
+            "window": true,
+            "bytes": png.len(),
+        });
+        if let Some(map) = result.as_object_mut() {
+            match path {
+                Some(path) => {
+                    session
+                        .write_output(path, &png)
+                        .map_err(|e| format!("{method}: {e}"))?;
+                    map.insert("path".into(), path.into());
+                }
+                None => {
+                    map.insert("mime".into(), "image/png".into());
+                    map.insert("base64".into(), craft3d_engine::encode_base64(&png).into());
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Whether the request `line` is `ui.screenshot {window: true}`, and
+    /// then its path or why its parameters are wrong. A path the session
+    /// may not write is refused here, before the window is captured.
+    pub fn window_picture_request(
+        session: &Session,
+        line: &str,
+    ) -> Option<Result<Option<String>, String>> {
+        let method = "ui.screenshot";
+        let request: Value = serde_json::from_str(line).ok()?;
+        if request.get("method").and_then(Value::as_str) != Some(method) {
+            return None;
+        }
+        let params = request.get("params");
+        if params.and_then(|p| p.get("window")) != Some(&Value::Bool(true)) {
+            return None;
+        }
+        let checked = (|| {
+            let map = fields(method, params, &["path", "window"])?;
+            match map.get("path") {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(path)) => {
+                    session
+                        .workspace()
+                        .resolve_write(path)
+                        .map_err(|e| format!("{method}: {e}"))?;
+                    Ok(Some(path.clone()))
+                }
+                Some(_) => Err(format!("{method}: `path` must be a string")),
+            }
+        })();
+        Some(checked)
+    }
+
     fn ui_screenshot(
         &mut self,
         session: &mut Session,
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.screenshot";
-        let map = fields(method, params, &["path", "width", "height", "scale"])?;
+        let map = fields(
+            method,
+            params,
+            &["path", "width", "height", "scale", "window"],
+        )?;
+        match map.get("window") {
+            None | Some(Value::Null | Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => {
+                return Err(format!(
+                    "{method}: `window` is a picture of the desktop window with its panels and controls, which only the window (craft3d --control) takes"
+                ));
+            }
+            Some(_) => return Err(format!("{method}: `window` must be a boolean")),
+        }
         let path = match map.get("path") {
             None | Some(Value::Null) => None,
             Some(Value::String(path)) => Some(path.as_str()),

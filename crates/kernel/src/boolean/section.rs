@@ -14,6 +14,7 @@ use super::{
     Vertices, face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
+use craft3d_geom::certify::{CurveBound, SurfaceBound};
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{Curve3, Surface};
@@ -186,6 +187,12 @@ pub(super) struct Sections {
     /// Points where two faces' surfaces only touch (a ball on a plane):
     /// they divide nothing, but are where the bodies meet.
     pub touches: Vec<Vec3>,
+    /// Points where an edge of one face meets the surface of the other
+    /// of a pair whose surfaces meet in a curve: where the bodies meet,
+    /// also where no stretch of the curve is left between two of them (a
+    /// circular edge of one body that touches the other's face in a point
+    /// from outside it).
+    pub edge_meets: Vec<Vec3>,
     /// Per edge: the vertices to split it at.
     pub splits_a: BTreeMap<EdgeId, BTreeSet<usize>>,
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
@@ -457,6 +464,10 @@ fn one_meeting(
 /// cuts within the tolerance of one another are merged: four tolerances
 /// would do; the rest is room.
 const EDGE_REACH: f64 = 16.0;
+
+/// The most pieces a proof that an edge lies on a surface may take
+/// (`lying_edges`).
+const LYING_PIECES: usize = 1 << 12;
 
 /// Adds to `cuts` where the edges of `face` of `own` meet `surface`, of
 /// the edges whose boxes come within [`EDGE_REACH`] tolerances of `near`,
@@ -1035,6 +1046,9 @@ pub(super) fn section(
         return Ok(sections);
     }
     let mut tested = crate::work::Tally::faces();
+    // Pairs of faces whose surfaces only touch (points, no curve), in the
+    // order they were met.
+    let mut touching: Vec<(usize, usize)> = Vec::new();
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
@@ -1128,6 +1142,11 @@ pub(super) fn section(
                         }
                     }
                     if meeting.curves.is_empty() {
+                        // Touch points and no curve: the surfaces may touch
+                        // all along an edge of either face, which is then
+                        // imprinted on the other face from the edge itself
+                        // (once every pair has been met: `lying_edges`).
+                        touching.push((fa, fb));
                         continue;
                     }
                     let mut found = Vec::new();
@@ -1135,6 +1154,9 @@ pub(super) fn section(
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
                     edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
                     edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+                    sections
+                        .edge_meets
+                        .extend(found.iter().map(|cut| cut.point));
                     for curve in &meeting.curves {
                         clip(
                             curve,
@@ -1152,7 +1174,192 @@ pub(super) fn section(
             }
         }
     }
+    for (fa, fb) in touching {
+        lying_edges(a, fa, b, fb, vertices, tolerance, &mut sections)?;
+    }
     Ok(sections)
+}
+
+/// Where the surfaces of face `fa` of A and `fb` of B only touch (geometry
+/// gave points and no curve), the edges of either face that lie on the
+/// other face's surface, imprinted on the other face from their own
+/// curves.
+///
+/// Two surfaces tangent along a curve with no closed form (the face of a
+/// fillet, exact or approximated, against the faces it rounds; a rational
+/// cylinder lying on a plane) meet in a curve along which the distance
+/// between them has a valley of minima: the numeric intersection settles
+/// it as touches, a disc of samples on one side around each. Where that
+/// curve is the boundary of either face (the border between a fillet and
+/// the strip of a tool that lies on the face it rounds), the face of the
+/// other body has to be divided along it, as along any edge of one body
+/// lying on a face of the other, and nothing else gives that curve: the
+/// faces on either side of the edge either touch the other face too or
+/// lie on its surface. So here every edge of either face near the other
+/// face that comes within the tolerance of its surface is cut where it
+/// meets that surface's face boundary (`edge_cuts`, as for any pair), and
+/// each piece that lies on the surface at five places is a stretch of
+/// touch along that edge, judged against both faces by [`clip`] like any
+/// other curve in which they meet. A piece already imprinted on the same
+/// face by another pair of faces (its middle on such a stretch) is left
+/// out. An edge of neither face divides nothing where surfaces only
+/// touch: on both sides of such a touch the face is on the same side of
+/// the other body.
+fn lying_edges(
+    a: &Solid,
+    fa: usize,
+    b: &Solid,
+    fb: usize,
+    vertices: &mut Vertices,
+    tolerance: &Tolerance,
+    sections: &mut Sections,
+) -> Result<(), Stop> {
+    let tol = tolerance.linear;
+    let named = [a.name(fa), b.name(fb)];
+    let (oa, ob) = (a.outline(fa)?, b.outline(fb)?);
+    let (Some(box_a), Some(box_b)) = (a.boxes.get(fa), b.boxes.get(fb)) else {
+        return Err(Stop::of(LOST));
+    };
+    let Some(near) = overlap(box_a, box_b, 2.0 * tol) else {
+        return Ok(());
+    };
+    let reach = EDGE_REACH * tol;
+    // The edges of each face that come within the tolerance of the other
+    // face's surface somewhere (nine places along them).
+    let close = |own: &Solid, face: usize, other: Sheet| -> Result<Vec<EdgeId>, Stop> {
+        let mut found = Vec::new();
+        for id in own.edges_near(face, |bx| boxes_meet(bx, &near, reach)) {
+            let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
+            let (t0, t1) = edge.range;
+            if (0..=8).any(|k| {
+                let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                surface_distance(other, edge.curve.eval(t)) <= tol
+            }) {
+                found.push(id);
+            }
+        }
+        Ok(found)
+    };
+    let (of_a, of_b) = (close(a, fa, ob.sheet())?, close(b, fb, oa.sheet())?);
+    if of_a.is_empty() && of_b.is_empty() {
+        return Ok(());
+    }
+    let mut found = Vec::new();
+    edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
+    edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+    for (own, edges, other, operand) in [
+        (a, &of_a, ob.sheet(), Operand::A),
+        (b, &of_b, oa.sheet(), Operand::B),
+    ] {
+        for &id in edges {
+            let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
+            let (t0, t1) = edge.range;
+            // The edge cut where it meets the other surface's boundary.
+            let mut at: Vec<f64> = vec![t0, t1];
+            for cut in &found {
+                let mine = match operand {
+                    Operand::A => cut.a_edge,
+                    Operand::B => cut.b_edge,
+                };
+                if mine == Some(id)
+                    && let Some(t) = locate(&edge.curve, edge.range, cut.point, tol)
+                {
+                    at.push(t);
+                }
+            }
+            at.sort_by(f64::total_cmp);
+            at.dedup();
+            // On the surface by proof (`geom::certify`: the distance from
+            // the curve to the surface bounded over every piece, pieces
+            // halved where the bound is over the tolerance, at most
+            // `LYING_PIECES`); five places first, to turn away the many
+            // edges that are not, cheaply. A proof not reached is no
+            // imprint: samples alone took a circle 5e4 tolerances off a
+            // surface between them for one lying on it.
+            let shape = CurveBound::new(&edge.curve);
+            let lies = |from: f64, to: f64| {
+                let near = (0..=4).all(|k| {
+                    let t = from + (to - from) * f64::from(k) / 4.0;
+                    surface_distance(other, edge.curve.eval(t)) <= tol
+                });
+                if !near {
+                    return false;
+                }
+                let (Some(bound), Some(start)) = (
+                    SurfaceBound::new(other.surface),
+                    other.project(edge.curve.eval(from)),
+                ) else {
+                    return false;
+                };
+                bound
+                    .curve_within(&shape, (from, to), start, &[], tol, LYING_PIECES)
+                    .is_ok()
+            };
+            // Consecutive pieces that lie on the surface, as one.
+            let mut pieces: Vec<(f64, f64)> = Vec::new();
+            for (&from, &to) in at.iter().zip(at.iter().skip(1)) {
+                if to > from && lies(from, to) {
+                    match pieces.last_mut() {
+                        Some(last) if last.1 == from => last.1 = to,
+                        _ => pieces.push((from, to)),
+                    }
+                }
+            }
+            // The stretches already on the face the edge lies on: a piece
+            // is cut where one of them ends on it, and what lies along
+            // one of them (its middle on it) is left out.
+            let on_face = |s: &&Stretch| match operand {
+                Operand::A => s.fb == fb,
+                Operand::B => s.fa == fa,
+            };
+            let mut uncovered: Vec<(f64, f64)> = Vec::new();
+            for (from, to) in pieces {
+                let mut cuts = vec![from, to];
+                for stretch in sections.stretches.iter().filter(on_face) {
+                    for vertex in [stretch.start, stretch.end] {
+                        if let Some(&p) = vertices.points.get(vertex)
+                            && let Some(t) = locate(&edge.curve, (from, to), p, tol)
+                            && t > from
+                            && t < to
+                        {
+                            cuts.push(t);
+                        }
+                    }
+                }
+                cuts.sort_by(f64::total_cmp);
+                cuts.dedup();
+                for (&lo, &hi) in cuts.iter().zip(cuts.iter().skip(1)) {
+                    let middle = edge.curve.eval(0.5 * (lo + hi));
+                    let imprinted = sections
+                        .stretches
+                        .iter()
+                        .filter(on_face)
+                        .any(|s| locate(&s.curve, s.range, middle, tol).is_some());
+                    if hi > lo && !imprinted {
+                        match uncovered.last_mut() {
+                            Some(last) if last.1 == lo => last.1 = hi,
+                            _ => uncovered.push((lo, hi)),
+                        }
+                    }
+                }
+            }
+            for (from, to) in uncovered {
+                let whole = from <= t0 && to >= t1;
+                let meeting = MeetingCurve {
+                    curve: edge.curve.clone(),
+                    range: (from, to),
+                    closed: whole && edge.start == edge.end,
+                    tangent: true,
+                    exact: true,
+                    deviation: 0.0,
+                };
+                clip(
+                    &meeting, &found, a, fa, b, fb, vertices, tolerance, sections,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

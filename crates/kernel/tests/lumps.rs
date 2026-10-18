@@ -606,4 +606,9 @@ fn time_of_lumps_on_a_plate_with_400_cavities() {
         start.elapsed()
     );
     assert_eq!(shape(&found), vec![400]);
+    // And the look regeneration takes for shells that touch.
+    let start = std::time::Instant::now();
+    let touch = craft3d_kernel::boolean::parts_touch(&body, &tolerance(k)).unwrap();
+    println!("parts_touch in {:?}", start.elapsed());
+    assert_eq!(touch, None);
 }

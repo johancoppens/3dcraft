@@ -1,0 +1,191 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S0",
+            "offset": 0.01,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                -0.01
+              ],
+              [
+                0.01,
+                -0.01
+              ],
+              [
+                0.01,
+                -0.005
+              ],
+              [
+                0.005,
+                -0.005
+              ]
+            ],
+            "sketch": "S0"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": -0.01,
+            "name": "N0",
+            "sketch": "S0"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 0.005,
+            "edges": [
+              [
+                "{N0}:side(e5)",
+                "{N0}:side(e8)"
+              ]
+            ],
+            "name": "N1"
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "count": 3,
+            "name": "N2",
+            "source": "N1",
+            "step": [
+              0.01,
+              0.01,
+              0.005
+            ]
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N3",
+            "open": [],
+            "source": "N2",
+            "thickness": 0.0003125
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.transform",
+          "params": {
+            "angle": "90 deg",
+            "axis": [
+              0.01,
+              0.01,
+              0.0
+            ],
+            "keep": false,
+            "name": "N6",
+            "pivot": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "source": "N3",
+            "translate": [
+              0.0,
+              0.005,
+              -0.0
+            ]
+          }
+        }
+      ],
+      "step": "transform"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N7",
+            "position": [
+              0.01,
+              -0.01,
+              0.0
+            ],
+            "radius": 0.0075
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N8",
+            "op": "subtract",
+            "target": "N6",
+            "tool": "N7"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 0.000625,
+            "edges": [
+              [
+                "{N8}:copy(0)/{N0}:startCap(e5,e6,e7,e8)",
+                "{N8}:copy(0)/{N1}:chamfer(0)"
+              ],
+              [
+                "{N8}:copy(0)/{N0}:side(e7)",
+                "{N8}:copy(0)/{N0}:side(e8)"
+              ],
+              [
+                "{N8}:copy(0)/{N3}:copy(1)/{N2}:copy(0)/{N0}:side(e7)",
+                "{N8}:copy(0)/{N3}:copy(1)/{N2}:copy(0)/{N0}:endCap(e5,e6,e7,e8)"
+              ]
+            ],
+            "name": "N10"
+          }
+        }
+      ],
+      "step": "blend"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 18436
+}
