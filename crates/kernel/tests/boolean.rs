@@ -126,7 +126,12 @@ fn an_edge_ten_tolerances_into_a_face_cuts_a_prism_with_triangles_for_ends() {
 /// within the tolerance of the end's plane well past the rim). A touch
 /// divides nothing, so the stretch is left out and the bodies are two,
 /// as given. Until 2026-10-13 it was refused as "a curve that is partly
-/// on and partly off a face boundary" (6 outcomes of the corpus).
+/// on and partly off a face boundary" (6 outcomes of the corpus). Two
+/// parts that touch along a line are zero thickness (the developer's
+/// decision of 2026-10-15), and since 2026-10-18 the union is refused as
+/// such: where the end's rim meets the wall's surface is a place the
+/// refusal looks at. Made without the refusal it is the two bodies, as
+/// before, at a point on both (`solve_parts`).
 #[test]
 fn a_wall_resting_on_a_flat_end_and_running_out_over_its_rim() {
     for k in SCALES {
@@ -164,7 +169,8 @@ fn a_wall_resting_on_a_flat_end_and_running_out_over_its_rim() {
         .unwrap();
         let (va, vb) = (PI * ra * ra * ha, PI * rb * rb * hb);
         let (aa, ab) = (2.0 * PI * ra * (ra + ha), 2.0 * PI * rb * (rb + hb));
-        let both = solve(&a, &b, Union, k);
+        let (both, refused) = solve_parts(&a, &b, Union, k);
+        assert!(refused.is_some(), "the union at scale {k} is not refused");
         assert_eq!(both.body.shells.len(), 2, "scale {k}");
         assert_mass(&both, va + vb, aa + ab, k);
         let less = solve(&a, &b, Subtract, k);

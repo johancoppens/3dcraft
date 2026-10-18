@@ -105,8 +105,17 @@ const AGREEING_FLOOR: usize = 11582;
 /// refused too, 108 unions, each with a witness of its own, which took
 /// the outright agreement from 10815 to 10717 and the zero-thick count
 /// from 767 to 865); a change to either is an expectation change.
-const MATCHED_FLOOR: usize = 10717;
-const ZERO_THICK_CEILING: usize = 865;
+/// Changed on 2026-10-18 (the fuzzer's 19604: the places where an edge of
+/// one operand meets the other's surface are looked at for zero
+/// thickness too): 158 unions in `contact` (100) and `near` (58) that
+/// were a `match` are refused, 157 of them two shells that touch, each
+/// with a point on two parts of the body made without the refusal
+/// (`on_parts`), and one shell (`contact/cone-spline/005`) touching
+/// itself by `touches_itself_at`; the digest and the sum are unchanged.
+/// The outright agreement goes from 10717 to 10559, the zero-thick count
+/// from 865 to 1023.
+const MATCHED_FLOOR: usize = 10559;
+const ZERO_THICK_CEILING: usize = 1023;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and

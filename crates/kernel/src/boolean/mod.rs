@@ -721,6 +721,10 @@ fn run(
             .map(|(p, _)| *p)
             .collect();
         meetings.extend_from_slice(&sections.touches);
+        // Where an edge of one meets the other's surface: also a contact
+        // in a point that leaves no stretch (a rim touching a ball from
+        // outside).
+        meetings.extend_from_slice(&sections.edge_meets);
         meetings.extend(on_the_other(&a, &b, tol));
         meetings.extend(on_the_other(&b, &a, tol));
         // Where an operand already touches itself (a shell meeting itself
@@ -757,7 +761,8 @@ fn run(
 /// Parts can only touch where the operands meet, or where an operand
 /// already touches itself, so only those places are looked at
 /// (`meetings`: the vertices both operands are at, the vertices the
-/// section made, the points where two faces only touch, a point inside
+/// section made, the points where two faces only touch, the points where
+/// an edge of one meets the other's surface, a point inside
 /// every stretch of curve along which faces meet, and the places where a
 /// vertex of an operand lies on a vertex or an edge of that operand
 /// not its own, `craft3d_topo::touches`). Faces of one operand that touch
@@ -1333,6 +1338,171 @@ fn on_the_other(x: &Solid, y: &Solid, tol: f64) -> Vec<Vec3> {
         }
     }
     found
+}
+
+/// Where two shells of a solid touch: `at` is a point of shell
+/// `faces[0]`'s face that lies on face `faces[1]` of another shell, both
+/// as indices into the body's faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartsTouch {
+    pub at: Vec3,
+    pub faces: [FaceId; 2],
+}
+
+/// The first place, if any, where two shells (parts) of the solid `body`
+/// touch: a vertex of one shell, the middle of one of its edges, or a
+/// point of one of its faces without loops, that lies on a face of
+/// another shell (within twice the tolerance of its surface and not
+/// outside its boundary). That is geometry of zero thickness, refused by
+/// the developer's decision of 2026-10-15, the rule the boolean holds its
+/// results to (`zero_thickness`) applied to a body without operands: an
+/// operation that builds a body by other means (a blend's steps, which
+/// leave the refusal to the blended body; a shell, an offset) is held to
+/// it by regeneration. `craft3d_topo::touches` finds a vertex on a vertex
+/// or an edge of another shell; this finds one on a face (the cavity of
+/// a hollow block whose outer edge was chamfered by twice the wall: the
+/// chamfer's face passes through the cavity's edge). Faces that touch
+/// with no vertex or middle of an edge there (a ball in a cavity resting
+/// on its floor) are not seen (owed, as for the boolean).
+///
+/// Only places in another shell's box are looked at, against the faces
+/// whose boxes hold them; outlines are made for those faces only. In face
+/// order, so the answer does not depend on threads or runs.
+///
+/// **Errors.** [`KernelError::InvalidSize`] for a tolerance that is not
+/// positive and finite.
+pub fn parts_touch(body: &Body, tolerance: &Tolerance) -> Result<Option<PartsTouch>, KernelError> {
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    if body.kind != BodyKind::Solid || body.shells.len() < 2 {
+        return Ok(None);
+    }
+    let near = 2.0 * tol;
+    let grow = Vec3::new(near, near, near);
+    let mut face_shell = vec![usize::MAX; body.faces.len()];
+    for (s, shell) in body.shells.iter().enumerate() {
+        for face in &shell.faces {
+            if let Some(slot) = face_shell.get_mut(face.0 as usize) {
+                *slot = s;
+            }
+        }
+    }
+    let boxes: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
+        .map(|f| {
+            body.face_bbox(face_id(f))
+                .ok()
+                .and_then(|b| b.corners())
+                .map(|(lo, hi)| (lo - grow, hi + grow))
+        })
+        .collect();
+    // Each shell's box, the faces' boxes together.
+    let mut shell_boxes: Vec<Option<(Vec3, Vec3)>> = vec![None; body.shells.len()];
+    for (f, b) in boxes.iter().enumerate() {
+        let (Some((lo, hi)), Some(slot)) =
+            (b, face_shell.get(f).and_then(|&s| shell_boxes.get_mut(s)))
+        else {
+            continue;
+        };
+        *slot = Some(match *slot {
+            None => (*lo, *hi),
+            Some((a, b)) => (
+                Vec3::new(a.x.min(lo.x), a.y.min(lo.y), a.z.min(lo.z)),
+                Vec3::new(b.x.max(hi.x), b.y.max(hi.y), b.z.max(hi.z)),
+            ),
+        });
+    }
+    let held = |b: Option<(Vec3, Vec3)>, p: Vec3| {
+        b.is_some_and(|(lo, hi)| {
+            lo.x <= p.x && p.x <= hi.x && lo.y <= p.y && p.y <= hi.y && lo.z <= p.z && p.z <= hi.z
+        })
+    };
+    let grid = FaceGrid::new(&boxes);
+    let mut outlines: BTreeMap<usize, Option<outline::Outline>> = BTreeMap::new();
+    let mut seen_vertex = vec![false; body.vertices.len()];
+    let mut seen_edge = vec![false; body.edges.len()];
+    for (f, face) in body.faces.iter().enumerate() {
+        let own = face_shell.get(f).copied().unwrap_or(usize::MAX);
+        if own == usize::MAX {
+            continue;
+        }
+        // The places of this face not looked at yet.
+        let mut places: Vec<Vec3> = Vec::new();
+        if face.loops.is_empty() {
+            places.push(face.surface.eval(0.0, 0.0));
+        }
+        for coedge in face
+            .loops
+            .iter()
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| &l.coedges)
+        {
+            let Some(edge) = body.edge(coedge.edge) else {
+                continue;
+            };
+            if let Some(seen) = seen_edge.get_mut(coedge.edge.0 as usize)
+                && !*seen
+            {
+                *seen = true;
+                let (t0, t1) = edge.range;
+                places.push(edge.curve.eval(0.5 * (t0 + t1)));
+            }
+            for v in [edge.start, edge.end] {
+                if let (Some(seen), Some(vertex)) =
+                    (seen_vertex.get_mut(v.0 as usize), body.vertex(v))
+                    && !*seen
+                {
+                    *seen = true;
+                    places.push(vertex.point);
+                }
+            }
+        }
+        for p in places {
+            if !p.is_finite() {
+                continue;
+            }
+            let elsewhere = shell_boxes
+                .iter()
+                .enumerate()
+                .any(|(t, b)| t != own && held(*b, p));
+            if !elsewhere {
+                continue;
+            }
+            for g in grid.near(p) {
+                let shell = face_shell.get(g).copied().unwrap_or(usize::MAX);
+                if shell == own || shell == usize::MAX || !held(boxes.get(g).copied().flatten(), p)
+                {
+                    continue;
+                }
+                let outline = outlines
+                    .entry(g)
+                    .or_insert_with(|| section::face_outline(body, g, tol).ok());
+                let Some(outline) = outline.as_ref() else {
+                    continue;
+                };
+                let Ok((u, v)) = outline.surface.project(p) else {
+                    continue;
+                };
+                let foot = outline.surface.eval(u, v);
+                if foot.distance(p) <= near
+                    && matches!(
+                        outline.side(foot, tol),
+                        Ok(outline::Side::In | outline::Side::On)
+                    )
+                {
+                    return Ok(Some(PartsTouch {
+                        at: p,
+                        faces: [face_id(f), face_id(g)],
+                    }));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Boxes in a grid of cells, about as many cells as boxes, each box in

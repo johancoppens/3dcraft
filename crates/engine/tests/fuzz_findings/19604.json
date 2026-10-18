@@ -1,0 +1,62 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.cone",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.0,
+              10000.0,
+              -0.0
+            ],
+            "height": 5000.0,
+            "name": "N0",
+            "position": [
+              0.0,
+              5000.0,
+              -5000.0
+            ],
+            "radius": 5000.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N1",
+            "position": [
+              -12500.0,
+              5000.0,
+              -5000.0
+            ],
+            "radius": 7500.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N2",
+            "op": "union",
+            "target": "N1",
+            "tool": "N0"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 1000.0,
+  "seed": 19604
+}

@@ -107,25 +107,38 @@ fn faces_at(body: &Body, edge: Option<u32>, vertex: u32) -> Vec<usize> {
         .collect()
 }
 
-/// What `found` says of `body`, with the faces named by `faces`.
+/// What `found` says of `body`, with the faces named by `faces`. A body
+/// the mesh finds clean is also held to the rule that no two of its
+/// shells touch (`craft3d_kernel::boolean::parts_touch`: a vertex or
+/// the middle of an edge of one shell on a face of another, which the
+/// mesh does not see), at the linear tolerance `linear`.
 fn verdict(
     body: &Body,
     found: Result<SelfCheck, craft3d_tess::TessError>,
     faces: &[PersistentName],
+    linear: f64,
 ) -> Crossing {
     let found = match found {
         Ok(found) => found,
         Err(craft3d_tess::TessError::Spent) => return Crossing::Spent,
         Err(error) => return Crossing::Unknown(error.to_string()),
     };
-    if found.is_clean() {
-        return Crossing::None;
-    }
     let name = |face: u32| {
         faces
             .get(face as usize)
             .map_or_else(|| format!("face {face}"), ToString::to_string)
     };
+    if found.is_clean() {
+        let tolerance = craft3d_math::Tolerance {
+            linear,
+            ..craft3d_math::Tolerance::default()
+        };
+        return match craft3d_kernel::boolean::parts_touch(body, &tolerance) {
+            Ok(None) => Crossing::None,
+            Ok(Some(touch)) => Crossing::Touching(touch.faces.map(|f| name(f.0)), touch.at, true),
+            Err(error) => Crossing::Unknown(error.to_string()),
+        };
+    }
     let certain = found.certain_crossings > 0 || found.shells.iter().any(|s| s.certain);
     if let (false, Some(touch)) = (certain, found.touching.first()) {
         let named = |face: Option<usize>| {
@@ -163,6 +176,7 @@ pub(crate) fn crossing(body: &Body, faces: &[PersistentName], linear: f64) -> Cr
         body,
         body_self_intersections(body, &SelfCheckParams::new(linear)),
         faces,
+        linear,
     )
 }
 
@@ -179,6 +193,7 @@ pub(crate) fn crossing_near(
         body,
         body_self_intersections_near(body, &SelfCheckParams::new(linear), roles),
         faces,
+        linear,
     )
 }
 

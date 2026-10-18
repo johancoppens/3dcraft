@@ -1,0 +1,184 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S0",
+            "offset": -5.0,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.circle",
+          "params": {
+            "center": [
+              10.0,
+              -10.0
+            ],
+            "radius": 10.0,
+            "sketch": "S0"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 15.0,
+            "name": "N0",
+            "sketch": "S0"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.block",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              10.0,
+              10.0,
+              0.0
+            ],
+            "name": "N1",
+            "position": [
+              5.0,
+              -5.0,
+              10.0
+            ],
+            "size": [
+              20.0,
+              10.0,
+              10.0
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.mirror",
+          "params": {
+            "keep": true,
+            "name": "N2",
+            "normal": [
+              10.0,
+              10.0,
+              10.0
+            ],
+            "point": [
+              -10.0,
+              5.0,
+              10.0
+            ],
+            "source": "N0"
+          }
+        }
+      ],
+      "step": "mirror"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.transform",
+          "params": {
+            "angle": "90 deg",
+            "axis": [
+              10.0,
+              10.0,
+              10.0
+            ],
+            "keep": false,
+            "name": "N3",
+            "pivot": [
+              5.0,
+              -5.0,
+              10.0
+            ],
+            "source": "N1",
+            "translate": [
+              0.0,
+              -5.0,
+              -5.0
+            ]
+          }
+        }
+      ],
+      "step": "transform"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N4",
+            "op": "subtract",
+            "target": "N3",
+            "tool": "N0"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N5",
+            "op": "union",
+            "target": "N4",
+            "tool": "N2"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N6",
+            "open": [],
+            "source": "N5",
+            "thickness": 0.625
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.chamfer",
+          "params": {
+            "chain": false,
+            "distance": 1.25,
+            "edges": [
+              [
+                "{N6}:copy(0)/{N1}:face(0)",
+                "{N6}:copy(0)/{N1}:face(2)"
+              ],
+              [
+                "{N6}:copy(1)/{N5}:copy(0)/{N1}:face(1)",
+                "{N6}:copy(1)/{N5}:copy(0)/{N1}:face(4)"
+              ]
+            ],
+            "name": "N7"
+          }
+        }
+      ],
+      "step": "blend"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 17070
+}

@@ -187,6 +187,12 @@ pub(super) struct Sections {
     /// Points where two faces' surfaces only touch (a ball on a plane):
     /// they divide nothing, but are where the bodies meet.
     pub touches: Vec<Vec3>,
+    /// Points where an edge of one face meets the surface of the other
+    /// of a pair whose surfaces meet in a curve: where the bodies meet,
+    /// also where no stretch of the curve is left between two of them (a
+    /// circular edge of one body that touches the other's face in a point
+    /// from outside it).
+    pub edge_meets: Vec<Vec3>,
     /// Per edge: the vertices to split it at.
     pub splits_a: BTreeMap<EdgeId, BTreeSet<usize>>,
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
@@ -1148,6 +1154,9 @@ pub(super) fn section(
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
                     edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
                     edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+                    sections
+                        .edge_meets
+                        .extend(found.iter().map(|cut| cut.point));
                     for curve in &meeting.curves {
                         clip(
                             curve,
