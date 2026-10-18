@@ -821,28 +821,50 @@ fn clip(
         let mut keep = true;
         for ((outline, inside), here) in [oa, ob].into_iter().zip(inside.iter_mut()).zip(heres) {
             let side = |p: Vec3| outline.side(p, tol).map_err(|r| Stop::of(r).at(&named));
-            match here {
-                Side::Out => {
-                    keep = false;
-                    break;
-                }
-                Side::In => *inside = true,
-                Side::On => {}
+            if here == Side::Out {
+                keep = false;
+                break;
             }
-            if [side(at(0.25))?, side(at(0.75))?]
-                .iter()
-                .any(|&q| q != here)
-            {
+            let quarters = [side(at(0.25))?, side(at(0.75))?];
+            let mixed = quarters.iter().any(|&q| q != here);
+            if quarters.contains(&Side::Out) || (mixed && meeting.tangent) {
                 // A curve along which the surfaces only touch divides
                 // nothing: where it runs over a face's boundary without
                 // a cut there (it is within the tolerance of the surface
                 // well past where it leaves it), it is left out. A
-                // crossing in that state is refused.
+                // crossing that leaves the face in that state is refused.
                 if meeting.tangent {
                     keep = false;
                     break;
                 }
                 return Err(Stop::of(AMBIGUOUS).at(&named));
+            }
+            // Between its cuts a stretch crosses no edge of the face, so
+            // it is either along the boundary (within the tolerance of
+            // it everywhere) or inside the face. A place within the
+            // tolerance of the boundary says nothing by itself; one
+            // clear of it says inside: a chord that cuts a corner of the
+            // face a few tolerances from its vertex is inside, and
+            // passes within the tolerance of both edges on the way. But a
+            // cut can be lost in that band (an edge fitted within the
+            // tolerance of its curve meets the surface at a shallow
+            // angle more than a tolerance from the meeting curve; a hit
+            // is taken to the edge's end), so a stretch that is inside
+            // somewhere must be inside by the sign of its offset from
+            // the nearest edge wherever it is in the band, at seven
+            // places; one that leaves the face there is refused.
+            if here == Side::In || quarters.contains(&Side::In) {
+                if mixed {
+                    for k in 1..8 {
+                        let p = at(f64::from(k) / 8.0);
+                        match side(p)? {
+                            Side::In => {}
+                            Side::On if outline.inside_by_sign(p, tol) == Some(true) => {}
+                            _ => return Err(Stop::of(AMBIGUOUS).at(&named)),
+                        }
+                    }
+                }
+                *inside = true;
             }
         }
         if !keep {

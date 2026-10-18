@@ -2,8 +2,10 @@
 //! solid, and which of them the operation keeps.
 
 use super::hits::{curve_hits, signed_distance};
-use super::outline::{Outline, Side, boxes_meet, line_in_box, surface_distance};
-use super::regions::{self, Half};
+use super::outline::{
+    Outline, SLIVER, Side, boxes_meet, line_in_box, nearest, onto, outward_normal, surface_distance,
+};
+use super::regions::{self, ANGLE_GUARD, Half};
 use super::section::Solid;
 use super::{
     Arcs, BooleanOp, FaceSource, IMPRINT_LOST, LOST, NO_RAY, ON_A_FACE, Operand, Reason, Stop,
@@ -149,9 +151,15 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
     Err(Stop::of(NO_RAY))
 }
 
-/// Where a region of a face of `own` is with respect to `other`.
+/// Where a region of a face of `own` is with respect to `other`: by a
+/// point well inside it, or, when the region holds no such point, read at
+/// its boundary ([`at_boundary`]). `loops` are the region's loops of
+/// arcs, in the order of `region`'s, and `across` the arcs that lie
+/// inside the face.
 fn classify(
     region: &Outline,
+    loops: &[Vec<Half>],
+    across: &BTreeSet<usize>,
     other: &Solid,
     coincident: &[(usize, bool)],
     tolerance: &Tolerance,
@@ -163,9 +171,13 @@ fn classify(
     // for a smaller one.)
     let mut tried = 0;
     'points: for want in [1, TRIES] {
-        let candidates = region
-            .interior_points(tol, 4.0 * tol, want)
-            .map_err(Stop::of)?;
+        let candidates = match region.interior_points(tol, 4.0 * tol, want) {
+            Ok(candidates) => candidates,
+            Err(SLIVER) if tried == 0 => {
+                return at_boundary(region, loops, across, other, coincident, tolerance);
+            }
+            Err(reason) => return Err(Stop::of(reason)),
+        };
         let fresh: Vec<Vec3> = candidates.into_iter().skip(tried).collect();
         tried += fresh.len();
         for p in fresh {
@@ -214,6 +226,248 @@ fn classify(
         }
     }
     Err(failure.unwrap_or(Stop::of(NO_RAY)))
+}
+
+const UNREAD: Reason = "a piece of a face too thin to find a point inside it, whose boundary does not say which side of the other body it is on (at the edge of tolerance)";
+const DISAGREE: Reason = "a piece of a face too thin to find a point inside it, whose boundary reads as more than one side of the other body (at the edge of tolerance)";
+/// The most arcs of a region that are read for its side at the boundary:
+/// a sliver has a few; beyond this the region is not read.
+const READ_ARCS: usize = 64;
+
+/// Where a region that holds no point at the margin from its boundary (a
+/// sliver a few tolerances wide: the corner a curve cuts off a face just
+/// past its vertex, the triangle between three edges of three bodies
+/// that nearly meet in one point) lies, read at its boundary, which is
+/// exact where a sample point is not: just inside the region next to an
+/// arc along which the other body passes through the face, the region is
+/// where the direction into it points with respect to what the other
+/// body is at that arc ([`beside`]). Every such arc of the region is read
+/// and they must agree; a region without one is not read.
+fn at_boundary(
+    region: &Outline,
+    loops: &[Vec<Half>],
+    across: &BTreeSet<usize>,
+    other: &Solid,
+    coincident: &[(usize, bool)],
+    tolerance: &Tolerance,
+) -> Result<Class, Stop> {
+    let mut found: Option<Class> = None;
+    let mut read = 0;
+    for (halves, segs) in loops.iter().zip(&region.loops) {
+        for (&(arc, _), seg) in halves.iter().zip(segs) {
+            if !across.contains(&arc) {
+                continue;
+            }
+            if read >= READ_ARCS {
+                return Err(Stop::of(UNREAD));
+            }
+            read += 1;
+            // Into the region: seen from outside, it lies to the left of
+            // its boundary.
+            let (p, travel) = seg.travel();
+            let Some(travel) = travel.normalized() else {
+                continue;
+            };
+            let Some(outward) = outward_normal(region.sheet(), region.reversed, p) else {
+                continue;
+            };
+            let Some(inward) = outward.cross(travel).normalized() else {
+                continue;
+            };
+            let along = [seg.at(0.25), seg.at(0.75)];
+            let class = beside(
+                other,
+                coincident,
+                region,
+                (p, along),
+                travel,
+                inward,
+                tolerance,
+            )?;
+            match found {
+                Some(before) if before != class => return Err(Stop::of(DISAGREE)),
+                _ => found = Some(class),
+            }
+        }
+    }
+    found.ok_or(Stop::of(SLIVER))
+}
+
+/// Where the face of `region` is, just beside the point `p` of its
+/// boundary in the direction `inward`, with respect to `other`, from the
+/// faces of `other` that hold the arc there (`p` and the two places
+/// `along` it, within the tolerance). `travel` is the direction of the
+/// arc at `p`.
+///
+/// `p` is inside an arc, so it is inside a face of `other` or inside an
+/// edge of it that runs along the arc: a face of `other` on the same
+/// surface as the region's (`coincident`) that reaches to the inward side
+/// has the region on it; otherwise the material of `other` next to `p`
+/// lies behind the one face through `p`, or in the wedge of the two that
+/// meet along the edge, which holds `inward` or not. A face through `p`
+/// that does not hold the arc would make `p` a vertex, and a sign within
+/// [`ANGLE_GUARD`] of zero means faces tangent there: neither is read.
+fn beside(
+    other: &Solid,
+    coincident: &[(usize, bool)],
+    region: &Outline,
+    (p, along): (Vec3, [Vec3; 2]),
+    travel: Vec3,
+    inward: Vec3,
+    tolerance: &Tolerance,
+) -> Result<Class, Stop> {
+    let tol = tolerance.linear;
+    // The faces of the other body that are not on this surface and hold
+    // the arc: their outward normals, and where `p` is on their boundary
+    // the direction into them from it.
+    let mut walls: Vec<(Vec3, Option<Vec3>)> = Vec::new();
+    // A face on the region's surface that lies on the other side of its
+    // edge along the arc: the second face of an edge that one wall is on.
+    let mut far_side = false;
+    for face in other.candidates(|b| b.contains(p, 2.0 * tol)) {
+        let Some(box_) = other.boxes.get(face) else {
+            return Err(Stop::of(LOST));
+        };
+        if !box_.contains(p, 2.0 * tol) {
+            continue;
+        }
+        let outline = other.outline(face)?;
+        let named = [other.name(face)];
+        let sheet = outline.sheet();
+        if surface_distance(sheet, p) > tol {
+            continue;
+        }
+        let Some(foot) = onto(sheet, p) else {
+            continue;
+        };
+        let side = outline
+            .side(foot, tol)
+            .map_err(|r| Stop::of(r).at(&named))?;
+        if side == Side::Out {
+            continue;
+        }
+        if along.iter().any(|&q| surface_distance(sheet, q) > tol) {
+            return Err(Stop::of(UNREAD).at(&named));
+        }
+        let Some(normal) = outward_normal(sheet, outline.reversed, foot) else {
+            return Err(Stop::of(UNREAD).at(&named));
+        };
+        let same_surface = coincident
+            .iter()
+            .find(|(f, _)| *f == face)
+            .map(|&(_, same)| same);
+        let on = |same_normal: bool| {
+            if same_normal == (region.reversed == outline.reversed) {
+                Class::OnSame
+            } else {
+                Class::OnOpposite
+            }
+        };
+        if side == Side::In {
+            match same_surface {
+                Some(same_normal) => return Ok(on(same_normal)),
+                None => walls.push((normal, None)),
+            }
+            continue;
+        }
+        // On the boundary of this face: along the piece of it that holds
+        // the arc, the nearest such piece to `p`.
+        let mut nearest_piece: Option<(f64, Vec3)> = None;
+        for (l, k) in outline.pieces_near(foot, tol) {
+            let Some(piece) = outline.loops.get(l).and_then(|loop_| loop_.get(k)) else {
+                continue;
+            };
+            let Some((t, d)) = nearest(&piece.curve, piece.range, foot) else {
+                continue;
+            };
+            if d.is_nan() || d > tol || nearest_piece.is_some_and(|(best, _)| d >= best) {
+                continue;
+            }
+            let holds = along
+                .iter()
+                .all(|&q| nearest(&piece.curve, piece.range, q).is_some_and(|(_, d)| d <= tol));
+            let span = piece.range.1 - piece.range.0;
+            if !holds || span.is_nan() || span <= 0.0 {
+                continue;
+            }
+            let (_, direction) = piece.travel_at((t - piece.range.0) / span);
+            nearest_piece = Some((d, direction));
+        }
+        let Some((_, direction)) = nearest_piece else {
+            return Err(Stop::of(UNREAD).at(&named));
+        };
+        let Some(direction) = direction.normalized() else {
+            return Err(Stop::of(UNREAD).at(&named));
+        };
+        if direction.dot(travel).abs() < 0.5 {
+            return Err(Stop::of(UNREAD).at(&named));
+        }
+        let Some(into) = normal.cross(direction).normalized() else {
+            return Err(Stop::of(UNREAD).at(&named));
+        };
+        match same_surface {
+            Some(same_normal) => {
+                // Its own surface is the region's: it reaches to the
+                // inward side, or lies on the other side of its edge.
+                let reach = into.dot(inward);
+                if reach > ANGLE_GUARD {
+                    return Ok(on(same_normal));
+                }
+                if reach >= -ANGLE_GUARD {
+                    return Err(Stop::of(UNREAD).at(&named));
+                }
+                far_side = true;
+            }
+            None => walls.push((normal, Some(into))),
+        }
+    }
+    let inside = match walls.as_slice() {
+        [] => return Err(Stop::of(UNREAD)),
+        [(normal, on_edge)] => {
+            // One face through `p`: the region is behind it or not. A
+            // wall that has `p` on its boundary is one face of an edge
+            // along the arc, and its other face must have been read
+            // (the one on the region's surface, on the far side), or the
+            // wedge is not known: a half-space would read a convex edge
+            // as inside.
+            if on_edge.is_some() && !far_side {
+                return Err(Stop::of(UNREAD));
+            }
+            let d = inward.dot(*normal);
+            if d.abs() <= ANGLE_GUARD {
+                return Err(Stop::of(UNREAD));
+            }
+            d < 0.0
+        }
+        [(n1, w1), (n2, w2)] => {
+            // An edge of the other body along the arc: its material is
+            // the wedge between the two faces, less than a half turn
+            // when each lies behind the other's surface.
+            let (Some(w1), Some(w2)) = (w1, w2) else {
+                return Err(Stop::of(UNREAD));
+            };
+            let (d1, d2) = (inward.dot(*n1), inward.dot(*n2));
+            if d1.abs() <= ANGLE_GUARD || d2.abs() <= ANGLE_GUARD {
+                return Err(Stop::of(UNREAD));
+            }
+            let (c1, c2) = (w1.dot(*n2), w2.dot(*n1));
+            if c1.abs() <= ANGLE_GUARD && c2.abs() <= ANGLE_GUARD {
+                // The faces continue each other smoothly: one wall.
+                if (d1 < 0.0) != (d2 < 0.0) {
+                    return Err(Stop::of(UNREAD));
+                }
+                d1 < 0.0
+            } else if (c1 < 0.0) != (c2 < 0.0) {
+                return Err(Stop::of(UNREAD));
+            } else if c1 < 0.0 {
+                d1 < 0.0 && d2 < 0.0
+            } else {
+                d1 < 0.0 || d2 < 0.0
+            }
+        }
+        _ => return Err(Stop::of(UNREAD)),
+    };
+    Ok(if inside { Class::In } else { Class::Out })
 }
 
 /// A region of a face of an operand that becomes a face of the result.
@@ -391,6 +645,7 @@ pub(super) fn select(
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
     let other_box = other.bbox();
+    let none = BTreeSet::new();
     for face in 0..own.faces() {
         let named = [own.name(face)];
         let f = own.body.faces.get(face).ok_or(Stop::of(LOST))?;
@@ -425,7 +680,9 @@ pub(super) fn select(
             let class = match (apart, region) {
                 (true, _) => Class::Out,
                 (false, Some(region)) => {
-                    classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?
+                    let across = interior.get(&face).unwrap_or(&none);
+                    classify(region, &loops, across, other, coincident, tolerance)
+                        .map_err(|s| s.at(&named))?
                 }
                 (false, None) => return Err(Stop::of(LOST).at(&named)),
             };

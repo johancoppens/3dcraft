@@ -36,7 +36,7 @@ pub(super) type Half = (usize, bool);
 
 /// Directions closer together than this (radians) at a vertex cannot be
 /// put in order reliably.
-const ANGLE_GUARD: f64 = 1e-6;
+pub(super) const ANGLE_GUARD: f64 = 1e-6;
 
 /// Directions closer together than this (radians) at a vertex are not
 /// trusted to be in the right order as they stand: an intersection curve

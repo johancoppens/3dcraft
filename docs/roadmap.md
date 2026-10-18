@@ -305,6 +305,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit: projection samples kept with the surface, chart speeds and lower bounds remembered, fine pieces sharing their corners, many bodies measured as one row of faces, checks not repeated by regeneration ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*) (2026-10-17)
 - Measures and the self-check's meshes faster, bit for bit: lines of a spline evaluated once per line, walks keeping their blend factors, projections and face meshes remembered, every operation's check remembered ([`design/booleans.md`](design/booleans.md) › *Second round*) (2026-10-18)
 - Several lumps and cavities proven and checked: shells one by one in `topo::check`, one rule for outsides and cavities (`kernel::lumps`, used by the STEP export and `document.check` deep), `shells` in `document.inspect` ([`design/booleans.md`](design/booleans.md) › *Lumps and cavities*) (2026-10-17)
+- Slivers a few tolerances wide (the joint of a riveted truss: three bars whose edges nearly meet in one point) classified at their boundary instead of by a point inside them, a chord read as inside where it passes within the tolerance of an edge ([`design/booleans.md`](design/booleans.md) › *Slivers read at their boundary*) (2026-10-18)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

@@ -63,7 +63,7 @@ pub(super) enum Side {
     Out,
 }
 
-const SLIVER: Reason =
+pub(super) const SLIVER: Reason =
     "a piece of a face too thin to find a point inside it (at the edge of tolerance)";
 /// Where along a boundary piece [`Outline::interior_points`] steps into
 /// the face, the part of the piece's width the first step starts from (it
@@ -538,8 +538,19 @@ pub(super) fn left_of(
     // ten tolerances wide the candidate must be more than the margin (four
     // tolerances) from its piece and less than half the strip (five), a
     // window halving steps hit only by chance: where they find nothing the
-    // steps shrink by a twelfth of an octave instead.
-    for (shrink, most, margin) in passes(margin) {
+    // steps shrink by a twelfth of an octave instead. Which side of its
+    // own pieces a point is on is a question of the pieces as they are,
+    // so a loop with no room at the margin (a sliver a few tolerances
+    // wide: the corner a curve cuts off a face just past its vertex) is
+    // answered as close to it as a sixteenth of the margin, well clear of
+    // rounding. The candidate still steps in from the stations of a
+    // piece, so with pieces between vertices two tolerances apart it is
+    // a tolerance from the piece's ends at the middle station and half
+    // that at the others, nearer to its piece than to anything else, and
+    // a winding about a point within rounding of another loop is refused
+    // (`TOO_CLOSE`); what such a sliver is next to is read at its
+    // boundary (`classify::at_boundary`), not at a point inside it.
+    for (shrink, most, margin) in passes(margin).into_iter().chain(passes(margin / 16.0)) {
         for seg in of {
             let (point, travel) = seg.travel();
             let Some(outward) = outward_normal(sheet, reversed, point) else {
@@ -716,6 +727,49 @@ impl Outline {
         } else {
             Side::Out
         })
+    }
+
+    /// For a point within `tol` of the boundary: whether it is inside the
+    /// face by the sign of its offset from the nearest piece (the test
+    /// [`left_of`] reads a witness by), when one piece is the nearest by
+    /// more than rounding and the foot of the offset is inside the piece,
+    /// further from its ends than the offset is long (so the nearest
+    /// point is the foot, not an end). `None` when no side can be read:
+    /// at a corner, or with the point on the piece.
+    pub fn inside_by_sign(&self, p: Vec3, tol: f64) -> Option<bool> {
+        let mut best: Option<(f64, usize, usize, f64)> = None;
+        let mut next = f64::INFINITY;
+        for (l, k) in self.pieces_near(p, tol) {
+            let Some(seg) = self.loops.get(l).and_then(|loop_| loop_.get(k)) else {
+                continue;
+            };
+            let Some((t, d)) = nearest(&seg.curve, seg.range, p) else {
+                continue;
+            };
+            match best {
+                Some((least, ..)) if d >= least => next = next.min(d),
+                Some((least, ..)) => {
+                    next = next.min(least);
+                    best = Some((d, l, k, t));
+                }
+                None => best = Some((d, l, k, t)),
+            }
+        }
+        let (d, l, k, t) = best?;
+        if !(d > 0.0 && next > d * (1.0 + 1e-9)) {
+            return None;
+        }
+        let seg = self.loops.get(l)?.get(k)?;
+        if !(t > seg.range.0 && t < seg.range.1) {
+            return None;
+        }
+        let (foot, tangent) = seg.curve.derivatives(t);
+        if !(foot.distance(seg.a) > d && foot.distance(seg.b) > d) {
+            return None;
+        }
+        let travel = if seg.reversed { -tangent } else { tangent };
+        let left = outward_normal(self.sheet(), self.reversed, foot)?.cross(travel);
+        Some(left.dot(p - foot) > 0.0)
     }
 
     /// Up to `want` points of the face well inside the loops: at least

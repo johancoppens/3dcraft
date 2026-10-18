@@ -94,8 +94,11 @@ use std::path::PathBuf;
 /// longer drawn twice: four `near` cases of a block or a dome against a
 /// roof). Raised to 11582 on 2026-10-15 (each pair of faces intersected
 /// in the box of the two faces, only that box walked: three `near` cases
-/// each of cylinder-spline, spline-spline and torus-dome).
-const AGREEING_FLOOR: usize = 11582;
+/// each of cylinder-spline, spline-spline and torus-dome). Raised to
+/// 11591 on 2026-10-18 (slivers a few tolerances wide read at their
+/// boundary and a chord within the tolerance of an edge read as inside:
+/// three `near` cases, each against FreeCAD's answer).
+const AGREEING_FLOOR: usize = 11591;
 
 /// A floor on the outcomes that agree outright (`match`, `match~`,
 /// `empty`), and a ceiling on those refused as zero thickness: the sum
@@ -113,8 +116,8 @@ const AGREEING_FLOOR: usize = 11582;
 /// (`on_parts`), and one shell (`contact/cone-spline/005`) touching
 /// itself by `touches_itself_at`; the digest and the sum are unchanged.
 /// The outright agreement goes from 10717 to 10559, the zero-thick count
-/// from 865 to 1023.
-const MATCHED_FLOOR: usize = 10559;
+/// from 865 to 1023; 10568 since the slivers of 2026-10-18.
+const MATCHED_FLOOR: usize = 10568;
 const ZERO_THICK_CEILING: usize = 1023;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
