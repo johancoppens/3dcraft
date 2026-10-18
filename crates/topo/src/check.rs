@@ -566,13 +566,18 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
                 if !(t0.is_finite() && t1.is_finite()) {
                     continue;
                 }
-                // Ends, middle and quarter points of the edge.
+                // Ends, middle and quarter points of the edge. A point
+                // whose distance cannot be had (not finite, or no
+                // projection) is not known to be on the surface: it
+                // counts as off, as it does wherever the kernel takes this
+                // measure (`boolean::section::edge_cuts`, `tweak::lies_on`).
                 let worst = (0..=4)
-                    .filter_map(|k| {
+                    .map(|k| {
                         distance_to(
                             &face.surface,
                             e.curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0),
                         )
+                        .unwrap_or(f64::INFINITY)
                     })
                     .fold(0.0, f64::max);
                 if worst > tol.linear {

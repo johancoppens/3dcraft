@@ -8,7 +8,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_geom::{Plane, Surface};
+use craft3d_geom::{Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::solids;
 use craft3d_topo::{
@@ -393,4 +393,74 @@ fn a_shell_alone_is_a_body_of_its_faces_and_only_what_they_use() {
     let volume = craft3d_topo::mass_properties(&second).unwrap().volume;
     assert!((volume - 1.0).abs() < 1e-9, "{volume}");
     assert!(craft3d_topo::shell_alone(&body, craft3d_topo::ShellId(2)).is_none());
+}
+
+/// A square sheet in the plane `z = 0` whose edge from `(3, 0, 0)` to
+/// `(1, 0, 0)` is `along`, over `range`.
+fn square_sheet(along: Curve3, range: (f64, f64)) -> Body {
+    let mut body = Body::new(BodyKind::Sheet);
+    let corners = [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(3.0, 0.0, 0.0),
+        Vec3::new(3.0, 1.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+    ];
+    let v: Vec<VertexId> = corners.iter().map(|p| body.add_vertex(*p)).collect();
+    // The given edge runs from the second corner to the first: the loop
+    // uses it against its direction.
+    let first = body.add_edge(along, range, v[1], v[0]);
+    let mut coedges = vec![Coedge {
+        edge: first,
+        reversed: true,
+    }];
+    for k in 1..4 {
+        let (a, b) = (corners[k], corners[(k + 1) % 4]);
+        let edge = body.add_edge(
+            Curve3::Line(Line::through(a, b).unwrap()),
+            (0.0, a.distance(b)),
+            v[k],
+            v[(k + 1) % 4],
+        );
+        coedges.push(Coedge {
+            edge,
+            reversed: false,
+        });
+    }
+    let loop_ = body.add_loop(coedges);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![loop_]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// A point of an edge whose distance to the surface cannot be had is not
+/// known to be on it, and the edge is off its surface: here a rational
+/// line of degree one, used past its domain to where its weight vanishes,
+/// so that the point in the middle of the edge's range is not finite,
+/// while every other place the checker measures lies in the plane. (It
+/// used to leave such a point out of its measure, and the edge passed.)
+#[test]
+fn a_point_without_a_distance_puts_the_edge_off_its_surface() {
+    let straight =
+        Curve3::Line(Line::through(Vec3::new(3.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap());
+    assert_eq!(defects(&square_sheet(straight, (0.0, 2.0))), vec![]);
+    // Weight `(1 - t) + 2t = 1 + t`: zero at `t = -1`, the middle of the
+    // range `(-3, 1)`; the ends are `(3, 0, 0)` and `(1, 0, 0)`.
+    let rational = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)],
+        vec![1.0, 2.0],
+    )
+    .unwrap();
+    assert!(rational.eval(-3.0).distance(Vec3::new(3.0, 0.0, 0.0)) < 1e-12);
+    assert!(rational.eval(1.0).distance(Vec3::new(1.0, 0.0, 0.0)) < 1e-12);
+    assert!(!rational.eval(-1.0).is_finite());
+    for t in [-2.0, 0.0] {
+        assert_eq!(rational.eval(t).z, 0.0);
+    }
+    let body = square_sheet(Curve3::Nurbs(rational), (-3.0, 1.0));
+    assert!(has(&body, |d| matches!(
+        d,
+        Defect::EdgeOffSurface { face: FaceId(0), edge: EdgeId(0), distance } if distance.is_infinite()
+    )));
 }
