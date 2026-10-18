@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-17 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (boolean checklist: rational weights a thousand apart in booleans built and measured)
+> **Last updated:** 2026-10-18 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (boolean checklist item 5: sheet bodies, `feature.fill`, a sheet trimmed by a solid and a solid cut by a sheet)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in the detail documents under [`design/`](design/README.md) (the structure in [`architecture.md`](architecture.md)), and how it is tested in [`testing.md`](testing.md).
 
@@ -51,7 +51,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
 3. ✅ 2026-10-13 **Results without scars:** faces and edges a boolean split needlessly are merged.
 4. ⬜ **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import will bring them.
-5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built, checked per shell and sorted by one rule (2026-10-17, [`design/booleans.md`](design/booleans.md) › *Lumps and cavities*); sheet bodies are owed.
+5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built (2026-10-17); sheets are made by `feature.fill`, trimmed by a solid and cut a solid (2026-10-18, [`design/booleans.md`](design/booleans.md) › *Sheets*); two sheets and a split into both pieces are owed.
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`design/regeneration.md`](design/regeneration.md) › *Never through itself*).
@@ -68,7 +68,8 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Rational weights a thousand apart in booleans: built 2026-10-17, not meshed (the tessellator does not mesh every face skewed a hundredfold and more); ten thousand apart along a degree-one direction and the plate at ten thousand still refused ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*).
 - [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [x] Several lumps and cavities (item 5): one rule for which shell is which (`kernel::lumps`), shells checked one by one, held to closed forms, genus per shell, meshes, the identities of sets and FreeCAD at three scales (2026-10-17).
-- [ ] Sheet bodies (item 5): nothing makes one yet and the boolean refuses them; and a name for the piece of a face in one lump (open decision D-open-13 on several lumps).
+- [x] Sheet bodies (item 5): the check of an open shell, `feature.fill`, a sheet trimmed by a solid and a solid cut by a sheet, held to closed forms, Euler with boundary loops, meshes open only at the boundary, the identities of areas and volumes and FreeCAD at three scales (2026-10-18).
+- [ ] Sheets, still refused: two sheets, a piece of a sheet on a face of the solid, a lump or cavity the sheet does not cross, a split into both pieces at once (open decision D-open-14); sheets from other commands (an open profile extruded, a face copied, a loft without caps); and a name for the piece of a face in one lump (open decision D-open-13 on several lumps).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
 - [ ] Tolerant modelling (item 4), before STEP import.
@@ -396,7 +397,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 #### Open
 - [ ] Replace face
 - [ ] Draft: cones, spheres and freeform faces, faces not along the pull direction, a parting line instead of a neutral plane, a face whose neighbour is tangent to it and not drafted
-- [ ] Thicken: a sheet body (none is made yet), walls along the faces' normals at a rim that is not square to its neighbours
+- [ ] Thicken: a sheet body (`feature.fill` makes one since 2026-10-18), walls along the faces' normals at a rim that is not square to its neighbours
 - [ ] Move face: a cylinder or cone tilted against a flat neighbour (the edge would be an ellipse), a moved face whose neighbours would have to gain or lose an edge
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
 - [ ] Freeform blends that are still refused: a blend whose end runs over more than one face (F9), a joint creased by more than the tolerance allows at the radius (the lamp's cells, B4), a chamfer chain whose face changes at a joint (B5); a border carried across a smooth edge of its face in a chain, a ring or a meet (the engine block's E6 in the full block, next to the waist round), across more than one from an end, or across one that it enters and leaves through the border; concave fillets that meet round a sharp convex edge, or convex ones round a concave edge (a blade's root loop, the turbofan's F3 and F11: the ball rolls over the edge); a weld whose ball runs past the end of a face onto the next (the bike's B2); a chain whose ends meet at one vertex; chamfers whose face changes at a joint or that meet; a freeform chamfer by distance and angle; a vertex patch with tangency (a setback) in place of the crease where two fillets meet
@@ -521,6 +522,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | minor | Boolean checklist item 5: sheet bodies (`feature.fill`, trim and cut by subtract and intersect); format version 22 |
 | 2026-10-16 | minor | M1: `floor`, `ceil`, `round`, `trunc` and `mod` in expressions; format version 17 renames old variables with those names |
 | 2026-10-16 | minor | M9: fillets along the rims of offset and shelled freeform faces |
 | 2026-10-16 | minor | M9: offset face, shell and thicken of freeform faces |
