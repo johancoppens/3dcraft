@@ -230,7 +230,8 @@ fn classify(
 
 const UNREAD: Reason = "a piece of a face too thin to find a point inside it, whose boundary does not say which side of the other body it is on (at the edge of tolerance)";
 const DISAGREE: Reason = "a piece of a face too thin to find a point inside it, whose boundary reads as more than one side of the other body (at the edge of tolerance)";
-/// The most arcs of a region that are read for its side at the boundary.
+/// The most arcs of a region that are read for its side at the boundary:
+/// a sliver has a few; beyond this the region is not read.
 const READ_ARCS: usize = 64;
 
 /// Where a region that holds no point at the margin from its boundary (a
@@ -258,7 +259,7 @@ fn at_boundary(
                 continue;
             }
             if read >= READ_ARCS {
-                break;
+                return Err(Stop::of(UNREAD));
             }
             read += 1;
             // Into the region: seen from outside, it lies to the left of
@@ -320,6 +321,9 @@ fn beside(
     // the arc: their outward normals, and where `p` is on their boundary
     // the direction into them from it.
     let mut walls: Vec<(Vec3, Option<Vec3>)> = Vec::new();
+    // A face on the region's surface that lies on the other side of its
+    // edge along the arc: the second face of an edge that one wall is on.
+    let mut far_side = false;
     for face in other.candidates(|b| b.contains(p, 2.0 * tol)) {
         let Some(box_) = other.boxes.get(face) else {
             return Err(Stop::of(LOST));
@@ -412,13 +416,23 @@ fn beside(
                 if reach >= -ANGLE_GUARD {
                     return Err(Stop::of(UNREAD).at(&named));
                 }
+                far_side = true;
             }
             None => walls.push((normal, Some(into))),
         }
     }
     let inside = match walls.as_slice() {
         [] => return Err(Stop::of(UNREAD)),
-        [(normal, _)] => {
+        [(normal, on_edge)] => {
+            // One face through `p`: the region is behind it or not. A
+            // wall that has `p` on its boundary is one face of an edge
+            // along the arc, and its other face must have been read
+            // (the one on the region's surface, on the far side), or the
+            // wedge is not known: a half-space would read a convex edge
+            // as inside.
+            if on_edge.is_some() && !far_side {
+                return Err(Stop::of(UNREAD));
+            }
             let d = inward.dot(*normal);
             if d.abs() <= ANGLE_GUARD {
                 return Err(Stop::of(UNREAD));

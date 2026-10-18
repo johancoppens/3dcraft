@@ -1,5 +1,6 @@
 //! Slivers a few tolerances wide: the corner a face of one body cuts off a
-//! face of the other just past its vertex, and the joint of a riveted
+//! face of the other just past its vertex, a face's edge beside a convex
+//! or a concave edge of the other body, and the joint of a riveted
 //! truss, where three angle bars turned about a common point have edges
 //! in one plane that nearly meet in one point (the Garabit pier's finding
 //! of 2026-10-18). A region of a face that holds no point at the margin
@@ -98,6 +99,101 @@ fn corner_cut_a_few_tolerances_from_the_vertex() {
             assert_eq!(common.faces.len(), 4, "{what}: intersection faces");
             assert_eq!(common.vertices.len(), 4, "{what}: intersection vertices");
             assert_volume(&common, tetrahedron, k, &what);
+        }
+    }
+}
+
+// --- A sliver beside an edge of the other body ---------------------------
+
+/// A block turned 45° about y whose edge lies in the plane `z = k` at
+/// `x = k − delta`, its 90° wedge opening towards +x, straddling the
+/// plane: the sliver of the cube's top face beside it reads the two
+/// walls of a convex edge.
+fn convex_wedge(k: f64, delta: f64) -> Body {
+    let origin = Vec3::new(k - delta, -k, k);
+    let frame = Frame::new(origin, Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 0.0, 1.0)).unwrap();
+    primitives::block(&frame, 0.5 * k, 0.5 * k, 3.0 * k).unwrap()
+}
+
+/// A pentagon prism along y with a reflex edge at `(k − delta, *, k)`:
+/// the notch's faces rise at ±45° from the plane `z = k`, the material
+/// fills 270° around the edge: the two walls of a concave edge.
+fn concave_wedge(k: f64, delta: f64) -> Body {
+    let x0 = k - delta;
+    let pts: [[f64; 2]; 5] = [
+        [x0 - 0.5 * k, 0.5 * k],
+        [x0 + 0.5 * k, 0.5 * k],
+        [x0 + 0.5 * k, 1.5 * k],
+        [x0, k],
+        [x0 - 0.5 * k, 1.5 * k],
+    ];
+    let curves: Vec<SketchCurve> = (0..5)
+        .map(|i| SketchCurve {
+            id: i as u64 + 1,
+            curve: Curve2::Line {
+                start: pts[i],
+                end: pts[(i + 1) % 5],
+            },
+        })
+        .collect();
+    let tol = tolerance(k);
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    // The profile's (u, v) are world (x, z); the extrusion runs along −y
+    // from y = 2k to y = −k.
+    let frame = Frame::new(
+        Vec3::new(0.0, 2.0 * k, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    extrude(&profiles, &frame, 0.0, 3.0 * k, &tol).unwrap().body
+}
+
+/// The sliver of the cube's top face between its edge and an edge of the
+/// other body a few tolerances away, convex (a turned block) and concave
+/// (a notched prism): union in both orders, difference and intersection
+/// to closed-form volumes (the review's probe of 2026-10-18).
+#[test]
+fn sliver_beside_an_edge_of_the_other_body() {
+    for k in AT {
+        let tol = tolerance(k).linear;
+        let cube = k.powi(3);
+        for tolerances in [3.0, 5.0] {
+            let delta = tolerances * tol;
+            let a = boxed(k, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+            for (shape, b, volume, common) in [
+                (
+                    "convex",
+                    convex_wedge(k, delta),
+                    0.75 * cube,
+                    0.5 * delta * delta * k,
+                ),
+                (
+                    "concave",
+                    concave_wedge(k, delta),
+                    2.25 * cube,
+                    (0.5 * k + delta) * k * 0.5 * k,
+                ),
+            ] {
+                let what = format!("{shape} wedge at {tolerances} tolerances, scale {k}");
+                let mb = mass_properties(&b).unwrap();
+                assert!(
+                    (mb.volume - volume).abs() <= 1e-9 * cube,
+                    "{what}: B {}",
+                    mb.volume
+                );
+                for (first, second) in [(&a, &b), (&b, &a)] {
+                    let union = op(first, second, Union, k, &what);
+                    assert_eq!(union.shells.len(), 1, "{what}");
+                    assert_volume(&union, cube + volume - common, k, &what);
+                }
+                let difference = op(&a, &b, Subtract, k, &what);
+                assert_eq!(difference.shells.len(), 1, "{what}");
+                assert_volume(&difference, cube - common, k, &what);
+                let meet = op(&a, &b, Intersect, k, &what);
+                assert_eq!(meet.shells.len(), 1, "{what}");
+                assert_volume(&meet, common, k, &what);
+            }
         }
     }
 }
