@@ -21,7 +21,7 @@ mod rational_common;
 
 use boolean_common::{SCALES, boxed, mass, rod, solve, tolerance};
 use craft3d_geom::refine::{elevated, with_knots};
-use craft3d_geom::{NurbsCurve, NurbsSurface, Surface};
+use craft3d_geom::{NurbsCurve, NurbsSurface, Surface, allowance};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract};
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, fillet};
@@ -466,6 +466,22 @@ fn balls_with_their_ring_filleted_shell_to_the_closed_form() {
     }
 }
 
+/// The work (`geom::allowance` units, not the clock) of offsetting the
+/// fillet with both faces it rolls along by `distance`, which fits.
+fn built(made: &Filleted, distance: f64, tol: &Tolerance) -> u64 {
+    let offsets: Vec<FaceOffset> = [made.fillet, made.supports[0], made.supports[1]]
+        .iter()
+        .map(|face| FaceOffset {
+            face: *face,
+            distance,
+        })
+        .collect();
+    let (made, units) =
+        allowance::measured(|| offset_faces_with(&made.body, &offsets, &Blends::default(), tol));
+    made.unwrap_or_else(|e| panic!("offset {distance}: {e}"));
+    units
+}
+
 /// A distance at which the fillet's radius reaches zero is too far, with
 /// the radius as what fits, found in closed form: nothing is built in
 /// the search (it ends at once).
@@ -484,13 +500,13 @@ fn a_fillet_whose_radius_would_reach_zero_is_too_far_by_its_radius() {
                 distance: -0.4 * k,
             })
             .collect();
-        let started = Instant::now();
-        let error = offset_faces_with(&made.body, &offsets, &Blends::default(), &tol).unwrap_err();
-        assert!(
-            started.elapsed().as_secs_f64() < 5.0,
-            "{:?}",
-            started.elapsed()
-        );
+        let (error, refusing) = allowance::measured(|| {
+            offset_faces_with(&made.body, &offsets, &Blends::default(), &tol).unwrap_err()
+        });
+        // Nothing built: a small part of the work of an offset that fits.
+        let building = built(&made, -0.1 * k, &tol);
+        println!("too far at {k}: {refusing} units, an offset that fits {building}");
+        assert!(refusing * 4 < building, "{refusing} against {building}");
         let KernelError::FaceOpTooFar {
             faces,
             largest,
@@ -526,9 +542,11 @@ fn a_fillet_moved_without_the_faces_it_rolls_along_is_refused_at_once() {
                 distance: 0.1,
             })
             .collect();
-        let started = Instant::now();
-        let error = offset_faces(&made.body, &offsets, &tol).unwrap_err();
-        assert!(started.elapsed().as_secs_f64() < 5.0);
+        let (error, refusing) =
+            allowance::measured(|| offset_faces(&made.body, &offsets, &tol).unwrap_err());
+        let building = built(&made, 0.1, &tol);
+        println!("alone: {refusing} units, with its faces {building}");
+        assert!(refusing * 4 < building, "{refusing} against {building}");
         let KernelError::FaceOp { faces, reason, .. } = error else {
             panic!("not refused: {error}");
         };
