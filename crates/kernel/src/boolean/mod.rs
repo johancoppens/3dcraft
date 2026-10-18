@@ -1137,6 +1137,58 @@ pub fn contains_points(
     Ok(found)
 }
 
+/// Where a point lies against a solid ([`classify_points`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Inside,
+    Outside,
+    /// Within twice the tolerance of the solid's boundary.
+    OnBoundary,
+    /// No ray could tell.
+    Unknown,
+}
+
+/// [`contains_points`] that tells a point on the boundary from one no ray
+/// could place.
+pub fn classify_points(
+    body: &Body,
+    points: &[Vec3],
+    tolerance: &Tolerance,
+) -> Result<Vec<Place>, KernelError> {
+    let unsupported = |stop| match stop {
+        Stop::Error(error) => error,
+        Stop::Unsupported { reason, mut faces } => {
+            faces.truncate(MAX_REPORTED);
+            KernelError::Unsupported {
+                operation: "point classification",
+                reason,
+                faces,
+            }
+        }
+    };
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    let mut vertices = Vertices::new(0.0, 0.0);
+    let solid =
+        section::prepare(body, Operand::A, &mut vertices, tolerance, false).map_err(unsupported)?;
+    let mut found = Vec::with_capacity(points.len());
+    for &point in points {
+        found.push(match classify::inside(&solid, point, tolerance) {
+            Ok(true) => Place::Inside,
+            Ok(false) => Place::Outside,
+            Err(Stop::Unsupported { reason, .. }) if reason == ON_A_FACE => Place::OnBoundary,
+            Err(Stop::Unsupported { .. }) => Place::Unknown,
+            Err(stop) => return Err(unsupported(stop)),
+        });
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

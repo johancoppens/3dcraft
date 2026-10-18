@@ -550,12 +550,34 @@ fn lumps(
     tolerance: &Tolerance,
     name: &str,
 ) -> Result<Vec<(usize, Vec<usize>)>, IoError> {
-    let found = craft3d_kernel::lumps::lumps(body, tolerance).map_err(|e| {
+    if let [_] = body.shells.as_slice() {
+        // One shell is the outside; a shell that is inside out would be a
+        // solid of negative volume, which is not for the export to judge.
+        return Ok(vec![(0, Vec::new())]);
+    }
+    let failed = |e: craft3d_kernel::KernelError| {
         unsupported(
             name,
             format!("cannot sort its shells into parts and cavities: {e}"),
         )
-    })?;
+    };
+    // The faces measured once, summed per shell.
+    let volumes = craft3d_topo::shell_volumes(body);
+    let outer = craft3d_kernel::lumps::outer_shells(body, &volumes).map_err(failed)?;
+    if let [only] = outer
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o)
+        .map(|(s, _)| s)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        // One part: every other shell is one of its cavities, without a
+        // ray (what lies where is `document.check`'s to judge).
+        let cavities = (0..outer.len()).filter(|s| s != only).collect();
+        return Ok(vec![(*only, cavities)]);
+    }
+    let found = craft3d_kernel::lumps::lumps_measured(body, tolerance, &volumes).map_err(failed)?;
     Ok(found
         .into_iter()
         .map(|lump| {

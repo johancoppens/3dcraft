@@ -12,8 +12,8 @@
 //! measure gives; only the time differs.
 
 use craft3d_topo::{
-    Body, Inertia, MassError, MassProperties, inertia, mass_and_inertia, mass_properties,
-    mass_properties_each,
+    Body, Inertia, MassError, MassProperties, ShellVolume, inertia, mass_and_inertia,
+    mass_with_shells, mass_with_shells_each_while,
 };
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -28,6 +28,11 @@ type Store<T> = Mutex<Vec<(Weak<Body>, T)>>;
 
 static REMEMBERED: Store<Measured> = Mutex::new(Vec::new());
 static REMEMBERED_INERTIA: Store<Turned> = Mutex::new(Vec::new());
+/// What each shell of a body of several shells encloses, measured with
+/// the body ([`shells_of`]).
+static REMEMBERED_SHELLS: Store<Shells> = Mutex::new(Vec::new());
+
+type Shells = Vec<Result<ShellVolume, MassError>>;
 
 thread_local! {
     /// Bodies this thread measured afresh ([`fresh_measures`]).
@@ -77,9 +82,26 @@ pub(crate) fn mass_of(body: &Arc<Body>) -> Measured {
         return measured;
     }
     counted();
-    let measured = mass_properties(body);
+    let (measured, shells) = mass_with_shells(body);
     remember(&REMEMBERED, body, measured.clone());
+    if body.shells.len() > 1 {
+        remember(&REMEMBERED_SHELLS, body, shells);
+    }
     measured
+}
+
+/// What each shell of `body` encloses (`craft3d_topo::mass_with_shells`),
+/// remembered with the body's measure: the faces are integrated once for
+/// both, when the body was first measured.
+pub(crate) fn shells_of(body: &Arc<Body>) -> Shells {
+    if let Some(shells) = recall(&REMEMBERED_SHELLS, body) {
+        return shells;
+    }
+    counted();
+    let (measured, shells) = mass_with_shells(body);
+    remember(&REMEMBERED, body, measured);
+    remember(&REMEMBERED_SHELLS, body, shells.clone());
+    shells
 }
 
 /// [`mass_of`] of each of `bodies`, ahead of asking for them one by one:
@@ -114,13 +136,19 @@ pub(crate) fn measure_ahead(bodies: &[&Arc<Body>]) -> bool {
         return fine;
     }
     let plain: Vec<&Body> = fresh.iter().map(|body| body.as_ref()).collect();
-    for (body, measured) in fresh.iter().zip(mass_properties_each(&plain)) {
-        let Some(measured) = measured else {
+    for (body, measured) in fresh
+        .iter()
+        .zip(mass_with_shells_each_while(&plain, |_| true))
+    {
+        let Some((measured, shells)) = measured else {
             return false;
         };
         fine &= measured.is_ok();
         counted();
         remember(&REMEMBERED, body, measured);
+        if body.shells.len() > 1 {
+            remember(&REMEMBERED_SHELLS, body, shells);
+        }
     }
     fine
 }
@@ -149,6 +177,7 @@ pub(crate) fn mass_and_inertia_of(body: &Arc<Body>) -> (Measured, Turned) {
 mod tests {
     use super::*;
     use craft3d_math::Frame;
+    use craft3d_topo::mass_properties;
 
     fn block(dx: f64) -> Arc<Body> {
         Arc::new(

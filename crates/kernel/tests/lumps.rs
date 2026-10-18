@@ -493,3 +493,117 @@ fn a_sheet_is_not_an_operand_and_has_no_lumps() {
         Err(KernelError::InvalidBody { .. })
     ));
 }
+
+/// A plate of `n` × `n` cells of 10 with a cube cavity of 4 in each, put
+/// together by hand (the plate and the cavities turned inside out), and
+/// its shells' volumes.
+fn plate_with_cavities(k: f64, n: usize) -> Body {
+    let side = 10.0 * n as f64;
+    let mut parts = vec![boxed(k, [0.0, 0.0, 0.0], [side, side, 10.0])];
+    for i in 0..n {
+        for j in 0..n {
+            let (x, y) = (10.0 * i as f64 + 3.0, 10.0 * j as f64 + 3.0);
+            parts.push(turned_inside_out(
+                &boxed(k, [x, y, 3.0], [x + 4.0, y + 4.0, 7.0]),
+                0,
+            ));
+        }
+    }
+    let all: Vec<&Body> = parts.iter().collect();
+    merge(&all).unwrap().0
+}
+
+#[test]
+fn shell_volumes_are_the_shells_measured_alone_and_sum_to_the_body() {
+    for k in SCALES {
+        let body = solve(&hollow(k), &cube(k, 4.0, 6.0), BooleanOp::Union, k).body;
+        let (whole, shells) = craft3d_topo::mass_with_shells(&body);
+        // The body's measure is the very value mass_properties gives.
+        assert_eq!(whole, craft3d_topo::mass_properties(&body));
+        assert_eq!(shells.len(), 3);
+        for (s, measured) in shells.iter().enumerate() {
+            let measured = measured.as_ref().unwrap();
+            let alone = mass(&craft3d_topo::shell_alone(&body, ShellId(s as u32)).unwrap()).volume;
+            assert!(
+                (measured.volume - alone).abs() <= 1e-9 * alone.abs(),
+                "shell {s}: {} against {alone}",
+                measured.volume
+            );
+            assert!(measured.bound >= 0.0 && measured.bound < 1e-6 * measured.volume.abs());
+        }
+        let total: f64 = shells.iter().map(|s| s.as_ref().unwrap().volume).sum();
+        let volume = whole.unwrap().volume;
+        assert!(
+            (total - volume).abs() <= 1e-9 * volume,
+            "{total} against {volume}"
+        );
+    }
+}
+
+#[test]
+fn a_cavity_that_meets_the_outside_is_refused_as_shells_that_meet() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        // A cavity in the corner of the block: its corner is the block's.
+        let corner = turned_inside_out(&cube(k, 0.0, 2.0), 0);
+        let body = merge(&[&cube(k, 0.0, 10.0), &corner]).unwrap().0;
+        match lumps(&body, &tol) {
+            Err(KernelError::InvalidBody { defects, .. }) => match defects.as_slice() {
+                [Defect::ShellNesting { reason, .. }] => {
+                    assert!(reason.contains("meets"), "{reason}")
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("expected shells that meet, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn many_cavities_are_sorted_with_each_shell_prepared_once() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    let bodies: Vec<(usize, Body)> = [5, 10]
+        .into_iter()
+        .map(|n| (n * n, plate_with_cavities(k, n)))
+        .collect();
+    let volumes: Vec<_> = bodies
+        .iter()
+        .map(|(_, b)| craft3d_topo::shell_volumes(b))
+        .collect();
+    for ((count, body), measured) in bodies.iter().zip(&volumes) {
+        let found = craft3d_kernel::lumps::lumps_measured(body, &tol, measured).unwrap();
+        assert_eq!(shape(&found), vec![*count]);
+    }
+    // Four times the cavities, about four times the work: classifying
+    // them against a plate prepared once per cavity would be sixteen.
+    craft3d_testkit::cost::assert_growth_below(
+        "lumps of a plate with cavities",
+        (0, 1),
+        8.0,
+        std::time::Duration::ZERO,
+        |i| {
+            let (_, body) = &bodies[i];
+            craft3d_kernel::lumps::lumps_measured(body, &tol, &volumes[i]).unwrap();
+        },
+    );
+}
+
+/// The time of `lumps` on a plate with 400 cube cavities (the review's
+/// case), in release:
+/// `cargo test --release -p craft3d-kernel --test lumps -- --ignored --nocapture`
+#[test]
+#[ignore = "timing, information only"]
+fn time_of_lumps_on_a_plate_with_400_cavities() {
+    let k = 1.0;
+    let body = plate_with_cavities(k, 20);
+    let start = std::time::Instant::now();
+    let found = lumps(&body, &tolerance(k)).unwrap();
+    println!(
+        "{} faces, {} shells: lumps in {:?}",
+        body.faces.len(),
+        body.shells.len(),
+        start.elapsed()
+    );
+    assert_eq!(shape(&found), vec![400]);
+}

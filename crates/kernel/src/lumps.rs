@@ -5,13 +5,20 @@
 //! cut a body in two or left a void, a shell or an offset of a body with a
 //! cavity, a pattern, a file): a shell that encloses a positive volume
 //! (its faces point away from what it encloses) is the outside of a lump,
-//! one that encloses a negative volume is a cavity. Which shells lie
-//! inside which is told by points of one shell classified against each
-//! other shell alone, by the ray casting the booleans use; in a valid
-//! solid shells do not meet, so every point of a shell gives the same
-//! answer, and the vote of the points that can tell is a guard against a
-//! point that happens to lie on the other shell. A shell with a point
-//! outside the box of another is not inside it, at no cost of rays. Then:
+//! one that encloses a negative volume is a cavity. The volumes come from
+//! one integration of the body's faces summed per shell
+//! (`craft3d_topo::shell_volumes`), and a volume within the integrator's
+//! own bound of zero has no sign to read.
+//!
+//! Which shells lie inside which is told by a few points of one shell
+//! classified against each other shell alone, by the ray casting the
+//! booleans use, each other shell prepared once with the points of every
+//! shell that can be in it; a shell with a point outside the box of
+//! another is not in it, at no cost of rays. This assumes that shells do
+//! not cross, which is the self-intersection check's to find
+//! (`tess::body_self_intersections`), not proven here: a point on another
+//! shell is refused as shells that meet, and points of one shell that
+//! disagree are refused as unsupported. Then:
 //!
 //! - every shell lies inside an even number of others when it is the
 //!   outside of a lump and an odd number when it is a cavity (a lump may
@@ -25,8 +32,11 @@
 //! `Defect::ShellNesting` and the shell.
 
 use crate::KernelError;
+use crate::boolean::{Operand, Place, classify_points};
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Defect, ShellId, mass_properties, shell_alone};
+use craft3d_topo::{
+    Body, BodyKind, Defect, FaceId, MassError, ShellId, ShellVolume, shell_alone, shell_volumes,
+};
 
 const OPERATION: &str = "sorting shells into lumps";
 
@@ -41,6 +51,76 @@ pub struct Lump {
     pub cavities: Vec<ShellId>,
 }
 
+fn shell_id(s: usize) -> ShellId {
+    ShellId(u32::try_from(s).unwrap_or(u32::MAX))
+}
+
+fn nesting(shell: usize, reason: String) -> KernelError {
+    KernelError::InvalidBody {
+        operation: OPERATION,
+        defects: vec![Defect::ShellNesting {
+            shell: shell_id(shell),
+            reason,
+        }],
+    }
+}
+
+/// Unsupported, naming the first face of shell `shell`.
+fn unsupported(body: &Body, shell: usize, reason: &'static str) -> KernelError {
+    KernelError::Unsupported {
+        operation: OPERATION,
+        reason,
+        faces: body
+            .shells
+            .get(shell)
+            .and_then(|s| s.faces.first())
+            .map(|&f: &FaceId| vec![(Operand::A, f)])
+            .unwrap_or_default(),
+    }
+}
+
+/// Whether each shell of the solid `body` is the outside of a lump (its
+/// volume, `volumes[s]` as [`craft3d_topo::shell_volumes`] gives it, is
+/// positive) or a cavity (negative).
+///
+/// **Errors.** [`KernelError::ShellUnmeasured`] for a shell that could not
+/// be measured, with its index and why; [`KernelError::Unsupported`] for a
+/// volume within its bound of zero (or not finite), whose sign cannot be
+/// told; [`KernelError::InvalidBody`] for a list that does not fit the
+/// shells.
+pub fn outer_shells(
+    body: &Body,
+    volumes: &[Result<ShellVolume, MassError>],
+) -> Result<Vec<bool>, KernelError> {
+    if volumes.len() != body.shells.len() {
+        return Err(nesting(
+            0,
+            format!("{} volumes for {} shells", volumes.len(), body.shells.len()),
+        ));
+    }
+    volumes
+        .iter()
+        .enumerate()
+        .map(|(s, measured)| {
+            let measured = measured
+                .as_ref()
+                .map_err(|error| KernelError::ShellUnmeasured {
+                    operation: OPERATION,
+                    shell: shell_id(s),
+                    error: error.clone(),
+                })?;
+            if !(measured.volume.is_finite() && measured.volume.abs() > measured.bound) {
+                return Err(unsupported(
+                    body,
+                    s,
+                    "the volume a shell encloses is within the measure's own bound of zero, so whether it is a lump or a cavity cannot be told",
+                ));
+            }
+            Ok(measured.volume > 0.0)
+        })
+        .collect()
+}
+
 /// The lumps of the solid `body`, in the order of their outer shells.
 ///
 /// A body of one shell is one lump without cavities, and is not measured:
@@ -48,18 +128,27 @@ pub struct Lump {
 /// not something to sort.
 ///
 /// **Errors.** [`KernelError::InvalidBody`] (with
-/// [`Defect::ShellNesting`]) for a sheet, a shell that encloses no volume,
-/// and shells that do not nest as lumps and cavities do;
-/// [`KernelError::Unsupported`] when a shell cannot be measured or no
-/// point of it can be told inside or outside another.
+/// [`Defect::ShellNesting`]) for a sheet, shells that meet, and shells
+/// that do not nest as lumps and cavities do;
+/// [`KernelError::ShellUnmeasured`] and [`KernelError::Unsupported`] (as
+/// [`outer_shells`], and when the points of a shell cannot tell whether it
+/// lies in another) when the sorting cannot be done.
 pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelError> {
-    let nesting = |shell: usize, reason: String| KernelError::InvalidBody {
-        operation: OPERATION,
-        defects: vec![Defect::ShellNesting {
-            shell: ShellId(u32::try_from(shell).unwrap_or(u32::MAX)),
-            reason,
-        }],
-    };
+    if body.kind == BodyKind::Solid && body.shells.len() > 1 {
+        lumps_measured(body, tolerance, &shell_volumes(body))
+    } else {
+        lumps_measured(body, tolerance, &[])
+    }
+}
+
+/// [`lumps`] with the shells' volumes given (`volumes[s]`, as
+/// [`craft3d_topo::shell_volumes`] or `mass_with_shells` gives them; not
+/// looked at for a body of one shell).
+pub fn lumps_measured(
+    body: &Body,
+    tolerance: &Tolerance,
+    volumes: &[Result<ShellVolume, MassError>],
+) -> Result<Vec<Lump>, KernelError> {
     if body.kind != BodyKind::Solid {
         return Err(nesting(0, "a sheet has no lumps".to_string()));
     }
@@ -71,36 +160,21 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
             })
             .collect());
     }
+    let outer = outer_shells(body, volumes)?;
     struct Part {
         body: Body,
-        volume: f64,
         lo: Vec3,
         hi: Vec3,
         points: Vec<Vec3>,
     }
     let mut parts = Vec::with_capacity(body.shells.len());
     for s in 0..body.shells.len() {
-        let id = ShellId(u32::try_from(s).unwrap_or(u32::MAX));
-        let alone = shell_alone(body, id).ok_or_else(|| {
+        let alone = shell_alone(body, shell_id(s)).ok_or_else(|| {
             nesting(
                 s,
                 "refers to a face, loop, edge or vertex that does not exist".to_string(),
             )
         })?;
-        let volume = mass_properties(&alone)
-            .map_err(|_| KernelError::Unsupported {
-                operation: OPERATION,
-                reason: "the volume a shell encloses cannot be measured",
-                faces: Vec::new(),
-            })?
-            .volume;
-        if !volume.is_finite() || volume.abs() <= tolerance.linear.powi(3) {
-            return Err(nesting(
-                s,
-                "encloses no volume, so it is neither the outside of a lump nor a cavity"
-                    .to_string(),
-            ));
-        }
         // A box that certainly holds the shell: a point of another shell
         // outside it is outside the shell. (Not the other way round: boxes
         // of curved faces reach past them, so a shell inside another may
@@ -113,43 +187,75 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
         let points = points_of(&alone);
         parts.push(Part {
             body: alone,
-            volume,
             lo,
             hi,
             points,
         });
     }
-    // inside[s]: the shells s lies inside.
+    // inside[s]: the shells s lies inside. Each other shell t is prepared
+    // once, for the points of every shell its box holds.
     let margin = 2.0 * tolerance.linear;
     let mut inside: Vec<Vec<usize>> = vec![Vec::new(); parts.len()];
-    for (s, part) in parts.iter().enumerate() {
-        for (t, other) in parts.iter().enumerate() {
-            let held = |p: &Vec3| {
-                p.x >= other.lo.x - margin
-                    && p.y >= other.lo.y - margin
-                    && p.z >= other.lo.z - margin
-                    && p.x <= other.hi.x + margin
-                    && p.y <= other.hi.y + margin
-                    && p.z <= other.hi.z + margin
-            };
-            let boxed = s != t && part.points.iter().all(held);
-            if !boxed {
-                continue;
+    for (t, other) in parts.iter().enumerate() {
+        let held = |p: &Vec3| {
+            p.x >= other.lo.x - margin
+                && p.y >= other.lo.y - margin
+                && p.z >= other.lo.z - margin
+                && p.x <= other.hi.x + margin
+                && p.y <= other.hi.y + margin
+                && p.z <= other.hi.z + margin
+        };
+        let candidates: Vec<usize> = parts
+            .iter()
+            .enumerate()
+            .filter(|&(s, part)| s != t && part.points.iter().all(held))
+            .map(|(s, _)| s)
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        let points: Vec<Vec3> = candidates
+            .iter()
+            .filter_map(|&s| parts.get(s))
+            .flat_map(|part| part.points.iter().copied())
+            .collect();
+        let found = classify_points(&other.body, &points, tolerance)?;
+        let mut at = 0_usize;
+        for &s in &candidates {
+            let count = parts.get(s).map_or(0, |p| p.points.len());
+            let votes = found.get(at..at.saturating_add(count)).unwrap_or_default();
+            at = at.saturating_add(count);
+            let (mut yes, mut no) = (0_usize, 0_usize);
+            for place in votes {
+                match place {
+                    Place::Inside => yes += 1,
+                    Place::Outside => no += 1,
+                    Place::OnBoundary => {
+                        return Err(nesting(
+                            s,
+                            format!(
+                                "meets shell {t}: a point of it lies on that shell, and shells that meet are not lumps and cavities"
+                            ),
+                        ));
+                    }
+                    Place::Unknown => {}
+                }
             }
-            let found = crate::boolean::contains_points(&other.body, &part.points, tolerance)?;
-            let (yes, no) = found.iter().fold((0, 0), |(yes, no), f| match f {
-                Some(true) => (yes + 1, no),
-                Some(false) => (yes, no + 1),
-                None => (yes, no),
-            });
-            if yes == no {
-                return Err(KernelError::Unsupported {
-                    operation: OPERATION,
-                    reason: "no point of a shell can be told inside or outside another shell",
-                    faces: Vec::new(),
-                });
+            if yes > 0 && no > 0 {
+                return Err(unsupported(
+                    body,
+                    s,
+                    "points of a shell disagree on whether it lies inside another shell (the shells may cross)",
+                ));
             }
-            if yes > no
+            if yes == 0 && no == 0 {
+                return Err(unsupported(
+                    body,
+                    s,
+                    "no point of a shell can be told inside or outside another shell",
+                ));
+            }
+            if yes > 0
                 && let Some(list) = inside.get_mut(s)
             {
                 list.push(t);
@@ -157,14 +263,24 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
         }
     }
     let depth = |s: usize| inside.get(s).map_or(0, Vec::len);
+    let is_outer = |s: usize| outer.get(s).copied().unwrap_or(false);
+    // The shell each lies in most deeply.
+    let parent = |s: usize| {
+        inside
+            .get(s)
+            .into_iter()
+            .flatten()
+            .copied()
+            .max_by_key(|&t| (depth(t), std::cmp::Reverse(t)))
+    };
     let mut lumps: Vec<Lump> = Vec::new();
     let mut owner = vec![None; parts.len()];
-    for (s, part) in parts.iter().enumerate() {
-        let outer = part.volume > 0.0;
-        if outer != (depth(s) % 2 == 0) {
+    for s in 0..parts.len() {
+        let outward = is_outer(s);
+        if outward != (depth(s) % 2 == 0) {
             return Err(nesting(
                 s,
-                if outer {
+                if outward {
                     format!(
                         "faces outward but lies inside {} other shells, which puts it in the material of a lump or in a cavity's void the wrong way round",
                         depth(s)
@@ -180,52 +296,34 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
                 },
             ));
         }
-        // The shell it lies in most deeply.
-        let parent = inside
-            .get(s)
-            .into_iter()
-            .flatten()
-            .copied()
-            .max_by_key(|&t| (depth(t), std::cmp::Reverse(t)));
-        if let Some(t) = parent {
-            let parent_outer = parts.get(t).is_some_and(|p| p.volume > 0.0);
-            if parent_outer == outer || depth(t) + 1 != depth(s) {
-                return Err(nesting(
-                    s,
-                    format!(
-                        "lies in shell {t}, which is not the outside of a lump with a cavity there nor a cavity a lump can sit in"
-                    ),
-                ));
-            }
+        if let Some(t) = parent(s)
+            && (is_outer(t) == outward || depth(t) + 1 != depth(s))
+        {
+            return Err(nesting(
+                s,
+                format!(
+                    "lies in shell {t}, which is not the outside of a lump with a cavity there nor a cavity a lump can sit in"
+                ),
+            ));
         }
-        if outer {
+        if outward {
             if let Some(slot) = owner.get_mut(s) {
                 *slot = Some(lumps.len());
             }
             lumps.push(Lump {
-                outer: ShellId(u32::try_from(s).unwrap_or(u32::MAX)),
+                outer: shell_id(s),
                 cavities: Vec::new(),
             });
         }
     }
     // Cavities after every outer shell has its lump: a cavity's lump may
     // come later in the order of the shells.
-    for s in 0..parts.len() {
-        if parts.get(s).is_some_and(|p| p.volume > 0.0) {
-            continue;
-        }
-        let parent = inside
-            .get(s)
-            .into_iter()
-            .flatten()
-            .copied()
-            .max_by_key(|&t| (depth(t), std::cmp::Reverse(t)));
-        let lump = parent
+    for s in (0..parts.len()).filter(|&s| !is_outer(s)) {
+        let lump = parent(s)
             .and_then(|t| owner.get(t).copied().flatten())
             .and_then(|l| lumps.get_mut(l))
             .ok_or_else(|| nesting(s, "is a cavity that lies in no lump".to_string()))?;
-        lump.cavities
-            .push(ShellId(u32::try_from(s).unwrap_or(u32::MAX)));
+        lump.cavities.push(shell_id(s));
     }
     Ok(lumps)
 }

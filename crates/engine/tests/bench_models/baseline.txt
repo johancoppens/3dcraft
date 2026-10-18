@@ -68,8 +68,8 @@ rotor commands 34
 rotor context_entries 48
 rotor features_rebuilt 33
 rotor features_reused 177
-rotor mass_evaluations 10279424
-rotor mass_faces 63
+rotor mass_evaluations 7688320
+rotor mass_faces 48
 rotor mesh_faces 55
 rotor meshes 6
 rotor patch_trees 4
