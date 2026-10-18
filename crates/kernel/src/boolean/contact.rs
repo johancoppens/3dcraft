@@ -88,6 +88,13 @@ pub fn interference(
             value: tol,
         });
     }
+    if a.kind != craft3d_topo::BodyKind::Solid || b.kind != craft3d_topo::BodyKind::Solid {
+        return Err(KernelError::Unsupported {
+            operation: "interference",
+            reason: super::NOT_SOLID,
+            faces: Vec::new(),
+        });
+    }
     if !boxes_meet(a, b, 2.0 * tol) {
         return Ok(Interference::Clear);
     }

@@ -50,6 +50,7 @@
 mod chart;
 mod classify;
 mod contact;
+mod cut;
 mod facetree;
 mod freeform;
 mod hits;
@@ -67,7 +68,7 @@ pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, ve
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, GeomError};
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
+use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use outline::locate;
 use regions::Half;
 use section::Solid;
@@ -183,6 +184,17 @@ impl Default for BooleanOptions {
     }
 }
 
+/// What the two operands of a boolean are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// Two solids.
+    Solids,
+    /// A sheet (A) trimmed by a solid (B): the result is a sheet.
+    Trim,
+    /// A solid (A) cut by a sheet (B): the result is a solid.
+    Cut,
+}
+
 /// Why something is refused, as a fixed text: tests count refusals by it.
 pub(crate) type Reason = &'static str;
 
@@ -197,6 +209,14 @@ const INCONSISTENT: Reason = "an imprinted curve that does not fit the edges it 
 const NON_MANIFOLD: Reason = "the result would have an edge shared by faces that do not pair up around it (at the edge of tolerance)";
 const TANGENT_EDGE: Reason = "more than two faces meet along an edge and two of them are tangent there (tangent contact along an edge)";
 const ON_A_FACE: Reason = "a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance)";
+/// A union with a sheet.
+pub(crate) const SHEET_UNION: Reason = "the union of a sheet with a body: a sheet can be subtracted from or intersected with a solid (to cut it), or trimmed by one, not joined";
+/// A question about inside and outside, asked of a sheet.
+pub(crate) const NOT_SOLID: Reason =
+    "a body that is a sheet, which has no inside: points and interference are told against solids";
+/// Two sheets.
+const TWO_SHEETS: Reason =
+    "a boolean of two sheets: a sheet is trimmed by a solid or cuts one, not another sheet (yet)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
 const LOST: Reason = "the boolean lost track of an entity; this is a bug";
 /// Two faces pass through each other along a curve, and the curve does not
@@ -496,6 +516,15 @@ fn run(
             value: tolerance.angular,
         }));
     }
+    // What the operands are: two solids, a sheet trimmed by a solid
+    // (the result a sheet), or a solid cut by a sheet (a solid).
+    let mode = match (a.kind, b.kind) {
+        (BodyKind::Solid, BodyKind::Solid) => Mode::Solids,
+        (BodyKind::Sheet, BodyKind::Sheet) => return Err(Stop::of(TWO_SHEETS)),
+        _ if op == BooleanOp::Union => return Err(Stop::of(SHEET_UNION)),
+        (BodyKind::Sheet, BodyKind::Solid) => Mode::Trim,
+        (BodyKind::Solid, BodyKind::Sheet) => Mode::Cut,
+    };
     let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
     let a = section::prepare(
         a,
@@ -573,32 +602,65 @@ fn run(
     }
 
     let mut kept = Vec::new();
-    classify::select(
-        &a,
-        &b,
-        &pieces_a,
-        &interior_a,
-        &crossing_a,
-        &sections.coincident_a,
-        &arcs,
-        &vertices,
-        op,
-        tolerance,
-        &mut kept,
-    )?;
-    classify::select(
-        &b,
-        &a,
-        &pieces_b,
-        &interior_b,
-        &crossing_b,
-        &sections.coincident_b,
-        &arcs,
-        &vertices,
-        op,
-        tolerance,
-        &mut kept,
-    )?;
+    let table = match mode {
+        Mode::Solids => classify::solids,
+        Mode::Trim | Mode::Cut => classify::sheet,
+    };
+    // The regions of the sheet of a cut, kept apart to tell the solid's
+    // sides by.
+    let mut cap = Vec::new();
+    if mode != Mode::Cut {
+        classify::select(
+            &a,
+            &b,
+            &pieces_a,
+            &interior_a,
+            &crossing_a,
+            &sections.coincident_a,
+            &arcs,
+            &vertices,
+            op,
+            table,
+            tolerance,
+            &mut kept,
+        )?;
+    }
+    if mode != Mode::Trim {
+        classify::select(
+            &b,
+            &a,
+            &pieces_b,
+            &interior_b,
+            &crossing_b,
+            &sections.coincident_b,
+            &arcs,
+            &vertices,
+            op,
+            table,
+            tolerance,
+            if mode == Mode::Cut {
+                &mut cap
+            } else {
+                &mut kept
+            },
+        )?;
+    }
+    if mode == Mode::Cut {
+        cut::select(
+            &a,
+            &b,
+            &cap,
+            &pieces_a,
+            &interior_a,
+            &sections.coincident_a,
+            &arcs,
+            &vertices,
+            op,
+            tolerance,
+            &mut kept,
+        )?;
+        kept.append(&mut cap);
+    }
     if kept.is_empty() {
         return Err(Stop::Error(KernelError::EmptyResult {
             operation: OPERATION,
@@ -608,7 +670,12 @@ fn run(
     if options.merge {
         merge::merge(&mut work, &sections.coincident_a, a.body, b.body, tol)?;
     }
-    let mut result = sew::finish(work)?;
+    let kind = if mode == Mode::Trim {
+        BodyKind::Sheet
+    } else {
+        BodyKind::Solid
+    };
+    let mut result = sew::finish(work, kind)?;
     pieces_of_splines(&mut result.body);
     let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
@@ -673,6 +740,13 @@ fn run(
                 .map(|s| s.curve.eval(0.5 * (s.range.0 + s.range.1))),
         );
         zero_thickness(&result, tolerance, &meetings)?;
+        // A sheet that comes back to itself in a point is refused; a
+        // solid's shell that does so is left to the rules above and to
+        // regeneration (a wall that thins to nothing: accepted, decided
+        // 2026-10-18).
+        if result.body.kind == BodyKind::Sheet {
+            touching_itself(&result, tol)?;
+        }
     }
     Ok(result)
 }
@@ -824,6 +898,55 @@ fn zero_thickness(
         &face_shell,
         &mut outlines,
     )
+}
+
+/// Refuses a result one of whose shells touches itself at a vertex: a
+/// vertex within twice the tolerance of another vertex, or of an edge it
+/// is not an end of, of the same shell (`craft3d_topo::touches`, the rule
+/// regeneration holds every body to). [`zero_thickness`] finds two faces
+/// at a place; this finds a face, or the boundary of a sheet, that comes
+/// back to itself in a point where the sewing gave each side its own
+/// vertex (a hole tangent to a cut-out, the figure of eight a plane
+/// leaves of a ring it touches).
+fn touching_itself(result: &BooleanResult, tol: f64) -> Result<(), Stop> {
+    let body = &result.body;
+    let Ok(found) = craft3d_topo::touches(body, 2.0 * tol, 1, craft3d_topo::TouchScope::All) else {
+        return Ok(());
+    };
+    let Some(touch) = found.into_iter().find(|t| !t.between_shells()) else {
+        return Ok(());
+    };
+    // A face at the vertex and one at what it touches, by their sources.
+    let face_at = |test: &dyn Fn(&craft3d_topo::Coedge) -> bool| {
+        body.faces.iter().enumerate().find_map(|(f, face)| {
+            face.loops
+                .iter()
+                .filter_map(|l| body.loop_(*l))
+                .flat_map(|l| &l.coedges)
+                .any(test)
+                .then(|| result.faces.get(f).map(|s| (s.operand, s.face)))
+                .flatten()
+        })
+    };
+    let at_vertex = |v: u32| {
+        move |c: &craft3d_topo::Coedge| {
+            body.edge(c.edge)
+                .is_some_and(|e| e.start.0 == v || e.end.0 == v)
+        }
+    };
+    let first = face_at(&at_vertex(touch.vertex));
+    let second = match touch.touches {
+        craft3d_topo::Touched::Vertex(v) => face_at(&at_vertex(v)),
+        craft3d_topo::Touched::Edge(e) => face_at(&|c: &craft3d_topo::Coedge| c.edge.0 == e),
+    };
+    let (Some(a), Some(b)) = (first, second) else {
+        return Err(Stop::of(LOST));
+    };
+    Err(Stop::Error(KernelError::ZeroThickness {
+        operation: OPERATION,
+        at: touch.at,
+        faces: [a, b],
+    }))
 }
 
 /// Whether face `g` (its outline, at `b`) stays on the outer side of
@@ -1467,6 +1590,9 @@ pub fn contains_points(
             value: tol,
         });
     }
+    if body.kind != BodyKind::Solid {
+        return Err(unsupported(Stop::of(NOT_SOLID)));
+    }
     // The vertices are not merged with anything here.
     let mut vertices = Vertices::new(0.0, 0.0);
     let solid =
@@ -1517,6 +1643,9 @@ pub fn classify_points(
             name: "tolerance",
             value: tol,
         });
+    }
+    if body.kind != BodyKind::Solid {
+        return Err(unsupported(Stop::of(NOT_SOLID)));
     }
     let mut vertices = Vertices::new(0.0, 0.0);
     let solid =

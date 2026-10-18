@@ -66,10 +66,17 @@ pub(crate) fn combine(
                         ToString::to_string,
                     )
             });
-            format!(
-                "the result would have zero thickness at ({}, {}, {}): two of its parts touch there along an edge or in a point, at {a} and {b}, and no solid can be that thin; move them apart by more than the tolerance, or into each other",
-                at.x, at.y, at.z
-            )
+            if target.kind == craft3d_topo::BodyKind::Sheet {
+                format!(
+                    "the trimmed sheet would touch itself at ({}, {}, {}): its boundary comes back to itself there in a point or along a line, at {a} and {b}, and no sheet can be pinched like that; move the solid by more than the tolerance, or further across the sheet",
+                    at.x, at.y, at.z
+                )
+            } else {
+                format!(
+                    "the result would have zero thickness at ({}, {}, {}): two of its parts touch there along an edge or in a point, at {a} and {b}, and no solid can be that thin; move them apart by more than the tolerance, or into each other",
+                    at.x, at.y, at.z
+                )
+            }
         }
         other => other.to_string(),
     })?;

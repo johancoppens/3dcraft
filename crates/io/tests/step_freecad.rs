@@ -37,6 +37,40 @@ use craft3d_testkit::{solids, trimmed};
 use craft3d_topo::{Body, BodyKind, mass_properties};
 use harness::{APPROXIMATED, Case, Extent, RELATIVE};
 
+/// Sheets made by `extrude::fill`.
+mod sheets {
+    use craft3d_kernel::extrude::fill;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::{Frame, Tolerance};
+    use craft3d_topo::Body;
+
+    /// The square of half side `half` about the origin of `frame`, in its
+    /// plane, with a round hole of radius `hole` (none for 0).
+    pub fn square(frame: &Frame, half: f64, hole: f64, tol: &Tolerance) -> Body {
+        let c = [[-half, -half], [half, -half], [half, half], [-half, half]];
+        let mut curves: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: c[i],
+                    end: c[(i + 1) % 4],
+                },
+            })
+            .collect();
+        if hole > 0.0 {
+            curves.push(SketchCurve {
+                id: 5,
+                curve: Curve2::Circle {
+                    center: [0.0, 0.0],
+                    radius: hole,
+                },
+            });
+        }
+        let profiles = detect_profiles(&curves, tol).unwrap();
+        fill(&profiles, frame, tol).unwrap().body
+    }
+}
+
 fn tilted(scale: f64) -> Frame {
     Frame::new(
         Vec3::new(1.0, -2.0, 0.5) * scale,
@@ -177,6 +211,87 @@ fn freecad_reads_every_kernel_body_as_the_solid_we_made() {
                 &options(scale),
                 1.0,
             ));
+        }
+    }
+    // Sheets made by the kernel's own operations (a fill, a sheet trimmed
+    // by a solid) and a solid cut by a sheet, against closed forms: a
+    // square of 20 with a hole of radius 1 (400 − π); the disc a ball of
+    // radius 2 leaves of it, its centre 0.5 off the plane (π (4 − 0.25));
+    // the disc of radius 0.75 the spline cone leaves of the plane a
+    // quarter of the way up; the part of a block 4 × 3 × 2 above the
+    // plane a quarter of the way down (volume 6, area 31).
+    for (scale, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
+        let k = scale;
+        // The tolerance follows the size, for the booleans and the file.
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let sized = StepOptions {
+            tolerance: tol,
+            ..StepOptions::default()
+        };
+        let up = Frame::WORLD.at(Vec3::new(0.0, 0.0, 1.5 * k)).unwrap();
+        let plain = sheets::square(&up, 10.0 * k, 0.0, &tol);
+        let holed = sheets::square(&up, 10.0 * k, 1.0 * k, &tol);
+        let ball = primitives::sphere(
+            &Frame::WORLD.at(Vec3::new(0.0, 0.0, 2.0 * k)).unwrap(),
+            2.0 * k,
+        )
+        .unwrap();
+        let block = primitives::block(
+            &Frame::WORLD.at(Vec3::new(-2.0 * k, -k, 0.0)).unwrap(),
+            4.0 * k,
+            3.0 * k,
+            2.0 * k,
+        )
+        .unwrap();
+        let cone = solids::spline_cone(&Frame::WORLD, 3.0 * k, 4.0 * k)
+            .unwrap()
+            .body;
+        let across = Frame::new(Vec3::new(0.0, k, 0.0), Vec3::Y, Vec3::X).unwrap();
+        let wall = sheets::square(&across, 10.0 * k, 0.0, &tol);
+        let trimmed_by_ball = boolean(&plain, &ball, BooleanOp::Intersect, &tol)
+            .unwrap()
+            .body;
+        let trimmed_by_cone = boolean(&wall, &cone, BooleanOp::Intersect, &tol)
+            .unwrap()
+            .body;
+        let cut = boolean(&block, &plain, BooleanOp::Subtract, &tol)
+            .unwrap()
+            .body;
+        let pi = std::f64::consts::PI;
+        for (name, body, lumps, area, volume) in [
+            ("fill_with_hole", &holed, 0, (400.0 - pi) * k * k, 0.0),
+            (
+                "sheet_in_ball",
+                &trimmed_by_ball,
+                0,
+                pi * (4.0 - 0.25) * k * k,
+                0.0,
+            ),
+            (
+                "sheet_in_spline_cone",
+                &trimmed_by_cone,
+                0,
+                pi * 0.5625 * k * k,
+                0.0,
+            ),
+            ("block_cut_by_sheet", &cut, 1, 31.0 * k * k, 6.0 * k * k * k),
+        ] {
+            assert_eq!(body.kind == BodyKind::Sheet, lumps == 0, "{name}");
+            let mut c = case(&format!("{tag}-{name}"), body, lumps, &sized, 1.0);
+            c.area = area;
+            if lumps > 0 {
+                c.volume = volume;
+            }
+            // The cone's section is bounded by two spline edges (within
+            // 2e-10 of the circle, our area the closed form to 1e-9):
+            // FreeCAD interpolates their parameter-space curves on import
+            // ([`APPROXIMATED`]; it reads the area 5.9e-6 small), and our
+            // box of a spline edge is that of its control points.
+            if name == "sheet_in_spline_cone" {
+                c.relative = APPROXIMATED;
+                c.extent = Extent::Loose;
+            }
+            cases.push(c);
         }
     }
     // A cylinder whose wall and rims are rational splines of four spans

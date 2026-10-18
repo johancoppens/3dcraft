@@ -142,6 +142,60 @@ pub(crate) fn shell_counts(body: &Body, shell: ShellId) -> Option<(usize, usize,
     Some((vertices.len(), edges.len(), faces.len(), rings, handles))
 }
 
+/// How many loops the boundary edges of shell `shell` make: the edges its
+/// faces use once, joined where they share a vertex (a sheet's boundary,
+/// where no more than two boundary edges end at a vertex, falls into
+/// closed loops; 0 for a closed shell). `None` when a reference does not
+/// exist.
+pub fn boundary_loops(body: &Body, shell: ShellId) -> Option<usize> {
+    let mut uses: BTreeMap<u32, usize> = BTreeMap::new();
+    for &face_id in &body.shells.get(shell.0 as usize)?.faces {
+        for &loop_id in &body.face(face_id)?.loops {
+            for coedge in &body.loop_(loop_id)?.coedges {
+                *uses.entry(coedge.edge.0).or_insert(0) += 1;
+            }
+        }
+    }
+    // Union-find over the vertices the boundary edges join.
+    let mut index: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut parent: Vec<usize> = Vec::new();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        for _ in 0..parent.len() {
+            let Some(&up) = parent.get(i) else {
+                return i;
+            };
+            if up == i {
+                return i;
+            }
+            let grand = parent.get(up).copied().unwrap_or(up);
+            if let Some(slot) = parent.get_mut(i) {
+                *slot = grand;
+            }
+            i = grand;
+        }
+        i
+    }
+    for (&edge, _) in uses.iter().filter(|&(_, &n)| n == 1) {
+        let e = body.edge(EdgeId(edge))?;
+        let mut at = [0_usize; 2];
+        for (slot, vertex) in at.iter_mut().zip([e.start.0, e.end.0]) {
+            let next = parent.len();
+            *slot = *index.entry(vertex).or_insert(next);
+            if *slot == next {
+                parent.push(next);
+            }
+        }
+        let (a, b) = (root(&mut parent, at[0]), root(&mut parent, at[1]));
+        if a != b
+            && let Some(slot) = parent.get_mut(a.max(b))
+        {
+            *slot = a.min(b);
+        }
+    }
+    let roots: BTreeSet<usize> = (0..parent.len()).map(|i| root(&mut parent, i)).collect();
+    Some(roots.len())
+}
+
 /// The genus of each shell of a solid (its handles: 0 for a ball or a
 /// cavity like one, 1 for a ring), from Euler–Poincaré per shell,
 /// `V − E + F − R − 2H = 2 (1 − G)`. `None` when a shell's counts fit no

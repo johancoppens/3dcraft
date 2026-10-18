@@ -575,7 +575,7 @@ pub(crate) fn offset_for(
             operation,
             Vec::new(),
             None,
-            "only the faces of a solid can be moved",
+            "the body is a sheet: offsetting, shelling or thickening a sheet is not built yet (only the faces of a solid can be moved)",
         ));
     }
     if offsets.len() > MAX_FACES {
@@ -762,7 +762,7 @@ pub(crate) fn usable(
             operation,
             Vec::new(),
             None,
-            "only the faces of a solid can be moved",
+            "the body is a sheet: offsetting, shelling or thickening a sheet is not built yet (only the faces of a solid can be moved)",
         ));
     }
     if faces.is_empty() {

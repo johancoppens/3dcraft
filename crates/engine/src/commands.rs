@@ -1311,6 +1311,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             "sweep",
             vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
         ),
+        FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
         FeatureKind::OffsetProfile(o) => (
             "offset profile",
             vec![
@@ -1623,6 +1624,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 return fail("feature.edit: a closed loft passes through at least 3 sketches");
             }
         }
+        FeatureKind::Fill(fill) => fill.sketch = new_sketch.unwrap_or(fill.sketch),
         FeatureKind::OffsetProfile(offset) => {
             offset.sketch = new_sketch.unwrap_or(offset.sketch);
             if let Some(corners) = crate::offset_cmds::corners_param(&p, "feature.edit")? {

@@ -64,7 +64,7 @@ impl Crossing {
                 at.x, at.y, at.z
             )),
             Crossing::Touching([a, b], at, false) => Err(format!(
-                "{param}: the {noun} touches itself at ({}, {}, {}), where {a} and {b} meet in a point or along a line that is no edge of both: no solid has a surface like that; move what meets there apart by more than the tolerance, or into each other",
+                "{param}: the {noun} touches itself at ({}, {}, {}), where {a} and {b} meet in a point or along a line that is no edge of both: no valid solid or sheet has a surface like that; move what meets there apart by more than the tolerance, or into each other",
                 at.x, at.y, at.z
             )),
         }

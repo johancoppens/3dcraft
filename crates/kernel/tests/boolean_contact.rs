@@ -1175,7 +1175,7 @@ fn the_witness_of_a_self_touch_says_no_on_a_plain_boundary() {
 /// its floor, its inner corners); a rib 1e-3 thick standing 2e-3 from the
 /// place on a plate; plates 1e-3 and 3e-3 thick; and the wall that thins
 /// to nothing between a hole and the plate's side it touches (accepted by
-/// the boolean, D-open-12).
+/// the boolean, decided 2026-10-18).
 #[test]
 fn the_witness_says_no_by_a_slot_a_rib_a_thin_plate_and_a_thinning_wall() {
     use craft3d_kernel::extrude::extrude;

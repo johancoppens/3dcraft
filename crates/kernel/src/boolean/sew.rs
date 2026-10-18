@@ -444,9 +444,9 @@ fn reframe_spheres(work: &mut Work) {
 
 /// The body, with faces in their order and edges and vertices numbered in
 /// the order the faces use them, and where everything came from.
-pub(super) fn finish(mut work: Work) -> Result<BooleanResult, Stop> {
+pub(super) fn finish(mut work: Work, kind: BodyKind) -> Result<BooleanResult, Stop> {
     reframe_spheres(&mut work);
-    let mut body = Body::new(BodyKind::Solid);
+    let mut body = Body::new(kind);
     let mut vertex_ids: BTreeMap<usize, VertexId> = BTreeMap::new();
     let mut edge_ids: BTreeMap<usize, EdgeId> = BTreeMap::new();
     let mut faces = Vec::new();

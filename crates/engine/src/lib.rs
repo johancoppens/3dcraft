@@ -38,6 +38,7 @@ mod recovery_store;
 mod replay_cmds;
 mod scene;
 mod section;
+mod sheet_cmds;
 mod sketch_cmds;
 mod sketch_path_cmds;
 mod sketch_pattern_cmds;
@@ -284,6 +285,7 @@ impl Session {
                 datum_cmds::SPECS,
                 helix_cmds::SPECS,
                 offset_cmds::SPECS,
+                sheet_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
                 pick_cmds::SPECS,
