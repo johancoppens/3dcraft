@@ -24,7 +24,7 @@ use craft3d_geom::{
     Circle, Curve3, Cylinder, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Surface,
 };
 use craft3d_math::{Frame, Tolerance};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId, check};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId};
 use std::f64::consts::TAU;
 
 /// What an entity of an extrusion is.
@@ -478,7 +478,7 @@ pub fn extrude(
         b.body.add_shell(faces);
     }
 
-    let mut defects = check(&b.body, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {

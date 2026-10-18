@@ -70,7 +70,7 @@ use crate::sweep::{
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Cylinder, NurbsCurve, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, check};
+use craft3d_topo::{Body, BodyKind, EdgeId, FaceId};
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
@@ -870,7 +870,7 @@ pub fn sweep_helix(
         *number = number.saturating_add(1);
     }
     let faces: Vec<Origin> = b.faces;
-    let mut defects = check(&b.body, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {

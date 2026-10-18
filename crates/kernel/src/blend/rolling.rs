@@ -3240,7 +3240,7 @@ pub(super) fn blend(
     }
     let (edge_was, vertex_was) = compact(&mut out);
     let face_was = compact_faces(&mut out);
-    let mut defects = craft3d_topo::check(&out, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&out, tolerance);
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {

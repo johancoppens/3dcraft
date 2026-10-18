@@ -1729,7 +1729,7 @@ fn join(
         faces,
         shells: vec![shell],
     };
-    let mut defects = craft3d_topo::check(&joined, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&joined, tolerance);
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {
