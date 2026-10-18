@@ -91,8 +91,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
-    spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
+    spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -496,6 +496,9 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
 /// A default chordal tolerance that suits the size of the model: a
 /// thousandth of the side of a square with the bodies' total area.
 fn automatic_tolerance(regen: &Regen) -> f64 {
+    let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> =
+        regen.bodies().map(|(_, body)| body).collect();
+    crate::mass::measure_ahead(&bodies);
     let area: f64 = regen
         .bodies()
         .filter_map(|(_, body)| mass_of(body).ok())
@@ -1798,6 +1801,14 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     };
     let mut features = Vec::new();
     let mut bodies = Vec::new();
+    crate::appearance_cmds::measure_all_ahead(
+        doc,
+        &regen,
+        doc.features.iter().filter_map(|feature| {
+            let body = regen.feature(feature.id).and_then(|o| o.own_body())?;
+            Some((feature.id, body))
+        }),
+    );
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -1967,6 +1978,13 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
     // The total mass, while every body has one.
     let mut total_mass = Some(0.0);
+    crate::appearance_cmds::measure_all_ahead(
+        doc,
+        &regen,
+        regen
+            .bodies()
+            .filter(|(id, _)| only.is_none_or(|o| o == *id)),
+    );
     for (id, body) in regen
         .bodies()
         .filter(|(id, _)| only.is_none_or(|o| o == *id))
@@ -2023,8 +2041,17 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
 }
 
 fn document_check(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("document.check", params, &["deep"])?;
+    let p = Params::new("document.check", params, &["deep", "feature"])?;
     let deep = p.bool("deep")?.unwrap_or(false);
+    let only = match p.get("feature") {
+        None => None,
+        Some(_) => Some(feature_ref(
+            session.document()?.history.current(),
+            &p,
+            "document.check",
+            "feature",
+        )?),
+    };
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -2033,7 +2060,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             CommandError::new("document.check: the document's tolerance is not positive and finite")
         })?;
     let mut problems = Vec::new();
-    for variable in &regen.variables {
+    for variable in regen.variables.iter().filter(|_| only.is_none()) {
         if let Err(error) = &variable.value {
             problems.push(json!({ "variable": variable.name, "problem": error }));
         }
@@ -2041,10 +2068,35 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     let mut checked = 0;
     let mut marginal = 0_usize;
     let mut booleans_checked = 0_usize;
+    let mut status = None;
     for outcome in &regen.features {
+        if only.is_some_and(|id| id != outcome.id) {
+            continue;
+        }
         let name = doc
             .feature(outcome.id)
             .map_or_else(|| outcome.id.to_string(), |f| f.name.clone());
+        if only.is_some() {
+            // What was asked about is not built: say so rather than "ok,
+            // no bodies".
+            let not_built = match outcome.status {
+                Status::Suppressed => Some("suppressed"),
+                Status::RolledBack => Some("after the rollback marker"),
+                Status::Ok | Status::Failed(_) => None,
+            };
+            if let Some(why) = not_built {
+                problems.push(json!({
+                    "feature": outcome.id.to_string(), "name": name,
+                    "problem": format!("the feature is {why}: nothing is built to check"),
+                }));
+            }
+            status = Some(match &outcome.status {
+                Status::Ok => "ok",
+                Status::Failed(_) => "failed",
+                Status::Suppressed => "suppressed",
+                Status::RolledBack => "rolledBack",
+            });
+        }
         if let Status::Failed(reason) = &outcome.status {
             let mut problem =
                 json!({ "feature": outcome.id.to_string(), "name": name, "problem": reason });
@@ -2100,6 +2152,9 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     }
     let mut result =
         json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems });
+    if let (Some(status), Some(map)) = (status, result.as_object_mut()) {
+        map.insert("status".into(), status.into());
+    }
     if let (true, Some(map)) = (deep, result.as_object_mut()) {
         map.insert("deep".into(), true.into());
         map.insert("marginal".into(), marginal.into());

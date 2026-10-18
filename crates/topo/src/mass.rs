@@ -4019,6 +4019,101 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     Ok(mass_from(body, all?, middle))
 }
 
+/// Faces in a run of bodies [`mass_properties_each`] measures at once, at
+/// least (a body with more is a run of its own): enough to keep every
+/// thread busy, and the most measured for nothing after a body that fails.
+/// A count of faces, not of threads, so that the work done is the same on
+/// any machine.
+const RUN_FACES: usize = 256;
+
+/// [`mass_properties`] of each of `bodies`, in their order: each the very
+/// value (or error) `mass_properties` gives for that body alone, up to and
+/// including the first body that fails; the bodies after it are not
+/// measured (`None`), as asking one after the other and stopping at the
+/// first failure would leave them. The faces of a run of bodies of at
+/// least [`RUN_FACES`] faces are integrated as one row of work, on as many
+/// threads as there are, and summed per body in its faces' order, so that
+/// many small bodies (the shells of a body of hundreds of parts, each of a
+/// few faces, too few for a thread of its own) take the time of a large
+/// one; a run is not started after one with a failure.
+pub fn mass_properties_each(bodies: &[&Body]) -> Vec<Option<Result<MassProperties, MassError>>> {
+    mass_properties_each_while(bodies, |_| true)
+}
+
+/// [`mass_properties_each`], stopping also after the first body whose
+/// measure `go_on` does not take (a shell that encloses no volume, for
+/// the STEP export): that body's measure is given, the ones after it not.
+pub fn mass_properties_each_while(
+    bodies: &[&Body],
+    go_on: impl Fn(&MassProperties) -> bool,
+) -> Vec<Option<Result<MassProperties, MassError>>> {
+    let rule = Rule::new(NODES);
+    let mut out: Vec<Option<Result<MassProperties, MassError>>> = Vec::with_capacity(bodies.len());
+    let mut failed = false;
+    let mut start = 0_usize;
+    while start < bodies.len() {
+        if failed {
+            out.push(None);
+            start += 1;
+            continue;
+        }
+        // The run: bodies from `start` until it holds RUN_FACES faces.
+        let mut end = start;
+        let mut faces = 0_usize;
+        while end < bodies.len() && (end == start || faces < RUN_FACES) {
+            faces = faces.saturating_add(bodies.get(end).map_or(0, |b| b.faces.len()));
+            end += 1;
+        }
+        let run = bodies.get(start..end).unwrap_or_default();
+        for measured in measure_run(run, &rule) {
+            if failed {
+                out.push(None);
+                continue;
+            }
+            failed = measured.as_ref().map_or(true, |m| !go_on(m));
+            out.push(Some(measured));
+        }
+        start = end;
+    }
+    out
+}
+
+/// The bodies of one run of [`mass_properties_each`], every face of them
+/// as one row of work.
+fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Result<MassProperties, MassError>> {
+    let extents: Vec<(f64, Vec3)> = bodies.iter().map(|body| body_extent(body)).collect();
+    let owners: Vec<(usize, usize)> = bodies
+        .iter()
+        .enumerate()
+        .flat_map(|(b, body)| (0..body.faces.len()).map(move |f| (b, f)))
+        .collect();
+    let mut per_face = each_face(owners.len(), |k| {
+        let found = owners.get(k).and_then(|&(b, f)| {
+            let body: &Body = bodies.get(b)?;
+            Some((body, body.faces.get(f)?, f, extents.get(b)?))
+        });
+        match found {
+            Some((body, face, index, &extent)) => {
+                face_integrals(body, face, index, rule, extent, Wanted::First).all
+            }
+            None => Err(MassError::Unsupported {
+                face: k,
+                what: "a face that is not in the body",
+            }),
+        }
+    })
+    .into_iter();
+    bodies
+        .iter()
+        .zip(&extents)
+        .map(|(body, &(_, middle))| {
+            let faces: Vec<Result<Sums, MassError>> =
+                per_face.by_ref().take(body.faces.len()).collect();
+            Ok(mass_from(body, total_of(body, faces)?, middle))
+        })
+        .collect()
+}
+
 /// How far [`MassProperties::area`] and [`MassProperties::volume`] can be
 /// off by the integrator's own account ([`mass_bound`]).
 #[derive(Clone, Copy, Debug, PartialEq)]

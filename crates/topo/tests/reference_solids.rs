@@ -220,3 +220,56 @@ fn the_mass_bound_covers_the_error_and_is_small() {
         }
     }
 }
+
+/// Bodies measured together (`mass_properties_each`, the faces of a run
+/// of them shared out over the threads) measure as each does alone, bit
+/// for bit, in their order; with a spline cone among them, an empty list
+/// and a body of no faces. After the first body that fails nothing is
+/// measured (`None`), in a short row and in one of several runs.
+#[test]
+fn bodies_measured_together_measure_as_each_alone() {
+    use craft3d_topo::{Body, LoopId, mass_properties_each};
+    let alone_is = |bodies: &[Body]| {
+        let refs: Vec<&Body> = bodies.iter().collect();
+        let together = mass_properties_each(&refs);
+        assert_eq!(together.len(), bodies.len());
+        let mut failed = false;
+        for (body, got) in bodies.iter().zip(&together) {
+            if failed {
+                assert!(got.is_none());
+                continue;
+            }
+            let alone = mass_properties(body);
+            failed = alone.is_err();
+            assert_eq!(format!("{got:?}"), format!("{:?}", Some(alone)));
+        }
+        failed
+    };
+    for scale in [1e-3, 1.0, 1e6] {
+        for frame in frames(scale) {
+            let mut bodies: Vec<Body> = solids::all(&frame, scale)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.body)
+                .collect();
+            bodies.push(
+                solids::spline_cone(&frame, 1.5 * scale, 2.0 * scale)
+                    .unwrap()
+                    .body,
+            );
+            bodies.push(Body::new(BodyKind::Solid));
+            assert!(!alone_is(&bodies));
+        }
+    }
+    assert!(mass_properties_each(&[]).is_empty());
+    // A body that cannot be measured (a face with a loop it does not
+    // have), early in a short row and in the middle of a row of runs.
+    let block = |k: f64| solids::block(&Frame::WORLD, k, 2.0, 3.0).unwrap().body;
+    let mut bad = block(1.0);
+    bad.faces[0].loops.push(LoopId(u32::MAX));
+    assert!(mass_properties(&bad).is_err());
+    assert!(alone_is(&[block(1.0), bad.clone(), block(2.0)]));
+    let mut row: Vec<Body> = (1..=120).map(|i| block(f64::from(i))).collect();
+    row.insert(70, bad);
+    assert!(alone_is(&row));
+}

@@ -14,6 +14,7 @@
 //! reducing every row in full, so the results are the same bit for bit
 //! (`tests/spline_eval.rs` keeps that older algorithm to compare with).
 
+use crate::surface::GridCache;
 use crate::{BezierPatch, GeomError, MAX_DEGREE};
 use craft3d_math::{Bbox3, Bits, Frame, Vec3};
 use std::fmt;
@@ -654,6 +655,9 @@ pub struct NurbsSurface {
     /// place a surface is made) so evaluation does not rebuild it. Not part
     /// of the surface's value: left out of `==` and of the debug text.
     homogeneous: Vec<H>,
+    /// The samples a projection onto the surface starts from, once made
+    /// (`Surface::project_grid`). Not part of the value either.
+    pub(crate) project_grid: GridCache,
 }
 
 impl PartialEq for NurbsSurface {
@@ -715,6 +719,7 @@ impl NurbsSurface {
             ctrl,
             weights,
             homogeneous,
+            project_grid: GridCache::default(),
         })
     }
 
@@ -817,21 +822,90 @@ fn binomial(n: usize, k: usize) -> f64 {
 /// `s`: the control points of the two halves, `[0, s]` and `[s, 1]`, each
 /// as long as the row.
 fn split_row(points: &[H], s: f64) -> (Vec<H>, Vec<H>) {
-    let mut work: Vec<H> = points.to_vec();
-    let mut left = Vec::with_capacity(points.len());
-    let mut right = Vec::with_capacity(points.len());
-    while let Some((&first, _)) = work.split_first() {
-        left.push(first);
-        right.push(work.last().copied().unwrap_or(first));
-        let next: Vec<H> = work
-            .iter()
-            .zip(work.iter().skip(1))
-            .map(|(a, b)| a.lerp(*b, s))
-            .collect();
-        work = next;
-    }
-    right.reverse();
+    let mut left = vec![ZERO; points.len()];
+    let mut right = vec![ZERO; points.len()];
+    split_row_into(points, s, &mut left, &mut right);
     (left, right)
+}
+
+/// [`split_row`] into `left` and `right` (each as long as `points`; a
+/// shorter one gets what fits). The triangle is worked in place in one
+/// buffer, level by level from the left, so each point is the blend of
+/// the two of the level before it, in the order and with the arithmetic
+/// of a fresh row per level.
+fn split_row_into(points: &[H], s: f64, left: &mut [H], right: &mut [H]) {
+    // Room on the stack for the usual low degrees, so clearing it costs
+    // next to nothing.
+    if points.len() <= 8 {
+        split_row_in::<8>(points, s, left, right);
+    } else if points.len() <= MAX_DEGREE + 1 {
+        split_row_in::<{ MAX_DEGREE + 1 }>(points, s, left, right);
+    } else {
+        let mut work = points.to_vec();
+        triangle(&mut work, s, left, right);
+    }
+}
+
+/// [`split_row_into`] with the triangle in an array of `N` (at least the
+/// row's length).
+fn split_row_in<const N: usize>(points: &[H], s: f64, left: &mut [H], right: &mut [H]) {
+    let mut work = [ZERO; N];
+    let n = points.len().min(N);
+    for (slot, &h) in work.iter_mut().zip(points) {
+        *slot = h;
+    }
+    triangle(work.get_mut(..n).unwrap_or_default(), s, left, right);
+}
+
+/// De Casteljau's triangle on `work` in place: level by level from the
+/// left, each point the blend of the two of the level before it; the
+/// first of each level goes to `left`, the last to `right` from its end.
+fn triangle(work: &mut [H], s: f64, left: &mut [H], right: &mut [H]) {
+    let n = work.len();
+    for level in 0..n {
+        let live = n - level;
+        if let (Some(slot), Some(&first)) = (left.get_mut(level), work.first()) {
+            *slot = first;
+        }
+        if let (Some(slot), Some(&last)) = (right.get_mut(n - 1 - level), work.get(live - 1)) {
+            *slot = last;
+        }
+        for i in 0..live.saturating_sub(1) {
+            if let (Some(&a), Some(&b)) = (work.get(i), work.get(i + 1))
+                && let Some(slot) = work.get_mut(i)
+            {
+                *slot = a.lerp(b, s);
+            }
+        }
+    }
+}
+
+/// The point of a row of homogeneous Bézier points at `s`: the last
+/// point of the left half [`split_row`] makes (the same arithmetic), or
+/// zero for an empty row.
+fn casteljau(points: &[H], s: f64) -> H {
+    if points.len() > 8 {
+        let (left, _) = split_row(points, s);
+        return left.last().copied().unwrap_or(ZERO);
+    }
+    let mut work = [ZERO; 8];
+    for (slot, &h) in work.iter_mut().zip(points) {
+        *slot = h;
+    }
+    for live in (1..points.len()).rev() {
+        for i in 0..live {
+            if let (Some(&a), Some(&b)) = (work.get(i), work.get(i + 1))
+                && let Some(slot) = work.get_mut(i)
+            {
+                *slot = a.lerp(b, s);
+            }
+        }
+    }
+    if points.is_empty() {
+        ZERO
+    } else {
+        work.first().copied().unwrap_or(ZERO)
+    }
 }
 
 /// Inserts the knot `u` once into `knots` and into every curve of `rows`
@@ -935,7 +1009,17 @@ impl RationalBezierPatch {
 
     /// The control points (positions, not weighted).
     pub fn control_points(&self) -> Vec<Vec3> {
-        self.homogeneous.iter().map(|h| h.p * (1.0 / h.w)).collect()
+        self.points().collect()
+    }
+
+    /// [`Self::control_points`] one by one, without a vector for them.
+    pub fn points(&self) -> impl Iterator<Item = Vec3> + '_ {
+        self.homogeneous.iter().map(|h| h.p * (1.0 / h.w))
+    }
+
+    /// The control point at `index` of [`Self::control_points`].
+    pub fn control_point(&self, index: usize) -> Option<Vec3> {
+        self.homogeneous.get(index).map(|h| h.p * (1.0 / h.w))
     }
 
     pub fn weights(&self) -> Vec<f64> {
@@ -950,7 +1034,7 @@ impl RationalBezierPatch {
 
     /// A box around the control points, and so around the patch.
     pub fn control_bbox(&self) -> Bbox3 {
-        Bbox3::from_points(self.control_points())
+        Bbox3::from_points(self.points())
     }
 
     fn row(&self, i: usize) -> &[H] {
@@ -971,11 +1055,9 @@ impl RationalBezierPatch {
         crate::allowance::charge(1);
         let mut along_u = Vec::with_capacity(self.degree_u + 1);
         for i in 0..=self.degree_u {
-            let (left, _) = split_row(self.row(i), t);
-            along_u.push(left.last().copied().unwrap_or(ZERO));
+            along_u.push(casteljau(self.row(i), t));
         }
-        let (left, _) = split_row(&along_u, s);
-        let h = left.last().copied().unwrap_or(ZERO);
+        let h = casteljau(&along_u, s);
         if h.w > 0.0 {
             h.p * (1.0 / h.w)
         } else {
@@ -988,16 +1070,45 @@ impl RationalBezierPatch {
     pub fn split_u(&self, s: f64) -> (Self, Self) {
         crate::allowance::charge(1);
         let width = self.degree_v + 1;
+        let height = self.degree_u + 1;
         let mut left = vec![ZERO; self.homogeneous.len()];
         let mut right = vec![ZERO; self.homogeneous.len()];
-        for j in 0..width {
-            let (l, r) = split_row(&self.column(j), s);
-            for (i, (a, b)) in l.into_iter().zip(r).enumerate() {
-                if let Some(slot) = left.get_mut(i * width + j) {
-                    *slot = a;
+        let mut column = [ZERO; 8];
+        let (mut l, mut r) = ([ZERO; 8], [ZERO; 8]);
+        if height <= column.len() {
+            for j in 0..width {
+                let mut count = 0;
+                for (slot, i) in column.iter_mut().zip(0..height) {
+                    if let Some(&h) = self.row(i).get(j) {
+                        *slot = h;
+                        count += 1;
+                    }
                 }
-                if let Some(slot) = right.get_mut(i * width + j) {
-                    *slot = b;
+                let (Some(points), Some(lo), Some(hi)) =
+                    (column.get(..count), l.get_mut(..count), r.get_mut(..count))
+                else {
+                    continue;
+                };
+                split_row_into(points, s, lo, hi);
+                for (i, (a, b)) in lo.iter().zip(hi.iter()).enumerate() {
+                    if let Some(slot) = left.get_mut(i * width + j) {
+                        *slot = *a;
+                    }
+                    if let Some(slot) = right.get_mut(i * width + j) {
+                        *slot = *b;
+                    }
+                }
+            }
+        } else {
+            for j in 0..width {
+                let (l, r) = split_row(&self.column(j), s);
+                for (i, (a, b)) in l.into_iter().zip(r).enumerate() {
+                    if let Some(slot) = left.get_mut(i * width + j) {
+                        *slot = a;
+                    }
+                    if let Some(slot) = right.get_mut(i * width + j) {
+                        *slot = b;
+                    }
                 }
             }
         }
@@ -1015,9 +1126,13 @@ impl RationalBezierPatch {
         let mut left = Vec::with_capacity(self.homogeneous.len());
         let mut right = Vec::with_capacity(self.homogeneous.len());
         for i in 0..=self.degree_u {
-            let (l, r) = split_row(self.row(i), t);
-            left.extend(l);
-            right.extend(r);
+            let row = self.row(i);
+            let (from_left, from_right) = (left.len(), right.len());
+            left.resize(from_left + row.len(), ZERO);
+            right.resize(from_right + row.len(), ZERO);
+            if let (Some(lo), Some(hi)) = (left.get_mut(from_left..), right.get_mut(from_right..)) {
+                split_row_into(row, t, lo, hi);
+            }
         }
         let make = |homogeneous| Self {
             degree_u: self.degree_u,
@@ -1675,6 +1790,7 @@ impl Bits for NurbsSurface {
             ctrl,
             weights,
             homogeneous: _,
+            project_grid: _,
         } = self;
         degree_u.push_bits(out);
         degree_v.push_bits(out);
@@ -1689,6 +1805,93 @@ impl Bits for NurbsSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// De Casteljau's split as it was written first (a fresh row per
+    /// level): what the in-place triangle must give, bit for bit.
+    fn split_row_by_levels(points: &[H], s: f64) -> (Vec<H>, Vec<H>) {
+        let mut work: Vec<H> = points.to_vec();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        while let Some((&first, _)) = work.split_first() {
+            left.push(first);
+            right.push(work.last().copied().unwrap_or(first));
+            work = work
+                .iter()
+                .zip(work.iter().skip(1))
+                .map(|(a, b)| a.lerp(*b, s))
+                .collect();
+        }
+        right.reverse();
+        (left, right)
+    }
+
+    fn bits(points: &[H]) -> Vec<[u64; 4]> {
+        points
+            .iter()
+            .map(|h| {
+                [
+                    h.p.x.to_bits(),
+                    h.p.y.to_bits(),
+                    h.p.z.to_bits(),
+                    h.w.to_bits(),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn splits_in_place_are_the_splits_by_levels_bit_for_bit() {
+        let mut seed = 17_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for n in [0, 1, 2, 3, 4, 7, 33, 34, 40] {
+            let row: Vec<H> = (0..n)
+                .map(|_| H {
+                    p: Vec3::new(unit() - 0.5, 3.0 * unit(), 1e6 * unit()),
+                    w: 0.1 + unit(),
+                })
+                .collect();
+            for s in [0.5, 0.3, 1.0 / 3.0, 0.999] {
+                let (a, b) = split_row(&row, s);
+                let (c, d) = split_row_by_levels(&row, s);
+                assert_eq!(bits(&a), bits(&c), "{n} at {s}");
+                assert_eq!(bits(&b), bits(&d), "{n} at {s}");
+                let point = casteljau(&row, s);
+                assert_eq!(bits(&[point]), bits(&[c.last().copied().unwrap_or(ZERO)]));
+            }
+        }
+        for (m, k) in [(1, 1), (3, 3), (2, 5), (5, 2)] {
+            let homogeneous: Vec<H> = (0..(m + 1) * (k + 1))
+                .map(|_| H {
+                    p: Vec3::new(unit(), unit() - 0.5, unit() * 7.0),
+                    w: 0.2 + unit(),
+                })
+                .collect();
+            let patch = RationalBezierPatch {
+                degree_u: m,
+                degree_v: k,
+                homogeneous,
+            };
+            let (lu, ru) = patch.split_u(0.5);
+            let (lv, rv) = patch.split_v(0.25);
+            let width = k + 1;
+            for j in 0..width {
+                let column = patch.column(j);
+                let (l, r) = split_row_by_levels(&column, 0.5);
+                assert_eq!(bits(&lu.column(j)), bits(&l));
+                assert_eq!(bits(&ru.column(j)), bits(&r));
+            }
+            for i in 0..=m {
+                let (l, r) = split_row_by_levels(patch.row(i), 0.25);
+                assert_eq!(bits(lv.row(i)), bits(&l));
+                assert_eq!(bits(rv.row(i)), bits(&r));
+            }
+        }
+    }
 
     fn close(a: Vec3, b: Vec3, tol: f64) -> bool {
         a.distance(b) <= tol
