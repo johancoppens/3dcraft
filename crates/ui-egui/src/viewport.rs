@@ -1451,7 +1451,12 @@ mod tests {
 
     /// A step to a nearer body between the samples gets no allowance: a
     /// point behind the further level is hidden right up to the step,
-    /// while the crease of a hollow of the same size is in sight.
+    /// while the crease of a hollow of the same size is in sight. The
+    /// trade-off pinned here: within the cell the step crosses, the
+    /// reconstruction lies between the two levels, so a point *on* the
+    /// further level there is hidden too (a line on the far face stops up
+    /// to a pixel short of the nearer body's outline); on either sample
+    /// the levels themselves are in sight.
     #[test]
     fn a_step_hides_what_a_hollow_shows() {
         let mut step = [[392.0; 4]; 4];
@@ -1461,8 +1466,26 @@ mod tests {
         }
         assert!(surface_hides(&step, 0.0, 0.0, 402.0, 0.0));
         assert!(surface_hides(&step, 0.9, 0.5, 402.0, 0.0));
-        // The far level itself, at the sample on its side of the step.
+        // The levels themselves, at the samples on their side of the step.
         assert!(!surface_hides(&step, 0.0, 0.0, 392.0, 0.0));
+        assert!(!surface_hides(&step, 1.0, 0.5, 362.0, 0.0));
+        assert!(surface_hides(
+            &step,
+            1.0,
+            0.5,
+            362.0 + 30.0 * SUBPIXEL_GRAIN + 1e-9,
+            0.0
+        ));
+        // The far level half-way across the step's cell: hidden, by the
+        // trade-off above (the reconstruction is 377 there).
+        assert!(surface_hides(&step, 0.5, 0.5, 392.0, 0.0));
+        assert!(!surface_hides(
+            &step,
+            0.5,
+            0.5,
+            377.0 + 30.0 * SUBPIXEL_GRAIN,
+            0.0
+        ));
         let mut hollow = [[0.0; 4]; 4];
         for row in &mut hollow {
             for (k, cell) in row.iter_mut().enumerate() {

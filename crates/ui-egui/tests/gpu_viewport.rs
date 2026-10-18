@@ -588,6 +588,18 @@ fn fill_decisions(
                 let cpu_hidden = hides(t);
                 let i = py * w + px;
                 fill[i] |= !cpu_hidden;
+                // Over the background at the pixel itself both paths see
+                // nothing and keep the point: not marginal. Where a
+                // sample of the 4 × 4 shows nothing while the pixel shows
+                // a body, the GPU's pixels (nothing as soon as one of
+                // their samples is) and the CPU's centres can disagree.
+                if !at(ix, iy).is_finite() {
+                    continue;
+                }
+                if z.iter().flatten().any(|d| !d.is_finite()) {
+                    marginal[i] = true;
+                    continue;
+                }
                 // The GPU computes the point in `f32`, relative to the eye:
                 // a few roundings of 2⁻²⁴ on numbers as large as the reach,
                 // magnified where the ray meets the plane at a grazing
@@ -595,28 +607,35 @@ fn fill_decisions(
                 let grazing = direction.length() * normal.length() / along.abs();
                 let error =
                     2f64.powi(-18) * (t.abs() + r.length() + u.length() + v.length()) * grazing;
-                // The 5 × 5 around the pixel: one plane, or not.
+                // The 5 × 5 around the pixel, over its drawn samples: one
+                // plane, or not. The GPU's mean of a pixel's samples equals
+                // the CPU's centre on a plane and differs by at most the
+                // spread where a crease or a step passes within a pixel.
                 let (mut far5, mut near5, mut kink5) = (0.0_f64, f64::INFINITY, 0.0_f64);
+                let drawn = |x: i64, y: i64| {
+                    let d = at(x, y);
+                    if d.is_finite() { Some(d) } else { None }
+                };
                 for dy in -2..=2 {
                     for dx in -2..=2 {
-                        let d = at(ix + dx, iy + dy);
+                        let Some(d) = drawn(ix + dx, iy + dy) else {
+                            continue;
+                        };
                         far5 = far5.max(d);
                         near5 = near5.min(d);
-                        if dx > -2 && dx < 2 {
-                            kink5 = kink5.max(
-                                (at(ix + dx - 1, iy + dy) - 2.0 * d + at(ix + dx + 1, iy + dy))
-                                    .abs(),
-                            );
+                        if let (Some(p), Some(r)) =
+                            (drawn(ix + dx - 1, iy + dy), drawn(ix + dx + 1, iy + dy))
+                        {
+                            kink5 = kink5.max((p - 2.0 * d + r).abs());
                         }
-                        if dy > -2 && dy < 2 {
-                            kink5 = kink5.max(
-                                (at(ix + dx, iy + dy - 1) - 2.0 * d + at(ix + dx, iy + dy + 1))
-                                    .abs(),
-                            );
+                        if let (Some(p), Some(r)) =
+                            (drawn(ix + dx, iy + dy - 1), drawn(ix + dx, iy + dy + 1))
+                        {
+                            kink5 = kink5.max((p - 2.0 * d + r).abs());
                         }
                     }
                 }
-                let planar = far5.is_finite() && kink5 <= far5 * 2f64.powi(-40);
+                let planar = kink5 <= far5 * 2f64.powi(-40);
                 let window = error + 2.0 * slack + if planar { 0.0 } else { far5 - near5 };
                 if !window.is_finite() || hides(t - window) != hides(t + window) {
                     marginal[i] = true;
@@ -922,6 +941,12 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         assert!(
             filled_pixels > (wu * hu) / 20,
             "too little of the fill compared: {filled_pixels}"
+        );
+        // The marginal pixels are the few where the rules can differ, not
+        // every pixel near the background (2026-10-18: 1 837 of 134 351).
+        assert!(
+            marginal_pixels * 20 < filled_pixels,
+            "{marginal_pixels} marginal pixels against {filled_pixels} compared"
         );
     }
     assert_eq!(

@@ -329,9 +329,10 @@ fn the_fill_covers_the_square_in_front_and_is_left_out_behind_a_body() {
         ]
     );
     // The plane below the plate: left out where the plate is in front,
-    // drawn around it. The test of the lines keeps a point whose own
-    // pixel or one of the eight around it shows something at or behind
-    // it, so the fill reaches one pixel onto the plate's outline.
+    // drawn around it. The test of the lines (`viewport::surface_hides`)
+    // keeps a point when one of the four samples around it shows nothing,
+    // so the fill reaches one pixel onto the plate's outline, and nowhere
+    // else: a step to the post on the plate gets no allowance.
     let below = changed(&fill("Below"));
     let wu = w as usize;
     let rim = |i: usize| {

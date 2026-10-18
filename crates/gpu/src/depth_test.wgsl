@@ -7,37 +7,45 @@
 // The view distance of the surface under pixel `p`: the mean of its
 // samples' depths, turned back into a distance. The depth is affine across
 // a triangle on the screen (near / dist in perspective, far - dist scaled
-// in orthographic) and the samples lie symmetric about the pixel's centre,
-// so on a plane this is the distance at the centre exactly, where the CPU
-// frame's sample is. Negative where a sample shows nothing (the cleared
-// reversed depth, 0) or is not a number: such a pixel hides nothing.
-fn surface_at(p: vec2<i32>) -> f32 {
+// in orthographic) and the standard sample positions lie symmetric about
+// the pixel's centre (their mean is the centre), so on a plane this is
+// the distance at the centre exactly, where the CPU frame's sample is.
+// A surface may lie at a negative distance in orthographic (the eye plane
+// inside the model's box), so "nothing" is a flag of its own, not a value:
+// the sum is a surface only when every sample was drawn (the cleared
+// reversed depth is 0, and a depth that is not a number counts as nothing).
+struct Surface {
+    distance: f32,
+    drawn: bool,
+}
+
+fn surface_at(p: vec2<i32>) -> Surface {
     let samples = i32(lines.size.w);
     var sum = 0.0;
     for (var s = 0; s < samples; s = s + 1) {
         let z = {{LOAD}};
         // Negated, so that a depth that is not a number counts as nothing.
         if !(z > 0.0) {
-            return -1.0;
+            return Surface(0.0, false);
         }
         sum = sum + z;
     }
     let z = sum / f32(samples);
     if scene.forward.w > 0.5 {
         // z = near / dist, as the scene pass writes it.
-        return scene.depth.x / z;
+        return Surface(scene.depth.x / z, true);
     }
     // z = (far - dist) * scale.
-    return scene.depth.x - z / scene.depth.y;
+    return Surface(scene.depth.x - z / scene.depth.y, true);
 }
 
 // How far the middle sample lies beyond the chord of its neighbours;
 // nothing where it lies before it or a neighbour shows nothing.
-fn beyond(p: f32, q: f32, r: f32) -> f32 {
-    if p < 0.0 || q < 0.0 || r < 0.0 {
+fn beyond(p: Surface, q: Surface, r: Surface) -> f32 {
+    if !(p.drawn && q.drawn && r.drawn) {
         return 0.0;
     }
-    return max(2.0 * q - p - r, 0.0);
+    return max(2.0 * q.distance - p.distance - r.distance, 0.0);
 }
 
 // Whether a surface of the picture lies in front of the point at pixel
@@ -56,20 +64,20 @@ fn surface_hides(at: vec2<f32>, depth: f32) -> bool {
     let u = at - vec2<f32>(0.5, 0.5);
     let cell = vec2<i32>(floor(u));
     let f = u - vec2<f32>(cell);
-    var z: array<array<f32, 4>, 4>;
+    var z: array<array<Surface, 4>, 4>;
     for (var r = 0; r < 4; r = r + 1) {
         for (var k = 0; k < 4; k = k + 1) {
             let q = clamp(cell + vec2<i32>(k - 1, r - 1), vec2<i32>(0), size - vec2<i32>(1));
             z[r][k] = surface_at(q);
         }
     }
-    let a = z[1][1];
-    let b = z[1][2];
-    let c = z[2][1];
-    let d = z[2][2];
-    if a < 0.0 || b < 0.0 || c < 0.0 || d < 0.0 {
+    if !(z[1][1].drawn && z[1][2].drawn && z[2][1].drawn && z[2][2].drawn) {
         return false;
     }
+    let a = z[1][1].distance;
+    let b = z[1][2].distance;
+    let c = z[2][1].distance;
+    let d = z[2][2].distance;
     let surface = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     var kink = 0.0;
     for (var n = 1; n < 3; n = n + 1) {

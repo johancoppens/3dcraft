@@ -94,7 +94,7 @@ fn corner_hollow_edge() -> Vec<[Vec3; 2]> {
 }
 
 fn evidence(name: &str) -> PathBuf {
-    let dir = PathBuf::from("/home/me/code/3dcraft/target/work/stripes");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/ui");
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
 }
@@ -105,7 +105,8 @@ struct Point {
     gpu_hidden: bool,
     /// The rule before 2026-10-18 on the CPU (the furthest of the nine
     /// pixels around the point plus the slack is nearer) and on the GPU
-    /// (plus the spread of the nine as well).
+    /// (plus the spread of the nine as well), evaluated on today's CPU
+    /// frame (whose distance is the true one), for the record.
     old_cpu_hidden: bool,
     old_gpu_hidden: bool,
     /// Every pixel within two of the point shows the same face: the
@@ -269,7 +270,7 @@ fn measure(
     }
     let count = |f: &dyn Fn(&Point) -> bool| points.iter().filter(|p| f(p)).count();
     println!(
-        "{name}: {} points ({} on one plane): hidden CPU {} GPU {}; the old rule CPU {} GPU {}; CPU and GPU differ {}",
+        "{name}: {} points ({} on one plane): hidden CPU {} GPU {}; the old rules on these frames CPU {} GPU {}; CPU and GPU differ {}",
         points.len(),
         count(&|p| p.plain),
         count(&|p| p.cpu_hidden),
@@ -279,6 +280,21 @@ fn measure(
         count(&|p| p.cpu_hidden != p.gpu_hidden),
     );
     points
+}
+
+/// `camera` with its target moved `along` millimetres further along the
+/// view: in orthographic the picture does not change, but the eye plane
+/// moves with the target, into the model's box when `along` exceeds the
+/// camera's distance, and the surfaces in front of it lie at negative
+/// distances (`depth_range` fits near below zero): the depth test must
+/// take those as surfaces, not as nothing.
+fn moved_along_the_view(camera: CameraState, along: f64) -> CameraState {
+    let forward = (camera.target() - camera.eye()).normalized().unwrap();
+    let target = camera.target() + forward * along;
+    CameraState {
+        target: [target.x, target.y, target.z],
+        ..camera
+    }
 }
 
 /// The developer's view of the pier (yaw 24.553°, pitch 46.293°), at
@@ -317,9 +333,28 @@ fn edges_behind_a_thin_plate_are_hidden_at_every_zoom_and_a_hollow_stays_in_sigh
         } else {
             &[1.0, 4.0, 8.0, 16.0, 30.0]
         };
+        // In orthographic also with the eye plane inside the leg (the
+        // camera at 4 mm/px is 5224 mm from its target).
+        let shifted: &[f64] = if projection == ProjectionKind::Orthographic {
+            &[0.0, 6500.0]
+        } else {
+            &[0.0]
+        };
+        let mut cases: Vec<(f64, f64)> = Vec::new();
         for &px_mm in zooms {
-            let cam = camera([0.0, 200.0, 2000.0], projection, px_mm);
-            let name = format!("leg-{pname}-{px_mm}");
+            for &along in shifted {
+                if along == 0.0 || px_mm == 4.0 || px_mm == 16.0 {
+                    cases.push((px_mm, along));
+                }
+            }
+        }
+        for (px_mm, along) in cases {
+            let cam = moved_along_the_view(camera([0.0, 200.0, 2000.0], projection, px_mm), along);
+            let name = if along == 0.0 {
+                format!("leg-{pname}-{px_mm}")
+            } else {
+                format!("leg-{pname}-{px_mm}-eye-inside")
+            };
             let hidden = measure(
                 &mut shell,
                 &mut leg_session,
