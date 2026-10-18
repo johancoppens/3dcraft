@@ -76,6 +76,8 @@ fn the_bracket_keeps_what_succeeded_before() {
     // The straight edges between flat faces get their exact change: the
     // block's twelve edges and the boss's foot are not all of them.
     let oriented = plan::orient_all(&mut call(&mut session), &mut chosen, &edges_of).unwrap();
+    plan::bound_all(&mut call(&mut session), &mut chosen);
+    assert!(chosen.iter().all(|a| a.volume_bound.is_some()));
     println!("{oriented} blends with their exact change");
     assert!(
         oriented >= 20,
@@ -228,6 +230,7 @@ fn action(expect: Expect, volume: f64, area: f64) -> plan::Action {
         centroid: [5.0, 5.0, 5.0],
         diag: 300f64.sqrt(),
         pair: None,
+        volume_bound: None,
     }
 }
 
@@ -372,6 +375,8 @@ fn measured(volume: f64, area: f64) -> plan::Measured {
         volume,
         area,
         centroid: [5.0, 5.0, 5.0],
+        volume_bound: None,
+        applied: None,
     }
 }
 
@@ -418,6 +423,8 @@ fn identities_catch_wrong_volumes() {
                 volume: 1000.0,
                 area,
                 centroid: c,
+                volume_bound: None,
+                applied: None,
             },
         )
         .is_ok()
@@ -431,7 +438,9 @@ fn identities_catch_wrong_volumes() {
             &plan::Measured {
                 volume: 1001.0,
                 area: 600.0,
-                centroid: [35.0, 5.0, 5.0]
+                centroid: [35.0, 5.0, 5.0],
+                volume_bound: None,
+                applied: None,
             }
         )
         .is_ok()
@@ -445,6 +454,8 @@ fn identities_catch_wrong_volumes() {
                 volume: v,
                 area,
                 centroid: [x, 5.0, 5.0],
+                volume_bound: None,
+                applied: None,
             },
         )
         .is_ok()
@@ -699,4 +710,214 @@ fn a_blend_runs_on_past_slanted_ends() {
             "four times the distance at scale {s}"
         );
     }
+}
+
+/// A blend the volume cannot tell from nothing: held to the noise of the
+/// integrator's bounds and, below it, to other evidence. Seeded: a blend
+/// that did nothing stays wrong.
+#[test]
+fn a_blend_below_the_noise_needs_other_evidence() {
+    let mut fillet = action(
+        Expect::Blend {
+            size: 0.1,
+            length: 10.0,
+            curved: 0,
+            ends: 2,
+            chamfer: false,
+            exact: None,
+        },
+        1000.0,
+        600.0,
+    );
+    fillet.volume_bound = Some(1e-3);
+    let after = |volume: f64, applied: Option<bool>| plan::Measured {
+        volume,
+        area: 600.0,
+        centroid: [5.0, 5.0, 5.0],
+        volume_bound: Some(1e-3),
+        applied,
+    };
+    let holds_after = |a: &plan::Action, m: plan::Measured| plan::identity(a, &m).is_ok();
+    // The noise is the two bounds, 2e-3, not 1e-9 of the body.
+    assert!((plan::noise(&fillet, &after(1000.0, None)) - 2e-3).abs() < 1e-15);
+    assert!(plan::needs_witness(&fillet, &after(999.999, None)));
+    assert!(!plan::needs_witness(&fillet, &after(999.99, None)));
+    assert!(
+        holds_after(&fillet, after(999.99, None)),
+        "a change above the noise"
+    );
+    // Below the noise: only with evidence.
+    assert!(
+        !holds_after(&fillet, after(1000.0, None)),
+        "nothing looked at"
+    );
+    assert!(
+        !holds_after(&fillet, after(1000.0, Some(false))),
+        "did nothing"
+    );
+    assert!(holds_after(&fillet, after(999.999, Some(true))), "applied");
+    // A blend whose exact change is well above the noise must show it in
+    // the volume, whatever else.
+    // (A chamfer of 0.1 along 10 takes 0.05, at least 0.05 − 2 · 5.67 ·
+    // 0.1 · 0.005 = 0.044 with its ends.)
+    let mut chamfer = cube_blend(0.1, true);
+    chamfer.volume_bound = Some(1e-3);
+    assert!(
+        !holds_after(&chamfer, after(1000.0, Some(true))),
+        "must take 0.05"
+    );
+    assert!(holds_after(&chamfer, after(999.95, None)));
+    // Without bounds the noise is relative 1e-9 of the body.
+    let plain = cube_blend(1.0, false);
+    assert!((plan::noise(&plain, &measured(1000.0, 600.0)) - 1e-6).abs() < 1e-18);
+}
+
+/// A drum of radius `100 s` with a lug `s` cubed on its top: the fillet of
+/// one of the lug's top edges with radius `0.003 s` takes about
+/// `0.2146 · (0.003 s)² · s = 1.9e-6 s³`, less than the integrator's own
+/// bounds on the drum's volume (about `4e-6 s³` each): the weld table's
+/// tiny fillets on a large body, made small. Held at three scales: the
+/// fillet is ok by the evidence that it was applied, and two features
+/// that did not round that edge (the body moved by nothing; a fillet of
+/// another edge) are not.
+#[test]
+fn a_tiny_blend_on_a_large_body_is_told_by_its_faces() {
+    for s in [0.1, 1.0, 100.0] {
+        let mm = |x: f64| format!("{} mm", x * s);
+        let mut session = Session::new(Workspace::unrestricted());
+        session
+            .execute("file.new", &json!({"units": "mm"}))
+            .unwrap();
+        for (id, params) in [
+            (
+                "feature.cylinder",
+                json!({"radius": mm(100.0), "height": mm(100.0), "name": "Drum"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": [mm(1.0), mm(1.0), mm(1.0)], "position": [mm(-0.5), mm(-0.5), mm(99.5)], "name": "Lug"}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "union", "target": "Drum", "tool": "Lug", "name": "Body"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let inspect = session.execute("document.inspect", &json!({})).unwrap();
+        let unit = plan::length_unit(&inspect);
+        let body = plan::bodies(&inspect)
+            .into_iter()
+            .find(|b| b.solid)
+            .expect("the body");
+        let edges = plan::edges(
+            &session
+                .execute("document.edges", &json!({"feature": body.feature}))
+                .unwrap(),
+        );
+        let (a, b) = ("F3:copy(1)/F2:face(1)", "F3:copy(1)/F2:face(2)");
+        let key = plan::pair_key(a, b);
+        let mut fillet = plan::plan(&body, &edges, &unit, &[plan::Kind::FilletSmall])
+            .into_iter()
+            .find(|x| x.entity == key)
+            .expect("a fillet of the lug's top edge");
+        let r = 0.003 * s;
+        fillet.params = json!({"edges": [[a, b]], "radius": format!("{r} mm")});
+        fillet.expect = match fillet.expect {
+            Expect::Blend {
+                length,
+                curved,
+                ends,
+                chamfer,
+                ..
+            } => Expect::Blend {
+                size: r,
+                length,
+                curved,
+                ends,
+                chamfer,
+                exact: None,
+            },
+            other => panic!("not a blend: {other:?}"),
+        };
+        let edges_of = [(body.feature.clone(), edges.clone())]
+            .into_iter()
+            .collect();
+        let mut one = vec![fillet];
+        plan::orient_all(&mut call(&mut session), &mut one, &edges_of).unwrap();
+        plan::bound_all(&mut call(&mut session), &mut one);
+        let fillet = one.pop().unwrap();
+        // One straight edge between flat faces: the exact change, whose
+        // lower end is below the noise.
+        assert!(matches!(
+            fillet.expect,
+            Expect::Blend { exact: Some(_), .. }
+        ));
+        let b0 = fillet.volume_bound.expect("the drum's bound");
+        let quarter = (1.0 - std::f64::consts::FRAC_PI_4) * r * r * s;
+        assert!(
+            quarter < b0,
+            "scale {s}: the fillet's change {quarter} is not below the bound {b0}"
+        );
+        let outcome = plan::run_action(&mut call(&mut session), &fillet);
+        assert_eq!(
+            outcome.verdict,
+            plan::Verdict::Ok,
+            "scale {s}: {}",
+            outcome.reason
+        );
+        let (volume, _) = outcome.after.unwrap();
+        let change = body.volume - volume;
+        assert!(
+            change.abs() <= 2.5 * b0,
+            "scale {s}: {change} is not within the noise, the witness was not needed"
+        );
+        // Did nothing: the body moved by nothing, and a fillet of another
+        // edge of the lug, each with the volume it gives.
+        let other = ("F3:copy(1)/F2:face(1)", "F3:copy(1)/F2:face(3)");
+        for (command, params) in [
+            (
+                "feature.transform",
+                json!({"source": "Body", "translate": ["0 mm", "0 mm", "0 mm"]}),
+            ),
+            (
+                "feature.fillet",
+                json!({"edges": [[other.0, other.1]], "radius": format!("{r} mm")}),
+            ),
+        ] {
+            let made = session.execute(command, &params).unwrap();
+            let id = made["id"].as_str().unwrap().to_string();
+            assert_eq!(made["status"], "ok", "{made}");
+            let measure = session
+                .execute("document.measure", &json!({"feature": id, "bound": true}))
+                .unwrap();
+            let after = plan::Measured {
+                volume: measure["volume"].as_f64().unwrap(),
+                area: measure["area"].as_f64().unwrap(),
+                centroid: [0.0; 3],
+                volume_bound: measure["volumeBound"].as_f64(),
+                applied: Some(plan::blend_applied(&mut call(&mut session), &fillet, &id).is_ok()),
+            };
+            assert!(plan::needs_witness(&fillet, &after), "scale {s}: {command}");
+            assert_eq!(after.applied, Some(false), "scale {s}: {command}");
+            assert!(
+                plan::identity(&fillet, &after).is_err(),
+                "scale {s}: {command} passed for the fillet"
+            );
+            session.execute("edit.undo", &json!({})).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_copied_name_merges_a_run_of_instance_zero() {
+    assert_eq!(
+        plan::copied("F5", "F4:copy(0)/F1:face(5)"),
+        "F5:copy(0)/F1:face(5)"
+    );
+    assert_eq!(
+        plan::copied("F5", "F4:copy(1)/F3:face(0)"),
+        "F5:copy(0)/F4:copy(1)/F3:face(0)"
+    );
+    assert_eq!(plan::copied("F2", "F1:face(0)"), "F2:copy(0)/F1:face(0)");
 }

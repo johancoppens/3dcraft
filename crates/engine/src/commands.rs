@@ -93,8 +93,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
-    spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
-        "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
+    spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
+        "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee; it costs a second integration). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
         "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
 ];
@@ -1960,7 +1960,8 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
 }
 
 fn document_measure(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("document.measure", params, &["feature"])?;
+    let p = Params::new("document.measure", params, &["feature", "bound"])?;
+    let with_bound = p.bool("bound")?.unwrap_or(false);
     let only = match p.get("feature") {
         None => None,
         Some(_) => Some(feature_ref(
@@ -1976,6 +1977,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let unit = length_unit(doc);
     let mut bodies = Vec::new();
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
+    let (mut volume_bound, mut area_bound) = (0.0, 0.0);
     // The total mass, while every body has one.
     let mut total_mass = Some(0.0);
     crate::appearance_cmds::measure_all_ahead(
@@ -2005,6 +2007,14 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
             "volume": mass.volume, "area": mass.area, "centroid": mass.centroid.map_or(Value::Null, vec3),
         });
         if let Some(map) = entry.as_object_mut() {
+            if with_bound {
+                let (_, bound) = craft3d_topo::mass_bound(body)
+                    .map_err(|e| CommandError::new(format!("document.measure: {name}: {e}")))?;
+                volume_bound += bound.volume;
+                area_bound += bound.area;
+                map.insert("volumeBound".into(), bound.volume.into());
+                map.insert("areaBound".into(), bound.area.into());
+            }
             crate::appearance_cmds::physical_fields(map, doc, &regen, id, body, unit);
             total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
                 (Some(sum), Some(m)) => Some(sum + m),
@@ -2031,6 +2041,10 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         "areaUnit": format!("{unit}^2"),
         "volumeUnit": format!("{unit}^3"),
     });
+    if let (Some(map), true) = (result.as_object_mut(), with_bound) {
+        map.insert("volumeBound".into(), volume_bound.into());
+        map.insert("areaBound".into(), area_bound.into());
+    }
     // The total mass when every body has a material.
     if let (Some(map), Some(mass), false) = (result.as_object_mut(), total_mass, bodies.is_empty())
     {

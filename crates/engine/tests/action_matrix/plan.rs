@@ -204,6 +204,9 @@ pub struct Action {
     pub diag: f64,
     /// For an edge-pair action: the faces and the edge.
     pub pair: Option<Pair>,
+    /// How far the body's volume before can be off by the integrator's
+    /// own account (`document.measure` with `bound`, [`bound_all`]).
+    pub volume_bound: Option<f64>,
 }
 
 /// The outcome of an action.
@@ -694,6 +697,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
             area: body.area,
             centroid: body.centroid,
             diag,
+            volume_bound: None,
         });
     };
     let pair_names: Vec<String> = pairs.keys().cloned().collect();
@@ -924,6 +928,133 @@ pub struct Measured {
     pub volume: f64,
     pub area: f64,
     pub centroid: [f64; 3],
+    /// How far `volume` can be off by the integrator's own account.
+    pub volume_bound: Option<f64>,
+    /// For a blend whose change the volume cannot tell from nothing:
+    /// whether the result shows by other means that it was applied (its
+    /// own faces are there and the edges between the pair are gone,
+    /// [`blend_applied`]); `None` when not looked at.
+    pub applied: Option<bool>,
+}
+
+/// What a change of volume after `action` must exceed to be one: the sum
+/// of the integrator's own bounds on the volume before and after, when
+/// both are known; else relative 1e-9 of the body. A change no larger
+/// decides nothing either way.
+pub fn noise(action: &Action, after: &Measured) -> f64 {
+    match (action.volume_bound, after.volume_bound) {
+        (Some(b0), Some(b1)) if b0.is_finite() && b1.is_finite() => b0.abs() + b1.abs(),
+        _ => 1e-9 * action.volume.abs(),
+    }
+}
+
+/// Whether the volume cannot tell what `action` made from what it was
+/// made from, for a blend: then [`identity`] needs [`Measured::applied`].
+pub fn needs_witness(action: &Action, after: &Measured) -> bool {
+    matches!(action.expect, Expect::Blend { .. })
+        && (after.volume - action.volume).abs() <= noise(action, after)
+}
+
+/// The name the body of feature `id`, made from the body a face named
+/// `name` is of as its instance 0 (a blend, a face operation), gives the
+/// image of that face: `id:copy(0)/name`, with a leading run of instance
+/// 0 merged into the new one (docs/design/names.md, *Copies of copies*).
+pub fn copied(id: &str, name: &str) -> String {
+    let feature = |head: &str| {
+        head.strip_prefix('F')
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let rest = name
+        .split_once(":copy(0)/")
+        .filter(|(head, _)| feature(head))
+        .map_or(name, |(_, rest)| rest);
+    format!("{id}:copy(0)/{rest}")
+}
+
+/// Evidence besides the volume that the blend `action`, built as feature
+/// `id`, was applied: the result has faces of its own (named by `id`, not
+/// copies), both faces of the pair are still there under the names the
+/// result gives them ([`copied`]), and no edge lies between them any more.
+/// The reason when not.
+pub fn blend_applied<F>(call: &mut F, action: &Action, id: &str) -> Result<(), String>
+where
+    F: FnMut(&str, &Value) -> Result<Value, CallError>,
+{
+    let Some(Pair { faces: [a, b], .. }) = &action.pair else {
+        return Err("not an edge-pair action".into());
+    };
+    let inspect =
+        call("document.inspect", &json!({})).map_err(|e| format!("document.inspect: {e:?}"))?;
+    let body = inspect
+        .get("bodies")
+        .and_then(Value::as_array)
+        .and_then(|bodies| {
+            bodies
+                .iter()
+                .find(|b| b.get("feature").and_then(Value::as_str) == Some(id))
+        })
+        .ok_or_else(|| format!("{id} has no body"))?;
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    for list in [body.get("faceNames")].into_iter().flatten().chain(
+        body.get("faceAliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten(),
+    ) {
+        names.extend(
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        );
+    }
+    let own = format!("{id}:");
+    let copy = format!("{id}:copy(");
+    if !names
+        .iter()
+        .any(|n| n.starts_with(&own) && !n.starts_with(&copy))
+    {
+        return Err(format!("{id} has no face of its own"));
+    }
+    let pair = [copied(id, a), copied(id, b)];
+    if let Some(gone) = pair.iter().find(|n| !names.contains(n.as_str())) {
+        return Err(format!("{id} has no face {gone}"));
+    }
+    let edges = call(
+        "document.edges",
+        &json!({"feature": id, "between": [pair[0], pair[1]]}),
+    )
+    .map_err(|e| format!("document.edges: {e:?}"))?;
+    match edges.get("count").and_then(Value::as_u64) {
+        Some(0) => Ok(()),
+        Some(n) => Err(format!(
+            "{n} edges still lie between {} and {}",
+            pair[0], pair[1]
+        )),
+        None => Err(format!("no count in {edges}")),
+    }
+}
+
+/// Asks the engine once per body of `actions` how far its volume can be
+/// off (`document.measure` with `bound`) and gives each action its body's
+/// bound. A body whose bound cannot be had keeps none (the noise is then
+/// relative 1e-9 of it, [`noise`]).
+pub fn bound_all<F>(call: &mut F, actions: &mut [Action])
+where
+    F: FnMut(&str, &Value) -> Result<Value, CallError>,
+{
+    let mut bounds: BTreeMap<String, Option<f64>> = BTreeMap::new();
+    for a in actions.iter_mut() {
+        let bound = *bounds.entry(a.body.clone()).or_insert_with(|| {
+            call(
+                "document.measure",
+                &json!({"feature": a.body, "bound": true}),
+            )
+            .ok()
+            .and_then(|m| m.get("volumeBound").and_then(num))
+        });
+        a.volume_bound = bound;
+    }
 }
 
 /// The fillet's setback over its radius at the smallest dihedral angle
@@ -943,14 +1074,17 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
         volume,
         area,
         centroid,
+        applied,
+        ..
     } = *after;
     if !(volume.is_finite() && volume > 0.0) {
         return Err(format!("volume {volume} is not positive"));
     }
     let change = volume - v0;
     // Changes this small are within what the measure itself can be off by
-    // (relative 1e-9 of the body): no conclusion either way.
-    let noise = 1e-9 * v0.abs();
+    // (the integrator's own bounds before and after): no conclusion
+    // either way.
+    let noise = noise(action, after);
     let larger = a0.max(area);
     // The centroid is held to 1e-6 of the body's diagonal.
     let near = |a: [f64; 3], b: [f64; 3]| norm(sub(a, b)) <= 1e-6 * action.diag;
@@ -982,14 +1116,38 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
             chamfer,
             exact,
         } => {
-            changes("a blend")?;
-            if let Some(x) = exact {
-                // Where it ends, an end face cut at γ to the edge moves the
-                // end by up to the setback times cot γ: γ of 10° or more
-                // is assumed (cot 10° = 5.67).
+            // Where it ends, an end face cut at γ to the edge moves the end
+            // by up to the setback times cot γ: γ of 10° or more is
+            // assumed (cot 10° = 5.67).
+            let window = exact.map(|x| {
                 let run_on = 2.0 * END_TILT * x.setback * x.section;
                 let expected = x.section * x.length;
-                let (lo, hi) = ((expected - run_on).max(0.0), expected + run_on);
+                ((expected - run_on).max(0.0), expected + run_on)
+            });
+            if change.abs() <= noise {
+                // The volume cannot tell this blend from nothing. A blend
+                // that must change it by more than the noise has failed;
+                // one whose whole change may be below the noise (a small
+                // radius on a large body) needs other evidence that it
+                // was applied.
+                if let Some((lo, _)) = window
+                    && lo * (1.0 - 1e-6) > noise
+                {
+                    return Err(format!(
+                        "a blend left the volume as it was ({v0} to {volume}), but must change it by at least {lo}"
+                    ));
+                }
+                return match applied {
+                    Some(true) => Ok(()),
+                    Some(false) => Err(format!(
+                        "a blend left the volume as it was ({v0} to {volume}, within {noise}) and the result does not show it was applied"
+                    )),
+                    None => Err(format!(
+                        "a blend left the volume as it was: {v0} to {volume} (within {noise}; nothing else looked at)"
+                    )),
+                };
+            }
+            if let (Some(x), Some((lo, hi))) = (exact, window) {
                 let taken = if x.gains { change } else { -change };
                 if taken <= noise {
                     return Err(format!(
@@ -1229,7 +1387,7 @@ where
             false,
         );
     }
-    let measure = match call("document.measure", &json!({"feature": id})) {
+    let measure = match call("document.measure", &json!({"feature": id, "bound": true})) {
         Ok(measure) => measure,
         Err(CallError::Command(message)) if !message.contains(INTERNAL) => {
             return outcome(
@@ -1250,14 +1408,25 @@ where
             false,
         );
     };
-    let measured = Measured {
+    let mut measured = Measured {
         volume,
         area,
         centroid,
+        volume_bound: measure.get("volumeBound").and_then(num),
+        applied: None,
     };
+    let mut witness = String::new();
+    if needs_witness(action, &measured) {
+        let applied = blend_applied(call, action, &id);
+        measured.applied = Some(applied.is_ok());
+        if let Err(why) = applied {
+            witness = why;
+        }
+    }
     let mut verdict = match identity(action, &measured) {
         Ok(()) => outcome(Verdict::Ok, "", false),
-        Err(why) => outcome(Verdict::Wrong, why, false),
+        Err(why) if witness.is_empty() => outcome(Verdict::Wrong, why, false),
+        Err(why) => outcome(Verdict::Wrong, format!("{why}: {witness}"), false),
     };
     verdict.after = Some((volume, area));
     verdict
