@@ -1,0 +1,11 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.000001}},
+  {"command":"sketch.create","params":{"name":"S0","offset":0.0,"plane":"xy"}},
+  {"command":"sketch.circle","params":{"center":[12.5,10.0],"radius":7.5,"sketch":"S0"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","name":"N0","sketch":"S0"}},
+  {"command":"sketch.create","params":{"name":"S3","offset":5.0,"plane":"zx"}},
+  {"command":"sketch.circle","params":{"center":[10.0,7.5],"radius":7.5,"sketch":"S3"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","intersect":"N0","name":"N3","sketch":"S3"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":0.625,"edges":[["F5:copy(0)/F2:side(e2)","F5:copy(1)/F4:side(e2)"]],"name":"N5"}},
+  {"command":"feature.offsetFace","params":{"distance":0.625,"faces":["F6:copy(0)/F5:copy(1)/F4:side(e2)"],"name":"N8"}}
+]

@@ -1,0 +1,12 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.000001}},
+  {"command":"feature.cylinder","params":{"angle":"90 deg","axis":[0.0,0.0,1.0],"height":20.0,"name":"N0","position":[-7.5,5.0,-7.5],"radius":2.5}},
+  {"command":"feature.sphere","params":{"name":"N1","position":[-10.0,10.0,2.5],"radius":10.0}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N2","op":"intersect","target":"N0","tool":"N1"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":2.5,"edges":[["F3:copy(0)/F1:face(0)","F3:copy(1)/F2:face(0)"]],"name":"N3","second":0.625}},
+  {"command":"sketch.create","params":{"name":"S5","offset":0.0,"plane":"yz"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[-10.0,5.0],[2.5,5.0],[2.5,10.0],[-10.0,10.0]],"sketch":"S5"}},
+  {"command":"feature.extrude","params":{"distance":2.5,"join":"N3","name":"N5","sketch":"S5"}},
+  {"command":"feature.transform","params":{"angle":"45 deg","axis":[0.0,0.0,1.0],"keep":true,"name":"N6","pivot":[7.5,10.0,2.5],"source":"N5","translate":[2.5,5.0,0.0]}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N8","op":"union","target":"N6","tool":"N5"}}
+]

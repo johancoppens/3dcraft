@@ -187,6 +187,9 @@ struct FinePiece {
     /// Kept until the piece is split.
     patch: Option<RationalBezierPatch>,
     children: Option<[usize; 4]>,
+    /// The work making it took ([`craft3d_geom::allowance::cost_of`]),
+    /// charged once per operation that goes into it, made then or kept.
+    units: u64,
 }
 
 /// A surface with a tree of boxes around pieces of it.
@@ -244,6 +247,12 @@ pub(super) struct PatchTree {
     /// The tree of the same surface drawn more evenly
     /// ([`PatchTree::evened`]), once asked for.
     evened: std::sync::OnceLock<Option<Arc<PatchTree>>>,
+    /// A number of the surface, the same for every tree of it (a hash of
+    /// its numbers written out), for what an operation remembers of it
+    /// ([`ScopedMemos`]).
+    id: u64,
+    /// The work building the tree took ([`craft3d_geom::allowance::cost_of`]).
+    units: u64,
 }
 
 /// The nearest point of the surface to a point.
@@ -1586,6 +1595,87 @@ impl<K: Ord, V: Copy> Memo<K, V> {
     }
 }
 
+/// What an operation under a work bound remembers for itself
+/// (`craft3d_geom::allowance::scope`), in place of a tree's own memos:
+/// those are shared with every operation that asked before, and an answer
+/// found there costs nothing where finding it costs a search, so what an
+/// operation counted would depend on what ran before it. Here a search is
+/// counted, and remembered for the rest of the operation only. By the
+/// tree's number ([`PatchTree::id`]) and the question.
+#[derive(Default)]
+struct ScopedMemos {
+    scope: u64,
+    nearest: BTreeMap<(u64, [u64; 3]), Option<Nearest>>,
+    sigma: BTreeMap<(u64, [u64; 4]), Option<f64>>,
+    bound: BTreeMap<(u64, [u64; 5]), f64>,
+}
+
+impl ScopedMemos {
+    fn len(&self) -> usize {
+        self.nearest.len() + self.sigma.len() + self.bound.len()
+    }
+}
+
+thread_local! {
+    static SCOPED: std::cell::RefCell<ScopedMemos> =
+        std::cell::RefCell::new(ScopedMemos::default());
+}
+
+/// Lets go of what the operation that just ended remembered.
+fn forget_scoped() {
+    let _ = SCOPED.try_with(|memos| {
+        if let Ok(mut memos) = memos.try_borrow_mut() {
+            *memos = ScopedMemos::default();
+        }
+    });
+}
+
+/// The answer to a question of the operation of bound `scope`: remembered
+/// by it (`find`), or searched (`search`, counted) and remembered
+/// (`keep`). What another operation remembered is let go first. At most
+/// [`MAX_MEMO`] answers of each kind, all let go when full (at the same
+/// question of the operation whatever ran before it).
+fn scoped<V: Copy>(
+    scope: u64,
+    find: impl Fn(&ScopedMemos) -> Option<V>,
+    search: impl FnOnce() -> V,
+    keep: impl FnOnce(&mut ScopedMemos, V),
+) -> V {
+    let found = SCOPED
+        .try_with(|memos| {
+            let mut memos = memos.try_borrow_mut().ok()?;
+            if memos.scope != scope {
+                *memos = ScopedMemos {
+                    scope,
+                    ..ScopedMemos::default()
+                };
+                craft3d_geom::allowance::at_scope_end(forget_scoped);
+            }
+            find(&memos)
+        })
+        .ok()
+        .flatten();
+    if let Some(found) = found {
+        return found;
+    }
+    // Not borrowed while searching: a search may ask other questions.
+    let found = search();
+    let _ = SCOPED.try_with(|memos| {
+        if let Ok(mut memos) = memos.try_borrow_mut()
+            && memos.scope == scope
+        {
+            if memos.len() >= 3 * MAX_MEMO {
+                *memos = ScopedMemos {
+                    scope,
+                    ..ScopedMemos::default()
+                };
+            }
+            keep(&mut memos, found);
+        }
+    });
+    found
+}
+
 /// A min-heap entry: a node and its box distance.
 struct Pending(f64, usize);
 
@@ -1703,6 +1793,15 @@ impl PatchTree {
     /// booleans on one body (each operand of the next the result of the
     /// last, its faces on the same surfaces) indexes each surface once.
     pub fn shared(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
+        // Built uncounted, found or not; asking for a tree charges by its
+        // nodes, the same either way (`craft3d_geom::allowance::uncounted`).
+        let tree = craft3d_geom::allowance::uncounted(|| PatchTree::shelved(surface))?;
+        craft3d_geom::allowance::once(tree.id, tree.units);
+        Ok(tree)
+    }
+
+    /// [`Self::shared`]: from the shelf, or built and put there.
+    fn shelved(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
         let key = format!("{surface:?}");
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1777,6 +1876,17 @@ impl PatchTree {
     }
 
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
+        // What building it took, kept with it, charged once per operation
+        // that asks for it, built then or found on the shelf.
+        let (made, units) = craft3d_geom::allowance::cost_of(|| PatchTree::built(surface));
+        made.map(|mut tree| {
+            tree.units = units;
+            tree
+        })
+    }
+
+    /// [`Self::new`]: the building.
+    fn built(surface: &Surface) -> Result<PatchTree, Reason> {
         let spans: Vec<Span> = match surface {
             Surface::Bezier(patch) => vec![(
                 (0.0, 1.0),
@@ -1834,6 +1944,8 @@ impl PatchTree {
             fine_cap: FINE_PIECES,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
+            id: craft3d_geom::allowance::number_of(&format!("{surface:?}")),
+            units: 0,
         };
         let whole = spans
             .iter()
@@ -1956,16 +2068,21 @@ impl PatchTree {
     /// side than on the other, and a stretch of a boundary along the knot
     /// takes the bound of the fast side; drawn evenly they do not.
     pub(super) fn evened(tree: &Arc<PatchTree>) -> Arc<PatchTree> {
-        let made = tree.evened.get_or_init(|| {
-            let Surface::Nurbs(s) = &tree.surface else {
-                return None;
-            };
-            let even = s.evened()?;
-            // On the shelf like any other tree, so that what it holds is
-            // counted against the shelf's bytes.
-            PatchTree::shared(&Surface::Nurbs(even)).ok()
+        let made = craft3d_geom::allowance::uncounted(|| {
+            tree.evened.get_or_init(|| {
+                let Surface::Nurbs(s) = &tree.surface else {
+                    return None;
+                };
+                let even = s.evened()?;
+                // On the shelf like any other tree, so that what it holds is
+                // counted against the shelf's bytes.
+                PatchTree::shared(&Surface::Nurbs(even)).ok()
+            })
         });
-        made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone)
+        let even = made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone);
+        // Charged as asking for a tree is, made now or before.
+        craft3d_geom::allowance::once(even.id, even.units);
+        even
     }
 
     /// A lower bound on the smallest singular value of the Jacobian over
@@ -1976,7 +2093,23 @@ impl PatchTree {
     /// surface, and never less than that. `None` where no piece is that
     /// near, or where a piece has no bound.
     pub(super) fn sigma_near(&self, p: Vec3, reach: f64) -> Option<f64> {
+        // A search splits pieces of leaves: past the work bound of an
+        // operation, when one is in force, the surface's own bound is the
+        // answer (true, if less sharp).
+        if craft3d_geom::allowance::exhausted() {
+            return self.least_sigma();
+        }
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), reach.to_bits()];
+        if let Some(scope) = craft3d_geom::allowance::scope() {
+            return scoped(
+                scope,
+                |m| m.sigma.get(&(self.id, key)).copied(),
+                || self.sigma_search(p, reach),
+                |m, found| {
+                    m.sigma.insert((self.id, key), found);
+                },
+            );
+        }
         if let Some(found) = self.sigma_memo.get(&key) {
             return found;
         }
@@ -2083,7 +2216,12 @@ impl PatchTree {
         let root = match fine.roots.entry(index) {
             std::collections::btree_map::Entry::Occupied(found) => found.into_mut(),
             std::collections::btree_map::Entry::Vacant(free) => {
-                let piece = self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0);
+                let (mut piece, units) = craft3d_geom::allowance::uncounted(|| {
+                    craft3d_geom::allowance::cost_of(|| {
+                        self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0)
+                    })
+                });
+                piece.units = units;
                 fine.pieces = fine.pieces.saturating_add(1);
                 free.insert(FineRoot {
                     nodes: vec![piece],
@@ -2091,6 +2229,9 @@ impl PatchTree {
                 })
             }
         };
+        if let Some(first) = root.nodes.first() {
+            self.charge_piece(first);
+        }
         root.used = clock;
         let before = root.nodes.len();
         let answer = self.finer_in(&mut root.nodes, p, reach, cutoff);
@@ -2099,6 +2240,19 @@ impl PatchTree {
         self.fine_pieces
             .store(fine.pieces, std::sync::atomic::Ordering::Relaxed);
         answer
+    }
+
+    /// Charges the fine piece over `u` × `v` (`craft3d_geom::allowance`):
+    /// once per operation under a bound, made now or kept from before (the
+    /// pieces a query splits are kept for the next, of this operation or
+    /// another: what a query costs depends on what was kept, so the making
+    /// is not counted, and each piece the operation goes into is, once).
+    fn charge_piece(&self, piece: &FinePiece) {
+        let (u, v) = (piece.u, piece.v);
+        let thing = [u.0, u.1, v.0, v.1].iter().fold(self.id, |h, x| {
+            (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
+        });
+        craft3d_geom::allowance::once(thing, piece.units);
     }
 
     /// [`Self::finer`] in the pieces kept under one leaf, `nodes` (the
@@ -2163,6 +2317,11 @@ impl PatchTree {
             }
             if let Some(kids) = piece.children {
                 for k in kids {
+                    if let Some(kid) = nodes.get(k) {
+                        self.charge_piece(kid);
+                    }
+                }
+                for k in kids {
                     if let Some(kid) = nodes.get(k).filter(|kid| near(kid)) {
                         heap.push(key(kid, k));
                     }
@@ -2172,7 +2331,13 @@ impl PatchTree {
             let Some(patch) = piece.patch.clone() else {
                 return Some(sigma);
             };
-            let made = self.quartered(piece, &patch, sigma);
+            let (mut made, units) = craft3d_geom::allowance::uncounted(|| {
+                craft3d_geom::allowance::cost_of(|| self.quartered(piece, &patch, sigma))
+            });
+            for kid in &mut made {
+                kid.units = units / 4;
+                self.charge_piece(kid);
+            }
             let mut kids = [0_usize; 4];
             for (slot, made) in kids.iter_mut().zip(made) {
                 *slot = nodes.len();
@@ -2377,6 +2542,7 @@ impl PatchTree {
             depth,
             patch: Some(patch),
             children: None,
+            units: 0,
         }
     }
 
@@ -2558,15 +2724,28 @@ impl PatchTree {
             resolution.to_bits(),
             threshold.to_bits(),
         ];
+        let search = || {
+            self.bound_by(
+                &|slab| box_distance(&slab.local, slab.to_local(p)),
+                resolution,
+                MAX_LEAVES,
+                threshold,
+            )
+        };
+        if let Some(scope) = craft3d_geom::allowance::scope() {
+            return scoped(
+                scope,
+                |m| m.bound.get(&(self.id, key)).copied(),
+                search,
+                |m, found| {
+                    m.bound.insert((self.id, key), found);
+                },
+            );
+        }
         if let Some(found) = self.bound_memo.get(&key) {
             return found;
         }
-        let found = self.bound_by(
-            &|slab| box_distance(&slab.local, slab.to_local(p)),
-            resolution,
-            MAX_LEAVES,
-            threshold,
-        );
+        let found = search();
         self.bound_memo.put(key, found);
         found
     }
@@ -2784,6 +2963,16 @@ impl PatchTree {
     /// The point of the surface nearest to `p`, remembered.
     pub fn nearest(&self, p: Vec3) -> Option<Nearest> {
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        if let Some(scope) = craft3d_geom::allowance::scope() {
+            return scoped(
+                scope,
+                |m| m.nearest.get(&(self.id, key)).copied(),
+                || self.search(p),
+                |m, found| {
+                    m.nearest.insert((self.id, key), found);
+                },
+            );
+        }
         if let Some(found) = self.memo.get(&key) {
             return found;
         }
@@ -3586,6 +3775,46 @@ mod tests {
             assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits), "{p:?} {r}");
             assert!(got.is_some_and(|g| g > 0.0), "{p:?} {r}");
         }
+    }
+
+    /// The tree of a surface drawn more evenly counts the same toward an
+    /// operation's bound made now or found made: building it asks for its
+    /// tree inside an uncounted region, which must not mark it charged.
+    #[test]
+    fn an_evened_tree_counts_the_same_made_now_or_before() {
+        use craft3d_geom::allowance;
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                2,
+                2,
+                vec![
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(0.0, 3.0, 1.2),
+                    Vec3::new(4.0, 0.0, 0.8),
+                    Vec3::new(4.0, 3.0, 1.0),
+                ],
+                vec![1.0, 1.0, 4.0, 4.0],
+            )
+            .unwrap(),
+        );
+        let count = || {
+            allowance::within(u64::MAX, || {
+                allowance::measured(|| {
+                    let tree = PatchTree::shared(&surface).unwrap();
+                    let even = PatchTree::evened(&tree);
+                    assert!(!Arc::ptr_eq(&tree, &even), "nothing to even");
+                })
+                .1
+            })
+        };
+        let cold = count();
+        let warm = count();
+        assert!(cold > 0);
+        assert_eq!(cold, warm);
     }
 
     #[test]

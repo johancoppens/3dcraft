@@ -1,0 +1,8 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.001}},
+  {"command":"sketch.create","params":{"name":"S0","offset":0.0,"plane":"zx"}},
+  {"command":"sketch.circle","params":{"center":[10000.0,10000.0],"radius":7500.0,"sketch":"S0"}},
+  {"command":"feature.revolve","params":{"angle":"90 deg","axis":"y","name":"N0","sketch":"S0"}},
+  {"command":"feature.fillet","params":{"chain":false,"edges":[["F2:side(e2)","F2:startCap(e2)"],["F2:side(e2)","F2:endCap(e2)"]],"name":"N1","radius":5000.0}},
+  {"command":"feature.shell","params":{"name":"N2","open":["F3:copy(0)/F2:startCap(e2)","F3:fillet(1)"],"source":"N1","thickness":10000.0}}
+]

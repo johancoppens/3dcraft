@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 21,
+  "format_version": 22,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 22"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 23"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 22,
+            file: 23,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 22")
+        text.contains("version 23")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1655,7 +1655,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 21);
+    assert_eq!(value["format_version"], 22);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1841,7 +1841,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 21);
+    assert_eq!(value["format_version"], 22);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2856,7 +2856,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 21);
+    assert_eq!(value["format_version"], 22);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3649,7 +3649,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 21);
+    assert_eq!(value["format_version"], 22);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3732,4 +3732,54 @@ fn a_version_20_file_opens_unchanged_and_is_saved_as_the_current_version() {
     let opened = from_manifest_json(old.as_bytes()).unwrap();
     assert_eq!(opened, doc);
     assert_eq!(to_manifest_json(&opened).unwrap(), json);
+}
+
+/// A fill (format 22): a sheet of the flat faces a sketch's profiles
+/// bound, and a boolean that cuts a solid with it, written and read back;
+/// a version-21 file (which has no fill) opens unchanged.
+#[test]
+fn a_fill_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Boolean, BooleanOp, Fill};
+    let mut doc = small();
+    let fill = doc
+        .add_feature(
+            Some("Cut sheet"),
+            FeatureKind::Fill(Fill {
+                sketch: FeatureId(7),
+            }),
+        )
+        .unwrap();
+    doc.add_feature(
+        Some("Cut"),
+        FeatureKind::Boolean(Boolean {
+            op: BooleanOp::Subtract,
+            target: FeatureId(1),
+            tool: fill,
+            keep_tool: true,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(FORMAT_VERSION, 22);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[1]["kind"],
+        serde_json::json!({"type": "fill", "sketch": 7})
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // An unknown field on a fill is refused, as on every kind.
+    let extra = json.replacen("\"sketch\": 7", "\"sketch\": 7, \"reversed\": true", 1);
+    assert_ne!(extra, json);
+    assert!(from_manifest_json(extra.as_bytes()).is_err());
+    // A version-21 file opens as it was and is saved as version 22.
+    let older = to_manifest_json(&small()).unwrap();
+    let old = older.replacen(&version_field(), "\"format_version\": 21", 1);
+    assert_ne!(old, older);
+    let opened = from_manifest_json(old.as_bytes()).unwrap();
+    assert_eq!(opened, small());
+    assert_eq!(to_manifest_json(&opened).unwrap(), older);
 }

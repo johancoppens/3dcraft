@@ -394,6 +394,53 @@ impl Builder<'_> {
     }
 }
 
+impl Builder<'_> {
+    /// One loop at offset `z` alone: its vertices and edges, as the start
+    /// of an extrusion has them, and the coedges of the loop in its own
+    /// direction.
+    fn outline(&mut self, path: &Loop2, z: f64) -> Result<Vec<Coedge>, KernelError> {
+        let segments = &path.segments;
+        let n = segments.len();
+        match (segments.first(), n) {
+            (None, _) => return Err(invalid("a loop without segments")),
+            (Some(first), 1) => {
+                if !matches!(first.shape, Shape::Circle { .. }) {
+                    return Err(invalid(
+                        "a loop of one segment that is not a circle is not closed",
+                    ));
+                }
+            }
+            _ => {
+                if segments
+                    .iter()
+                    .any(|s| matches!(s.shape, Shape::Circle { .. }))
+                {
+                    return Err(invalid("a circle is a loop on its own"));
+                }
+            }
+        }
+        let before = segments.iter().cycle().skip(n - 1);
+        let vertices: Vec<VertexId> = before
+            .zip(segments)
+            .map(|(arriving, leaving)| {
+                let origin = Origin::of_piece(
+                    Role::StartVertex,
+                    &[arriving.source, leaving.source],
+                    leaving.piece,
+                );
+                self.vertex(leaving.start, z, origin)
+            })
+            .collect();
+        let after = vertices.iter().cycle().skip(1);
+        let mut coedges = Vec::with_capacity(n);
+        for (segment, (&here, &there)) in segments.iter().zip(vertices.iter().zip(after)) {
+            let (edge, reversed) = self.layer_edge(segment, z, (here, there), Role::StartEdge)?;
+            coedges.push(Coedge { edge, reversed });
+        }
+        Ok(coedges)
+    }
+}
+
 struct Swept {
     faces: Vec<FaceId>,
     start: Vec<Coedge>,
@@ -483,6 +530,73 @@ pub fn extrude(
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {
             operation: "extrude",
+            defects,
+        });
+    }
+    Ok(OpResult {
+        body: b.body,
+        origins: b.origins,
+    })
+}
+
+/// The planar faces the profiles bound, in the plane of `plane` (its z = 0),
+/// as a sheet: one face per profile, with its holes, and one shell per
+/// profile. A face's normal is the plane's z, so its outer loop runs
+/// counter-clockwise seen from there. It is the start cap of an extrusion
+/// of the same profiles alone, and its entities have that cap's roles and
+/// origins ([`Role::StartCap`], [`Role::StartEdge`],
+/// [`Role::StartVertex`]), so that it is named as that cap is; added per
+/// profile, per loop (the outer one first) its vertices and edges, then
+/// the face.
+///
+/// The profiles are trusted not to overlap each other, as those of
+/// [`crate::profile::detect_profiles`] do not; curve ids must be unique
+/// across them. The sheet has passed `craft3d_topo::check` with
+/// `tolerance`.
+pub fn fill(
+    profiles: &[Profile],
+    plane: &Frame,
+    tolerance: &Tolerance,
+) -> Result<OpResult, KernelError> {
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    if profiles.is_empty() {
+        return Err(KernelError::NoProfile);
+    }
+    each_curve_once(profiles)?;
+    let mut b = Builder {
+        body: Body::new(BodyKind::Sheet),
+        origins: Origins::default(),
+        plane,
+    };
+    let face_frame = plane
+        .at(plane.point(0.0, 0.0, 0.0))
+        .ok_or_else(degenerate_frame)?;
+    for profile in profiles {
+        let mut loops = Vec::with_capacity(1 + profile.holes.len());
+        for path in std::iter::once(&profile.outer).chain(&profile.holes) {
+            let coedges = b.outline(path, 0.0)?;
+            loops.push(b.body.add_loop(coedges));
+        }
+        let sources = cap_sources(&profile.outer);
+        let face = b.face(
+            Surface::Plane(Plane::new(face_frame)),
+            false,
+            loops,
+            Origin::new(Role::StartCap, &sources),
+        );
+        b.body.add_shell(vec![face]);
+    }
+    let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
+    if !defects.is_empty() {
+        defects.truncate(MAX_REPORTED);
+        return Err(KernelError::InvalidBody {
+            operation: "fill",
             defects,
         });
     }

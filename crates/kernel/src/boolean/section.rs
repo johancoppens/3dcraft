@@ -19,7 +19,7 @@ use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
+use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
@@ -223,9 +223,6 @@ pub(super) fn prepare<'a>(
     tolerance: &Tolerance,
     trusted: bool,
 ) -> Result<Solid<'a>, Stop> {
-    if body.kind != BodyKind::Solid {
-        return Err(Stop::of("an operand that is a sheet; booleans need solids"));
-    }
     let mut defects = if trusted {
         Vec::new()
     } else {

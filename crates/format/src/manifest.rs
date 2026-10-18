@@ -432,6 +432,9 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "OffsetCorners::is_round")]
         corners: OffsetCorners,
     },
+    /// A sheet: the flat faces the closed profiles of sketch `sketch` (or
+    /// of an offset of them) bound (format version 22).
+    Fill { sketch: u64 },
 }
 
 /// How an offset profile goes round a corner where its curves part.

@@ -201,5 +201,6 @@ pub fn draft(body: &Body, draft: &Draft, tolerance: &Tolerance) -> Result<Offset
         }
         tweak::resurface(body, &surfaces, OPERATION, tolerance)
     };
-    fitting(attempt, largest, OPERATION, tolerance).map(same_numbers)
+    let bound = crate::offset_face::face_op_work(body, &draft.faces);
+    fitting(attempt, largest, OPERATION, tolerance, bound).map(same_numbers)
 }

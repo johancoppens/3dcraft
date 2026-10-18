@@ -39,6 +39,20 @@ pub(crate) enum Crossing {
     Touching([String; 2], Vec3, bool),
     /// The body could not be meshed to look; the tessellator's reason.
     Unknown(String),
+    /// Meshing it to look took more work than a check is allowed
+    /// (`craft3d_tess::SELF_CHECK_WORK`): a face that is hard to mesh,
+    /// refined round after round. Not a finding about the body's shape.
+    Spent,
+}
+
+impl Crossing {
+    /// The refusal of a body that could not be looked at within the work
+    /// a check is allowed.
+    pub(crate) fn spent(param: &str, noun: &str) -> String {
+        format!(
+            "{param}: whether the {noun} passes through itself could not be looked at within the work a check is allowed (a face of it needs its mesh refined further than that); it is not handed on"
+        )
+    }
 }
 
 impl Crossing {
@@ -48,6 +62,7 @@ impl Crossing {
     pub(crate) fn refused(self, param: &str, noun: &str, advice: &str) -> Result<(), String> {
         match self {
             Crossing::None => Ok(()),
+            Crossing::Spent => Err(Crossing::spent(param, noun)),
             Crossing::Unknown(error) => Err(format!(
                 "{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})"
             )),
@@ -64,7 +79,7 @@ impl Crossing {
                 at.x, at.y, at.z
             )),
             Crossing::Touching([a, b], at, false) => Err(format!(
-                "{param}: the {noun} touches itself at ({}, {}, {}), where {a} and {b} meet in a point or along a line that is no edge of both: no solid has a surface like that; move what meets there apart by more than the tolerance, or into each other",
+                "{param}: the {noun} touches itself at ({}, {}, {}), where {a} and {b} meet in a point or along a line that is no edge of both: no valid solid or sheet has a surface like that; move what meets there apart by more than the tolerance, or into each other",
                 at.x, at.y, at.z
             )),
         }
@@ -100,6 +115,7 @@ fn verdict(
 ) -> Crossing {
     let found = match found {
         Ok(found) => found,
+        Err(craft3d_tess::TessError::Spent) => return Crossing::Spent,
         Err(error) => return Crossing::Unknown(error.to_string()),
     };
     if found.is_clean() {

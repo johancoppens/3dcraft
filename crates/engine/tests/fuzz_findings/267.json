@@ -1,0 +1,14 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1E-9}},
+  {"command":"feature.block","params":{"angle":"0 deg","axis":[0.0,0.01,0.01],"name":"N0","position":[0.005,-0.0125,0.005],"size":[0.0025,0.01,0.01]}},
+  {"command":"feature.cone","params":{"angle":"0 deg","axis":[0.01,0.0,1.0],"height":0.015,"name":"N1","position":[0.01,-0.005,-0.0025],"radius":0.0075}},
+  {"command":"feature.shell","params":{"name":"N2","open":["F2:face(1)"],"source":"N1","thickness":0.00125}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N3","op":"subtract","target":"N0","tool":"N2"}},
+  {"command":"sketch.create","params":{"name":"S5","offset":0.0,"plane":"zx"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[-0.005,-0.0025],[0.005,-0.0025],[0.005,0.0025],[0.0,0.0025],[0.0,0.0075],[-0.005,0.0075]],"sketch":"S5"}},
+  {"command":"feature.extrude","params":{"distance":0.02,"join":"N3","name":"N5","sketch":"S5"}},
+  {"command":"feature.fillet","params":{"chain":false,"edges":[["F7:copy(0)/F1:face(5)","F7:copy(0)/F4:copy(1)/F3:copy(0)/F2:face(0)"],["F7:copy(1)/F6:side(e8)","F7:copy(1)/F6:endCap(e7,e8,e9,e10,e11,e12)"]],"name":"N8","radius":0.005}},
+  {"command":"feature.transform","params":{"angle":"90 deg","axis":[0.0,0.0,1.0],"keep":true,"name":"N9","pivot":[0.004999999999999999,-0.0125,0.005],"source":"N8","translate":[-0.00375,0.005,0.0]}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N10","op":"union","target":"N8","tool":"N9"}},
+  {"command":"feature.shell","params":{"name":"N11","open":[],"source":"N10","thickness":0.0025}}
+]

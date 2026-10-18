@@ -1,0 +1,15 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.000001}},
+  {"command":"feature.torus","params":{"angle":"45 deg","axis":[0.0,10.0,1.0],"major":15.0,"minor":12.5,"name":"N0","position":[-5.0,0.0,10.0]}},
+  {"command":"sketch.create","params":{"name":"S1","offset":0.0,"plane":"xy"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[-5.0,5.0],[7.5,5.0],[7.5,7.5],[-5.0,7.5]],"sketch":"S1"}},
+  {"command":"feature.extrude","params":{"distance":20.0,"intersect":"N0","name":"N1","sketch":"S1"}},
+  {"command":"feature.shell","params":{"name":"N2","open":["F4:copy(1)/F3:side(e6)"],"source":"N1","thickness":1.25}},
+  {"command":"feature.transform","params":{"angle":"180 deg","axis":[0.0,1.0,0.0],"keep":false,"name":"N3","pivot":[-2.5,0.0,-10.0],"source":"N1","translate":[2.5,-5.0,0.0]}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":1.25,"edges":[["F6:copy(0)/F4:copy(1)/F3:side(e6)","F6:copy(0)/F4:copy(1)/F3:startCap(e5,e6,e7,e8)"],["F6:copy(0)/F1:face(0)","F6:copy(0)/F4:copy(1)/F3:side(e5)"],["F6:copy(0)/F4:copy(1)/F3:side(e7)","F6:copy(0)/F4:copy(1)/F3:side(e8)"]],"name":"N4","second":1.25}},
+  {"command":"sketch.create","params":{"name":"S5","offset":7.5,"plane":"zx"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[0.0,-5.0],[10.0,-5.0],[10.0,0.0],[0.0,0.0]],"sketch":"S5"}},
+  {"command":"feature.extrude","params":{"cut":"N4","distance":5.0,"name":"N5","sketch":"S5"}},
+  {"command":"feature.shell","params":{"name":"N6","open":["F10:copy(0)/F4:copy(1)/F3:side(e8)"],"source":"N5","thickness":0.625}},
+  {"command":"feature.block","params":{"angle":"90 deg","axis":[0.0,0.0,1.0],"name":"N7","position":[1.2500000000000047,2.5,-38.99008988481793],"size":[2.5,7.5,20.0]}}
+]

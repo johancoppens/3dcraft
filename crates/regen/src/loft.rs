@@ -128,6 +128,7 @@ pub(crate) fn build(
     let advice = "give a section another `start` (the curve its loop starts with), or move the sections apart";
     match crossing(&made.body, &faces, tolerance.linear) {
         Crossing::None => {}
+        Crossing::Spent => return Err(Crossing::spent("sections", "loft")),
         Crossing::Unknown(error) => {
             return Err(format!(
                 "sections: the loft cannot be meshed to see whether it passes through itself ({error}); its sections are probably matched with a twist: {advice}"

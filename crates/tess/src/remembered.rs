@@ -28,7 +28,9 @@ const BYTES: usize = 8 << 20;
 /// each key is one allocation both hold.
 #[derive(Default)]
 struct Kept {
-    meshes: BTreeMap<Arc<[u64]>, Arc<FaceMesh>>,
+    /// Each mesh with the work making it took (`craft3d_geom::allowance`,
+    /// on the thread that made it), which finding it charges again.
+    meshes: BTreeMap<Arc<[u64]>, (Arc<FaceMesh>, u64)>,
     order: VecDeque<Arc<[u64]>>,
     bytes: usize,
 }
@@ -120,16 +122,19 @@ pub(crate) fn key(
 
 /// The mesh kept for `key`, if any.
 pub(crate) fn find(key: &[u64]) -> Option<Arc<FaceMesh>> {
-    KEPT.lock()
+    let (mesh, units) = KEPT
+        .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .meshes
         .get(key)
-        .cloned()
+        .cloned()?;
+    craft3d_geom::allowance::charge(units);
+    Some(mesh)
 }
 
 /// Keeps `mesh` for `key`, letting go of the oldest while there is not
 /// room.
-pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
+pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh, units: u64) {
     let bytes = size_of(&key, mesh);
     if bytes > BYTES / 4 {
         return;
@@ -142,14 +147,14 @@ pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
         let Some(oldest) = kept.order.pop_front() else {
             break;
         };
-        if let Some(gone) = kept.meshes.remove(&oldest) {
+        if let Some((gone, _)) = kept.meshes.remove(&oldest) {
             kept.bytes = kept.bytes.saturating_sub(size_of(&oldest, &gone));
         }
     }
     kept.bytes = kept.bytes.saturating_add(bytes);
     let key: Arc<[u64]> = Arc::from(key);
     kept.order.push_back(Arc::clone(&key));
-    kept.meshes.insert(key, Arc::new(mesh.clone()));
+    kept.meshes.insert(key, (Arc::new(mesh.clone()), units));
 }
 
 /// How many meshes are kept and about how many bytes they take.

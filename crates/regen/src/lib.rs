@@ -677,6 +677,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         // Solved in `features`; a sketch is not a body.
         FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
         FeatureKind::OffsetProfile(_) => return Err("an offset has no body".to_string()),
+        FeatureKind::Fill(_) => return Err("a fill needs its sketch".to_string()),
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
@@ -907,10 +908,13 @@ fn build_feature(
             }
             Err(reason) => (Status::Failed(reason), None),
         }
-    } else if let FeatureKind::Extrude(_) | FeatureKind::Revolve(_) = &feature.kind {
+    } else if let FeatureKind::Extrude(_) | FeatureKind::Revolve(_) | FeatureKind::Fill(_) =
+        &feature.kind
+    {
         let swept = match &feature.kind {
             FeatureKind::Revolve(revolution) => revolve::build(doc, variables, revolution, earlier),
             FeatureKind::Extrude(extrusion) => extrude::build(doc, variables, extrusion, earlier),
+            FeatureKind::Fill(fill) => extrude::fill(doc, fill, earlier),
             _ => Err("not a sweep".to_string()),
         };
         let up_to = matches!(
@@ -926,6 +930,7 @@ fn build_feature(
                 let sketch = match &feature.kind {
                     FeatureKind::Revolve(r) => Some(r.sketch),
                     FeatureKind::Extrude(e) => Some(e.sketch),
+                    FeatureKind::Fill(f) => Some(f.sketch),
                     _ => None,
                 };
                 if let Some(sketch) = sketch {

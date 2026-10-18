@@ -56,6 +56,11 @@ const SHARDS: usize = 16;
 /// the bits of the point.
 type ProjectionKey = (u64, [u64; 3]);
 
+/// A projection remembered: the parameters found, and the work finding
+/// them took (`crate::allowance`), which a hit charges again, so that a
+/// projection counts the same remembered or not.
+type Projected = ((f64, f64), u64);
+
 /// No entry, in [`Shard::table`].
 const EMPTY: u32 = u32::MAX;
 
@@ -67,7 +72,7 @@ const EMPTY: u32 = u32::MAX;
 /// short). The hash only decides where a place is looked for: what is
 /// found is compared in full.
 struct Shard {
-    ring: Vec<(ProjectionKey, (f64, f64))>,
+    ring: Vec<(ProjectionKey, Projected)>,
     /// The ring's next place to write.
     next: usize,
     table: Vec<u32>,
@@ -118,7 +123,7 @@ impl Shard {
         None
     }
 
-    fn get(&self, key: &ProjectionKey) -> Option<(f64, f64)> {
+    fn get(&self, key: &ProjectionKey) -> Option<Projected> {
         let slot = self.slot_of(key)?;
         let place = *self.table.get(slot)?;
         self.ring.get(place as usize).map(|(_, found)| *found)
@@ -161,7 +166,7 @@ impl Shard {
         }
     }
 
-    fn put(&mut self, key: ProjectionKey, found: (f64, f64)) {
+    fn put(&mut self, key: ProjectionKey, found: Projected) {
         if self.room == 0 || self.slot_of(&key).is_some() {
             return;
         }
@@ -202,7 +207,7 @@ impl Shard {
     fn size(&self) -> (usize, usize) {
         (
             self.ring.len(),
-            self.ring.capacity() * std::mem::size_of::<(ProjectionKey, (f64, f64))>()
+            self.ring.capacity() * std::mem::size_of::<(ProjectionKey, Projected)>()
                 + self.table.capacity() * std::mem::size_of::<u32>(),
         )
     }
@@ -266,11 +271,13 @@ impl ProjectMemo {
         if found.is_some() {
             HITS.with(|hits| hits.set(hits.get() + 1));
         }
-        found
+        let (found, units) = found?;
+        crate::allowance::charge(units);
+        Some(found)
     }
 
-    fn put(&self, key: [u64; 3], found: (f64, f64)) {
-        self.shard().put((self.id, key), found);
+    fn put(&self, key: [u64; 3], found: (f64, f64), units: u64) {
+        self.shard().put((self.id, key), (found, units));
     }
 }
 
@@ -797,11 +804,18 @@ impl Surface {
         }
         let grid = self.project_grid((u0, u1), (v0, v1));
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        // Remembered from every projection onto the surface before, with
+        // what finding it took, which a hit charges again; nothing is
+        // remembered while not counting (`crate::allowance::counting`).
         if let Some(found) = grid.memo.get(&key) {
             return Ok(found);
         }
-        let found = self.project_from_grid(p, &grid, ((u0, u1), (v0, v1)))?;
-        grid.memo.put(key, found);
+        let (found, units) =
+            crate::allowance::measured(|| self.project_from_grid(p, &grid, ((u0, u1), (v0, v1))));
+        let found = found?;
+        if crate::allowance::counting() {
+            grid.memo.put(key, found, units);
+        }
         Ok(found)
     }
 
@@ -1025,7 +1039,14 @@ impl Surface {
     /// grid of 289 evaluations; with the grid kept that is a look-up, and
     /// every projection the same, bit for bit.
     fn project_grid(&self, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Arc<ProjectGrid> {
-        let made = || Arc::new(self.sample_grid((u0, u1), (v0, v1)));
+        // Made uncounted (`crate::allowance::uncounted`): kept with the
+        // surface and cloned with it, so whether it is made here depends
+        // on what was done with the surface before.
+        let made = || {
+            Arc::new(crate::allowance::uncounted(|| {
+                self.sample_grid((u0, u1), (v0, v1))
+            }))
+        };
         match self {
             Surface::Nurbs(s) => Arc::clone(s.project_grid.0.get_or_init(made)),
             Surface::Bezier(b) => Arc::clone(b.project_grid.0.get_or_init(made)),
@@ -1533,7 +1554,7 @@ mod tests {
         let room = 64;
         let mut shard = Shard::new(room);
         let key = |id: u64, k: u64| (id, [k, k.wrapping_mul(7), k ^ 0x55]);
-        let value = |id: u64, k: u64| (id as f64, k as f64 * 0.5);
+        let value = |id: u64, k: u64| ((id as f64, k as f64 * 0.5), k);
         let mut put: Vec<(u64, u64)> = Vec::new();
         let mut seed = 7_u64;
         for step in 0..2000_u64 {

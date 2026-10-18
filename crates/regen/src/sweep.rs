@@ -142,6 +142,7 @@ pub(crate) fn build(
         "keep the path further from itself than the profile is wide, or make the profile narrower";
     match crossing(&swept.body, &faces, made.tolerance.linear) {
         Crossing::None => {}
+        Crossing::Spent => return Err(Crossing::spent("path", "sweep")),
         Crossing::Unknown(error) => {
             return Err(format!(
                 "path: the sweep cannot be meshed to see whether it passes through itself ({error}); {advice}"

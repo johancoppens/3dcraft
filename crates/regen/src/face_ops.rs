@@ -300,6 +300,7 @@ fn said(
     use crate::selfcheck::Crossing;
     match found {
         Crossing::None => Ok(()),
+        Crossing::Spent => Err(Crossing::spent(param, noun)),
         Crossing::Unknown(error) => Err(format!(
             "{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})"
         )),

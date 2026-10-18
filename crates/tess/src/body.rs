@@ -116,14 +116,20 @@ fn in_order<T: Send>(
     }
     // Each worker takes the next index not yet taken. Which worker does
     // which varies from run to run; the results do not, and they are put
-    // back in order.
+    // back in order. So does the work counted for a bound
+    // (`craft3d_geom::allowance`): each worker's is added to this thread's
+    // when it is joined, so the total is the same however it was shared.
     let next = AtomicUsize::new(0);
-    let work = || -> Vec<(usize, T)> {
+    let work = || -> (Vec<(usize, T)>, u64) {
+        let before = craft3d_geom::allowance::spent();
         let mut done = Vec::new();
         loop {
             let n = next.fetch_add(1, Ordering::Relaxed);
             let Some(result) = one(n) else {
-                return done;
+                return (
+                    done,
+                    craft3d_geom::allowance::spent().saturating_sub(before),
+                );
             };
             done.push((n, result));
         }
@@ -139,10 +145,13 @@ fn in_order<T: Send>(
                 workers.push(worker);
             }
         }
-        let mut done = work();
+        let (mut done, _) = work();
         for worker in workers {
             match worker.join() {
-                Ok(more) => done.extend(more),
+                Ok((more, spent)) => {
+                    done.extend(more);
+                    craft3d_geom::allowance::charge(spent);
+                }
                 Err(_) => panicked = true,
             }
         }
@@ -495,6 +504,7 @@ fn tessellate_some(
             if let Some(found) = key.as_deref().and_then(crate::remembered::find) {
                 return (Vec::new(), Some(Ok(FaceMesh::clone(&found))));
             }
+            let before = craft3d_geom::allowance::spent();
             let mut starved = false;
             let boundary = match face_boundary(body, points, face, index, params, &mut starved) {
                 Ok(boundary) => boundary,
@@ -527,7 +537,12 @@ fn tessellate_some(
                 return (ask, None);
             }
             if let (Some(key), true, Some(Ok(made))) = (key, wanted.is_empty(), &result) {
-                crate::remembered::keep(key, made);
+                // Kept with what making it took on this thread, which
+                // finding it charges again (`craft3d_geom::allowance`).
+                let took = craft3d_geom::allowance::spent().saturating_sub(before);
+                if craft3d_geom::allowance::counting() {
+                    crate::remembered::keep(key, made, took);
+                }
             }
             (wanted, result)
         };
@@ -565,6 +580,15 @@ fn tessellate_some(
                 faces,
                 max_triangles: budget.max_triangles,
             });
+        }
+        // A round is a few seconds at most (the points of the edges are
+        // capped); the bound of an operation that meshes, when one is in
+        // force, is asked after each. Asked here, after a round over the
+        // triangle budget has ended the work (which faces it skipped
+        // depends on timing, and so would the work counted), so that what
+        // it decides is the same on any number of threads.
+        if craft3d_geom::allowance::pass() {
+            return Err(TessError::Spent);
         }
         let mut wanted: Vec<Chord> = Vec::new();
         for (&index, (_, more, result)) in todo.iter().zip(done) {

@@ -42,6 +42,12 @@
 //!    A point within twice the tolerance of any of the three boundaries
 //!    (where [`super::contains_points`] does not tell) is passed over.
 //!
+//! With a sheet: a sheet trimmed by a solid is held to the same rules (a
+//! sheet's volume is zero, and it has no inside, so no point is
+//! compared); a solid cut by a sheet is held to rules 1 and 2 of a
+//! difference, no larger than the solid and within its box, since the
+//! part a cut keeps of a face far from the sheet is the side it is on.
+//!
 //! Every rule holds for any pair of solids and any surface; nothing in it
 //! knows what kind of faces it is given. It costs a box per face, a match
 //! per face far from the other operand (no intersections), a ray per
@@ -51,7 +57,7 @@ use super::{BooleanOp, Operand, contains_points};
 use crate::KernelError;
 use craft3d_geom::Surface;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
-use craft3d_topo::{Body, FaceId, VertexId, mass_bound};
+use craft3d_topo::{Body, BodyKind, FaceId, VertexId, mass_bound};
 use std::fmt;
 
 /// What [`verify`] looks at.
@@ -288,6 +294,36 @@ pub fn verify(
     let (boxes_a, boxes_b) = (face_boxes(a)?, face_boxes(b)?);
     let (box_a, box_b) = (boxes_a.whole, boxes_b.whole);
     let mut found = Verification::default();
+    // A solid cut by a sheet keeps a part of the solid on one side of the
+    // sheet: within the solid's box, no larger than the solid, its seeded
+    // points inside the solid, and its cut faces turned the way the side
+    // kept has them; nothing of it is known to be kept far from the sheet
+    // (the side there is the side of the cut). Rules 2 and 1 as for a
+    // difference, rule 4 one way (the sheet has no inside), and no faces
+    // far from the sheet.
+    if a.kind == BodyKind::Solid && b.kind == BodyKind::Sheet {
+        cut_faces(a, b, op, result, &mut found.violations);
+        within_the_solid(a, result, &box_a, tolerance, options, &mut found);
+        if options.volumes {
+            volumes(
+                a,
+                b,
+                BooleanOp::Subtract,
+                result,
+                (&box_a, &box_b),
+                tol,
+                &mut found,
+            );
+        }
+        out_of_reach(
+            BooleanOp::Subtract,
+            result,
+            (&box_a, &box_b),
+            tol,
+            &mut found.violations,
+        );
+        return Ok(found);
+    }
     if options.volumes {
         volumes(a, b, op, result, (&box_a, &box_b), tol, &mut found);
     }
@@ -326,6 +362,90 @@ fn unboxed() -> KernelError {
     }
 }
 
+/// Of a solid cut by a sheet: every face of the result on the surface of
+/// a face of the sheet (the cut, a piece of the sheet's face, which no
+/// face of the solid shares: such a piece is refused) faces against the
+/// sheet's normal for a subtract, which keeps the side the normal points
+/// to, and along it for an intersect. A result that kept the other side,
+/// consistently, has it the other way round.
+fn cut_faces(
+    solid: &Body,
+    sheet: &Body,
+    op: BooleanOp,
+    result: &Body,
+    violations: &mut Vec<Violation>,
+) {
+    let turned = op == BooleanOp::Subtract;
+    for (index, face) in result.faces.iter().enumerate() {
+        let Some(of_sheet) = sheet.faces.iter().find(|s| s.surface == face.surface) else {
+            continue;
+        };
+        // A face of the solid on the very surface (beside the sheet, not
+        // under it) is no cut.
+        if solid.faces.iter().any(|f| f.surface == face.surface) {
+            continue;
+        }
+        if face.reversed != (of_sheet.reversed != turned) {
+            violations.push(Violation::FarFace {
+                operand: Operand::B,
+                face: FaceId(u32::try_from(index).unwrap_or(u32::MAX)),
+                problem: "the cut face looks the wrong way: the part kept is on the other side of the sheet",
+            });
+        }
+    }
+}
+
+/// Of a solid cut by a sheet, rule 4 one way: a seeded point in the
+/// solid's box that is inside the result is inside the solid.
+fn within_the_solid(
+    a: &Body,
+    result: &Body,
+    box_a: &Bbox3,
+    tolerance: &Tolerance,
+    options: &VerifyOptions,
+    found: &mut Verification,
+) {
+    if options.points == 0 {
+        return;
+    }
+    let Some((lo, hi)) = box_a.corners() else {
+        return;
+    };
+    let mut seeded = Seeded(0x3dc4_af7b_00c4_ec4b);
+    let points: Vec<Vec3> = (0..options.points)
+        .map(|_| seeded.point_in(lo, hi))
+        .collect();
+    let told = (
+        contains_points(a, &points, tolerance),
+        contains_points(result, &points, tolerance),
+    );
+    let (in_a, in_r) = match told {
+        (Ok(in_a), Ok(in_r)) => (in_a, in_r),
+        (Err(e), _) => {
+            found.unclassified = Some(format!("the target: {e}"));
+            return;
+        }
+        (_, Err(e)) => {
+            found.unclassified = Some(format!("the result: {e}"));
+            return;
+        }
+    };
+    for ((&at, a), r) in points.iter().zip(in_a).zip(in_r) {
+        let (Some(in_a), Some(in_result)) = (a, r) else {
+            continue;
+        };
+        found.points += 1;
+        if in_result && !in_a {
+            found.violations.push(Violation::Membership {
+                at,
+                in_a,
+                in_b: false,
+                in_result,
+            });
+        }
+    }
+}
+
 /// Rule 1.
 fn volumes(
     a: &Body,
@@ -360,6 +480,11 @@ fn volumes(
             (VolumeRule::UnionLoses, va.max(vb), true),
             (VolumeRule::UnionGains, va + vb, false),
         ],
+        // A solid cut by a sheet (the volume of a sheet is zero): no more
+        // than the solid, and what is cut away is not bounded by the tool.
+        BooleanOp::Subtract if b.kind == BodyKind::Sheet => {
+            vec![(VolumeRule::SubtractAdds, va, false)]
+        }
         BooleanOp::Subtract => vec![
             (VolumeRule::SubtractAdds, va, false),
             (VolumeRule::SubtractTakesTooMuch, va - vb, true),

@@ -75,6 +75,10 @@ pub enum OffsetError {
     /// The approximation did not come within the limit in the samples
     /// allowed.
     NoFit,
+    /// The work bound of the operation this offset is part of was reached
+    /// ([`crate::allowance`]) before the offset was proven regular and
+    /// fitted.
+    Spent,
     /// Input that is no surface or no distance.
     Invalid(GeomError),
 }
@@ -262,6 +266,9 @@ pub fn regular_over(surface: &Surface, distance: f64, over: Domain) -> Result<()
     let spans = nurbs.bezier_spans()?;
     let mut budget = MAX_PIECES;
     for span in &spans {
+        if crate::allowance::pass() {
+            return Err(OffsetError::Spent);
+        }
         let points = span.patch.control_points();
         let weights = span.patch.weights();
         let (m, n) = span.patch.degrees();
@@ -298,6 +305,9 @@ pub fn regular_over(surface: &Surface, distance: f64, over: Domain) -> Result<()
         };
         let mut stack = vec![(nets, (0.0, 1.0), (0.0, 1.0), 0_u32)];
         while let Some((mut piece, s, t, depth)) = stack.pop() {
+            if crate::allowance::pass() {
+                return Err(OffsetError::Spent);
+            }
             let global = |a: f64, b: f64| {
                 (
                     span.u.0 + (span.u.1 - span.u.0) * (box_u.0 + (box_u.1 - box_u.0) * a),
@@ -868,6 +878,12 @@ impl Bern {
     }
 
     fn mul(&self, other: &Bern) -> Bern {
+        // A multiplication per pair of coefficients.
+        crate::allowance::charge(
+            ((self.c.len() as u64).saturating_mul(other.c.len() as u64)
+                / crate::allowance::ARITHMETIC_PER_UNIT)
+                .saturating_add(1),
+        );
         let (m, n) = (self.m + other.m, self.n + other.n);
         if (m + 1).saturating_mul(n + 1) > MAX_COEFFICIENTS {
             // Never for the degrees of a surface (MAX_DEGREE bounds them
@@ -1065,7 +1081,16 @@ impl Bern {
         (left, right)
     }
 
+    /// Charges a split along a direction of degree `degree`: de Casteljau
+    /// on every line of coefficients, half the square of its length in
+    /// additions each.
+    fn charge_split(&self, degree: usize) {
+        let work = (self.c.len() as u64).saturating_mul(degree as u64 + 1) / 2;
+        crate::allowance::charge(work / crate::allowance::ARITHMETIC_PER_UNIT + 1);
+    }
+
     fn split_u(&self) -> (Bern, Bern) {
+        self.charge_split(self.m);
         let (mut left, mut right) = (Bern::zero(self.m, self.n), Bern::zero(self.m, self.n));
         for j in 0..=self.n {
             let column: Vec<f64> = (0..=self.m).map(|i| self.at(i, j)).collect();
@@ -1084,6 +1109,7 @@ impl Bern {
     }
 
     fn split_v(&self) -> (Bern, Bern) {
+        self.charge_split(self.n);
         let (mut left, mut right) = (Bern::zero(self.m, self.n), Bern::zero(self.m, self.n));
         for i in 0..=self.m {
             let row: Vec<f64> = (0..=self.n).map(|j| self.at(i, j)).collect();
@@ -1520,6 +1546,9 @@ fn fit(
     }
     let mut verified = false;
     for _ in 0..PASSES {
+        if crate::allowance::pass() {
+            return Err(OffsetError::Spent);
+        }
         let fitted = tensor(&us, &vs, (&breaks_u, &breaks_v), &rows).ok_or(OffsetError::NoFit)?;
         let fractions: &[f64] = if verified { &QUARTERS } else { &MIDDLE };
         let (at_u, at_v) = (lattice(&us, fractions), lattice(&vs, fractions));
