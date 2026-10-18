@@ -777,22 +777,22 @@ pub(crate) fn offset_for(
             face_op_work(body, &moved),
         )
     };
-    // A fillet that cannot be rebuilt (no ball of the new radius found
-    // along it, no fit in the samples allowed) is offset as any freeform
-    // face instead, which holds it to its exact offset within its share
-    // of the tolerance or refuses it: once per such fillet.
-    let mut fillets = fillets;
-    loop {
-        let made = search(&fillets);
-        if let Err(KernelError::FaceOp { faces, reason, .. }) = &made
-            && crate::offset_blend::cannot_rebuild(reason)
-            && let Some(face) = faces.first()
-            && fillets.remove(face).is_some()
-        {
-            continue;
+    // Where the rebuilt fillets do not make a body (a fillet that cannot
+    // be rebuilt, or one rebuilt that the closing of the body refuses),
+    // the fillets are offset as any freeform face instead, which holds
+    // each to its exact offset within its share of the tolerance or
+    // refuses it; the refusal said is the first one. Both searches within
+    // one bound on their work together.
+    craft3d_geom::allowance::within(face_op_work(body, &moved), || {
+        let first = search(&fillets);
+        if first.is_ok() || fillets.is_empty() {
+            return first;
         }
-        return made;
-    }
+        match search(&BTreeMap::new()) {
+            Ok(made) => Ok(made),
+            Err(_) => first,
+        }
+    })
 }
 
 /// `attempt(1.0)`, the whole of an operation whose size is `largest`
@@ -970,6 +970,17 @@ pub fn offset_faces(
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
     offset_faces_with(body, offsets, &Blends::default(), tolerance)
+}
+
+/// Which of `faces` an offset would take for rolling-ball fillets and
+/// rebuild (`crate::offset_blend`): for tests that hold the recognition to
+/// faces that are fillets and to faces that only look like them.
+#[doc(hidden)]
+pub fn fillets_recognised(body: &Body, faces: &[FaceId], tolerance: &Tolerance) -> Vec<FaceId> {
+    let keys: BTreeSet<FaceId> = faces.iter().copied().collect();
+    crate::offset_blend::fillets(body, &keys, &BTreeMap::new(), tolerance)
+        .into_keys()
+        .collect()
 }
 
 /// [`offset_faces`], told how faces were made (`blends`: the radius each

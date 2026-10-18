@@ -802,3 +802,115 @@ fn a_shell_after_an_offset_is_the_shell_alone() {
     );
     assert_eq!(alone, after);
 }
+
+/// The rounded block's fillet face replaced by a spline of 33 rows across,
+/// of degree one along the fillet, each row the quarter arc of the ball at
+/// that place (the exact cylinder: rows that are translates interpolate
+/// to translates), but for `tilt` (the middle control point of each inner
+/// row turned about the chord by that angle) and `bump` (the middle weight
+/// of every odd row times that): the face is then no fillet, though its
+/// borders stay on its faces and its end rows are the fillet's.
+fn imposter(k: f64, tilt: f64, bump: f64) -> (Body, FaceId, [FaceId; 3]) {
+    let ([a, b, c], rho) = ([3.0, 2.0, 1.5], 0.4);
+    let tol = tolerance(k);
+    let (mut body, fillet_face, top, front) = rounded_block(k, [a, b, c], rho, &tol);
+    let Surface::Nurbs(old) = &body.face(fillet_face).unwrap().surface else {
+        panic!("not a spline")
+    };
+    let ((u0, u1), _) = old.domain();
+    // Which way the old surface runs: v = 0 on the front or on the top,
+    // u along +x or −x.
+    let start = old.eval(u0, 0.0);
+    let on_front = start.y.abs() <= 1e-6 * k;
+    let along = if old.eval(u1, 0.0).x > start.x {
+        1.0
+    } else {
+        -1.0
+    };
+    let rows = 33;
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for i in 0..rows {
+        let t = i as f64 / (rows - 1) as f64;
+        let x = if along > 0.0 { a * t } else { a * (1.0 - t) } * k;
+        let front_foot = Vec3::new(x, 0.0, (c - rho) * k);
+        let top_foot = Vec3::new(x, rho * k, c * k);
+        let corner = Vec3::new(x, 0.0, c * k);
+        let (q1, q2) = if on_front {
+            (front_foot, top_foot)
+        } else {
+            (top_foot, front_foot)
+        };
+        let inner = i > 0 && i + 1 < rows;
+        let mut middle = corner;
+        if inner && tilt != 0.0 {
+            // Turned about the chord q1 → q2.
+            let axis = (q2 - q1).normalized().unwrap();
+            let off = corner - q1;
+            let along_axis = axis * off.dot(axis);
+            let radial = off - along_axis;
+            let turned = radial * tilt.cos()
+                + axis.cross(radial) * tilt.sin()
+                + axis * axis.dot(radial) * (1.0 - tilt.cos());
+            middle = q1 + along_axis + turned;
+        }
+        let weight = if inner && i % 2 == 1 { w * bump } else { w };
+        ctrl.extend([q1, middle, q2]);
+        weights.extend([1.0, weight, 1.0]);
+    }
+    let mut knots_u = vec![u0, u0];
+    for i in 1..rows - 1 {
+        knots_u.push(u0 + (u1 - u0) * i as f64 / (rows - 1) as f64);
+    }
+    knots_u.extend([u1, u1]);
+    let surface = NurbsSurface::new(
+        1,
+        2,
+        knots_u,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        rows,
+        3,
+        ctrl,
+        weights,
+    )
+    .unwrap();
+    body.faces[fillet_face.0 as usize].surface = Surface::Nurbs(surface);
+    (body, fillet_face, [fillet_face, top, front])
+}
+
+/// A fillet face is taken for one, and rebuilt, only where it is proven
+/// to be the rolling-ball fillet between its faces: rows turned off the
+/// ball's great circle (each still an arc on a ball through both feet,
+/// tangent to both faces) and rows that hold only where they are sampled
+/// (the odd ones bulged by their weight) are not, at three scales; the
+/// same spline with true rows is.
+#[test]
+fn a_face_that_only_looks_like_a_fillet_is_not_rebuilt() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (body, face, faces) = imposter(k, 0.0, 1.0);
+        assert_eq!(check(&body, &tol), [], "the true rows at {k}");
+        assert_eq!(
+            craft3d_kernel::offset_face::fillets_recognised(&body, &faces, &tol),
+            vec![face],
+            "the true rows at {k}"
+        );
+        for tilt in [0.05, 0.2, 0.5] {
+            let (body, _, faces) = imposter(k, tilt, 1.0);
+            assert_eq!(
+                craft3d_kernel::offset_face::fillets_recognised(&body, &faces, &tol),
+                vec![],
+                "rows turned {tilt} at {k}"
+            );
+        }
+        for bump in [1.02, 1.1] {
+            let (body, _, faces) = imposter(k, 0.0, bump);
+            assert_eq!(
+                craft3d_kernel::offset_face::fillets_recognised(&body, &faces, &tol),
+                vec![],
+                "odd rows bulged {bump} at {k}"
+            );
+        }
+    }
+}

@@ -258,10 +258,17 @@ pub(crate) fn fillet_of(
         };
         let exact = solver.ball(across, &near, ball.radius, ball.convex)?;
         let centre = exact.centre?;
+        // The ball's own arc: on the ball, and in the plane of its centre
+        // and feet (any other circle of the ball through the feet is
+        // tangent to the faces there too).
+        let [f1, f2] = exact.feet;
+        let plane = (f1 - centre).cross(f2 - centre).normalized()?;
         for j in 0..=8 {
             let v = f64::from(j) / 8.0;
-            let off = (surface.eval(u, v).distance(centre) - ball.radius).abs();
-            if !(off <= tol) {
+            let p = surface.eval(u, v);
+            let off = (p.distance(centre) - ball.radius).abs();
+            let aside = (p - centre).dot(plane).abs();
+            if !(off <= tol && aside <= tol) {
                 return None;
             }
         }
@@ -273,6 +280,107 @@ pub(crate) fn fillet_of(
         }
     }
     Some(ball)
+}
+
+/// Rows of `surface` across `v` (`count_v` of them) taken in the curve at
+/// `v`: the iso-curve of a surface of one span in `v` along `u`.
+fn iso_v(surface: &NurbsSurface, v: f64) -> Option<craft3d_geom::NurbsCurve> {
+    let (degree_u, degree_v) = surface.degrees();
+    let (count_u, count_v) = surface.counts();
+    if count_v != degree_v + 1 {
+        return None;
+    }
+    // Bernstein weights of one Bézier span over [0, 1].
+    let n = degree_v;
+    let mut basis = vec![0.0; n + 1];
+    let mut choose = 1.0_f64;
+    for (j, slot) in basis.iter_mut().enumerate() {
+        if j > 0 {
+            choose = choose * (n + 1 - j) as f64 / j as f64;
+        }
+        *slot = choose * v.powi(j as i32) * (1.0 - v).powi((n - j) as i32);
+    }
+    let mut ctrl = Vec::with_capacity(count_u);
+    let mut weights = Vec::with_capacity(count_u);
+    for i in 0..count_u {
+        let (mut point, mut weight) = (Vec3::ZERO, 0.0);
+        for (j, b) in basis.iter().enumerate() {
+            let k = i.checked_mul(count_v)?.checked_add(j)?;
+            let w = *surface.weights().get(k)?;
+            point += *surface.control_points().get(k)? * (w * b);
+            weight += w * b;
+        }
+        if !(weight > 0.0) {
+            return None;
+        }
+        ctrl.push(point * (1.0 / weight));
+        weights.push(weight);
+    }
+    craft3d_geom::NurbsCurve::new(degree_u, surface.knots_u().to_vec(), ctrl, weights).ok()
+}
+
+/// Lines along the face, `v` fixed, proven against the rebuilt fillet.
+const PROVEN_LINES: usize = 8;
+
+/// Most pieces of the proof of one line (the saddle's fillets of 264 to
+/// 352 spans take about 16 000 at the default tolerance).
+const PROOF_PIECES: usize = 1 << 16;
+
+/// Whether `surface`, the fillet [`fillet_of`] read off it (`ball`, between
+/// `sides`), is that fillet over `core` (the part of its `u` its face's
+/// edges reach) to the tolerance, proven, not sampled: the fillet is
+/// rebuilt between the same faces with the same radius (within a quarter
+/// of the tolerance of the exact balls, as every rolling-ball blend), and
+/// the lines of `surface` at `v = k / 8` are proven within three quarters
+/// of the tolerance of it over the whole core (so within the tolerance of
+/// the exact fillet) ([`craft3d_geom::certify`]). A
+/// surface whose rows are arcs of the balls at the rows held but not
+/// between them is no fillet.
+pub(crate) fn proven(
+    surface: &NurbsSurface,
+    ball: Ball,
+    sides: [Support<'_>; 2],
+    core: (f64, f64),
+    joints: [bool; 2],
+    tolerance: &Tolerance,
+) -> bool {
+    use craft3d_geom::certify::{CurveBound, SurfaceBound};
+    let Ok(reference) = rebuilt(
+        surface, ball, sides, sides, 0.0, core, core, joints, tolerance,
+    ) else {
+        return false;
+    };
+    let reference = Surface::Nurbs(reference);
+    let Some(bound) = SurfaceBound::new(&reference) else {
+        return false;
+    };
+    let ((u0, u1), _) = surface.domain();
+    let range = if closed(surface, tolerance.linear) {
+        (u0, u1)
+    } else {
+        (core.0.max(u0), core.1.min(u1))
+    };
+    (0..=PROVEN_LINES).all(|k| {
+        let v = k as f64 / PROVEN_LINES as f64;
+        let Some(line) = iso_v(surface, v) else {
+            return false;
+        };
+        // The rebuilt fillet keeps the old one's parameters: the foot of
+        // the line's start is at its own `(u, v)` there (round a ring a
+        // projection could find it across the seam, at the other end).
+        let ((r0, r1), _) = reference.domain();
+        let start = (range.0.clamp(r0, r1), v);
+        bound
+            .curve_within(
+                &CurveBound::nurbs(&line),
+                range,
+                start,
+                &[],
+                0.75 * tolerance.linear,
+                PROOF_PIECES,
+            )
+            .is_ok()
+    })
 }
 
 /// Whether the fillet goes round on itself along `u` (a ring).
