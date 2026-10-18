@@ -10,8 +10,8 @@
 //! other shell alone, by the ray casting the booleans use; in a valid
 //! solid shells do not meet, so every point of a shell gives the same
 //! answer, and the vote of the points that can tell is a guard against a
-//! point that happens to lie on the other shell. A shell whose box is not
-//! inside another's is inside nothing, at no cost. Then:
+//! point that happens to lie on the other shell. A shell with a point
+//! outside the box of another is not inside it, at no cost of rays. Then:
 //!
 //! - every shell lies inside an even number of others when it is the
 //!   outside of a lump and an odd number when it is a cavity (a lump may
@@ -101,8 +101,12 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
                     .to_string(),
             ));
         }
+        // A box that certainly holds the shell: a point of another shell
+        // outside it is outside the shell. (Not the other way round: boxes
+        // of curved faces reach past them, so a shell inside another may
+        // have a box that is not inside the other's.)
         let (lo, hi) = alone
-            .held_bbox()
+            .bbox()
             .ok()
             .and_then(|b| b.corners())
             .ok_or_else(|| nesting(s, "has no bounded box".to_string()))?;
@@ -120,10 +124,15 @@ pub fn lumps(body: &Body, tolerance: &Tolerance) -> Result<Vec<Lump>, KernelErro
     let mut inside: Vec<Vec<usize>> = vec![Vec::new(); parts.len()];
     for (s, part) in parts.iter().enumerate() {
         for (t, other) in parts.iter().enumerate() {
-            let within = |a: Vec3, b: Vec3| {
-                a.x >= b.x - margin && a.y >= b.y - margin && a.z >= b.z - margin
+            let held = |p: &Vec3| {
+                p.x >= other.lo.x - margin
+                    && p.y >= other.lo.y - margin
+                    && p.z >= other.lo.z - margin
+                    && p.x <= other.hi.x + margin
+                    && p.y <= other.hi.y + margin
+                    && p.z <= other.hi.z + margin
             };
-            let boxed = s != t && within(part.lo, other.lo) && within(other.hi, part.hi);
+            let boxed = s != t && part.points.iter().all(held);
             if !boxed {
                 continue;
             }
