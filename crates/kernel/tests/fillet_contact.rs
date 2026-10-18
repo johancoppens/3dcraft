@@ -694,9 +694,10 @@ fn the_tool_a_rolling_fillet_takes_away() {
     }
 }
 
-/// A chain whose arcs go on in each other (the tools of a chain are joined
-/// by `blend::join` because a torus that goes on in another torus was a
-/// contact the boolean refused): the top rim of an outline of a line, a
+/// A chain whose arcs go on in each other (a torus that goes on in another
+/// torus, a contact the boolean once refused; until 2026-10-18 the tools
+/// of a chain were joined into one by `blend::join` to avoid it, now the
+/// boolean takes it tool by tool): the top rim of an outline of a line, a
 /// convex quarter arc of radius 1, then a convex quarter of radius 2 (two
 /// tori turning one way) or a concave one of radius 2 (an S: tori from
 /// either side), and a line. Pappus along each piece gives what the round

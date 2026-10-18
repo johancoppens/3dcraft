@@ -15,7 +15,7 @@ mod boolean_common;
 mod common;
 
 use boolean_common::{Rng, SCALES, assert_close, boxed, mass, tolerance};
-use common::{arc, frames, line, polygon, rounded_polygon, scale_curves};
+use common::{arc, circle, frames, line, polygon, rounded_polygon, scale_curves};
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
@@ -24,7 +24,7 @@ use craft3d_kernel::fillet::{FilletEdge, FilletFace, FilletResult, fillet, tange
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, EdgeId, FaceId, check, genus};
+use craft3d_topo::{Body, EdgeId, FaceId, check, edge_faces, genus};
 use std::f64::consts::PI;
 
 /// What a square corner loses to a round of radius 1: the square less the
@@ -920,6 +920,102 @@ fn the_rim_of_a_rod_becomes_a_quarter_of_a_torus() {
             assert_close(torus.radii().0, (rr - r) * k, "the ring");
             let centre = frame.point(0.0, 0.0, (h - r) * k);
             assert!(torus.frame().origin().distance(centre) < 1e-9 * k.max(1.0) * 10.0);
+        }
+    }
+}
+
+/// A closed chain of exactly two edges: the top rim of a rod whose circle
+/// is drawn as two half arcs, filleted as the chain `tangent_chain` finds
+/// (each arc goes on in the other at both vertices), against the same rim
+/// drawn as one circle. Until 2026-10-18 the two tools of such a chain
+/// were joined into one body at both joints (`blend::join`); now the
+/// boolean takes each tool on its own. Pappus gives the volume and the
+/// torus area, the same for both rims. The two-arc rod has 5 faces where
+/// the one-circle rod has 4: the extrusion makes one side face per arc
+/// and the fillet leaves those two as they are (faces of one operand that
+/// the operation does not split), while the second tool's torus face
+/// lies on the surface of the first's, already in the body, and shares
+/// the arc at the joint with it, so the boolean's merge step makes them
+/// one face (`booleans.md` › *Merge*: coincident pieces of a face of A
+/// and a face of B), as the rim of one circle gives one torus.
+#[test]
+fn a_rim_of_two_arcs_is_a_closed_chain_of_two() {
+    let (rr, h, r) = (1.0, 3.0, 0.25);
+    let (removed, torus_area) = ring([rr, h], [-1.0, 0.0], [0.0, -1.0], r);
+    let volume = PI * rr * rr * h - removed;
+    let area = PI * rr * rr + 2.0 * PI * rr * (h - r) + PI * (rr - r) * (rr - r) + torus_area;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let halves = [
+                arc(1, [0.0, 0.0], [rr, 0.0], [-rr, 0.0]),
+                arc(2, [0.0, 0.0], [-rr, 0.0], [rr, 0.0]),
+            ];
+            let profiles = detect_profiles(&scale_curves(&halves, k), &tol).unwrap();
+            let part = extrude(&profiles, &frame, 0.0, h * k, &tol).unwrap().body;
+            assert_eq!(part.faces.len(), 4);
+            // The chain from one arc: the other arc, and nothing else.
+            let seed = edge_in(&part, &frame, k, [0.0, rr, h]);
+            let top = edge_faces(&part)[seed.0 as usize]
+                .iter()
+                .copied()
+                .find(|f| matches!(part.faces[f.0 as usize].surface, Surface::Plane(_)))
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 2, "at scale {k}");
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            assert_mass(&made, volume, area, k);
+            let kinds: Vec<&str> = made
+                .body
+                .faces
+                .iter()
+                .map(|f| match f.surface {
+                    Surface::Plane(_) => "plane",
+                    Surface::Cylinder(_) => "cylinder",
+                    Surface::Torus(_) => "torus",
+                    _ => "other",
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                ["cylinder", "cylinder", "plane", "plane", "torus"],
+                "at scale {k}"
+            );
+            let rounds = fillet_faces(&made);
+            assert_eq!(rounds.len(), 1, "at scale {k}");
+            let centre = frame.point(0.0, 0.0, (h - r) * k);
+            for face in rounds {
+                let Surface::Torus(torus) = &made.body.faces[face].surface else {
+                    panic!("the fillet faces of a rim are tori");
+                };
+                assert_close(torus.radii().1, r * k, "the tube");
+                assert_close(torus.radii().0, (rr - r) * k, "the ring");
+                assert!(torus.frame().origin().distance(centre) < 1e-8 * k.max(1.0));
+            }
+            // The same rim as one circle: one edge, one torus.
+            let whole = [circle(1, [0.0, 0.0], rr)];
+            let profiles = detect_profiles(&scale_curves(&whole, k), &tol).unwrap();
+            let rod = extrude(&profiles, &frame, 0.0, h * k, &tol).unwrap().body;
+            let one = solve(&rod, &[round_in(&rod, &frame, k, [-rr, 0.0, h], r)], k);
+            assert_mass(&one, volume, area, k);
+            assert_eq!(one.body.faces.len(), 4);
+            assert_close(
+                mass(&made.body).volume,
+                mass(&one.body).volume,
+                "the two rims' volumes",
+            );
+            assert_close(
+                mass(&made.body).area,
+                mass(&one.body).area,
+                "the two rims' areas",
+            );
         }
     }
 }
