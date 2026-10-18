@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-18: A wall that thins to nothing within one shell (decided by the developer)
+
+A wall that thins to nothing within one shell (a hole whose wall touches the plate's side along a line, a cone inside a cone along a ruling) stays accepted: the boundary is still one 2-manifold, with an edge of zero angle, and the volume is well defined, so it is a valid body, as Parasolid, ACIS and OpenCascade accept it. Parts that touch each other (a non-manifold boundary: an edge or a point where the shell meets itself) stay refused as zero thickness (2026-10-15). An operation that cannot work on such a knife edge (a fillet, a shell, an offset) refuses with its own reason. Pinned by `boolean_contact.rs` › `a_hole_that_touches_the_side_and_a_cylinder_that_fills_its_block` and `cones_that_share_a_ruling`; the rule is `walls_apart` in `boolean/mod.rs`. A warning from `document.check` (not a problem) may come later.
+
 ### 2026-10-17: Nested sketch patterns (decided by the developer; design in `plan/nested-patterns.md`)
 
 - **A pattern may hold whole patterns in its seed** (a tree, at most 3 deep); the maps compose level by level, with no new unknowns; an equation over the solver's 18 unknowns is refused by name.
@@ -466,7 +470,6 @@ Made by the agent, overnight; the developer can overturn any of them.
 
 | # | Question | Options | Needed by | Default if nobody decides |
 |---|---|---|---|---|
-| D-open-12 | **A wall that thins to nothing within one shell** (a hole whose wall touches the plate's side along a line, a cone inside a cone along a ruling): accepted by the boolean, while two parts that touch (a union that overlaps and also touches along a line, the corners a cylinder leaves of a block it touches on all four sides) are refused as zero thickness since 2026-10-15/17. Refuse the thinning wall too (as other modellers do: "zero-thickness geometry" for a cut tangent to an edge)? | Refuse; accept as now | — | Accept as now (`boolean/mod.rs` › `walls_apart`; pinned by `boolean_contact.rs` › `a_hole_that_touches_the_side_and_a_cylinder_that_fills_its_block` and `cones_that_share_a_ruling`) |
 | D-open-4 | **Is this project part of storytold's `*Craft` family** (naming, bundle ids, shared standards), or an independent project that follows the same principles? | Family member; independent | Before any release or public repo | Independent, same principles |
 | D-open-5 | **General-purpose maths dependencies in the kernel** (linear algebra, interval or exact arithmetic) | Write everything; allow specific permissive pure-Rust crates | M1 | Write it; revisit with a measured reason |
 | D-open-9 | **Default units and tolerance** of a new document | mm / deg / 1e-6 mm; other | M2 | mm, degrees, 1e-6 mm linear, 1e-9 rad angular |

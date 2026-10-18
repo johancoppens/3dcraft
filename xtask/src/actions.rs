@@ -1029,6 +1029,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .problems
                 .push(format!("cannot work the exact blends out: {e}")),
         }
+        // How far each body's volume can be off, for the noise of the
+        // identities (`plan::noise`).
+        plan::bound_all(&mut on_first, &mut chosen);
         eprintln!(
             "actions: {}: {} bodies, {} faces, {} actions (loaded in {:.0} s)",
             model.name, report.bodies, report.faces, report.planned, report.load_seconds

@@ -76,6 +76,8 @@ fn the_bracket_keeps_what_succeeded_before() {
     // The straight edges between flat faces get their exact change: the
     // block's twelve edges and the boss's foot are not all of them.
     let oriented = plan::orient_all(&mut call(&mut session), &mut chosen, &edges_of).unwrap();
+    plan::bound_all(&mut call(&mut session), &mut chosen);
+    assert!(chosen.iter().all(|a| a.volume_bound.is_some()));
     println!("{oriented} blends with their exact change");
     assert!(
         oriented >= 20,
@@ -228,6 +230,8 @@ fn action(expect: Expect, volume: f64, area: f64) -> plan::Action {
         centroid: [5.0, 5.0, 5.0],
         diag: 300f64.sqrt(),
         pair: None,
+        volume_bound: None,
+        area_bound: None,
     }
 }
 
@@ -274,17 +278,7 @@ fn outward() -> std::collections::BTreeMap<String, [f64; 3]> {
 
 /// A blend of the block's edge between its top and the side x = 10.
 fn cube_blend(size: f64, chamfer: bool) -> plan::Action {
-    let mut a = action(
-        Expect::Blend {
-            size,
-            length: 10.0,
-            curved: 0,
-            chamfer,
-            exact: None,
-        },
-        1000.0,
-        600.0,
-    );
+    let mut a = action(plan::blend(size, 10.0, 0, 2, chamfer), 1000.0, 600.0);
     a.kind = if chamfer {
         plan::Kind::Chamfer
     } else {
@@ -338,17 +332,7 @@ fn a_blend_between_flat_faces_has_its_exact_change() {
     for n in inside.values_mut() {
         *n = [-n[0], -n[1], -n[2]];
     }
-    let mut pocket = action(
-        Expect::Blend {
-            size: 1.0,
-            length: 10.0,
-            curved: 0,
-            chamfer: false,
-            exact: None,
-        },
-        1000.0,
-        600.0,
-    );
+    let mut pocket = action(plan::blend(1.0, 10.0, 0, 2, false), 1000.0, 600.0);
     pocket.pair = Some(plan::Pair {
         faces: ["top".into(), "x1".into()],
         line: Some(([10., 0., 10.], [10., 10., 10.])),
@@ -370,6 +354,9 @@ fn measured(volume: f64, area: f64) -> plan::Measured {
         volume,
         area,
         centroid: [5.0, 5.0, 5.0],
+        volume_bound: None,
+        area_bound: None,
+        applied: None,
     }
 }
 
@@ -416,6 +403,9 @@ fn identities_catch_wrong_volumes() {
                 volume: 1000.0,
                 area,
                 centroid: c,
+                volume_bound: None,
+                area_bound: None,
+                applied: None,
             },
         )
         .is_ok()
@@ -429,7 +419,10 @@ fn identities_catch_wrong_volumes() {
             &plan::Measured {
                 volume: 1001.0,
                 area: 600.0,
-                centroid: [35.0, 5.0, 5.0]
+                centroid: [35.0, 5.0, 5.0],
+                volume_bound: None,
+                area_bound: None,
+                applied: None,
             }
         )
         .is_ok()
@@ -443,6 +436,9 @@ fn identities_catch_wrong_volumes() {
                 volume: v,
                 area,
                 centroid: [x, 5.0, 5.0],
+                volume_bound: None,
+                area_bound: None,
+                applied: None,
             },
         )
         .is_ok()
@@ -451,47 +447,22 @@ fn identities_catch_wrong_volumes() {
     assert!(!two(1999.0, 1200.0, 20.0));
     assert!(!two(2000.0, 1100.0, 20.0), "instances merged");
     assert!(!two(2000.0, 1200.0, 5.0), "both in one place");
-    // Without the exact change: a fillet of radius 1 along one straight
-    // edge 10 long takes at most 11.43 · 10 = 114 (r times its setback at
-    // 10°); a chamfer of 1 at most 5; along a curved edge 2π · 11.43 more.
-    let fillet = action(
-        Expect::Blend {
-            size: 1.0,
-            length: 10.0,
-            curved: 0,
-            chamfer: false,
-            exact: None,
-        },
-        1000.0,
-        600.0,
-    );
-    assert!(holds(&fillet, 997.85, 598.0));
+    // Without the exact change: a fillet of radius 0.1 along one straight
+    // edge 10 long takes at most 0.1143 · (10 + 2 · 5.67 · 1.143) = 2.62
+    // (r times its setback at 10°, along the edge and on past both ends
+    // by the setback times cot 10°); a chamfer of 1 at most
+    // 0.5 · (10 + 2 · 5.67) = 10.7; along a closed curved edge (no ends)
+    // 2π times the setback more than its length.
+    let fillet = action(plan::blend(0.1, 10.0, 0, 2, false), 1000.0, 600.0);
+    assert!(holds(&fillet, 999.98, 599.98));
     assert!(!holds(&fillet, 1000.0, 600.0), "nothing done");
-    assert!(!holds(&fillet, 880.0, 598.0), "more than the bound");
-    let curved = action(
-        Expect::Blend {
-            size: 1.0,
-            length: 10.0,
-            curved: 1,
-            chamfer: false,
-            exact: None,
-        },
-        1000.0,
-        600.0,
-    );
+    assert!(!holds(&fillet, 997.0, 598.0), "more than the bound");
+    let curved = action(plan::blend(1.0, 10.0, 1, 0, false), 1000.0, 600.0);
     assert!(holds(&curved, 880.0, 598.0));
-    let chamfer = action(
-        Expect::Blend {
-            size: 1.0,
-            length: 10.0,
-            curved: 0,
-            chamfer: true,
-            exact: None,
-        },
-        1000.0,
-        600.0,
-    );
+    assert!(!holds(&curved, 50.0, 598.0), "more than the bound");
+    let chamfer = action(plan::blend(1.0, 10.0, 0, 2, true), 1000.0, 600.0);
     assert!(holds(&chamfer, 995.0, 596.0));
+    assert!(holds(&chamfer, 990.0, 596.0), "run on past its ends");
     assert!(!holds(&chamfer, 950.0, 596.0), "more than a chamfer takes");
 }
 
@@ -553,5 +524,468 @@ fn the_ratchet_reads_back() {
         json!({"models": {"bracket": {"chamfer": [1]}}}),
     ] {
         assert!(plan::ratchet_from(&bad).is_err(), "{bad}");
+    }
+}
+
+/// The block `[-4, 0] x [0, 3] x [-3, 3]` times `s` with both edges of its
+/// side `x = 0` chamfered by `0.5 s` (end faces at 45° to y) and a
+/// scallop of radius `1.5 s` round the y axis cut out of that side: the
+/// side and the scallop meet in two straight edges along y, `2 s` long,
+/// that end on the 45° chamfers (the turbofan's flange scallop, made
+/// small).
+fn scallop(s: f64) -> Session {
+    let mm = |x: f64| format!("{} mm", x * s);
+    let mut session = Session::new(Workspace::unrestricted());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    for (id, params) in [
+        (
+            "feature.block",
+            json!({"size": [mm(4.0), mm(3.0), mm(6.0)], "position": [mm(-4.0), mm(0.0), mm(-3.0)], "name": "Box"}),
+        ),
+        (
+            "feature.chamfer",
+            json!({"distance": mm(0.5), "edges": [["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(5)"]], "name": "Ends"}),
+        ),
+        (
+            "feature.cylinder",
+            json!({"radius": mm(1.5), "height": mm(5.0), "position": [mm(0.0), mm(-1.0), mm(0.0)], "axis": [0, 1, 0], "name": "Tool"}),
+        ),
+        (
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Ends", "tool": "Tool", "name": "Scallop"}),
+        ),
+    ] {
+        session.execute(id, &params).unwrap();
+    }
+    session
+}
+
+/// A blend of straight edges between curved faces runs on past the edges'
+/// ends onto slanted end faces, so the bound of the cross-section times
+/// the length alone is too tight (the turbofan's chamfer of a flange
+/// scallop broke it by 2.8 %); the bound gives each end the setback times
+/// cot 10°, as the exact change does. The volume the chamfer takes is
+/// worked out here independently, at three scales: in the plane square
+/// to the edges the chamfer cuts the corner between the side `x = 0` and
+/// the scallop's circle with the chord from `d` along the side to `d`
+/// along the circle (arc length, as `distance` means on a curved face);
+/// that cross-section `A` runs the edge's length and, past each end, on
+/// over the 45° chamfer as far as its depth `−x` into the side. So each
+/// edge takes `A·L + 2·∫_A (−x) dA`.
+#[test]
+fn a_blend_runs_on_past_slanted_ends() {
+    for s in [0.1, 1.0, 100.0] {
+        let mut session = scallop(s);
+        let inspect = session.execute("document.inspect", &json!({})).unwrap();
+        let unit = plan::length_unit(&inspect);
+        let body = plan::bodies(&inspect)
+            .into_iter()
+            .find(|b| b.solid)
+            .expect("the scallop's body");
+        let edges = plan::edges(
+            &session
+                .execute("document.edges", &json!({"feature": body.feature}))
+                .unwrap(),
+        );
+        let key = plan::pair_key("F4:copy(0)/F1:face(5)", "F4:copy(1)/F3:face(0)");
+        let mut chamfer = plan::plan(&body, &edges, &unit, &[plan::Kind::Chamfer])
+            .into_iter()
+            .find(|a| a.entity == key)
+            .expect("a chamfer of the side's edges with the scallop");
+        let Expect::Blend {
+            size: d,
+            length,
+            curved,
+            ends,
+            exact,
+            ..
+        } = chamfer.expect
+        else {
+            panic!("not a blend: {:?}", chamfer.expect);
+        };
+        // Two straight edges, four ends: the general bound.
+        assert_eq!((curved, ends), (0, 4));
+        assert!((length - 4.0 * s).abs() < 1e-9 * s, "{length}");
+        plan::orient_all(
+            &mut call(&mut session),
+            std::slice::from_mut(&mut chamfer),
+            &[(body.feature.clone(), edges.clone())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        assert!(exact.is_none() && matches!(chamfer.expect, Expect::Blend { exact: None, .. }));
+        // The faces meet square (the side and the scallop's wall, whose
+        // axis runs along the edges), and each end is a 45° chamfer: cot
+        // and 1/sin of 45° at each of the four ends.
+        let Expect::Blend {
+            wedge, tilt, slant, ..
+        } = chamfer.expect
+        else {
+            panic!("not a blend");
+        };
+        let w = wedge.expect("the wedge from the normals");
+        assert!((w - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "{w}");
+        assert!((tilt - 4.0).abs() < 1e-9, "{tilt}");
+        assert!(
+            (slant - 4.0 * std::f64::consts::SQRT_2).abs() < 1e-9,
+            "{slant}"
+        );
+        // The cross-section at the edge (0, ρ): the side runs on along +z,
+        // the circle into x < 0. A polygon of the corner, the chord and
+        // 4096 pieces of the arc: area and first moment exact for the
+        // polygon, the arc's chord error (d/ρ)²/4096² of no account.
+        let rho = 1.5 * s;
+        let t = d / rho;
+        let mut poly = vec![(0.0, rho), (0.0, rho + d)];
+        let n = 4096;
+        for i in (0..=n).rev() {
+            let a = t * f64::from(i) / f64::from(n);
+            poly.push((-rho * a.sin(), rho * a.cos()));
+        }
+        let (mut area, mut moment) = (0.0, 0.0);
+        for (i, &(x0, z0)) in poly.iter().enumerate() {
+            let (x1, z1) = poly[(i + 1) % poly.len()];
+            let cross = x0 * z1 - x1 * z0;
+            area += cross / 2.0;
+            moment += (x0 + x1) * cross / 6.0;
+        }
+        let (area, depth) = (area.abs(), moment.abs());
+        let along = 2.0 * s;
+        let taken = 2.0 * (area * along + 2.0 * depth);
+        // The section alone along the length: what the old bound allowed
+        // at most, d²/2 times the length, is less than what is taken.
+        assert!(
+            taken > 0.5 * d * d * length * 1.01,
+            "{taken} against {}",
+            0.5 * d * d * length
+        );
+        let outcome = plan::run_action(&mut call(&mut session), &chamfer);
+        assert_eq!(outcome.verdict, plan::Verdict::Ok, "{}", outcome.reason);
+        let (volume, _) = outcome.after.expect("measured after");
+        let change = body.volume - volume;
+        assert!(
+            (change - taken).abs() <= 1e-6 * taken,
+            "scale {s}: the chamfer took {change}, worked out {taken}"
+        );
+        // It is held: four times the distance is not let through.
+        assert!(
+            !holds(&chamfer, body.volume - 16.0 * taken, body.area),
+            "four times the distance at scale {s}"
+        );
+    }
+}
+
+/// A blend the volume cannot tell from nothing: held to the noise of the
+/// integrator's bounds and, below it, to other evidence and to its area.
+/// Seeded: a blend that did nothing, one whose change the volume would
+/// show, and one of the wrong size stay wrong.
+#[test]
+fn a_blend_below_the_noise_needs_other_evidence() {
+    // Bounds of 1e-8 on the volume and 1e-9 on the area, before and after.
+    let bounded = |mut a: plan::Action| {
+        a.volume_bound = Some(1e-8);
+        a.area_bound = Some(1e-9);
+        a
+    };
+    let after = |volume: f64, area: f64, applied: Option<bool>| plan::Measured {
+        volume,
+        area,
+        centroid: [5.0, 5.0, 5.0],
+        volume_bound: Some(1e-8),
+        area_bound: Some(1e-9),
+        applied,
+    };
+    let holds_after = |a: &plan::Action, m: plan::Measured| plan::identity(a, &m).is_ok();
+    // A fillet of radius 1e-5 along 10: at most 11.43e-10 · 10.0013 =
+    // 1.14e-8 of volume, below the noise 2e-8; the faces lose strips
+    // 1.14e-4 wide, at most 2.29e-3 of area.
+    let tiny = bounded(action(plan::blend(1e-5, 10.0, 0, 2, false), 1000.0, 600.0));
+    assert!((plan::noise(&tiny, &after(1000.0, 600.0, None)) - 2e-8).abs() < 1e-20);
+    assert!(plan::needs_witness(
+        &tiny,
+        &after(1000.0 - 1e-8, 600.0, None)
+    ));
+    assert!(!plan::needs_witness(
+        &tiny,
+        &after(1000.0 - 1e-7, 600.0, None)
+    ));
+    let v = 1000.0 - 1e-9;
+    assert!(
+        holds_after(&tiny, after(v, 600.0 - 1e-3, Some(true))),
+        "applied"
+    );
+    assert!(
+        !holds_after(&tiny, after(v, 600.0 - 1e-3, Some(false))),
+        "did nothing"
+    );
+    assert!(
+        !holds_after(&tiny, after(v, 600.0 - 1e-3, None)),
+        "not looked at"
+    );
+    assert!(
+        !holds_after(&tiny, after(v, 600.0 + 1e-3, Some(true))),
+        "area gained"
+    );
+    assert!(
+        !holds_after(&tiny, after(v, 600.0 - 3e-3, Some(true))),
+        "too wide"
+    );
+    // A fillet of radius 0.1 may change the volume by 2.6: unchanged, it is
+    // wrong whatever else shows.
+    let normal = bounded(action(plan::blend(0.1, 10.0, 0, 2, false), 1000.0, 600.0));
+    assert!(
+        !holds_after(&normal, after(1000.0, 599.9, Some(true))),
+        "could tell"
+    );
+    // The exact fillet of radius 1 on the cube's edge, the volume as it
+    // was: wrong, applied or not.
+    let mut cube = cube_blend(1.0, false);
+    cube = bounded(cube);
+    assert!(
+        !holds_after(&cube, after(1000.0, 598.0, Some(true))),
+        "must take 2.1"
+    );
+    // An exact fillet of radius 1e-5 on it changes the volume by 2.1e-10,
+    // below the noise, and the area by 10 · (π/2 − 2) · 1e-5 = −4.29e-5,
+    // give or take the end faces (5e-10).
+    let small = bounded(cube_blend(1e-5, false));
+    let strip = 10.0 * (std::f64::consts::FRAC_PI_2 - 2.0) * 1e-5;
+    let v = 1000.0 - 2e-10;
+    assert!(
+        holds_after(&small, after(v, 600.0 + strip, Some(true))),
+        "exact"
+    );
+    for (k, why) in [
+        (2.0, "twice the radius"),
+        (1.0 / 30.0, "a thirtieth"),
+        (4.0, "four times"),
+    ] {
+        assert!(
+            !holds_after(&small, after(v, 600.0 + k * strip, Some(true))),
+            "{why}"
+        );
+    }
+    // Looser bounds than 1e-9 of the body leave the noise at that.
+    let mut loose = tiny.clone();
+    loose.volume_bound = Some(1.0);
+    let mut far = after(1000.0, 600.0, None);
+    far.volume_bound = Some(1.0);
+    assert!((plan::noise(&loose, &far) - 1e-6).abs() < 1e-18);
+    let plain = cube_blend(1.0, false);
+    assert!((plan::noise(&plain, &measured(1000.0, 600.0)) - 1e-6).abs() < 1e-18);
+}
+
+/// A drum of radius `100 s` with a lug `s` cubed on its top: the fillet of
+/// one of the lug's top edges with radius `0.003 s` takes
+/// `0.2146 · (0.003 s)² · s = 1.9e-6 s³`, less than the integrator's own
+/// bounds on the drum's volume (about `4e-6 s³` each): the weld table's
+/// tiny fillets on a large body, made small. Held at three scales: the
+/// fillet is ok by the evidence that it was applied and by its area; the
+/// same fillet built at twice, a thirtieth and four times the radius is
+/// not, nor are two features that did not round that edge (the body
+/// moved by nothing; a fillet of another edge). The move by nothing also
+/// pins how little the measure jitters: far below the bounds.
+#[test]
+fn a_tiny_blend_on_a_large_body_is_told_by_its_faces() {
+    for s in [0.1, 1.0, 100.0] {
+        let mm = |x: f64| format!("{} mm", x * s);
+        let mut session = Session::new(Workspace::unrestricted());
+        session
+            .execute("file.new", &json!({"units": "mm"}))
+            .unwrap();
+        for (id, params) in [
+            (
+                "feature.cylinder",
+                json!({"radius": mm(100.0), "height": mm(100.0), "name": "Drum"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": [mm(1.0), mm(1.0), mm(1.0)], "position": [mm(-0.5), mm(-0.5), mm(99.5)], "name": "Lug"}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "union", "target": "Drum", "tool": "Lug", "name": "Body"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let inspect = session.execute("document.inspect", &json!({})).unwrap();
+        let unit = plan::length_unit(&inspect);
+        let body = plan::bodies(&inspect)
+            .into_iter()
+            .find(|b| b.solid)
+            .expect("the body");
+        let edges = plan::edges(
+            &session
+                .execute("document.edges", &json!({"feature": body.feature}))
+                .unwrap(),
+        );
+        let (a, b) = ("F3:copy(1)/F2:face(1)", "F3:copy(1)/F2:face(2)");
+        let key = plan::pair_key(a, b);
+        let mut fillet = plan::plan(&body, &edges, &unit, &[plan::Kind::FilletSmall])
+            .into_iter()
+            .find(|x| x.entity == key)
+            .expect("a fillet of the lug's top edge");
+        let r = 0.003 * s;
+        let radius = |k: f64| json!({"edges": [[a, b]], "radius": format!("{} mm", k * r)});
+        fillet.params = radius(1.0);
+        if let Expect::Blend { size, .. } = &mut fillet.expect {
+            *size = r;
+        }
+        let edges_of = [(body.feature.clone(), edges.clone())]
+            .into_iter()
+            .collect();
+        let mut one = vec![fillet];
+        plan::orient_all(&mut call(&mut session), &mut one, &edges_of).unwrap();
+        plan::bound_all(&mut call(&mut session), &mut one);
+        let fillet = one.pop().unwrap();
+        // One straight edge between flat faces: the exact change; its end
+        // faces (the lug's sides) are square to it.
+        let Expect::Blend {
+            exact: Some(x),
+            tilt,
+            slant,
+            ..
+        } = fillet.expect
+        else {
+            panic!("scale {s}: not exact: {:?}", fillet.expect);
+        };
+        assert!(
+            tilt.abs() < 1e-9 && (slant - 2.0).abs() < 1e-9,
+            "{tilt} {slant}"
+        );
+        let b0 = fillet.volume_bound.expect("the drum's bound");
+        assert!(
+            x.section * x.length < b0,
+            "scale {s}: the fillet's change {} is not below the bound {b0}",
+            x.section * x.length
+        );
+        let outcome = plan::run_action(&mut call(&mut session), &fillet);
+        assert_eq!(
+            outcome.verdict,
+            plan::Verdict::Ok,
+            "scale {s}: {}",
+            outcome.reason
+        );
+        let (volume, _) = outcome.after.unwrap();
+        let change = body.volume - volume;
+        assert!(
+            change.abs() <= 2.5 * b0,
+            "scale {s}: {change} is not within the noise, the witness was not needed"
+        );
+        // The wrong size, held to the plan of radius r: never ok (a
+        // thirtieth at the smallest scale is below the document's
+        // tolerance and refused; built, it is wrong).
+        for k in [2.0, 1.0 / 30.0, 4.0] {
+            let mut wrong = fillet.clone();
+            wrong.params = radius(k);
+            let outcome = plan::run_action(&mut call(&mut session), &wrong);
+            let built = outcome.verdict != plan::Verdict::Refused;
+            assert!(
+                outcome.verdict == plan::Verdict::Wrong || (!built && k < 1.0 && s < 1.0),
+                "scale {s}: {k} times the radius: {:?} {}",
+                outcome.verdict,
+                outcome.reason
+            );
+        }
+        // Did nothing: the body moved by nothing, and a fillet of another
+        // edge of the lug, each with the volume it gives.
+        let other = ("F3:copy(1)/F2:face(1)", "F3:copy(1)/F2:face(3)");
+        for (command, params) in [
+            (
+                "feature.transform",
+                json!({"source": "Body", "translate": ["0 mm", "0 mm", "0 mm"]}),
+            ),
+            (
+                "feature.fillet",
+                json!({"edges": [[other.0, other.1]], "radius": format!("{r} mm")}),
+            ),
+        ] {
+            let made = session.execute(command, &params).unwrap();
+            let id = made["id"].as_str().unwrap().to_string();
+            assert_eq!(made["status"], "ok", "{made}");
+            let measure = session
+                .execute("document.measure", &json!({"feature": id, "bound": true}))
+                .unwrap();
+            let after = plan::Measured {
+                volume: measure["volume"].as_f64().unwrap(),
+                area: measure["area"].as_f64().unwrap(),
+                centroid: [0.0; 3],
+                volume_bound: measure["volumeBound"].as_f64(),
+                area_bound: measure["areaBound"].as_f64(),
+                applied: Some(plan::blend_applied(&mut call(&mut session), &fillet, &id).is_ok()),
+            };
+            if command == "feature.transform" {
+                // The same body measured again: its change is jitter, far
+                // below the bounds the noise is made of.
+                let jitter = (after.volume - body.volume).abs();
+                let bounds = b0 + after.volume_bound.unwrap();
+                assert!(
+                    jitter <= 1e-2 * bounds,
+                    "scale {s}: a move by nothing changed the volume by {jitter}, bounds {bounds}"
+                );
+            }
+            assert!(plan::needs_witness(&fillet, &after), "scale {s}: {command}");
+            assert_eq!(after.applied, Some(false), "scale {s}: {command}");
+            assert!(
+                plan::identity(&fillet, &after).is_err(),
+                "scale {s}: {command} passed for the fillet"
+            );
+            session.execute("edit.undo", &json!({})).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_copied_name_merges_a_run_of_instance_zero() {
+    assert_eq!(
+        plan::copied("F5", "F4:copy(0)/F1:face(5)"),
+        "F5:copy(0)/F1:face(5)"
+    );
+    assert_eq!(
+        plan::copied("F5", "F4:copy(1)/F3:face(0)"),
+        "F5:copy(0)/F4:copy(1)/F3:face(0)"
+    );
+    assert_eq!(plan::copied("F2", "F1:face(0)"), "F2:copy(0)/F1:face(0)");
+}
+
+/// A circle cut in two arcs has no ends; one arc has two, and turns
+/// through the angle its chord and length say (never less).
+#[test]
+fn ends_are_vertices_of_one_edge_and_arcs_turn_as_drawn() {
+    let arc = |from: f64, to: f64| {
+        let r = 2.0;
+        let point = |t: f64| [r * t.cos(), r * t.sin(), 0.0];
+        // The length document.edges gives: the polygon through 64 points.
+        let length: f64 = (0..64)
+            .map(|i| {
+                let a = from + (to - from) * f64::from(i) / 64.0;
+                let b = from + (to - from) * f64::from(i + 1) / 64.0;
+                let (p, q) = (point(a), point(b));
+                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
+            })
+            .sum();
+        plan::Edge {
+            faces: ["a".into(), "b".into()],
+            curve: "circle".into(),
+            start: point(from),
+            end: point(to),
+            closed: false,
+            length: Some(length),
+        }
+    };
+    let pi = std::f64::consts::PI;
+    let halves = [arc(0.0, pi), arc(pi, 2.0 * pi)];
+    assert!(plan::loose_ends(&halves, 4.0).is_empty());
+    assert_eq!(plan::loose_ends(&halves[..1], 4.0).len(), 2);
+    for t in [0.01, 0.5, 2.0, 3.0] {
+        let turned = plan::turning(&arc(0.0, t)).unwrap();
+        assert!(
+            turned >= t && turned <= t * (1.0 + 1e-3) + 2e-6,
+            "{t}: {turned}"
+        );
     }
 }

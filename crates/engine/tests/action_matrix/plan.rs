@@ -109,22 +109,38 @@ pub enum Expect {
     /// A positive, finite volume.
     Positive,
     /// A blend of one pair of faces with size `size` (a fillet's radius, a
-    /// chamfer's distance) along edges `length` long in all, `curved` of
-    /// them not straight: the volume changes (a blend that changes nothing
-    /// is not built), by at most the cross-section's bound times the
-    /// length. The cross-section of a chamfer is a triangle with two sides
-    /// `size` long, at most `size²/2`; a fillet's is at most `r` times its
-    /// setback `r·cot(θ/2)`, which is at most `11.43·r` when the faces
-    /// meet at θ of 10° or more (assumed, not checked: a sharper edge is
-    /// reported wrong, never let through). Along a curved edge the
-    /// cross-section travels at most `2π` times the setback further than
-    /// the edge. With `exact` (one straight edge between two flat faces)
-    /// the change is the cross-section's own area times the length, with
-    /// its sign.
+    /// chamfer's distance) along edges `length` long in all: the volume
+    /// changes (a blend that changes nothing is not built), by at most the
+    /// cross-section's bound times how far it travels. The cross-section
+    /// of a chamfer is a triangle with two sides `size` long, at most
+    /// `size²/2`; a fillet's is at most `r` times its setback
+    /// `r·cot(θ/2)`, with θ the `wedge` the faces meet at where it is
+    /// known (both faces flat or of revolution about an axis along the
+    /// edge, from their normals: the smaller of the angle between them
+    /// and its supplement), else 10° or more, `11.43·r` (assumed, not
+    /// checked: a sharper edge is reported wrong, never let through).
+    /// Along a curved edge the cross-section travels further than the
+    /// edge by the setback times the angle it turns through: `turning` in
+    /// all for the circles, `2π` for each of the `curved` others. Past
+    /// each of the `ends` of the edges (the vertices only one of them ends
+    /// in) the blend runs on until it leaves the end face, at most the
+    /// setback times `cot γ` further for an end face at γ to the edge:
+    /// `tilt` is `cot γ` summed over the ends, measured where the end face
+    /// is flat and the edge straight, else 10° or more assumed (as for the
+    /// exact change: a more slanted end is reported wrong, never let
+    /// through); `slant` is `1/sin γ` summed the same way, for the area
+    /// the end faces gain or lose. With `exact` (one straight edge between
+    /// two flat faces) the change is the cross-section's own area times
+    /// the length, with its sign.
     Blend {
         size: f64,
         length: f64,
         curved: usize,
+        turning: f64,
+        ends: usize,
+        tilt: f64,
+        slant: f64,
+        wedge: Option<f64>,
         chamfer: bool,
         exact: Option<Exact>,
     },
@@ -167,6 +183,9 @@ pub struct Exact {
     pub gains: bool,
     /// How far the blend reaches along each face from the edge.
     pub setback: f64,
+    /// The length of the blend's own face across: a fillet's arc
+    /// `r·(π − φ)`, a chamfer's chord `2d·sin(φ/2)`.
+    pub across: f64,
     /// The edge's length.
     pub length: f64,
 }
@@ -199,6 +218,31 @@ pub struct Action {
     pub diag: f64,
     /// For an edge-pair action: the faces and the edge.
     pub pair: Option<Pair>,
+    /// How far the body's volume and area before can be off by the
+    /// integrator's own account (`document.measure` with `bound`,
+    /// [`bound_all`]).
+    pub volume_bound: Option<f64>,
+    pub area_bound: Option<f64>,
+}
+
+/// A blend's expectation before the faces are looked at: no wedge known,
+/// every end at 10° ([`refine`] and [`orient`] know more).
+pub fn blend(size: f64, length: f64, curved: usize, ends: usize, chamfer: bool) -> Expect {
+    // `ends` is a small count.
+    #[allow(clippy::cast_precision_loss)]
+    let n = ends as f64;
+    Expect::Blend {
+        size,
+        length,
+        curved,
+        turning: 0.0,
+        ends,
+        tilt: n * END_TILT,
+        slant: n * END_SLANT,
+        wedge: None,
+        chamfer,
+        exact: None,
+    }
 }
 
 /// The outcome of an action.
@@ -446,7 +490,12 @@ struct PairEdges {
     faces: [String; 2],
     length: f64,
     count: usize,
+    /// Edges neither straight nor circles.
     curved: usize,
+    /// What the circles turn through, in all.
+    turning: f64,
+    /// The edges themselves.
+    edges: Vec<Edge>,
     /// The ends of a straight one.
     line: Option<([f64; 3], [f64; 3])>,
 }
@@ -454,6 +503,72 @@ struct PairEdges {
 fn unit_vector(a: [f64; 3]) -> Option<[f64; 3]> {
     let n = norm(a);
     (n.is_finite() && n > 0.0).then(|| [a[0] / n, a[1] / n, a[2] / n])
+}
+
+/// The angle a circular edge turns through, from its chord and its length
+/// (`sin(t/2)/(t/2)` is the chord over the length): `2π` for a closed one.
+/// `document.edges` gives the length of the polygon through 64 points,
+/// short of the arc by the factor `sinc(t/128)`; the length is taken that
+/// much longer for an angle at least the true one (first 2π, then the
+/// angle found, which is still at least the true one), so the angle is
+/// never too small.
+pub fn turning(e: &Edge) -> Option<f64> {
+    if e.closed {
+        return Some(std::f64::consts::TAU);
+    }
+    let polygon = e.length?;
+    let chord = norm(sub(e.end, e.start));
+    if !(polygon.is_finite() && polygon > 0.0 && chord.is_finite()) {
+        return None;
+    }
+    let sinc = |x: f64| if x == 0.0 { 1.0 } else { x.sin() / x };
+    // The half angle whose sinc is `q`, sinc decreasing on [0, π].
+    let half = |q: f64| {
+        if q >= 1.0 {
+            return 0.0;
+        }
+        let (mut lo, mut hi) = (0.0, std::f64::consts::PI);
+        if sinc(hi) >= q {
+            return hi;
+        }
+        for _ in 0..100 {
+            let mid = 0.5 * (lo + hi);
+            if sinc(mid) > q {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        hi
+    };
+    let mut t = std::f64::consts::TAU;
+    for _ in 0..8 {
+        let length = polygon / sinc(t / 128.0);
+        t = 2.0 * half(chord / length);
+    }
+    // For a short arc the chord over the length is 1 − t²/24, so its
+    // rounding moves t by about 1e-15/t: a microradian more covers it.
+    Some(t * (1.0 + 1e-9) + 1e-6)
+}
+
+/// The vertices only one of `edges` ends in (closed edges end nowhere),
+/// each with that edge.
+pub fn loose_ends(edges: &[Edge], diag: f64) -> Vec<([f64; 3], Edge)> {
+    let tol = 1e-9 * diag.max(1e-300);
+    let mut points: Vec<([f64; 3], usize, Edge)> = Vec::new();
+    for e in edges.iter().filter(|e| !e.closed) {
+        for p in [e.start, e.end] {
+            match points.iter_mut().find(|(q, _, _)| norm(sub(p, *q)) <= tol) {
+                Some((_, n, _)) => *n += 1,
+                None => points.push((p, 1, e.clone())),
+            }
+        }
+    }
+    points
+        .into_iter()
+        .filter(|(_, n, _)| *n == 1)
+        .map(|(p, _, e)| (p, e))
+        .collect()
 }
 
 /// The direction from the straight edge `p`–`q` into the flat face
@@ -530,20 +645,139 @@ pub fn orient(action: &mut Action, edges: &[Edge], outward: &BTreeMap<String, [f
         return;
     }
     let half = (0.5 * phi).tan();
-    let (section, setback) = if chamfer {
-        (0.5 * size * size * phi.sin(), size)
+    let (section, setback, across) = if chamfer {
+        (
+            0.5 * size * size * phi.sin(),
+            size,
+            2.0 * size * (0.5 * phi).sin(),
+        )
     } else {
         (
             size * size * (1.0 / half - 0.5 * (std::f64::consts::PI - phi)),
             size / half,
+            size * (std::f64::consts::PI - phi),
         )
     };
     *exact = Some(Exact {
         section,
         gains: sa > 0.0,
         setback,
+        across,
         length: norm(sub(*q, *p)),
     });
+}
+
+/// The edges of `list` between the faces `a` and `b`.
+fn between(list: &[Edge], a: &str, b: &str) -> Vec<Edge> {
+    list.iter()
+        .filter(|e| (e.faces[0] == a && e.faces[1] == b) || (e.faces[0] == b && e.faces[1] == a))
+        .cloned()
+        .collect()
+}
+
+/// The faces other than `a` and `b` of the edges of `list` that end in
+/// `p`: the end faces of a blend of the edge between `a` and `b` there.
+fn end_faces(list: &[Edge], p: [f64; 3], a: &str, b: &str, diag: f64) -> BTreeSet<String> {
+    let tol = 1e-9 * diag.max(1e-300);
+    list.iter()
+        .filter(|e| !e.closed && (norm(sub(e.start, p)) <= tol || norm(sub(e.end, p)) <= tol))
+        .flat_map(|e| e.faces.iter())
+        .filter(|f| f.as_str() != a && f.as_str() != b)
+        .cloned()
+        .collect()
+}
+
+/// The faces' normals as far as they are known: flat faces by their
+/// outward normal, faces of revolution by their axis (origin, direction).
+#[derive(Clone, Debug, Default)]
+pub struct Normals {
+    pub flat: BTreeMap<String, [f64; 3]>,
+    pub axes: BTreeMap<String, ([f64; 3], [f64; 3])>,
+}
+
+impl Normals {
+    /// The normal (either way round) of `face` all along the straight
+    /// edge `p`–`q`: a flat face's, or a face of revolution's when its axis
+    /// runs along the edge (then the face is a cylinder along the edge
+    /// and its normal is the one from the axis to the edge).
+    fn along(&self, face: &str, p: [f64; 3], q: [f64; 3]) -> Option<[f64; 3]> {
+        if let Some(n) = self.flat.get(face) {
+            return Some(*n);
+        }
+        let (o, u) = self.axes.get(face)?;
+        let u = unit_vector(*u)?;
+        let e = unit_vector(sub(q, p))?;
+        if dot(u, e).abs() < 1.0 - 1e-9 {
+            return None;
+        }
+        let w = sub(p, *o);
+        let t = dot(w, u);
+        unit_vector([w[0] - t * u[0], w[1] - t * u[1], w[2] - t * u[2]])
+    }
+}
+
+/// What the faces at a blend's edges and ends say beyond its plan
+/// ([`blend`]): the wedge between the two faces, where every edge of the
+/// pair is straight and both faces' normals are known along it, and for
+/// each end of a straight edge at a single flat end face, its angle γ to
+/// the edge (`tilt` and `slant` then count that end's `cot γ` and
+/// `1/sin γ` instead of 10°'s).
+pub fn refine(action: &mut Action, list: &[Edge], normals: &Normals) {
+    let Some(Pair { faces: [a, b], .. }) = action.pair.clone() else {
+        return;
+    };
+    let diag = action.diag;
+    let Expect::Blend {
+        ref mut tilt,
+        ref mut slant,
+        ref mut wedge,
+        ..
+    } = action.expect
+    else {
+        return;
+    };
+    let mine = between(list, &a, &b);
+    if mine.is_empty() {
+        return;
+    }
+    if mine.iter().all(|e| e.curve == "line") {
+        let mut least: Option<f64> = None;
+        for e in &mine {
+            let (Some(na), Some(nb)) = (
+                normals.along(&a, e.start, e.end),
+                normals.along(&b, e.start, e.end),
+            ) else {
+                least = None;
+                break;
+            };
+            // The wedge is π less the angle between the outward normals;
+            // either way round, it is at least the smaller of that angle
+            // and its supplement.
+            let beta = dot(na, nb).abs().min(1.0).acos();
+            least = Some(least.map_or(beta, |l: f64| l.min(beta)));
+        }
+        *wedge = least.filter(|w| *w > 1e-6);
+    }
+    let (mut t, mut s) = (0.0, 0.0);
+    for (p, e) in loose_ends(&mine, diag) {
+        let measured = (e.curve == "line")
+            .then(|| unit_vector(sub(e.end, e.start)))
+            .flatten()
+            .and_then(|d| {
+                let ends = end_faces(list, p, &a, &b, diag);
+                let only = (ends.len() == 1)
+                    .then(|| ends.into_iter().next())
+                    .flatten()?;
+                let n = normals.flat.get(&only)?;
+                let sin = dot(d, *n).abs().min(1.0);
+                (sin > 1e-9).then(|| ((1.0 - sin * sin).max(0.0).sqrt() / sin, 1.0 / sin))
+            });
+        let (c, k) = measured.unwrap_or((END_TILT, END_SLANT));
+        t += c;
+        s += k;
+    }
+    *tilt = t;
+    *slant = s;
 }
 
 /// [`orient`]s every blend of `actions` it can: asks the engine for the
@@ -559,22 +793,36 @@ pub fn orient_all<F>(
 where
     F: FnMut(&str, &Value) -> Result<Value, CallError>,
 {
-    // The faces of every blend of one straight edge; `datum.plane` says
-    // which of them are flat.
+    // The faces of every blend whose edges are all straight, and the end
+    // faces at their ends; `datum.plane` says which of them are flat, and
+    // `datum.axis` gives the axis of the pair's faces of revolution.
     let mut wanted: BTreeSet<String> = BTreeSet::new();
+    let mut pairs: BTreeSet<String> = BTreeSet::new();
     for a in actions.iter() {
-        if let (
+        let (
             Expect::Blend { .. },
             Some(Pair {
-                faces,
-                line: Some(_),
+                faces: [fa, fb], ..
             }),
-        ) = (a.expect, &a.pair)
-        {
-            wanted.extend(faces.iter().cloned());
+            Some(list),
+        ) = (a.expect, &a.pair, edges.get(&a.body))
+        else {
+            continue;
+        };
+        let mine = between(list, fa, fb);
+        if mine.is_empty() || mine.iter().any(|e| e.curve != "line") {
+            continue;
+        }
+        pairs.insert(fa.clone());
+        pairs.insert(fb.clone());
+        wanted.insert(fa.clone());
+        wanted.insert(fb.clone());
+        for (p, _) in loose_ends(&mine, a.diag) {
+            wanted.extend(end_faces(list, p, fa, fb, a.diag));
         }
     }
-    let mut outward: BTreeMap<String, [f64; 3]> = BTreeMap::new();
+    let mut normals = Normals::default();
+    let outward = &mut normals.flat;
     for face in wanted {
         let made = call("datum.plane", &json!({"from": face, "distance": "0"}));
         if let Ok(made) = &made {
@@ -590,10 +838,29 @@ where
                 .map_err(|e| format!("edit.undo after a datum plane on {face}: {e:?}"))?;
         }
     }
+    for face in pairs {
+        if normals.flat.contains_key(&face) {
+            continue;
+        }
+        if let Ok(made) = call("datum.axis", &json!({"face": face})) {
+            let ok = made.get("status").and_then(Value::as_str) == Some("ok");
+            let datum = made.get("datum");
+            if let (true, Some(o), Some(u)) = (
+                ok,
+                point(datum.and_then(|d| d.get("origin"))),
+                point(datum.and_then(|d| d.get("direction"))),
+            ) {
+                normals.axes.insert(face.clone(), (o, u));
+            }
+            call("edit.undo", &json!({}))
+                .map_err(|e| format!("edit.undo after a datum axis on {face}: {e:?}"))?;
+        }
+    }
     let mut oriented = 0;
     for a in actions.iter_mut() {
         if let Some(list) = edges.get(&a.body) {
-            orient(a, list, &outward);
+            refine(a, list, &normals);
+            orient(a, list, &normals.flat);
             if matches!(a.expect, Expect::Blend { exact: Some(_), .. }) {
                 oriented += 1;
             }
@@ -631,12 +898,17 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
             length: 0.0,
             count: 0,
             curved: 0,
+            turning: 0.0,
+            edges: Vec::new(),
             line: None,
         });
         entry.length += l;
         entry.count += 1;
+        entry.edges.push(e.clone());
         if e.curve == "line" {
             entry.line = Some((e.start, e.end));
+        } else if let Some(t) = (e.curve == "circle").then(|| turning(e)).flatten() {
+            entry.turning += t;
         } else {
             entry.curved += 1;
         }
@@ -683,6 +955,8 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
             area: body.area,
             centroid: body.centroid,
             diag,
+            volume_bound: None,
+            area_bound: None,
         });
     };
     let pair_names: Vec<String> = pairs.keys().cloned().collect();
@@ -694,6 +968,8 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         faces: [a, b],
                         length,
                         curved,
+                        turning,
+                        edges: mine,
                         ..
                     }) = pairs.get(key)
                     else {
@@ -710,13 +986,12 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         _ => ("feature.chamfer", "distance", 0.15 * near),
                     };
                     let params = json!({"edges": [[a, b]], key_name: expr(size, unit)});
-                    let expect = Expect::Blend {
-                        size: rounded(size),
-                        length: *length,
-                        curved: *curved,
-                        chamfer: kind == Kind::Chamfer,
-                        exact: None,
-                    };
+                    let ends = loose_ends(mine, diag).len();
+                    let mut expect =
+                        blend(rounded(size), *length, *curved, ends, kind == Kind::Chamfer);
+                    if let Expect::Blend { turning: t, .. } = &mut expect {
+                        *t = *turning;
+                    }
                     push(kind, key, command, params, expect);
                 }
             }
@@ -911,6 +1186,176 @@ pub struct Measured {
     pub volume: f64,
     pub area: f64,
     pub centroid: [f64; 3],
+    /// How far `volume` can be off by the integrator's own account.
+    pub volume_bound: Option<f64>,
+    /// How far `area` can be off by the same account.
+    pub area_bound: Option<f64>,
+    /// For a blend whose change the volume cannot tell from nothing:
+    /// whether the result shows by other means that it was applied (its
+    /// own faces are there and the edges between the pair are gone,
+    /// [`blend_applied`]); `None` when not looked at.
+    pub applied: Option<bool>,
+}
+
+/// What a change of volume after `action` must exceed to be one:
+/// relative 1e-9 of the body, or the sum of the integrator's own bounds
+/// on the volume before and after when both are known and that is less,
+/// so never looser than 1e-9. A change no larger decides nothing either
+/// way. The bounds are each measure's own estimate of how far it is off,
+/// so their sum bounds a change's error by that same estimate; measured,
+/// the jitter of a change that changes nothing (the same body measured
+/// again after a move by nothing, its centre and its faces' order new)
+/// is far below it (a block 1800 times, the bracket 6000 times, a drum
+/// 5600 times below; `a_tiny_blend_on_a_large_body_is_told_by_its_faces`
+/// holds the drum's). On freeform bodies the bounds are far looser than
+/// 1e-9 (the impeller's: 0.36 of 3067, 1.2e-4, above its offsets' real
+/// changes of 0.08 to 0.7), and there 1e-9 stays the threshold.
+pub fn noise(action: &Action, after: &Measured) -> f64 {
+    let relative = 1e-9 * action.volume.abs();
+    match (action.volume_bound, after.volume_bound) {
+        (Some(b0), Some(b1)) if b0.is_finite() && b1.is_finite() => {
+            relative.min(b0.abs() + b1.abs())
+        }
+        _ => relative,
+    }
+}
+
+/// The noise of the area, as [`noise`] of the volume: relative 1e-9 of
+/// the body's area, or the integrator's bounds where those are less.
+pub fn area_noise(action: &Action, after: &Measured) -> f64 {
+    let relative = 1e-9 * action.area.abs();
+    match (action.area_bound, after.area_bound) {
+        (Some(b0), Some(b1)) if b0.is_finite() && b1.is_finite() => {
+            relative.min(b0.abs() + b1.abs())
+        }
+        _ => relative,
+    }
+}
+
+/// A bound on a blend's cross-section and its setback without the exact
+/// change: a chamfer's triangle of sides `d`, at most `d²/2`; a fillet's
+/// `r` times its setback `r·cot(θ/2)`, at the `wedge` θ where known, else
+/// at 10°.
+fn general_section(size: f64, chamfer: bool, wedge: Option<f64>) -> (f64, f64) {
+    if chamfer {
+        return (0.5 * size * size, size);
+    }
+    let per_r = wedge
+        .map(|w| 1.0 / (0.5 * w.min(std::f64::consts::PI)).tan())
+        .filter(|x| x.is_finite() && *x >= 0.0)
+        .unwrap_or(SETBACK);
+    (per_r * size * size, per_r * size)
+}
+
+/// Whether the volume cannot tell what `action` made from what it was
+/// made from, for a blend: then [`identity`] needs [`Measured::applied`].
+pub fn needs_witness(action: &Action, after: &Measured) -> bool {
+    matches!(action.expect, Expect::Blend { .. })
+        && (after.volume - action.volume).abs() <= noise(action, after)
+}
+
+/// The name the body of feature `id`, made from the body a face named
+/// `name` is of as its instance 0 (a blend, a face operation), gives the
+/// image of that face: `id:copy(0)/name`, with a leading run of instance
+/// 0 merged into the new one (docs/design/names.md, *Copies of copies*).
+pub fn copied(id: &str, name: &str) -> String {
+    let feature = |head: &str| {
+        head.strip_prefix('F')
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let rest = name
+        .split_once(":copy(0)/")
+        .filter(|(head, _)| feature(head))
+        .map_or(name, |(_, rest)| rest);
+    format!("{id}:copy(0)/{rest}")
+}
+
+/// Evidence besides the volume that the blend `action`, built as feature
+/// `id`, was applied: the result has faces of its own (named by `id`, not
+/// copies), both faces of the pair are still there under the names the
+/// result gives them ([`copied`]), and no edge lies between them any more.
+/// The reason when not.
+pub fn blend_applied<F>(call: &mut F, action: &Action, id: &str) -> Result<(), String>
+where
+    F: FnMut(&str, &Value) -> Result<Value, CallError>,
+{
+    let Some(Pair { faces: [a, b], .. }) = &action.pair else {
+        return Err("not an edge-pair action".into());
+    };
+    let inspect =
+        call("document.inspect", &json!({})).map_err(|e| format!("document.inspect: {e:?}"))?;
+    let body = inspect
+        .get("bodies")
+        .and_then(Value::as_array)
+        .and_then(|bodies| {
+            bodies
+                .iter()
+                .find(|b| b.get("feature").and_then(Value::as_str) == Some(id))
+        })
+        .ok_or_else(|| format!("{id} has no body"))?;
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    for list in [body.get("faceNames")].into_iter().flatten().chain(
+        body.get("faceAliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten(),
+    ) {
+        names.extend(
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        );
+    }
+    let own = format!("{id}:");
+    let copy = format!("{id}:copy(");
+    if !names
+        .iter()
+        .any(|n| n.starts_with(&own) && !n.starts_with(&copy))
+    {
+        return Err(format!("{id} has no face of its own"));
+    }
+    let pair = [copied(id, a), copied(id, b)];
+    if let Some(gone) = pair.iter().find(|n| !names.contains(n.as_str())) {
+        return Err(format!("{id} has no face {gone}"));
+    }
+    let edges = call(
+        "document.edges",
+        &json!({"feature": id, "between": [pair[0], pair[1]]}),
+    )
+    .map_err(|e| format!("document.edges: {e:?}"))?;
+    match edges.get("count").and_then(Value::as_u64) {
+        Some(0) => Ok(()),
+        Some(n) => Err(format!(
+            "{n} edges still lie between {} and {}",
+            pair[0], pair[1]
+        )),
+        None => Err(format!("no count in {edges}")),
+    }
+}
+
+/// Asks the engine once per body of `actions` how far its volume can be
+/// off (`document.measure` with `bound`) and gives each action its body's
+/// bound. A body whose bound cannot be had keeps none (the noise is then
+/// relative 1e-9 of it, [`noise`]).
+pub fn bound_all<F>(call: &mut F, actions: &mut [Action])
+where
+    F: FnMut(&str, &Value) -> Result<Value, CallError>,
+{
+    let mut bounds: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+    for a in actions.iter_mut() {
+        let (volume, area) = *bounds.entry(a.body.clone()).or_insert_with(|| {
+            let m = call(
+                "document.measure",
+                &json!({"feature": a.body, "bound": true}),
+            )
+            .ok();
+            let get = |key: &str| m.as_ref().and_then(|m| m.get(key)).and_then(num);
+            (get("volumeBound"), get("areaBound"))
+        });
+        a.volume_bound = volume;
+        a.area_bound = area;
+    }
 }
 
 /// The fillet's setback over its radius at the smallest dihedral angle
@@ -921,6 +1366,10 @@ const SETBACK: f64 = 11.430_052_302_761_343;
 /// moves the end of a blend, per unit of setback: `cot 10°`.
 const END_TILT: f64 = 5.671_281_819_617_709;
 
+/// How much more area of an end face at 10° to the edge a cross-section
+/// covers than its own: `1/sin 10°`.
+const END_SLANT: f64 = 5.758_770_483_143_634;
+
 /// Whether what was measured after `action` keeps its identity; the
 /// failed identity when not.
 pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
@@ -930,14 +1379,17 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
         volume,
         area,
         centroid,
+        applied,
+        ..
     } = *after;
     if !(volume.is_finite() && volume > 0.0) {
         return Err(format!("volume {volume} is not positive"));
     }
     let change = volume - v0;
     // Changes this small are within what the measure itself can be off by
-    // (relative 1e-9 of the body): no conclusion either way.
-    let noise = 1e-9 * v0.abs();
+    // (the integrator's own bounds before and after): no conclusion
+    // either way.
+    let noise = noise(action, after);
     let larger = a0.max(area);
     // The centroid is held to 1e-6 of the body's diagonal.
     let near = |a: [f64; 3], b: [f64; 3]| norm(sub(a, b)) <= 1e-6 * action.diag;
@@ -965,17 +1417,89 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
             size,
             length,
             curved,
+            turning,
+            tilt,
+            slant,
+            wedge,
             chamfer,
             exact,
+            ..
         } => {
-            changes("a blend")?;
-            if let Some(x) = exact {
-                // Where it ends, an end face cut at γ to the edge moves the
-                // end by up to the setback times cot γ: γ of 10° or more
-                // is assumed (cot 10° = 5.67).
-                let ends = 2.0 * END_TILT * x.setback * x.section;
+            let (section, setback) = general_section(size, chamfer, wedge);
+            // Around a curved edge the cross-section travels further than
+            // the edge by the setback times the angle the edge turns
+            // through (2π where that is not known); past each end it runs
+            // on onto the end face, up to the setback times cot γ (a
+            // straight edge between curved faces ending on a 45° chamfer,
+            // the turbofan's scallop in its flange, runs on by the setback
+            // at each end: 2.8 % more than the length alone allows, worked
+            // out independently in `a_blend_runs_on_past_slanted_ends`).
+            // `curved` is a small count.
+            #[allow(clippy::cast_precision_loss)]
+            let travel = length
+                + setback * (turning + std::f64::consts::TAU * curved as f64)
+                + setback * tilt;
+            // An exact blend's change, with what its ends may move it by.
+            let window = exact.map(|x| {
+                let run_on = tilt * x.setback * x.section;
                 let expected = x.section * x.length;
-                let (lo, hi) = ((expected - ends).max(0.0), expected + ends);
+                ((expected - run_on).max(0.0), expected + run_on)
+            });
+            let most = window.map_or(section * travel, |(_, hi)| hi);
+            if change.abs() <= noise {
+                // The volume cannot tell this blend from nothing. It may
+                // do without a change only when all it can change it by
+                // is within the noise (a small radius on a large body);
+                // then other evidence must show it was applied, and its
+                // area must have changed as such a blend changes it.
+                if most * (1.0 + 1e-6) > noise {
+                    return Err(format!(
+                        "a blend left the volume as it was ({v0} to {volume}, within {noise}), but may change it by up to {most}"
+                    ));
+                }
+                match applied {
+                    Some(true) => {}
+                    Some(false) => {
+                        return Err(format!(
+                            "a blend left the volume as it was ({v0} to {volume}, within {noise}) and the result does not show it was applied"
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "a blend left the volume as it was: {v0} to {volume} (within {noise}; nothing else looked at)"
+                        ));
+                    }
+                }
+                let gained = area - a0;
+                let room = area_noise(action, after);
+                if let Some(x) = exact {
+                    // The two faces lose a strip a setback wide each, the
+                    // blend's own face is `across` wide; each end face
+                    // gains or loses the cross-section (over sin γ), and
+                    // past each end the strips and the blend run on by up
+                    // to the setback times cot γ.
+                    let strip = x.across - 2.0 * x.setback;
+                    let expected = x.length * strip;
+                    let ends = slant * x.section + strip.abs() * x.setback * tilt;
+                    if (gained - expected).abs() > ends * (1.0 + 1e-6) + room {
+                        return Err(format!(
+                            "a blend changed the area by {gained}, not {expected} ± {ends}"
+                        ));
+                    }
+                } else {
+                    // The faces lose strips no wider than the setback, which
+                    // the blend's narrower face only partly gives back; the
+                    // end faces may gain at most the cross-section each.
+                    let (lo, hi) = (-(2.0 * setback * travel + slant * section), slant * section);
+                    if gained < lo * (1.0 + 1e-6) - room || gained > hi * (1.0 + 1e-6) + room {
+                        return Err(format!(
+                            "a blend changed the area by {gained}, not within [{lo}, {hi}]"
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            if let (Some(x), Some((lo, hi))) = (exact, window) {
                 let taken = if x.gains { change } else { -change };
                 if taken <= noise {
                     return Err(format!(
@@ -996,14 +1520,6 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            let (section, setback) = if chamfer {
-                (0.5 * size * size, size)
-            } else {
-                (SETBACK * size * size, SETBACK * size)
-            };
-            // `curved` is a small count.
-            #[allow(clippy::cast_precision_loss)]
-            let travel = length + std::f64::consts::TAU * setback * curved as f64;
             at_most("a blend", section * travel)
         }
         Expect::Offset(d) => {
@@ -1226,14 +1742,34 @@ where
             false,
         );
     };
-    let measured = Measured {
+    let mut measured = Measured {
         volume,
         area,
         centroid,
+        volume_bound: None,
+        area_bound: None,
+        applied: None,
     };
+    // The noise is never more than 1e-9 of the body; only a change below
+    // that needs the integrator's bounds, which cost an integration more.
+    if (volume - action.volume).abs() <= 1e-9 * action.volume.abs()
+        && let Ok(bounded) = call("document.measure", &json!({"feature": id, "bound": true}))
+    {
+        measured.volume_bound = bounded.get("volumeBound").and_then(num);
+        measured.area_bound = bounded.get("areaBound").and_then(num);
+    }
+    let mut witness = String::new();
+    if needs_witness(action, &measured) {
+        let applied = blend_applied(call, action, &id);
+        measured.applied = Some(applied.is_ok());
+        if let Err(why) = applied {
+            witness = why;
+        }
+    }
     let mut verdict = match identity(action, &measured) {
         Ok(()) => outcome(Verdict::Ok, "", false),
-        Err(why) => outcome(Verdict::Wrong, why, false),
+        Err(why) if witness.is_empty() => outcome(Verdict::Wrong, why, false),
+        Err(why) => outcome(Verdict::Wrong, format!("{why}: {witness}"), false),
     };
     verdict.after = Some((volume, area));
     verdict

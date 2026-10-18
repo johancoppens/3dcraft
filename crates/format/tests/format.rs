@@ -757,6 +757,24 @@ fn a_document_that_breaks_the_rules_is_not_saved() {
 }
 
 #[test]
+fn a_step_or_stl_file_opened_as_a_document_says_what_it_is() {
+    let step = b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nENDSEC;\n";
+    let bom = [&[0xef, 0xbb, 0xbf][..], b"  \n", step].concat();
+    for bytes in [&step[..], &bom] {
+        let error = from_bytes(bytes).unwrap_err();
+        assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
+        assert!(error.to_string().contains("STEP"), "{error}");
+        assert!(error.to_string().contains("not built yet"), "{error}");
+    }
+    let stl = b"solid part\n  facet normal 0 0 1\n    outer loop\n";
+    let error = from_bytes(stl).unwrap_err();
+    assert!(error.to_string().contains("STL"), "{error}");
+    // A word that merely starts like one is still just not a ZIP archive.
+    let error = from_bytes(b"solidly not a mesh").unwrap_err();
+    assert!(matches!(error, FormatError::Zip(_)), "{error}");
+}
+
+#[test]
 fn something_that_is_not_a_zip_is_an_error_that_says_what_the_file_should_be() {
     for bytes in [&b""[..], b"hello", b"{\"format\": \"3dcraft\"}", &[0; 100]] {
         let error = from_bytes(bytes).unwrap_err();
