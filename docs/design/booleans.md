@@ -239,7 +239,6 @@ The third oracle the developer asked for on 2026-10-17 (roadmap › *Oracles owe
 
 **Open.** The far-face rule matches by box distance only: faces near the tool but outside it are not checked; the volume allowance leaves out the second-order terms of the band; a rule for the area (`S(R) ≤ S(A) + S(B)` holds, a lower bound does not) is not used.
 
-
 ### Speed of freeform booleans and of their measures (2026-10-17)
 
 Profiled in release (stack samples of the running process, `eu-stack`, a few thousand per model; work counters where the samples left a doubt), on the showcase models opened (regenerated), measured, inspected and exported to STEP, the cusp's block edge and the boolean corpus. Where the time went before:
@@ -335,7 +334,6 @@ A fillet made as a boolean with its tool (the solid the fillet takes away, whose
 *Held to* (`fillet_contact.rs`, at 1e-3, 1 and 1e6): the blend's fillet and the boolean with the tool are the same body (volume within the tolerance times the area, area within a band of the tolerance along every edge, the same faces, shells, edges and vertices, the checker and the boolean's own check in full); closed forms (the block 1 − (1 − π/4) r², the rod by Pappus, a whole ring and a quarter); the rational tools against the analytic ones (tilted too for the block); the identities (the common part and the cut make up the body; the fillet and its tool share nothing; put back, the body). The blade root's rolling fillet (a spline face within a quarter of the tolerance of the exact one) and the boolean with the exact tool agree to 1e-2 of the tolerance times the area. B less the tool a rolling fillet takes away gives the fillet; put back, the body.
 
 *Still owed.* Where an edge touches a face tangentially (the body's edge across the end of a fillet, against the round face of its tool) the touch is placed within the length over which the edge stays within the tolerance of the face, `sqrt(2 tol r)` (the reach the test allows), not at the vertex of the other operand that is there: B less the tool a rolling fillet takes away has one short extra edge per such end (27 tolerances at scale 1 on the frustum, 48 on the lofted tip), and the test allows exactly those vertices within that reach. Snapping a touch to the other operand's vertex is tolerant entities' work (structural debt). A contact along a curve inside both faces still reads as touch points.
-
 
 ### Sheet bodies (2026-10-18, checklist item 5)
 
