@@ -21,6 +21,7 @@ pub mod extrude_to;
 pub mod fillet;
 pub mod helix;
 pub mod loft;
+pub mod lumps;
 pub mod move_face;
 pub mod offset_face;
 mod offset_normal;
@@ -196,6 +197,13 @@ pub enum KernelError {
         operation: &'static str,
         violation: boolean::Violation,
         count: usize,
+    },
+    /// A shell of the body could not be measured (`shell`, by index), so
+    /// the operation cannot tell what it encloses.
+    ShellUnmeasured {
+        operation: &'static str,
+        shell: craft3d_topo::ShellId,
+        error: craft3d_topo::MassError,
     },
     /// The operation leaves nothing: an intersection of bodies that do not
     /// overlap, a body minus one that contains it.
@@ -497,6 +505,15 @@ impl fmt::Display for KernelError {
                 } else {
                     String::new()
                 }
+            ),
+            KernelError::ShellUnmeasured {
+                operation,
+                shell,
+                error,
+            } => write!(
+                f,
+                "{operation}: shell {} cannot be measured: {error}",
+                shell.0
             ),
             KernelError::EmptyResult { operation } => {
                 write!(f, "{operation} leaves nothing: the result is empty")

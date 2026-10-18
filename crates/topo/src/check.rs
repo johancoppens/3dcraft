@@ -1,6 +1,6 @@
 //! The validity checker: what must hold for a body to be a body.
 
-use crate::{Body, BodyKind, Coedge, EdgeId, Face, FaceId, LoopId, VertexId};
+use crate::{Body, BodyKind, Coedge, EdgeId, Face, FaceId, LoopId, ShellId, VertexId};
 use craft3d_geom::Surface;
 use craft3d_math::{Bits, Tolerance};
 use std::collections::BTreeMap;
@@ -87,6 +87,37 @@ pub enum Defect {
         rings: i64,
         shells: usize,
     },
+    /// The faces of a shell do not hang together through edges: they are
+    /// `parts` pieces, which are shells of their own.
+    ShellApart {
+        shell: ShellId,
+        parts: usize,
+    },
+    /// An edge is used by faces of two shells, which are then one.
+    EdgeInTwoShells {
+        edge: EdgeId,
+        shells: [ShellId; 2],
+    },
+    /// One shell's V − E + F − R, less 2 for every face that keeps a
+    /// torus's handle, is not 2 (1 − genus) for any whole genus ≥ 0
+    /// (checked per shell when a solid has more than one, which the count
+    /// over the whole body does not catch where two shells make up for
+    /// each other).
+    ShellEuler {
+        shell: ShellId,
+        vertices: usize,
+        edges: usize,
+        faces: usize,
+        rings: i64,
+    },
+    /// The shells of a solid do not lie inside each other as the outsides
+    /// of lumps and their cavities do (found by `craft3d_kernel::lumps`,
+    /// which tells it from geometry: a cavity outside every lump, a lump
+    /// in the material of another, a shell that encloses no volume).
+    ShellNesting {
+        shell: ShellId,
+        reason: String,
+    },
 }
 
 impl fmt::Display for Defect {
@@ -170,6 +201,31 @@ impl fmt::Display for Defect {
                 "Euler-Poincaré fails: V - E + F - R = {vertices} - {edges} + {faces} - {rings} is not \
                  2 (S - G) for {shells} shells and a whole genus G >= 0"
             ),
+            Defect::ShellApart { shell, parts } => write!(
+                f,
+                "the faces of shell {} fall into {parts} pieces that share no edge; each must be a shell of its own",
+                shell.0
+            ),
+            Defect::EdgeInTwoShells { edge, shells } => write!(
+                f,
+                "edge {} is used by faces of shells {} and {}, which share no edge in a valid body",
+                edge.0, shells[0].0, shells[1].0
+            ),
+            Defect::ShellEuler {
+                shell,
+                vertices,
+                edges,
+                faces,
+                rings,
+            } => write!(
+                f,
+                "Euler-Poincaré fails for shell {}: V - E + F - R = {vertices} - {edges} + {faces} - {rings} is not \
+                 2 (1 - G) for a whole genus G >= 0",
+                shell.0
+            ),
+            Defect::ShellNesting { shell, reason } => {
+                write!(f, "shell {}: {reason}", shell.0)
+            }
         }
     }
 }
@@ -193,7 +249,7 @@ const HANDLE_STEPS: u32 = 32;
 ///
 /// `false` for anything that cannot be followed (a dangling reference, a
 /// number that is not finite): `check` reports those as what they are.
-fn keeps_handle(body: &Body, face: &Face) -> bool {
+pub(crate) fn keeps_handle(body: &Body, face: &Face) -> bool {
     let (Some(period_u), Some(period_v)) = (face.surface.period_u(), face.surface.period_v())
     else {
         return false;
@@ -513,6 +569,7 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
             }
         }
     }
+    let shells_sound = face_uses.iter().all(|&uses| uses == 1) && defects.is_empty();
     for (i, &uses) in face_uses.iter().enumerate() {
         if uses != 1 {
             defects.push(Defect::FaceUses {
@@ -554,5 +611,88 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
             });
         }
     }
+    if shells_sound {
+        shell_defects(body, &mut defects);
+    }
     defects
+}
+
+/// What holds for each shell on its own, once every face is in exactly one
+/// shell and every reference holds: its faces hang together through edges
+/// and share no edge with another shell's, and (for a solid of several
+/// shells) its counts satisfy Euler–Poincaré.
+fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
+    let mut shell_of = vec![ShellId(u32::MAX); body.faces.len()];
+    for (s, shell) in body.shells.iter().enumerate() {
+        for face in &shell.faces {
+            if let Some(slot) = shell_of.get_mut(face.0 as usize) {
+                *slot = ShellId(u32::try_from(s).unwrap_or(u32::MAX));
+            }
+        }
+    }
+    // An edge's shells, by the faces whose loops use it.
+    let mut edge_shell: BTreeMap<EdgeId, ShellId> = BTreeMap::new();
+    let mut reported: std::collections::BTreeSet<EdgeId> = std::collections::BTreeSet::new();
+    for (f, face) in body.faces.iter().enumerate() {
+        let Some(&shell) = shell_of.get(f) else {
+            continue;
+        };
+        for loop_id in &face.loops {
+            let Some(loop_) = body.loop_(*loop_id) else {
+                continue;
+            };
+            for coedge in &loop_.coedges {
+                let first = *edge_shell.entry(coedge.edge).or_insert(shell);
+                if first != shell && reported.insert(coedge.edge) {
+                    defects.push(Defect::EdgeInTwoShells {
+                        edge: coedge.edge,
+                        shells: [first.min(shell), first.max(shell)],
+                    });
+                }
+            }
+        }
+    }
+    // Pieces per shell: the groups of faces hanging together, counted by
+    // the shells their faces are in.
+    let mut parts = vec![0_usize; body.shells.len()];
+    for group in crate::face_groups(body) {
+        let mut seen = std::collections::BTreeSet::new();
+        for face in group {
+            if let Some(&shell) = shell_of.get(face.0 as usize)
+                && seen.insert(shell)
+                && let Some(count) = parts.get_mut(shell.0 as usize)
+            {
+                *count += 1;
+            }
+        }
+    }
+    for (s, &count) in parts.iter().enumerate() {
+        if count > 1 {
+            defects.push(Defect::ShellApart {
+                shell: ShellId(u32::try_from(s).unwrap_or(u32::MAX)),
+                parts: count,
+            });
+        }
+    }
+    if body.kind == BodyKind::Solid && body.shells.len() > 1 {
+        for s in 0..body.shells.len() {
+            let shell = ShellId(u32::try_from(s).unwrap_or(u32::MAX));
+            let Some((vertices, edges, faces, rings, handles)) =
+                crate::shells::shell_counts(body, shell)
+            else {
+                continue;
+            };
+            let chi = vertices as i64 - edges as i64 + faces as i64 - rings - 2 * handles;
+            let twice = 2 - chi;
+            if twice < 0 || twice % 2 != 0 {
+                defects.push(Defect::ShellEuler {
+                    shell,
+                    vertices,
+                    edges,
+                    faces,
+                    rings,
+                });
+            }
+        }
+    }
 }

@@ -570,6 +570,35 @@ fn make(s: &mut Session, solid: &Solid, name: &str, k: f64) {
     run(s, &format!("feature.{}", solid.kind), params);
 }
 
+/// A command and its parameters.
+type Step = (&'static str, Value);
+
+/// `params` with every length times `k`: the numbers under size,
+/// position, radius, height and thickness.
+fn scaled(params: &Value, k: f64) -> Value {
+    let mut out = params.clone();
+    if let Some(map) = out.as_object_mut() {
+        for (key, value) in map.iter_mut() {
+            let lengths = ["size", "position", "radius", "height", "thickness"];
+            if !lengths.contains(&key.as_str()) {
+                continue;
+            }
+            let new = match &*value {
+                Value::Array(items) => Value::Array(
+                    items
+                        .iter()
+                        .map(|x| json!(x.as_f64().unwrap() * k))
+                        .collect(),
+                ),
+                Value::Number(x) => json!(x.as_f64().unwrap() * k),
+                other => other.clone(),
+            };
+            *value = new;
+        }
+    }
+    out
+}
+
 /// `A op B` as the document's one body, or why the kernel refused.
 fn boolean(s: &mut Session, a: &Solid, b: &Solid, op: &str, k: f64) -> Built {
     make(s, a, "A", k);
@@ -1047,6 +1076,171 @@ fn freecad_reads_what_the_commands_build() {
                     boolean(s, a, b, op, k)
                 });
             }
+        }
+
+        // Several lumps and cavities made in several steps (the boolean
+        // checklist's item 5): a cut through the middle, a lump in a
+        // cavity, the same drilled through, a hollow in a hollow's
+        // cavity, two hollows overlapping, a closed shell of a hollow.
+        let lumpy: [(&str, Expect, &[Step]); 6] = [
+            (
+                "split",
+                FLAT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [12, 12, 2], "position": [-1, -1, 4], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "Result"}),
+                    ),
+                ],
+            ),
+            (
+                "nested",
+                FLAT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [3, 3, 3], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "Hollow"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [2, 2, 2], "position": [4, 4, 4], "name": "Core"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "union", "target": "Hollow", "tool": "Core", "name": "Result"}),
+                    ),
+                ],
+            ),
+            (
+                "nested-drilled",
+                EXACT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [3, 3, 3], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "Hollow"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [2, 2, 2], "position": [4, 4, 4], "name": "Core"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "union", "target": "Hollow", "tool": "Core", "name": "Nest"}),
+                    ),
+                    (
+                        "feature.cylinder",
+                        json!({"radius": 0.5, "height": 12, "position": [5, 5, -1], "name": "Drill"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "Nest", "tool": "Drill", "name": "Result"}),
+                    ),
+                ],
+            ),
+            (
+                "hollow-in-hollow",
+                FLAT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [6, 6, 6], "position": [2, 2, 2], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "Outer"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [3, 3, 3], "name": "C"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [2, 2, 2], "position": [4, 4, 4], "name": "D"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "C", "tool": "D", "name": "Inner"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "union", "target": "Outer", "tool": "Inner", "name": "Result"}),
+                    ),
+                ],
+            ),
+            (
+                "hollows-overlapping",
+                FLAT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [3, 3, 3], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "H1"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [10, 10, 10], "position": [5, 0, 0], "name": "C"}),
+                    ),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [8, 3, 3], "name": "D"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "C", "tool": "D", "name": "H2"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "union", "target": "H1", "tool": "H2", "name": "Result"}),
+                    ),
+                ],
+            ),
+            (
+                "hollow-shelled",
+                FLAT,
+                &[
+                    ("feature.block", json!({"size": [10, 10, 10], "name": "A"})),
+                    (
+                        "feature.block",
+                        json!({"size": [4, 4, 4], "position": [3, 3, 3], "name": "B"}),
+                    ),
+                    (
+                        "feature.boolean",
+                        json!({"op": "subtract", "target": "A", "tool": "B", "name": "Hollow"}),
+                    ),
+                    (
+                        "feature.shell",
+                        json!({"source": "Hollow", "thickness": 0.5, "name": "Result"}),
+                    ),
+                ],
+            ),
+        ];
+        for (name, expect, steps) in &lumpy {
+            set.add(&format!("{tag}-lumps-{name}"), "mm", k, *expect, |s, k| {
+                for (id, params) in steps.iter() {
+                    run(s, id, scaled(params, k));
+                }
+                Ok(())
+            });
         }
     }
 

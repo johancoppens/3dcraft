@@ -329,3 +329,68 @@ fn a_hole_left_outside_its_face_or_across_its_border_is_found() {
     let across = plate_with_hole_moved(Vec3::new(2.0, 0.0, 0.0));
     assert!(has(&across, |d| matches!(d, Defect::StrandedLoop { .. })));
 }
+
+/// Two blocks apart, one shell each (`merge` keeps them so).
+fn two_blocks() -> Body {
+    let far = solids::block(
+        &Frame::WORLD.at(Vec3::new(10.0, 0.0, 0.0)).unwrap(),
+        1.0,
+        1.0,
+        1.0,
+    )
+    .unwrap()
+    .body;
+    craft3d_topo::merge(&[&block(), &far]).unwrap().0
+}
+
+#[test]
+fn shells_that_hang_together_and_apart_are_told_from_how_faces_share_edges() {
+    let body = two_blocks();
+    assert_eq!(body.shells.len(), 2);
+    assert_eq!(defects(&body), vec![]);
+    assert_eq!(craft3d_topo::shell_genera(&body), Some(vec![0, 0]));
+    assert_eq!(craft3d_topo::face_groups(&body).len(), 2);
+    // The same faces, three of each block in each shell: the counts over
+    // the whole body still fit (V − E + F = 16 − 24 + 12 = 2 · 2), the
+    // shells do not.
+    let mut mixed = body.clone();
+    let first: Vec<FaceId> = mixed.shells[0].faces.clone();
+    let second: Vec<FaceId> = mixed.shells[1].faces.clone();
+    mixed.shells[0].faces = first[..3].iter().chain(&second[..3]).copied().collect();
+    mixed.shells[1].faces = first[3..].iter().chain(&second[3..]).copied().collect();
+    assert!(genus(&mixed).is_some(), "the whole body's counts fit");
+    assert!(has(&mixed, |d| matches!(
+        d,
+        Defect::ShellApart { parts: 2, .. }
+    )));
+    assert!(has(&mixed, |d| matches!(d, Defect::EdgeInTwoShells { .. })));
+    // Both blocks in one shell: the whole body's counts already fail,
+    // and the shell is in two pieces.
+    let mut one = body.clone();
+    let all: Vec<FaceId> = first.iter().chain(&second).copied().collect();
+    one.shells = vec![craft3d_topo::Shell { faces: all }];
+    assert!(has(&one, |d| matches!(
+        d,
+        Defect::ShellApart { parts: 2, .. }
+    )));
+    assert!(has(&one, |d| matches!(d, Defect::Euler { .. })));
+}
+
+#[test]
+fn a_shell_alone_is_a_body_of_its_faces_and_only_what_they_use() {
+    let body = two_blocks();
+    let second = craft3d_topo::shell_alone(&body, craft3d_topo::ShellId(1)).unwrap();
+    assert_eq!(
+        (
+            second.vertices.len(),
+            second.edges.len(),
+            second.faces.len(),
+            second.shells.len()
+        ),
+        (8, 12, 6, 1)
+    );
+    assert_eq!(defects(&second), vec![]);
+    let volume = craft3d_topo::mass_properties(&second).unwrap().volume;
+    assert!((volume - 1.0).abs() < 1e-9, "{volume}");
+    assert!(craft3d_topo::shell_alone(&body, craft3d_topo::ShellId(2)).is_none());
+}
