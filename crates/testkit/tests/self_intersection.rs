@@ -27,12 +27,12 @@ mod boolean_common;
 use boolean_common::{Rng, SCALES, boxed, rod, tolerance};
 use craft3d_geom::{Curve3, Line, Plane, Surface};
 use craft3d_kernel::KernelError;
-use craft3d_kernel::boolean::{BooleanOp, boolean};
+use craft3d_kernel::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with};
 use craft3d_kernel::boolean::{BooleanResult, Operand};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
-use craft3d_math::{Frame, Transform, Vec3};
+use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_tess::{
     CrossingKind, FaceRole, SelfCheck, SelfCheckParams, ShellDefect, Touched,
     body_self_intersections, body_self_intersections_near,
@@ -42,6 +42,25 @@ use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, check, merge};
 use std::collections::BTreeMap;
 
 use BooleanOp::{Intersect, Subtract, Union};
+
+/// A body that touches itself, which the boolean refuses as zero
+/// thickness since 2026-10-17 (a shell that touches itself, fuzz seed
+/// 5279): asserts the refusal, then makes the body without it, as the
+/// mesh detector's input.
+fn touching(a: &Body, b: &Body, op: BooleanOp, tol: &Tolerance) -> Body {
+    assert!(
+        matches!(
+            boolean(a, b, op, tol),
+            Err(KernelError::ZeroThickness { .. })
+        ),
+        "the boolean refuses a body that touches itself"
+    );
+    let unrefused = BooleanOptions {
+        refuse_zero_thickness: false,
+        ..BooleanOptions::default()
+    };
+    boolean_with(a, b, op, tol, &unrefused).unwrap().body
+}
 
 fn v(x: f64, y: f64, z: f64) -> Vec3 {
     Vec3::new(x, y, z)
@@ -776,7 +795,7 @@ fn a_shell_that_touches_itself_along_a_line_is_caught() {
                 let under = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
                 extrude(&profiles, &under, 0.0, 3.0 * k, &tol).unwrap().body
             };
-            let touching = boolean(&block, &notch(0.0), Subtract, &tol).unwrap().body;
+            let touching = touching(&block, &notch(0.0), Subtract, &tol);
             assert_eq!(check(&touching, &tol), [], "the checker does not see it");
             assert_eq!(touching.shells.len(), 1);
             let found = assert_caught(&touching, k, "a notch touching the outside");
@@ -1585,7 +1604,7 @@ fn pairs_that_once_fooled_the_detector() {
         let tol = tolerance(k);
         let volume = |body: &Body| craft3d_topo::mass_properties(body).unwrap().volume;
         for (x, y) in [(&a, &b), (&b, &a)] {
-            let union = boolean(x, y, Union, &tol).unwrap().body;
+            let union = touching(x, y, Union, &tol);
             assert_eq!(check(&union, &tol), []);
             assert_eq!(union.shells.len(), 1);
             let (is, should) = (volume(&union), volume(&a) + volume(&b));
@@ -1883,7 +1902,7 @@ fn a_shell_touching_itself_cut_into_two_parts_is_refused() {
             let profiles = detect_profiles(&curves, &tol).unwrap();
             let under = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
             let notch = extrude(&profiles, &under, 0.0, 3.0 * k, &tol).unwrap().body;
-            let touching = boolean(&block, &notch, Subtract, &tol).unwrap().body;
+            let touching = touching(&block, &notch, Subtract, &tol);
             assert_eq!(touching.shells.len(), 1);
             // Everything from the notch's mouth on taken off.
             let beyond = frame.at(frame.point(-k, 1.5 * k, -k)).unwrap();
