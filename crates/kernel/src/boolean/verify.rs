@@ -42,6 +42,12 @@
 //!    A point within twice the tolerance of any of the three boundaries
 //!    (where [`super::contains_points`] does not tell) is passed over.
 //!
+//! With a sheet: a sheet trimmed by a solid is held to the same rules (a
+//! sheet's volume is zero, and it has no inside, so no point is
+//! compared); a solid cut by a sheet is held to rules 1 and 2 of a
+//! difference, no larger than the solid and within its box, since the
+//! part a cut keeps of a face far from the sheet is the side it is on.
+//!
 //! Every rule holds for any pair of solids and any surface; nothing in it
 //! knows what kind of faces it is given. It costs a box per face, a match
 //! per face far from the other operand (no intersections), a ray per
@@ -51,7 +57,7 @@ use super::{BooleanOp, Operand, contains_points};
 use crate::KernelError;
 use craft3d_geom::Surface;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
-use craft3d_topo::{Body, FaceId, VertexId, mass_bound};
+use craft3d_topo::{Body, BodyKind, FaceId, VertexId, mass_bound};
 use std::fmt;
 
 /// What [`verify`] looks at.
@@ -288,6 +294,33 @@ pub fn verify(
     let (boxes_a, boxes_b) = (face_boxes(a)?, face_boxes(b)?);
     let (box_a, box_b) = (boxes_a.whole, boxes_b.whole);
     let mut found = Verification::default();
+    // A solid cut by a sheet keeps a part of the solid on one side of the
+    // sheet: within the solid's box, no larger than the solid, and
+    // nothing of it is known to be kept far from the sheet (the side
+    // there is the side of the cut). Rules 2 and 1 as for a difference;
+    // no faces far from the sheet and no membership (the sheet has no
+    // inside).
+    if a.kind == BodyKind::Solid && b.kind == BodyKind::Sheet {
+        if options.volumes {
+            volumes(
+                a,
+                b,
+                BooleanOp::Subtract,
+                result,
+                (&box_a, &box_b),
+                tol,
+                &mut found,
+            );
+        }
+        out_of_reach(
+            BooleanOp::Subtract,
+            result,
+            (&box_a, &box_b),
+            tol,
+            &mut found.violations,
+        );
+        return Ok(found);
+    }
     if options.volumes {
         volumes(a, b, op, result, (&box_a, &box_b), tol, &mut found);
     }
@@ -360,6 +393,11 @@ fn volumes(
             (VolumeRule::UnionLoses, va.max(vb), true),
             (VolumeRule::UnionGains, va + vb, false),
         ],
+        // A solid cut by a sheet (the volume of a sheet is zero): no more
+        // than the solid, and what is cut away is not bounded by the tool.
+        BooleanOp::Subtract if b.kind == BodyKind::Sheet => {
+            vec![(VolumeRule::SubtractAdds, va, false)]
+        }
         BooleanOp::Subtract => vec![
             (VolumeRule::SubtractAdds, va, false),
             (VolumeRule::SubtractTakesTooMuch, va - vb, true),

@@ -520,6 +520,17 @@ pub struct Pattern {
     pub layout: PatternLayout,
 }
 
+/// A sheet: the flat faces the closed profiles of a sketch bound, one
+/// face per profile with its holes, each facing the way the sketch's
+/// normal points. It has an area and no volume; a boolean trims it by a
+/// solid, or cuts a solid with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fill {
+    /// The sketch (or an offset of one's profiles) the profiles come
+    /// from. It has to come before this feature in the history.
+    pub sketch: FeatureId,
+}
+
 /// How two bodies are combined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -879,6 +890,7 @@ pub enum FeatureKind {
     DeleteFace(DeleteFace),
     Thread(Thread),
     OffsetProfile(OffsetProfile),
+    Fill(Fill),
 }
 
 impl FeatureKind {
@@ -913,6 +925,7 @@ impl FeatureKind {
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
             FeatureKind::OffsetProfile(_) => "offsetProfile",
+            FeatureKind::Fill(_) => "fill",
         }
     }
 
@@ -991,7 +1004,8 @@ impl FeatureKind {
             | FeatureKind::DatumAxis(_)
             | FeatureKind::DatumPoint(_)
             | FeatureKind::DatumHelix(_)
-            | FeatureKind::OffsetProfile(_) => None,
+            | FeatureKind::OffsetProfile(_)
+            | FeatureKind::Fill(_) => None,
         }
     }
 
@@ -1011,6 +1025,7 @@ impl FeatureKind {
             FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
             FeatureKind::Sweep(s) => vec![s.sketch, s.path],
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
+            FeatureKind::Fill(f) => vec![f.sketch],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -1104,7 +1119,8 @@ impl FeatureKind {
             FeatureKind::Boolean(_)
             | FeatureKind::Loft(_)
             | FeatureKind::Sweep(_)
-            | FeatureKind::DeleteFace(_) => {
+            | FeatureKind::DeleteFace(_)
+            | FeatureKind::Fill(_) => {
                 out = Vec::new();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
@@ -1208,7 +1224,8 @@ impl FeatureKind {
             FeatureKind::Boolean(_)
             | FeatureKind::Loft(_)
             | FeatureKind::Sweep(_)
-            | FeatureKind::DeleteFace(_) => Vec::new(),
+            | FeatureKind::DeleteFace(_)
+            | FeatureKind::Fill(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),

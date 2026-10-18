@@ -605,3 +605,24 @@ pub(crate) fn not_through_itself(
         "the cut at the face did not find where the extrusion meets it, and the result is refused rather than handed on",
     )
 }
+
+/// A fill: the flat faces the closed profiles of the sketch bound, as a
+/// sheet. Named as the start cap of an extrusion of the same profiles
+/// (`F5:startCap(e1,e2,e3,e4)`, `F5:startEdge(e2)`,
+/// `F5:startVertex(e1,e2)`), so a cap's name keeps when a pattern's count
+/// changes and an offset's curves name what they bound.
+pub(crate) fn fill(
+    doc: &Document,
+    feature: &craft3d_doc::Fill,
+    earlier: &[FeatureResult],
+) -> Result<(Body, Origins), String> {
+    let Swept {
+        profiles,
+        plane,
+        tolerance,
+        ..
+    } = swept(doc, earlier, feature.sketch, "fill")?;
+    let made =
+        craft3d_kernel::extrude::fill(&profiles, &plane, &tolerance).map_err(|e| e.to_string())?;
+    Ok((made.body, made.origins))
+}

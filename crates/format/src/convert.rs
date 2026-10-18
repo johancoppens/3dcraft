@@ -287,6 +287,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 ruled: *ruled,
                 closed: *closed,
             },
+            doc::FeatureKind::Fill(doc::Fill {
+                sketch: doc::FeatureId(sketch),
+            }) => manifest::FeatureKind::Fill { sketch: *sketch },
             doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
@@ -1439,6 +1442,9 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     .collect(),
                 ruled,
                 closed,
+            }),
+            manifest::FeatureKind::Fill { sketch } => doc::FeatureKind::Fill(doc::Fill {
+                sketch: doc::FeatureId(sketch),
             }),
             manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),

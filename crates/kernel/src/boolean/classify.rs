@@ -6,7 +6,8 @@ use super::outline::{Outline, Side, boxes_meet, line_in_box, surface_distance};
 use super::regions::{self, Half};
 use super::section::Solid;
 use super::{
-    Arcs, BooleanOp, FaceSource, IMPRINT_LOST, LOST, NO_RAY, ON_A_FACE, Operand, Stop, Vertices,
+    Arcs, BooleanOp, FaceSource, IMPRINT_LOST, LOST, NO_RAY, ON_A_FACE, Operand, Reason, Stop,
+    Vertices,
 };
 use super::{face_id, geometry};
 use craft3d_geom::intersect::CurveIntersection;
@@ -16,7 +17,7 @@ use craft3d_topo::Coedge;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Class {
+pub(super) enum Class {
     In,
     Out,
     /// On a face of the other solid whose outward normal is the same.
@@ -225,7 +226,11 @@ pub(super) struct Kept {
 
 /// The boundary of a face in arcs: per loop, the uses of the pieces of its
 /// edges in the loop's direction.
-fn boundary(solid: &Solid, face: usize, pieces: &[Vec<Half>]) -> Result<Vec<Vec<Half>>, Stop> {
+pub(super) fn boundary(
+    solid: &Solid,
+    face: usize,
+    pieces: &[Vec<Half>],
+) -> Result<Vec<Vec<Half>>, Stop> {
     let f = solid.body.faces.get(face).ok_or(Stop::of(LOST))?;
     let mut loops = Vec::with_capacity(f.loops.len());
     for loop_ in f.loops.iter().filter_map(|&l| solid.body.loop_(l)) {
@@ -243,8 +248,132 @@ fn boundary(solid: &Solid, face: usize, pieces: &[Vec<Half>]) -> Result<Vec<Vec<
     Ok(loops)
 }
 
+/// What a selection keeps of a region of `own` in the place `class`:
+/// `Ok(Some(flip))` keeps it (turned inside out when `flip`), `Ok(None)`
+/// leaves it out, `Err` refuses the operation.
+pub(super) type Table = fn(BooleanOp, Operand, Class) -> Result<Option<bool>, Reason>;
+
+/// The table of two solids. Of two coincident regions with the same
+/// normal A's is the one kept; with opposite normals the solids lie on
+/// either side and only A minus B has a face there, A's.
+pub(super) fn solids(op: BooleanOp, own: Operand, class: Class) -> Result<Option<bool>, Reason> {
+    Ok(match (op, own, class) {
+        (BooleanOp::Union, _, Class::Out) => Some(false),
+        (BooleanOp::Union, Operand::A, Class::OnSame) => Some(false),
+        (BooleanOp::Intersect, _, Class::In) => Some(false),
+        (BooleanOp::Intersect, Operand::A, Class::OnSame) => Some(false),
+        (BooleanOp::Subtract, Operand::A, Class::Out | Class::OnOpposite) => Some(false),
+        (BooleanOp::Subtract, Operand::B, Class::In) => Some(true),
+        _ => None,
+    })
+}
+
+/// A piece of a sheet that lies on a face of the solid.
+pub(super) const SHEET_ON_FACE: Reason = "a piece of the sheet lies on a face of the solid: whether it is inside or outside is not settled (open decision D-open-14)";
+
+/// The table of a sheet's regions against a solid: the sheet is the
+/// target and is trimmed (intersect keeps what is inside the solid,
+/// subtract what is outside), or the sheet is the tool and its piece
+/// inside the solid is the face where the solid is cut (turned inside
+/// out for subtract, which keeps the side in front of the sheet).
+pub(super) fn sheet(op: BooleanOp, own: Operand, class: Class) -> Result<Option<bool>, Reason> {
+    match class {
+        Class::OnSame | Class::OnOpposite => Err(SHEET_ON_FACE),
+        Class::In => Ok(match (op, own) {
+            (BooleanOp::Intersect, _) => Some(false),
+            (BooleanOp::Subtract, Operand::B) => Some(true),
+            _ => None,
+        }),
+        Class::Out => Ok(match (op, own) {
+            (BooleanOp::Subtract, Operand::A) => Some(false),
+            _ => None,
+        }),
+    }
+}
+
+/// The regions of face `face` of `own`, each as its loops of arcs, and
+/// what is known of where they lie before classifying them: `apart` when
+/// the face is whole and nowhere near `other_box` (so outside it).
+pub(super) struct FaceRegions<'o> {
+    pub regions: Vec<Vec<Vec<Half>>>,
+    pub whole: bool,
+    pub apart: bool,
+    pub outline: Option<&'o Outline>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn face_regions<'o>(
+    own: &'o Solid,
+    face: usize,
+    pieces: &[Vec<Half>],
+    interior: &BTreeMap<usize, BTreeSet<usize>>,
+    crossing: &BTreeMap<usize, BTreeSet<usize>>,
+    coincident: &[(usize, bool)],
+    arcs: &Arcs,
+    vertices: &Vertices,
+    other_box: &craft3d_math::Bbox3,
+    tol: f64,
+) -> Result<FaceRegions<'o>, Stop> {
+    let none = BTreeSet::new();
+    let named = [own.name(face)];
+    let loops = boundary(own, face, pieces)?;
+    let across = interior.get(&face).unwrap_or(&none);
+    let whole = across.is_empty()
+        && own.edges_of(face).iter().all(|edge| {
+            pieces
+                .get(edge.0 as usize)
+                .is_some_and(|halves| halves.len() == 1)
+        });
+    // A whole face that is nowhere near the other solid's box is
+    // outside that solid, without looking for a point of it (and
+    // without its outline).
+    let apart = whole
+        && coincident.is_empty()
+        && own
+            .boxes
+            .get(face)
+            .is_some_and(|own_box| !boxes_meet(own_box, other_box, 4.0 * tol));
+    let outline = if apart {
+        None
+    } else {
+        Some(own.outline(face)?)
+    };
+    let regions = if whole {
+        vec![loops]
+    } else {
+        let outline = outline.ok_or(Stop::of(LOST))?;
+        let (regions, dropped) = regions::build(
+            outline.sheet(),
+            outline.reversed,
+            &loops,
+            across,
+            &arcs.arcs,
+            &vertices.points,
+            tol,
+        )
+        .map_err(|r| Stop::of(r).at(&named))?;
+        // Where the other body's face passes through this one, what
+        // is on one side of the curve is inside that body and what is
+        // on the other side is not: such a curve divides the face, or
+        // a piece of the imprint is missing.
+        if crossing
+            .get(&face)
+            .is_some_and(|must| !must.is_disjoint(&dropped))
+        {
+            return Err(Stop::of(IMPRINT_LOST).at(&named));
+        }
+        regions
+    };
+    Ok(FaceRegions {
+        regions,
+        whole,
+        apart,
+        outline,
+    })
+}
+
 /// The regions of every face of `own`, classified against `other`, and of
-/// those the ones the operation keeps.
+/// those the ones the operation keeps by `table`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn select(
     own: &Solid,
@@ -256,64 +385,24 @@ pub(super) fn select(
     arcs: &Arcs,
     vertices: &Vertices,
     op: BooleanOp,
+    table: Table,
     tolerance: &Tolerance,
     kept: &mut Vec<Kept>,
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
-    let none = BTreeSet::new();
     let other_box = other.bbox();
     for face in 0..own.faces() {
         let named = [own.name(face)];
         let f = own.body.faces.get(face).ok_or(Stop::of(LOST))?;
-        let loops = boundary(own, face, pieces)?;
-        let across = interior.get(&face).unwrap_or(&none);
-        let whole = across.is_empty()
-            && own.edges_of(face).iter().all(|edge| {
-                pieces
-                    .get(edge.0 as usize)
-                    .is_some_and(|halves| halves.len() == 1)
-            });
         let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
-        // A whole face that is nowhere near the other solid's box is
-        // outside that solid, without looking for a point of it (and
-        // without its outline).
-        let apart = whole
-            && coincident.is_empty()
-            && own
-                .boxes
-                .get(face)
-                .is_some_and(|own_box| !boxes_meet(own_box, &other_box, 4.0 * tol));
-        let outline = if apart {
-            None
-        } else {
-            Some(own.outline(face)?)
-        };
-        let regions = if whole {
-            vec![loops]
-        } else {
-            let outline = outline.ok_or(Stop::of(LOST))?;
-            let (regions, dropped) = regions::build(
-                outline.sheet(),
-                outline.reversed,
-                &loops,
-                across,
-                &arcs.arcs,
-                &vertices.points,
-                tol,
-            )
-            .map_err(|r| Stop::of(r).at(&named))?;
-            // Where the other body's face passes through this one, what
-            // is on one side of the curve is inside that body and what is
-            // on the other side is not: such a curve divides the face, or
-            // a piece of the imprint is missing.
-            if crossing
-                .get(&face)
-                .is_some_and(|must| !must.is_disjoint(&dropped))
-            {
-                return Err(Stop::of(IMPRINT_LOST).at(&named));
-            }
-            regions
-        };
+        let FaceRegions {
+            regions,
+            whole,
+            apart,
+            outline,
+        } = face_regions(
+            own, face, pieces, interior, crossing, coincident, arcs, vertices, &other_box, tol,
+        )?;
         for loops in regions {
             // A face that nothing divides is its own outline.
             let made;
@@ -340,21 +429,10 @@ pub(super) fn select(
                 }
                 (false, None) => return Err(Stop::of(LOST).at(&named)),
             };
-            // Of two coincident regions with the same normal A's is the
-            // one kept; with opposite normals the solids lie on either
-            // side and only A minus B has a face there, A's.
-            let (keep, flip) = match (op, own.operand, class) {
-                (BooleanOp::Union, _, Class::Out) => (true, false),
-                (BooleanOp::Union, Operand::A, Class::OnSame) => (true, false),
-                (BooleanOp::Intersect, _, Class::In) => (true, false),
-                (BooleanOp::Intersect, Operand::A, Class::OnSame) => (true, false),
-                (BooleanOp::Subtract, Operand::A, Class::Out | Class::OnOpposite) => (true, false),
-                (BooleanOp::Subtract, Operand::B, Class::In) => (true, true),
-                _ => (false, false),
-            };
-            if !keep {
+            let Some(flip) = table(op, own.operand, class).map_err(|r| Stop::of(r).at(&named))?
+            else {
                 continue;
-            }
+            };
             let loops = if flip {
                 loops
                     .into_iter()

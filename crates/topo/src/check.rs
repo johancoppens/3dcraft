@@ -53,7 +53,8 @@ pub enum Defect {
         edge: EdgeId,
         distance: f64,
     },
-    /// In a solid every edge is used exactly twice.
+    /// In a solid every edge is used exactly twice; in a sheet once (an
+    /// edge of its boundary) or twice.
     EdgeUses {
         edge: EdgeId,
         uses: usize,
@@ -109,6 +110,14 @@ pub enum Defect {
         edges: usize,
         faces: usize,
         rings: i64,
+    },
+    /// More than two edges of a sheet's boundary end at a vertex: two
+    /// pieces of the boundary touch there, and the sheet is pinched to a
+    /// point (not a manifold with boundary). `ends` counts the boundary
+    /// edge ends at the vertex.
+    BoundaryPinch {
+        vertex: VertexId,
+        ends: usize,
     },
     /// The shells of a solid do not lie inside each other as the outsides
     /// of lumps and their cavities do (found by `craft3d_kernel::lumps`,
@@ -172,7 +181,7 @@ impl fmt::Display for Defect {
             ),
             Defect::EdgeUses { edge, uses } => write!(
                 f,
-                "edge {} is used {uses} times; in a solid every edge is shared by exactly two faces",
+                "edge {} is used {uses} times; in a solid every edge is shared by exactly two faces, in a sheet by one or two",
                 edge.0
             ),
             Defect::EdgeUsedTwiceSameWay { edge } => write!(
@@ -220,8 +229,13 @@ impl fmt::Display for Defect {
             } => write!(
                 f,
                 "Euler-Poincaré fails for shell {}: V - E + F - R = {vertices} - {edges} + {faces} - {rings} is not \
-                 2 (1 - G) for a whole genus G >= 0",
+                 2 (1 - G) - B for a whole genus G >= 0 and its B loops of boundary edges",
                 shell.0
+            ),
+            Defect::BoundaryPinch { vertex, ends } => write!(
+                f,
+                "{ends} edges of the sheet's boundary end at vertex {}: the boundary touches itself there, so the sheet is pinched to a point",
+                vertex.0
             ),
             Defect::ShellNesting { shell, reason } => {
                 write!(f, "shell {}: {reason}", shell.0)
@@ -409,7 +423,11 @@ pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
 /// edges, closed loops, each loop in one face and each face in one shell,
 /// boundary edges on their face's surface, and for solids that every edge
 /// is used once in each direction and that the counts satisfy
-/// Euler–Poincaré. Also that a face's loops lie inside each
+/// Euler–Poincaré. For sheets: every edge is used once (an edge of the
+/// boundary) or once each way, no more than two boundary edges end at a
+/// vertex, and each shell satisfies Euler–Poincaré with its boundary,
+/// `V − E + F − R − 2H = 2 (1 − G) − B` with `B` its loops of boundary
+/// edges ([`crate::boundary_loops`]). Also that a face's loops lie inside each
 /// other as a face's do, for faces on a plane (`stranded_loops`). Not
 /// checked yet: self-intersection, the same for loops on curved faces,
 /// and that each face is bounded by its
@@ -610,6 +628,22 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
                 shells,
             });
         }
+    } else {
+        // A sheet: an edge of its boundary is used once, any other edge
+        // once each way.
+        for i in 0..body.edges.len() {
+            let edge = EdgeId(i as u32);
+            let uses = edge_uses.get(&edge).map_or(&[][..], Vec::as_slice);
+            match uses {
+                [_] => {}
+                [a, b] if a != b => {}
+                [_, _] => defects.push(Defect::EdgeUsedTwiceSameWay { edge }),
+                _ => defects.push(Defect::EdgeUses {
+                    edge,
+                    uses: uses.len(),
+                }),
+            }
+        }
     }
     if shells_sound {
         shell_defects(body, &mut defects);
@@ -674,7 +708,40 @@ fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
             });
         }
     }
-    if body.kind == BodyKind::Solid && body.shells.len() > 1 {
+    // At a vertex of a sheet at most two edges of a shell's boundary end
+    // (two shells that share a vertex touch, which is geometry's to
+    // refuse, as for the lumps of a solid).
+    if body.kind == BodyKind::Sheet {
+        let mut uses: BTreeMap<EdgeId, usize> = BTreeMap::new();
+        for face in &body.faces {
+            for loop_ in face.loops.iter().filter_map(|l| body.loop_(*l)) {
+                for coedge in &loop_.coedges {
+                    *uses.entry(coedge.edge).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut ends: BTreeMap<(ShellId, VertexId), usize> = BTreeMap::new();
+        for (&edge, _) in uses.iter().filter(|&(_, &n)| n == 1) {
+            let (Some(&shell), Some(e)) = (edge_shell.get(&edge), body.edge(edge)) else {
+                continue;
+            };
+            for end in [e.start, e.end] {
+                *ends.entry((shell, end)).or_insert(0) += 1;
+            }
+        }
+        for ((_, vertex), count) in ends {
+            if count > 2 {
+                defects.push(Defect::BoundaryPinch {
+                    vertex,
+                    ends: count,
+                });
+            }
+        }
+    }
+    // A sheet's shells are counted one by one always: what one shell's
+    // boundary loops allow, another's cannot make up for.
+    let sheet = body.kind == BodyKind::Sheet;
+    if (body.kind == BodyKind::Solid && body.shells.len() > 1) || sheet {
         for s in 0..body.shells.len() {
             let shell = ShellId(u32::try_from(s).unwrap_or(u32::MAX));
             let Some((vertices, edges, faces, rings, handles)) =
@@ -682,8 +749,16 @@ fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
             else {
                 continue;
             };
+            let boundary = if sheet {
+                match crate::shells::boundary_loops(body, shell) {
+                    Some(loops) => i64::try_from(loops).unwrap_or(i64::MAX),
+                    None => continue,
+                }
+            } else {
+                0
+            };
             let chi = vertices as i64 - edges as i64 + faces as i64 - rings - 2 * handles;
-            let twice = 2 - chi;
+            let twice = 2 - chi - boundary;
             if twice < 0 || twice % 2 != 0 {
                 defects.push(Defect::ShellEuler {
                     shell,
