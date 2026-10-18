@@ -4,6 +4,7 @@
 //! Reference: Piegl & Tiller, *The NURBS Book*, 2nd ed., ch. 1 (Bernstein
 //! polynomials, Bézier surfaces).
 
+pub mod allowance;
 pub mod certify;
 pub mod closure;
 mod curve;
@@ -236,6 +237,7 @@ impl BezierPatch {
     /// Point at `(u, v)`. Parameters outside `[0, 1]` extrapolate the
     /// polynomial; non-finite parameters give a non-finite point.
     pub fn eval(&self, u: f64, v: f64) -> Vec3 {
+        allowance::charge(1);
         let bu = bernstein(self.degree_u, u);
         let bv = bernstein(self.degree_v, v);
         // Sum of `bu[i] * bv[j] * P(i, j)`, row by row.
@@ -250,6 +252,7 @@ impl BezierPatch {
 
     /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`.
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
+        allowance::charge(1);
         let bu = bernstein(self.degree_u, u);
         let bv = bernstein(self.degree_v, v);
         let du = bernstein_derivative(self.degree_u, u);

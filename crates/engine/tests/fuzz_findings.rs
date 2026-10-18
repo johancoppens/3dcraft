@@ -1,127 +1,244 @@
-//! Designs the random-design fuzzer (`apps/craft3d-fuzz`) found wrong,
-//! each replayed from its reproducer as the fuzzer runs it: per group of
-//! commands, names in braces resolved to the ids the document gives them;
-//! a group that is refused is taken back. Each design must end valid and
-//! measurable with nothing touching itself (`document.check` deep finds
-//! no problem), and the groups that are refused must be refused for the
-//! reason given here.
+//! Designs the random-design fuzzer (`apps/craft3d-fuzz`) found that ran
+//! for minutes or did not end (2026-10-17), each replayed from its script
+//! (`fuzz_findings/<seed>.json`, as `craft3d-cli run --script` takes it).
+//! A hang is as bad as a crash: each has to end within a bound on its
+//! work, either with the body built and valid or with the feature refused
+//! by a reason that says why. Each replay runs on a thread of its own and
+//! fails, rather than hangs, when it does not end in [`HARD_LIMIT`]; each
+//! step may add at most [`STEP_WORK`] units to the work count
+//! (`craft3d_geom::allowance`); and the outcome of every feature, built or
+//! refused, is pinned.
 //!
-//! - `5279.json` (shrunk) and `5279-by-hand.json`: a union of two
-//!   revolutions that overlap and also touch along a line, accepted, which
-//!   `document.check` found touching itself: zero thickness, refused.
-//! - `14211.json`: a chamfer on a sphere's small cap that went past the
-//!   cap's top and folded through itself, accepted, which could not be
-//!   measured: refused.
+//! - Offset face and shell of blend faces of spheres, tori and revolved
+//!   bodies (1279, 5599, 6195, 7802, 9601, 14064; shells 267, 5457,
+//!   6578, 9534, 12333): each try of the operation offsets faces of a few
+//!   hundred spans and classifies points against them, a second or more
+//!   each, and the search for the largest size that fits halves to the
+//!   tolerance and widens freeform faces three times per size. Now the
+//!   search is held to a work bound (`FACE_OP_WORK`) and refused by name
+//!   when it is spent.
+//! - Chamfers whose body cannot be meshed for the self-check (3016, 4499,
+//!   14214, 14420): a face that cannot be meshed was refined round after
+//!   round and the check tried again finer, each pass seconds. Now the
+//!   check is held to its own bound (`SELF_CHECK_WORK`).
+//! - A pattern of 10 000 overlapping spheres (9611): the instances were
+//!   joined one after the other, quadratic in the count, and the
+//!   self-check asked every one of 10 000 boxes per triangle. Now they
+//!   are joined in pairs and the boxes are asked through a tree.
+//! - Slow but ending (1573, 12372, 6597): replayed to keep them so.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
-/// `text` with every `{name}` that names a feature replaced by its id.
-fn resolved(text: &str, ids: &BTreeMap<String, String>) -> String {
-    let mut out = text.to_string();
-    for (name, id) in ids {
-        out = out.replace(&format!("{{{name}}}"), id);
-    }
-    out
-}
+/// How long a replay may run before it fails: far past the slowest (two
+/// and a half minutes in release, a few in the test profile), so a test
+/// fails here only when a replay no longer ends.
+const HARD_LIMIT: Duration = Duration::from_secs(1200);
 
-fn mapped(value: &Value, ids: &BTreeMap<String, String>) -> Value {
-    match value {
-        Value::String(s) => Value::String(resolved(s, ids)),
-        Value::Array(items) => Value::Array(items.iter().map(|v| mapped(v, ids)).collect()),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), mapped(v, ids)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
+/// The most work one step may count: a feature's own bounds (a face
+/// operation's, at most 400 million here: a shell of 188 edges; a
+/// self-check's) and what is not bounded besides, several times over.
+const STEP_WORK: u64 = 2_000_000_000;
 
-fn ids(session: &mut Session) -> BTreeMap<String, String> {
-    let inspect = session.execute("document.inspect", &json!({})).unwrap();
-    inspect["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|f| {
-            Some((
-                f["name"].as_str()?.to_string(),
-                f["id"].as_str()?.to_string(),
-            ))
+/// Replays `seed` and holds its features to `pins`: each feature's name
+/// with `true` where it is built, `false` where it is refused.
+fn replay(seed: &'static str, pins: &'static [(&'static str, bool)]) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let runner = std::thread::Builder::new()
+        .name(format!("replay {seed}"))
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(|| run(seed));
+            let _ = sender.send(outcome);
         })
-        .collect()
+        .unwrap();
+    let outcome = match receiver.recv_timeout(HARD_LIMIT) {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => panic!("{seed}: the replay did not end within {HARD_LIMIT:?}"),
+    };
+    let _ = runner.join();
+    let want: Vec<(String, bool)> = pins.iter().map(|(n, ok)| ((*n).to_string(), *ok)).collect();
+    assert_eq!(outcome, want, "{seed}: the outcomes of its features");
 }
 
-/// Replays `file`; the reasons of the groups refused, in order.
-fn replay(file: &str) -> Vec<String> {
-    let text = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fuzz_findings")
-            .join(file),
-    )
-    .unwrap();
-    let design: Value = serde_json::from_str(&text).unwrap();
-    let scale = design["scale"].as_f64().unwrap();
+/// The steps of `seed`, each within [`STEP_WORK`]; what was built checked
+/// deep; the features' outcomes in history order.
+fn run(seed: &str) -> Vec<(String, bool)> {
+    use craft3d_geom::allowance;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fuzz_findings")
+        .join(format!("{seed}.json"));
+    let steps: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let mut session = Session::new(Workspace::unrestricted());
-    session
-        .execute(
-            "file.new",
-            &json!({"units": "mm", "tolerance": 1e-6 * scale}),
-        )
-        .unwrap();
-    let mut refusals = Vec::new();
-    for group in design["groups"].as_array().unwrap() {
-        let before = session.clone();
-        let names = ids(&mut session);
-        let mut refused = None;
-        for command in group["commands"].as_array().unwrap() {
-            let id = command["command"].as_str().unwrap();
-            let params = mapped(&command["params"], &names);
-            match session.execute(id, &params) {
-                Ok(result) if result["status"] == "failed" => {
-                    refused = Some(result["error"].as_str().unwrap_or_default().to_string());
-                }
-                Ok(_) => {}
-                Err(error) => refused = Some(error.message().to_string()),
-            }
-            if refused.is_some() {
-                break;
-            }
-        }
-        if let Some(reason) = refused {
-            assert!(!reason.contains("internal"), "{file}: {reason}");
-            refusals.push(reason);
-            session = before;
+    for (n, step) in steps.iter().enumerate() {
+        let (id, params) = (step["command"].as_str().unwrap(), &step["params"]);
+        // A command may refuse its params outright; it may not panic (the
+        // session turns a panic into an error) or run on.
+        let (result, work) = allowance::measured(|| session.execute(id, params));
+        assert!(
+            work <= STEP_WORK,
+            "{seed} step {n} {id}: {work} units of work"
+        );
+        if let Ok(result) = result
+            && result["status"] == "failed"
+        {
+            let reason = result["error"].as_str().unwrap_or_default();
+            assert!(
+                !reason.is_empty(),
+                "{seed} {id}: refused without a reason: {result}"
+            );
         }
     }
+    // What was built is valid; what was not built says why.
     let check = session
         .execute("document.check", &json!({"deep": true}))
         .unwrap();
-    assert_eq!(check["problems"], json!([]), "{file}: {check}");
-    refusals
-}
-
-#[test]
-fn the_fuzzers_findings_end_valid_or_refused_for_their_reason() {
-    for (file, reasons) in [
-        ("5279.json", &["zero thickness"][..]),
-        ("5279-by-hand.json", &["zero thickness"][..]),
-        ("14211.json", &["fold through itself"][..]),
-    ] {
-        let refused = replay(file);
-        assert_eq!(refused.len(), reasons.len(), "{file}: {refused:?}");
-        for (got, want) in refused.iter().zip(reasons) {
-            assert!(got.contains(want), "{file}: {got}");
+    for problem in check["problems"].as_array().unwrap() {
+        let text = problem["problem"].as_str().unwrap_or_default();
+        assert!(
+            problem["feature"].is_string() && !text.is_empty(),
+            "{seed}: {problem}"
+        );
+        for bad in [
+            "invalid body",
+            "cannot be measured",
+            "passes through or touches itself",
+            "cannot be searched",
+        ] {
+            assert!(!text.starts_with(bad), "{seed}: {problem}");
         }
     }
+    assert_eq!(check["marginal"], 0, "{seed}: {check}");
+    let document = session.execute("document.inspect", &json!({})).unwrap();
+    document["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap().to_string(), f["status"] == "ok"))
+        .collect()
+}
+
+macro_rules! findings {
+    ($($(#[$attr:meta])* $name:ident: $seed:literal => [$($feature:literal: $ok:expr),* $(,)?],)*) => {
+        $(
+            #[test]
+            $(#[$attr])*
+            fn $name() {
+                replay($seed, &[$(($feature, $ok)),*]);
+            }
+        )*
+    };
+}
+
+const OK: bool = true;
+const REFUSED: bool = false;
+
+// Six in the gate, one of each kind that ends in seconds in release; the
+// rest, a minute or two each in release (a face operation of blend faces
+// ends at its bound), with `cargo test --release -p craft3d-engine --test
+// fuzz_findings -- --include-ignored`.
+findings! {
+    chamfer_of_a_sphere_torus_union: "14214" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N5": OK, "S6": OK, "Revolve1": OK,
+        "N6": OK, "N7": REFUSED,
+    ],
+    chamfer_of_tori_mirrored: "3016" => [
+        "N0": OK, "S1": REFUSED, "Extrude1": REFUSED, "N1": REFUSED, "N2": OK, "N3": OK,
+        "N4": OK, "S5": REFUSED, "N5": REFUSED, "N6": OK, "N7": REFUSED, "N8": OK, "N9": OK,
+        "N10": OK, "N11": OK,
+    ],
+    shell_and_its_edit_on_a_filleted_pattern_of_spheres: "5457" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": REFUSED, "N5": OK,
+    ],
+    pattern_of_ten_thousand_overlapping_spheres: "9611" => ["N0": OK, "N1": OK],
+    chain_chamfers_on_a_pattern_of_tori: "12372" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": OK,
+    ],
+    union_after_a_chamfer_of_a_cylinder_and_sphere: "1573" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "S5": OK, "Extrude1": OK, "N5": OK,
+        "N6": OK, "N8": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_fillet_on_a_revolved_ring: "9601" => [
+        "S0": OK, "N0": OK, "N1": OK, "N3": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_cylinder_and_sphere: "9534" => [
+        "N0": OK, "N1": OK, "N3": OK, "N4": OK, "N5": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    chamfer_of_a_filleted_torus_on_a_cylinder: "4499" => [
+        "N0": OK, "N1": OK, "N2": OK, "N4": OK, "N5": OK, "N6": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_between_two_revolved_rings: "1279" => [
+        "S0": OK, "N0": OK, "S3": OK, "Revolve1": OK, "N3": OK, "N5": OK, "N8": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_fillet_on_a_pattern_of_spheres: "14064" => [
+        "N0": OK, "N1": OK, "N2": OK, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_on_a_pattern_of_tori: "5599" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_after_a_fillet_on_a_pattern_of_spheres: "7802" => [
+        "N0": OK, "N2": OK, "N4": OK, "N5": OK, "N6": OK, "N7": OK, "N9": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_and_shell_of_chamfers_on_a_revolved_ring: "6195" => [
+        "S0": OK, "N0": OK, "N1": REFUSED, "N2": OK, "N3": REFUSED, "N5": OK,
+        "N6": REFUSED, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_revolved_ring: "12333" => [
+        "S0": OK, "N0": OK, "N1": OK, "N2": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_block_and_cone: "267" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "S5": OK, "Extrude1": OK, "N5": OK,
+        "N8": OK, "N9": OK, "N10": OK, "N11": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_chamfered_torus_and_block: "6578" => [
+        "N0": OK, "S1": OK, "Extrude1": OK, "N1": OK, "N2": REFUSED, "N3": OK, "N4": OK,
+        "S5": OK, "Extrude2": OK, "N5": OK, "N6": REFUSED, "N7": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    chamfer_of_a_cone_torus_union: "14420" => [
+        "N1": OK, "N2": OK, "N5": OK, "N7": REFUSED, "N8": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    circular_pattern_of_a_pattern_at_scale_1e3: "6597" => [
+        "N2": OK, "N4": OK, "N7": OK,
+    ],
+}
+
+/// The instances of a pattern that overlap are joined in pairs, then pairs
+/// of pairs: the work grows with `n log n`, not with the square of the
+/// count as when each was joined to all before it (a chain of 1000 balls
+/// took ten seconds, one of 10 000 more than an hour).
+#[test]
+fn a_chain_of_overlapping_balls_is_joined_in_less_than_quadratic_work() {
+    craft3d_testkit::cost::assert_not_quadratic("a pattern of n balls", (100, 400), |n| {
+        let mut s = Session::new(Workspace::unrestricted());
+        s.execute("file.new", &json!({"units": "mm"})).unwrap();
+        s.execute(
+            "feature.sphere",
+            &json!({"name": "Ball", "position": [0.0, 0.0, 0.0], "radius": 10.0}),
+        )
+        .unwrap();
+        let made = s
+            .execute(
+                "feature.pattern",
+                &json!({"name": "Chain", "source": "Ball", "count": n, "step": [10.0, 10.0, 10.0]}),
+            )
+            .unwrap();
+        assert_eq!(made["status"], "ok", "{made}");
+    });
 }

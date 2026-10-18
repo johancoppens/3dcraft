@@ -1,0 +1,9 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.000001}},
+  {"command":"feature.sphere","params":{"name":"N0","position":[-5.0,-0.0,5.0],"radius":10.0}},
+  {"command":"feature.pattern","params":{"count":5.0,"name":"N1","source":"N0","step":[10.0,10.0,0.0]}},
+  {"command":"feature.fillet","params":{"chain":false,"edges":[["F2:copy(0)/F1:face(0)","F2:copy(1)/F1:face(0)"],["F2:copy(1)/F1:face(0)","F2:copy(2)/F1:face(0)"]],"name":"N2","radius":5.0}},
+  {"command":"feature.offsetFace","params":{"distance":-1.25,"faces":["F3:copy(0)/F1:face(0)"],"name":"N3"}},
+  {"command":"feature.shell","params":{"name":"N5","open":[],"source":"N2","thickness":1.25}},
+  {"command":"feature.edit","params":{"feature":"N5","thickness":2.5}}
+]

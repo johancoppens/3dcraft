@@ -1,0 +1,12 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.000001}},
+  {"command":"feature.sphere","params":{"name":"N0","position":[2.5,-5.0,10.0],"radius":2.5}},
+  {"command":"feature.torus","params":{"angle":"0 deg","axis":[0.0,10.0,10.0],"major":10.0,"minor":7.5,"name":"N1","position":[-1.2413871534086942,-3.7553256555620433,8.75]}},
+  {"command":"feature.sphere","params":{"name":"N2","position":[-5.0,-5.0,-15.0],"radius":2.5}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N3","op":"subtract","target":"N0","tool":"N1"}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N5","op":"union","target":"N2","tool":"N3"}},
+  {"command":"sketch.create","params":{"name":"S6","offset":7.5,"plane":"xy"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[7.5,2.5],[10.0,2.5],[10.0,10.0],[7.5,10.0]],"sketch":"S6"}},
+  {"command":"feature.revolve","params":{"angle":"90 deg","axis":"y","cut":"N5","name":"N6","sketch":"S6"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":1.25,"edges":[["F8:copy(0)/F5:copy(1)/F4:copy(0)/F1:face(0)","F8:copy(0)/F5:copy(1,1)/F2:face(0)"]],"name":"N7"}}
+]

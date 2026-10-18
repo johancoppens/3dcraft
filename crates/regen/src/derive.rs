@@ -321,53 +321,96 @@ fn instances_meet(doc: &Document, placed: &[Body]) -> Result<bool, String> {
     Ok(false)
 }
 
-/// The instances joined into one body by the kernel's union, one after
-/// the other: where they touch or overlap they become one piece, and no
-/// face is left inside the material. Returns the body and, for each of
-/// its faces, the instances and the faces of the source it has a piece
-/// of: one pair for a face that is a piece of one instance's face, more
-/// for a face the union merged from the faces of several (three bars end
-/// to end: one top), the one it is named after first; and for each of its
-/// edges and vertices the instance and the entity of the source it is,
-/// when it is one through every union.
+/// The instances joined into one body by the kernel's union: where they
+/// touch or overlap they become one piece, and no face is left inside the
+/// material. Returns the body and, for each of its faces, the instances
+/// and the faces of the source it has a piece of: one pair for a face that
+/// is a piece of one instance's face, more for a face the union merged
+/// from the faces of several (three bars end to end: one top), the one it
+/// is named after first; and for each of its edges and vertices the
+/// instance and the entity of the source it is, when it is one through
+/// every union.
+///
+/// **Joined in pairs, not one after the other.** Each union costs about
+/// the size of its operands, so joining every instance to all those
+/// before it costs the square of the count (a chain of 1000 spheres took
+/// ten seconds, one of 10 000 more than an hour: fuzzing, 2026-10-17).
+/// Instead neighbours in instance order are joined, then neighbouring
+/// pairs, and so on: every instance is in about `log₂ n` unions, the
+/// whole costs `n log n`. The order is fixed (the left part is always the
+/// lower instances, operand A), so the body is the same on every run, and
+/// a face of several instances is named after the lowest of them, as
+/// before.
 fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, Kept), String> {
     use craft3d_kernel::boolean::{
         BooleanOp, EdgeSource, FaceSource, Operand, VertexSource, boolean,
     };
+    /// A body made of the instances `first..=last`, with where its
+    /// entities came from.
+    struct Part {
+        body: Body,
+        sources: Contributors,
+        edges: Kept,
+        vertices: Kept,
+        first: u64,
+        last: u64,
+    }
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    let Some((first, others)) = placed.split_first() else {
+    let mut parts: Vec<Part> = placed
+        .iter()
+        .enumerate()
+        .map(|(index, body)| {
+            let instance = index as u64;
+            Part {
+                sources: (0..body.faces.len())
+                    .map(|face| vec![(instance, face)])
+                    .collect(),
+                edges: (0..body.edges.len())
+                    .map(|edge| Some((instance, edge)))
+                    .collect(),
+                vertices: (0..body.vertices.len())
+                    .map(|v| Some((instance, v)))
+                    .collect(),
+                body: body.clone(),
+                first: instance,
+                last: instance,
+            }
+        })
+        .collect();
+    if parts.is_empty() {
         return Err("there is no instance".to_string());
-    };
-    let mut body = first.clone();
-    let mut sources: Contributors = (0..body.faces.len()).map(|face| vec![(0, face)]).collect();
-    let mut edges: Kept = (0..body.edges.len()).map(|edge| Some((0, edge))).collect();
-    let mut vertices: Kept = (0..body.vertices.len()).map(|v| Some((0, v))).collect();
-    // An entity of the body so far is what it already was; one of the new
-    // instance is its own; one the union made is nobody's.
-    let through = |so_far: &Kept, operand: Operand, index: u32, instance: u64| match operand {
-        Operand::A => so_far.get(index as usize).copied().flatten(),
-        Operand::B => Some((instance, index as usize)),
-    };
-    for (index, other) in others.iter().enumerate() {
-        let instance = index.saturating_add(1) as u64;
-        let result = boolean(&body, other, BooleanOp::Union, &tolerance).map_err(|e| {
-            format!("instance {instance} touches or overlaps the ones before it and cannot be joined to them: {e}")
+    }
+    let join = |a: Part, b: Part| -> Result<Part, String> {
+        let result = boolean(&a.body, &b.body, BooleanOp::Union, &tolerance).map_err(|e| {
+            let name = |p: &Part| {
+                if p.first == p.last {
+                    format!("instance {}", p.first)
+                } else {
+                    format!("instances {} to {}", p.first, p.last)
+                }
+            };
+            format!(
+                "{} and {} touch or overlap and cannot be joined: {e}",
+                name(&a),
+                name(&b)
+            )
         })?;
-        let mut next = Contributors::with_capacity(result.faces.len());
+        let mut sources = Contributors::with_capacity(result.faces.len());
         for (face, source) in result.faces.iter().enumerate() {
-            // A face of the body so far brings every instance it already
-            // had a piece of; a face of the new instance is its own. The
-            // kernel's source comes first, then what it merged in.
+            // A face of either part brings every instance it already had
+            // a piece of. The kernel's source comes first, then what it
+            // merged in.
             let mut pairs = Vec::new();
             let mut add = |from: &FaceSource| -> Result<(), String> {
-                let face = from.face.0 as usize;
-                let earlier: &[(u64, usize)] = match from.operand {
-                    Operand::A => sources
-                        .get(face)
-                        .ok_or("the union lost track of a face".to_string())?,
-                    Operand::B => &[(instance, face)],
+                let part = match from.operand {
+                    Operand::A => &a,
+                    Operand::B => &b,
                 };
+                let earlier = part
+                    .sources
+                    .get(from.face.0 as usize)
+                    .ok_or("the union lost track of a face".to_string())?;
                 for pair in earlier {
                     if !pairs.contains(pair) {
                         pairs.push(*pair);
@@ -379,30 +422,59 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, 
             for from in result.merged.get(face).into_iter().flatten() {
                 add(from)?;
             }
-            next.push(pairs);
+            sources.push(pairs);
         }
-        edges = result
+        let through = |operand: Operand, index: u32, of: fn(&Part) -> &Kept| {
+            let part = match operand {
+                Operand::A => &a,
+                Operand::B => &b,
+            };
+            of(part).get(index as usize).copied().flatten()
+        };
+        let edges = result
             .edges
             .iter()
             .map(|source| match source {
-                EdgeSource::Kept { operand, edge } => through(&edges, *operand, edge.0, instance),
+                EdgeSource::Kept { operand, edge } => through(*operand, edge.0, |p| &p.edges),
                 EdgeSource::Intersection { .. } => None,
             })
             .collect();
-        vertices = result
+        let vertices = result
             .vertices
             .iter()
             .map(|source| match source {
                 VertexSource::Kept { operand, vertex } => {
-                    through(&vertices, *operand, vertex.0, instance)
+                    through(*operand, vertex.0, |p| &p.vertices)
                 }
                 VertexSource::New { .. } => None,
             })
             .collect();
-        body = result.body;
-        sources = next;
+        Ok(Part {
+            body: result.body,
+            sources,
+            edges,
+            vertices,
+            first: a.first,
+            last: b.last,
+        })
+    };
+    // Level by level: each pass halves the parts (an odd one out goes on
+    // as it is), so there are about log₂ n passes.
+    while parts.len() > 1 {
+        let mut next = Vec::with_capacity(parts.len().div_ceil(2));
+        let mut pending = parts.into_iter();
+        while let Some(a) = pending.next() {
+            match pending.next() {
+                Some(b) => next.push(join(a, b)?),
+                None => next.push(a),
+            }
+        }
+        parts = next;
     }
-    Ok((body, sources, edges, vertices))
+    let Some(whole) = parts.pop() else {
+        return Err("there is no instance".to_string());
+    };
+    Ok((whole.body, whole.sources, whole.edges, whole.vertices))
 }
 
 pub(crate) fn build(
@@ -525,4 +597,159 @@ pub(crate) fn build(
         names,
         instances: maps,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
+    use super::*;
+    use craft3d_doc::Units;
+    use craft3d_kernel::boolean::{
+        BooleanOp, EdgeSource, FaceSource, Operand, VertexSource, boolean,
+    };
+    use craft3d_math::Frame;
+
+    /// The join as it was before 2026-10-17: each instance joined to the
+    /// union of all before it. The reference for [`joined`].
+    fn one_after_another(doc: &Document, placed: &[Body]) -> (Body, Contributors, Kept, Kept) {
+        let tolerance =
+            craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular).unwrap();
+        let (first, others) = placed.split_first().unwrap();
+        let mut body = first.clone();
+        let mut sources: Contributors = (0..body.faces.len()).map(|f| vec![(0, f)]).collect();
+        let mut edges: Kept = (0..body.edges.len()).map(|e| Some((0, e))).collect();
+        let mut vertices: Kept = (0..body.vertices.len()).map(|v| Some((0, v))).collect();
+        let through = |so_far: &Kept, operand: Operand, index: u32, instance: u64| match operand {
+            Operand::A => so_far.get(index as usize).copied().flatten(),
+            Operand::B => Some((instance, index as usize)),
+        };
+        for (index, other) in others.iter().enumerate() {
+            let instance = index as u64 + 1;
+            let result = boolean(&body, other, BooleanOp::Union, &tolerance).unwrap();
+            let mut next = Contributors::new();
+            for (face, source) in result.faces.iter().enumerate() {
+                let mut pairs = Vec::new();
+                let mut add = |from: &FaceSource| {
+                    let earlier: Vec<(u64, usize)> = match from.operand {
+                        Operand::A => sources[from.face.0 as usize].clone(),
+                        Operand::B => vec![(instance, from.face.0 as usize)],
+                    };
+                    for pair in earlier {
+                        if !pairs.contains(&pair) {
+                            pairs.push(pair);
+                        }
+                    }
+                };
+                add(source);
+                for from in result.merged.get(face).into_iter().flatten() {
+                    add(from);
+                }
+                next.push(pairs);
+            }
+            edges = result
+                .edges
+                .iter()
+                .map(|s| match s {
+                    EdgeSource::Kept { operand, edge } => {
+                        through(&edges, *operand, edge.0, instance)
+                    }
+                    EdgeSource::Intersection { .. } => None,
+                })
+                .collect();
+            vertices = result
+                .vertices
+                .iter()
+                .map(|s| match s {
+                    VertexSource::Kept { operand, vertex } => {
+                        through(&vertices, *operand, vertex.0, instance)
+                    }
+                    VertexSource::New { .. } => None,
+                })
+                .collect();
+            body = result.body;
+            sources = next;
+        }
+        (body, sources, edges, vertices)
+    }
+
+    fn placed(source: &Body, steps: usize, step: [f64; 3]) -> Vec<Body> {
+        (0..steps)
+            .map(|i| {
+                let k = i as f64;
+                source
+                    .transformed(&craft3d_math::Transform::translation(
+                        craft3d_math::Vec3::new(step[0] * k, step[1] * k, step[2] * k),
+                    ))
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    /// The faces' sources as a set: the same faces whatever their order,
+    /// each with the instances and source faces it has a piece of, the one
+    /// it is named after first.
+    fn sorted(sources: &Contributors) -> Vec<Vec<(u64, usize)>> {
+        let mut all = sources.clone();
+        all.sort();
+        all
+    }
+
+    /// Joined in pairs, the body is the one joined one instance at a time:
+    /// as many faces, edges and vertices, the same volume and area, and
+    /// every face with the same sources, the one it is named after first
+    /// (three bars end to end: one top, named after the first bar).
+    #[test]
+    fn pairs_join_to_the_body_one_after_another_does() {
+        let doc = Document::new(Units::default());
+        let bar = craft3d_kernel::primitives::block(&Frame::WORLD, 4.0, 1.0, 1.0).unwrap();
+        let ball = craft3d_kernel::primitives::sphere(&Frame::WORLD, 1.0).unwrap();
+        let cube = craft3d_kernel::primitives::block(&Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+        let cases = [
+            (
+                "bars end to end, overlapping",
+                placed(&bar, 5, [3.0, 0.0, 0.0]),
+            ),
+            (
+                "bars end to end, touching",
+                placed(&bar, 3, [4.0, 0.0, 0.0]),
+            ),
+            ("overlapping balls", placed(&ball, 7, [1.2, 0.3, 0.0])),
+            ("touching cubes", placed(&cube, 6, [1.0, 0.0, 0.0])),
+            ("a grid's row of cubes", placed(&cube, 4, [0.5, 0.5, 0.0])),
+        ];
+        for (what, instances) in cases {
+            let (body, sources, edges, vertices) = joined(&doc, &instances).unwrap();
+            let (want, want_sources, want_edges, want_vertices) =
+                one_after_another(&doc, &instances);
+            assert_eq!(body.faces.len(), want.faces.len(), "{what}: faces");
+            assert_eq!(body.edges.len(), want.edges.len(), "{what}: edges");
+            assert_eq!(body.vertices.len(), want.vertices.len(), "{what}: vertices");
+            assert_eq!(
+                sorted(&sources),
+                sorted(&want_sources),
+                "{what}: face sources"
+            );
+            let kept = |k: &Kept| {
+                let mut all: Vec<_> = k.iter().flatten().copied().collect();
+                all.sort();
+                all
+            };
+            assert_eq!(kept(&edges), kept(&want_edges), "{what}: edges kept");
+            assert_eq!(
+                kept(&vertices),
+                kept(&want_vertices),
+                "{what}: vertices kept"
+            );
+            let (m, w) = (
+                craft3d_topo::mass_properties(&body).unwrap(),
+                craft3d_topo::mass_properties(&want).unwrap(),
+            );
+            assert!(
+                (m.volume - w.volume).abs() <= 1e-9 * w.volume,
+                "{what}: volume"
+            );
+            assert!((m.area - w.area).abs() <= 1e-9 * w.area, "{what}: area");
+        }
+    }
 }

@@ -269,3 +269,41 @@ fn a_surface_that_cannot_be_fitted_past_its_domain_is_fitted_up_to_it() {
     });
     assert!(off <= limit, "{off:e}");
 }
+
+/// Under a work bound (`craft3d_geom::allowance`) too small for it, the
+/// proof and the fit stop and say so, in no more work than the bound and
+/// a pass; without one the same offset is made, and its work is counted.
+#[test]
+fn an_offset_under_a_work_bound_too_small_for_it_stops_and_says_so() {
+    use craft3d_geom::allowance;
+    let frame = tilted(1.0);
+    let sphere = revolved(&frame, 0.0, 2.0, (-0.7, 0.9), (0.2, 1.9));
+    let centre = frame.origin();
+    let d = 0.6 * outward(&sphere, |_| centre);
+    let before = allowance::spent();
+    offset(&sphere, d, 0.25e-6).unwrap();
+    let whole = allowance::spent() - before;
+    assert!(whole > 100, "the offset was not counted: {whole}");
+    for bound in [0, 1] {
+        let before = allowance::spent();
+        let got = allowance::within(bound, || offset(&sphere, d, 0.25e-6));
+        assert!(
+            matches!(got, Err(OffsetError::Spent)),
+            "bound {bound}: {got:?}"
+        );
+        assert!(allowance::spent() - before < whole / 4, "bound {bound}");
+        assert!(matches!(
+            allowance::within(bound, || regular(&sphere, d)),
+            Err(OffsetError::Spent)
+        ));
+    }
+    // Half way: stopped, or done in the pass that crossed the bound (a
+    // pass is not cut short, and what it made is right), never more.
+    let before = allowance::spent();
+    let got = allowance::within(whole / 2, || offset(&sphere, d, 0.25e-6));
+    assert!(matches!(got, Err(OffsetError::Spent) | Ok(_)), "{got:?}");
+    assert!(allowance::spent() - before <= whole);
+    // The bound is gone with its closure.
+    assert!(!allowance::exhausted());
+    offset(&sphere, d, 0.25e-6).unwrap();
+}

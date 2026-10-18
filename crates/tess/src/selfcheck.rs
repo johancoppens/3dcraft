@@ -613,9 +613,30 @@ fn first_chord(body: &Body, params: &SelfCheckParams) -> Result<f64, TessError> 
     Ok((params.relative_chord * size).max(4.0 * tolerance))
 }
 
+/// The work one check may do ([`craft3d_geom::allowance`] units, about a
+/// microsecond each), all its passes together. A face that cannot be meshed
+/// is refined round after round, and the check tried again finer: on faces
+/// of a few hundred spans that went on for a minute and more before it
+/// gave up (fuzzing, 2026-10-17). Past the bound the check ends with
+/// [`TessError::Spent`], which a caller treats as a body it could not look
+/// at.
+pub const SELF_CHECK_WORK: u64 = 20_000_000;
+
 /// The passes of the check: a first mesh at `chord`, finer ones where a
-/// face cannot be meshed or something within the margin is left.
+/// face cannot be meshed or something within the margin is left; bounded
+/// by [`SELF_CHECK_WORK`].
 fn refined(
+    body: &Body,
+    params: &SelfCheckParams,
+    chord: f64,
+    scope: Option<&Scope<'_>>,
+) -> Result<SelfCheck, TessError> {
+    craft3d_geom::allowance::within(SELF_CHECK_WORK, || {
+        refined_within(body, params, chord, scope)
+    })
+}
+
+fn refined_within(
     body: &Body,
     params: &SelfCheckParams,
     mut chord: f64,
@@ -715,6 +736,137 @@ impl Span {
     fn bbox(&self) -> Bbox3 {
         Bbox3::from_points([self.lo, self.hi])
     }
+
+    fn middle(&self, axis: usize) -> f64 {
+        let (lo, hi) = match axis {
+            0 => (self.lo.x, self.hi.x),
+            1 => (self.lo.y, self.hi.y),
+            _ => (self.lo.z, self.hi.z),
+        };
+        0.5 * (lo + hi)
+    }
+}
+
+/// Most boxes in a leaf of a [`SpanTree`].
+const SPAN_LEAF: usize = 8;
+
+/// Boxes, for asking whether a box meets any of them in about the
+/// logarithm of their number: a tree of boxes around groups of them, each
+/// group halved at its middle along the longest side of its box. The
+/// answer is the one asking every box gives; a mesh of a pattern of ten
+/// thousand pieces asks it of every triangle, and asking every box took
+/// minutes (fuzzing, 2026-10-17).
+struct SpanTree {
+    items: Vec<Span>,
+    /// The box around `items[start..end]`, and the two halves when it is
+    /// not a leaf. The root is the first.
+    nodes: Vec<SpanNode>,
+}
+
+struct SpanNode {
+    span: Span,
+    start: usize,
+    end: usize,
+    halves: Option<(usize, usize)>,
+}
+
+impl SpanTree {
+    fn new(mut items: Vec<Span>) -> Self {
+        let around = |items: &[Span]| -> Option<Span> {
+            let (first, rest) = items.split_first()?;
+            Some(rest.iter().fold(*first, |all, b| all.join(b)))
+        };
+        let mut nodes = Vec::new();
+        let Some(root) = around(&items) else {
+            return Self { items, nodes };
+        };
+        nodes.push(SpanNode {
+            span: root,
+            start: 0,
+            end: items.len(),
+            halves: None,
+        });
+        // Each node is split once and its halves are smaller: this ends.
+        let mut todo = vec![0_usize];
+        while let Some(at) = todo.pop() {
+            let Some(&SpanNode {
+                span, start, end, ..
+            }) = nodes.get(at)
+            else {
+                continue;
+            };
+            if end.saturating_sub(start) <= SPAN_LEAF {
+                continue;
+            }
+            let size = span.hi - span.lo;
+            let axis = if size.x >= size.y && size.x >= size.z {
+                0
+            } else if size.y >= size.z {
+                1
+            } else {
+                2
+            };
+            let Some(group) = items.get_mut(start..end) else {
+                continue;
+            };
+            group.sort_by(|a, b| a.middle(axis).total_cmp(&b.middle(axis)));
+            let mid = start + (end - start) / 2;
+            let (Some(left), Some(right)) = (
+                items.get(start..mid).and_then(around),
+                items.get(mid..end).and_then(around),
+            ) else {
+                continue;
+            };
+            let first = nodes.len();
+            nodes.push(SpanNode {
+                span: left,
+                start,
+                end: mid,
+                halves: None,
+            });
+            nodes.push(SpanNode {
+                span: right,
+                start: mid,
+                end,
+                halves: None,
+            });
+            if let Some(node) = nodes.get_mut(at) {
+                node.halves = Some((first, first + 1));
+            }
+            todo.push(first);
+            todo.push(first + 1);
+        }
+        Self { items, nodes }
+    }
+
+    /// Whether `span` meets any of the boxes.
+    fn meets(&self, span: &Span) -> bool {
+        let mut todo = Vec::with_capacity(64);
+        if !self.nodes.is_empty() {
+            todo.push(0_usize);
+        }
+        while let Some(at) = todo.pop() {
+            let Some(node) = self.nodes.get(at) else {
+                continue;
+            };
+            if !node.span.meets(span) {
+                continue;
+            }
+            match node.halves {
+                Some((left, right)) => {
+                    todo.push(left);
+                    todo.push(right);
+                }
+                None => {
+                    let group = self.items.get(node.start..node.end).unwrap_or_default();
+                    if group.iter().any(|b| b.meets(span)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Which faces [`body_self_intersections_near`] meshes and which pairs
@@ -729,7 +881,7 @@ struct Scope<'a> {
     left_out_boxes: Vec<Bbox3>,
     /// Where pairs that are looked at can meet, grown by how far the
     /// depth of a crossing is followed.
-    reach: Vec<Span>,
+    reach: SpanTree,
     /// The body with the holes of flat faces that are far from all of
     /// that filled, when there were such holes.
     trimmed: Option<Body>,
@@ -793,12 +945,8 @@ impl<'a> Scope<'a> {
                 }
             }
         }
-        zone.sort_by(|a, b| a.lo.x.total_cmp(&b.lo.x));
-        let in_zone = |bbox: &Span| {
-            zone.iter()
-                .take_while(|z| z.lo.x <= bbox.hi.x)
-                .any(|z| z.meets(bbox))
-        };
+        let zones = SpanTree::new(zone.clone());
+        let in_zone = |bbox: &Span| zones.meets(bbox);
         let mut faces: Vec<bool> = boxes
             .iter()
             .map(|bbox| bbox.as_ref().is_some_and(in_zone))
@@ -844,6 +992,7 @@ impl<'a> Scope<'a> {
                 hi: z.hi + Vec3::new(far, far, far),
             })
             .collect();
+        let reach = SpanTree::new(reach);
         let trimmed = trim_far_holes(body, &faces, &left_out, &reach)?;
         Ok(Self {
             roles,
@@ -863,7 +1012,7 @@ impl<'a> Scope<'a> {
             lo: a.min(b).min(c),
             hi: a.max(b).max(c),
         };
-        self.reach.iter().any(|r| r.meets(&span))
+        self.reach.meets(&span)
     }
 
     fn is_empty(&self) -> bool {
@@ -894,7 +1043,7 @@ fn trim_far_holes(
     body: &Body,
     faces: &[bool],
     left_out: &[bool],
-    reach: &[Span],
+    reach: &SpanTree,
 ) -> Result<Option<Body>, TessError> {
     let shell_of = shell_of_faces(body);
     let mut trimmed: Option<Body> = None;
@@ -927,7 +1076,7 @@ fn trim_far_holes(
         let keep: Vec<bool> = boxes
             .iter()
             .enumerate()
-            .map(|(k, b)| k == outer || b.is_none_or(|b| reach.iter().any(|r| r.meets(&b))))
+            .map(|(k, b)| k == outer || b.is_none_or(|b| reach.meets(&b)))
             .collect();
         if keep.iter().all(|&k| k) {
             continue;

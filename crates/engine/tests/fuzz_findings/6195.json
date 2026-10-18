@@ -1,0 +1,12 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1E-9}},
+  {"command":"sketch.create","params":{"name":"S0","offset":0.01,"plane":"xy"}},
+  {"command":"sketch.circle","params":{"center":[0.0075,0.005],"radius":0.0025,"sketch":"S0"}},
+  {"command":"feature.revolve","params":{"angle":"90 deg","axis":"y","name":"N0","sketch":"S0"}},
+  {"command":"feature.chamfer","params":{"chain":true,"distance":0.0025,"edges":[["F2:side(e2)","F2:endCap(e2)"]],"name":"N1"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":0.000625,"edges":[["F2:side(e2)","F2:endCap(e2)"]],"name":"N2"}},
+  {"command":"feature.offsetFace","params":{"distance":-0.000625,"faces":["F4:copy(0)/F2:side(e2)"],"name":"N3"}},
+  {"command":"feature.transform","params":{"keep":true,"name":"N5","source":"N2","translate":[0.0,0.0025,0.0]}},
+  {"command":"feature.fillet","params":{"chain":true,"edges":[["F4:copy(0)/F2:side(e2)","F4:copy(0)/F2:startCap(e2)"]],"name":"N6","radius":0.0025}},
+  {"command":"feature.shell","params":{"name":"N7","open":["F6:copy(0)/F2:side(e2)"],"source":"N5","thickness":0.0025}}
+]

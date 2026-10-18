@@ -837,13 +837,19 @@ impl<'a> Prepared<'a> {
         } else {
             // Each worker takes the next chunk not yet taken; which worker
             // does which varies, the results do not.
+            // The work counted for a bound (`craft3d_geom::allowance`) is
+            // added to this thread's as each worker is joined.
             let next = AtomicUsize::new(0);
             let work = || {
+                let before = craft3d_geom::allowance::spent();
                 let mut mine = Vec::new();
                 loop {
                     let chunk = next.fetch_add(1, Ordering::Relaxed);
                     if chunk >= chunks {
-                        return mine;
+                        return (
+                            mine,
+                            craft3d_geom::allowance::spent().saturating_sub(before),
+                        );
                     }
                     mine.push((chunk, one(chunk)));
                 }
@@ -858,10 +864,13 @@ impl<'a> Prepared<'a> {
                         workers.push(worker);
                     }
                 }
-                done = work();
+                done = work().0;
                 for worker in workers {
                     match worker.join() {
-                        Ok(more) => done.extend(more),
+                        Ok((more, spent)) => {
+                            done.extend(more);
+                            craft3d_geom::allowance::charge(spent);
+                        }
                         Err(_) => panicked = true,
                     }
                 }

@@ -1176,6 +1176,9 @@ fn resurface_with(
         if !(moved_vertices.contains(&edge.start) || moved_vertices.contains(&edge.end)) {
             continue;
         }
+        if craft3d_geom::allowance::pass() {
+            return Err(spent());
+        }
         let id = EdgeId(index_u32(index));
         let faces: Vec<FaceId> = uses.get(index).cloned().unwrap_or_default();
         let on: Vec<&Surface> = faces
@@ -1301,6 +1304,9 @@ fn resurface_with(
             defects: defects.into_iter().take(crate::MAX_REPORTED).collect(),
         }));
     }
+    if craft3d_geom::allowance::pass() {
+        return Err(spent());
+    }
     if let Some(face) = buried(&made, &uses, &remade, tolerance) {
         return Err(TweakError::Vanishes {
             faces: vec![face],
@@ -1309,6 +1315,15 @@ fn resurface_with(
         });
     }
     Ok(made)
+}
+
+/// The work bound of the operation was reached ([`craft3d_geom::allowance`]).
+fn spent() -> TweakError {
+    TweakError::Unsupported {
+        faces: Vec::new(),
+        edge: None,
+        reason: crate::offset_face::SPENT,
+    }
 }
 
 /// How far inside a face from its edge, and how far off the face, the

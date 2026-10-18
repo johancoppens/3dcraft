@@ -534,3 +534,114 @@ fn a_crease_too_shallow_to_be_a_crease_is_built_within_the_tolerance_or_refused_
     let (m, e) = (mass(&made.body), mass(&exact.body));
     within(m.volume, e.volume, e.area * tol.linear, "the ridged prism");
 }
+
+/// A face operation is held to a work bound (`FACE_OP_WORK`): under a
+/// bound too small for it, it is refused by that name, not as too far and
+/// not with a body, also when the bound ends its search for the largest
+/// size that fits half way; without one the same offset is made, well
+/// within the operation's own bound.
+#[test]
+fn a_freeform_offset_that_needs_more_work_than_its_bound_is_refused_by_name() {
+    use craft3d_geom::allowance;
+    use craft3d_kernel::offset_face::FACE_OP_WORK;
+    let k = 1.0;
+    let tol = tolerance(k);
+    let spent =
+        |got: Result<craft3d_kernel::offset_face::Offset, KernelError>, what: &str| match got {
+            Err(error @ KernelError::FaceOp { .. }) => {
+                assert!(
+                    error.to_string().contains("needs more work"),
+                    "{what}: {error}"
+                );
+            }
+            Err(other) => panic!("{what}: {other}"),
+            Ok(_) => panic!("{what}: built"),
+        };
+    let (_, twin, _) = twins(&ball_zone(k), k).remove(0);
+    let face = freeform(&twin)[0];
+    let offsets = [FaceOffset {
+        face,
+        distance: 0.4 * k,
+    }];
+    let before = allowance::spent();
+    offset_faces(&twin, &offsets, &tol).unwrap();
+    let whole = allowance::spent() - before;
+    // Well within the bound (1.9 million when this was written).
+    assert!(whole > 0 && whole < FACE_OP_WORK / 4, "{whole}");
+    spent(
+        allowance::within(0, || offset_faces(&twin, &offsets, &tol)),
+        "no work at all",
+    );
+    // The elliptic rod of the fold above: its search halves twenty times
+    // on proofs of regularity; half its work ends it half way.
+    let rod = boolean_common::rod(k, [0.0, 0.0, 0.0], 1.0, 3.0);
+    let corner = boxed(k, [0.0, 0.0, -1.0], [3.0, 3.0, 4.0]);
+    let quarter = solve(&rod, &corner, Intersect, k).body;
+    let (twin, _) = rationalized(&quarter, 0.0, true);
+    let elliptic = stretched(&twin, 2.0);
+    let offsets = [FaceOffset {
+        face: freeform(&elliptic)[0],
+        distance: -0.6,
+    }];
+    let before = allowance::spent();
+    let far = offset_faces(&elliptic, &offsets, &tol);
+    let whole = allowance::spent() - before;
+    assert!(
+        matches!(far, Err(KernelError::FaceOpTooFar { .. })),
+        "{far:?}"
+    );
+    spent(
+        allowance::within(whole / 2, || offset_faces(&elliptic, &offsets, &tol)),
+        "half the work of the search",
+    );
+    // And a shell the same way.
+    match allowance::within(0, || shell(&elliptic, 0.1 * k, &[], &tol)) {
+        Err(error) => assert!(error.to_string().contains("needs more work"), "{error}"),
+        Ok(_) => panic!("a shell under a bound of nothing was built"),
+    }
+}
+
+/// What an operation counts toward its bound is a function of its inputs:
+/// the same offset and shell on bodies built afresh each time count the
+/// same, the first time (the trees, projections and intersections of
+/// their surfaces not made yet), the second (all of them on the shelves)
+/// and after another boolean ran in between. A cache that is hit charges
+/// what its miss cost.
+#[test]
+fn the_same_operation_counts_the_same_whatever_ran_before() {
+    use craft3d_geom::allowance;
+    let k = 1.0;
+    let tol = tolerance(k);
+    let counts = |what: &str| {
+        let (_, twin, _) = twins(&ball_zone(k), k).remove(0);
+        let face = freeform(&twin)[0];
+        let offsets = [FaceOffset {
+            face,
+            distance: 0.4 * k,
+        }];
+        let (made, offset) = allowance::measured(|| offset_faces(&twin, &offsets, &tol));
+        made.unwrap_or_else(|e| panic!("{what}: {e}"));
+        // The boolean of the shell is under no bound of its own: counted
+        // under one here, so that it remembers for itself too.
+        let (made, shelled) = allowance::within(u64::MAX, || {
+            allowance::measured(|| shell(&twin, 0.1 * k, &[], &tol))
+        });
+        assert!(made.is_ok(), "{what}");
+        (offset, shelled)
+    };
+    let first = counts("first");
+    let second = counts("second");
+    // Another boolean between: a ring and a block, freeform twins.
+    let ring = ring_slice(k);
+    let (_, other, _) = twins(&ring, k).remove(0);
+    let _ = solve(
+        &other,
+        &boxed(k, [0.0, 0.0, -0.2], [2.0, 2.0, 0.2]),
+        Intersect,
+        k,
+    );
+    let third = counts("after another boolean");
+    eprintln!("offset and shell: {first:?} {second:?} {third:?}");
+    assert_eq!(first, second);
+    assert_eq!(first, third);
+}

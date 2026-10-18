@@ -1,0 +1,10 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1E-9}},
+  {"command":"feature.sphere","params":{"name":"N0","position":[-0.01,0.005,-0.0],"radius":0.005}},
+  {"command":"feature.transform","params":{"keep":true,"name":"N2","source":"N0","translate":[0.0,0.0,-0.005]}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 4","axis":[0.01,1.0,0.0],"count":4,"name":"N4","point":[-0.005,-0.0025,0.01],"source":"N2"}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N5","op":"union","target":"N0","tool":"N4"}},
+  {"command":"feature.offsetFace","params":{"distance":-0.0025,"faces":["F4:copy(1,3)/F2:copy(0)/F1:face(0)"],"name":"N6"}},
+  {"command":"feature.fillet","params":{"chain":false,"edges":[["F5:copy(0)/F1:face(0)","F5:copy(0)/F4:copy(1)/F3:copy(0)/F1:face(0)"]],"name":"N7","radius":0.000625}},
+  {"command":"feature.offsetFace","params":{"distance":-0.005,"faces":["F6:copy(0)/F4:copy(1)/F3:copy(0)/F1:face(0)","F6:fillet(0)"],"name":"N9"}}
+]
