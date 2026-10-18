@@ -66,13 +66,12 @@ pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, ve
 
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, GeomError};
-use craft3d_math::{Bits, Tolerance, Vec3};
-use craft3d_topo::{Body, EdgeId, FaceId, VertexId, check};
+use craft3d_math::{Tolerance, Vec3};
+use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use outline::locate;
 use regions::Half;
 use section::Solid;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Mutex, PoisonError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BooleanOp {
@@ -247,45 +246,12 @@ fn geometry(error: GeomError, faces: &[(Operand, FaceId)]) -> Stop {
     }
 }
 
-/// Bodies that passed `craft3d_topo::check` lately, each written out in
-/// full with the tolerance it was checked with, every bit of every number
-/// (`craft3d_math::Bits`: two are the same only when every number of them
-/// is, bit for bit), the most recent last.
-static PASSED: Mutex<Vec<Vec<u64>>> = Mutex::new(Vec::new());
-/// How many are remembered, and how many words all of them are at most.
-const PASSED_BODIES: usize = 8;
-const PASSED_WORDS: usize = 1 << 22;
-
-/// `craft3d_topo::check` of `body`, remembering the bodies that pass. In a
-/// row of booleans each result is the first operand of the next, and is
-/// checked as a result and again as an operand; written out, a body is
-/// compared at a small part of what checking it costs. Written out as its
-/// bits, not as text: formatting every number of a large body cost a
-/// quarter of a long row of cuts.
+/// `craft3d_topo::check` of `body`, remembering the bodies that pass
+/// ([`craft3d_topo::check_remembered`]): in a row of booleans each result
+/// is the first operand of the next, and is checked as a result, again by
+/// regeneration, and again as an operand.
 pub(crate) fn checked(body: &Body, tolerance: &Tolerance) -> Vec<craft3d_topo::Defect> {
-    let mut key = craft3d_math::bits_of(tolerance);
-    body.push_bits(&mut key);
-    {
-        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(at) = passed.iter().position(|k| *k == key) {
-            let entry = passed.remove(at);
-            passed.push(entry);
-            return Vec::new();
-        }
-    }
-    let defects = check(body, tolerance);
-    if defects.is_empty() && key.len() <= PASSED_WORDS {
-        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
-        if !passed.contains(&key) {
-            passed.push(key);
-        }
-        while passed.len() > PASSED_BODIES
-            || passed.iter().map(Vec::len).sum::<usize>() > PASSED_WORDS
-        {
-            let _forgotten = passed.remove(0);
-        }
-    }
-    defects
+    craft3d_topo::check_remembered(body, tolerance)
 }
 
 fn face_id(index: usize) -> FaceId {
@@ -1182,7 +1148,7 @@ mod tests {
         let good = crate::primitives::block(&frame, 2.0, 3.0, 4.0).unwrap();
         let mut bad = good.clone();
         bad.vertices[0].point = Vec3::new(-1.0, 0.0, 0.0);
-        let defects = check(&bad, &tolerance);
+        let defects = craft3d_topo::check(&bad, &tolerance);
         assert!(!defects.is_empty());
         for _ in 0..2 {
             assert!(checked(&good, &tolerance).is_empty());

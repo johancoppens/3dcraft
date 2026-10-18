@@ -155,8 +155,19 @@ impl Ord for Ordered {
 
 #[derive(Debug, Default)]
 struct Fine {
+    /// The pieces under each leaf asked about, by the leaf's index (the
+    /// leaf's own piece first).
+    roots: BTreeMap<usize, FineRoot>,
+    /// How many pieces all of them hold.
+    pieces: usize,
+    /// Counts the queries, to tell which leaf was asked about last.
+    clock: u64,
+}
+
+#[derive(Debug, Default)]
+struct FineRoot {
     nodes: Vec<FinePiece>,
-    roots: BTreeMap<usize, usize>,
+    used: u64,
 }
 
 #[derive(Debug)]
@@ -168,6 +179,10 @@ struct FinePiece {
     /// The least and the largest of the least singular values at the
     /// corners and the middle.
     measured: (f64, f64),
+    /// Those values, at `(u.0, v.0)`, `(u.0, v.1)`, `(u.1, v.0)`, `(u.1,
+    /// v.1)` and the middle: the corners of a piece's halves and quarters
+    /// are among its corners and middle, and are not worked out again.
+    at: [f64; 5],
     depth: usize,
     /// Kept until the piece is split.
     patch: Option<RationalBezierPatch>,
@@ -197,7 +212,32 @@ pub(super) struct PatchTree {
     /// and the bisections of a face's boundary, for every winding number
     /// taken about a point of it). A pure function of the point, so the
     /// answer from here is the answer the search would give.
-    memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
+    memo: Memo<[u64; 3], Option<Nearest>>,
+    /// The answers of [`Self::sigma_near`] so far, by the bits of the
+    /// point and the reach: a winding number about each of many points
+    /// halves every piece of a face's boundary the same way and asks the
+    /// same of each stretch (the chart's speed near it does not depend on
+    /// the point wound about). A pure function of the two (the answer of
+    /// [`Self::finer`] does not depend on what it kept), so the answer
+    /// from here is the answer the search would give.
+    sigma_memo: Memo<[u64; 4], Option<f64>>,
+    /// The answers of [`Self::lower_bound`] so far, by the bits of the
+    /// point, the resolution and the threshold: the root isolation along
+    /// a curve looks at the ends and the quarters of every stretch it
+    /// halves, so each end is asked about again by the stretch next to
+    /// it and each quarter by the halves. A pure function of the three.
+    bound_memo: Memo<[u64; 5], f64>,
+    /// How many fine pieces [`Self::fine`] holds, for [`Self::bytes`]
+    /// without its lock.
+    fine_pieces: std::sync::atomic::AtomicUsize,
+    /// What the tree takes without what it remembers: its nodes and the
+    /// pieces its leaves keep.
+    base_bytes: usize,
+    /// About what one fine piece takes, its patch with it.
+    fine_piece_bytes: usize,
+    /// How many fine pieces the tree keeps at most ([`FINE_PIECES`]; less
+    /// in the tests of letting them go).
+    fine_cap: usize,
     /// The leaves split further for [`Self::sigma_near`], as far as its
     /// queries called for ([`Fine`]).
     fine: Mutex<Fine>,
@@ -321,9 +361,8 @@ impl Slab {
     /// The box around a piece's control points, in the frame of its
     /// corners; in the world's axes when the corners give no frame.
     fn around(patch: &RationalBezierPatch) -> Self {
-        let points = patch.control_points();
         let (m, n) = patch.degrees();
-        let at = |i: usize, j: usize| points.get(i * (n + 1) + j).copied();
+        let at = |i: usize, j: usize| patch.control_point(i * (n + 1) + j);
         let frame = (|| {
             let (p00, pm0, p0n, pmn) = (at(0, 0)?, at(m, 0)?, at(0, n)?, at(m, n)?);
             let along_u = (pm0 - p00) + (pmn - p0n);
@@ -332,7 +371,7 @@ impl Slab {
             let third = along_u.cross(along_v).normalized()?;
             Some([first, third.cross(first), third])
         })();
-        let (Some(axes), Some(&origin)) = (frame, points.first()) else {
+        let (Some(axes), Some(origin)) = (frame, patch.control_point(0)) else {
             return Slab::axis_aligned(patch.control_bbox());
         };
         let slab = Slab {
@@ -340,7 +379,7 @@ impl Slab {
             axes,
             local: Bbox3::EMPTY,
         };
-        let local = Bbox3::from_points(points.iter().map(|&p| slab.to_local(p)));
+        let local = Bbox3::from_points(patch.points().map(|p| slab.to_local(p)));
         Slab { local, ..slab }
     }
 
@@ -1500,6 +1539,53 @@ fn refine(
     best
 }
 
+/// What a tree remembers of the answers to one kind of question, by the
+/// bits of what was asked: at most [`MAX_MEMO`] answers, all let go when
+/// full. How many it holds is kept beside the map, so that the shelf can
+/// count what the tree takes without taking its lock.
+#[derive(Debug)]
+struct Memo<K, V> {
+    map: Mutex<BTreeMap<K, V>>,
+    len: std::sync::atomic::AtomicUsize,
+}
+
+impl<K, V> Default for Memo<K, V> {
+    fn default() -> Self {
+        Memo {
+            map: Mutex::new(BTreeMap::new()),
+            len: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl<K: Ord, V: Copy> Memo<K, V> {
+    fn get(&self, key: &K) -> Option<V> {
+        self.map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .copied()
+    }
+
+    fn put(&self, key: K, value: V) {
+        let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        if map.len() >= MAX_MEMO {
+            map.clear();
+        }
+        map.insert(key, value);
+        self.len
+            .store(map.len(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// About what the answers take: each key and answer, and as much
+    /// again for the map's own nodes.
+    fn bytes(&self) -> usize {
+        self.len
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_mul(2 * (std::mem::size_of::<K>() + std::mem::size_of::<V>()))
+    }
+}
+
 /// A min-heap entry: a node and its box distance.
 struct Pending(f64, usize);
 
@@ -1525,7 +1611,7 @@ impl Ord for Pending {
 /// that two surfaces are the same key only when every number of them is
 /// the same, bit for bit), with what each takes ([`PatchTree::bytes`]),
 /// the most recently used last.
-type Shelf = Vec<(String, Arc<PatchTree>, usize)>;
+type Shelf = Vec<(String, Arc<PatchTree>)>;
 static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 /// How many trees are kept, and how much memory all of them take at most
 /// ([`PatchTree::bytes`]). A boolean holds the trees of every freeform
@@ -1566,18 +1652,35 @@ pub fn release_unused(bodies: &[&craft3d_topo::Body]) -> usize {
     }
     let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
     let before = shelf.len();
-    shelf.retain(|(key, _, _)| held.contains(key));
+    shelf.retain(|(key, _)| held.contains(key));
     before.saturating_sub(shelf.len())
 }
 
 /// How many trees the shelf holds, and about how many bytes they take.
 pub fn shelf_size() -> (usize, usize) {
     let shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-    let bytes = shelf
+    (shelf.len(), shelf_bytes(&shelf))
+}
+
+/// What the trees on the shelf take now, what they remember included.
+fn shelf_bytes(shelf: &Shelf) -> usize {
+    shelf
         .iter()
-        .map(|(_, _, b)| *b)
-        .fold(0_usize, usize::saturating_add);
-    (shelf.len(), bytes)
+        .map(|(_, tree)| tree.bytes())
+        .fold(0_usize, usize::saturating_add)
+}
+
+/// Lets go of the trees asked for longest ago while the shelf holds more
+/// trees or bytes than it may.
+fn keep_within_budget(shelf: &mut Shelf) {
+    let mut total = shelf_bytes(shelf);
+    while shelf.len() > SHELF_TREES || total > SHELF_BYTES {
+        if shelf.is_empty() {
+            break;
+        }
+        let (_, forgotten) = shelf.remove(0);
+        total = total.saturating_sub(forgotten.bytes());
+    }
 }
 
 thread_local! {
@@ -1603,10 +1706,13 @@ impl PatchTree {
         let key = format!("{surface:?}");
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
+            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
                 let entry = shelf.remove(at);
                 let tree = Arc::clone(&entry.1);
                 shelf.push(entry);
+                // What the trees remember grew since they were put on the
+                // shelf: counted again each time a tree is asked for.
+                keep_within_budget(&mut shelf);
                 return Ok(tree);
             }
         }
@@ -1615,42 +1721,59 @@ impl PatchTree {
         let tree = Arc::new(PatchTree::new(surface)?);
         BUILT.with(|built| built.set(built.get().saturating_add(1)));
         crate::work::patch_tree();
-        let bytes = tree.bytes();
-        if bytes <= SHELF_BYTES {
+        if tree.bytes() <= SHELF_BYTES {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if !shelf.iter().any(|(k, _, _)| *k == key) {
-                shelf.push((key, Arc::clone(&tree), bytes));
+            if !shelf.iter().any(|(k, _)| *k == key) {
+                shelf.push((key, Arc::clone(&tree)));
             }
-            let mut total = shelf
-                .iter()
-                .map(|(_, _, b)| *b)
-                .fold(0_usize, usize::saturating_add);
-            while shelf.len() > SHELF_TREES || total > SHELF_BYTES {
-                let (_, _forgotten, b) = shelf.remove(0);
-                total = total.saturating_sub(b);
-            }
+            keep_within_budget(&mut shelf);
         }
         Ok(tree)
     }
 
-    /// About how much memory the tree takes: its nodes and the pieces its
-    /// leaves keep (not the memo of nearest points, which is small).
+    /// About how much memory the tree takes now: its nodes and the pieces
+    /// its leaves keep, and what it remembers (its memos and the fine
+    /// pieces of its leaves), which grows as it is used, up to their caps.
     fn bytes(&self) -> usize {
+        let fine = self
+            .fine_pieces
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_mul(self.fine_piece_bytes);
+        self.base_bytes
+            .saturating_add(self.memo.bytes())
+            .saturating_add(self.sigma_memo.bytes())
+            .saturating_add(self.bound_memo.bytes())
+            .saturating_add(fine)
+    }
+
+    /// [`Self::base_bytes`] and [`Self::fine_piece_bytes`] of a tree just
+    /// made.
+    fn measure_base(&mut self) {
+        let patch_bytes = |p: &RationalBezierPatch| {
+            let (du, dv) = p.degrees();
+            (du + 1)
+                .saturating_mul(dv + 1)
+                .saturating_mul(4 * std::mem::size_of::<f64>())
+        };
         let leaves: usize = self
             .nodes
             .iter()
             .filter_map(|n| n.patch.as_ref())
-            .map(|p| {
-                let (du, dv) = p.degrees();
-                (du + 1)
-                    .saturating_mul(dv + 1)
-                    .saturating_mul(4 * std::mem::size_of::<f64>())
-            })
+            .map(patch_bytes)
             .fold(0_usize, usize::saturating_add);
-        self.nodes
+        let largest = self
+            .nodes
+            .iter()
+            .filter_map(|n| n.patch.as_ref())
+            .map(patch_bytes)
+            .max()
+            .unwrap_or(0);
+        self.base_bytes = self
+            .nodes
             .len()
             .saturating_mul(std::mem::size_of::<Node>())
-            .saturating_add(leaves)
+            .saturating_add(leaves);
+        self.fine_piece_bytes = std::mem::size_of::<FinePiece>().saturating_add(largest);
     }
 
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
@@ -1702,7 +1825,13 @@ impl PatchTree {
             wedge: Wedge::of(surface, &found),
             closes: closure(surface),
             poles: found,
-            memo: Mutex::new(BTreeMap::new()),
+            memo: Memo::default(),
+            sigma_memo: Memo::default(),
+            bound_memo: Memo::default(),
+            fine_pieces: std::sync::atomic::AtomicUsize::new(0),
+            base_bytes: 0,
+            fine_piece_bytes: 0,
+            fine_cap: FINE_PIECES,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
         };
@@ -1717,6 +1846,7 @@ impl PatchTree {
         if !polynomial {
             tree.second = tree.second_of_leaves();
         }
+        tree.measure_base();
         Ok(tree)
     }
 
@@ -1846,6 +1976,17 @@ impl PatchTree {
     /// surface, and never less than that. `None` where no piece is that
     /// near, or where a piece has no bound.
     pub(super) fn sigma_near(&self, p: Vec3, reach: f64) -> Option<f64> {
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), reach.to_bits()];
+        if let Some(found) = self.sigma_memo.get(&key) {
+            return found;
+        }
+        let found = self.sigma_search(p, reach);
+        self.sigma_memo.put(key, found);
+        found
+    }
+
+    /// [`Self::sigma_near`]: the search.
+    fn sigma_search(&self, p: Vec3, reach: f64) -> Option<f64> {
         let mut least = f64::INFINITY;
         let mut stack: Vec<usize> = self.roots.clone();
         let mut visited = 0_usize;
@@ -1911,23 +2052,65 @@ impl PatchTree {
             return None;
         }
         let patch = node.patch.as_ref()?;
-        let mut fine = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        let fine = &mut *guard;
+        fine.clock = fine.clock.wrapping_add(1);
         // The splits are kept only to be found again: the answer is the
         // same whatever was kept (a kept split this query would not make
-        // is not looked into), so a full store is emptied, not let decide.
-        if fine.nodes.len().saturating_add(4 * FINE_LOOKS + 1) > FINE_PIECES {
-            *fine = Fine::default();
+        // is not looked into). Room for what this query may add is made
+        // by letting go of the pieces of the leaves asked about longest
+        // ago, a leaf's all at once: the queries come along the curves of
+        // a boundary, near the last ones, and emptying the whole store
+        // made the same pieces again and again (36.7 million of them in
+        // one boolean of the helmet, for a store of 16,384).
+        while fine.pieces.saturating_add(4 * FINE_LOOKS + 1) > self.fine_cap {
+            let oldest = fine
+                .roots
+                .iter()
+                .filter(|(leaf, _)| **leaf != index)
+                .min_by_key(|(_, root)| root.used)
+                .map(|(leaf, _)| *leaf)
+                .or_else(|| fine.roots.contains_key(&index).then_some(index));
+            let Some(oldest) = oldest else {
+                fine.pieces = 0;
+                break;
+            };
+            if let Some(gone) = fine.roots.remove(&oldest) {
+                fine.pieces = fine.pieces.saturating_sub(gone.nodes.len());
+            }
         }
-        let root = match fine.roots.get(&index) {
-            Some(&root) => root,
-            None => {
-                let root = fine.nodes.len();
+        let clock = fine.clock;
+        let root = match fine.roots.entry(index) {
+            std::collections::btree_map::Entry::Occupied(found) => found.into_mut(),
+            std::collections::btree_map::Entry::Vacant(free) => {
                 let piece = self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0);
-                fine.nodes.push(piece);
-                fine.roots.insert(index, root);
-                root
+                fine.pieces = fine.pieces.saturating_add(1);
+                free.insert(FineRoot {
+                    nodes: vec![piece],
+                    used: clock,
+                })
             }
         };
+        root.used = clock;
+        let before = root.nodes.len();
+        let answer = self.finer_in(&mut root.nodes, p, reach, cutoff);
+        let added = root.nodes.len().saturating_sub(before);
+        fine.pieces = fine.pieces.saturating_add(added);
+        self.fine_pieces
+            .store(fine.pieces, std::sync::atomic::Ordering::Relaxed);
+        answer
+    }
+
+    /// [`Self::finer`] in the pieces kept under one leaf, `nodes` (the
+    /// leaf's own piece first), adding the pieces it splits.
+    fn finer_in(
+        &self,
+        nodes: &mut Vec<FinePiece>,
+        p: Vec3,
+        reach: f64,
+        cutoff: f64,
+    ) -> Option<f64> {
+        let root = 0_usize;
         // Lowest bound first; ties by where the piece is (not by its index
         // in the store, which depends on what was kept before), so that the
         // order is fixed.
@@ -1942,7 +2125,7 @@ impl PatchTree {
             ))
         };
         let near = |piece: &FinePiece| box_distance(&piece.bbox, p) <= reach;
-        if let Some(piece) = fine.nodes.get(root).filter(|piece| near(piece)) {
+        if let Some(piece) = nodes.get(root).filter(|piece| near(piece)) {
             heap.push(key(piece, root));
         }
         let mut looks = 0_usize;
@@ -1951,7 +2134,7 @@ impl PatchTree {
             if !(sigma < cutoff) || looks > FINE_LOOKS {
                 return Some(sigma);
             }
-            let Some(piece) = fine.nodes.get(at) else {
+            let Some(piece) = nodes.get(at) else {
                 continue;
             };
             let inside = piece.bbox.corners().is_some_and(|(lo, hi)| {
@@ -1980,7 +2163,7 @@ impl PatchTree {
             }
             if let Some(kids) = piece.children {
                 for k in kids {
-                    if let Some(kid) = fine.nodes.get(k).filter(|kid| near(kid)) {
+                    if let Some(kid) = nodes.get(k).filter(|kid| near(kid)) {
                         heap.push(key(kid, k));
                     }
                 }
@@ -1989,24 +2172,16 @@ impl PatchTree {
             let Some(patch) = piece.patch.clone() else {
                 return Some(sigma);
             };
-            let (u, v, depth) = (piece.u, piece.v, piece.depth + 1);
-            let (left, right) = patch.split_u(0.5);
-            let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+            let made = self.quartered(piece, &patch, sigma);
             let mut kids = [0_usize; 4];
-            for (slot, (part, pu, pv)) in kids.iter_mut().zip([
-                (ll, (u.0, um), (v.0, vm)),
-                (lh, (u.0, um), (vm, v.1)),
-                (rl, (um, u.1), (v.0, vm)),
-                (rh, (um, u.1), (vm, v.1)),
-            ]) {
-                *slot = fine.nodes.len();
-                let made = self.fine_piece(part, pu, pv, sigma, depth);
+            for (slot, made) in kids.iter_mut().zip(made) {
+                *slot = nodes.len();
                 if near(&made) {
                     heap.push(key(&made, *slot));
                 }
-                fine.nodes.push(made);
+                nodes.push(made);
             }
-            if let Some(piece) = fine.nodes.get_mut(at) {
+            if let Some(piece) = nodes.get_mut(at) {
                 piece.children = Some(kids);
                 piece.patch = None;
             }
@@ -2055,20 +2230,10 @@ impl PatchTree {
             }
             let (pu, pv, floor) = (piece.u, piece.v, piece.sigma);
             let (um, vm) = (0.5 * (pu.0 + pu.1), 0.5 * (pv.0 + pv.1));
-            let halves_u = (along_u < FINE_DEPTH && um > pu.0 && um < pu.1).then(|| {
-                let (a, b) = patch.split_u(0.5);
-                [
-                    self.fine_piece(a, (pu.0, um), pv, floor, 0),
-                    self.fine_piece(b, (um, pu.1), pv, floor, 0),
-                ]
-            });
-            let halves_v = (along_v < FINE_DEPTH && vm > pv.0 && vm < pv.1).then(|| {
-                let (a, b) = patch.split_v(0.5);
-                [
-                    self.fine_piece(a, pu, (pv.0, vm), floor, 0),
-                    self.fine_piece(b, pu, (vm, pv.1), floor, 0),
-                ]
-            });
+            let halves_u = (along_u < FINE_DEPTH && um > pu.0 && um < pu.1)
+                .then(|| self.halved(&piece, patch, true, floor));
+            let halves_v = (along_v < FINE_DEPTH && vm > pv.0 && vm < pv.1)
+                .then(|| self.halved(&piece, patch, false, floor));
             let lower = |halves: &Option<[FinePiece; 2]>| {
                 halves
                     .as_ref()
@@ -2107,17 +2272,98 @@ impl PatchTree {
         floor: f64,
         depth: usize,
     ) -> FinePiece {
-        let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
-        for (a, b) in [
+        self.fine_piece_with(patch, u, v, floor, depth, [None; 4])
+    }
+
+    /// The four quarters of `piece` (its patch `patch`), each at least
+    /// `floor`: [`Self::fine_piece`] of each, with the values at their
+    /// corners taken from the piece's corners and middle and from the
+    /// middles of its sides (the same parameters, bit for bit).
+    fn quartered(
+        &self,
+        piece: &FinePiece,
+        patch: &RationalBezierPatch,
+        floor: f64,
+    ) -> [FinePiece; 4] {
+        let (u, v, depth) = (piece.u, piece.v, piece.depth + 1);
+        let (um, vm) = (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1));
+        let [c00, c01, c10, c11, m] = piece.at.map(Some);
+        let (left, right) = patch.split_u(0.5);
+        let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+        let side_l = Some(self.sigma_at(u.0, vm));
+        let side_r = Some(self.sigma_at(u.1, vm));
+        let side_b = Some(self.sigma_at(um, v.0));
+        let side_t = Some(self.sigma_at(um, v.1));
+        [
+            (ll, (u.0, um), (v.0, vm), [c00, side_l, side_b, m]),
+            (lh, (u.0, um), (vm, v.1), [side_l, c01, m, side_t]),
+            (rl, (um, u.1), (v.0, vm), [side_b, m, c10, side_r]),
+            (rh, (um, u.1), (vm, v.1), [m, side_t, side_r, c11]),
+        ]
+        .map(|(part, pu, pv, corners)| self.fine_piece_with(part, pu, pv, floor, depth, corners))
+    }
+
+    /// The two halves of `piece` across u (`along_u`) or across v, each at
+    /// least `floor`, as [`Self::quartered`] makes its quarters.
+    fn halved(
+        &self,
+        piece: &FinePiece,
+        patch: &RationalBezierPatch,
+        along_u: bool,
+        floor: f64,
+    ) -> [FinePiece; 2] {
+        let (pu, pv) = (piece.u, piece.v);
+        let (um, vm) = (0.5 * (pu.0 + pu.1), 0.5 * (pv.0 + pv.1));
+        let [c00, c01, c10, c11, _] = piece.at.map(Some);
+        if along_u {
+            let (a, b) = patch.split_u(0.5);
+            let (bottom, top) = (Some(self.sigma_at(um, pv.0)), Some(self.sigma_at(um, pv.1)));
+            [
+                self.fine_piece_with(a, (pu.0, um), pv, floor, 0, [c00, c01, bottom, top]),
+                self.fine_piece_with(b, (um, pu.1), pv, floor, 0, [bottom, top, c10, c11]),
+            ]
+        } else {
+            let (a, b) = patch.split_v(0.5);
+            let (left, right) = (Some(self.sigma_at(pu.0, vm)), Some(self.sigma_at(pu.1, vm)));
+            [
+                self.fine_piece_with(a, pu, (pv.0, vm), floor, 0, [c00, left, c10, right]),
+                self.fine_piece_with(b, pu, (vm, pv.1), floor, 0, [left, c01, right, c11]),
+            ]
+        }
+    }
+
+    /// The least singular value of the Jacobian at `(a, b)`.
+    fn sigma_at(&self, a: f64, b: f64) -> f64 {
+        let (_, su, sv) = self.surface.derivatives(a, b);
+        let sum = su.length_squared() + sv.length_squared();
+        least_singular(sum, su.cross(sv).length_squared())
+    }
+
+    /// [`Self::fine_piece`] with the values at its corners that are known
+    /// already (those of the piece it was split from, at the same
+    /// parameters, bit for bit), in the order of [`FinePiece::at`].
+    fn fine_piece_with(
+        &self,
+        patch: RationalBezierPatch,
+        u: (f64, f64),
+        v: (f64, f64),
+        floor: f64,
+        depth: usize,
+        corners: [Option<f64>; 4],
+    ) -> FinePiece {
+        let places = [
             (u.0, v.0),
             (u.0, v.1),
             (u.1, v.0),
             (u.1, v.1),
             (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1)),
-        ] {
-            let (_, su, sv) = self.surface.derivatives(a, b);
-            let sum = su.length_squared() + sv.length_squared();
-            let sigma = least_singular(sum, su.cross(sv).length_squared());
+        ];
+        let mut at = [0.0; 5];
+        let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+        for (k, (slot, (a, b))) in at.iter_mut().zip(places).enumerate() {
+            let known = corners.get(k).copied().flatten();
+            let sigma = known.unwrap_or_else(|| self.sigma_at(a, b));
+            *slot = sigma;
             least = least.min(sigma);
             most = most.max(sigma);
         }
@@ -2127,6 +2373,7 @@ impl PatchTree {
             v,
             sigma: sigma_bound(&patch, (u.1 - u.0, v.1 - v.0)).max(floor),
             measured: (least, most),
+            at,
             depth,
             patch: Some(patch),
             children: None,
@@ -2304,12 +2551,24 @@ impl PatchTree {
     /// farther piece is dropped unsplit. The splits are not kept. The
     /// bound is capped at `threshold` (see [`Self::segment_lower_bound`]).
     pub fn lower_bound(&self, p: Vec3, resolution: f64, threshold: f64) -> f64 {
-        self.bound_by(
+        let key = [
+            p.x.to_bits(),
+            p.y.to_bits(),
+            p.z.to_bits(),
+            resolution.to_bits(),
+            threshold.to_bits(),
+        ];
+        if let Some(found) = self.bound_memo.get(&key) {
+            return found;
+        }
+        let found = self.bound_by(
             &|slab| box_distance(&slab.local, slab.to_local(p)),
             resolution,
             MAX_LEAVES,
             threshold,
-        )
+        );
+        self.bound_memo.put(key, found);
+        found
     }
 
     /// A distance no larger than the distance from any point of the
@@ -2517,20 +2776,11 @@ impl PatchTree {
     /// The point of the surface nearest to `p`, remembered.
     pub fn nearest(&self, p: Vec3) -> Option<Nearest> {
         let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-        if let Some(found) = self
-            .memo
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-        {
-            return *found;
+        if let Some(found) = self.memo.get(&key) {
+            return found;
         }
         let found = self.search(p);
-        let mut memo = self.memo.lock().unwrap_or_else(PoisonError::into_inner);
-        if memo.len() >= MAX_MEMO {
-            memo.clear();
-        }
-        memo.insert(key, found);
+        self.memo.put(key, found);
         found
     }
 
@@ -3088,6 +3338,191 @@ mod tests {
             let tree = PatchTree::new(&Surface::Nurbs(cone)).unwrap();
             assert_eq!(tree.parameter_speed(), None, "tilted {tilted}, top {top}");
         }
+    }
+
+    /// What a tree remembers counts in what it takes (the shelf's budget):
+    /// its bytes grow with the answers it keeps and the fine pieces of its
+    /// leaves, and stay below what the caps allow.
+    #[test]
+    fn what_a_tree_remembers_counts_in_its_bytes() {
+        let tree = PatchTree::new(&dome()).unwrap();
+        let bare = tree.bytes();
+        assert_eq!(bare, tree.base_bytes);
+        for k in 0..300 {
+            let t = f64::from(k) / 299.0;
+            let p = Vec3::new(4.0 * t, 3.0 * (1.0 - t), 1.0 + t);
+            let _ = tree.nearest(p);
+            let _ = tree.lower_bound(p, 1e-3, 0.1);
+            let _ = tree.sigma_near(p, 10f64.powi(-(k % 5)));
+        }
+        let used = tree.bytes();
+        assert!(used > bare, "{used} {bare}");
+        let memo = |k: usize, v: usize| MAX_MEMO * 2 * (k + v);
+        let most =
+            bare + memo(
+                std::mem::size_of::<[u64; 3]>(),
+                std::mem::size_of::<Option<Nearest>>(),
+            ) + memo(
+                std::mem::size_of::<[u64; 4]>(),
+                std::mem::size_of::<Option<f64>>(),
+            ) + memo(std::mem::size_of::<[u64; 5]>(), std::mem::size_of::<f64>())
+                + FINE_PIECES * tree.fine_piece_bytes;
+        assert!(used <= most);
+    }
+
+    /// The quarters and halves of a fine piece take the values at their
+    /// corners from the piece; each is the piece [`PatchTree::fine_piece`]
+    /// makes of the same patch and range afresh, bit for bit, on a rational
+    /// patch with weights far apart and on the dome, three levels down.
+    #[test]
+    fn quarters_and_halves_are_the_pieces_made_afresh() {
+        let skewed = Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                3,
+                2,
+                vec![
+                    Vec3::new(0.0, 0.0, 2.0),
+                    Vec3::new(0.0, 3.0, 2.0),
+                    Vec3::new(2.0, 0.0, 2.7),
+                    Vec3::new(2.0, 3.0, 1.6),
+                    Vec3::new(4.0, 0.0, 2.0),
+                    Vec3::new(4.0, 3.0, 2.0),
+                ],
+                vec![1.0, 700.0, 30.0, 1.0, 1.0, 1e3],
+            )
+            .unwrap(),
+        );
+        let same = |a: &FinePiece, b: &FinePiece, what: &str| {
+            assert_eq!(format!("{a:?}"), format!("{b:?}"), "{what}");
+        };
+        for surface in [skewed, dome()] {
+            let tree = PatchTree::new(&surface).unwrap();
+            let Some(leaf) = tree.nodes.iter().find(|n| n.patch.is_some()) else {
+                panic!("a leaf with its patch");
+            };
+            let patch = leaf.patch.clone().unwrap();
+            let mut pieces = vec![tree.fine_piece(patch, leaf.u, leaf.v, 0.25 * leaf.sigma, 0)];
+            for level in 0..3 {
+                let mut next = Vec::new();
+                for piece in &pieces {
+                    let patch = piece.patch.clone().unwrap();
+                    let floor = piece.sigma * 0.5;
+                    let quarters = tree.quartered(piece, &patch, floor);
+                    let (left, right) = patch.split_u(0.5);
+                    let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+                    let (u, v) = (piece.u, piece.v);
+                    let (um, vm) = (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1));
+                    for (got, (part, pu, pv)) in quarters.iter().zip([
+                        (ll, (u.0, um), (v.0, vm)),
+                        (lh, (u.0, um), (vm, v.1)),
+                        (rl, (um, u.1), (v.0, vm)),
+                        (rh, (um, u.1), (vm, v.1)),
+                    ]) {
+                        let want = tree.fine_piece(part, pu, pv, floor, piece.depth + 1);
+                        same(got, &want, &format!("quarter at level {level}"));
+                    }
+                    for along_u in [true, false] {
+                        let halves = tree.halved(piece, &patch, along_u, floor);
+                        let (a, b, ra, rb) = if along_u {
+                            let (a, b) = patch.split_u(0.5);
+                            (a, b, ((u.0, um), v), ((um, u.1), v))
+                        } else {
+                            let (a, b) = patch.split_v(0.5);
+                            (a, b, (u, (v.0, vm)), (u, (vm, v.1)))
+                        };
+                        for (got, (part, (pu, pv))) in halves.iter().zip([(a, ra), (b, rb)]) {
+                            let want = tree.fine_piece(part, pu, pv, floor, 0);
+                            same(got, &want, &format!("half at level {level}"));
+                        }
+                    }
+                    next.extend(quarters);
+                }
+                pieces = next;
+            }
+        }
+    }
+
+    /// The fine store lets go of the leaves asked about longest ago when
+    /// full: whatever it let go of, every answer is the one a tree that
+    /// never kept anything gives, bit for bit, and it counts what it holds
+    /// right. With room for one query only (everything let go before each),
+    /// a little more (some leaves kept), and the store of a tree in use.
+    #[test]
+    fn a_full_fine_store_lets_go_of_old_leaves_and_answers_the_same() {
+        let plate = Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 0.5, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                3,
+                2,
+                vec![
+                    Vec3::new(0.0, 0.0, 2.0),
+                    Vec3::new(0.0, 3.0, 2.0),
+                    Vec3::new(2.0, 0.0, 2.3),
+                    Vec3::new(2.0, 3.0, 1.8),
+                    Vec3::new(4.0, 0.0, 2.0),
+                    Vec3::new(4.0, 3.0, 2.0),
+                ],
+                vec![1.0, 1000.0, 300.0, 1.0, 1.0, 1000.0],
+            )
+            .unwrap(),
+        );
+        let mut seed = 20_261_018_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let questions: Vec<(Vec3, f64)> = (0..400)
+            .map(|_| {
+                let p = Vec3::new(4.0 * unit(), 3.0 * unit(), 1.8 + 0.5 * unit());
+                (p, 10f64.powf(-6.0 * unit()))
+            })
+            .collect();
+        let room = 4 * FINE_LOOKS + 1;
+        let mut most = 0;
+        for cap in [room, room + 300, FINE_PIECES] {
+            let mut kept = PatchTree::new(&plate).unwrap();
+            kept.fine_cap = cap;
+            let mut let_go = 0;
+            let mut before = 0;
+            for &(p, r) in &questions {
+                let fresh = PatchTree::new(&plate).unwrap();
+                let got = kept.sigma_search(p, r);
+                let want = fresh.sigma_search(p, r);
+                assert_eq!(
+                    got.map(f64::to_bits),
+                    want.map(f64::to_bits),
+                    "{cap}: {p:?} {r}"
+                );
+                let fine = kept.fine.lock().unwrap();
+                let held: usize = fine.roots.values().map(|root| root.nodes.len()).sum();
+                assert_eq!(fine.pieces, held, "{cap}");
+                assert!(fine.pieces <= cap, "{cap}: {}", fine.pieces);
+                assert_eq!(
+                    kept.fine_pieces.load(std::sync::atomic::Ordering::Relaxed),
+                    held
+                );
+                // Fewer than before the query: leaves were let go.
+                if held < before {
+                    let_go += 1;
+                }
+                before = held;
+                most = most.max(held);
+            }
+            if cap < FINE_PIECES {
+                assert!(let_go > 0, "{cap}: nothing was let go");
+            }
+        }
+        // The queries need more than the small stores hold.
+        assert!(most > room + 300, "{most}");
     }
 
     #[test]

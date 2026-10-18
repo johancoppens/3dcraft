@@ -718,7 +718,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
 fn checked(doc: &Document, body: Body) -> Result<Body, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    match craft3d_topo::check(&body, &tolerance).first() {
+    // Remembered: a body the operation that made it checked already
+    // (every boolean does) is not checked again.
+    match craft3d_topo::check_remembered(&body, &tolerance).first() {
         None => Ok(body),
         Some(defect) => Err(format!("the result is not a valid body: {defect}")),
     }
