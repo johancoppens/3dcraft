@@ -36,62 +36,86 @@ pub(crate) struct ProjectGrid {
     memo: ProjectMemo,
 }
 
-/// How many projections one surface remembers at most, and all surfaces
-/// together (about 80 bytes each); a surface that would pass either lets
-/// go of all of its own first.
-const PROJECTIONS_PER_SURFACE: usize = 1 << 15;
-#[cfg(not(target_arch = "wasm32"))]
+/// How many projections all surfaces remember together, at most: the
+/// first in is the first out, whichever surface it is of, so that the
+/// surfaces in use keep what they project and the ones left idle make
+/// room. Kept in [`SHARDS`] parts by the surface, so that threads that
+/// project onto different surfaces rarely wait for each other.
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 const PROJECTIONS: usize = 1 << 20;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 const PROJECTIONS: usize = 1 << 16;
-/// How many projections all surfaces remember now.
-static PROJECTIONS_KEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Little, in the unit tests, so that they see the oldest go.
+#[cfg(test)]
+const PROJECTIONS: usize = 1 << 10;
+const SHARDS: usize = 16;
 
-/// The projections a surface remembers ([`ProjectGrid::memo`]).
-#[derive(Debug, Default)]
-struct ProjectMemo(std::sync::Mutex<std::collections::BTreeMap<[u64; 3], (f64, f64)>>);
+/// A projection remembered: the surface's grid ([`ProjectMemo::id`]) and
+/// the bits of the point.
+type ProjectionKey = (u64, [u64; 3]);
 
-impl ProjectMemo {
-    fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .copied()
-    }
+/// One part of the projections remembered: the answers, and the keys in
+/// the order they came.
+#[derive(Default)]
+struct Shard {
+    found: std::collections::BTreeMap<ProjectionKey, (f64, f64)>,
+    order: std::collections::VecDeque<ProjectionKey>,
+}
 
-    fn put(&self, key: [u64; 3], found: (f64, f64)) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let mut map = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key(&key) {
-            return;
+static PROJECTIONS_KEPT: [std::sync::Mutex<Shard>; SHARDS] = [const {
+    std::sync::Mutex::new(Shard {
+        found: std::collections::BTreeMap::new(),
+        order: std::collections::VecDeque::new(),
+    })
+}; SHARDS];
+
+/// The next grid's number: every grid has its own, never used again, so
+/// that what is remembered of a grid let go is never taken for another's.
+static GRIDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The projections a surface remembers ([`ProjectGrid::memo`]): its number
+/// in the projections all surfaces remember.
+#[derive(Debug)]
+struct ProjectMemo {
+    id: u64,
+}
+
+impl Default for ProjectMemo {
+    fn default() -> Self {
+        ProjectMemo {
+            id: GRIDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
-        let full = map.len() >= PROJECTIONS_PER_SURFACE
-            || PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS;
-        if full {
-            PROJECTIONS_KEPT.fetch_sub(map.len(), Relaxed);
-            map.clear();
-            // Still full with this surface's own let go: the others hold
-            // the room, and this one remembers nothing.
-            if PROJECTIONS_KEPT.load(Relaxed).saturating_add(1) > PROJECTIONS {
-                return;
-            }
-        }
-        map.insert(key, found);
-        PROJECTIONS_KEPT.fetch_add(1, Relaxed);
     }
 }
 
-impl Drop for ProjectMemo {
-    fn drop(&mut self) {
-        let held = self
-            .0
-            .get_mut()
-            .map_or_else(|poisoned| poisoned.into_inner().len(), |map| map.len());
-        PROJECTIONS_KEPT.fetch_sub(held, std::sync::atomic::Ordering::Relaxed);
+impl ProjectMemo {
+    fn shard(&self) -> std::sync::MutexGuard<'static, Shard> {
+        let at = usize::try_from(self.id % SHARDS as u64).unwrap_or(0);
+        PROJECTIONS_KEPT
+            .get(at)
+            .unwrap_or(&PROJECTIONS_KEPT[0])
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, key: &[u64; 3]) -> Option<(f64, f64)> {
+        self.shard().found.get(&(self.id, *key)).copied()
+    }
+
+    fn put(&self, key: [u64; 3], found: (f64, f64)) {
+        let key = (self.id, key);
+        let mut shard = self.shard();
+        if shard.found.contains_key(&key) {
+            return;
+        }
+        while shard.found.len() >= PROJECTIONS / SHARDS {
+            let Some(oldest) = shard.order.pop_front() else {
+                break;
+            };
+            shard.found.remove(&oldest);
+        }
+        shard.found.insert(key, found);
+        shard.order.push_back(key);
     }
 }
 
@@ -1260,39 +1284,95 @@ mod tests {
         BezierPatch::bicubic(net).unwrap()
     }
 
-    /// A surface remembers the projections it made, and lets go of them
-    /// when full: whatever it holds, every projection is the one a surface
-    /// that never kept anything makes, bit for bit, with more points than
-    /// it keeps asked twice over.
+    /// The point of a Bézier patch alone (`Surface::eval`) is the point of
+    /// its derivatives, bit for bit, inside its square and beyond it, at
+    /// several degrees and scales.
+    #[test]
+    fn the_point_of_a_patch_is_the_point_of_its_derivatives() {
+        let raised = |m: usize, n: usize, scale: f64| {
+            let ctrl: Vec<Vec3> = (0..(m + 1) * (n + 1))
+                .map(|k| {
+                    let (i, j) = ((k / (n + 1)) as f64, (k % (n + 1)) as f64);
+                    Vec3::new(i, 1.3 * j, ((k * 7) % 5) as f64 * 0.3) * scale
+                })
+                .collect();
+            Surface::Bezier(BezierPatch::new(m, n, ctrl).unwrap())
+        };
+        for scale in [1e-3, 1.0, 1e6] {
+            for surface in [
+                Surface::Bezier(bumpy(scale)),
+                raised(1, 1, scale),
+                raised(2, 5, scale),
+                raised(7, 3, scale),
+            ] {
+                for i in 0..=24 {
+                    for j in 0..=24 {
+                        let (u, v) = (
+                            -0.2 + 1.4 * f64::from(i) / 24.0,
+                            -0.2 + 1.4 * f64::from(j) / 24.0,
+                        );
+                        let (a, b) = (surface.eval(u, v), surface.derivatives(u, v).0);
+                        assert_eq!(
+                            [a.x.to_bits(), a.y.to_bits(), a.z.to_bits()],
+                            [b.x.to_bits(), b.y.to_bits(), b.z.to_bits()],
+                            "{u} {v}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The surfaces remember the projections they made, all together within
+    /// one budget, the first in the first out: whatever is held, every
+    /// projection is the one a surface that never kept anything makes, bit
+    /// for bit; a surface made after the budget is full still remembers
+    /// (the old ones make room), and none holds more than its part.
     #[test]
     fn remembered_projections_are_the_ones_made_afresh() {
-        let make = || Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(1.0)).unwrap());
-        let kept = make();
-        let count = PROJECTIONS_PER_SURFACE + 500;
+        let make = |k: usize| {
+            let scale = 1.0 + 0.01 * k as f64;
+            Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(scale)).unwrap())
+        };
         let point = |k: usize| {
             let t = k as f64;
             Vec3::new(
-                (t * 0.0137).sin() * 2.0 + 1.5,
-                (t * 0.0261).cos() * 3.0 + 2.0,
-                (t * 0.0093).sin() * 1.5,
+                (t * 0.137).sin() * 2.0 + 1.5,
+                (t * 0.261).cos() * 3.0 + 2.0,
+                (t * 0.093).sin() * 1.5,
             )
         };
-        let fresh: Vec<(f64, f64)> = (0..count)
-            .step_by(97)
-            .map(|k| make().project(point(k)).unwrap())
-            .collect();
-        for _ in 0..2 {
-            for k in 0..count {
-                let _ = kept.project(point(k));
-            }
-            for (k, want) in (0..count).step_by(97).zip(&fresh) {
-                let got = kept.project(point(k)).unwrap();
-                assert_eq!(
-                    (got.0.to_bits(), got.1.to_bits()),
-                    (want.0.to_bits(), want.1.to_bits())
-                );
+        // More surfaces and points than the budget holds.
+        let surfaces: Vec<Surface> = (0..24).map(make).collect();
+        let points = 3 * PROJECTIONS / surfaces.len();
+        for round in 0..2 {
+            for (s, surface) in surfaces.iter().enumerate() {
+                for k in (0..points).step_by(1 + s % 3) {
+                    let got = surface.project(point(k)).unwrap();
+                    if k % 37 == round {
+                        let want = make(s).project(point(k)).unwrap();
+                        assert_eq!(
+                            (got.0.to_bits(), got.1.to_bits()),
+                            (want.0.to_bits(), want.1.to_bits())
+                        );
+                    }
+                }
             }
         }
+        for shard in &PROJECTIONS_KEPT {
+            let shard = shard.lock().unwrap();
+            assert!(shard.found.len() <= PROJECTIONS / SHARDS);
+            assert_eq!(shard.found.len(), shard.order.len());
+        }
+        // A surface made now, with the budget full of the others', keeps
+        // what it projects.
+        let late = make(99);
+        let p = point(5);
+        let first = late.project(p).unwrap();
+        let ((u0, u1), (v0, v1)) = late.domain();
+        let grid = late.project_grid((u0, u1), (v0, v1));
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        assert_eq!(grid.memo.get(&key), Some(first));
     }
 
     /// The derivatives a walk from a start comes back with are those of the

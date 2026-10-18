@@ -24,10 +24,12 @@ const BYTES: usize = 64 << 20;
 #[cfg(target_arch = "wasm32")]
 const BYTES: usize = 8 << 20;
 
+/// The meshes kept, by their keys, and the keys in the order they came;
+/// each key is one allocation both hold.
 #[derive(Default)]
 struct Kept {
-    meshes: BTreeMap<Vec<u64>, Arc<FaceMesh>>,
-    order: VecDeque<Vec<u64>>,
+    meshes: BTreeMap<Arc<[u64]>, Arc<FaceMesh>>,
+    order: VecDeque<Arc<[u64]>>,
     bytes: usize,
 }
 
@@ -37,13 +39,23 @@ static KEPT: Mutex<Kept> = Mutex::new(Kept {
     bytes: 0,
 });
 
-/// About what a mesh takes, its key with it.
+/// About what a mesh kept takes, all of it counted: its key (once, with
+/// the count of the two that hold it), the mesh's vectors as allocated and
+/// the mesh itself behind its own count, and its places in the map (a
+/// node's share, taken as twice the entry) and in the order.
 fn size_of(key: &[u64], mesh: &FaceMesh) -> usize {
     use std::mem::size_of;
+    let counted = 2 * size_of::<usize>();
+    let vectors = (mesh.positions.capacity() + mesh.normals.capacity()) * size_of::<Vec3>()
+        + mesh.triangles.capacity() * size_of::<[u32; 3]>()
+        + (mesh.border.capacity() + mesh.rungs.capacity()) * size_of::<(Vec3, Vec3)>();
     std::mem::size_of_val(key)
-        + (mesh.positions.len() + mesh.normals.len()) * size_of::<Vec3>()
-        + mesh.triangles.len() * size_of::<[u32; 3]>()
-        + (mesh.border.len() + mesh.rungs.len()) * size_of::<(Vec3, Vec3)>()
+        + counted
+        + vectors
+        + size_of::<FaceMesh>()
+        + counted
+        + 2 * size_of::<(Arc<[u64]>, Arc<FaceMesh>)>()
+        + size_of::<Arc<[u64]>>()
 }
 
 /// Everything the mesh of face `face` of `body` is made from, written out:
@@ -58,14 +70,22 @@ pub(crate) fn key(
     params: &TessParams,
     last: bool,
 ) -> Option<Vec<u64>> {
+    // Every parameter (a new one does not compile until it is written out
+    // here too).
+    let TessParams {
+        chordal_tolerance,
+        max_segments,
+        max_triangles,
+        max_angle,
+    } = params;
     let mut out = Vec::new();
-    params.chordal_tolerance.push_bits(&mut out);
-    out.push(u64::from(params.max_segments));
-    match params.max_triangles {
-        Some(most) => out.extend([1, u64::try_from(most).unwrap_or(u64::MAX)]),
+    chordal_tolerance.push_bits(&mut out);
+    out.push(u64::from(*max_segments));
+    match max_triangles {
+        Some(most) => out.extend([1, u64::try_from(*most).unwrap_or(u64::MAX)]),
         None => out.push(0),
     }
-    match params.max_angle {
+    match max_angle {
         Some(angle) => out.extend([1, angle.to_bits()]),
         None => out.push(0),
     }
@@ -109,12 +129,13 @@ pub(crate) fn find(key: &[u64]) -> Option<Arc<FaceMesh>> {
 /// Keeps `mesh` for `key`, letting go of the oldest while there is not
 /// room.
 pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
-    let bytes = size_of(&key, mesh);
+    let mesh = mesh.clone();
+    let bytes = size_of(&key, &mesh);
     if bytes > BYTES / 4 {
         return;
     }
     let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
-    if kept.meshes.contains_key(&key) {
+    if kept.meshes.contains_key(key.as_slice()) {
         return;
     }
     while kept.bytes.saturating_add(bytes) > BYTES {
@@ -126,8 +147,9 @@ pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
         }
     }
     kept.bytes = kept.bytes.saturating_add(bytes);
-    kept.order.push_back(key.clone());
-    kept.meshes.insert(key, Arc::new(mesh.clone()));
+    let key: Arc<[u64]> = Arc::from(key);
+    kept.order.push_back(Arc::clone(&key));
+    kept.meshes.insert(key, Arc::new(mesh));
 }
 
 /// How many meshes are kept and about how many bytes they take.
