@@ -751,30 +751,48 @@ pub(crate) fn offset_for(
             largest: fits,
         });
     }
-    let unfolded = |fraction: f64| {
-        offsets.iter().all(|offset| {
-            if fillets.contains_key(&offset.face) {
-                return true;
-            }
-            let Some(face) = body.face(offset.face) else {
-                return true;
-            };
-            if !matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-                return true;
-            }
-            let along = offset.distance * fraction * if face.reversed { -1.0 } else { 1.0 };
-            craft3d_geom::offset::regular(&face.surface, along).is_ok()
-        })
-    };
     let moved: Vec<FaceId> = offsets.iter().map(|o| o.face).collect();
-    fitting_with(
-        |fraction| at(body, offsets, &fillets, fraction, operation, tolerance),
-        Some(&unfolded),
-        largest,
-        operation,
-        tolerance,
-        face_op_work(body, &moved),
-    )
+    let search = |fillets: &BTreeMap<FaceId, Fillet>| {
+        let unfolded = |fraction: f64| {
+            offsets.iter().all(|offset| {
+                if fillets.contains_key(&offset.face) {
+                    return true;
+                }
+                let Some(face) = body.face(offset.face) else {
+                    return true;
+                };
+                if !matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+                    return true;
+                }
+                let along = offset.distance * fraction * if face.reversed { -1.0 } else { 1.0 };
+                craft3d_geom::offset::regular(&face.surface, along).is_ok()
+            })
+        };
+        fitting_with(
+            |fraction| at(body, offsets, fillets, fraction, operation, tolerance),
+            Some(&unfolded),
+            largest,
+            operation,
+            tolerance,
+            face_op_work(body, &moved),
+        )
+    };
+    // A fillet that cannot be rebuilt (no ball of the new radius found
+    // along it, no fit in the samples allowed) is offset as any freeform
+    // face instead, which holds it to its exact offset within its share
+    // of the tolerance or refuses it: once per such fillet.
+    let mut fillets = fillets;
+    loop {
+        let made = search(&fillets);
+        if let Err(KernelError::FaceOp { faces, reason, .. }) = &made
+            && crate::offset_blend::cannot_rebuild(reason)
+            && let Some(face) = faces.first()
+            && fillets.remove(face).is_some()
+        {
+            continue;
+        }
+        return made;
+    }
 }
 
 /// `attempt(1.0)`, the whole of an operation whose size is `largest`

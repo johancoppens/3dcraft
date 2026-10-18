@@ -40,11 +40,17 @@ pub(crate) struct Fillet {
 /// reaches, as a share of its old surface's parameter range.
 const JOINT_MARGIN: f64 = 1e-3;
 
-pub(crate) const STAYS: &str = "a face this fillet rolls along does not move with it by the same distance: the offset of a fillet is the fillet of the radius changed by the distance between the faces it rolls along moved by that distance, and it would not meet this face";
+pub(crate) const STAYS: &str = "a face this fillet rolls along does not move with it by the same distance (in a shell: the face is left open): the offset of a fillet is the fillet with its radius changed by the distance, between the faces it rolls along moved as far, and it would not meet this face";
 pub(crate) const VANISHES: &str =
     "the fillet's radius would reach zero: the fillet would vanish into an edge";
 pub(crate) const CIRCULAR: &str =
     "the fillets rest on each other in a circle: none can be rebuilt before another";
+
+/// Whether a face operation was refused because a fillet could not be
+/// rebuilt (and may be offset as a freeform face instead).
+pub(crate) fn cannot_rebuild(reason: &str) -> bool {
+    reason == rebuild::UNSOLVED || reason == rebuild::NOT_FITTED || reason == CIRCULAR
+}
 
 /// The fillet faces among the freeform faces of `moving`: a face whose
 /// borders `v = 0` and `v = 1` each lie along edges to one other face, and
