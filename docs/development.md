@@ -189,6 +189,8 @@ Rules:
 - Screenshots capture only our own window.
 - Demo models are original or public-domain designs. No personal data in files, file names or requests; when fetching anything, use a generic `Craft3d-dev` User-Agent.
 
+**A picture of the whole window**, panels and the controls over the viewport included: `ui.screenshot {"window": true, "path": "shot.png"}` on the control channel (the window must be drawn: on screen, not minimised). `--window-size 1920x1080` (or `CRAFT3D_WINDOW_SIZE`) opens the window at a given size. A headless `mutter` draws no frames for it, so this needs a real display.
+
 ## Offscreen UI snapshots (no window)
 
 ```sh

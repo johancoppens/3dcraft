@@ -27,8 +27,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 2e-4, "maxTriangles": integer = 1000000, "angle": degrees = 12}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null, "transparency": number from 0 to 0.9 = 0, "section": {"on": boolean, "plane": "xy|yz|zx" or a datum plane or a face name, "feature": id or name, "point": [x, y, z], "normal": [x, y, z], "offset": number, "flip": boolean}, "show": {"datums": boolean = true, "sketches": boolean = true}}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size and an angle criterion of angle degrees (no chord of an edge turns its tangent, no side of a triangle the surface's normal, by more than that unless it is shorter than the tolerance, so small holes stay round; 0 for none), coarsened until the scene has at most maxTriangles triangles but never beyond the quick first picture's tolerance (1e-3 of the diagonal of the model's box), which the window shows while the mesh is refined. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); transparency is how see-through the bodies are drawn (0: opaque; up to 0.9): the front surface is blended over the one behind it, so that inner faces, holes and cavities show, and the hidden parts of edges are drawn dimmed; ui.screenshot shows it too, and a pick still gives the front-most face. section cuts the viewport's picture open with a plane, to look inside a shell, a pocket or a cavity; it is a view, the document does not change. The plane is plane (xy, yz or zx, a datum plane by its feature's id or name, or a flat face by its persistent name, with feature to say which body) or point and normal, moved by offset along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body, so a negative offset cuts into it) and flip keeps the other half. Where the plane passes through a body the cut is closed with a flat cap in a colour of its own, edges end at the plane and the outline of the cut is drawn as edges. Setting plane replaces point and normal and the other way round; on with no plane at all is xy. A plane that means nothing (an unknown name, a face that is not flat, a normal without direction) is an error and changes nothing; ui.get says under section where the plane lies and between which offsets it passes through the model. ui.screenshot and ui.pick follow the section: a pick gives what is seen, never a face that is cut away, and on the cap kind is section. show says what the viewport draws besides the bodies and their edges: datums false hides the datum planes, axes and points, sketches false the sketches (their lines and points); the toggles over the viewport set the same fields, and ui.screenshot follows them. picked, the last click, cannot be set.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 2e-4, "maxTriangles": integer = 1000000, "angle": degrees = 12}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null, "transparency": number from 0 to 0.9 = 0, "section": {"on": boolean, "plane": "xy|yz|zx" or a datum plane or a face name, "feature": id or name, "point": [x, y, z], "normal": [x, y, z], "offset": number, "flip": boolean}, "show": {"datums": boolean = true, "sketches": boolean = true}, "controlsLayout": "current|a|b|c" = "current"}"#,
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size and an angle criterion of angle degrees (no chord of an edge turns its tangent, no side of a triangle the surface's normal, by more than that unless it is shorter than the tolerance, so small holes stay round; 0 for none), coarsened until the scene has at most maxTriangles triangles but never beyond the quick first picture's tolerance (1e-3 of the diagonal of the model's box), which the window shows while the mesh is refined. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); transparency is how see-through the bodies are drawn (0: opaque; up to 0.9): the front surface is blended over the one behind it, so that inner faces, holes and cavities show, and the hidden parts of edges are drawn dimmed; ui.screenshot shows it too, and a pick still gives the front-most face. section cuts the viewport's picture open with a plane, to look inside a shell, a pocket or a cavity; it is a view, the document does not change. The plane is plane (xy, yz or zx, a datum plane by its feature's id or name, or a flat face by its persistent name, with feature to say which body) or point and normal, moved by offset along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body, so a negative offset cuts into it) and flip keeps the other half. Where the plane passes through a body the cut is closed with a flat cap in a colour of its own, edges end at the plane and the outline of the cut is drawn as edges. Setting plane replaces point and normal and the other way round; on with no plane at all is xy. A plane that means nothing (an unknown name, a face that is not flat, a normal without direction) is an error and changes nothing; ui.get says under section where the plane lies and between which offsets it passes through the model. ui.screenshot and ui.pick follow the section: a pick gives what is seen, never a face that is cut away, and on the cap kind is section. show says what the viewport draws besides the bodies and their edges: datums false hides the datum planes, axes and points, sketches false the sketches (their lines and points); the toggles over the viewport set the same fields, and ui.screenshot follows them. controlsLayout says where the controls over the viewport are placed: current (today's), or the mockups a, b and c; every control sets the same state in each. picked, the last click, cannot be set.",
     },
     UiMethod {
         name: "ui.pick",
@@ -47,8 +47,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.screenshot",
-        params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point}"#,
-        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
+        params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point, "window": boolean = false}"#,
+        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64. With window: true (the desktop window only; then only path may be given) it is instead the window's own next frame as it is drawn, panels and the controls over the viewport included, at the window's size in pixels.",
     },
     UiMethod {
         name: "ui.notice",
@@ -606,13 +606,103 @@ impl Shell {
         Ok(result)
     }
 
+    /// `ui.screenshot {window: true, path?}` as the desktop window answers
+    /// it: `image` is the window's own frame (panels, controls and all,
+    /// as egui drew it), saved as a PNG under the write root when `path`
+    /// is given, otherwise returned as base64.
+    pub fn window_picture(
+        &self,
+        session: &mut Session,
+        image: &egui::ColorImage,
+        path: Option<&str>,
+    ) -> Result<Value, String> {
+        let method = "ui.screenshot";
+        let [width, height] = image.size;
+        let mut rgb = Vec::with_capacity(image.pixels.len().saturating_mul(3));
+        for pixel in &image.pixels {
+            rgb.extend_from_slice(&[pixel.r(), pixel.g(), pixel.b()]);
+        }
+        let (w, h) = (
+            u32::try_from(width).map_err(|e| format!("{method}: {e}"))?,
+            u32::try_from(height).map_err(|e| format!("{method}: {e}"))?,
+        );
+        let png = craft3d_render::encode_png(w, h, &rgb).map_err(|e| format!("{method}: {e}"))?;
+        let mut result = json!({
+            "width": width,
+            "height": height,
+            "window": true,
+            "bytes": png.len(),
+        });
+        if let Some(map) = result.as_object_mut() {
+            match path {
+                Some(path) => {
+                    session
+                        .write_output(path, &png)
+                        .map_err(|e| format!("{method}: {e}"))?;
+                    map.insert("path".into(), path.into());
+                }
+                None => {
+                    map.insert("mime".into(), "image/png".into());
+                    map.insert("base64".into(), craft3d_engine::encode_base64(&png).into());
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Whether the request `line` is `ui.screenshot {window: true}`, and
+    /// then its path or why its parameters are wrong. A path the session
+    /// may not write is refused here, before the window is captured.
+    pub fn window_picture_request(
+        session: &Session,
+        line: &str,
+    ) -> Option<Result<Option<String>, String>> {
+        let method = "ui.screenshot";
+        let request: Value = serde_json::from_str(line).ok()?;
+        if request.get("method").and_then(Value::as_str) != Some(method) {
+            return None;
+        }
+        let params = request.get("params");
+        if params.and_then(|p| p.get("window")) != Some(&Value::Bool(true)) {
+            return None;
+        }
+        let checked = (|| {
+            let map = fields(method, params, &["path", "window"])?;
+            match map.get("path") {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(path)) => {
+                    session
+                        .workspace()
+                        .resolve_write(path)
+                        .map_err(|e| format!("{method}: {e}"))?;
+                    Ok(Some(path.clone()))
+                }
+                Some(_) => Err(format!("{method}: `path` must be a string")),
+            }
+        })();
+        Some(checked)
+    }
+
     fn ui_screenshot(
         &mut self,
         session: &mut Session,
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.screenshot";
-        let map = fields(method, params, &["path", "width", "height", "scale"])?;
+        let map = fields(
+            method,
+            params,
+            &["path", "width", "height", "scale", "window"],
+        )?;
+        match map.get("window") {
+            None | Some(Value::Null | Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => {
+                return Err(format!(
+                    "{method}: `window` is a picture of the desktop window with its panels and controls, which only the window (craft3d --control) takes"
+                ));
+            }
+            Some(_) => return Err(format!("{method}: `window` must be a boolean")),
+        }
         let path = match map.get("path") {
             None | Some(Value::Null) => None,
             Some(Value::String(path)) => Some(path.as_str()),

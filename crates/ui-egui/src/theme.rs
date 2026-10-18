@@ -219,6 +219,40 @@ pub struct Tokens {
     pub tab_min_width: f32,
     pub tab_gap: f32,
     pub tab_accent_width: f32,
+    /// The mockup arrangements of the controls over the viewport
+    /// (`state::ControlsVariant` a, b and c) share one size system: every
+    /// control is `nav_height` high on a plate `nav_padding` larger on
+    /// each side, `nav_margin` from the viewport's edge; `nav_gap` between
+    /// two plates and between two groups on a plate (a divider sits in
+    /// the middle of it), `nav_spacing` between two controls of a group
+    /// and `nav_row_gap` between two rows of a plate, in points.
+    pub nav_height: f32,
+    pub nav_padding: f32,
+    pub nav_margin: f32,
+    pub nav_gap: f32,
+    pub nav_spacing: f32,
+    pub nav_row_gap: f32,
+    /// The corner radius of a plate and of a control on it: the plate's
+    /// is the control's plus the padding, so the two curves run parallel.
+    pub nav_radius: u8,
+    pub nav_control_radius: u8,
+    /// The side of the view cube's and of the triad's place, the size of
+    /// the triad's letters, in points.
+    pub nav_cube_size: f32,
+    pub nav_triad_size: f32,
+    pub nav_triad_font: f32,
+    /// A control's icon: its side and the width of its lines, the space
+    /// from the control's side to the icon (or to the text when there is
+    /// no icon) and between icon and text, in points.
+    pub nav_icon_size: f32,
+    pub nav_icon_width: f32,
+    pub nav_inset: f32,
+    pub nav_icon_gap: f32,
+    /// A toggle that is on: the accent at this opacity behind it (0 to
+    /// 255).
+    pub nav_on_opacity: u8,
+    /// The small title of a floating panel, in points.
+    pub nav_title_font: f32,
 }
 
 impl Default for Tokens {
@@ -338,6 +372,23 @@ impl Tokens {
             tab_min_width: 72.0,
             tab_gap: 2.0,
             tab_accent_width: 2.0,
+            nav_height: 28.0,
+            nav_padding: 4.0,
+            nav_margin: 12.0,
+            nav_gap: 8.0,
+            nav_spacing: 2.0,
+            nav_row_gap: 4.0,
+            nav_radius: 10,
+            nav_control_radius: 6,
+            nav_cube_size: 108.0,
+            nav_triad_size: 88.0,
+            nav_triad_font: 13.0,
+            nav_icon_size: 16.0,
+            nav_icon_width: 1.5,
+            nav_inset: 9.0,
+            nav_icon_gap: 6.0,
+            nav_on_opacity: 96,
+            nav_title_font: 11.0,
         }
     }
 

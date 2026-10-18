@@ -146,7 +146,24 @@ pub struct Desk {
     /// window draw: a quick command is answered in the same turn, a slow
     /// one does not hold up a frame.
     patience: Duration,
+    /// A picture of the window asked for (`ui.screenshot {window: true}`),
+    /// while it waits for its frame; the requests after it wait with it.
+    capture: Option<Capture>,
 }
+
+/// A request for a picture of the window: it is answered once egui hands
+/// over a frame it drew after the request came in.
+struct Capture {
+    request: Request,
+    path: Option<String>,
+    /// Frames drawn since it came in: the frame is asked for after a few,
+    /// so that what came before it (a `ui.set`) is drawn and has settled.
+    frames: u32,
+    asked: bool,
+}
+
+/// Frames a picture of the window waits before it is asked for.
+const CAPTURE_FRAMES: u32 = 3;
 
 /// Who waits for the task on the engine thread.
 enum Waiting {
@@ -184,6 +201,7 @@ impl Desk {
             refiner: None,
             waiting: None,
             patience: PATIENCE,
+            capture: None,
         }
     }
 
@@ -279,9 +297,39 @@ impl Desk {
             if self.queue.front().is_some_and(|r| is_screenshot(&r.line)) && self.refining() {
                 break;
             }
+            // A picture of the window waits for its frame, and what came
+            // after it waits with it.
+            if self.capture.is_some() {
+                // `ui.get` and `ui.quit` do not wait for it.
+                for request in std::mem::take(&mut self.queue) {
+                    if route(&request.line) == Route::Anytime {
+                        self.host.answer(request);
+                    } else {
+                        self.queue.push_back(request);
+                    }
+                }
+                break;
+            }
             if let Some(request) = self.queue.pop_front() {
                 served += 1;
                 changed = true;
+                match Shell::window_picture_request(&self.host.session, &request.line) {
+                    Some(Ok(path)) => {
+                        self.capture = Some(Capture {
+                            request,
+                            path,
+                            frames: 0,
+                            asked: false,
+                        });
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        let id = request_id(&request.line);
+                        let _ = request.reply.send(Some(rpc::error_reply(&id, &error)));
+                        continue;
+                    }
+                    None => {}
+                }
                 match route(&request.line) {
                     Route::Engine => {
                         let label = request_label(&request.line);
@@ -591,6 +639,50 @@ impl Desk {
     }
 }
 
+/// The `id` of a request, `null` when it has none.
+fn request_id(line: &str) -> Value {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| request.get("id").cloned())
+        .unwrap_or(Value::Null)
+}
+
+impl Desk {
+    /// Before a frame: asks egui for a picture of the frame once a
+    /// capture has waited its frames.
+    fn ask_capture(&mut self, ctx: &egui::Context) {
+        let Some(capture) = self.capture.as_mut() else {
+            return;
+        };
+        if capture.asked {
+            return;
+        }
+        capture.frames = capture.frames.saturating_add(1);
+        if capture.frames >= CAPTURE_FRAMES {
+            capture.asked = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        }
+        ctx.request_repaint();
+    }
+
+    /// A frame egui drew, as asked for: the capture's answer.
+    fn captured(&mut self, image: &egui::ColorImage) {
+        let Some(capture) = self.capture.take() else {
+            return;
+        };
+        let id = request_id(&capture.request.line);
+        let reply = match self.host.shell.window_picture(
+            &mut self.host.session,
+            image,
+            capture.path.as_deref(),
+        ) {
+            Ok(result) => rpc::ok_reply(&id, &result),
+            Err(error) => rpc::error_reply(&id, &error),
+        };
+        let _ = capture.request.reply.send(Some(reply));
+    }
+}
+
 /// True for a `ui.screenshot` request.
 fn is_screenshot(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
@@ -652,6 +744,7 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
+        desk.ask_capture(ctx);
         let title = if desk.away() {
             window_title(desk.host.shell.shown_status())
         } else {
@@ -668,6 +761,15 @@ impl eframe::App for Viewer {
         let Ok(mut desk) = self.desk.try_borrow_mut() else {
             return;
         };
+        let shot = ui.input(|i| {
+            i.raw.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(Arc::clone(image)),
+                _ => None,
+            })
+        });
+        if let Some(image) = shot {
+            desk.captured(&image);
+        }
         if desk.away() {
             desk.host.shell.ui_away(ui);
         } else {
@@ -832,7 +934,11 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
             .with_app_id("craft3d")
-            .with_inner_size([1280.0, 800.0])
+            .with_inner_size(
+                options
+                    .window_size
+                    .map_or([1280.0, 800.0], |[w, h]| [w as f32, h as f32]),
+            )
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
@@ -1040,6 +1146,65 @@ mod tests {
         assert!(reply.contains(r#""quitting":true"#), "{reply}");
         // It stays asked for: whichever turn the event loop looks at.
         assert!(desk.turn().quit);
+    }
+
+    /// Turns until `answer` has its reply, or a few seconds have passed.
+    fn turn_until(desk: &mut Desk, answer: &Receiver<Option<String>>) -> Option<String> {
+        for _ in 0..500 {
+            desk.turn();
+            if let Ok(reply) = answer.try_recv() {
+                return reply;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// `ui.screenshot {window: true}` is answered with the frame egui hands
+    /// over after it asked for one; meanwhile the requests after it wait,
+    /// but `ui.get` does not, and parameters it does not take are refused
+    /// at once.
+    #[test]
+    fn a_window_picture_waits_for_its_frame_and_holds_what_comes_after() {
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let host = Host::new(Session::new(Workspace::none()));
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let wrong = ask(
+            &requests,
+            r#"{"id":1,"method":"ui.screenshot","params":{"window":true,"width":30}}"#,
+        );
+        let reply = turn_until(&mut desk, &wrong).unwrap();
+        assert!(
+            reply.contains(r#""ok":false"#) && reply.contains("width"),
+            "{reply}"
+        );
+        let shot = ask(
+            &requests,
+            r#"{"id":2,"method":"ui.screenshot","params":{"window":true}}"#,
+        );
+        let after = ask(
+            &requests,
+            r#"{"id":3,"method":"ui.notice","params":{"text":"next"}}"#,
+        );
+        let get = ask(&requests, r#"{"id":4,"method":"ui.get"}"#);
+        assert!(turn_until(&mut desk, &get).is_some());
+        assert!(shot.try_recv().is_err() && after.try_recv().is_err());
+        // Asked for after a few frames, once.
+        let ctx = egui::Context::default();
+        for _ in 0..CAPTURE_FRAMES {
+            desk.ask_capture(&ctx);
+        }
+        assert!(desk.capture.as_ref().is_some_and(|c| c.asked));
+        let image = egui::ColorImage::new([5, 2], vec![egui::Color32::from_rgb(1, 2, 3); 10]);
+        desk.captured(&image);
+        let reply = shot.try_recv().unwrap().unwrap();
+        assert!(
+            reply.contains(r#""ok":true"#) && reply.contains(r#""width":5"#),
+            "{reply}"
+        );
+        let reply = turn_until(&mut desk, &after).unwrap();
+        assert!(reply.contains(r#""ok":true"#), "{reply}");
     }
 
     /// Every wake posts an event of its own to the event loop, also when

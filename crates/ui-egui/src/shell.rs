@@ -23,13 +23,16 @@ use craft3d_render::{Highlight, Section};
 use std::sync::Arc;
 
 mod controls;
+mod icons;
 pub mod number_field;
 mod tabs;
+mod variants;
 pub use controls::{ControlWidths, ControlsLayout, controls_layout};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
 };
+pub use variants::{NavWidths, variant_layout};
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -1943,8 +1946,16 @@ impl Shell {
             _ => {}
         }
         if let Some(problem) = self.problem() {
+            // Right of the triad where an arrangement puts it bottom left.
+            let at = if self.state.controls_layout == crate::state::ControlsVariant::Current {
+                inner.left_bottom()
+            } else {
+                let margin = tokens.nav_margin;
+                rect.left_bottom()
+                    + egui::vec2(margin + tokens.nav_triad_size + tokens.nav_gap, -margin)
+            };
             painter.text(
-                inner.left_bottom(),
+                at,
                 egui::Align2::LEFT_BOTTOM,
                 problem,
                 egui::FontId::proportional(13.0),

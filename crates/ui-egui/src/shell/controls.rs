@@ -171,6 +171,14 @@ pub struct ControlsLayout {
     /// The view cube's square place and the triad's.
     pub cube: Option<Rect>,
     pub triad: Option<Rect>,
+    /// The mockup arrangements' dividers between the groups of a plate
+    /// (today's has the one `divider`).
+    pub dividers: [Option<[Pos2; 2]>; 4],
+    /// The title of the section's floating panel (arrangement C).
+    pub section_title: Option<Rect>,
+    /// The mockup arrangements' chips show their icons only: the viewport
+    /// is too narrow for their names.
+    pub compact: bool,
 }
 
 impl ControlsLayout {
@@ -629,7 +637,12 @@ fn faded(c: egui::Color32, enabled: bool, tokens: &Tokens) -> egui::Color32 {
 /// A glass plate behind controls: a dark base so the controls read over a
 /// light model too, the glass tint over it and a faint rim.
 fn plate(painter: &egui::Painter, rect: Rect, tokens: &Tokens) {
-    let radius = egui::CornerRadius::same(tokens.plate_radius);
+    plate_rounded(painter, rect, tokens, tokens.plate_radius);
+}
+
+/// A glass plate (see [`plate`]) with corners of `radius` points.
+pub(super) fn plate_rounded(painter: &egui::Painter, rect: Rect, tokens: &Tokens, radius: u8) {
+    let radius = egui::CornerRadius::same(radius);
     painter.rect_filled(
         rect,
         radius,
@@ -780,6 +793,60 @@ fn segmented(
     (rects, clicked)
 }
 
+/// The section's base planes by the axis they are across: X, Y and Z.
+pub(super) const SECTION_PLANES: [(&str, &str); 3] = [("x", "yz"), ("y", "zx"), ("z", "xy")];
+
+/// The middle of the model along axis `axis`: where a plane that is
+/// chosen in the controls starts.
+fn model_middle(scene: Option<&Scene>, axis: usize) -> f64 {
+    scene
+        .and_then(|scene| scene.bbox.corners())
+        .map_or(0.0, |(lo, hi)| {
+            let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            match (lo.get(axis), hi.get(axis)) {
+                (Some(lo), Some(hi)) => (lo + hi) * 0.5,
+                _ => 0.0,
+            }
+        })
+}
+
+/// The section switched on or off; switched on with no plane at all, it
+/// is across Z through the model's middle.
+pub(super) fn toggle_section(section: &mut crate::state::SectionState, scene: Option<&Scene>) {
+    section.on = !section.on;
+    if section.on && section.plane.is_none() && section.normal.is_none() {
+        section.plane = Some("xy".to_string());
+        section.offset = model_middle(scene, 2);
+    }
+}
+
+/// Which of X, Y and Z the section is across, if it is across a base
+/// plane.
+pub(super) fn chosen_axis(section: &crate::state::SectionState) -> Option<usize> {
+    SECTION_PLANES
+        .iter()
+        .position(|(_, plane)| section.plane.as_deref() == Some(*plane))
+}
+
+/// The section across axis `axis` (0 X, 1 Y, 2 Z) through the model's
+/// middle, unless it is across that axis already.
+pub(super) fn choose_axis(
+    section: &mut crate::state::SectionState,
+    axis: usize,
+    scene: Option<&Scene>,
+) {
+    if Some(axis) == chosen_axis(section) {
+        return;
+    }
+    if let Some((_, plane)) = SECTION_PLANES.get(axis) {
+        section.plane = Some((*plane).to_string());
+        section.feature = None;
+        section.point = None;
+        section.normal = None;
+        section.offset = model_middle(scene, axis);
+    }
+}
+
 impl Shell {
     /// The controls over the viewport `rect`, inside `inner` (see the top
     /// of this module).
@@ -790,6 +857,11 @@ impl Shell {
         inner: Rect,
         scene: Option<&Scene>,
     ) {
+        let variant = self.state.controls_layout;
+        if variant != crate::state::ControlsVariant::Current {
+            self.variant_controls(ui, rect, scene, variant);
+            return;
+        }
         let tokens = self.tokens;
         let painter = ui.painter_at(rect);
         let widths = ControlWidths::measure(&painter, &tokens);
@@ -879,6 +951,19 @@ impl Shell {
             Some(_) => Some(ProjectionKind::Orthographic),
             None => None,
         };
+        self.camera_clicks(ui, fit, iso, projection, scene);
+    }
+
+    /// What a click on Fit, on Iso or on one half of the projection does,
+    /// whichever arrangement drew them.
+    pub(super) fn camera_clicks(
+        &mut self,
+        ui: &egui::Ui,
+        fit: bool,
+        iso: bool,
+        projection: Option<ProjectionKind>,
+        scene: Option<&Scene>,
+    ) {
         if let Some(projection) = projection.filter(|p| *p != self.state.camera.projection) {
             self.turn = None;
             self.state.camera.projection = projection;
@@ -914,6 +999,21 @@ impl Shell {
             show.datums = !show.datums;
         }
         self.show_hits = vec![("sketches", sketches), ("datums", datums)];
+        self.see_through_field(ui, field);
+        self.set_show(ui, show);
+    }
+
+    /// Shows `show` from now on.
+    pub(super) fn set_show(&mut self, ui: &egui::Ui, show: crate::state::Show) {
+        if show != self.state.show {
+            self.state.show = show;
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The See-through field in `field`: how see-through the bodies are.
+    pub(super) fn see_through_field(&mut self, ui: &mut egui::Ui, field: Rect) {
+        let tokens = self.tokens;
         self.transparency_rect = Some(field);
         let range = [0.0, crate::state::MAX_TRANSPARENCY];
         let outcome = NumberField {
@@ -931,10 +1031,6 @@ impl Shell {
         .show(ui, field, &tokens, &mut self.fields, &mut self.typing);
         if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
             self.state.transparency = value.clamp(range[0], range[1]);
-            ui.ctx().request_repaint();
-        }
-        if show != self.state.show {
-            self.state.show = show;
             ui.ctx().request_repaint();
         }
     }
@@ -961,68 +1057,24 @@ impl Shell {
             return;
         };
         let mut section = self.state.section.clone();
-        let range = self.section_cache.as_ref().and_then(|cache| cache.range);
-        // The middle of the model along a base plane's normal: where a
-        // plane that is chosen here starts.
-        let middle = |axis: usize| {
-            scene
-                .and_then(|scene| scene.bbox.corners())
-                .map_or(0.0, |(lo, hi)| {
-                    let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
-                    match (lo.get(axis), hi.get(axis)) {
-                        (Some(lo), Some(hi)) => (lo + hi) * 0.5,
-                        _ => 0.0,
-                    }
-                })
-        };
         let mut hits: Vec<(&'static str, Rect)> = vec![("toggle", toggle)];
         if switch(ui, toggle, "section", "Section", section.on, &tokens) {
-            section.on = !section.on;
-            if section.on && section.plane.is_none() && section.normal.is_none() {
-                section.plane = Some("xy".to_string());
-                section.offset = middle(2);
-            }
+            toggle_section(&mut section, scene);
         }
         let on = self.state.section.on;
-        let planes = [("x", "yz"), ("y", "zx"), ("z", "xy")];
-        let chosen = planes
-            .iter()
-            .position(|(_, plane)| section.plane.as_deref() == Some(*plane));
+        let chosen = chosen_axis(&section);
         let (cells, clicked) = segmented(ui, axes, "axes", &["X", "Y", "Z"], chosen, on, &tokens);
         if on {
-            for ((name, _), cell) in planes.iter().zip(&cells) {
+            for ((name, _), cell) in SECTION_PLANES.iter().zip(&cells) {
                 hits.push((name, *cell));
             }
         }
-        if let Some(axis) = clicked.filter(|&k| Some(k) != chosen)
-            && let Some((_, plane)) = planes.get(axis)
-        {
-            section.plane = Some((*plane).to_string());
-            section.feature = None;
-            section.point = None;
-            section.normal = None;
-            section.offset = middle(axis);
+        if let Some(axis) = clicked {
+            choose_axis(&mut section, axis, scene);
         }
-        let field_range = range.filter(|[lo, hi]| lo < hi);
-        let unit = self.length_unit;
-        let outcome: FieldOutcome = NumberField {
-            id: "offset",
-            label: "Offset",
-            value: section.offset,
-            range: field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]),
-            step: field_range.map_or(1.0, number_field::nice_step),
-            scale: 1.0,
-            decimals: 2,
-            unit,
-            enabled: on && field_range.is_some(),
-            range_known: field_range.is_some(),
-        }
-        .show(ui, offset, &tokens, &mut self.fields, &mut self.typing);
+        self.offset_field(ui, offset, &mut section, on);
         if on {
             hits.push(("offset", offset));
-        }
-        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
-            section.offset = value;
         }
         let (cells, clicked) = segmented(
             ui,
@@ -1042,6 +1094,42 @@ impl Shell {
             section.flip = k == 1;
         }
         self.section_hits = hits;
+        self.commit_section(ui, section);
+    }
+
+    /// The Offset field in `rect`: where the section's plane is along its
+    /// normal, across the model's extent; inert while the section is off.
+    pub(super) fn offset_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        section: &mut crate::state::SectionState,
+        on: bool,
+    ) {
+        let tokens = self.tokens;
+        let range = self.section_cache.as_ref().and_then(|cache| cache.range);
+        let field_range = range.filter(|[lo, hi]| lo < hi);
+        let unit = self.length_unit;
+        let outcome: FieldOutcome = NumberField {
+            id: "offset",
+            label: "Offset",
+            value: section.offset,
+            range: field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]),
+            step: field_range.map_or(1.0, number_field::nice_step),
+            scale: 1.0,
+            decimals: 2,
+            unit,
+            enabled: on && field_range.is_some(),
+            range_known: field_range.is_some(),
+        }
+        .show(ui, rect, &tokens, &mut self.fields, &mut self.typing);
+        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
+            section.offset = value;
+        }
+    }
+
+    /// Makes `section` the viewport's section, when it changed and is one.
+    pub(super) fn commit_section(&mut self, ui: &egui::Ui, section: crate::state::SectionState) {
         if section != self.state.section
             && let Ok(section) = section.validated()
         {
@@ -1121,7 +1209,7 @@ impl Shell {
     /// handles the cube's mouse. A click on a facet starts a turn of the camera
     /// to that side (see [`Self::advance_turn`]), and a drag orbits the
     /// camera.
-    fn view_cube(
+    pub(super) fn view_cube(
         &mut self,
         ui: &mut egui::Ui,
         place: Rect,
@@ -1220,20 +1308,21 @@ impl Shell {
             }
         }
         if let Some(triad) = triad {
-            self.paint_triad(&painter, triad);
+            let font = (triad.height() * 0.17).clamp(8.0, 12.0);
+            self.paint_triad(&painter, triad, font);
         }
     }
 
     /// The axis triad in `place`: X, Y and Z from a common origin, in
     /// their colours, each with its letter at its tip, turning with the
     /// camera; an arm that points away from the viewer is dimmer.
-    fn paint_triad(&self, painter: &egui::Painter, place: Rect) {
+    pub(super) fn paint_triad(&self, painter: &egui::Painter, place: Rect, font_size: f32) {
         let tokens = self.tokens;
         let Some(arms) = view_cube::triad(&self.state.camera) else {
             return;
         };
         let origin = place.center();
-        let font = egui::FontId::proportional((place.height() * 0.17).clamp(8.0, 12.0));
+        let font = egui::FontId::proportional(font_size);
         // The letters sit just past the tips, inside the place.
         let reach = place.height() * 0.5 - font.size * 0.7;
         painter.circle_filled(origin, tokens.triad_width * 1.4, color(tokens.text));

@@ -513,6 +513,48 @@ pub struct UiState {
     /// `ui.set {"show": {"datums": false}}` hides the datums,
     /// `{"show": {"sketches": false}}` the sketches.
     pub show: Show,
+    /// Where the controls over the viewport (view cube, triad, camera,
+    /// display and section controls) are placed: today's layout or one of
+    /// the three mockups to choose from (`ui.set {"controlsLayout": "b"}`).
+    /// Only the placement changes; every control sets the same state.
+    pub controls_layout: ControlsVariant,
+}
+
+/// The arrangements of the controls over the viewport.
+///
+/// - `current`: today's layout, bottom right (the default).
+/// - `a`: the view cube top right with the camera controls under it, a
+///   display bar at the bottom centre whose section options open inline,
+///   the triad bottom left.
+/// - `b`: one aligned stack at the bottom right: the cube over a card with
+///   a camera row, the section options (growing upward) and the display
+///   rows; the triad bottom left.
+/// - `c`: one slim toolbar along the bottom edge with icons and labels,
+///   the cube top right, the triad bottom left; Section opens a small
+///   floating panel over its button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlsVariant {
+    #[default]
+    Current,
+    A,
+    B,
+    C,
+}
+
+impl ControlsVariant {
+    /// Every arrangement, the default first.
+    pub const ALL: [Self; 4] = [Self::Current, Self::A, Self::B, Self::C];
+
+    /// The name `ui.set` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::A => "a",
+            Self::B => "b",
+            Self::C => "c",
+        }
+    }
 }
 
 fn finite(name: &str, value: f64) -> Result<f64, String> {
@@ -817,6 +859,9 @@ mod tests {
                 datums: false,
                 sketches: false,
             },
+            // Added with the mockup arrangements of the controls
+            // (2026-10-18).
+            controls_layout: ControlsVariant::B,
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -844,6 +889,7 @@ mod tests {
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
                 "show": {"datums": false, "sketches": false},
+                "controlsLayout": "b",
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();
