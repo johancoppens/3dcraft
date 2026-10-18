@@ -40,15 +40,16 @@ static KEPT: Mutex<Kept> = Mutex::new(Kept {
 });
 
 /// About what a mesh kept takes, all of it counted: its key (once, with
-/// the count of the two that hold it), the mesh's vectors as allocated and
-/// the mesh itself behind its own count, and its places in the map (a
-/// node's share, taken as twice the entry) and in the order.
+/// the count of the two that hold it), the mesh's vectors (a clone's are
+/// as long as they hold), the mesh itself behind its own count, and its
+/// places in the map (a node's share, taken as twice the entry) and in the
+/// order.
 fn size_of(key: &[u64], mesh: &FaceMesh) -> usize {
     use std::mem::size_of;
     let counted = 2 * size_of::<usize>();
-    let vectors = (mesh.positions.capacity() + mesh.normals.capacity()) * size_of::<Vec3>()
-        + mesh.triangles.capacity() * size_of::<[u32; 3]>()
-        + (mesh.border.capacity() + mesh.rungs.capacity()) * size_of::<(Vec3, Vec3)>();
+    let vectors = (mesh.positions.len() + mesh.normals.len()) * size_of::<Vec3>()
+        + mesh.triangles.len() * size_of::<[u32; 3]>()
+        + (mesh.border.len() + mesh.rungs.len()) * size_of::<(Vec3, Vec3)>();
     std::mem::size_of_val(key)
         + counted
         + vectors
@@ -129,8 +130,7 @@ pub(crate) fn find(key: &[u64]) -> Option<Arc<FaceMesh>> {
 /// Keeps `mesh` for `key`, letting go of the oldest while there is not
 /// room.
 pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
-    let mesh = mesh.clone();
-    let bytes = size_of(&key, &mesh);
+    let bytes = size_of(&key, mesh);
     if bytes > BYTES / 4 {
         return;
     }
@@ -149,7 +149,7 @@ pub(crate) fn keep(key: Vec<u64>, mesh: &FaceMesh) {
     kept.bytes = kept.bytes.saturating_add(bytes);
     let key: Arc<[u64]> = Arc::from(key);
     kept.order.push_back(Arc::clone(&key));
-    kept.meshes.insert(key, Arc::new(mesh));
+    kept.meshes.insert(key, Arc::new(mesh.clone()));
 }
 
 /// How many meshes are kept and about how many bytes they take.

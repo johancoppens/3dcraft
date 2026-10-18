@@ -21,7 +21,7 @@ pub use nurbs::{
     AtU, AtV, BezierSpan, CurvePiece, DerivativeBounds, DerivativeCache, MAX_CONTROL_POINTS,
     NurbsCurve, NurbsSurface, RationalBezierPatch,
 };
-pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
+pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus, kept_projections};
 pub use transform::{ISOMETRY_EPSILON, MirrorRule};
 
 use craft3d_math::{Bbox3, Bits, Vec3};
