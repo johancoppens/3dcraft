@@ -74,7 +74,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] `body.split`: one body per lump when asked, and a name for the piece of a face in one lump (decided 2026-10-18, [`decisions.md`](decisions.md)).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
-- [ ] Tolerant modelling (item 4), before STEP import.
+- [ ] Tolerant modelling (item 4), before STEP import: a tolerance per vertex and edge, the kernel at the body's largest, a cap of 1000 times the tolerance (decided 2026-10-18, [`decisions.md`](decisions.md)); first slice owed.
 
 **Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
 

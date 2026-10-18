@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-18: Tolerant modelling: a tolerance per vertex and edge, the kernel at the body's largest (decided by the developer)
+
+Geometry that is not exact to the document's tolerance (a STEP file whose edges lie up to 1e-4 off their faces, faces that share no vertices, a fit that cannot reach half the tolerance) is held as option (4) of the proposal (`plan/tolerant.md`): a tolerance per vertex and edge is stored and checked, as Parasolid, ACIS and OpenCascade keep one, and the kernel works at the body's largest until a measurement shows which distance rule should go per entity, one rule at a time. A body without loose entities (every body 3DCraft builds itself) is unchanged: the boolean corpus digest and the benchmark stay bit for bit. A cap on any entity's tolerance is document data, by default 1000 times the linear tolerance (1 µm at the default); above it an operation refuses with its reason rather than growing tolerances unseen (the creep other kernels are known for). Sewing at import merges topology and measures gaps; it never moves geometry. Rejected: (1) every distance rule per entity from the start (some 100 rules in the boolean alone get a second input); (2) healing to exact on import (moves the author's geometry, fails at tangent fillet edges); (3) one tolerance per body alone (one bad edge coarsens the body for good). First slice owed (checklist item 4, before STEP import): the table, the check per entity with edge-on-surface proven, the working tolerance through the boolean, a perturbed-body oracle.
+
 ### 2026-10-18: Which side a cut by a sheet keeps (decided by the developer)
 
 Subtract and intersect choose the side, as built (D-open-14 (c1)): subtract keeps the side the sheet's normal points to (for a fill, the sketch's normal), intersect the other. No `reversed` flag on the fill and no `flip` on the cut: either would be a second way to say the same thing. A "flip side" button in the UI, as other modellers show, switches between subtract and intersect. With (a) and (b) above this closes D-open-14.
