@@ -12,10 +12,6 @@ pub enum Icon {
     Fit,
     /// The iso view: a cube seen from a corner.
     Iso,
-    /// Perspective: a frustum, narrower at the back.
-    Perspective,
-    /// Orthographic: a square.
-    Orthographic,
     /// Sketches: a polyline with its points.
     Sketches,
     /// Datums: a plane seen at a slant.
@@ -66,24 +62,6 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                 line(vec![p(0.0, 0.0), p(0.0, 0.95)]),
             ]
         }
-        Icon::Perspective => vec![
-            closed(vec![
-                p(-0.4, -0.75),
-                p(0.4, -0.75),
-                p(0.9, 0.75),
-                p(-0.9, 0.75),
-            ]),
-            line(vec![p(0.0, -0.75), p(0.0, 0.75)]),
-        ],
-        Icon::Orthographic => vec![
-            closed(vec![
-                p(-0.75, -0.75),
-                p(0.75, -0.75),
-                p(0.75, 0.75),
-                p(-0.75, 0.75),
-            ]),
-            line(vec![p(0.0, -0.75), p(0.0, 0.75)]),
-        ],
         Icon::Sketches => {
             let points = [p(-0.85, 0.6), p(-0.3, -0.55), p(0.3, 0.35), p(0.85, -0.6)];
             let mut shapes = vec![line(points.to_vec())];

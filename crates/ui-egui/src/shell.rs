@@ -24,15 +24,15 @@ use std::sync::Arc;
 
 mod controls;
 mod icons;
+mod layout;
 pub mod number_field;
 mod tabs;
-mod variants;
-pub use controls::{ControlWidths, ControlsLayout, controls_layout};
+pub use controls::ControlsLayout;
+pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
 };
-pub use variants::{NavWidths, variant_layout};
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -473,6 +473,8 @@ pub struct Shell {
     /// Where the controls over the viewport were laid out in the last
     /// frame.
     controls_layout: Option<ControlsLayout>,
+    /// Where the items of the status bar were drawn.
+    status_hits: Vec<(StatusSlot, egui::Rect)>,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -520,6 +522,127 @@ impl Default for Shell {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// What an item of the status bar is: the order in which they give way
+/// when the bar is too narrow is [`STATUS_YIELD`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusSlot {
+    /// The document's units, or "no document".
+    Units,
+    /// The document's path.
+    Path,
+    /// When it was autosaved, or why not.
+    Autosave,
+    /// The last command's name, and what it answered.
+    Command,
+    Answer,
+    /// The renderer's numbers, on the right.
+    Render,
+}
+
+/// The order in which the items give way: each is first elided to its
+/// least width in this order, then left out in this order. The units go
+/// last, the answer to the last command first.
+pub const STATUS_YIELD: [StatusSlot; 6] = [
+    StatusSlot::Answer,
+    StatusSlot::Command,
+    StatusSlot::Autosave,
+    StatusSlot::Path,
+    StatusSlot::Render,
+    StatusSlot::Units,
+];
+
+/// How wide an item of the status bar wants to be and how narrow it may
+/// be elided to (as wide as it wants for one that is not elided), in
+/// points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StatusFit {
+    pub slot: StatusSlot,
+    pub natural: f32,
+    pub least: f32,
+}
+
+/// An item of the status bar as it is drawn.
+struct StatusItem {
+    slot: StatusSlot,
+    text: String,
+    tint: egui::Color32,
+    elide: bool,
+}
+
+impl StatusItem {
+    fn fixed(slot: StatusSlot, text: String, tint: egui::Color32) -> Self {
+        Self {
+            slot,
+            text,
+            tint,
+            elide: false,
+        }
+    }
+
+    fn elided(slot: StatusSlot, text: String, tint: egui::Color32) -> Self {
+        Self {
+            slot,
+            text,
+            tint,
+            elide: true,
+        }
+    }
+}
+
+/// The widths the items of the status bar get in `available` points, with
+/// `gap` between two that are shown: each as wide as it wants when they
+/// all fit; otherwise, in the order of [`STATUS_YIELD`], items are elided
+/// down to their least width until they fit, and when that is not enough
+/// the first in the order are left out (`None`), the others elided only
+/// as far as still needed. Never more than `available` in all.
+pub fn fit_status(available: f32, gap: f32, items: &[StatusFit]) -> Vec<Option<f32>> {
+    let clean = |w: f32| if w.is_finite() { w.max(0.0) } else { 0.0 };
+    let available = if available.is_finite() {
+        available.max(0.0)
+    } else {
+        0.0
+    };
+    let gap = if gap.is_finite() {
+        gap.max(0.0)
+    } else {
+        available + 1.0
+    };
+    let total = |widths: &[Option<f32>]| {
+        let shown: Vec<f32> = widths.iter().flatten().copied().collect();
+        shown.iter().sum::<f32>() + gap * shown.len().saturating_sub(1) as f32
+    };
+    // The first `dropped` of the order left out, the rest elided as far as
+    // needed, in the order.
+    for dropped in 0..=STATUS_YIELD.len() {
+        let gone = STATUS_YIELD.get(..dropped).unwrap_or(&STATUS_YIELD);
+        let mut widths: Vec<Option<f32>> = items
+            .iter()
+            .map(|i| (!gone.contains(&i.slot)).then(|| clean(i.natural)))
+            .collect();
+        let mut over = total(&widths) - available;
+        for slot in STATUS_YIELD {
+            if over <= 0.0 {
+                break;
+            }
+            for (item, width) in items.iter().zip(widths.iter_mut()) {
+                if item.slot != slot {
+                    continue;
+                }
+                if let Some(w) = width {
+                    let least = clean(item.least).min(*w);
+                    let shrunk = (*w - over).max(least);
+                    over -= *w - shrunk;
+                    *w = shrunk;
+                }
+            }
+        }
+        if total(&widths) <= available + 1e-3 {
+            return widths;
+        }
+    }
+    vec![None; items.len()]
 }
 
 fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> String {
@@ -593,6 +716,7 @@ impl Shell {
             show_hits: Vec::new(),
             camera_hits: Vec::new(),
             controls_layout: None,
+            status_hits: Vec::new(),
             zoom_anchor: None,
             cause_hits: Vec::new(),
             section_cache: None,
@@ -1581,72 +1705,166 @@ impl Shell {
         clicked
     }
 
-    fn status_bar(&self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
-        let dim = color(self.tokens.text_dim);
-        ui.horizontal(|ui| {
-            match status {
-                Some(status) => {
-                    ui.label(format!("{} · {}", status.length_unit, status.angle_unit));
-                    ui.separator();
-                    let name = status.path.as_deref().unwrap_or("untitled");
-                    let dirty = if status.dirty { " *" } else { "" };
-                    ui.label(format!("{name}{dirty}"));
-                }
-                None => {
-                    ui.colored_label(dim, "no document");
-                }
+    /// The status bar: units, the document's path, when it was autosaved,
+    /// the last command and what it answered on the left; the renderer's
+    /// numbers on the right. When the bar is too narrow the items give way
+    /// in a fixed order ([`fit_status`]): first they are elided (with the
+    /// whole text as a tooltip), then left out, so no two overlap.
+    fn status_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
+        let tokens = self.tokens;
+        let dim = color(tokens.text_dim);
+        let mut items: Vec<StatusItem> = Vec::new();
+        match status {
+            Some(status) => {
+                let units = format!("{} · {}", status.length_unit, status.angle_unit);
+                items.push(StatusItem::fixed(
+                    StatusSlot::Units,
+                    units,
+                    color(tokens.text),
+                ));
+                let name = status.path.as_deref().unwrap_or("untitled");
+                let dirty = if status.dirty { " *" } else { "" };
+                items.push(StatusItem::elided(
+                    StatusSlot::Path,
+                    format!("{name}{dirty}"),
+                    color(tokens.text),
+                ));
             }
-            if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
-                ui.separator();
-                let tint = if problem {
-                    color(self.tokens.failed)
-                } else {
-                    dim
-                };
-                let label = egui::Label::new(egui::RichText::new(&text).color(tint)).truncate();
-                // The whole reason, when the bar is too narrow for it.
-                ui.add(label).on_hover_text(&text);
-                if !problem {
-                    // "3 min ago" grows old without anything else to draw.
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs(30));
-                }
+            None => items.push(StatusItem::fixed(
+                StatusSlot::Units,
+                "no document".to_string(),
+                dim,
+            )),
+        }
+        if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
+            let tint = if problem { color(tokens.failed) } else { dim };
+            items.push(StatusItem::elided(StatusSlot::Autosave, text, tint));
+            if !problem {
+                // "3 min ago" grows old without anything else to draw.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(30));
             }
-            if let Some(report) = &self.last_command {
-                ui.separator();
-                let tint = if report.ok {
-                    self.tokens.ok
-                } else {
-                    self.tokens.failed
-                };
-                ui.colored_label(color(tint), &report.label);
-                ui.add(egui::Label::new(egui::RichText::new(&report.text).color(dim)).truncate());
-            }
-            if let Some(stats) = self.stats {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let time = stats
-                        .milliseconds
-                        .map_or_else(String::new, |ms| format!(" · {ms:.0} ms"));
-                    // The quick first picture is shown while the display
-                    // mesh is built: said here, unobtrusively.
-                    let refining = if self.shown_scene.as_ref().is_some_and(|s| s.preview) {
-                        "refining · "
+        }
+        if let Some(report) = &self.last_command {
+            let tint = if report.ok { tokens.ok } else { tokens.failed };
+            items.push(StatusItem::fixed(
+                StatusSlot::Command,
+                report.label.clone(),
+                color(tint),
+            ));
+            items.push(StatusItem::elided(
+                StatusSlot::Answer,
+                report.text.clone(),
+                dim,
+            ));
+        }
+        if let Some(stats) = self.stats {
+            let time = stats
+                .milliseconds
+                .map_or_else(String::new, |ms| format!(" · {ms:.0} ms"));
+            // The quick first picture is shown while the display mesh is
+            // built: said here, unobtrusively.
+            let refining = if self.shown_scene.as_ref().is_some_and(|s| s.preview) {
+                "refining · "
+            } else {
+                ""
+            };
+            let text = format!(
+                "{refining}{} {}×{} · {} triangles{time}",
+                stats.renderer.name().to_uppercase(),
+                stats.width,
+                stats.height,
+                stats.triangles
+            );
+            items.push(StatusItem::fixed(StatusSlot::Render, text, dim));
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let painter = ui.painter().clone();
+        let measure = |text: &str| {
+            painter
+                .layout_no_wrap(text.to_string(), font.clone(), dim)
+                .size()
+                .x
+        };
+        let fits: Vec<StatusFit> = items
+            .iter()
+            .map(|item| {
+                let natural = measure(&item.text).ceil();
+                StatusFit {
+                    slot: item.slot,
+                    natural,
+                    least: if item.elide {
+                        natural.min(tokens.status_least)
                     } else {
-                        ""
-                    };
-                    ui.colored_label(
-                        dim,
-                        format!(
-                            "{refining}{} {}×{} · {} triangles{time}",
-                            stats.renderer.name().to_uppercase(),
-                            stats.width,
-                            stats.height,
-                            stats.triangles
-                        ),
+                        natural
+                    },
+                }
+            })
+            .collect();
+        let available = ui.available_width();
+        let widths = fit_status(available, tokens.status_gap, &fits);
+        let height = ui.spacing().interact_size.y;
+        let mut hits = Vec::new();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let mut used = 0.0;
+            let mut first = true;
+            for (item, width) in items.iter().zip(&widths) {
+                let Some(width) = *width else { continue };
+                if item.slot == StatusSlot::Render {
+                    // Right-aligned: the room left goes before it.
+                    let room = (available - used - width).max(0.0);
+                    ui.add_space(room);
+                    used += room;
+                } else if !first {
+                    // A divider in the middle of the gap, except between a
+                    // command and its answer.
+                    let (gap, _) = ui.allocate_exact_size(
+                        egui::vec2(tokens.status_gap, height),
+                        egui::Sense::hover(),
                     );
-                });
+                    if item.slot != StatusSlot::Answer {
+                        let x = gap.center().x;
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(x, gap.top() + height * 0.2),
+                                egui::pos2(x, gap.bottom() - height * 0.2),
+                            ],
+                            egui::Stroke::new(
+                                1.0,
+                                color_alpha(tokens.text_dim, tokens.divider_opacity),
+                            ),
+                        );
+                    }
+                    used += tokens.status_gap;
+                }
+                first = false;
+                let label =
+                    egui::Label::new(egui::RichText::new(&item.text).color(item.tint)).truncate();
+                let response = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2(width, height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_width(width);
+                            ui.add(label)
+                        },
+                    )
+                    .inner;
+                hits.push((item.slot, response.rect));
+                if width + 0.5 < measure(&item.text) {
+                    // The whole text, where the bar is too narrow for it.
+                    response.on_hover_text(&item.text);
+                }
+                used += width;
             }
         });
+        self.status_hits = hits;
+    }
+
+    /// Where the items of the status bar were drawn in the last frame.
+    pub fn status_hits(&self) -> &[(StatusSlot, egui::Rect)] {
+        &self.status_hits
     }
 
     fn tree(&mut self, ui: &mut egui::Ui, has_document: bool) {
@@ -1947,13 +2165,12 @@ impl Shell {
         }
         if let Some(problem) = self.problem() {
             // Right of the triad where an arrangement puts it bottom left.
-            let at = if self.state.controls_layout == crate::state::ControlsVariant::Current {
-                inner.left_bottom()
-            } else {
-                let margin = tokens.nav_margin;
-                rect.left_bottom()
-                    + egui::vec2(margin + tokens.nav_triad_size + tokens.nav_gap, -margin)
-            };
+            let margin = tokens.nav_margin;
+            let at = rect.left_bottom()
+                + egui::vec2(
+                    margin + layout::triad_side(&tokens) + tokens.nav_gap,
+                    -margin,
+                );
             painter.text(
                 at,
                 egui::Align2::LEFT_BOTTOM,
@@ -1988,7 +2205,7 @@ impl Shell {
         }
 
         // The view cube and the controls around it, bottom right.
-        self.viewport_controls(ui, rect, inner, scene);
+        self.viewport_controls(ui, rect, scene);
     }
 
     /// Moves the camera along the turn a click on the view cube started:

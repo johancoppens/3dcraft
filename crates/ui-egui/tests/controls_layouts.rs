@@ -1,8 +1,7 @@
-//! The arrangements of the controls over the viewport (`controlsLayout`:
-//! today's and the mockups a, b and c): in a window of 1920 × 1080 and one
-//! of 1280 × 800, with the section off and on, every control is drawn
-//! inside the viewport, and a synthetic click on each does what the
-//! control is for: the same state changes whichever arrangement drew it.
+//! The controls over the viewport: in a window of 1920 × 1080 and one of
+//! 1280 × 800, with the section off and on, every control is drawn inside
+//! the viewport, and a synthetic click on each does what the control is
+//! for.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,7 +11,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
-use craft3d_ui_egui::state::{ControlsVariant, ProjectionKind};
+use craft3d_ui_egui::state::ProjectionKind;
 use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, PointerButton, Pos2, Rect, vec2};
 use serde_json::{Value, json};
@@ -88,11 +87,11 @@ fn set(shell: &mut Shell, session: &mut Session, patch: Value) {
         .unwrap();
 }
 
-/// Every arrangement at both sizes: everything inside the viewport, and
-/// each control does its job when clicked.
+/// At both sizes: everything inside the viewport, and each control does
+/// its job when clicked.
 #[test]
-fn every_arrangement_keeps_every_control_reachable() {
-    for variant in ControlsVariant::ALL {
+fn every_control_is_reachable() {
+    {
         for (width, height) in [(1920.0, 1080.0), (1280.0, 800.0)] {
             let mut session = part();
             let mut shell = Shell::with_renderer(RendererChoice::Cpu);
@@ -101,15 +100,10 @@ fn every_arrangement_keeps_every_control_reachable() {
                 size: vec2(width, height),
                 time: 0.0,
             };
-            set(
-                &mut shell,
-                &mut session,
-                json!({"controlsLayout": variant.name()}),
-            );
             for _ in 0..4 {
                 window.frame(&mut shell, &mut session, Vec::new());
             }
-            let label = format!("{variant:?} at {width}x{height}");
+            let label = format!("{width}x{height}");
             let viewport = shell.viewport_rect().unwrap();
             let check = |shell: &Shell, on: bool| {
                 let layout = shell.controls_layout().unwrap();
@@ -132,9 +126,7 @@ fn every_arrangement_keeps_every_control_reachable() {
                     "cube",
                     "triad",
                 ];
-                if on || variant == ControlsVariant::Current {
-                    // Today's arrangement shows the section's options
-                    // always, dimmed while it is off.
+                if on {
                     expected.extend(["axes", "offset", "side"]);
                 }
                 for name in expected {
@@ -143,13 +135,11 @@ fn every_arrangement_keeps_every_control_reachable() {
                         "{label}, section {on}: no {name} in {names:?}"
                     );
                 }
-                if variant != ControlsVariant::Current {
-                    assert_eq!(
-                        layout.axes.is_some(),
-                        on,
-                        "{label}: the options only while on"
-                    );
-                }
+                assert_eq!(
+                    layout.axes.is_some(),
+                    on,
+                    "{label}: the options only while on"
+                );
             };
             check(&shell, false);
             // The display toggles.
@@ -197,12 +187,7 @@ fn every_arrangement_keeps_every_control_reachable() {
             let at = hit(shell.section_hits(), "x");
             window.click(&mut shell, &mut session, at);
             assert_eq!(shell.state.section.plane.as_deref(), Some("yz"), "{label}");
-            let flip = if variant == ControlsVariant::Current {
-                "back"
-            } else {
-                "flip"
-            };
-            let at = hit(shell.section_hits(), flip);
+            let at = hit(shell.section_hits(), "flip");
             window.click(&mut shell, &mut session, at);
             assert!(shell.state.section.flip, "{label}");
             assert!(shell.section_hits().iter().any(|(n, _)| *n == "offset"));
@@ -219,37 +204,6 @@ fn every_arrangement_keeps_every_control_reachable() {
                 shell.section_hits()
             );
         }
-    }
-}
-
-/// The arrangement is view state: `ui.get` has it, `ui.set` takes the
-/// four names and refuses any other, and the default is today's.
-#[test]
-fn the_arrangement_is_set_by_name() {
-    let mut session = part();
-    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
-    let get = |shell: &mut Shell, session: &mut Session| {
-        shell
-            .handle_method(session, "ui.get", None)
-            .unwrap()
-            .unwrap()["state"]["controlsLayout"]
-            .clone()
-    };
-    assert_eq!(get(&mut shell, &mut session), json!("current"));
-    for name in ["a", "b", "c", "current"] {
-        set(&mut shell, &mut session, json!({"controlsLayout": name}));
-        assert_eq!(get(&mut shell, &mut session), json!(name));
-    }
-    for bad in [json!("d"), json!(1), json!(null), json!("A")] {
-        let error = shell
-            .handle_method(
-                &mut session,
-                "ui.set",
-                Some(&json!({"controlsLayout": bad})),
-            )
-            .unwrap();
-        assert!(error.is_err(), "{bad}");
-        assert_eq!(get(&mut shell, &mut session), json!("current"));
     }
 }
 

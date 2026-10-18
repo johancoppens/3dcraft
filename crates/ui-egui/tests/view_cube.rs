@@ -130,26 +130,27 @@ fn set(shell: &mut Shell, session: &mut Session, patch: Value) {
 #[test]
 fn the_cube_is_in_the_corner_of_the_viewport() {
     let (_session, shell, _window) = started();
+    let tokens = shell.tokens;
     let viewport = shell.viewport_rect().unwrap();
     let rect = shell.view_cube_rect().unwrap();
     assert!(viewport.contains_rect(rect), "{rect:?} in {viewport:?}");
-    assert_eq!(rect.width(), shell.tokens.view_cube_size);
-    assert_eq!(rect.height(), shell.tokens.view_cube_size);
-    // Bottom right, low over the camera's controls and centred on them,
-    // the triad to its left.
-    let right = viewport.right() - rect.right() - shell.tokens.inset;
-    assert!((-0.5..60.0).contains(&right), "{right}");
+    assert_eq!(rect.width(), tokens.nav_cube_size);
+    assert_eq!(rect.height(), tokens.nav_cube_size);
+    // Top right, the margin from the top; the camera's controls on a
+    // plate under it, centred on it and at the margin from the right.
+    assert!((rect.top() - viewport.top() - tokens.nav_margin).abs() < 0.5);
     let layout = shell.controls_layout().unwrap();
-    let (fit, projection) = (layout.fit.unwrap(), layout.projection.unwrap());
-    let plate = layout.camera_plate.or(layout.bar).unwrap();
+    let plate = layout.camera_plate.unwrap();
     assert!(
-        (plate.top() - rect.bottom()).abs() < 0.5,
+        (plate.top() - rect.bottom() - tokens.nav_gap).abs() < 0.5,
         "{plate:?} {rect:?}"
     );
-    let middle = (fit.left() + projection.right()) * 0.5;
-    assert!((middle - rect.center().x).abs() < 0.5);
+    assert!((viewport.right() - plate.right() - tokens.nav_margin).abs() < 0.5);
+    assert!((plate.center().x - rect.center().x).abs() < 0.5);
+    // The triad in the bottom left corner, at the margin.
     let triad = layout.triad.unwrap();
-    assert!(triad.right() <= rect.left() + 0.5);
+    assert!((triad.left() - viewport.left() - tokens.nav_margin).abs() < 0.5);
+    assert!((viewport.bottom() - triad.bottom() - tokens.nav_margin).abs() < 0.5);
     let names: Vec<&str> = shell.camera_hits().iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["fit", "iso", "perspective", "orthographic"]);
     for (_, hit) in shell.camera_hits() {

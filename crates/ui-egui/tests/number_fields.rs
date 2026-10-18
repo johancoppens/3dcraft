@@ -256,27 +256,28 @@ fn typed_expressions_with_units_set_the_value_and_bad_text_says_why() {
 }
 
 #[test]
-fn the_section_controls_are_dimmed_and_inert_while_it_is_off() {
+fn the_section_options_are_not_there_while_it_is_off() {
     let (mut session, mut shell, mut window) = started();
     assert!(!shell.state.section.on);
     let layout = shell.controls_layout().unwrap();
-    // The plate and its controls are there, but only the switch answers.
-    assert!(layout.section_plate.is_some() && layout.offset.is_some());
+    // Only the toggle: no axis, no offset field, no flip, nothing to type
+    // into.
+    assert!(layout.section_toggle.is_some());
+    assert!(layout.axes.is_none() && layout.offset.is_none() && layout.side.is_none());
     let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["toggle"]);
-    let before = shell.state.clone();
-    for rect in [
-        layout.axes.unwrap(),
-        layout.offset.unwrap(),
-        layout.side.unwrap(),
-    ] {
-        window.click(&mut shell, &mut session, rect.center());
-        window.double_click(&mut shell, &mut session, rect.center());
-        window.drag(&mut shell, &mut session, rect.center(), 40.0);
-    }
+    // On, they are there; off again, gone, and the state keeps the plane.
+    let toggle = layout.section_toggle.unwrap().center();
+    window.click(&mut shell, &mut session, toggle);
+    window.frame(&mut shell, &mut session, Vec::new());
+    let on = shell.controls_layout().unwrap();
+    assert!(on.axes.is_some() && on.offset.is_some() && on.side.is_some());
+    window.click(&mut shell, &mut session, toggle);
+    window.frame(&mut shell, &mut session, Vec::new());
+    let off = shell.controls_layout().unwrap();
+    assert!(off.offset.is_none());
+    assert!(!shell.state.section.on && shell.state.section.plane.is_some());
     assert!(shell.typing().is_none());
-    assert_eq!(shell.state.section, before.section);
-    assert_eq!(shell.state.picked, None);
 }
 
 /// Shift pressed in the middle of a drag goes on from the value reached

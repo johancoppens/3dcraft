@@ -80,11 +80,6 @@ pub struct Tokens {
     /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
-    /// The side of the view cube's place in the viewport, in points.
-    pub view_cube_size: f32,
-    /// The smallest side the view cube is drawn at, in points: a viewport
-    /// with less room has no cube (its buttons stay).
-    pub view_cube_min: f32,
     /// The view cube's proportions, in units of its half side so that
     /// they scale with it: how deep its edges are cut (a capsule and a
     /// corner's circle are as wide as the cut less the gap), the one gap
@@ -137,43 +132,30 @@ pub struct Tokens {
     pub view_cube_shadow: Rgb,
     pub view_cube_shadow_opacity: u8,
     pub view_cube_shadow_size: [f32; 3],
-    /// The side of the place of the axis triad left of the view cube, and
-    /// the width of its arms, in points.
-    pub triad_size: f32,
-    pub triad_width: f32,
     /// The glass plates behind the controls over the viewport: a dark base
     /// (`panel_fill` at `plate_opacity`, so the controls read over a light
     /// model too), the glass tint over it (`glass` at
-    /// `plate_glass_opacity`), a faint rim, and their corner radius.
+    /// `plate_glass_opacity`) and a faint rim; their corner radius is
+    /// `nav_radius`.
     pub plate_opacity: u8,
     pub plate_glass_opacity: u8,
     pub plate_rim: Rgb,
     pub plate_rim_opacity: u8,
-    pub plate_radius: u8,
-    /// The space between a plate's edge and its controls, between two
-    /// columns of controls and between two plates, between two actions,
-    /// and on either side of the divider in the bottom bar, in points.
-    pub plate_padding: f32,
-    pub group_gap: f32,
-    pub control_spacing: f32,
-    pub divider_gap: f32,
+    /// The opacity of a divider between two groups on a plate (0 to 255,
+    /// the colour is `plate_rim`).
     pub divider_opacity: u8,
     /// The glass tint of plates and controls, and the accent of what is
     /// on (a switch, a chosen segment, a number field's bar).
     pub glass: Rgb,
     pub accent: Rgb,
-    /// A control's fill (0 to 255, the colour is `glass`), its text size
-    /// and its height, in points; how opaque an inert control is drawn (0
-    /// to 1).
+    /// A control's fill (0 to 255, the colour is `glass`) and its text
+    /// size in points; how opaque an inert control is drawn (0 to 1).
     pub control_opacity: u8,
     pub control_font: f32,
-    pub bar_height: f32,
     pub disabled_opacity: f32,
-    /// A switch's track when off, and its knob; the size of its track (the
-    /// knob is a circle a point inside its height), in points.
-    pub switch_off: Rgb,
+    /// The ink of what is on: the text and icon of a toggle that is on,
+    /// of a chosen segment.
     pub knob: Rgb,
-    pub switch_size: egui::Vec2,
     /// A number field: its least width, its corner radius, and its fill
     /// while it is typed into, in points.
     pub field_width: f32,
@@ -191,8 +173,6 @@ pub struct Tokens {
     pub field_bar_inset: f32,
     pub field_bar_height: f32,
     pub field_bar_radius: u8,
-    /// The space between two rows of things over the viewport, in points.
-    pub bar_gap: f32,
     /// The least width of the progress bar over the viewport, in points.
     pub slider_width: f32,
     /// Space between the viewport's edge and what floats over it.
@@ -219,27 +199,28 @@ pub struct Tokens {
     pub tab_min_width: f32,
     pub tab_gap: f32,
     pub tab_accent_width: f32,
-    /// The mockup arrangements of the controls over the viewport
-    /// (`state::ControlsVariant` a, b and c) share one size system: every
-    /// control is `nav_height` high on a plate `nav_padding` larger on
-    /// each side, `nav_margin` from the viewport's edge; `nav_gap` between
-    /// two plates and between two groups on a plate (a divider sits in
-    /// the middle of it), `nav_spacing` between two controls of a group
-    /// and `nav_row_gap` between two rows of a plate, in points.
+    /// The controls over the viewport (`shell/layout.rs`) share one size
+    /// system: every control is `nav_height` high on a plate
+    /// `nav_padding` larger on each side, `nav_margin` from the viewport's
+    /// edge; `nav_gap` between two plates and between two groups on a
+    /// plate (a divider sits in the middle of it), `nav_spacing` between
+    /// two controls of a group, in points.
     pub nav_height: f32,
     pub nav_padding: f32,
     pub nav_margin: f32,
     pub nav_gap: f32,
     pub nav_spacing: f32,
-    pub nav_row_gap: f32,
     /// The corner radius of a plate and of a control on it: the plate's
     /// is the control's plus the padding, so the two curves run parallel.
     pub nav_radius: u8,
     pub nav_control_radius: u8,
-    /// The side of the view cube's and of the triad's place, the size of
-    /// the triad's letters, in points.
+    /// The side of the view cube's place; the length of an arm of the
+    /// axis triad seen square on, the width of its arms and the size of
+    /// its letters, in points (the triad's place is as large as an arm and
+    /// a letter on either side).
     pub nav_cube_size: f32,
-    pub nav_triad_size: f32,
+    pub nav_triad_arm: f32,
+    pub nav_triad_width: f32,
     pub nav_triad_font: f32,
     /// A control's icon: its side and the width of its lines, the space
     /// from the control's side to the icon (or to the text when there is
@@ -251,8 +232,11 @@ pub struct Tokens {
     /// A toggle that is on: the accent at this opacity behind it (0 to
     /// 255).
     pub nav_on_opacity: u8,
-    /// The small title of a floating panel, in points.
-    pub nav_title_font: f32,
+    /// The status bar: the gap between two items (a divider in its
+    /// middle), and the least width an item that is elided keeps, in
+    /// points.
+    pub status_gap: f32,
+    pub status_least: f32,
 }
 
 impl Default for Tokens {
@@ -300,8 +284,6 @@ impl Tokens {
             highlight_width: 3.0,
             highlight_radius: 4.0,
             pick_radius: 4.0,
-            view_cube_size: 168.0,
-            view_cube_min: 48.0,
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,
@@ -325,27 +307,17 @@ impl Tokens {
             view_cube_shadow: [0, 0, 0],
             view_cube_shadow_opacity: 60,
             view_cube_shadow_size: [0.93, 0.72, 0.09],
-            triad_size: 84.0,
-            triad_width: 2.0,
             plate_opacity: 200,
             plate_glass_opacity: 22,
             plate_rim: [185, 205, 245],
             plate_rim_opacity: 30,
-            plate_radius: 10,
-            plate_padding: 10.0,
-            group_gap: 10.0,
-            control_spacing: 6.0,
-            divider_gap: 12.0,
             divider_opacity: 45,
             glass: [170, 190, 230],
             accent: [92, 140, 230],
             control_opacity: 32,
             control_font: 13.0,
-            bar_height: 24.0,
             disabled_opacity: 0.35,
-            switch_off: [96, 104, 122],
             knob: [245, 248, 255],
-            switch_size: egui::vec2(18.0, 10.0),
             field_width: 160.0,
             field_radius: 6,
             field_typing: [20, 22, 28],
@@ -356,7 +328,6 @@ impl Tokens {
             field_bar_inset: 4.0,
             field_bar_height: 2.0,
             field_bar_radius: 1,
-            bar_gap: 6.0,
             slider_width: 90.0,
             inset: 10.0,
             work_accent: [64, 196, 212],
@@ -377,18 +348,19 @@ impl Tokens {
             nav_margin: 12.0,
             nav_gap: 8.0,
             nav_spacing: 2.0,
-            nav_row_gap: 4.0,
             nav_radius: 10,
             nav_control_radius: 6,
             nav_cube_size: 108.0,
-            nav_triad_size: 88.0,
-            nav_triad_font: 13.0,
+            nav_triad_arm: 54.0,
+            nav_triad_width: 2.5,
+            nav_triad_font: 14.0,
             nav_icon_size: 16.0,
             nav_icon_width: 1.5,
             nav_inset: 9.0,
             nav_icon_gap: 6.0,
             nav_on_opacity: 96,
-            nav_title_font: 11.0,
+            status_gap: 13.0,
+            status_least: 48.0,
         }
     }
 

@@ -1,52 +1,45 @@
-//! Three mockup arrangements of the controls over the viewport, to choose
-//! from (`state::UiState::controls_layout`, `ui.set {"controlsLayout":
-//! "a" | "b" | "c"}`); `current` is today's ([`super::controls`]).
+//! Where the controls over the viewport go, and their widgets.
 //!
-//! They share one size system from the tokens (`nav_*`): every control is
+//! - **The navigation cluster** in the top right corner: the view cube,
+//!   and under it, centred on it, the camera plate: *Fit* and *Iso*
+//!   (actions), a divider, *Persp* | *Ortho* (a choice).
+//! - **The display bar** at the bottom centre: *Sketches* and *Datums*
+//!   (toggles) and the *See-through* field, a divider, the *Section*
+//!   toggle. While the section is on its options open inline to the right
+//!   of the Section chip, after a divider: *X* | *Y* | *Z*, the *Offset*
+//!   field and *Flip side* (which half is kept); the chip stays where it
+//!   is. Off, the options are not there at all.
+//! - **The axis triad** in the bottom left corner.
+//!
+//! One size system from the tokens (`nav_*`): every control is
 //! `nav_height` high on a glass plate `nav_padding` larger, every plate
 //! `nav_margin` from the viewport's edge, groups `nav_gap` apart with a
-//! divider between them. They share one visual grammar too: a *toggle*
-//! (Sketches, Datums, Section, Flip) is a chip with an icon that is tinted
-//! with the accent while it is on; an *action* (Fit, Iso) is a plain
-//! button that lights up under the pointer; a *choice* (Persp | Ortho,
-//! X | Y | Z) is a segmented track whose chosen segment is filled. The
-//! view cube is `nav_cube_size` and the triad `nav_triad_size`, always at
-//! the bottom left. The section's options (axis, offset, flip) exist only
-//! while the section is on.
-//!
-//! - **A**, *corner cluster*: the cube in the top right corner with the
-//!   camera controls on a plate under it; a display bar at the bottom
-//!   centre (Sketches, Datums, See-through | Section), whose section
-//!   options open inline to the right of the Section chip, which stays
-//!   where it is.
-//! - **B**, *one stack*: everything at the bottom right as one column:
-//!   the cube centred over one card as wide as its widest row, with the
-//!   camera row, the display rows and the Section row at the bottom; the
-//!   section's options appear above the Section row and push the rest up.
-//! - **C**, *toolbar*: one slim toolbar centred along the bottom edge,
-//!   every control with its icon and its name, in four groups (view,
-//!   projection, display, section); the cube in the top right corner;
-//!   Section opens a small floating panel over its button.
+//! divider between them. One visual grammar: a *toggle* is a chip with an
+//! icon that is tinted with the accent while it is on; an *action* is a
+//! plain button that lights up under the pointer; a *choice* is a
+//! segmented track whose chosen segment is filled.
 //!
 //! In a viewport too narrow for the names the chips show their icons
 //! only (with the name as a tooltip); what still does not fit is left
-//! out, so nothing is ever drawn outside the viewport or over another
-//! control.
+//! out (the triad first, then the cube), so nothing is ever drawn outside
+//! the viewport or over another control. They are widgets over the
+//! viewport, so a click on them is not a click in the viewport and picks
+//! nothing.
 
 use super::Shell;
 use super::controls::{
-    ControlsLayout, SECTION_PLANES, choose_axis, chosen_axis, plate_rounded, toggle_section,
+    ControlsLayout, SECTION_PLANES, choose_axis, chosen_axis, plate, toggle_section,
 };
 use super::icons::{self, Icon};
-use crate::state::{ControlsVariant, ProjectionKind};
+use crate::state::ProjectionKind;
 use crate::theme::{Tokens, color, color_alpha};
 use craft3d_engine::Scene;
 use egui::{Pos2, Rect, pos2, vec2};
 
-/// The widths the controls of the arrangements need for their texts, in
-/// points.
+/// The widths the controls need for their texts, in points, measured
+/// each frame ([`ControlWidths::measure`]) so the layout fits any font.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NavWidths {
+pub struct ControlWidths {
     /// Chips and buttons with an icon and a name.
     pub fit: f32,
     pub iso: f32,
@@ -54,34 +47,22 @@ pub struct NavWidths {
     pub datums: f32,
     pub section: f32,
     pub flip: f32,
-    /// One segment of Persp | Ortho, by name only and with an icon.
+    /// One segment of Persp | Ortho.
     pub projection: f32,
-    pub projection_icon: f32,
     /// One segment of X | Y | Z.
     pub axis: f32,
     /// The number fields.
     pub see_through: f32,
     pub offset: f32,
-    /// The title of the section's floating panel.
-    pub title: f32,
 }
 
-/// The title of the section's floating panel (arrangement C).
-pub const SECTION_TITLE: &str = "SECTION PLANE";
-
-impl NavWidths {
+impl ControlWidths {
     /// The widths as the texts need them in the controls' font.
     pub fn measure(painter: &egui::Painter, tokens: &Tokens) -> Self {
         let font = egui::FontId::proportional(tokens.control_font);
-        let title = egui::FontId::proportional(tokens.nav_title_font);
         let text = |s: &str| {
-            let font = if s == SECTION_TITLE {
-                title.clone()
-            } else {
-                font.clone()
-            };
             painter
-                .layout_no_wrap(s.to_string(), font, egui::Color32::WHITE)
+                .layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE)
                 .size()
                 .x
         };
@@ -109,11 +90,9 @@ impl NavWidths {
             section: with_icon("Section"),
             flip: with_icon("Flip side"),
             projection: widest(&["Persp", "Ortho"], &plain),
-            projection_icon: widest(&["Persp", "Ortho"], &with_icon),
             axis: widest(&["X", "Y", "Z"], &plain),
             see_through: field("See-through", "90 %"),
             offset: field("Offset", "-000.00 mm"),
-            title: text(SECTION_TITLE),
         };
         if out.all_finite() {
             out
@@ -131,11 +110,9 @@ impl NavWidths {
             self.section,
             self.flip,
             self.projection,
-            self.projection_icon,
             self.axis,
             self.see_through,
             self.offset,
-            self.title,
         ]
         .iter()
         .all(|w| w.is_finite() && *w >= 0.0)
@@ -154,23 +131,25 @@ impl NavWidths {
             section: icon + chars(7.0),
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
-            projection_icon: icon + chars(5.0),
             axis: tokens.nav_height,
             see_through: tokens.field_width,
             offset: tokens.field_width,
-            title: chars(13.0),
         }
     }
 }
 
-/// Where the controls of arrangement `variant` go in the viewport `rect`,
-/// with the section on or off. Today's arrangement is not laid out here
-/// (it has [`super::controls_layout`]): for it the layout is empty.
-pub fn variant_layout(
-    variant: ControlsVariant,
+/// The side of the triad's square place: an arm and a letter on either
+/// side of the origin.
+pub fn triad_side(tokens: &Tokens) -> f32 {
+    2.0 * (tokens.nav_triad_arm + tokens.nav_triad_font)
+}
+
+/// Where the controls go in the viewport `rect`, with the section on or
+/// off (see the top of this module).
+pub fn controls_layout(
     rect: Rect,
     tokens: &Tokens,
-    widths: &NavWidths,
+    widths: &ControlWidths,
     section_on: bool,
 ) -> ControlsLayout {
     let empty = ControlsLayout::default();
@@ -180,7 +159,7 @@ pub fn variant_layout(
     let widths = if widths.all_finite() {
         *widths
     } else {
-        NavWidths::fallback(tokens)
+        ControlWidths::fallback(tokens)
     };
     let area = rect.shrink(tokens.nav_margin);
     if !(area.width() > 0.0 && area.height() > 0.0) {
@@ -194,12 +173,7 @@ pub fn variant_layout(
             compact,
             on: section_on,
         };
-        let mut layout = match variant {
-            ControlsVariant::Current => return ControlsLayout::default(),
-            ControlsVariant::A => n.a(),
-            ControlsVariant::B => n.b(),
-            ControlsVariant::C => n.c(),
-        };
+        let mut layout = n.layout();
         layout.compact = compact;
         layout
     };
@@ -213,10 +187,10 @@ pub fn variant_layout(
     layout
 }
 
-/// The arrangements' common measures, for one viewport.
+/// The measures of the layout, for one viewport.
 struct Nav<'a> {
     tokens: &'a Tokens,
-    w: NavWidths,
+    w: ControlWidths,
     /// The viewport less the margin.
     area: Rect,
     /// Chips by their icons only.
@@ -246,7 +220,7 @@ impl Nav<'_> {
 
     /// The triad's place, at the bottom left.
     fn triad(&self) -> Rect {
-        let side = self.tokens.nav_triad_size;
+        let side = triad_side(self.tokens);
         Rect::from_min_size(
             pos2(self.area.left(), self.area.bottom() - side),
             vec2(side, side),
@@ -264,13 +238,6 @@ impl Nav<'_> {
         let mid = x + self.tokens.nav_gap * 0.5;
         let inset = self.h() * 0.2;
         [pos2(mid, y + inset), pos2(mid, y + self.h() - inset)]
-    }
-
-    /// A horizontal divider in the middle of the gap above `y` on a plate
-    /// from `left` to `right`.
-    fn horizontal(&self, left: f32, right: f32, y: f32) -> [Pos2; 2] {
-        let mid = y - self.tokens.nav_gap * 0.5;
-        [pos2(left, mid), pos2(right, mid)]
     }
 
     /// The camera group (Fit, Iso, a divider, Persp | Ortho) from `x` on a
@@ -296,9 +263,9 @@ impl Nav<'_> {
         x + projection
     }
 
-    /// A: the cube top right over the camera plate; the display bar at the
+    /// The cube top right over the camera plate; the display bar at the
     /// bottom centre with the section inline; the triad bottom left.
-    fn a(&self) -> ControlsLayout {
+    fn layout(&self) -> ControlsLayout {
         let t = self.tokens;
         let mut out = ControlsLayout::default();
         let (pad, sp, gap) = (self.pad(), t.nav_spacing, t.nav_gap);
@@ -333,15 +300,13 @@ impl Nav<'_> {
         let off_w = pad + sketches + sp + datums + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
         let axes = 3.0 * self.w.axis;
-        let extra = if self.on {
-            gap + axes + sp + self.w.offset + sp + flip
-        } else {
-            0.0
-        };
-        let bar_w = off_w + extra;
+        let extra = gap + axes + sp + self.w.offset + sp + flip;
+        let bar_w = if self.on { off_w + extra } else { off_w };
+        // Placed for the bar with the options open, so that the Section
+        // chip stays where it is when they open: centred when that fits.
         let left = (area.center().x - off_w * 0.5)
             .max(triad.right() + gap)
-            .min(area.right() - bar_w);
+            .min(area.right() - off_w - extra);
         let bar = Rect::from_min_size(
             pos2(left, area.bottom() - self.plate_h()),
             vec2(bar_w, self.plate_h()),
@@ -367,164 +332,6 @@ impl Nav<'_> {
             out.offset = Some(self.at(x, y, self.w.offset));
             x += self.w.offset + sp;
             out.side = Some(self.at(x, y, flip));
-        }
-        out
-    }
-
-    /// B: one card at the bottom right, the cube centred over it; from
-    /// the bottom up the Section row, its options when it is on, the
-    /// display rows and the camera row.
-    fn b(&self) -> ControlsLayout {
-        let t = self.tokens;
-        let mut out = ControlsLayout::default();
-        let (pad, sp, gap, rg, h) = (
-            self.pad(),
-            t.nav_spacing,
-            t.nav_gap,
-            t.nav_row_gap,
-            self.h(),
-        );
-        let area = self.area;
-        let (fit, iso) = (self.chip(self.w.fit), self.chip(self.w.iso));
-        let projection = 2.0 * self.w.projection;
-        let (sketches, datums) = (self.chip(self.w.sketches), self.chip(self.w.datums));
-        let flip = self.chip(self.w.flip);
-        let axes = 3.0 * self.w.axis;
-        let rows = [
-            fit + sp + iso + gap + projection,
-            sketches + sp + datums,
-            self.w.see_through,
-            self.chip(self.w.section),
-            axes + sp + flip,
-            self.w.offset,
-        ];
-        let inner = rows.iter().copied().fold(0.0, f32::max);
-        let card_w = inner + 2.0 * pad;
-        let left = area.right() - card_w;
-        let x = left + pad;
-        // From the bottom up.
-        let mut y = area.bottom() - pad - h;
-        out.section_toggle = Some(self.at(x, y, inner));
-        if self.on {
-            y -= rg + h;
-            out.offset = Some(self.at(x, y, inner));
-            y -= rg + h;
-            let axes_w = inner - sp - flip;
-            out.axes = Some(self.at(x, y, axes_w));
-            out.side = Some(self.at(x + axes_w + sp, y, flip));
-        }
-        out.dividers[1] = Some(self.horizontal(left + pad, left + card_w - pad, y));
-        y -= gap + h;
-        out.see_through = Some(self.at(x, y, inner));
-        y -= rg + h;
-        let half = (inner - sp) * 0.5;
-        out.sketches = Some(self.at(x, y, half));
-        out.datums = Some(self.at(x + half + sp, y, half));
-        out.dividers[2] = Some(self.horizontal(left + pad, left + card_w - pad, y));
-        y -= gap + h;
-        // The camera row: the buttons as they are, the choice the rest.
-        self.camera_row(&mut out, x, y, fit, iso, inner - fit - sp - iso - gap);
-        let card = Rect::from_min_max(pos2(left, y - pad), pos2(area.right(), area.bottom()));
-        out.bar = Some(card);
-        let side = t.nav_cube_size;
-        out.cube = Some(Rect::from_min_size(
-            pos2(card.center().x - side * 0.5, card.top() - gap - side),
-            vec2(side, side),
-        ));
-        out.triad = Some(self.triad());
-        out
-    }
-
-    /// C: one toolbar at the bottom centre in four groups, the cube top
-    /// right, the triad bottom left, the section's floating panel over its
-    /// button.
-    fn c(&self) -> ControlsLayout {
-        let t = self.tokens;
-        let mut out = ControlsLayout::default();
-        let (pad, sp, gap, rg, h) = (
-            self.pad(),
-            t.nav_spacing,
-            t.nav_gap,
-            t.nav_row_gap,
-            self.h(),
-        );
-        let area = self.area;
-        let (fit, iso) = (self.chip(self.w.fit), self.chip(self.w.iso));
-        let projection = 2.0 * self.chip(self.w.projection_icon);
-        let (sketches, datums) = (self.chip(self.w.sketches), self.chip(self.w.datums));
-        let section = self.chip(self.w.section);
-        let see = self.w.see_through;
-        let bar_w = pad
-            + fit
-            + sp
-            + iso
-            + gap
-            + projection
-            + gap
-            + sketches
-            + sp
-            + datums
-            + sp
-            + see
-            + gap
-            + section
-            + pad;
-        let triad = self.triad();
-        out.triad = Some(triad);
-        let left = (area.center().x - bar_w * 0.5)
-            .max(triad.right() + gap)
-            .min(area.right() - bar_w);
-        let bar = Rect::from_min_size(
-            pos2(left, area.bottom() - self.plate_h()),
-            vec2(bar_w, self.plate_h()),
-        );
-        out.bar = Some(bar);
-        let y = bar.top() + pad;
-        let mut x = self.camera_row(&mut out, bar.left() + pad, y, fit, iso, projection);
-        out.dividers[1] = Some(self.vertical(x, y));
-        x += gap;
-        out.sketches = Some(self.at(x, y, sketches));
-        x += sketches + sp;
-        out.datums = Some(self.at(x, y, datums));
-        x += datums + sp;
-        out.see_through = Some(self.at(x, y, see));
-        x += see;
-        out.dividers[2] = Some(self.vertical(x, y));
-        x += gap;
-        let toggle = self.at(x, y, section);
-        out.section_toggle = Some(toggle);
-        let side = t.nav_cube_size;
-        out.cube = Some(Rect::from_min_size(
-            pos2(area.right() - side, area.top()),
-            vec2(side, side),
-        ));
-        if self.on {
-            // The floating panel: a title, then X | Y | Z, Offset and Flip
-            // as rows of one width, over the Section button.
-            let ppad = 2.0 * pad;
-            let title_h = t.nav_title_font + 2.0 * pad;
-            let inner = (3.0 * self.w.axis)
-                .max(self.w.offset)
-                .max(self.w.flip)
-                .max(self.w.title);
-            let panel_w = inner + 2.0 * ppad;
-            let panel_h = 2.0 * ppad + title_h + 3.0 * (rg + h);
-            let right = (toggle.right() + pad).min(area.right());
-            let left = (right - panel_w).max(area.left());
-            let panel = Rect::from_min_size(
-                pos2(left, bar.top() - gap - panel_h),
-                vec2(panel_w, panel_h),
-            );
-            out.section_plate = Some(panel);
-            let x = panel.left() + ppad;
-            let mut y = panel.top() + ppad;
-            out.section_title = Some(Rect::from_min_size(pos2(x, y), vec2(inner, title_h)));
-            y += title_h + rg;
-            out.axes = Some(self.at(x, y, inner));
-            y += h + rg;
-            out.offset = Some(self.at(x, y, inner));
-            y += h + rg;
-            out.side = Some(self.at(x, y, inner));
         }
         out
     }
@@ -560,17 +367,13 @@ fn complete(layout: &ControlsLayout, area: Rect, section_on: bool) -> bool {
 }
 
 /// Leaves out what does not fit: a plate outside `area` or over a plate
-/// kept before it (the bar first, then the camera plate, then the
-/// section's), with its controls; the cube and then the triad when they
+/// kept before it (the bar first, then the camera plate), with its
+/// controls; the cube and then the triad when they
 /// are outside or over something kept.
 fn prune(layout: &mut ControlsLayout, area: Rect) {
     let inside = |r: Rect| area.expand(0.5).contains_rect(r);
     let mut kept: Vec<Rect> = Vec::new();
-    for slot in [
-        &mut layout.bar,
-        &mut layout.camera_plate,
-        &mut layout.section_plate,
-    ] {
+    for slot in [&mut layout.bar, &mut layout.camera_plate] {
         if let Some(plate) = *slot {
             if inside(plate) && kept.iter().all(|k| !k.shrink(0.01).intersects(plate)) {
                 kept.push(plate);
@@ -591,7 +394,6 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
         &mut layout.fit,
         &mut layout.iso,
         &mut layout.projection,
-        &mut layout.section_title,
     ] {
         if slot.is_some_and(|r| !on_plate(&r)) {
             *slot = None;
@@ -824,30 +626,25 @@ fn choice(
 }
 
 impl Shell {
-    /// The controls over the viewport `rect` in arrangement `variant` (see
-    /// the top of this module).
-    pub(super) fn variant_controls(
+    /// The controls over the viewport `rect` (see the top of this module).
+    pub(super) fn viewport_controls(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         scene: Option<&Scene>,
-        variant: ControlsVariant,
     ) {
         let tokens = self.tokens;
         let painter = ui.painter_at(rect);
-        let widths = NavWidths::measure(&painter, &tokens);
-        let layout = variant_layout(variant, rect, &tokens, &widths, self.state.section.on);
+        let widths = ControlWidths::measure(&painter, &tokens);
+        let layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
         self.controls_layout = Some(layout);
-        for plate in [layout.bar, layout.camera_plate, layout.section_plate]
-            .into_iter()
-            .flatten()
-        {
-            plate_rounded(&painter, plate, &tokens, tokens.nav_radius);
+        for place in [layout.bar, layout.camera_plate].into_iter().flatten() {
+            plate(&painter, place, &tokens);
             // A click between two controls is not a pick in the viewport.
             ui.interact(
-                plate,
+                place,
                 ui.id()
-                    .with(("nav-plate", plate.min.x.to_bits(), plate.min.y.to_bits())),
+                    .with(("nav-plate", place.min.x.to_bits(), place.min.y.to_bits())),
                 egui::Sense::click_and_drag(),
             );
         }
@@ -858,13 +655,13 @@ impl Shell {
             );
         }
         let named = !layout.compact;
-        self.nav_camera(ui, &layout, variant, named, scene);
+        self.nav_camera(ui, &layout, named, scene);
         self.nav_show(ui, &layout, named);
         self.nav_section(ui, &layout, named, scene);
         match layout.cube {
             Some(place) => {
                 self.view_cube_rect = Some(place);
-                self.view_cube(ui, place, None, scene);
+                self.view_cube(ui, place, scene);
             }
             None => {
                 self.view_cube_rect = None;
@@ -873,7 +670,7 @@ impl Shell {
         }
         if let Some(triad) = layout.triad {
             let painter = ui.painter_at(triad.expand(tokens.nav_triad_font));
-            self.paint_triad(&painter, triad, tokens.nav_triad_font);
+            self.paint_triad(&painter, triad);
         }
     }
 
@@ -882,7 +679,6 @@ impl Shell {
         &mut self,
         ui: &mut egui::Ui,
         layout: &ControlsLayout,
-        variant: ControlsVariant,
         named: bool,
         scene: Option<&Scene>,
     ) {
@@ -903,15 +699,7 @@ impl Shell {
             ProjectionKind::Perspective => 0,
             ProjectionKind::Orthographic => 1,
         };
-        // The toolbar names every control with its icon.
-        let items: [(Option<Icon>, &str); 2] = if variant == ControlsVariant::C {
-            [
-                (Some(Icon::Perspective), "Persp"),
-                (Some(Icon::Orthographic), "Ortho"),
-            ]
-        } else {
-            [(None, "Persp"), (None, "Ortho")]
-        };
+        let items: [(Option<Icon>, &str); 2] = [(None, "Persp"), (None, "Ortho")];
         let (cells, clicked) = choice(
             ui,
             projection_rect,
@@ -1021,15 +809,6 @@ impl Shell {
         if let (true, Some(axes), Some(offset), Some(side)) =
             (on, layout.axes, layout.offset, layout.side)
         {
-            if let Some(title) = layout.section_title {
-                ui.painter().text(
-                    title.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    SECTION_TITLE,
-                    egui::FontId::proportional(tokens.nav_title_font),
-                    color(tokens.text_dim),
-                );
-            }
             let items = [(None, "X"), (None, "Y"), (None, "Z")];
             let (cells, clicked) = choice(
                 ui,
@@ -1077,222 +856,170 @@ impl Shell {
 mod tests {
     use super::*;
 
-    const VARIANTS: [ControlsVariant; 3] =
-        [ControlsVariant::A, ControlsVariant::B, ControlsVariant::C];
-
     /// The viewport of a window of 1920 × 1080 and one of 1280 × 800 (the
-    /// tree on the left, the tabs over it and the status bar under it), and
-    /// of the window's least size.
-    fn viewports() -> [Rect; 3] {
+    /// tree on the left, the tabs over it and the status bar under it).
+    fn viewports() -> [Rect; 2] {
         [
             Rect::from_min_size(pos2(270.0, 112.0), vec2(1650.0, 940.0)),
             Rect::from_min_size(pos2(270.0, 112.0), vec2(1010.0, 660.0)),
-            Rect::from_min_size(pos2(270.0, 112.0), vec2(210.0, 180.0)),
         ]
     }
 
-    fn names(layout: &ControlsLayout) -> Vec<&'static str> {
-        let mut names: Vec<&str> = layout.controls().into_iter().map(|(n, _)| n).collect();
-        names.extend(layout.parts().into_iter().map(|(n, _)| n));
-        names
-    }
-
     /// At both window sizes, with the section off and on, every control
-    /// of every arrangement is there with its name, the cube and the
-    /// triad too, inside the viewport less its margin and clear of each
-    /// other; the triad is at the bottom left, the cube and the triad have
-    /// the theme's sizes, and every control is the theme's height.
+    /// is there with its name, the cube and the triad too, inside the
+    /// viewport less its margin and clear of each other; the cluster is
+    /// in the top right corner with the camera plate centred under the
+    /// cube, the bar at the bottom, the triad bottom left, at the theme's
+    /// sizes; the Section chip stays where it is when the options open.
     #[test]
-    fn every_arrangement_has_every_control_inside_the_viewport() {
+    fn every_control_is_there_and_where_it_belongs() {
         let tokens = Tokens::dark();
-        let widths = NavWidths::fallback(&tokens);
-        for variant in VARIANTS {
-            for viewport in viewports().into_iter().take(2) {
-                for on in [false, true] {
-                    let layout = variant_layout(variant, viewport, &tokens, &widths, on);
-                    let mut expected = vec![
-                        "sketches",
-                        "datums",
-                        "see-through",
-                        "section",
-                        "fit",
-                        "iso",
-                        "projection",
-                    ];
-                    if on {
-                        expected.extend(["axes", "offset", "side"]);
-                    }
-                    expected.extend(["cube", "triad"]);
-                    let names = names(&layout);
-                    for name in &expected {
-                        assert!(
-                            names.contains(name),
-                            "{variant:?} {on} {viewport:?}: no {name} in {names:?}"
-                        );
-                    }
-                    assert!(!layout.compact, "{variant:?} {on} {viewport:?}");
-                    let area = viewport.shrink(tokens.nav_margin);
-                    assert!(complete(&layout, area, on), "{variant:?} {on} {layout:?}");
-                    let triad = layout.triad.unwrap();
-                    assert_eq!(triad.left_bottom(), area.left_bottom());
-                    assert_eq!(triad.width(), tokens.nav_triad_size);
-                    assert_eq!(layout.cube.unwrap().width(), tokens.nav_cube_size);
-                    for (name, rect) in layout.controls() {
-                        assert_eq!(rect.height(), tokens.nav_height, "{name}");
-                    }
-                    // The options only while the section is on.
-                    assert_eq!(layout.axes.is_some(), on);
+        let widths = ControlWidths::fallback(&tokens);
+        for viewport in viewports() {
+            let area = viewport.shrink(tokens.nav_margin);
+            let off = controls_layout(viewport, &tokens, &widths, false);
+            for on in [false, true] {
+                let layout = controls_layout(viewport, &tokens, &widths, on);
+                let mut names: Vec<&str> = layout.controls().into_iter().map(|(n, _)| n).collect();
+                names.extend(layout.parts().into_iter().map(|(n, _)| n));
+                let mut expected = vec![
+                    "sketches",
+                    "datums",
+                    "see-through",
+                    "section",
+                    "fit",
+                    "iso",
+                    "projection",
+                ];
+                if on {
+                    expected.extend(["axes", "offset", "side"]);
                 }
+                expected.extend(["bar", "camera", "cube", "triad"]);
+                for name in &expected {
+                    assert!(
+                        names.contains(name),
+                        "{on} {viewport:?}: no {name} in {names:?}"
+                    );
+                }
+                assert_eq!(layout.axes.is_some(), on);
+                assert!(!layout.compact, "{on} {viewport:?}");
+                assert!(complete(&layout, area, on), "{on} {layout:?}");
+                for (name, rect) in layout.controls() {
+                    assert_eq!(rect.height(), tokens.nav_height, "{name}");
+                }
+                let (cube, camera) = (layout.cube.unwrap(), layout.camera_plate.unwrap());
+                assert_eq!(cube.width(), tokens.nav_cube_size);
+                assert_eq!(cube.top(), area.top());
+                assert!((camera.right() - area.right()).abs() < 0.01);
+                assert!(camera.top() > cube.bottom());
+                assert!((camera.center().x - cube.center().x).abs() < 0.01);
+                assert_eq!(layout.bar.unwrap().bottom(), area.bottom());
+                let triad = layout.triad.unwrap();
+                assert_eq!(triad.left_bottom(), area.left_bottom());
+                assert_eq!(triad.width(), triad_side(&tokens));
+                assert_eq!(layout.section_toggle, off.section_toggle);
+            }
+            // With the section off the bar is centred in the viewport
+            // where there is room for its options to open.
+            let bar = off.bar.unwrap();
+            if viewport.width() > 1200.0 {
+                assert!((bar.center().x - area.center().x).abs() < 0.01, "{bar:?}");
             }
         }
     }
 
     /// At every size, from a phone-sized viewport to a large one, with the
-    /// section off and on: what is shown is inside the viewport less its
-    /// margin, no plate overlaps another, the cube or the triad, every
-    /// control is on a plate and clear of the others, and numbers that are
-    /// not numbers give an empty layout.
+    /// section off and on and with wide texts: what is shown is inside
+    /// the viewport less its margin, no plate overlaps another, the cube
+    /// or the triad, every control is on a plate and clear of the others,
+    /// and numbers that are not numbers give nothing that is not either.
     #[test]
-    fn the_arrangements_never_overlap_and_stay_inside() {
+    fn the_controls_never_overlap_and_stay_inside() {
         let tokens = Tokens::dark();
-        let plain = NavWidths::fallback(&tokens);
-        let wide = NavWidths {
+        let plain = ControlWidths::fallback(&tokens);
+        let wide = ControlWidths {
             sketches: 160.0,
             see_through: 220.0,
             offset: 240.0,
             ..plain
         };
-        let mut shown = 0;
-        for variant in VARIANTS {
-            for widths in [plain, wide] {
-                for on in [false, true] {
-                    for w in (20..1800).step_by(53) {
-                        for h in (20..1100).step_by(47) {
-                            let viewport =
-                                Rect::from_min_size(pos2(3.0, 9.0), vec2(w as f32, h as f32));
-                            let layout = variant_layout(variant, viewport, &tokens, &widths, on);
-                            let area = viewport.shrink(tokens.nav_margin);
-                            let parts = layout.parts();
-                            for (k, (name, rect)) in parts.iter().enumerate() {
+        let mut full = 0;
+        for widths in [plain, wide] {
+            for on in [false, true] {
+                for w in (20..1800).step_by(37) {
+                    for h in (20..1100).step_by(41) {
+                        let viewport =
+                            Rect::from_min_size(pos2(3.0, 9.0), vec2(w as f32, h as f32));
+                        let layout = controls_layout(viewport, &tokens, &widths, on);
+                        let area = viewport.shrink(tokens.nav_margin);
+                        let parts = layout.parts();
+                        for (k, (name, rect)) in parts.iter().enumerate() {
+                            assert!(
+                                area.expand(0.5).contains_rect(*rect),
+                                "{name} {rect:?} in {area:?}"
+                            );
+                            for (other, second) in parts.iter().skip(k + 1) {
                                 assert!(
-                                    area.expand(0.5).contains_rect(*rect),
-                                    "{variant:?} {name} {rect:?} in {area:?}"
+                                    !rect.shrink(0.01).intersects(*second),
+                                    "{name} and {other} in {viewport:?}"
                                 );
-                                for (other, second) in parts.iter().skip(k + 1) {
-                                    assert!(
-                                        !rect.shrink(0.01).intersects(*second),
-                                        "{variant:?} {name} and {other} in {viewport:?}"
-                                    );
-                                }
                             }
-                            let plates: Vec<Rect> =
-                                [layout.bar, layout.camera_plate, layout.section_plate]
-                                    .into_iter()
-                                    .flatten()
-                                    .collect();
-                            let controls = layout.controls();
-                            for (k, (name, rect)) in controls.iter().enumerate() {
+                        }
+                        let plates: Vec<Rect> = [layout.bar, layout.camera_plate]
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        let controls = layout.controls();
+                        for (k, (name, rect)) in controls.iter().enumerate() {
+                            assert!(
+                                plates.iter().any(|p| p.expand(0.01).contains_rect(*rect)),
+                                "{name} on no plate in {viewport:?}"
+                            );
+                            for (other, second) in controls.iter().skip(k + 1) {
                                 assert!(
-                                    plates.iter().any(|p| p.expand(0.01).contains_rect(*rect)),
-                                    "{variant:?} {name} on no plate in {viewport:?}"
+                                    !rect.shrink(0.01).intersects(*second),
+                                    "{name} and {other} in {viewport:?}"
                                 );
-                                for (other, second) in controls.iter().skip(k + 1) {
-                                    assert!(
-                                        !rect.shrink(0.01).intersects(*second),
-                                        "{variant:?} {name} and {other} in {viewport:?}"
-                                    );
-                                }
                             }
-                            if controls.len() >= 7 {
-                                shown += 1;
-                            }
+                        }
+                        if complete(&layout, area, on) {
+                            full += 1;
                         }
                     }
                 }
             }
         }
-        assert!(shown > 500, "{shown}");
+        assert!(full > 500, "{full}");
         let nowhere = Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(10.0, 10.0));
-        for variant in VARIANTS {
-            assert!(
-                variant_layout(variant, nowhere, &tokens, &plain, true)
-                    .parts()
-                    .is_empty()
-            );
-            let broken = NavWidths {
-                fit: f32::NAN,
-                ..plain
-            };
-            let layout = variant_layout(variant, viewports()[0], &tokens, &broken, true);
-            for (_, rect) in layout.parts().into_iter().chain(layout.controls()) {
-                assert!(rect.min.x.is_finite() && rect.max.y.is_finite());
-            }
-        }
-        // Today's arrangement is not laid out here.
         assert!(
-            variant_layout(
-                ControlsVariant::Current,
-                viewports()[0],
-                &tokens,
-                &plain,
-                true
-            )
-            .parts()
-            .is_empty()
+            controls_layout(nowhere, &tokens, &plain, true)
+                .parts()
+                .is_empty()
         );
+        let broken = ControlWidths {
+            fit: f32::NAN,
+            ..plain
+        };
+        let layout = controls_layout(viewports()[0], &tokens, &broken, true);
+        assert!(layout.fit.is_some());
+        for (_, rect) in layout.parts().into_iter().chain(layout.controls()) {
+            assert!(rect.min.x.is_finite() && rect.max.y.is_finite());
+        }
     }
 
-    /// The arrangements differ where the developer asked them to: A has
-    /// the cube top right over the camera plate and the display bar at
-    /// the bottom; B stacks everything at the bottom right, the cube
-    /// centred over one card; C has one toolbar at the bottom with every
-    /// control on it and the section's options on a panel over it.
+    /// The triad's arms are about 45 to 50 points long in the iso view,
+    /// in balance with the cube.
     #[test]
-    fn the_arrangements_put_things_where_they_say() {
+    fn the_triad_is_in_balance_with_the_cube() {
         let tokens = Tokens::dark();
-        let widths = NavWidths::fallback(&tokens);
-        let viewport = viewports()[0];
-        let area = viewport.shrink(tokens.nav_margin);
-        let a = variant_layout(ControlsVariant::A, viewport, &tokens, &widths, true);
-        let (cube, camera, bar) = (a.cube.unwrap(), a.camera_plate.unwrap(), a.bar.unwrap());
-        assert_eq!(cube.top(), area.top());
-        assert!(camera.right() <= area.right() + 0.01 && camera.top() > cube.bottom());
-        assert!((camera.center().x - cube.center().x).abs() < 0.01);
-        assert_eq!(bar.bottom(), area.bottom());
-        // The Section chip is where it is with the section off.
-        let off = variant_layout(ControlsVariant::A, viewport, &tokens, &widths, false);
-        assert_eq!(off.section_toggle, a.section_toggle);
-        let b = variant_layout(ControlsVariant::B, viewport, &tokens, &widths, true);
-        let card = b.bar.unwrap();
-        assert_eq!(card.right_bottom(), area.right_bottom());
-        assert!((b.cube.unwrap().center().x - card.center().x).abs() < 0.01);
-        for (name, rect) in b.controls() {
-            assert!(card.contains_rect(rect), "{name}");
-        }
-        let b_off = variant_layout(ControlsVariant::B, viewport, &tokens, &widths, false);
-        assert_eq!(b_off.section_toggle, b.section_toggle);
-        assert!(
-            b_off.bar.unwrap().top() > card.top(),
-            "the options push the card up"
-        );
-        let c = variant_layout(ControlsVariant::C, viewport, &tokens, &widths, true);
-        let (toolbar, panel) = (c.bar.unwrap(), c.section_plate.unwrap());
-        assert_eq!(toolbar.bottom(), area.bottom());
-        assert!(panel.bottom() < toolbar.top());
-        for rect in [c.axes, c.offset, c.side, c.section_title] {
-            assert!(panel.contains_rect(rect.unwrap()));
-        }
-        for rect in [
-            c.fit,
-            c.iso,
-            c.projection,
-            c.sketches,
-            c.datums,
-            c.see_through,
-            c.section_toggle,
-        ] {
-            assert!(toolbar.contains_rect(rect.unwrap()));
-        }
-        assert_eq!(c.cube.unwrap().right_top(), area.right_top());
+        let mut camera = crate::state::CameraState::default();
+        camera.set_view("iso").unwrap();
+        let arms = crate::view_cube::triad(&camera).unwrap();
+        let longest = arms
+            .iter()
+            .map(|a| a.tip[0].hypot(a.tip[1]) as f32 * tokens.nav_triad_arm)
+            .fold(0.0, f32::max);
+        assert!((45.0..=50.0).contains(&longest), "{longest}");
+        assert!(triad_side(&tokens) <= 1.5 * tokens.nav_cube_size);
     }
 }
