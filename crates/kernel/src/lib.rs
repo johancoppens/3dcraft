@@ -30,6 +30,7 @@ pub mod offset_profile;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
+mod shared;
 pub mod shell;
 mod spline2;
 pub mod sweep;

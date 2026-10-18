@@ -7,11 +7,13 @@
 mod bits;
 mod frame;
 pub mod quadrature;
+mod threads;
 mod tolerance;
 mod transform;
 
 pub use bits::{Bits, bits_of};
 pub use frame::Frame;
+pub use threads::available_threads;
 pub use tolerance::Tolerance;
 pub use transform::Transform;
 

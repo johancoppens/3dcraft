@@ -249,7 +249,7 @@ mod native {
     /// How many frames to render at once: the cores, as far as the
     /// renderer's buffers for frames of this size fit in about 1.5 GB.
     fn threads_for(width: u64, height: u64, ssaa: u32) -> usize {
-        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let cores = craft3d_math::available_threads();
         let samples = width
             .saturating_mul(height)
             .saturating_mul(u64::from(ssaa).pow(2))

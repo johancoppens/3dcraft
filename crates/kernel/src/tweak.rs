@@ -35,10 +35,10 @@
 
 use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
-use craft3d_geom::refine::interpolate;
+use crate::shared::{curve_through, index_u32};
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
-use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
+use craft3d_topo::{Body, EdgeId, FaceId, VertexId, edge_faces};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
@@ -80,28 +80,6 @@ pub(crate) const RIMS: &str = "the two rims of the face would change places: the
 pub(crate) const THROUGH: &str =
     "the face would pass through another part of the body, or lie in another face of it";
 pub(crate) const TURNED: &str = "the face would be turned inside out: it would vanish";
-
-fn index_u32(index: usize) -> u32 {
-    u32::try_from(index).unwrap_or(u32::MAX)
-}
-
-/// Per edge, the faces that use it (twice the same face for a seam).
-pub(crate) fn edge_faces(body: &Body) -> Vec<Vec<FaceId>> {
-    let mut uses: Vec<Vec<FaceId>> = vec![Vec::new(); body.edges.len()];
-    for (index, face) in body.faces.iter().enumerate() {
-        for coedge in face
-            .loops
-            .iter()
-            .filter_map(|l| body.loop_(*l))
-            .flat_map(|l| &l.coedges)
-        {
-            if let Some(list) = uses.get_mut(coedge.edge.0 as usize) {
-                list.push(FaceId(index_u32(index)));
-            }
-        }
-    }
-    uses
-}
 
 /// The signed distance from `point` to `surface` and the direction it
 /// grows in. `None` where the surface has no nearest point with a normal
@@ -512,21 +490,6 @@ const EDGE_SHARE: f64 = 0.25;
 /// feet on its surfaces it was found from.
 type Sample = (f64, Vec3, Vec<Option<(f64, f64)>>);
 
-/// A cubic (or lower) through `points` at `params`.
-fn curve_through(params: &[f64], points: &[Vec3]) -> Option<NurbsCurve> {
-    let degree = params.len().checked_sub(1)?.min(3);
-    let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
-    let (knots, rows) = interpolate(params, degree, &values).ok()?;
-    let ctrl: Vec<Vec3> = rows
-        .iter()
-        .map(|r| match r.as_slice() {
-            [x, y, z] => Some(Vec3::new(*x, *y, *z)),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
-    NurbsCurve::polynomial(degree, knots, ctrl).ok()
-}
-
 /// The edge with curve `old` over `range` found again from `start` to
 /// `end` where `surfaces` meet, when it is no longer a curve of a kind
 /// made in closed form: every point of the old curve, moved as the ends
@@ -716,14 +679,9 @@ fn tangent_along(body: &Body, faces: &[FaceId], curve: &Curve3, range: (f64, f64
     let (Some(a), Some(b)) = (body.face(*a), body.face(*b)) else {
         return false;
     };
-    let outward = |face: &craft3d_topo::Face, p: Vec3| {
-        let (u, v) = face.surface.project(p).ok()?;
-        let n = face.surface.normal(u, v)?;
-        Some(if face.reversed { -n } else { n })
-    };
     (0..=4).all(|k| {
         let p = curve.eval(range.0 + (range.1 - range.0) * f64::from(k) / 4.0);
-        match (outward(a, p), outward(b, p)) {
+        match (a.outward(p), b.outward(p)) {
             (Some(m), Some(n)) => m.dot(n) > 0.0 && m.cross(n).length() <= TANGENT,
             _ => false,
         }
@@ -1478,10 +1436,8 @@ fn buried(
             continue;
         };
         let outward = |at: Vec3| {
-            let (u, v) = face.surface.project(at).ok()?;
-            let normal = face.surface.normal(u, v)?;
-            let foot = face.surface.eval(u, v);
-            Some((foot, if face.reversed { -normal } else { normal }))
+            let ((u, v), normal) = face.nearest(at).ok()??;
+            Some((face.surface.eval(u, v), normal))
         };
         for coedge in face
             .loops

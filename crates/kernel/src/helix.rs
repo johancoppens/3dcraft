@@ -65,7 +65,7 @@ use crate::loft::{Band, skin};
 use crate::profile::Profile;
 use crate::sweep::{
     Builder, Element, Form, Map2, Motion, P2, Station, Swept, against_normal, coedge, curve_at,
-    edge_ends, part_band, quarters, refuse, stations_of,
+    edge_ends, part_band, profile_loops, quarters, refuse, stations_of,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Cylinder, NurbsCurve, Surface};
@@ -551,41 +551,13 @@ pub fn sweep_helix(
         y: if mirrored { [0.0, -1.0] } else { [0.0, 1.0] },
         mirrored,
     };
-    let mut loops: Vec<Vec<Element>> = Vec::with_capacity(1 + profile.holes.len());
-    for path in std::iter::once(&profile.outer).chain(&profile.holes) {
-        let mut elements = path
-            .segments
-            .iter()
-            .map(|s| map.element(s, tol))
-            .collect::<Result<Vec<_>, _>>()?;
-        match elements.as_slice() {
-            [] => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a loop without segments",
-                });
-            }
-            [only] if !only.whole() => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a loop of one segment that is not a circle is not closed",
-                });
-            }
-            [_] => {}
-            several if several.iter().any(Element::whole) => {
-                return Err(KernelError::InvalidProfile {
-                    reason: "a circle is a loop on its own",
-                });
-            }
-            _ => {}
-        }
-        if mirrored {
-            elements = elements.iter().rev().map(Element::flipped).collect();
-        }
+    let mut loops = profile_loops(profile, &map, tol)?;
+    for elements in &mut loops {
         // No surface along the helix closes on itself.
-        elements = elements.iter().flat_map(quarters).collect();
-        for element in &mut elements {
+        *elements = elements.iter().flat_map(quarters).collect();
+        for element in elements.iter_mut() {
             element.flat = false;
         }
-        loops.push(elements);
     }
 
     // The profile against the axis: it stays clear of it and on one side

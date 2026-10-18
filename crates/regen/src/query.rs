@@ -27,23 +27,11 @@ pub fn faces_named(names: &Names, name: &PersistentName) -> Vec<FaceId> {
 /// without repeats: two for an edge of a solid, one for a seam or for the
 /// border of a sheet.
 pub fn faces_of_edges(body: &Body) -> Vec<Vec<FaceId>> {
-    let mut users: Vec<Vec<FaceId>> = vec![Vec::new(); body.edges.len()];
-    for (index, face) in body.faces.iter().enumerate() {
-        let Ok(id) = u32::try_from(index).map(FaceId) else {
-            continue;
-        };
-        for coedge in face
-            .loops
-            .iter()
-            .filter_map(|l| body.loop_(*l))
-            .flat_map(|l| &l.coedges)
-        {
-            if let Some(list) = users.get_mut(coedge.edge.0 as usize)
-                && !list.contains(&id)
-            {
-                list.push(id);
-            }
-        }
+    let mut users = craft3d_topo::edge_faces(body);
+    // Each list is in face order, so a face's repeats are next to each
+    // other.
+    for list in &mut users {
+        list.dedup();
     }
     users
 }

@@ -72,6 +72,7 @@
 use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
+use crate::shared::curve_through;
 use craft3d_geom::certify::{Apart, CurveBound, SurfaceBound, curves_apart};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
@@ -575,21 +576,6 @@ fn border(surface: &NurbsSurface, last: bool) -> Option<NurbsCurve> {
         weights,
     )
     .ok()
-}
-
-/// A polynomial cubic (or lower) through `points` at `params`.
-fn curve_through(params: &[f64], points: &[Vec3]) -> Option<NurbsCurve> {
-    let degree = (params.len().checked_sub(1)?).min(3);
-    let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
-    let (knots, rows) = interpolate(params, degree, &values).ok()?;
-    let ctrl: Vec<Vec3> = rows
-        .iter()
-        .map(|r| match r.as_slice() {
-            [x, y, z] => Some(Vec3::new(*x, *y, *z)),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
-    NurbsCurve::polynomial(degree, knots, ctrl).ok()
 }
 
 /// The vertex at one end of the edge and what meets there.

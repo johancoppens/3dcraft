@@ -923,7 +923,7 @@ mod tests {
                 Vec3::new(*t, y, 0.0)
             })
             .collect();
-        let curve = super::super::curve_through(&params, &points).unwrap();
+        let curve = crate::shared::curve_through(&params, &points).unwrap();
         let mut body = Body::new(BodyKind::Sheet);
         for p in [
             Vec3::ZERO,

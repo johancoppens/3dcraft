@@ -1322,105 +1322,14 @@ fn own_sphere(body: &Body, face: &Face, sphere: &Sphere) -> Option<Surface> {
     Some(Surface::Sphere(Sphere::new(frame, radius).ok()?))
 }
 
-/// How near, as a share of the size of the control net, two rows of
-/// control points must be to count as the same row.
-const SAME_ROW: f64 = 1e-9;
-
 /// Where a Bézier or NURBS surface closes on itself, in u and in v: the
-/// parameter range across which it does, its domain in that direction.
-/// It closes in a direction when its control net ends there on the row
-/// it starts with (the same points to [`SAME_ROW`] of the net's size, and
-/// weights in one proportion, so that the two rows are the same curve)
-/// on clamped knots, and the rows in between are not all that one row
-/// (which is a pole, not a seam). `[None, None]` for the analytic kinds,
-/// which say how they close themselves (`Surface::period_u`).
+/// parameter range across which it does, its domain in that direction
+/// ([`craft3d_geom::closure::closes`]). `[None, None]` for the analytic
+/// kinds, which say how they close themselves (`Surface::period_u`).
 fn spline_closure(surface: &Surface) -> [Option<(f64, f64)>; 2] {
-    let (points, weights, (count_u, count_v), clamped): (&[Vec3], Option<&[f64]>, _, [bool; 2]) =
-        match surface {
-            Surface::Bezier(patch) => (
-                patch.control_points(),
-                None,
-                (patch.degree_u() + 1, patch.degree_v() + 1),
-                [true, true],
-            ),
-            Surface::Nurbs(s) => {
-                let (degree_u, degree_v) = s.degrees();
-                (
-                    s.control_points(),
-                    Some(s.weights()),
-                    s.counts(),
-                    [
-                        clamped(s.knots_u(), degree_u),
-                        clamped(s.knots_v(), degree_v),
-                    ],
-                )
-            }
-            _ => return [None, None],
-        };
-    if count_u < 2 || count_v < 2 || count_u.checked_mul(count_v) != Some(points.len()) {
-        return [None, None];
-    }
-    let near = SAME_ROW * Bbox3::from_points(points.iter().copied()).diagonal();
-    if !(near.is_finite() && near > 0.0) {
-        return [None, None];
-    }
-    let at = |i: usize, j: usize| {
-        let index = i.checked_mul(count_v)?.checked_add(j)?;
-        let weight = match weights {
-            Some(weights) => *weights.get(index)?,
-            None => 1.0,
-        };
-        Some((*points.get(index)?, weight))
-    };
-    // Along `rows` rows of `across` points each, the k-th of row r being
-    // `get(r, k)`.
-    let closes = |rows: usize, across: usize, get: &dyn Fn(usize, usize) -> Option<(Vec3, f64)>| {
-        let (Some((_, first)), Some((_, last))) = (get(0, 0), get(rows - 1, 0)) else {
-            return false;
-        };
-        let mut moves = false;
-        for k in 0..across {
-            let (Some((p, w)), Some((q, x))) = (get(0, k), get(rows - 1, k)) else {
-                return false;
-            };
-            // `w / first == x / last`, without dividing. Not `>`: a NaN
-            // closes nothing.
-            if !(p.distance(q) <= near
-                && (w * last - x * first).abs() <= SAME_ROW * (w * last).abs())
-            {
-                return false;
-            }
-            for row in 1..rows - 1 {
-                moves |= get(row, k).is_some_and(|(r, _)| r.distance(p) > near);
-            }
-        }
-        moves
-    };
+    let [closes_u, closes_v] = craft3d_geom::closure::closes(surface);
     let ((u0, u1), (v0, v1)) = surface.domain();
-    let range = |closes: bool, low: f64, high: f64| {
-        (closes && low.is_finite() && high.is_finite() && high > low).then_some((low, high))
-    };
-    let [clamped_u, clamped_v] = clamped;
-    [
-        range(clamped_u && closes(count_u, count_v, &at), u0, u1),
-        range(
-            clamped_v && closes(count_v, count_u, &|j, i| at(i, j)),
-            v0,
-            v1,
-        ),
-    ]
-}
-
-/// Whether a knot vector is clamped: its first and its last `degree + 1`
-/// knots are one value each, so that the spline starts on its first row
-/// of control points and ends on its last.
-fn clamped(knots: &[f64], degree: usize) -> bool {
-    let (Some(first), Some(last)) = (knots.first(), knots.last()) else {
-        return false;
-    };
-    knots.len() > 2 * degree + 1
-        && knots.iter().take(degree + 1).all(|k| k == first)
-        && knots.iter().rev().take(degree + 1).all(|k| k == last)
+    [closes_u.then_some((u0, u1)), closes_v.then_some((v0, v1))]
 }
 
 /// Whether the boundary samples jump, between two in a row of one loop
@@ -3979,8 +3888,7 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Mutex, PoisonError};
-        let threads = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
+        let threads = craft3d_math::available_threads()
             .min(count / PARALLEL_FACES.max(1) + 1)
             .min(count);
         if threads > 1 {

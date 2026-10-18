@@ -179,23 +179,6 @@ pub(crate) struct Contacts {
     pub rounding: f64,
 }
 
-/// No more threads than this by default.
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_AUTOMATIC_THREADS: usize = 16;
-
-fn automatic_threads() -> usize {
-    #[cfg(target_arch = "wasm32")]
-    {
-        1
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .min(MAX_AUTOMATIC_THREADS)
-    }
-}
-
 /// Coordinates above this are refused: their products overflow.
 const MAX_COORDINATE: f64 = 1e100;
 
@@ -826,7 +809,7 @@ impl<'a> Prepared<'a> {
             self.pairs_in(first..first.saturating_add(CHUNK).min(count), cap, rules)
         };
         let wanted = if threads == 0 {
-            automatic_threads()
+            crate::body::automatic_threads()
         } else {
             threads
         };

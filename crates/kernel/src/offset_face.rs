@@ -438,7 +438,7 @@ fn at(
 /// face whose surface has its nearest point to it on a border, not square
 /// below it, has to go on past that border.
 fn borders_passed(body: &Body, moving: &BTreeMap<FaceId, f64>) -> BTreeMap<FaceId, Growth> {
-    let uses = tweak::edge_faces(body);
+    let uses = craft3d_topo::edge_faces(body);
     let mut around: Vec<BTreeSet<FaceId>> = vec![BTreeSet::new(); body.vertices.len()];
     for (index, edge) in body.edges.iter().enumerate() {
         for vertex in [edge.start, edge.end] {
@@ -503,15 +503,9 @@ pub(crate) fn foresee(
         let Some(data) = body.face(*face) else {
             continue;
         };
-        let Some(normal) = data
-            .surface
-            .project(at)
-            .ok()
-            .and_then(|(u, v)| data.surface.normal(u, v))
-        else {
+        let Some(normal) = data.outward(at) else {
             continue;
         };
-        let normal = if data.reversed { -normal } else { normal };
         let mut rest = normal;
         let mut right = moving.get(face).copied().unwrap_or(0.0);
         for (axis, c) in basis.iter().zip(&solved) {

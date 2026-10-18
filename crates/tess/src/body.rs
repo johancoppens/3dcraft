@@ -83,20 +83,12 @@ use craft3d_topo::Body;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// No more threads than this by default; faces are small jobs.
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_AUTOMATIC_THREADS: usize = 16;
 
-fn automatic_threads() -> usize {
-    #[cfg(target_arch = "wasm32")]
-    {
-        1
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .min(MAX_AUTOMATIC_THREADS)
-    }
+/// The threads tessellation takes when it is not told: the machine's, up
+/// to [`MAX_AUTOMATIC_THREADS`] (1 on wasm).
+pub(crate) fn automatic_threads() -> usize {
+    craft3d_math::available_threads().min(MAX_AUTOMATIC_THREADS)
 }
 
 type FaceResult = Result<FaceMesh, TessError>;

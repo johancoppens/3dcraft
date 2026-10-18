@@ -46,6 +46,7 @@
 use crate::cdt::{Cdt, CdtError, FIRST_VERTEX, Interior, P2, orient};
 use crate::edge::arc_segments;
 use crate::{TessError, TessParams};
+use craft3d_geom::closure::clamped;
 use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, Face};
@@ -176,18 +177,6 @@ fn net_closes(count_u: usize, count_v: usize, ctrl: &[Vec3], weights: Option<&[f
         closes(count_u, count_v, &|i, j| at(i, j).zip(weight(i, j))),
         closes(count_v, count_u, &|j, i| at(i, j).zip(weight(i, j))),
     ]
-}
-
-/// Whether a knot vector is clamped: its first and its last `degree + 1`
-/// knots are one value each, so that the spline starts on its first
-/// control point and ends on its last.
-fn clamped(knots: &[f64], degree: usize) -> bool {
-    let (Some(first), Some(last)) = (knots.first(), knots.last()) else {
-        return false;
-    };
-    knots.len() > 2 * degree + 1
-        && knots.iter().take(degree + 1).all(|k| k == first)
-        && knots.iter().rev().take(degree + 1).all(|k| k == last)
 }
 
 impl Closure {

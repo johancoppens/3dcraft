@@ -37,7 +37,6 @@ const MAX_LISTED: usize = 5_000;
 /// Most face names listed per body of a pair.
 const MAX_FACES: usize = 200;
 /// No more threads than this.
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_THREADS: usize = 8;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -366,12 +365,7 @@ fn face_names(regen: &Regen, id: FeatureId, faces: &[FaceId]) -> Vec<Value> {
 /// `job` for every index of `indices`, on several threads; the results in
 /// the order of `indices`. `None` for a job whose thread stopped.
 fn in_order<T: Send>(indices: &[usize], job: impl Fn(usize) -> Option<T> + Sync) -> Vec<Option<T>> {
-    #[cfg(target_arch = "wasm32")]
-    let threads = 1;
-    #[cfg(not(target_arch = "wasm32"))]
-    let threads = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(MAX_THREADS);
+    let threads = craft3d_math::available_threads().min(MAX_THREADS);
     let threads = threads.min(indices.len());
     let one = |n: usize| indices.get(n).and_then(|&index| job(index));
     if threads <= 1 {

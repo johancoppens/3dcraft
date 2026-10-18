@@ -247,12 +247,10 @@ impl Builder<'_> {
         let segments = &path.segments;
         let n = segments.len();
         let whole_circle = match (segments.first(), n) {
-            (None, _) => return Err(invalid("a loop without segments")),
+            (None, _) => return Err(invalid(crate::profile::NO_SEGMENTS)),
             (Some(first), 1) => {
                 if !matches!(first.shape, Shape::Circle { .. }) {
-                    return Err(invalid(
-                        "a loop of one segment that is not a circle is not closed",
-                    ));
+                    return Err(invalid(crate::profile::ONE_SEGMENT_OPEN));
                 }
                 true
             }
@@ -261,7 +259,7 @@ impl Builder<'_> {
                     .iter()
                     .any(|s| matches!(s.shape, Shape::Circle { .. }))
                 {
-                    return Err(invalid("a circle is a loop on its own"));
+                    return Err(invalid(crate::profile::CIRCLE_NOT_ALONE));
                 }
                 false
             }
@@ -402,12 +400,10 @@ impl Builder<'_> {
         let segments = &path.segments;
         let n = segments.len();
         match (segments.first(), n) {
-            (None, _) => return Err(invalid("a loop without segments")),
+            (None, _) => return Err(invalid(crate::profile::NO_SEGMENTS)),
             (Some(first), 1) => {
                 if !matches!(first.shape, Shape::Circle { .. }) {
-                    return Err(invalid(
-                        "a loop of one segment that is not a circle is not closed",
-                    ));
+                    return Err(invalid(crate::profile::ONE_SEGMENT_OPEN));
                 }
             }
             _ => {
@@ -415,7 +411,7 @@ impl Builder<'_> {
                     .iter()
                     .any(|s| matches!(s.shape, Shape::Circle { .. }))
                 {
-                    return Err(invalid("a circle is a loop on its own"));
+                    return Err(invalid(crate::profile::CIRCLE_NOT_ALONE));
                 }
             }
         }

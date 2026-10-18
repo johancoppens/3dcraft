@@ -312,6 +312,9 @@ struct Border {
 
 /// True when the knot vector starts and ends with `degree + 1` equal
 /// knots: the curve then starts and ends at its end control points.
+/// Not `geom::closure::clamped`: this one also accepts exactly
+/// `2 * degree + 1` knots (`> 2 * degree`, not `> 2 * degree + 1`), and
+/// merging the two would change which curves this tool takes.
 fn clamped(knots: &[f64], degree: usize) -> bool {
     let ends_equal = |mut it: std::slice::Iter<f64>| {
         let first = it.next();
