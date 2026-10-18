@@ -245,6 +245,36 @@ fn a_fill_that_cannot_be_made_says_why() {
         let e = error(&mut s, "feature.fill", params.clone());
         assert!(!e.is_empty(), "{params}");
     }
+    // Shell and thicken of a sheet are not built yet, and say so.
+    built(
+        &mut s,
+        "feature.fill",
+        json!({"sketch": "Square", "name": "Plate"}),
+    );
+    let face = body(&mut s, "Plate")["faceNames"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let shelled = failed(
+        &mut s,
+        "feature.shell",
+        json!({"source": "Plate", "thickness": "0.1 mm", "name": "Hollow"}),
+    );
+    assert!(
+        shelled.contains("sheet") && shelled.contains("not built yet"),
+        "{shelled}"
+    );
+    run(&mut s, "feature.delete", json!({"feature": "Hollow"}));
+    let thickened = failed(
+        &mut s,
+        "feature.thicken",
+        json!({"faces": [face], "thickness": "0.1 mm", "name": "Layer"}),
+    );
+    assert!(
+        thickened.contains("sheet") && thickened.contains("not built yet"),
+        "{thickened}"
+    );
+    run(&mut s, "feature.delete", json!({"feature": "Layer"}));
     // An edit to another sketch: the fill follows it.
     built(
         &mut s,

@@ -295,12 +295,15 @@ pub fn verify(
     let (box_a, box_b) = (boxes_a.whole, boxes_b.whole);
     let mut found = Verification::default();
     // A solid cut by a sheet keeps a part of the solid on one side of the
-    // sheet: within the solid's box, no larger than the solid, and
-    // nothing of it is known to be kept far from the sheet (the side
-    // there is the side of the cut). Rules 2 and 1 as for a difference;
-    // no faces far from the sheet and no membership (the sheet has no
-    // inside).
+    // sheet: within the solid's box, no larger than the solid, its seeded
+    // points inside the solid, and its cut faces turned the way the side
+    // kept has them; nothing of it is known to be kept far from the sheet
+    // (the side there is the side of the cut). Rules 2 and 1 as for a
+    // difference, rule 4 one way (the sheet has no inside), and no faces
+    // far from the sheet.
     if a.kind == BodyKind::Solid && b.kind == BodyKind::Sheet {
+        cut_faces(a, b, op, result, &mut found.violations);
+        within_the_solid(a, result, &box_a, tolerance, options, &mut found);
         if options.volumes {
             volumes(
                 a,
@@ -356,6 +359,90 @@ fn unboxed() -> KernelError {
         operation: "boolean check",
         reason: "a body or a face without a finite box (run craft3d_topo::check)",
         faces: Vec::new(),
+    }
+}
+
+/// Of a solid cut by a sheet: every face of the result on the surface of
+/// a face of the sheet (the cut, a piece of the sheet's face, which no
+/// face of the solid shares: such a piece is refused) faces against the
+/// sheet's normal for a subtract, which keeps the side the normal points
+/// to, and along it for an intersect. A result that kept the other side,
+/// consistently, has it the other way round.
+fn cut_faces(
+    solid: &Body,
+    sheet: &Body,
+    op: BooleanOp,
+    result: &Body,
+    violations: &mut Vec<Violation>,
+) {
+    let turned = op == BooleanOp::Subtract;
+    for (index, face) in result.faces.iter().enumerate() {
+        let Some(of_sheet) = sheet.faces.iter().find(|s| s.surface == face.surface) else {
+            continue;
+        };
+        // A face of the solid on the very surface (beside the sheet, not
+        // under it) is no cut.
+        if solid.faces.iter().any(|f| f.surface == face.surface) {
+            continue;
+        }
+        if face.reversed != (of_sheet.reversed != turned) {
+            violations.push(Violation::FarFace {
+                operand: Operand::B,
+                face: FaceId(u32::try_from(index).unwrap_or(u32::MAX)),
+                problem: "the cut face looks the wrong way: the part kept is on the other side of the sheet",
+            });
+        }
+    }
+}
+
+/// Of a solid cut by a sheet, rule 4 one way: a seeded point in the
+/// solid's box that is inside the result is inside the solid.
+fn within_the_solid(
+    a: &Body,
+    result: &Body,
+    box_a: &Bbox3,
+    tolerance: &Tolerance,
+    options: &VerifyOptions,
+    found: &mut Verification,
+) {
+    if options.points == 0 {
+        return;
+    }
+    let Some((lo, hi)) = box_a.corners() else {
+        return;
+    };
+    let mut seeded = Seeded(0x3dc4_af7b_00c4_ec4b);
+    let points: Vec<Vec3> = (0..options.points)
+        .map(|_| seeded.point_in(lo, hi))
+        .collect();
+    let told = (
+        contains_points(a, &points, tolerance),
+        contains_points(result, &points, tolerance),
+    );
+    let (in_a, in_r) = match told {
+        (Ok(in_a), Ok(in_r)) => (in_a, in_r),
+        (Err(e), _) => {
+            found.unclassified = Some(format!("the target: {e}"));
+            return;
+        }
+        (_, Err(e)) => {
+            found.unclassified = Some(format!("the result: {e}"));
+            return;
+        }
+    };
+    for ((&at, a), r) in points.iter().zip(in_a).zip(in_r) {
+        let (Some(in_a), Some(in_result)) = (a, r) else {
+            continue;
+        };
+        found.points += 1;
+        if in_result && !in_a {
+            found.violations.push(Violation::Membership {
+                at,
+                in_a,
+                in_b: false,
+                in_result,
+            });
+        }
     }
 }
 

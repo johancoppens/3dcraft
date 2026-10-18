@@ -652,7 +652,6 @@ fn run(
             &cap,
             &pieces_a,
             &interior_a,
-            &crossing_a,
             &sections.coincident_a,
             &arcs,
             &vertices,
@@ -741,6 +740,13 @@ fn run(
                 .map(|s| s.curve.eval(0.5 * (s.range.0 + s.range.1))),
         );
         zero_thickness(&result, tolerance, &meetings)?;
+        // A sheet that comes back to itself in a point is refused; a
+        // solid's shell that does so is left to the rules above and to
+        // regeneration (a wall that thins to nothing: open decision
+        // D-open-12).
+        if result.body.kind == BodyKind::Sheet {
+            touching_itself(&result, tol)?;
+        }
     }
     Ok(result)
 }
@@ -892,6 +898,55 @@ fn zero_thickness(
         &face_shell,
         &mut outlines,
     )
+}
+
+/// Refuses a result one of whose shells touches itself at a vertex: a
+/// vertex within twice the tolerance of another vertex, or of an edge it
+/// is not an end of, of the same shell (`craft3d_topo::touches`, the rule
+/// regeneration holds every body to). [`zero_thickness`] finds two faces
+/// at a place; this finds a face, or the boundary of a sheet, that comes
+/// back to itself in a point where the sewing gave each side its own
+/// vertex (a hole tangent to a cut-out, the figure of eight a plane
+/// leaves of a ring it touches).
+fn touching_itself(result: &BooleanResult, tol: f64) -> Result<(), Stop> {
+    let body = &result.body;
+    let Ok(found) = craft3d_topo::touches(body, 2.0 * tol, 1, craft3d_topo::TouchScope::All) else {
+        return Ok(());
+    };
+    let Some(touch) = found.into_iter().find(|t| !t.between_shells()) else {
+        return Ok(());
+    };
+    // A face at the vertex and one at what it touches, by their sources.
+    let face_at = |test: &dyn Fn(&craft3d_topo::Coedge) -> bool| {
+        body.faces.iter().enumerate().find_map(|(f, face)| {
+            face.loops
+                .iter()
+                .filter_map(|l| body.loop_(*l))
+                .flat_map(|l| &l.coedges)
+                .any(test)
+                .then(|| result.faces.get(f).map(|s| (s.operand, s.face)))
+                .flatten()
+        })
+    };
+    let at_vertex = |v: u32| {
+        move |c: &craft3d_topo::Coedge| {
+            body.edge(c.edge)
+                .is_some_and(|e| e.start.0 == v || e.end.0 == v)
+        }
+    };
+    let first = face_at(&at_vertex(touch.vertex));
+    let second = match touch.touches {
+        craft3d_topo::Touched::Vertex(v) => face_at(&at_vertex(v)),
+        craft3d_topo::Touched::Edge(e) => face_at(&|c: &craft3d_topo::Coedge| c.edge.0 == e),
+    };
+    let (Some(a), Some(b)) = (first, second) else {
+        return Err(Stop::of(LOST));
+    };
+    Err(Stop::Error(KernelError::ZeroThickness {
+        operation: OPERATION,
+        at: touch.at,
+        faces: [a, b],
+    }))
 }
 
 /// Whether face `g` (its outline, at `b`) stays on the outer side of

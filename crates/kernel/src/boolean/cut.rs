@@ -51,7 +51,6 @@ pub(super) fn select(
     cap: &[Kept],
     pieces: &[Vec<Half>],
     interior: &BTreeMap<usize, BTreeSet<usize>>,
-    crossing: &BTreeMap<usize, BTreeSet<usize>>,
     coincident: &BTreeMap<usize, Vec<(usize, bool)>>,
     arcs: &Arcs,
     vertices: &Vertices,
@@ -87,14 +86,19 @@ pub(super) fn select(
         }
     }
     let sheet_box = sheet.bbox();
+    let none = BTreeMap::new();
     // Every region of the solid's faces: its face and its loops.
     let mut regions: Vec<(usize, Vec<Vec<Half>>)> = Vec::new();
     for face in 0..solid.faces() {
         // A region on the sheet's surface is told its side as any other:
         // where a piece of the sheet lies on it, that piece was refused.
         let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
+        // No curve is held to dividing a face here: every curve the sheet
+        // crosses a face of the solid in is a cut, and one that divides
+        // nothing (a ring cut once) is told below as a sheet that does not
+        // divide the solid.
         let FaceRegions { regions: found, .. } = face_regions(
-            solid, face, pieces, interior, crossing, coincident, arcs, vertices, &sheet_box, tol,
+            solid, face, pieces, interior, &none, coincident, arcs, vertices, &sheet_box, tol,
         )?;
         regions.extend(found.into_iter().map(|loops| (face, loops)));
     }
@@ -103,6 +107,19 @@ pub(super) fn select(
     for (r, (_, loops)) in regions.iter().enumerate() {
         for &(arc, reversed) in loops.iter().flatten() {
             by_solid.entry(arc).or_default().push((r, reversed));
+        }
+    }
+    // An arc of the cap's boundary that no region of the solid ends at
+    // runs across a face without dividing it: the material on its two
+    // sides is one.
+    for (arc, uses) in &by_cap {
+        if uses.len() == 1 && !by_solid.contains_key(arc) {
+            let named: Vec<_> = uses
+                .iter()
+                .filter_map(|&c| cap.get(c))
+                .map(|k| (k.source.operand, k.source.face))
+                .collect();
+            return Err(Stop::of(BOTH_SIDES).at(&named));
         }
     }
     // Regions joined by an arc that is no cut are on one side.

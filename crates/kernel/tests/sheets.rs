@@ -718,8 +718,128 @@ fn what_a_sheet_cannot_do_is_refused() {
             "does not cross",
             "two lumps",
         );
+        // A ring cut once, by a half-sheet whose edge lies in its hole:
+        // the material on the two sides of the cut is one.
+        let flat = ring(k, [0.0, 0.0, 0.0], 3.0, 1.0);
+        let half_plane = Frame::new(Vec3::ZERO, Vec3::Y, Vec3::X).unwrap();
+        let once = rectangle([0.0, -5.0], [10.0, 5.0], &half_plane, k);
+        for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+            refused(
+                boolean(&flat, &once, op, &tol),
+                "does not divide",
+                "ring cut once",
+            );
+        }
         // A sheet has no inside to classify points by.
         assert!(craft3d_kernel::boolean::contains_points(&big, &[Vec3::ZERO], &tol).is_err());
         assert!(craft3d_kernel::boolean::interference(&big, &block, &tol).is_err());
+    }
+}
+
+/// A trim that would leave a sheet touching itself in a point is refused
+/// as zero thickness, as a solid touching itself is: a square with a round
+/// hole less a block whose side is tangent to the hole, and a plane
+/// tangent to the inside of a ring's tube less the ring (its section a
+/// figure of eight).
+#[test]
+fn a_sheet_that_would_touch_itself_is_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let holed = filled(&plate_and_arch()[..5], &level(1.0, k), k);
+        // The block's side x = 1 touches the hole (radius 1) at (1, 0).
+        let block = boxed(k, [1.0, -5.0, 0.0], [5.0, 5.0, 2.0]);
+        // A ring about z (R 3, r 1); the plane x = 2 touches its tube's
+        // inside at (2, 0, 0).
+        let ring = ring(k, [0.0, 0.0, 0.0], 3.0, 1.0);
+        let side = Frame::new(Vec3::new(2.0 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let wall = rectangle([-10.0, -10.0], [10.0, 10.0], &side, k);
+        // (What the block holds of the square touches the hole in one
+        // point of its edge only: a plain rectangle, which is made.)
+        let inside = solve(&holed, &block, BooleanOp::Intersect, k);
+        assert_close(mass(&inside.body).area, 4.0 * k * k, "inside the block");
+        for (sheet, solid, what, ops) in [
+            (&holed, &block, "tangent block", &[BooleanOp::Subtract][..]),
+            (
+                &wall,
+                &ring,
+                "ring",
+                &[BooleanOp::Subtract, BooleanOp::Intersect][..],
+            ),
+        ] {
+            for &op in ops {
+                match boolean(sheet, solid, op, &tol) {
+                    Err(KernelError::ZeroThickness { .. }) => {}
+                    Err(other) => panic!("{what} {op:?} at {k}: {other}"),
+                    Ok(r) => panic!(
+                        "{what} {op:?} at {k}: a sheet that touches itself was made ({:?})",
+                        check(&r.body, &tol)
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// The check of a cut sees a result that kept the wrong side (its cut
+/// face looks the wrong way) and a result that reaches outside the solid.
+#[test]
+fn the_check_of_a_cut_sees_the_wrong_side() {
+    use craft3d_kernel::boolean::{VerifyOptions, verify};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = boxed(k, [-2.0, -1.0, 0.0], [2.0, 2.0, 2.0]);
+        let sheet = rectangle([-10.0, -10.0], [10.0, 10.0], &level(1.5, k), k);
+        let front = solve(&block, &sheet, BooleanOp::Subtract, k).body;
+        let wrong = verify(
+            &block,
+            &sheet,
+            BooleanOp::Intersect,
+            &front,
+            &tol,
+            &VerifyOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            !wrong.violations.is_empty(),
+            "the front kept for an intersect passes"
+        );
+        let outside = boxed(k, [5.0, 5.0, 5.0], [6.0, 6.0, 6.0]);
+        let options = VerifyOptions {
+            volumes: false,
+            points: 64,
+        };
+        let away = verify(
+            &block,
+            &sheet,
+            BooleanOp::Subtract,
+            &outside,
+            &tol,
+            &options,
+        )
+        .unwrap();
+        assert!(away.points > 0);
+        let right = verify(&block, &sheet, BooleanOp::Subtract, &front, &tol, &options).unwrap();
+        assert!(right.is_ok(), "{:?}", right.violations);
+        // A result that fills the box of a ball it was cut from: its
+        // points in the corners of the box are outside the ball.
+        let round = ball(k, [0.0, 0.0, 1.0], 2.0);
+        let filled_box = boxed(k, [-2.0, -2.0, -1.0], [2.0, 2.0, 3.0]);
+        let seen = verify(
+            &round,
+            &sheet,
+            BooleanOp::Subtract,
+            &filled_box,
+            &tol,
+            &options,
+        )
+        .unwrap();
+        assert!(
+            seen.violations
+                .iter()
+                .any(|v| matches!(v, craft3d_kernel::boolean::Violation::Membership { .. })),
+            "{:?}",
+            seen.violations
+        );
+        assert!(!away.violations.is_empty());
     }
 }
