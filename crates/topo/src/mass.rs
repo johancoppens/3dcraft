@@ -3979,8 +3979,7 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Mutex, PoisonError};
-        let threads = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
+        let threads = craft3d_math::available_threads()
             .min(count / PARALLEL_FACES.max(1) + 1)
             .min(count);
         if threads > 1 {

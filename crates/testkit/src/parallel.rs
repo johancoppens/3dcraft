@@ -27,10 +27,7 @@ where
     F: Fn(T) -> R + Sync,
 {
     let count = items.len();
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(count)
-        .max(1);
+    let threads = craft3d_math::available_threads().min(count).max(1);
     let queue: Mutex<VecDeque<(usize, T)>> = Mutex::new(items.into_iter().enumerate().collect());
     let done: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::with_capacity(count));
     let failed = AtomicBool::new(false);
