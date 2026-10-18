@@ -92,6 +92,14 @@ pub enum FormatError {
     },
     /// The file is not a ZIP archive this crate can read.
     Zip(ZipError),
+    /// The file is not a ZIP archive but a file of another format, told
+    /// by how it starts (a STEP or STL file opened as a document).
+    Foreign {
+        /// What it is, e.g. "a STEP file (ISO 10303-21)".
+        kind: &'static str,
+        /// What to do with it instead.
+        hint: &'static str,
+    },
     /// The archive has no `manifest.json`.
     MissingManifest,
     /// `manifest.json` is not JSON. The message has the line and column.
@@ -138,6 +146,9 @@ impl fmt::Display for FormatError {
                  of uncompressed entries; if it was repacked by hand, store the entries without \
                  compression (`zip -0`)"
             ),
+            FormatError::Foreign { kind, hint } => {
+                write!(f, "this is not a .3dcraft file but {kind}; {hint}")
+            }
             FormatError::MissingManifest => write!(
                 f,
                 "this is not a .3dcraft file: the archive has no `{MANIFEST_NAME}` entry"
@@ -206,6 +217,7 @@ impl std::error::Error for FormatError {
             FormatError::Zip(error) => Some(error),
             FormatError::InvalidDocument(error) | FormatError::CannotSave(error) => Some(error),
             FormatError::TooLarge { .. }
+            | FormatError::Foreign { .. }
             | FormatError::MissingManifest
             | FormatError::Json(_)
             | FormatError::NotAnObject
@@ -274,12 +286,35 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
         return Err(too_large("the file", bytes.len(), MAX_FILE_BYTES));
     }
-    let entries = craft3d_zipstore::read_stored(bytes).map_err(FormatError::Zip)?;
+    let entries = craft3d_zipstore::read_stored(bytes)
+        .map_err(|error| foreign(bytes).unwrap_or(FormatError::Zip(error)))?;
     let manifest = entries
         .iter()
         .find(|entry| entry.name == MANIFEST_NAME)
         .ok_or(FormatError::MissingManifest)?;
     from_manifest_json_noted(manifest.data)
+}
+
+/// What a file that is not a ZIP archive is instead, by how it starts.
+fn foreign(bytes: &[u8]) -> Option<FormatError> {
+    let start = bytes.get(..bytes.len().min(512))?;
+    let text = String::from_utf8_lossy(start);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    if text.starts_with("ISO-10303-21") {
+        return Some(FormatError::Foreign {
+            kind: "a STEP file (ISO 10303-21)",
+            hint: "reading STEP into a document is not built yet (milestone M10); \
+                   3DCraft writes STEP with `file.export`",
+        });
+    }
+    if text.starts_with("solid") && text.contains("facet") {
+        return Some(FormatError::Foreign {
+            kind: "an STL mesh",
+            hint: "reading meshes into a document is not built yet; \
+                   3DCraft writes STL with `file.export`",
+        });
+    }
+    None
 }
 
 /// A short description of a JSON value for an error message: hostile files

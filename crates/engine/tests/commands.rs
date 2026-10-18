@@ -847,3 +847,58 @@ fn file_open_says_when_it_brought_the_tolerance_into_range() {
         );
     }
 }
+
+/// `document.measure` with `bound` gives the integrator's own bound on the
+/// volume and the area, per body and summed; the closed form lies within
+/// it, and a bound that is not a boolean is an error.
+#[test]
+fn measure_gives_its_bound_when_asked() {
+    for s in [0.01, 1.0, 1000.0] {
+        let mut session = Session::new(Workspace::unrestricted());
+        session
+            .execute("file.new", &json!({"units": "mm"}))
+            .unwrap();
+        let mm = |x: f64| format!("{} mm", x * s);
+        session
+            .execute(
+                "feature.cylinder",
+                &json!({"radius": mm(3.0), "height": mm(5.0), "name": "Pin"}),
+            )
+            .unwrap();
+        session
+            .execute(
+                "feature.block",
+                &json!({"size": [mm(2.0), mm(3.0), mm(4.0)], "position": [mm(10.0), mm(0.0), mm(0.0)], "name": "Box"}),
+            )
+            .unwrap();
+        let plain = session.execute("document.measure", &json!({})).unwrap();
+        assert!(plain.get("volumeBound").is_none());
+        let m = session
+            .execute("document.measure", &json!({"bound": true}))
+            .unwrap();
+        assert_eq!(m["volume"], plain["volume"], "the very same volume");
+        let bodies = m["bodies"].as_array().unwrap();
+        let mut sum = 0.0;
+        for body in bodies {
+            let bound = body["volumeBound"].as_f64().unwrap();
+            assert!(bound.is_finite() && bound >= 0.0, "{body}");
+            assert!(body["areaBound"].as_f64().unwrap() >= 0.0);
+            sum += bound;
+        }
+        assert_eq!(m["volumeBound"].as_f64().unwrap(), sum);
+        let pin = &bodies[0];
+        let exact = PI * 9.0 * 5.0 * s.powi(3);
+        let off = (pin["volume"].as_f64().unwrap() - exact).abs();
+        let bound = pin["volumeBound"].as_f64().unwrap();
+        // The bound is an estimate: the closed form within it, and the
+        // bound itself small (1e-9 of the volume).
+        assert!(
+            off <= bound + 1e-15 * exact,
+            "scale {s}: off {off}, bound {bound}"
+        );
+        assert!(bound <= 1e-9 * exact, "scale {s}: bound {bound}");
+        for bad in [json!({"bound": 1}), json!({"bound": "yes"})] {
+            assert!(session.execute("document.measure", &bad).is_err(), "{bad}");
+        }
+    }
+}
