@@ -118,13 +118,18 @@ pub enum Expect {
     /// meet at θ of 10° or more (assumed, not checked: a sharper edge is
     /// reported wrong, never let through). Along a curved edge the
     /// cross-section travels at most `2π` times the setback further than
-    /// the edge. With `exact` (one straight edge between two flat faces)
-    /// the change is the cross-section's own area times the length, with
-    /// its sign.
+    /// the edge. Past each of the `ends` of the edges (two of an open one,
+    /// none of a closed one) the blend runs on until it leaves the end
+    /// face, at most the setback times `cot γ` further for an end face at
+    /// γ to the edge, of 10° or more (assumed, as for the exact change: a
+    /// more slanted end is reported wrong, never let through). With
+    /// `exact` (one straight edge between two flat faces) the change is
+    /// the cross-section's own area times the length, with its sign.
     Blend {
         size: f64,
         length: f64,
         curved: usize,
+        ends: usize,
         chamfer: bool,
         exact: Option<Exact>,
     },
@@ -447,6 +452,8 @@ struct PairEdges {
     length: f64,
     count: usize,
     curved: usize,
+    /// The ends of its edges: two of an open one, none of a closed one.
+    ends: usize,
     /// The ends of a straight one.
     line: Option<([f64; 3], [f64; 3])>,
 }
@@ -631,10 +638,14 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
             length: 0.0,
             count: 0,
             curved: 0,
+            ends: 0,
             line: None,
         });
         entry.length += l;
         entry.count += 1;
+        if !e.closed {
+            entry.ends += 2;
+        }
         if e.curve == "line" {
             entry.line = Some((e.start, e.end));
         } else {
@@ -694,6 +705,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         faces: [a, b],
                         length,
                         curved,
+                        ends,
                         ..
                     }) = pairs.get(key)
                     else {
@@ -714,6 +726,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         size: rounded(size),
                         length: *length,
                         curved: *curved,
+                        ends: *ends,
                         chamfer: kind == Kind::Chamfer,
                         exact: None,
                     };
@@ -965,6 +978,7 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
             size,
             length,
             curved,
+            ends,
             chamfer,
             exact,
         } => {
@@ -973,9 +987,9 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
                 // Where it ends, an end face cut at γ to the edge moves the
                 // end by up to the setback times cot γ: γ of 10° or more
                 // is assumed (cot 10° = 5.67).
-                let ends = 2.0 * END_TILT * x.setback * x.section;
+                let run_on = 2.0 * END_TILT * x.setback * x.section;
                 let expected = x.section * x.length;
-                let (lo, hi) = ((expected - ends).max(0.0), expected + ends);
+                let (lo, hi) = ((expected - run_on).max(0.0), expected + run_on);
                 let taken = if x.gains { change } else { -change };
                 if taken <= noise {
                     return Err(format!(
@@ -1001,9 +1015,19 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
             } else {
                 (SETBACK * size * size, SETBACK * size)
             };
-            // `curved` is a small count.
+            // Around a curved edge the cross-section travels up to 2π
+            // times the setback further than the edge; past each end of an
+            // open edge it runs on onto the end face, up to the setback
+            // times cot γ, as for the exact change above (a straight edge
+            // between curved faces ending on a 45° chamfer, the turbofan's
+            // scallop in its flange, runs on by the setback at each end:
+            // 2.8 % more than the length alone allows, worked out
+            // independently in `a_blend_runs_on_past_slanted_ends`).
+            // `curved` and `ends` are small counts.
             #[allow(clippy::cast_precision_loss)]
-            let travel = length + std::f64::consts::TAU * setback * curved as f64;
+            let travel = length
+                + std::f64::consts::TAU * setback * curved as f64
+                + END_TILT * setback * ends as f64;
             at_most("a blend", section * travel)
         }
         Expect::Offset(d) => {

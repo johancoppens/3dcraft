@@ -279,6 +279,7 @@ fn cube_blend(size: f64, chamfer: bool) -> plan::Action {
             size,
             length: 10.0,
             curved: 0,
+            ends: 2,
             chamfer,
             exact: None,
         },
@@ -343,6 +344,7 @@ fn a_blend_between_flat_faces_has_its_exact_change() {
             size: 1.0,
             length: 10.0,
             curved: 0,
+            ends: 2,
             chamfer: false,
             exact: None,
         },
@@ -451,28 +453,33 @@ fn identities_catch_wrong_volumes() {
     assert!(!two(1999.0, 1200.0, 20.0));
     assert!(!two(2000.0, 1100.0, 20.0), "instances merged");
     assert!(!two(2000.0, 1200.0, 5.0), "both in one place");
-    // Without the exact change: a fillet of radius 1 along one straight
-    // edge 10 long takes at most 11.43 · 10 = 114 (r times its setback at
-    // 10°); a chamfer of 1 at most 5; along a curved edge 2π · 11.43 more.
+    // Without the exact change: a fillet of radius 0.1 along one straight
+    // edge 10 long takes at most 0.1143 · (10 + 2 · 5.67 · 1.143) = 2.62
+    // (r times its setback at 10°, along the edge and on past both ends
+    // by the setback times cot 10°); a chamfer of 1 at most
+    // 0.5 · (10 + 2 · 5.67) = 10.7; along a closed curved edge (no ends)
+    // 2π times the setback more than its length.
     let fillet = action(
         Expect::Blend {
-            size: 1.0,
+            size: 0.1,
             length: 10.0,
             curved: 0,
+            ends: 2,
             chamfer: false,
             exact: None,
         },
         1000.0,
         600.0,
     );
-    assert!(holds(&fillet, 997.85, 598.0));
+    assert!(holds(&fillet, 999.98, 599.98));
     assert!(!holds(&fillet, 1000.0, 600.0), "nothing done");
-    assert!(!holds(&fillet, 880.0, 598.0), "more than the bound");
+    assert!(!holds(&fillet, 997.0, 598.0), "more than the bound");
     let curved = action(
         Expect::Blend {
             size: 1.0,
             length: 10.0,
             curved: 1,
+            ends: 0,
             chamfer: false,
             exact: None,
         },
@@ -480,11 +487,13 @@ fn identities_catch_wrong_volumes() {
         600.0,
     );
     assert!(holds(&curved, 880.0, 598.0));
+    assert!(!holds(&curved, 50.0, 598.0), "more than the bound");
     let chamfer = action(
         Expect::Blend {
             size: 1.0,
             length: 10.0,
             curved: 0,
+            ends: 2,
             chamfer: true,
             exact: None,
         },
@@ -492,6 +501,7 @@ fn identities_catch_wrong_volumes() {
         600.0,
     );
     assert!(holds(&chamfer, 995.0, 596.0));
+    assert!(holds(&chamfer, 990.0, 596.0), "run on past its ends");
     assert!(!holds(&chamfer, 950.0, 596.0), "more than a chamfer takes");
 }
 
@@ -553,5 +563,140 @@ fn the_ratchet_reads_back() {
         json!({"models": {"bracket": {"chamfer": [1]}}}),
     ] {
         assert!(plan::ratchet_from(&bad).is_err(), "{bad}");
+    }
+}
+
+/// The block `[-4, 0] x [0, 3] x [-3, 3]` times `s` with both edges of its
+/// side `x = 0` chamfered by `0.5 s` (end faces at 45° to y) and a
+/// scallop of radius `1.5 s` round the y axis cut out of that side: the
+/// side and the scallop meet in two straight edges along y, `2 s` long,
+/// that end on the 45° chamfers (the turbofan's flange scallop, made
+/// small).
+fn scallop(s: f64) -> Session {
+    let mm = |x: f64| format!("{} mm", x * s);
+    let mut session = Session::new(Workspace::unrestricted());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    for (id, params) in [
+        (
+            "feature.block",
+            json!({"size": [mm(4.0), mm(3.0), mm(6.0)], "position": [mm(-4.0), mm(0.0), mm(-3.0)], "name": "Box"}),
+        ),
+        (
+            "feature.chamfer",
+            json!({"distance": mm(0.5), "edges": [["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(5)"]], "name": "Ends"}),
+        ),
+        (
+            "feature.cylinder",
+            json!({"radius": mm(1.5), "height": mm(5.0), "position": [mm(0.0), mm(-1.0), mm(0.0)], "axis": [0, 1, 0], "name": "Tool"}),
+        ),
+        (
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Ends", "tool": "Tool", "name": "Scallop"}),
+        ),
+    ] {
+        session.execute(id, &params).unwrap();
+    }
+    session
+}
+
+/// A blend of straight edges between curved faces runs on past the edges'
+/// ends onto slanted end faces, so the bound of the cross-section times
+/// the length alone is too tight (the turbofan's chamfer of a flange
+/// scallop broke it by 2.8 %); the bound gives each end the setback times
+/// cot 10°, as the exact change does. The volume the chamfer takes is
+/// worked out here independently, at three scales: in the plane square
+/// to the edges the chamfer cuts the corner between the side `x = 0` and
+/// the scallop's circle with the chord from `d` along the side to `d`
+/// along the circle (arc length, as `distance` means on a curved face);
+/// that cross-section `A` runs the edge's length and, past each end, on
+/// over the 45° chamfer as far as its depth `−x` into the side. So each
+/// edge takes `A·L + 2·∫_A (−x) dA`.
+#[test]
+fn a_blend_runs_on_past_slanted_ends() {
+    for s in [0.1, 1.0, 100.0] {
+        let mut session = scallop(s);
+        let inspect = session.execute("document.inspect", &json!({})).unwrap();
+        let unit = plan::length_unit(&inspect);
+        let body = plan::bodies(&inspect)
+            .into_iter()
+            .find(|b| b.solid)
+            .expect("the scallop's body");
+        let edges = plan::edges(
+            &session
+                .execute("document.edges", &json!({"feature": body.feature}))
+                .unwrap(),
+        );
+        let key = plan::pair_key("F4:copy(0)/F1:face(5)", "F4:copy(1)/F3:face(0)");
+        let mut chamfer = plan::plan(&body, &edges, &unit, &[plan::Kind::Chamfer])
+            .into_iter()
+            .find(|a| a.entity == key)
+            .expect("a chamfer of the side's edges with the scallop");
+        let Expect::Blend {
+            size: d,
+            length,
+            curved,
+            ends,
+            exact,
+            ..
+        } = chamfer.expect
+        else {
+            panic!("not a blend: {:?}", chamfer.expect);
+        };
+        // Two straight edges, four ends: the general bound.
+        assert_eq!((curved, ends), (0, 4));
+        assert!((length - 4.0 * s).abs() < 1e-9 * s, "{length}");
+        plan::orient_all(
+            &mut call(&mut session),
+            std::slice::from_mut(&mut chamfer),
+            &[(body.feature.clone(), edges.clone())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        assert!(exact.is_none() && matches!(chamfer.expect, Expect::Blend { exact: None, .. }));
+        // The cross-section at the edge (0, ρ): the side runs on along +z,
+        // the circle into x < 0. A polygon of the corner, the chord and
+        // 4096 pieces of the arc: area and first moment exact for the
+        // polygon, the arc's chord error (d/ρ)²/4096² of no account.
+        let rho = 1.5 * s;
+        let t = d / rho;
+        let mut poly = vec![(0.0, rho), (0.0, rho + d)];
+        let n = 4096;
+        for i in (0..=n).rev() {
+            let a = t * f64::from(i) / f64::from(n);
+            poly.push((-rho * a.sin(), rho * a.cos()));
+        }
+        let (mut area, mut moment) = (0.0, 0.0);
+        for (i, &(x0, z0)) in poly.iter().enumerate() {
+            let (x1, z1) = poly[(i + 1) % poly.len()];
+            let cross = x0 * z1 - x1 * z0;
+            area += cross / 2.0;
+            moment += (x0 + x1) * cross / 6.0;
+        }
+        let (area, depth) = (area.abs(), moment.abs());
+        let along = 2.0 * s;
+        let taken = 2.0 * (area * along + 2.0 * depth);
+        // The section alone along the length: what the old bound allowed
+        // at most, d²/2 times the length, is less than what is taken.
+        assert!(
+            taken > 0.5 * d * d * length * 1.01,
+            "{taken} against {}",
+            0.5 * d * d * length
+        );
+        let outcome = plan::run_action(&mut call(&mut session), &chamfer);
+        assert_eq!(outcome.verdict, plan::Verdict::Ok, "{}", outcome.reason);
+        let (volume, _) = outcome.after.expect("measured after");
+        let change = body.volume - volume;
+        assert!(
+            (change - taken).abs() <= 1e-6 * taken,
+            "scale {s}: the chamfer took {change}, worked out {taken}"
+        );
+        // It is held: four times the distance is not let through.
+        assert!(
+            !holds(&chamfer, body.volume - 16.0 * taken, body.area),
+            "four times the distance at scale {s}"
+        );
     }
 }
