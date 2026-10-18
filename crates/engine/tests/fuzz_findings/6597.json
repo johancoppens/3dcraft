@@ -1,0 +1,6 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.001}},
+  {"command":"feature.cylinder","params":{"angle":"0 deg","axis":[0.0,10000.0,0.0],"height":20000.0,"name":"N2","position":[0.0,0.0,10000.0],"radius":5000.0}},
+  {"command":"feature.pattern","params":{"angle":"45 deg","axis":[0.0,0.0,1.0],"count":5,"name":"N4","point":[0.0,13750.0,0.0],"source":"N2"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 6","axis":[0.0,0.0,1.0],"count":6,"name":"N7","point":[1982.2330470336235,20000.0,4973.119482016888],"source":"N4"}}
+]

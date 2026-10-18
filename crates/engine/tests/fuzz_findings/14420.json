@@ -1,0 +1,8 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1E-9}},
+  {"command":"feature.cone","params":{"angle":"0 deg","axis":[0.01,0.01,0.0],"height":0.015,"name":"N1","position":[0.0125,0.01125,0.01],"radius":0.01}},
+  {"command":"feature.torus","params":{"angle":"90 deg","axis":[0.01,0.0,0.0],"major":0.0125,"minor":0.0025,"name":"N2","position":[0.0175,0.01875,0.0125]}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N5","op":"subtract","target":"N1","tool":"N2"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":0.00125,"edges":[["F3:copy(0)/F1:face(0)","F3:copy(1)/F2:face(0)"]],"name":"N7"}},
+  {"command":"feature.offsetFace","params":{"distance":0.00125,"faces":["F4:chamfer(0)","F4:copy(0)/F1:face(1)"],"name":"N8"}}
+]

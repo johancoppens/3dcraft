@@ -25,8 +25,8 @@ pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };
 pub use selfcheck::{
-    FaceCrossing, FaceRole, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, Touch, Touched,
-    body_self_intersections, body_self_intersections_near, body_touches_itself,
+    FaceCrossing, FaceRole, SELF_CHECK_WORK, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding,
+    Touch, Touched, body_self_intersections, body_self_intersections_near, body_touches_itself,
 };
 pub use weld::Welded;
 
@@ -203,6 +203,9 @@ pub enum TessError {
     },
     /// The tessellator itself went wrong (a bug); nothing was produced.
     Internal(String),
+    /// The work bound of the operation the mesh is made for
+    /// (`craft3d_geom::allowance`) was reached before the mesh was done.
+    Spent,
 }
 
 impl fmt::Display for TessError {
@@ -255,6 +258,10 @@ impl fmt::Display for TessError {
                 write!(f, "face {face} cannot be tessellated: {reason}")
             }
             TessError::Internal(what) => write!(f, "internal tessellator error: {what}"),
+            TessError::Spent => write!(
+                f,
+                "the mesh needs more work than the operation it is made for is allowed"
+            ),
         }
     }
 }

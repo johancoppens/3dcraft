@@ -261,6 +261,7 @@ fn homogeneous(ctrl: &[Vec3], weights: &[f64]) -> Vec<H> {
 }
 
 fn curve_at<const N: usize>(c: &NurbsCurve, t: f64, derivative: bool) -> (Vec3, Vec3) {
+    crate::allowance::charge(1);
     let along = Along::<N>::new(&c.knots, c.degree, c.homogeneous.len(), t, derivative);
     let d = along.local(&c.homogeneous);
     let da = if derivative {
@@ -283,6 +284,7 @@ fn surface_at<const N: usize>(
     v: f64,
     derivative: bool,
 ) -> (Vec3, Vec3, Vec3) {
+    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     let count_u = s.homogeneous.len() / count_v;
     let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, derivative);
@@ -317,6 +319,7 @@ fn surface_at<const N: usize>(
 /// The denominator of a NURBS surface at `(u, v)`: `Σ N_i(u) N_j(v) w_ij`,
 /// the weight of the homogeneous point (see [`NurbsSurface::weight_at`]).
 fn surface_weight_at<const N: usize>(s: &NurbsSurface, u: f64, v: f64) -> f64 {
+    crate::allowance::charge(1);
     let count_v = s.count_v.max(1);
     let count_u = s.homogeneous.len() / count_v;
     let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, false);
@@ -965,6 +968,7 @@ impl RationalBezierPatch {
 
     /// The point at `(s, t)` in `[0, 1]²`, by de Casteljau's algorithm.
     pub fn eval(&self, s: f64, t: f64) -> Vec3 {
+        crate::allowance::charge(1);
         let mut along_u = Vec::with_capacity(self.degree_u + 1);
         for i in 0..=self.degree_u {
             let (left, _) = split_row(self.row(i), t);
@@ -982,6 +986,7 @@ impl RationalBezierPatch {
     /// The two patches over `[0, s]` and `[s, 1]` in u (each over
     /// `[0, 1]²` of its own).
     pub fn split_u(&self, s: f64) -> (Self, Self) {
+        crate::allowance::charge(1);
         let width = self.degree_v + 1;
         let mut left = vec![ZERO; self.homogeneous.len()];
         let mut right = vec![ZERO; self.homogeneous.len()];
@@ -1006,6 +1011,7 @@ impl RationalBezierPatch {
 
     /// The two patches over `[0, t]` and `[t, 1]` in v.
     pub fn split_v(&self, t: f64) -> (Self, Self) {
+        crate::allowance::charge(1);
         let mut left = Vec::with_capacity(self.homogeneous.len());
         let mut right = Vec::with_capacity(self.homogeneous.len());
         for i in 0..=self.degree_u {
@@ -1060,16 +1066,33 @@ impl RationalBezierPatch {
         // fu has degrees (a, b) = (m − 1, n), fv has (c, d) = (m, n − 1).
         let (a, b, c, d) = (m.saturating_sub(1), n, m, n.saturating_sub(1));
         let (ka, kb) = (a + c, b + d);
+        // A cross product per pair of coefficients.
+        let pairs = ((a + 1) * (b + 1)).saturating_mul((c + 1) * (d + 1)) as u64;
+        crate::allowance::charge(
+            pairs.saturating_mul(16) / crate::allowance::ARITHMETIC_PER_UNIT + 1,
+        );
+        // The binomial weights of the product, per direction, computed once
+        // (the same products and quotients, in the same order, as per pair).
+        let weights = |p: usize, q: usize| -> Vec<f64> {
+            let mut table = Vec::with_capacity((p + 1) * (q + 1));
+            for i in 0..=p {
+                for i2 in 0..=q {
+                    table.push(binomial(p, i) * binomial(q, i2) / binomial(p + q, i + i2));
+                }
+            }
+            table
+        };
+        let (along_u, along_v) = (weights(a, c), weights(b, d));
         let mut net = vec![Vec3::ZERO; (ka + 1) * (kb + 1)];
         for i in 0..=a {
             for j in 0..=b {
                 let f = fu.get(i * (b + 1) + j).copied().unwrap_or(Vec3::ZERO);
                 for i2 in 0..=c {
+                    let wu = along_u.get(i * (c + 1) + i2).copied().unwrap_or(0.0);
                     for j2 in 0..=d {
                         let g = fv.get(i2 * (d + 1) + j2).copied().unwrap_or(Vec3::ZERO);
                         let (k, l) = (i + i2, j + j2);
-                        let weight = binomial(a, i) * binomial(c, i2) / binomial(ka, k)
-                            * (binomial(b, j) * binomial(d, j2) / binomial(kb, l));
+                        let weight = wu * along_v.get(j * (d + 1) + j2).copied().unwrap_or(0.0);
                         if let Some(slot) = net.get_mut(k * (kb + 1) + l) {
                             *slot += f.cross(g) * weight;
                         }

@@ -222,3 +222,71 @@ fn patches_stop_at_the_first_that_exceeds_the_budget() {
         .to_string();
     assert!(said.contains("over the budget of 10"), "{said}");
 }
+
+/// The work a mesh counts toward an operation's bound
+/// (`craft3d_geom::allowance`) is the same whatever the number of threads:
+/// each worker's is added to the calling thread's when it is joined. So
+/// is the verdict under a bound: a bound too small for the mesh ends it
+/// with `TessError::Spent`, on every number of threads alike.
+#[test]
+fn the_work_a_mesh_counts_and_its_bound_do_not_depend_on_the_threads() {
+    use craft3d_geom::allowance;
+    let mut freeform = 0;
+    for solid in fixtures() {
+        let p = params(1e-3, None);
+        let mut counts = Vec::new();
+        for threads in THREADS {
+            let before = allowance::spent();
+            tessellate_body_with_threads(&solid.body, &p, threads).unwrap();
+            counts.push(allowance::spent() - before);
+        }
+        assert!(
+            counts.windows(2).all(|w| w[0] == w[1]),
+            "{}: {counts:?}",
+            solid.name
+        );
+        let whole = counts[0];
+        if whole == 0 {
+            continue;
+        }
+        freeform += 1;
+        for threads in THREADS {
+            let got = allowance::within(whole / 2, || {
+                tessellate_body_with_threads(&solid.body, &p, threads)
+            });
+            // Asked after each round: what a round leaves undone of the
+            // bound is not refused, but no more than that.
+            match got {
+                Err(TessError::Spent) | Ok(_) => {}
+                Err(other) => panic!("{}: {other}", solid.name),
+            }
+            let zero =
+                allowance::within(0, || tessellate_body_with_threads(&solid.body, &p, threads));
+            assert!(
+                matches!(zero, Err(TessError::Spent)),
+                "{}: {zero:?}",
+                solid.name
+            );
+        }
+    }
+    assert!(freeform > 0, "no fixture evaluated a freeform surface");
+}
+
+/// The self-check is held to its own bound (`SELF_CHECK_WORK`): a body
+/// whose check needs more ends with `TessError::Spent`, which a caller
+/// treats as a body it could not look at. Here a smaller bound around it
+/// stands for a body that is dear to mesh.
+#[test]
+fn a_self_check_past_its_bound_ends_with_spent() {
+    use craft3d_geom::allowance;
+    use craft3d_tess::{SELF_CHECK_WORK, SelfCheckParams, body_self_intersections};
+    let solid = trimmed::pipe_elbow(&Frame::WORLD, 3.0, 1.0, 1.9).unwrap();
+    let params = SelfCheckParams::new(1e-6);
+    let before = allowance::spent();
+    let check = body_self_intersections(&solid.body, &params).unwrap();
+    assert!(check.crossings.is_empty());
+    let whole = allowance::spent() - before;
+    assert!(whole > 0 && whole < SELF_CHECK_WORK / 10, "{whole}");
+    let got = allowance::within(0, || body_self_intersections(&solid.body, &params));
+    assert!(matches!(got, Err(TessError::Spent)), "{got:?}");
+}

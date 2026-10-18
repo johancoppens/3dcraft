@@ -534,3 +534,69 @@ fn a_crease_too_shallow_to_be_a_crease_is_built_within_the_tolerance_or_refused_
     let (m, e) = (mass(&made.body), mass(&exact.body));
     within(m.volume, e.volume, e.area * tol.linear, "the ridged prism");
 }
+
+/// A face operation is held to a work bound (`FACE_OP_WORK`): under a
+/// bound too small for it, it is refused by that name, not as too far and
+/// not with a body, also when the bound ends its search for the largest
+/// size that fits half way; without one the same offset is made, well
+/// within the operation's own bound.
+#[test]
+fn a_freeform_offset_that_needs_more_work_than_its_bound_is_refused_by_name() {
+    use craft3d_geom::allowance;
+    use craft3d_kernel::offset_face::FACE_OP_WORK;
+    let k = 1.0;
+    let tol = tolerance(k);
+    let spent =
+        |got: Result<craft3d_kernel::offset_face::Offset, KernelError>, what: &str| match got {
+            Err(error @ KernelError::FaceOp { .. }) => {
+                assert!(
+                    error.to_string().contains("needs more work"),
+                    "{what}: {error}"
+                );
+            }
+            Err(other) => panic!("{what}: {other}"),
+            Ok(_) => panic!("{what}: built"),
+        };
+    let (_, twin, _) = twins(&ball_zone(k), k).remove(0);
+    let face = freeform(&twin)[0];
+    let offsets = [FaceOffset {
+        face,
+        distance: 0.4 * k,
+    }];
+    let before = allowance::spent();
+    offset_faces(&twin, &offsets, &tol).unwrap();
+    let whole = allowance::spent() - before;
+    // Well within the bound (1.9 million when this was written).
+    assert!(whole > 0 && whole < FACE_OP_WORK / 4, "{whole}");
+    spent(
+        allowance::within(0, || offset_faces(&twin, &offsets, &tol)),
+        "no work at all",
+    );
+    // The elliptic rod of the fold above: its search halves twenty times
+    // on proofs of regularity; half its work ends it half way.
+    let rod = boolean_common::rod(k, [0.0, 0.0, 0.0], 1.0, 3.0);
+    let corner = boxed(k, [0.0, 0.0, -1.0], [3.0, 3.0, 4.0]);
+    let quarter = solve(&rod, &corner, Intersect, k).body;
+    let (twin, _) = rationalized(&quarter, 0.0, true);
+    let elliptic = stretched(&twin, 2.0);
+    let offsets = [FaceOffset {
+        face: freeform(&elliptic)[0],
+        distance: -0.6,
+    }];
+    let before = allowance::spent();
+    let far = offset_faces(&elliptic, &offsets, &tol);
+    let whole = allowance::spent() - before;
+    assert!(
+        matches!(far, Err(KernelError::FaceOpTooFar { .. })),
+        "{far:?}"
+    );
+    spent(
+        allowance::within(whole / 2, || offset_faces(&elliptic, &offsets, &tol)),
+        "half the work of the search",
+    );
+    // And a shell the same way.
+    match allowance::within(0, || shell(&elliptic, 0.1 * k, &[], &tol)) {
+        Err(error) => assert!(error.to_string().contains("needs more work"), "{error}"),
+        Ok(_) => panic!("a shell under a bound of nothing was built"),
+    }
+}

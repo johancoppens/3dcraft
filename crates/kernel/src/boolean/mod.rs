@@ -1162,6 +1162,15 @@ pub fn contains_points(
         section::prepare(body, Operand::A, &mut vertices, tolerance, false).map_err(unsupported)?;
     let mut found = Vec::with_capacity(points.len());
     for &point in points {
+        // A point can be dear to classify among freeform faces: the
+        // operation's work bound, when one is in force, is asked per point.
+        if craft3d_geom::allowance::pass() {
+            return Err(KernelError::Unsupported {
+                operation: "point classification",
+                reason: "the work bound of the operation it is part of was reached",
+                faces: Vec::new(),
+            });
+        }
         found.push(match classify::inside(&solid, point, tolerance) {
             Ok(inside) => Some(inside),
             Err(Stop::Unsupported { .. }) => None,
