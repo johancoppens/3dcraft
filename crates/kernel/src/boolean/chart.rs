@@ -39,6 +39,9 @@ use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
 
+/// The work bound of the operation this is part of was reached
+/// ([`craft3d_geom::allowance`]).
+pub(super) const SPENT: Reason = "the work bound of the operation it is part of was reached";
 pub(super) const TOO_CLOSE: Reason =
     "a point too close to a face boundary to tell inside from outside (at the edge of tolerance)";
 const NO_POLE: Reason =
@@ -837,6 +840,12 @@ impl Chart {
             steps += 1;
             if steps > MAX_TURN_STEPS {
                 return Err(TOO_CLOSE);
+            }
+            // Each step may search the surface's pieces near it: the work
+            // bound of an operation, when one is in force, is asked per
+            // step.
+            if craft3d_geom::allowance::pass() {
+                return Err(SPENT);
             }
             let far = p0.0.hypot(p0.1);
             if far > pace * (t1 - t0) || (local.is_some() && far > pace_over(t0, t1)) {

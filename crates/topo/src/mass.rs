@@ -3962,7 +3962,11 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
         if threads > 1 {
             let next = AtomicUsize::new(0);
             let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
+            // Each helper's count of work (`craft3d_geom::allowance`) is
+            // added to this thread's when it is joined, so the count is the
+            // same however the faces were shared out.
             let run = || {
+                let before = craft3d_geom::allowance::spent();
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(slot) = slots.get(index) else {
@@ -3971,6 +3975,7 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
                     let result = work(index);
                     *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
                 }
+                craft3d_geom::allowance::spent().saturating_sub(before)
             };
             std::thread::scope(|scope| {
                 // This thread works too; helpers that cannot be started
@@ -3978,12 +3983,14 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
                 let helpers: Vec<_> = (1..threads)
                     .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
                     .collect();
-                run();
+                let _ = run();
                 for helper in helpers {
                     // A panic on a helper leaves its face's slot empty;
                     // that face is done again below, where the panic
                     // surfaces on this thread as it would have.
-                    let _ = helper.join();
+                    if let Ok(spent) = helper.join() {
+                        craft3d_geom::allowance::charge(spent);
+                    }
                 }
             });
             return slots

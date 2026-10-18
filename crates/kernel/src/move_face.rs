@@ -121,5 +121,6 @@ pub fn move_faces(
         }
         tweak::resurface_rigid(body, &surfaces, &map, OPERATION, tolerance)
     };
-    fitting(attempt, largest, OPERATION, tolerance).map(same_numbers)
+    let bound = crate::offset_face::face_op_work(body, faces);
+    fitting(attempt, largest, OPERATION, tolerance, bound).map(same_numbers)
 }

@@ -75,7 +75,9 @@ impl Projector {
                 return Ok(projector);
             }
         }
-        let projector = Arc::new(Projector::new(surface)?);
+        // Made uncounted: whether it is on the shelf depends on what ran
+        // before (`crate::allowance::uncounted`).
+        let projector = Arc::new(crate::allowance::uncounted(|| Projector::new(surface))?);
         let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
         if !shelf.iter().any(|(k, _)| *k == key) {
             shelf.push((key, Arc::clone(&projector)));
@@ -753,7 +755,7 @@ impl Pieces {
                 return pieces;
             }
         }
-        let pieces = Pieces::new(surface).map(Arc::new);
+        let pieces = crate::allowance::uncounted(|| Pieces::new(surface)).map(Arc::new);
         let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
         if !shelf.iter().any(|(k, _)| *k == key) {
             shelf.push((key, pieces.clone()));

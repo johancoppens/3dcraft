@@ -598,3 +598,158 @@ pub(crate) fn build(
         instances: maps,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
+    use super::*;
+    use craft3d_doc::Units;
+    use craft3d_kernel::boolean::{
+        BooleanOp, EdgeSource, FaceSource, Operand, VertexSource, boolean,
+    };
+    use craft3d_math::Frame;
+
+    /// The join as it was before 2026-10-17: each instance joined to the
+    /// union of all before it. The reference for [`joined`].
+    fn one_after_another(doc: &Document, placed: &[Body]) -> (Body, Contributors, Kept, Kept) {
+        let tolerance =
+            craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular).unwrap();
+        let (first, others) = placed.split_first().unwrap();
+        let mut body = first.clone();
+        let mut sources: Contributors = (0..body.faces.len()).map(|f| vec![(0, f)]).collect();
+        let mut edges: Kept = (0..body.edges.len()).map(|e| Some((0, e))).collect();
+        let mut vertices: Kept = (0..body.vertices.len()).map(|v| Some((0, v))).collect();
+        let through = |so_far: &Kept, operand: Operand, index: u32, instance: u64| match operand {
+            Operand::A => so_far.get(index as usize).copied().flatten(),
+            Operand::B => Some((instance, index as usize)),
+        };
+        for (index, other) in others.iter().enumerate() {
+            let instance = index as u64 + 1;
+            let result = boolean(&body, other, BooleanOp::Union, &tolerance).unwrap();
+            let mut next = Contributors::new();
+            for (face, source) in result.faces.iter().enumerate() {
+                let mut pairs = Vec::new();
+                let mut add = |from: &FaceSource| {
+                    let earlier: Vec<(u64, usize)> = match from.operand {
+                        Operand::A => sources[from.face.0 as usize].clone(),
+                        Operand::B => vec![(instance, from.face.0 as usize)],
+                    };
+                    for pair in earlier {
+                        if !pairs.contains(&pair) {
+                            pairs.push(pair);
+                        }
+                    }
+                };
+                add(source);
+                for from in result.merged.get(face).into_iter().flatten() {
+                    add(from);
+                }
+                next.push(pairs);
+            }
+            edges = result
+                .edges
+                .iter()
+                .map(|s| match s {
+                    EdgeSource::Kept { operand, edge } => {
+                        through(&edges, *operand, edge.0, instance)
+                    }
+                    EdgeSource::Intersection { .. } => None,
+                })
+                .collect();
+            vertices = result
+                .vertices
+                .iter()
+                .map(|s| match s {
+                    VertexSource::Kept { operand, vertex } => {
+                        through(&vertices, *operand, vertex.0, instance)
+                    }
+                    VertexSource::New { .. } => None,
+                })
+                .collect();
+            body = result.body;
+            sources = next;
+        }
+        (body, sources, edges, vertices)
+    }
+
+    fn placed(source: &Body, steps: usize, step: [f64; 3]) -> Vec<Body> {
+        (0..steps)
+            .map(|i| {
+                let k = i as f64;
+                source
+                    .transformed(&craft3d_math::Transform::translation(
+                        craft3d_math::Vec3::new(step[0] * k, step[1] * k, step[2] * k),
+                    ))
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    /// The faces' sources as a set: the same faces whatever their order,
+    /// each with the instances and source faces it has a piece of, the one
+    /// it is named after first.
+    fn sorted(sources: &Contributors) -> Vec<Vec<(u64, usize)>> {
+        let mut all = sources.clone();
+        all.sort();
+        all
+    }
+
+    /// Joined in pairs, the body is the one joined one instance at a time:
+    /// as many faces, edges and vertices, the same volume and area, and
+    /// every face with the same sources, the one it is named after first
+    /// (three bars end to end: one top, named after the first bar).
+    #[test]
+    fn pairs_join_to_the_body_one_after_another_does() {
+        let doc = Document::new(Units::default());
+        let bar = craft3d_kernel::primitives::block(&Frame::WORLD, 4.0, 1.0, 1.0).unwrap();
+        let ball = craft3d_kernel::primitives::sphere(&Frame::WORLD, 1.0).unwrap();
+        let cube = craft3d_kernel::primitives::block(&Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+        let cases = [
+            (
+                "bars end to end, overlapping",
+                placed(&bar, 5, [3.0, 0.0, 0.0]),
+            ),
+            (
+                "bars end to end, touching",
+                placed(&bar, 3, [4.0, 0.0, 0.0]),
+            ),
+            ("overlapping balls", placed(&ball, 7, [1.2, 0.3, 0.0])),
+            ("touching cubes", placed(&cube, 6, [1.0, 0.0, 0.0])),
+            ("a grid's row of cubes", placed(&cube, 4, [0.5, 0.5, 0.0])),
+        ];
+        for (what, instances) in cases {
+            let (body, sources, edges, vertices) = joined(&doc, &instances).unwrap();
+            let (want, want_sources, want_edges, want_vertices) =
+                one_after_another(&doc, &instances);
+            assert_eq!(body.faces.len(), want.faces.len(), "{what}: faces");
+            assert_eq!(body.edges.len(), want.edges.len(), "{what}: edges");
+            assert_eq!(body.vertices.len(), want.vertices.len(), "{what}: vertices");
+            assert_eq!(
+                sorted(&sources),
+                sorted(&want_sources),
+                "{what}: face sources"
+            );
+            let kept = |k: &Kept| {
+                let mut all: Vec<_> = k.iter().flatten().copied().collect();
+                all.sort();
+                all
+            };
+            assert_eq!(kept(&edges), kept(&want_edges), "{what}: edges kept");
+            assert_eq!(
+                kept(&vertices),
+                kept(&want_vertices),
+                "{what}: vertices kept"
+            );
+            let (m, w) = (
+                craft3d_topo::mass_properties(&body).unwrap(),
+                craft3d_topo::mass_properties(&want).unwrap(),
+            );
+            assert!(
+                (m.volume - w.volume).abs() <= 1e-9 * w.volume,
+                "{what}: volume"
+            );
+            assert!((m.area - w.area).abs() <= 1e-9 * w.area, "{what}: area");
+        }
+    }
+}

@@ -324,6 +324,19 @@ const PASSED_WORDS: usize = 1 << 22;
 pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
     let mut key = craft3d_math::bits_of(tolerance);
     body.push_bits(&mut key);
+    // Checked uncounted, remembered or not; a check charges what the body
+    // holds once per body and operation, about what checking an entity
+    // takes, the same either way (`craft3d_geom::allowance::uncounted`).
+    let entities = (body.faces.len() + body.edges.len() + body.vertices.len()) as u64;
+    let thing = key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, w| {
+        (h ^ w).wrapping_mul(0x0100_0000_01b3)
+    });
+    craft3d_geom::allowance::once(thing, entities.saturating_mul(16));
+    craft3d_geom::allowance::uncounted(|| remembered_check(body, tolerance, key))
+}
+
+/// [`check_remembered`]: remembered, or checked and remembered.
+fn remembered_check(body: &Body, tolerance: &Tolerance, key: Vec<u64>) -> Vec<Defect> {
     {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(at) = passed.iter().position(|k| *k == key) {

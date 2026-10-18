@@ -600,3 +600,48 @@ fn a_freeform_offset_that_needs_more_work_than_its_bound_is_refused_by_name() {
         Ok(_) => panic!("a shell under a bound of nothing was built"),
     }
 }
+
+/// What an operation counts toward its bound is a function of its inputs:
+/// the same offset and shell on bodies built afresh each time count the
+/// same, the first time (the trees, projections and intersections of
+/// their surfaces not made yet), the second (all of them on the shelves)
+/// and after another boolean ran in between. A cache that is hit charges
+/// what its miss cost.
+#[test]
+fn the_same_operation_counts_the_same_whatever_ran_before() {
+    use craft3d_geom::allowance;
+    let k = 1.0;
+    let tol = tolerance(k);
+    let counts = |what: &str| {
+        let (_, twin, _) = twins(&ball_zone(k), k).remove(0);
+        let face = freeform(&twin)[0];
+        let offsets = [FaceOffset {
+            face,
+            distance: 0.4 * k,
+        }];
+        let (made, offset) = allowance::measured(|| offset_faces(&twin, &offsets, &tol));
+        made.unwrap_or_else(|e| panic!("{what}: {e}"));
+        // The boolean of the shell is under no bound of its own: counted
+        // under one here, so that it remembers for itself too.
+        let (made, shelled) = allowance::within(u64::MAX, || {
+            allowance::measured(|| shell(&twin, 0.1 * k, &[], &tol))
+        });
+        assert!(made.is_ok(), "{what}");
+        (offset, shelled)
+    };
+    let first = counts("first");
+    let second = counts("second");
+    // Another boolean between: a ring and a block, freeform twins.
+    let ring = ring_slice(k);
+    let (_, other, _) = twins(&ring, k).remove(0);
+    let _ = solve(
+        &other,
+        &boxed(k, [0.0, 0.0, -0.2], [2.0, 2.0, 0.2]),
+        Intersect,
+        k,
+    );
+    let third = counts("after another boolean");
+    eprintln!("offset and shell: {first:?} {second:?} {third:?}");
+    assert_eq!(first, second);
+    assert_eq!(first, third);
+}

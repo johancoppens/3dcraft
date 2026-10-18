@@ -732,7 +732,14 @@ impl Surface {
     /// grid of 289 evaluations; with the grid kept that is a look-up, and
     /// every projection the same, bit for bit.
     fn project_grid(&self, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Arc<ProjectGrid> {
-        let made = || Arc::new(self.sample_grid((u0, u1), (v0, v1)));
+        // Made uncounted (`crate::allowance::uncounted`): kept with the
+        // surface and cloned with it, so whether it is made here depends
+        // on what was done with the surface before.
+        let made = || {
+            Arc::new(crate::allowance::uncounted(|| {
+                self.sample_grid((u0, u1), (v0, v1))
+            }))
+        };
         match self {
             Surface::Nurbs(s) => Arc::clone(s.project_grid.0.get_or_init(made)),
             Surface::Bezier(b) => Arc::clone(b.project_grid.0.get_or_init(made)),

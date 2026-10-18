@@ -87,16 +87,23 @@ const OFFSET_SHARE: f64 = 0.25;
 
 pub(crate) const FOLDS: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to)";
 pub(crate) const NO_NORMAL: &str = "the freeform face has a pole or a border or corner drawn into a point, where its normal and so its offset are not defined";
-/// The work one face operation may do ([`craft3d_geom::allowance`]
-/// units, about half a microsecond each in release): its tries at the
-/// whole distance and its halving for the largest that fits, together.
-/// The dearest face operations of the tests (an offset and a shell of a
-/// lofted saddle) take up to nine million; a try on faces of a few hundred
-/// spans (a blend of a sphere or a torus) one to ten million, and the
-/// search of such faces ran for minutes before it ended (fuzzing,
-/// 2026-10-17). The bound is about twice the dearest that is built, and
-/// ends such a search within seconds, in a refusal ([`SPENT`]).
-pub const FACE_OP_WORK: u64 = 16_000_000;
+/// The work every face operation may do ([`craft3d_geom::allowance`]
+/// units, about half a microsecond each in release), its tries at the
+/// whole distance and its halving for the largest that fits together;
+/// [`face_op_work`] adds what the faces moved call for. The dearest face
+/// operations of the action matrix's ratchet (an end cap of the rotor
+/// moved 0.055 mm: four points classified against its blades, 110 million
+/// units, 30 to 55 s) take half of it; a search on blend faces of a few
+/// hundred spans ran for minutes before it ended (fuzzing, 2026-10-17)
+/// and now ends at the bound.
+pub const FACE_OP_WORK: u64 = 200_000_000;
+
+/// What [`face_op_work`] adds per span of a freeform face that moves (its
+/// offset is proven regular and fitted span by span) and per edge on a
+/// face that moves (each is made again on its faces, and the body is
+/// classified beside it).
+pub const FACE_OP_WORK_PER_SPAN: u64 = 20_000;
+pub const FACE_OP_WORK_PER_EDGE: u64 = 1_000_000;
 
 pub(crate) const SPENT: &str = "it needs more work than one operation is allowed: each try of it is dear here (offsets of freeform faces of many spans, and the checks of the body they make), and the search for a size that fits did not end within the bound";
 pub(crate) const TURN_TOO_FAR: &str = "the faces are tangent here only to within an angle that, at this distance, parts their offsets by more than a quarter of the tolerance: they do not meet as tangent faces within it";
@@ -662,12 +669,14 @@ pub(crate) fn offset_for(
             craft3d_geom::offset::regular(&face.surface, along).is_ok()
         })
     };
+    let moved: Vec<FaceId> = offsets.iter().map(|o| o.face).collect();
     fitting_with(
         |fraction| at(body, offsets, fraction, operation, tolerance),
         Some(&unfolded),
         largest,
         operation,
         tolerance,
+        face_op_work(body, &moved),
     )
 }
 
@@ -681,8 +690,9 @@ pub(crate) fn fitting(
     largest: f64,
     operation: &'static str,
     tolerance: &Tolerance,
+    bound: u64,
 ) -> Result<Body, KernelError> {
-    fitting_with(attempt, None, largest, operation, tolerance)
+    fitting_with(attempt, None, largest, operation, tolerance, bound)
 }
 
 /// [`fitting`], where a freeform face's offset that folds over is told by
@@ -705,10 +715,55 @@ pub(crate) fn fitting_with(
     largest: f64,
     operation: &'static str,
     tolerance: &Tolerance,
+    bound: u64,
 ) -> Result<Body, KernelError> {
-    craft3d_geom::allowance::within(FACE_OP_WORK, || {
+    craft3d_geom::allowance::within(bound, || {
         bounded_fitting(attempt, unfolded, largest, operation, tolerance)
     })
+}
+
+/// The spans of a freeform surface (its Bézier pieces); none for another.
+fn spans(surface: &Surface) -> u64 {
+    let distinct = |knots: &[f64], (lo, hi): (f64, f64)| -> u64 {
+        let mut count = 0_u64;
+        let mut last = f64::NAN;
+        for &k in knots {
+            if k > lo && k < hi && k != last {
+                count += 1;
+                last = k;
+            }
+        }
+        count + 1
+    };
+    match surface {
+        Surface::Bezier(_) => 1,
+        Surface::Nurbs(s) => {
+            let (u, v) = s.domain();
+            distinct(s.knots_u(), u).saturating_mul(distinct(s.knots_v(), v))
+        }
+        _ => 0,
+    }
+}
+
+/// The work bound of a face operation on `body` that moves `moved`:
+/// [`FACE_OP_WORK`], and more the more freeform spans and edges the faces
+/// that move have, so that a shell of many faces is not held to what one
+/// offset may do.
+pub(crate) fn face_op_work(body: &Body, moved: &[FaceId]) -> u64 {
+    let moved_spans: u64 = moved
+        .iter()
+        .filter_map(|f| body.face(*f))
+        .map(|f| spans(&f.surface))
+        .sum();
+    let moved_edges: usize = moved
+        .iter()
+        .filter_map(|f| body.face(*f))
+        .flat_map(|f| f.loops.iter().filter_map(|l| body.loop_(*l)))
+        .map(|l| l.coedges.len())
+        .sum();
+    FACE_OP_WORK
+        .saturating_add(moved_spans.saturating_mul(FACE_OP_WORK_PER_SPAN))
+        .saturating_add((moved_edges as u64).saturating_mul(FACE_OP_WORK_PER_EDGE))
 }
 
 fn bounded_fitting(

@@ -3,7 +3,11 @@
 //! (`fuzz_findings/<seed>.json`, as `craft3d-cli run --script` takes it).
 //! A hang is as bad as a crash: each has to end within a bound on its
 //! work, either with the body built and valid or with the feature refused
-//! by a reason that says why.
+//! by a reason that says why. Each replay runs on a thread of its own and
+//! fails, rather than hangs, when it does not end in [`HARD_LIMIT`]; each
+//! step may add at most [`STEP_WORK`] units to the work count
+//! (`craft3d_geom::allowance`); and the outcome of every feature, built or
+//! refused, is pinned.
 //!
 //! - Offset face and shell of blend faces of spheres, tori and revolved
 //!   bodies (1279, 5599, 6195, 7802, 9601, 14064; shells 267, 5457,
@@ -26,29 +30,60 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use craft3d_engine::{Session, Workspace};
-use craft3d_testkit::cost::WorkClock;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// The most work (CPU time of the replaying thread, test profile) one
-/// replay may take. Before the fixes the slowest ran for more than ten
-/// minutes in release; now the slowest ends in about ten seconds there.
-const MOST_WORK: Duration = Duration::from_secs(150);
+/// How long a replay may run before it fails: far past the slowest (two
+/// and a half minutes in release, a few in the test profile), so a test
+/// fails here only when a replay no longer ends.
+const HARD_LIMIT: Duration = Duration::from_secs(1200);
 
-fn replay(seed: &str) {
+/// The most work one step may count: a feature's own bounds (a face
+/// operation's, at most 400 million here: a shell of 188 edges; a
+/// self-check's) and what is not bounded besides, several times over.
+const STEP_WORK: u64 = 2_000_000_000;
+
+/// Replays `seed` and holds its features to `pins`: each feature's name
+/// with `true` where it is built, `false` where it is refused.
+fn replay(seed: &'static str, pins: &'static [(&'static str, bool)]) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let runner = std::thread::Builder::new()
+        .name(format!("replay {seed}"))
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(|| run(seed));
+            let _ = sender.send(outcome);
+        })
+        .unwrap();
+    let outcome = match receiver.recv_timeout(HARD_LIMIT) {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => panic!("{seed}: the replay did not end within {HARD_LIMIT:?}"),
+    };
+    let _ = runner.join();
+    let want: Vec<(String, bool)> = pins.iter().map(|(n, ok)| ((*n).to_string(), *ok)).collect();
+    assert_eq!(outcome, want, "{seed}: the outcomes of its features");
+}
+
+/// The steps of `seed`, each within [`STEP_WORK`]; what was built checked
+/// deep; the features' outcomes in history order.
+fn run(seed: &str) -> Vec<(String, bool)> {
+    use craft3d_geom::allowance;
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fuzz_findings")
         .join(format!("{seed}.json"));
     let steps: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let mut session = Session::new(Workspace::unrestricted());
-    let clock = WorkClock::start();
-    for step in &steps {
+    for (n, step) in steps.iter().enumerate() {
         let (id, params) = (step["command"].as_str().unwrap(), &step["params"]);
-        // A command may refuse its params outright; it may not panic or
-        // run on (the session turns a panic into an error, and the clock
-        // below catches the rest).
-        if let Ok(result) = session.execute(id, params)
+        // A command may refuse its params outright; it may not panic (the
+        // session turns a panic into an error) or run on.
+        let (result, work) = allowance::measured(|| session.execute(id, params));
+        assert!(
+            work <= STEP_WORK,
+            "{seed} step {n} {id}: {work} units of work"
+        );
+        if let Ok(result) = result
             && result["status"] == "failed"
         {
             let reason = result["error"].as_str().unwrap_or_default();
@@ -58,9 +93,6 @@ fn replay(seed: &str) {
             );
         }
     }
-    let work = clock.elapsed();
-    eprintln!("{seed}: {work:?} of work");
-    assert!(work < MOST_WORK, "{seed}: {work:?} of work");
     // What was built is valid; what was not built says why.
     let check = session
         .execute("document.check", &json!({"deep": true}))
@@ -81,53 +113,110 @@ fn replay(seed: &str) {
         }
     }
     assert_eq!(check["marginal"], 0, "{seed}: {check}");
+    let document = session.execute("document.inspect", &json!({})).unwrap();
+    document["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap().to_string(), f["status"] == "ok"))
+        .collect()
 }
 
 macro_rules! findings {
-    ($($(#[$attr:meta])* $name:ident: $seed:literal,)*) => {
+    ($($(#[$attr:meta])* $name:ident: $seed:literal => [$($feature:literal: $ok:expr),* $(,)?],)*) => {
         $(
             #[test]
             $(#[$attr])*
             fn $name() {
-                replay($seed);
+                replay($seed, &[$(($feature, $ok)),*]);
             }
         )*
     };
 }
 
-// One of each kind in the gate; the rest, each tens of seconds of work in
-// the test profile, with `cargo test --release -p craft3d-engine --test
-// fuzz_findings -- --include-ignored` (a minute or two in all).
+const OK: bool = true;
+const REFUSED: bool = false;
+
+// Six in the gate, one of each kind that ends in seconds in release; the
+// rest, a minute or two each in release (a face operation of blend faces
+// ends at its bound), with `cargo test --release -p craft3d-engine --test
+// fuzz_findings -- --include-ignored`.
 findings! {
-    offset_of_a_fillet_on_a_revolved_ring: "9601",
-    shell_of_a_filleted_cylinder_and_sphere: "9534",
-    chamfer_of_a_sphere_torus_union: "14214",
-    chamfer_of_a_filleted_torus_on_a_cylinder: "4499",
-    pattern_of_ten_thousand_overlapping_spheres: "9611",
-    chain_chamfers_on_a_pattern_of_tori: "12372",
-    union_after_a_chamfer_of_a_cylinder_and_sphere: "1573",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    offset_of_a_chamfer_between_two_revolved_rings: "1279",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    offset_of_a_fillet_on_a_pattern_of_spheres: "14064",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    offset_of_a_chamfer_on_a_pattern_of_tori: "5599",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    offset_after_a_fillet_on_a_pattern_of_spheres: "7802",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    offset_and_shell_of_chamfers_on_a_revolved_ring: "6195",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    shell_of_a_filleted_revolved_ring: "12333",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    shell_of_a_filleted_block_and_cone: "267",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    shell_and_its_edit_on_a_filleted_pattern_of_spheres: "5457",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    shell_of_a_chamfered_torus_and_block: "6578",
-    chamfer_of_a_cone_torus_union: "14420",
-    chamfer_of_tori_mirrored: "3016",
-    #[ignore = "tens of seconds in the test profile: run in release"]
-    circular_pattern_of_a_pattern_at_scale_1e3: "6597",
+    chamfer_of_a_sphere_torus_union: "14214" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N5": OK, "S6": OK, "Revolve1": OK,
+        "N6": OK, "N7": REFUSED,
+    ],
+    chamfer_of_tori_mirrored: "3016" => [
+        "N0": OK, "S1": REFUSED, "Extrude1": REFUSED, "N1": REFUSED, "N2": OK, "N3": OK,
+        "N4": OK, "S5": REFUSED, "N5": REFUSED, "N6": OK, "N7": REFUSED, "N8": OK, "N9": OK,
+        "N10": OK, "N11": OK,
+    ],
+    shell_and_its_edit_on_a_filleted_pattern_of_spheres: "5457" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": REFUSED, "N5": OK,
+    ],
+    pattern_of_ten_thousand_overlapping_spheres: "9611" => ["N0": OK, "N1": OK],
+    chain_chamfers_on_a_pattern_of_tori: "12372" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": OK,
+    ],
+    union_after_a_chamfer_of_a_cylinder_and_sphere: "1573" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "S5": OK, "Extrude1": OK, "N5": OK,
+        "N6": OK, "N8": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_fillet_on_a_revolved_ring: "9601" => [
+        "S0": OK, "N0": OK, "N1": OK, "N3": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_cylinder_and_sphere: "9534" => [
+        "N0": OK, "N1": OK, "N3": OK, "N4": OK, "N5": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    chamfer_of_a_filleted_torus_on_a_cylinder: "4499" => [
+        "N0": OK, "N1": OK, "N2": OK, "N4": OK, "N5": OK, "N6": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_between_two_revolved_rings: "1279" => [
+        "S0": OK, "N0": OK, "S3": OK, "Revolve1": OK, "N3": OK, "N5": OK, "N8": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_fillet_on_a_pattern_of_spheres: "14064" => [
+        "N0": OK, "N1": OK, "N2": OK, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_on_a_pattern_of_tori: "5599" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_after_a_fillet_on_a_pattern_of_spheres: "7802" => [
+        "N0": OK, "N2": OK, "N4": OK, "N5": OK, "N6": OK, "N7": OK, "N9": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_and_shell_of_chamfers_on_a_revolved_ring: "6195" => [
+        "S0": OK, "N0": OK, "N1": REFUSED, "N2": OK, "N3": REFUSED, "N5": OK,
+        "N6": REFUSED, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_revolved_ring: "12333" => [
+        "S0": OK, "N0": OK, "N1": OK, "N2": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_filleted_block_and_cone: "267" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "S5": OK, "Extrude1": OK, "N5": OK,
+        "N8": OK, "N9": OK, "N10": OK, "N11": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_chamfered_torus_and_block: "6578" => [
+        "N0": OK, "S1": OK, "Extrude1": OK, "N1": OK, "N2": REFUSED, "N3": OK, "N4": OK,
+        "S5": OK, "Extrude2": OK, "N5": OK, "N6": REFUSED, "N7": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    chamfer_of_a_cone_torus_union: "14420" => [
+        "N1": OK, "N2": OK, "N5": OK, "N7": REFUSED, "N8": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    circular_pattern_of_a_pattern_at_scale_1e3: "6597" => [
+        "N2": OK, "N4": OK, "N7": OK,
+    ],
 }
 
 /// The instances of a pattern that overlap are joined in pairs, then pairs

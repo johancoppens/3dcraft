@@ -278,6 +278,11 @@ static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 const SHELF_SIZE: usize = 64;
 const SHELF_POINTS: usize = 1 << 18;
 
+/// What a numeric intersection charges per point it holds, once per
+/// operation (`crate::allowance::once`): about what marching to a point
+/// evaluates.
+const MEET_UNITS: u64 = 64;
+
 /// How many points an intersection holds, roughly: what it costs to keep.
 fn weight(result: &Result<SurfaceMeeting, GeomError>) -> usize {
     match result {
@@ -310,6 +315,22 @@ fn remembered(
     tol: &Tolerance,
 ) -> Result<SurfaceMeeting, GeomError> {
     let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
+    // Made uncounted, found or not; the question charges what the answer
+    // holds, the same either way (`crate::allowance::uncounted`).
+    let thing = crate::allowance::number_of(&key);
+    let answer = crate::allowance::uncounted(|| shelved(a, b, within, tol, key));
+    crate::allowance::once(thing, (weight(&answer) as u64).saturating_mul(MEET_UNITS));
+    answer
+}
+
+/// [`remembered`]: from the shelf, or made and put there.
+fn shelved(
+    a: &Surface,
+    b: &Surface,
+    within: &Bbox3,
+    tol: &Tolerance,
+    key: String,
+) -> Result<SurfaceMeeting, GeomError> {
     {
         let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
