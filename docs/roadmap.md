@@ -69,7 +69,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
-- [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17); left: the lower bounds near a cusp, the self-check's meshes made again for every feature, mass integration ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
+- [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 **Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
@@ -298,6 +298,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Only the part of a chart that can be inside the box is walked; a march step goes as far as it was asked; a face on a torus has a box of its own size (the bike's inset core and mirrored stays, the turbofan's 0.1 mm rounds on discs; [`design/geometry.md`](design/geometry.md), [`design/booleans.md`](design/booleans.md)) (2026-10-15)
 - Many lumps and faces with many edges cost work in proportion: the faces a face, a ray or a point can meet and the edges near the other face come from trees of boxes in the order of testing all, bit for bit the same (2500 lumps 5.4 s to 0.9 s; the welding table's finding W2; [`design/booleans.md`](design/booleans.md) › *Many lumps*) (2026-10-17)
 - Freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit: projection samples kept with the surface, chart speeds and lower bounds remembered, fine pieces sharing their corners, many bodies measured as one row of faces, checks not repeated by regeneration ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*) (2026-10-17)
+- Measures and the self-check's meshes faster, bit for bit: lines of a spline evaluated once per line, walks keeping their blend factors, projections and face meshes remembered, every operation's check remembered ([`design/booleans.md`](design/booleans.md) › *Second round*) (2026-10-18)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

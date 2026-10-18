@@ -404,8 +404,7 @@ impl Sums {
 /// `∫x² dV = ∮ x³/3 n_x dA` and `∫xy dV = ∮ x²y/2 n_x dA`, and so on
 /// around the axes; their sizes are the same products of the absolute
 /// coordinates and the length of the normal.
-fn integrand(surface: &Surface, u: f64, v: f64, about: Vec3, second: bool) -> Total {
-    let (at, su, sv) = surface.derivatives(u, v);
+fn integrand((at, su, sv): (Vec3, Vec3, Vec3), about: Vec3, second: bool) -> Total {
     let s = at - about;
     let n = su.cross(sv);
     let (seconds, second_sizes) = if second {
@@ -658,13 +657,11 @@ impl<'a> Follow<'a> {
     fn project(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
         if self.touch > 0.0
             && let Some(start) = self.last
-            && let Ok((u, v)) = self.surface.project_from(p, start)
+            && let Ok(((u, v), there)) = self.surface.project_from_with_derivatives(p, start)
+            && self.is_foot(p, there)
         {
-            let there = self.surface.derivatives(u, v);
-            if self.is_foot(p, there) {
-                self.last = Some((u, v));
-                return Ok(((u, v), there));
-            }
+            self.last = Some((u, v));
+            return Ok(((u, v), there));
         }
         let (u, v) = self.surface.project(p)?;
         let there = self.surface.derivatives(u, v);
@@ -780,6 +777,30 @@ fn inner(
         _ => fixed,
     };
     let mut sum = Total::default();
+    // On a NURBS surface every node of the line has the same v (along u)
+    // or the same u (along v): along u its rows of control points are
+    // collapsed along v once for all nodes (where they are no more than
+    // one panel's nodes would collapse on their own, so that it never
+    // costs more), along v the blend factors along u are worked out once;
+    // each node's derivatives the very ones `Surface::derivatives` gives.
+    #[allow(clippy::large_enum_variant)] // One on the stack per inner integral.
+    enum Line<'a> {
+        AtV(craft3d_geom::AtV<'a>),
+        AtU(craft3d_geom::AtU<'a>),
+        Plain,
+    }
+    let line = match (surface, along) {
+        (Surface::Nurbs(s), Along::U) if s.counts().0 <= NODES * (s.degrees().0 + 1) => {
+            Line::AtV(s.at_v(fixed))
+        }
+        (Surface::Nurbs(s), Along::V) => Line::AtU(s.at_u(fixed)),
+        _ => Line::Plain,
+    };
+    let derivatives = |u: f64, v: f64| match &line {
+        Line::AtV(line) => line.derivatives(u),
+        Line::AtU(line) => line.derivatives(v),
+        Line::Plain => surface.derivatives(u, v),
+    };
     // `map`: the panel is one of the Möbius parameter `s` of a stretch,
     // `(start, width, β)` (see [`moebius`]); without it, of `t` itself.
     let mut panel = |start: f64, end: f64, sign: f64, map: Option<(f64, f64, f64)>| {
@@ -793,7 +814,10 @@ fn inner(
                 Along::U => (t, fixed),
                 Along::V => (fixed, t),
             };
-            sum.add(integrand(surface, u, v, work.about, work.second), w * sign);
+            sum.add(
+                integrand(derivatives(u, v), work.about, work.second),
+                w * sign,
+            );
         }
     };
     let knots: &[f64] = match (surface, along) {

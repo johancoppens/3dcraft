@@ -53,7 +53,7 @@ use crate::profile::{Profile, Shape};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check};
+use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeSet;
 
 const OPERATION: &str = "extrude up to a face";
@@ -538,7 +538,7 @@ fn freeform_tool(sweep: &Sweep, surface: &Surface) -> Result<Tool, KernelError> 
     ));
     body.add_shell(faces);
 
-    if !check(&body, &sweep.tolerance).is_empty() {
+    if !craft3d_topo::check_remembered(&body, &sweep.tolerance).is_empty() {
         return Err(unsupported(
             "a freeform face whose surface, with a wall under each border, does not close into a solid",
         ));
@@ -816,7 +816,7 @@ pub fn extrude_up_to(
     }
 
     let made = assemble(&cut, &prism.origins, &kept, &parts, near)?;
-    let mut defects = check(&made.body, tolerance);
+    let mut defects = craft3d_topo::check_remembered(&made.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(KernelError::InvalidBody {

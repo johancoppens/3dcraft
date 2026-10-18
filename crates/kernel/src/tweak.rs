@@ -1294,7 +1294,7 @@ fn resurface_with(
         }
     }
 
-    let defects = craft3d_topo::check(&made, tolerance);
+    let defects = craft3d_topo::check_remembered(&made, tolerance);
     if !defects.is_empty() {
         return Err(TweakError::Kernel(KernelError::InvalidBody {
             operation,

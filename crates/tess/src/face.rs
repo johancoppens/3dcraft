@@ -59,7 +59,7 @@ type Uv = [f64; 2];
 pub(crate) type Chord = (u32, u32);
 
 /// What a face adds to the mesh: its own vertices and triangles over them.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct FaceMesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
