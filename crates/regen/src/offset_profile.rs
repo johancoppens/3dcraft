@@ -18,6 +18,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::offset_profile::{
     Corners, OffsetOrigin, OffsetOutline, OffsetSource, loop_curves, offset_profiles,
 };
+use std::sync::Arc;
 
 /// What an offset feature made.
 #[derive(Clone, Debug, PartialEq)]
@@ -166,7 +167,7 @@ pub(crate) fn rename(
         // The link the kernel's numbers are in: under a piece, if any.
         let mut link = name;
         while link.role == NameRole::Piece {
-            let Some(next) = link.of.as_deref_mut() else {
+            let Some(next) = link.of.as_mut().map(Arc::make_mut) else {
                 break;
             };
             link = next;

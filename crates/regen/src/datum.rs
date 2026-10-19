@@ -473,7 +473,7 @@ fn vertex(
         Some(vertex) => Ok(vertex.point),
         None => Err(format!(
             "{role}: `{made_by}` no longer has a vertex {name}; its vertices are: {}",
-            listed(&names.vertices)
+            listed(&names.vertex_names().collect::<Vec<_>>())
         )),
     }
 }
@@ -817,14 +817,16 @@ pub struct References {
 /// kind.
 pub fn references(body: &Body, names: &crate::Names, limit: usize) -> References {
     let mut out = References::default();
-    for (name, vertex) in names.vertices.iter().zip(&body.vertices) {
+    for (index, vertex) in body.vertices.iter().enumerate() {
+        let Some(name) = names.vertex_name(index) else {
+            continue;
+        };
         if out.vertices.len() >= limit {
             out.truncated = true;
             break;
         }
-        out.vertex_aliases
-            .push(names.vertex_aliases_of(out.vertices.len()).to_vec());
-        out.vertices.push((name.clone(), vertex.point));
+        out.vertex_aliases.push(names.vertex_aliases_of(index));
+        out.vertices.push((name, vertex.point));
     }
     for (index, (edge, faces)) in body
         .edges
@@ -855,8 +857,8 @@ pub fn references(body: &Body, names: &crate::Names, limit: usize) -> References
             _ => (None, None),
         };
         out.edges.push(EdgeReference {
-            name: names.edges.get(index).cloned(),
-            aliases: names.edge_aliases_of(index).to_vec(),
+            name: names.edge_name(index),
+            aliases: names.edge_aliases_of(index),
             between: [a, b],
             kind: edge.curve.kind(),
             line,

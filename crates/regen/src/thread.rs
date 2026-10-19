@@ -44,6 +44,7 @@ use craft3d_kernel::thread::{
 };
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, FaceId};
+use std::sync::Arc;
 
 const NOUN: &str = "a thread";
 
@@ -516,8 +517,8 @@ pub(crate) fn build(
     // The groove's faces, by what they are of the profile: the curves of
     // `IsoThread::groove` are 1 the root, 2 the flank towards the start,
     // 3 the line outside, 4 the flank away from it.
-    let groove_names = Names {
-        faces: swept
+    let groove_names = Names::listed(
+        swept
             .faces
             .iter()
             .map(|origin| {
@@ -535,8 +536,9 @@ pub(crate) fn build(
                 )
             })
             .collect(),
-        ..Names::default()
-    };
+        Vec::new(),
+        Vec::new(),
+    );
     let made = combine(
         source.body,
         &swept.body,
@@ -547,7 +549,7 @@ pub(crate) fn build(
     .map_err(|error| format!("the groove of the thread cannot be cut: {error}"))?;
     let operand = |instance: u64| {
         if instance == 0 {
-            Some(source.names)
+            Some(source.names.as_ref())
         } else {
             Some(&groove_names)
         }
@@ -576,7 +578,7 @@ pub(crate) fn build(
             && name.sources == [1]
             && let Some(own) = name.of.take()
         {
-            *name = *own;
+            *name = Arc::try_unwrap(own).unwrap_or_else(|shared| (*shared).clone());
         }
     }
     names.name_entities(

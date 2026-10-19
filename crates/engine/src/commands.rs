@@ -2079,7 +2079,13 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         )?),
     };
     let open = session.document_mut()?;
-    let regen = open.regen();
+    // A deep check holds every boolean to its operands, also those the
+    // cache let go of.
+    let regen = open.regen_needing(if deep {
+        craft3d_regen::Need::All
+    } else {
+        craft3d_regen::Need::Bodies
+    });
     let doc = open.history.current();
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or_else(|| {

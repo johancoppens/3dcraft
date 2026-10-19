@@ -5,7 +5,7 @@
 
 use crate::extrude::swept;
 use crate::selfcheck::{Crossing, crossing};
-use crate::{FeatureResult, Names, entity};
+use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, FeatureId, Loft, MAX_LOFT_SECTIONS, NameRole, PersistentName};
 use craft3d_kernel::extrude::{Origin, Role};
 use craft3d_kernel::loft::{Options, Section, loft};
@@ -147,12 +147,6 @@ pub(crate) fn build(
         }
     }
 
-    let by_faces = entity::by_faces(id, &made.body, &faces, tolerance.linear);
-    let names = Names {
-        faces,
-        edges: by_faces.edges,
-        vertices: by_faces.vertices,
-        ..Names::default()
-    };
+    let names = Names::by_faces(id, &made.body, faces, tolerance.linear);
     Ok((made.body, names))
 }

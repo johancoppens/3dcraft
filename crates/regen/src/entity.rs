@@ -26,10 +26,12 @@
 //! (`F7:copy(0)/F1:vertex(3)`), when it is the only one of the result
 //! that came from it.
 
-use craft3d_doc::{FeatureId, MAX_NAME_FACES, PersistentName};
+use crate::Names;
+use craft3d_doc::{FeatureId, MAX_NAME_FACES, NameRole, PersistentName};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// How many edges away from an edge or a vertex the faces are looked at
 /// that tell it from the others on the same faces.
@@ -40,14 +42,242 @@ pub(crate) const MAX_NEAR_HOPS: usize = 4;
 /// faces.
 const MAX_NEAR_VERTICES: usize = 4096;
 
-/// The names of the edges and of the vertices of one body, by index.
+/// The names of the edges and of the vertices of one body, in the form
+/// that takes the least room; a name is made when it is asked for
+/// ([`Names::edge_name`]). What is stored is a function of the body and
+/// of the names of its faces ([`ByFaces`]), or of the names of the body
+/// the entities are copies of (`Copied`), so equal stored forms give
+/// equal names. A body of a thousand faces has thousands of edges and
+/// vertices, and a name by faces written out is hundreds of bytes: stored
+/// as such, the names of a body cost six times the body (2026-10-19).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Entities {
+    /// Each name as it is: a primitive's or a sweep's, by where the
+    /// entity came from.
+    Listed {
+        edges: Vec<PersistentName>,
+        vertices: Vec<PersistentName>,
+    },
+    /// By the faces they lie on, with the names each kept from the body
+    /// it came from.
+    ByFaces(Box<ByFaces>),
+    /// The copies, in `feature`, of the entities of other bodies: for
+    /// each instance in order, every entity of its source in the
+    /// source's order. Each instance is listed with what its source's
+    /// entities are called, shared with that source's result.
+    Copied {
+        feature: FeatureId,
+        instances: Vec<(u64, Arc<Names>)>,
+    },
+    /// Let go of with the body, to stay within the cache's budget
+    /// ([`crate::RegenCache::set_body_budget`]): only how many there were.
+    /// Derived again with the body when a feature built from it needs
+    /// them.
+    Dropped { edges: usize, vertices: usize },
+}
+
+impl Default for Entities {
+    fn default() -> Self {
+        Entities::Listed {
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        }
+    }
+}
+
+/// Edges and vertices named by their faces: each as the ranks, among the
+/// distinct names of the faces, of the faces it lies on and of those
+/// near it, and its number when only that tells it apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ByFaces {
-    pub edges: Vec<PersistentName>,
-    pub vertices: Vec<PersistentName>,
+    feature: FeatureId,
+    /// Per rank (the distinct names of the faces, in their order) a face
+    /// that has that name.
+    ranked: Vec<u32>,
+    /// The ranks every item lists, one item after the other: the faces
+    /// it is on, then those near it.
+    ranks: Vec<u32>,
+    edges: Vec<Item>,
+    vertices: Vec<Item>,
+    pub(crate) edge_aliases: Aliases,
+    pub(crate) vertex_aliases: Aliases,
+}
+
+/// One edge or vertex as it is named: where its ranks are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Item {
+    /// Where its ranks start in `ByFaces::ranks`.
+    start: u32,
+    /// How many of them are the faces it is on, and how many those near
+    /// it.
+    on: u16,
+    near: u16,
+    number: Option<u64>,
+}
+
+/// Per entity, the names it kept from the bodies it came from: all of
+/// them in entity order, and where each entity's end.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct Aliases {
+    names: Vec<PersistentName>,
+    /// Per entity, where its names end in `names`.
+    ends: Vec<u32>,
+}
+
+impl Aliases {
+    /// The lists of `map` for entities `0..count`.
+    pub(crate) fn from_map(map: &BTreeMap<usize, Vec<PersistentName>>, count: usize) -> Self {
+        let mut out = Aliases {
+            names: Vec::new(),
+            ends: Vec::with_capacity(count),
+        };
+        for index in 0..count {
+            if let Some(list) = map.get(&index) {
+                out.names.extend(list.iter().cloned());
+            }
+            out.ends
+                .push(u32::try_from(out.names.len()).unwrap_or(u32::MAX));
+        }
+        out
+    }
+
+    /// The names entity `index` kept.
+    pub(crate) fn of(&self, index: usize) -> &[PersistentName] {
+        let end = self.ends.get(index).copied().unwrap_or(0) as usize;
+        let start = match index.checked_sub(1) {
+            Some(before) => self.ends.get(before).copied().unwrap_or(0) as usize,
+            None => 0,
+        };
+        self.names.get(start..end).unwrap_or(&[])
+    }
+}
+
+impl ByFaces {
+    pub(crate) fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    pub(crate) fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// The names of the faces at ranks `from..from + count` of `ranks`,
+    /// among `faces` (the names of this body's faces): ascending, as a
+    /// name lists them.
+    fn listed(&self, faces: &[PersistentName], from: u32, count: u16) -> Vec<PersistentName> {
+        let from = from as usize;
+        self.ranks
+            .get(from..from.saturating_add(usize::from(count)))
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|rank| self.ranked.get(*rank as usize))
+            .filter_map(|face| faces.get(*face as usize))
+            .cloned()
+            .collect()
+    }
+
+    fn name(
+        &self,
+        faces: &[PersistentName],
+        item: &Item,
+        make: fn(
+            FeatureId,
+            Vec<PersistentName>,
+            Vec<PersistentName>,
+            Option<u64>,
+        ) -> PersistentName,
+    ) -> PersistentName {
+        let on = self.listed(faces, item.start, item.on);
+        let near = self.listed(
+            faces,
+            item.start.saturating_add(u32::from(item.on)),
+            item.near,
+        );
+        make(self.feature, on, near, item.number)
+    }
+
+    /// The name of edge `edge` of a body whose faces are called `faces`.
+    pub(crate) fn edge(&self, faces: &[PersistentName], edge: usize) -> Option<PersistentName> {
+        self.edges
+            .get(edge)
+            .map(|item| self.name(faces, item, PersistentName::between))
+    }
+
+    /// The name of vertex `vertex`.
+    pub(crate) fn vertex(&self, faces: &[PersistentName], vertex: usize) -> Option<PersistentName> {
+        self.vertices
+            .get(vertex)
+            .map(|item| self.name(faces, item, PersistentName::corner))
+    }
+
+    /// Whether `item` is called `name` (a name of role `role` of this
+    /// feature, listing the faces the item does), without making the
+    /// name: the lists are compared face by face.
+    fn is(
+        &self,
+        faces: &[PersistentName],
+        item: &Item,
+        name: &PersistentName,
+        role: NameRole,
+    ) -> bool {
+        if name.feature != self.feature || name.role != role || name.of.is_some() {
+            return false;
+        }
+        if name.sources.as_slice() != item.number.as_slice() {
+            return false;
+        }
+        let lists = |from: u32, count: u16| {
+            let from = from as usize;
+            self.ranks
+                .get(from..from.saturating_add(usize::from(count)))
+                .unwrap_or(&[])
+                .iter()
+                .map(|rank| {
+                    self.ranked
+                        .get(*rank as usize)
+                        .and_then(|face| faces.get(*face as usize))
+                })
+        };
+        let same = |listed: &[PersistentName], from: u32, count: u16| {
+            listed.len() == usize::from(count)
+                && listed
+                    .iter()
+                    .zip(lists(from, count))
+                    .all(|(a, b)| Some(a) == b)
+        };
+        same(name.faces(), item.start, item.on)
+            && same(
+                name.near(),
+                item.start.saturating_add(u32::from(item.on)),
+                item.near,
+            )
+    }
+
+    /// The edge called `name`, by its own name.
+    pub(crate) fn edge_named(
+        &self,
+        faces: &[PersistentName],
+        name: &PersistentName,
+    ) -> Option<usize> {
+        self.edges
+            .iter()
+            .position(|item| self.is(faces, item, name, NameRole::Between))
+    }
+
+    /// The vertex called `name`, by its own name.
+    pub(crate) fn vertex_named(
+        &self,
+        faces: &[PersistentName],
+        name: &PersistentName,
+    ) -> Option<usize> {
+        self.vertices
+            .iter()
+            .position(|item| self.is(faces, item, name, NameRole::Corner))
+    }
 }
 
 /// One edge or vertex as it is told from the others.
-struct Item {
+struct Candidate {
     /// The faces it lies on, as ranks of their names, ascending; an edge
     /// has one per side, so a seam has its face twice.
     on: Vec<u32>,
@@ -68,7 +298,7 @@ struct Around {
 impl Around {
     /// The faces at the vertices within `hops` edges of `item`'s own,
     /// without the faces it lies on: ascending, without repeats.
-    fn near(&self, item: &Item, hops: usize) -> Vec<u32> {
+    fn near(&self, item: &Candidate, hops: usize) -> Vec<u32> {
         let mut seen: BTreeSet<u32> = item.ends.iter().copied().collect();
         let mut rim: Vec<u32> = item.ends.clone();
         for _ in 0..hops {
@@ -138,28 +368,33 @@ pub(crate) fn sort_in_space(items: &mut [(usize, Vec3)], tolerance: f64, axis: u
 }
 
 /// Names `items`, each by what it lies on, with as much more as it takes
-/// to tell it from the others. `reach` is how many edges away the faces
+/// to tell it from the others: each as the ranks it lists, put into
+/// `ranks`, and its number. `reach` is how many edges away the faces
 /// near an item are looked at first: none for an edge (the faces at its
 /// own ends), one for a vertex.
 fn named(
-    items: &[Item],
+    items: &[Candidate],
     around: &Around,
     reach: usize,
-    ranked: &[&PersistentName],
     tolerance: f64,
-    make: impl Fn(Vec<PersistentName>, Vec<PersistentName>, Option<u64>) -> PersistentName,
-) -> Vec<PersistentName> {
-    let faces = |ranks: &[u32]| -> Vec<PersistentName> {
-        ranks
-            .iter()
-            .filter_map(|rank| ranked.get(*rank as usize))
-            .map(|name| (*name).clone())
-            .collect()
-    };
-    let mut names: Vec<Option<PersistentName>> = vec![None; items.len()];
-    let mut put = |index: usize, name: PersistentName| {
+    ranks: &mut Vec<u32>,
+) -> Vec<Item> {
+    let mut names: Vec<Option<Item>> = vec![None; items.len()];
+    let mut put = |index: usize, on: &[u32], near: &[u32], number: Option<u64>| {
+        let start = u32::try_from(ranks.len()).unwrap_or(u32::MAX);
+        let (Ok(on_count), Ok(near_count)) = (u16::try_from(on.len()), u16::try_from(near.len()))
+        else {
+            return;
+        };
+        ranks.extend_from_slice(on);
+        ranks.extend_from_slice(near);
         if let Some(slot) = names.get_mut(index) {
-            *slot = Some(name);
+            *slot = Some(Item {
+                start,
+                on: on_count,
+                near: near_count,
+                number,
+            });
         }
     };
     let mut same_faces: BTreeMap<&[u32], Vec<usize>> = BTreeMap::new();
@@ -168,7 +403,7 @@ fn named(
     }
     for (on, group) in same_faces {
         if let [only] = group.as_slice() {
-            put(*only, make(faces(on), Vec::new(), None));
+            put(*only, on, &[], None);
             continue;
         }
         // All of the group say what is near them equally far away: the
@@ -195,12 +430,12 @@ fn named(
         }
         for (near, mut tied) in best {
             if let [(only, _)] = tied.as_slice() {
-                put(*only, make(faces(on), faces(&near), None));
+                put(*only, on, &near, None);
                 continue;
             }
             sort_in_space(&mut tied, tolerance, 0);
             for (number, (index, _)) in tied.iter().enumerate() {
-                put(*index, make(faces(on), faces(&near), Some(number as u64)));
+                put(*index, on, &near, Some(number as u64));
             }
         }
     }
@@ -209,7 +444,12 @@ fn named(
         .into_iter()
         .enumerate()
         .map(|(index, name)| {
-            name.unwrap_or_else(|| make(Vec::new(), Vec::new(), Some(index as u64)))
+            name.unwrap_or(Item {
+                start: 0,
+                on: 0,
+                near: 0,
+                number: Some(index as u64),
+            })
         })
         .collect()
 }
@@ -218,7 +458,8 @@ fn named(
 /// `faces[i]` is the name of face `i`. No two edges get one name, and no
 /// two vertices; the names do not depend on the order of the entities in
 /// the body, except where two of them lie in one place within
-/// `tolerance`.
+/// `tolerance`. What is kept from other bodies (`ByFaces::edge_aliases`)
+/// is left empty.
 pub(crate) fn by_faces(
     feature: FeatureId,
     body: &Body,
@@ -228,12 +469,22 @@ pub(crate) fn by_faces(
     // Names are compared often and are long: each face gets the rank of
     // its name among the names, and equal names (the pieces of one face)
     // get one rank.
-    let ranked: Vec<&PersistentName> = faces.iter().collect::<BTreeSet<_>>().into_iter().collect();
-    let rank_of: BTreeMap<&PersistentName, u32> = ranked
+    let distinct: Vec<&PersistentName> =
+        faces.iter().collect::<BTreeSet<_>>().into_iter().collect();
+    let rank_of: BTreeMap<&PersistentName, u32> = distinct
         .iter()
         .enumerate()
         .filter_map(|(rank, name)| Some((*name, u32::try_from(rank).ok()?)))
         .collect();
+    let mut ranked: Vec<u32> = vec![u32::MAX; distinct.len()];
+    for (index, name) in faces.iter().enumerate() {
+        if let Some(&rank) = rank_of.get(name)
+            && let Some(slot) = ranked.get_mut(rank as usize)
+            && *slot == u32::MAX
+        {
+            *slot = u32::try_from(index).unwrap_or(u32::MAX);
+        }
+    }
 
     let mut sides: Vec<Vec<u32>> = vec![Vec::new(); body.edges.len()];
     let mut around = Around {
@@ -276,7 +527,7 @@ pub(crate) fn by_faces(
         }
     }
 
-    let edges: Vec<Item> = body
+    let edges: Vec<Candidate> = body
         .edges
         .iter()
         .zip(sides)
@@ -288,59 +539,52 @@ pub(crate) fn by_faces(
             if edge.end != edge.start {
                 ends.push(edge.end.0);
             }
-            Item {
+            Candidate {
                 on,
                 ends,
                 at: edge.curve.eval(middle),
             }
         })
         .collect();
-    let vertices: Vec<Item> = body
+    let vertices: Vec<Candidate> = body
         .vertices
         .iter()
         .zip(&around.faces)
         .enumerate()
-        .map(|(index, (vertex, on))| Item {
+        .map(|(index, (vertex, on))| Candidate {
             on: on.iter().copied().take(MAX_NAME_FACES).collect(),
             ends: u32::try_from(index).into_iter().collect(),
             at: vertex.point,
         })
         .collect();
+    let mut ranks = Vec::new();
+    let edges = named(&edges, &around, 0, tolerance, &mut ranks);
+    let vertices = named(&vertices, &around, 1, tolerance, &mut ranks);
+    ranks.shrink_to_fit();
     ByFaces {
-        edges: named(
-            &edges,
-            &around,
-            0,
-            &ranked,
-            tolerance,
-            |on, near, number| PersistentName::between(feature, on, near, number),
-        ),
-        vertices: named(
-            &vertices,
-            &around,
-            1,
-            &ranked,
-            tolerance,
-            |on, near, number| PersistentName::corner(feature, on, near, number),
-        ),
+        feature,
+        ranked,
+        ranks,
+        edges,
+        vertices,
+        edge_aliases: Aliases::default(),
+        vertex_aliases: Aliases::default(),
     }
 }
 
 /// The names entities keep from the bodies they came from. `kept[i]` is,
 /// for entity `i` of the result, the instance and the entity of that
 /// instance's source it is (or is a piece of), when the kernel says so;
-/// `names_there(instance, entity)` gives every name it answers to in that
-/// source. An entity is given those of them that a primitive or a sweep
-/// gave, as copies, when it is the only one that came from there: the two
-/// pieces of an edge that was cut through are neither of them "the" edge.
-pub(crate) fn kept_names<'a, I>(
+/// `names_there(instance, entity)` gives the names it answers to in that
+/// source that a primitive or a sweep gave ([`Names::edge_kept_names`]).
+/// An entity is given those, as copies, when it is the only one that
+/// came from there: the two pieces of an edge that was cut through are
+/// neither of them "the" edge.
+pub(crate) fn kept_names(
     feature: FeatureId,
     kept: &[Option<(u64, usize)>],
-    names_there: impl Fn(u64, usize) -> I,
-) -> BTreeMap<usize, Vec<PersistentName>>
-where
-    I: Iterator<Item = &'a PersistentName>,
-{
+    names_there: impl Fn(u64, usize) -> Vec<PersistentName>,
+) -> BTreeMap<usize, Vec<PersistentName>> {
     let mut times: BTreeMap<(u64, usize), usize> = BTreeMap::new();
     for from in kept.iter().flatten() {
         let count = times.entry(*from).or_default();
@@ -355,12 +599,9 @@ where
             continue;
         }
         let (instance, entity) = *from;
-        // The name it was first given, by a primitive or a sweep, is the
-        // one worth keeping: what it was called by its faces in a body
-        // in between says nothing its faces here do not say.
         let copies: Vec<PersistentName> = names_there(instance, entity)
-            .filter(|name| !name.root().role.is_by_faces())
-            .map(|name| PersistentName::copy(feature, instance, name.clone()))
+            .into_iter()
+            .map(|name| PersistentName::copy(feature, instance, name))
             .filter(|copy| copy.check().is_ok())
             .collect();
         if !copies.is_empty() {
@@ -560,6 +801,21 @@ mod tests {
         faces: Vec<usize>,
     }
 
+    /// Every name of `by`, written out.
+    fn written(
+        by: &ByFaces,
+        faces: &[PersistentName],
+    ) -> (Vec<PersistentName>, Vec<PersistentName>) {
+        (
+            (0..by.edge_count())
+                .map(|edge| by.edge(faces, edge).unwrap())
+                .collect(),
+            (0..by.vertex_count())
+                .map(|vertex| by.vertex(faces, vertex).unwrap())
+                .collect(),
+        )
+    }
+
     fn gcd(a: usize, b: usize) -> usize {
         if b == 0 { a } else { gcd(b, a % b) }
     }
@@ -569,34 +825,44 @@ mod tests {
         for halved in [false, true] {
             let (body, names) = cut(halved);
             let feature = names.faces[0].feature;
-            let made = by_faces(feature, &body, &names.faces, 1e-6);
+            let made = written(&by_faces(feature, &body, &names.faces, 1e-6), &names.faces);
             // What regeneration stored is what this gives.
             assert_eq!(
-                (&made.edges, &made.vertices),
-                (&names.edges, &names.vertices)
+                made,
+                (
+                    names.edge_names().collect::<Vec<_>>(),
+                    names.vertex_names().collect::<Vec<_>>()
+                )
             );
             let unique =
                 |list: &[PersistentName]| list.iter().collect::<BTreeSet<_>>().len() == list.len();
-            assert!(unique(&made.edges) && unique(&made.vertices));
-            for name in made.edges.iter().chain(&made.vertices) {
+            assert!(unique(&made.0) && unique(&made.1));
+            for name in made.0.iter().chain(&made.1) {
                 assert_eq!(name.check(), Ok(()), "{name}");
                 assert_eq!(&name.to_string().parse::<PersistentName>().unwrap(), name);
             }
             let numbered = made
-                .edges
+                .0
                 .iter()
-                .chain(&made.vertices)
+                .chain(&made.1)
                 .filter(|name| !name.sources.is_empty())
                 .count();
             assert_eq!(numbered, if halved { 6 } else { 0 });
+            // Each is found by its name, without the name being made.
+            for (edge, name) in made.0.iter().enumerate() {
+                assert_eq!(names.edge_named(name), Some(edge), "{name}");
+            }
+            for (vertex, name) in made.1.iter().enumerate() {
+                assert_eq!(names.vertex_named(name), Some(vertex), "{name}");
+            }
             let (other, other_faces, shuffle) = shuffled(&body, &names.faces);
             assert_eq!(shuffle.faces.len(), other_faces.len());
-            let again = by_faces(feature, &other, &other_faces, 1e-6);
+            let again = written(&by_faces(feature, &other, &other_faces, 1e-6), &other_faces);
             for (old, new) in shuffle.edges.iter().enumerate() {
-                assert_eq!(again.edges[*new], made.edges[old], "edge {old}");
+                assert_eq!(again.0[*new], made.0[old], "edge {old}");
             }
             for (old, new) in shuffle.vertices.iter().enumerate() {
-                assert_eq!(again.vertices[*new], made.vertices[old], "vertex {old}");
+                assert_eq!(again.1[*new], made.1[old], "vertex {old}");
             }
         }
     }
@@ -611,15 +877,15 @@ mod tests {
         body.faces[1].loops.push(craft3d_topo::LoopId(u32::MAX));
         body.vertices[0].point = Vec3::new(f64::NAN, f64::INFINITY, 0.0);
         let made = by_faces(feature, &body, &names.faces[..3], f64::NAN);
-        assert_eq!(made.edges.len(), body.edges.len());
-        assert_eq!(made.vertices.len(), body.vertices.len());
+        assert_eq!(made.edge_count(), body.edges.len());
+        assert_eq!(made.vertex_count(), body.vertices.len());
         let empty = by_faces(
             feature,
             &Body::new(craft3d_topo::BodyKind::Solid),
             &[],
             1e-6,
         );
-        assert!(empty.edges.is_empty() && empty.vertices.is_empty());
+        assert!(empty.edge_count() == 0 && empty.vertex_count() == 0);
     }
 
     #[test]
@@ -630,11 +896,18 @@ mod tests {
             name("F2:corner[F2:copy(0)/F1:face(0)]"),
             name("F2:copy(0)/F1:vertex(3)"),
         ];
-        let there = |instance: u64, entity: usize| -> std::slice::Iter<'_, PersistentName> {
+        let there = |instance: u64, entity: usize| -> Vec<PersistentName> {
+            let kept = |names: &[PersistentName]| {
+                names
+                    .iter()
+                    .filter(|name| !name.root().role.is_by_faces())
+                    .cloned()
+                    .collect()
+            };
             match (instance, entity) {
-                (0, 3) => first.iter(),
-                (1, 0) => between.iter(),
-                _ => [].iter(),
+                (0, 3) => kept(&first),
+                (1, 0) => kept(&between),
+                _ => Vec::new(),
             }
         };
         let kept = [

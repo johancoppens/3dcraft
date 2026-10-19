@@ -192,7 +192,7 @@ fn a_joined_pattern_names_a_merged_cap_after_every_instance() {
     let names = names_of(&regenerate(&doc), row);
     assert_eq!(names.faces.len(), 18);
     assert!(names.aliases.is_empty());
-    assert_eq!(names.edges.len(), 36);
+    assert_eq!(names.edge_count(), 36);
 }
 
 /// What a face, an edge or a vertex answers to besides its own name, it
@@ -228,10 +228,17 @@ fn aliases_follow_the_body_through_a_copy_and_through_another_boolean() {
     // The corners and edges of the joint keep, moved, the names the
     // plate and the wing gave them.
     assert_eq!(
-        (names.vertices.len(), names.vertex_aliases.len()),
+        (
+            names.vertex_count(),
+            (0..names.vertex_count())
+                .filter(|vertex| !names.vertex_aliases_of(*vertex).is_empty())
+                .count()
+        ),
         (8, 8),
         "{:?}",
-        names.vertex_aliases
+        (0..names.vertex_count())
+            .map(|vertex| names.vertex_aliases_of(vertex))
+            .collect::<Vec<_>>()
     );
     for (text, at) in [
         ("F4:copy(0)/F3:copy(0)/F1:vertex(0)", [0.0, 0.0, 50.0]),
@@ -242,17 +249,21 @@ fn aliases_follow_the_body_through_a_copy_and_through_another_boolean() {
         let p = body.vertices[index].point;
         assert_eq!([p.x, p.y, p.z], at, "{text}");
         assert!(
-            names.vertices[index]
+            names
+                .vertex_name(index)
+                .unwrap()
                 .to_string()
                 .starts_with("F4:copy(0)/F3:corner[")
         );
     }
-    assert_eq!(names.edges.len(), 12);
+    assert_eq!(names.edge_count(), 12);
     let edge = names
         .edge_named(&name("F4:copy(0)/F3:copy(1)/F2:edge(5)"))
         .expect("the wing's top right edge");
     assert!(
-        names.edges[edge]
+        names
+            .edge_name(edge)
+            .unwrap()
             .to_string()
             .starts_with("F4:copy(0)/F3:between[")
     );
@@ -290,16 +301,25 @@ fn aliases_follow_the_body_through_a_copy_and_through_another_boolean() {
     assert_eq!([p.x, p.y, p.z], [70.0, 20.0, 5.0]);
     // Its own name is by the faces of this body, and it carries no name
     // by the faces of the body in between.
-    assert!(names.vertices[index].to_string().starts_with("F5:corner["));
+    assert!(
+        names
+            .vertex_name(index)
+            .unwrap()
+            .to_string()
+            .starts_with("F5:corner[")
+    );
     assert_eq!(
-        texts(names.vertex_aliases_of(index)),
+        texts(&names.vertex_aliases_of(index)),
         ["F5:copy(0)/F3:copy(1)/F2:vertex(7)"]
     );
     // Every edge and vertex has a name, and no two share one.
-    for list in [&names.edges, &names.vertices] {
+    for list in [
+        names.edge_names().collect::<Vec<_>>(),
+        names.vertex_names().collect::<Vec<_>>(),
+    ] {
         let mut seen = std::collections::BTreeSet::new();
-        assert!(list.iter().all(|n| seen.insert(n)), "{:?}", texts(list));
+        assert!(list.iter().all(|n| seen.insert(n)), "{:?}", texts(&list));
     }
-    assert_eq!(names.edges.len(), body.edges.len());
-    assert_eq!(names.vertices.len(), body.vertices.len());
+    assert_eq!(names.edge_count(), body.edges.len());
+    assert_eq!(names.vertex_count(), body.vertices.len());
 }

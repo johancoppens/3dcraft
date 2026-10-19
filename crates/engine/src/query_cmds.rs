@@ -71,7 +71,9 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         Some(_) => return fail(format!("{ID}: `between` takes two face names")),
     };
     let open = session.document_mut()?;
-    let regen = open.regen();
+    // Also of a body that went into a later feature, which the cache may
+    // have let go of.
+    let regen = open.regen_needing(craft3d_regen::Need::These(&[feature]));
     let doc = open.history.current();
     let made_by = doc
         .feature(feature)
@@ -176,7 +178,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
             "closed": edge.start == edge.end,
             "length": edge_length(edge),
         });
-        if let (Some(map), Some(name)) = (entry.as_object_mut(), names.edges.get(index)) {
+        if let (Some(map), Some(name)) = (entry.as_object_mut(), names.edge_name(index)) {
             map.insert("name".into(), name.to_string().into());
             let aliases: Vec<String> = names
                 .edge_aliases_of(index)
@@ -206,7 +208,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
             "point": vec3(vertex.point),
             "faces": faces,
         });
-        if let (Some(map), Some(name)) = (entry.as_object_mut(), names.vertices.get(index)) {
+        if let (Some(map), Some(name)) = (entry.as_object_mut(), names.vertex_name(index)) {
             map.insert("name".into(), name.to_string().into());
         }
         vertices.push(entry);
