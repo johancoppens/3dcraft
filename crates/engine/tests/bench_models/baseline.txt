@@ -3,7 +3,7 @@
 # every change is an expectation change, logged in the dev log.
 turbofan blend_sections 0
 turbofan boolean_edge_candidates 281984
-turbofan boolean_face_candidates 331507
+turbofan boolean_face_candidates 213861
 turbofan boolean_face_pairs 42369
 turbofan booleans 367
 turbofan check_problems 0
@@ -21,10 +21,10 @@ turbofan regenerations 242
 turbofan sketch_solves 101
 turbofan triangles 95331
 engine-block blend_sections 28
-engine-block boolean_edge_candidates 22690
-engine-block boolean_face_candidates 507040
-engine-block boolean_face_pairs 4936
-engine-block booleans 314
+engine-block boolean_edge_candidates 34289
+engine-block boolean_face_candidates 547079
+engine-block boolean_face_pairs 6432
+engine-block booleans 396
 engine-block check_problems 0
 engine-block commands 331
 engine-block context_entries 1317
@@ -41,7 +41,7 @@ engine-block sketch_solves 166
 engine-block triangles 159397
 impeller blend_sections 3564
 impeller boolean_edge_candidates 2477
-impeller boolean_face_candidates 3576
+impeller boolean_face_candidates 3921
 impeller boolean_face_pairs 409
 impeller booleans 13
 impeller check_problems 0
