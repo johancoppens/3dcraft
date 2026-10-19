@@ -8,13 +8,14 @@
 //! Nothing here can change a document: edits are commands.
 
 use crate::mass::mass_of;
+use crate::meshes::{
+    BodyFacts, EdgePolylines, Limit, MeshStore, mesh_bytes, points_bytes, text_bytes,
+};
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
-use craft3d_tess::{
-    Mesh, TessError, TessParams, tessellate_body_and_edges, tessellate_within_budget,
-};
+use craft3d_tess::{Mesh, TessError, TessParams};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -83,6 +84,77 @@ pub const DISPLAY_MAX_TRIANGLES: usize = 1_000_000;
 /// automatic tolerance. Every step coarsens the tolerance at least twice,
 /// so six steps cover a factor of 64 and the default of 33.
 const MAX_DISPLAY_ATTEMPTS: usize = 6;
+
+/// The rungs of the ladder the display rule's and the quick first
+/// picture's tolerances stand on ([`on_rung`]): `2^(k/8)` for `k` from 0
+/// to 8, so eight rungs to an octave, each 9.05 % coarser than the one
+/// below.
+const RUNGS: [f64; 9] = [
+    1.0,
+    1.090_507_732_665_257_7,
+    1.189_207_115_002_721,
+    1.296_839_554_651_009_6,
+    std::f64::consts::SQRT_2,
+    1.542_210_825_407_940_7,
+    1.681_792_830_507_429,
+    1.834_008_086_409_342_4,
+    2.0,
+];
+
+/// Halfway between the rungs, in the same octave: `2^((k + ½)/8)` for
+/// `k` from 0 to 7, what a mantissa is compared with to find its nearest
+/// rung.
+const BETWEEN_RUNGS: [f64; 8] = [
+    1.044_273_782_427_413_8,
+    1.138_788_634_756_691_6,
+    1.241_857_812_073_484,
+    1.354_255_546_936_892_7,
+    1.476_826_145_939_499_3,
+    1.610_490_331_949_254_3,
+    1.756_252_160_373_299_5,
+    1.915_206_561_397_147_4,
+];
+
+/// The rung of the ladder nearest `tolerance`: `2^(k/8)` document units
+/// for the integer `k` that comes nearest, within 4.5 % of `tolerance`
+/// either way (the rungs are 9.05 % apart). A tolerance that follows the
+/// model's size (the display rule's, the quick first picture's) moves a
+/// little with every edit: on the ladder it stands still until the size
+/// has moved by about a rung, and the meshes of the bodies the edit did
+/// not touch are kept (`meshes.rs`) instead of being made again at a
+/// tolerance a tenth of a percent away. Found from the exponent and the
+/// mantissa of the number, without `log2` or `exp2`: the same bits on
+/// every platform. A tolerance that is not a positive finite number, or
+/// is subnormal, is returned as it is.
+pub(crate) fn on_rung(tolerance: f64) -> f64 {
+    if !(tolerance.is_finite() && tolerance > 0.0) {
+        return tolerance;
+    }
+    let bits = tolerance.to_bits();
+    let biased = (bits >> 52) & 0x7ff;
+    if biased == 0 {
+        return tolerance;
+    }
+    // The mantissa as a number in [1, 2): the same bits under the
+    // exponent of one.
+    let mantissa = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));
+    let k = BETWEEN_RUNGS
+        .iter()
+        .position(|&between| mantissa < between)
+        .unwrap_or(BETWEEN_RUNGS.len());
+    let Some(&rung) = RUNGS.get(k) else {
+        return tolerance;
+    };
+    // Times the tolerance's power of two: exact, as the product of a
+    // number and a power of two is, unless it leaves the normal range.
+    let scale = f64::from_bits(biased << 52);
+    let on = rung * scale;
+    if on.is_finite() && on > 0.0 && on.to_bits() >> 52 & 0x7ff != 0 {
+        on
+    } else {
+        tolerance
+    }
+}
 
 /// How finely the bodies and the sketch curves of a scene are sampled.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -212,40 +284,34 @@ pub struct SceneBody {
     /// (`F3`).
     pub feature: String,
     pub name: String,
-    pub mesh: Mesh,
+    /// Shared with the scenes of other states of the document that have
+    /// the body, and with the session's store of meshes (`meshes.rs`): a
+    /// scene rebuilt after an edit meshes only the bodies that changed.
+    pub mesh: Arc<Mesh>,
     /// The body's face ids in [`Scene::mesh`] start here.
     pub first_face_id: u32,
     /// The body's edges as polylines in space, one per edge in the order
     /// of the B-rep, sampled with the scene's tolerance. They are the
     /// points the mesh has along each edge, so a line drawn through them
-    /// lies on the border between the faces it separates.
-    pub edges: Vec<Vec<Vec3>>,
-    /// The persistent name of every face, as `document.inspect` lists them
-    /// under `faceNames`: face `k` of the body has id `first_face_id + k`
-    /// in [`Scene::mesh`]. Empty when the body's faces have no names.
-    pub face_names: Vec<String>,
-    /// Per face, the other names it answers to (`faceAliases` of
-    /// `document.inspect`). Empty when no face of the body has any.
-    pub face_aliases: Vec<Vec<String>>,
-    /// The persistent name of every edge, in the order of [`Self::edges`],
-    /// as `document.edges` gives it under `name`. Empty when the body's
-    /// edges have no names of their own (after a boolean): an edge is then
-    /// referred to by the faces it lies between.
-    pub edge_names: Vec<String>,
-    /// Per edge, the faces it lies between, as their places among the
-    /// faces of the body, ascending: two for an edge of a solid, one for a
-    /// seam. What `document.edges` lists under `faces`.
-    pub edge_faces: Vec<Vec<usize>>,
-    /// The body's vertices, in the order of the B-rep.
-    pub vertices: Vec<Vec3>,
-    /// The persistent name of every vertex, in the order of
-    /// [`Self::vertices`], as `document.edges` gives it under `vertices`.
-    /// Empty when the body's vertices have no names of their own (after a
-    /// boolean): a vertex is then referred to by the faces that meet in it.
-    pub vertex_names: Vec<String>,
-    /// Per vertex, the faces that meet in it (the faces of the edges that
-    /// end there), as their places among the faces of the body, ascending.
-    pub vertex_faces: Vec<Vec<usize>>,
+    /// lies on the border between the faces it separates. Shared like
+    /// [`Self::mesh`].
+    pub edges: Arc<EdgePolylines>,
+    /// The names of the body's faces, edges and vertices, which faces
+    /// each edge lies between and which meet in each vertex, and its
+    /// vertices: worked out once per body and shared like
+    /// [`Self::mesh`]. Face `k` of the body has id `first_face_id + k`
+    /// in [`Scene::mesh`].
+    pub facts: Arc<BodyFacts>,
+}
+
+impl std::ops::Deref for SceneBody {
+    type Target = BodyFacts;
+
+    /// A body's facts read as its own fields: `body.face_names`,
+    /// `body.edge_faces`, `body.vertices`, …
+    fn deref(&self) -> &BodyFacts {
+        &self.facts
+    }
 }
 
 /// What a polyline of a sketch stands for.
@@ -436,26 +502,7 @@ impl Scene {
     /// names. What the memory budget of the scenes kept counts
     /// ([`Session::set_scene_budget`]).
     pub fn bytes(&self) -> usize {
-        fn mesh_bytes(mesh: &Mesh) -> usize {
-            let point = std::mem::size_of::<Vec3>();
-            mesh.positions
-                .len()
-                .saturating_add(mesh.normals.len())
-                .saturating_mul(point)
-                .saturating_add(mesh.triangles.len().saturating_mul(12))
-                .saturating_add(mesh.face_ids.len().saturating_mul(4))
-        }
-        fn points(lines: &[Vec<Vec3>]) -> usize {
-            lines
-                .iter()
-                .fold(0usize, |n, line| n.saturating_add(line.len()))
-                .saturating_mul(std::mem::size_of::<Vec3>())
-        }
-        fn text(names: &[String]) -> usize {
-            names.iter().fold(0usize, |n, name| {
-                n.saturating_add(name.len()).saturating_add(24)
-            })
-        }
+        let (points, text) = (points_bytes, text_bytes);
         let mut bytes = std::mem::size_of::<Scene>().saturating_add(mesh_bytes(&self.mesh));
         for body in self.bodies.iter() {
             bytes = bytes
@@ -550,6 +597,11 @@ pub(crate) struct SceneCache {
     budget: usize,
     /// See [`Session::set_refine_elsewhere`].
     refine_elsewhere: bool,
+    /// The meshes of the bodies, by body and sampling, shared by every
+    /// scene built for the session (`meshes.rs`): a scene rebuilt after
+    /// an edit meshes only the bodies the edit changed. Within the same
+    /// budget as the scenes.
+    pub(crate) meshes: MeshStore,
 }
 
 impl Default for SceneCache {
@@ -561,6 +613,7 @@ impl Default for SceneCache {
             tick: 0,
             budget: DEFAULT_SCENE_BUDGET,
             refine_elsewhere: false,
+            meshes: MeshStore::new(DEFAULT_SCENE_BUDGET),
         }
     }
 }
@@ -581,6 +634,7 @@ impl SceneCache {
             if let Some(kept) = self.active_mut() {
                 kept.shown = tick;
             }
+            self.meshes.forget_gone();
         }
         // States nobody else holds any more (a closed document, an edit
         // undone and then overwritten) cannot be shown again. Checked
@@ -1236,12 +1290,17 @@ impl Sampling {
 /// `angle` is the tessellator's angle criterion, if any.
 ///
 /// With `cancel`, the build stops before the next body once it is set.
+///
+/// Every body's mesh comes from `meshes`, which keeps it: a body meshed
+/// so before (for an earlier state of the document, or for another
+/// scene) is not meshed again, and the scene is the same either way.
 fn build(
     doc: &Document,
     regen: &Regen,
     revision: u64,
     sampling: Sampling,
     cancel: Option<&AtomicBool>,
+    meshes: &MeshStore,
 ) -> (Scene, Option<Stop>) {
     #[cfg(test)]
     tests::building();
@@ -1284,6 +1343,9 @@ fn build(
         0
     };
     let mut faces_done: usize = 0;
+    // The face ids of the next body start here: one past the highest id
+    // in the scene's mesh so far.
+    let mut next_face_id: u32 = 0;
     let steps = doc.features.len();
     for (index, feature) in doc.features.iter().enumerate() {
         let outcome = regen.feature(feature.id);
@@ -1340,36 +1402,23 @@ fn build(
             step: index.saturating_add(1),
             steps,
         });
-        let left = budget.map(|max| max.saturating_sub(scene.mesh.triangles.len()));
+        // What the body is meshed within. Without the scene's budget a
+        // body too fine for the tessellator at this tolerance is
+        // coarsened until it is not, and the scene says so (lamp T2,
+        // 2026-10-15: a picture refused for it); within `per_body`
+        // triangles too, when that is asked for. A body that needs
+        // neither is the body meshed at the tolerance. With the scene's
+        // budget, the body gets what the bodies before it left.
+        let limit = match budget {
+            None => per_body.map_or(Limit::None, Limit::Own),
+            Some(max) => Limit::Left(max.saturating_sub(scene.mesh.triangles.len())),
+        };
         // The mesh and the edges with the angle criterion `max_angle`, and
         // whether the tolerance was coarsened for the body.
         let mesh_with = |max_angle: Option<f64>| {
-            let meshed = match budget {
-                // Without the scene's budget a body too fine for the
-                // tessellator at this tolerance is coarsened until it is
-                // not, and the scene says so (lamp T2, 2026-10-15: a
-                // picture refused for it); within `per_body` triangles
-                // too, when that is asked for. A body that needs neither
-                // is the body meshed at the tolerance.
-                None => tessellate_within_budget(
-                    body,
-                    &TessParams {
-                        max_triangles: per_body,
-                        max_angle,
-                        ..tess
-                    },
-                )
-                .map(|within| (within.mesh, within.edges, within.tolerance > tolerance)),
-                Some(_) => tessellate_body_and_edges(
-                    body,
-                    &TessParams {
-                        max_triangles: left,
-                        max_angle,
-                        ..tess
-                    },
-                )
-                .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges, false))),
-            };
+            let meshed = meshes
+                .mesh(body, &TessParams { max_angle, ..tess }, limit)
+                .map(|meshed| (meshed.mesh, meshed.edges, meshed.coarsened));
             #[cfg(test)]
             let meshed = tests::tessellated(meshed, max_angle.is_some());
             meshed
@@ -1433,17 +1482,16 @@ fn build(
                 .push(format!("{}: the scene has too many vertices", feature.name));
             continue;
         };
-        let first_face_id = scene
-            .mesh
-            .face_ids
-            .iter()
-            .copied()
-            .max()
-            .map_or(0, |m| m.saturating_add(1));
+        let first_face_id = next_face_id;
+        if let Some(highest) = mesh.face_ids.iter().copied().max() {
+            next_face_id = first_face_id.saturating_add(highest).saturating_add(1);
+        }
         // The scene's own mesh while it is built: `make_mut` copies nothing.
         let all = Arc::make_mut(&mut scene.mesh);
         all.positions.extend(&mesh.positions);
         all.normals.extend(&mesh.normals);
+        // (The body's own mesh and edges are shared with the store and
+        // with the scenes of other states that have the body.)
         all.triangles.extend(
             mesh.triangles
                 .iter()
@@ -1454,52 +1502,7 @@ fn build(
                 .iter()
                 .map(|f| f.saturating_add(first_face_id)),
         );
-        let names = outcome.and_then(|o| o.names.as_ref());
-        let face_names: Vec<String> = names
-            .map(|names| names.faces.iter().map(ToString::to_string).collect())
-            .unwrap_or_default();
-        let face_aliases: Vec<Vec<String>> = names
-            .filter(|names| !names.aliases.is_empty())
-            .map(|names| {
-                (0..names.faces.len())
-                    .map(|face| {
-                        names
-                            .aliases_of(face)
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let edge_names: Vec<String> = names
-            .map(|names| names.edge_names().map(|name| name.to_string()).collect())
-            .unwrap_or_default();
-        let edge_faces: Vec<Vec<usize>> = craft3d_regen::faces_of_edges(body)
-            .into_iter()
-            .map(|faces| faces.into_iter().map(|face| face.0 as usize).collect())
-            .collect();
-        let vertices: Vec<Vec3> = body.vertices.iter().map(|v| v.point).collect();
-        let vertex_names: Vec<String> = names
-            .map(|names| names.vertex_names().map(|name| name.to_string()).collect())
-            .unwrap_or_default();
-        let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); vertices.len()];
-        for (edge, faces) in body.edges.iter().zip(&edge_faces) {
-            for end in [edge.start, edge.end] {
-                if let Some(list) = vertex_faces.get_mut(end.0 as usize) {
-                    list.extend(
-                        faces
-                            .iter()
-                            .filter(|face| !list.contains(face))
-                            .copied()
-                            .collect::<Vec<_>>(),
-                    );
-                }
-            }
-        }
-        for list in &mut vertex_faces {
-            list.sort_unstable();
-        }
+        let facts = meshes.facts(body, outcome.and_then(|o| o.names.as_ref()));
         crate::appearance::color_faces(
             Arc::make_mut(&mut scene.face_colors),
             doc,
@@ -1514,13 +1517,7 @@ fn build(
             mesh,
             first_face_id,
             edges,
-            face_names,
-            face_aliases,
-            edge_names,
-            edge_faces,
-            vertices,
-            vertex_names,
-            vertex_faces,
+            facts,
         });
         faces_done = faces_done.saturating_add(body.faces.len());
         let triangles = scene.mesh.triangles.len();
@@ -1660,7 +1657,13 @@ fn coarser_by(stop: &Stop, max_triangles: usize) -> Option<f64> {
 /// faces than the budget has triangles) is that partial scene with a
 /// problem that says so, which a picture refuses. [`Scene::coarsened`]
 /// when the tolerance or a body's had to be coarser than `fine`.
-pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fine: f64) -> Scene {
+pub(crate) fn picture_scene_of(
+    doc: &Document,
+    regen: &Regen,
+    revision: u64,
+    fine: f64,
+    meshes: &MeshStore,
+) -> Scene {
     let mut tolerance = fine;
     loop {
         let sampling = Sampling {
@@ -1669,7 +1672,7 @@ pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fin
             budget: Some(DISPLAY_MAX_TRIANGLES),
             per_body: None,
         };
-        let (mut scene, stop) = build(doc, regen, revision, sampling, None);
+        let (mut scene, stop) = build(doc, regen, revision, sampling, None, meshes);
         let Some(stop) = stop else {
             return Scene {
                 coarsened: scene.coarsened || tolerance > fine,
@@ -1679,7 +1682,10 @@ pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fin
         let Some(factor) = coarser_by(&stop, DISPLAY_MAX_TRIANGLES) else {
             return scene;
         };
-        let next = tolerance * factor;
+        // Each rung at least twice as coarse, on the ladder's rungs (the
+        // estimate moves with every edit; `on_rung`): still above the
+        // tolerance, as a rung's nearest neighbour is within 4.5 %.
+        let next = on_rung(tolerance * factor);
         if !(next.is_finite() && next > tolerance) {
             scene.problems.push(format!(
                 "the picture has more than {DISPLAY_MAX_TRIANGLES} triangles at any chordal tolerance"
@@ -1690,6 +1696,15 @@ pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fin
     }
 }
 
+/// What the display rule asks for ([`build_for_display`]): the chordal
+/// tolerance it starts from, its triangle budget and its angle.
+#[derive(Clone, Copy, Debug)]
+struct DisplayRule {
+    fine: f64,
+    max_triangles: usize,
+    angle: Option<f64>,
+}
+
 /// The display rule: the scene at `fine`, or at the coarsest tolerance
 /// between `fine` and `cap` (the quick first picture's) that keeps the
 /// scene within `max_triangles` triangles and within the tessellator's
@@ -1697,18 +1712,23 @@ pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fin
 /// next tolerance is coarser by that ratio (triangles grow as the inverse
 /// of the tolerance at worst, so the estimate errs towards another
 /// attempt, never towards a coarser mesh than needed), at least twice as
-/// coarse and at most 64 times. At or beyond `cap` no budget applies, and
+/// coarse and at most 64 times, on the ladder's rungs ([`on_rung`]). At or
+/// beyond `cap` no budget applies, and
 /// the scene is the first picture itself: the same tolerance gives the
 /// same mesh. `None` when `cancel` was set meanwhile.
 fn build_for_display(
     doc: &Document,
     regen: &Regen,
     preview: &Scene,
-    fine: f64,
-    max_triangles: usize,
-    angle: Option<f64>,
+    rule: DisplayRule,
     cancel: &AtomicBool,
+    meshes: &MeshStore,
 ) -> Option<Scene> {
+    let DisplayRule {
+        fine,
+        max_triangles,
+        angle,
+    } = rule;
     let (revision, cap) = (preview.revision, preview.tolerance);
     let mut tolerance = fine;
     let mut attempts = 0;
@@ -1720,7 +1740,7 @@ fn build_for_display(
             budget: Some(max_triangles),
             per_body: None,
         };
-        let (scene, stop) = build(doc, regen, revision, sampling, Some(cancel));
+        let (scene, stop) = build(doc, regen, revision, sampling, Some(cancel), meshes);
         let Some(stop) = stop else {
             return Some(Scene {
                 coarsened: tolerance > fine,
@@ -1728,7 +1748,10 @@ fn build_for_display(
             });
         };
         let factor = coarser_by(&stop, max_triangles)?;
-        tolerance = (tolerance * factor).min(cap);
+        // On the ladder's rung, like the first attempt (`on_rung`): the
+        // estimate moves a little with every edit, and a model over the
+        // budget would otherwise be meshed again whole at every step.
+        tolerance = on_rung((tolerance * factor).min(cap));
     }
     // At the cap, out of attempts below it, or asked for something
     // coarser from the start: no budget.
@@ -1753,7 +1776,7 @@ fn build_for_display(
             budget: None,
             per_body: Some(DISPLAY_MAX_TRIANGLES),
         };
-        match build(doc, regen, revision, sampling, Some(cancel)) {
+        match build(doc, regen, revision, sampling, Some(cancel), meshes) {
             (_, Some(Stop::Cancelled)) => return None,
             (scene, _) => scene,
         }
@@ -1790,6 +1813,9 @@ pub struct Refinement {
     max_triangles: usize,
     max_angle: Option<f64>,
     preview: Arc<Scene>,
+    /// The session's store of meshes, shared: what the refinement meshes
+    /// serves the scenes built on the engine thread, and the other way.
+    meshes: MeshStore,
 }
 
 /// What [`Refinement::run`] built.
@@ -1811,10 +1837,13 @@ impl Refinement {
     /// Builds the display scene: the display rule ([`SceneQuality::Display`])
     /// with the model's size taken from the area of the first picture's
     /// mesh (the exact area takes seconds to measure on spline faces; the
-    /// mesh's is within its chordal tolerance of it), and the first
-    /// picture's tolerance as the coarsest it goes. Stops before the next
-    /// body, or the next attempt, once `cancel` is set. Never panics: a
-    /// panic in the kernel becomes the scene's error.
+    /// mesh's is within its chordal tolerance of it), the tolerance on
+    /// the ladder's nearest rung ([`on_rung`]: so that an edit that moves
+    /// the size a little leaves the tolerance, and the meshes of the
+    /// bodies it did not touch, as they were), and the first picture's
+    /// tolerance as the coarsest it goes. Stops before the next body, or
+    /// the next attempt, once `cancel` is set. Never panics: a panic in
+    /// the kernel becomes the scene's error.
     pub fn run(&self, cancel: &AtomicBool) -> Refined {
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let area = mesh_area(&self.preview.mesh);
@@ -1827,10 +1856,13 @@ impl Refinement {
                 &self.doc,
                 &self.regen,
                 &self.preview,
-                size * self.relative,
-                self.max_triangles,
-                self.max_angle,
+                DisplayRule {
+                    fine: on_rung(size * self.relative),
+                    max_triangles: self.max_triangles,
+                    angle: self.max_angle,
+                },
                 cancel,
+                &self.meshes,
             )
         }));
         let built = match built {
@@ -1940,6 +1972,7 @@ impl Session {
         if let Some(built) = self.scene.lookup(key) {
             return built.map(Some);
         }
+        let meshes = self.scene.meshes.clone();
         let (relative, max_triangles, max_angle) = match quality {
             SceneQuality::Display {
                 relative,
@@ -1949,20 +1982,20 @@ impl Session {
             SceneQuality::Preview => {
                 return self.build_and_keep(key, |doc, regen| {
                     let sampling = Sampling {
-                        tolerance: preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE,
+                        tolerance: on_rung(preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE),
                         angle: None,
                         budget: None,
                         per_body: Some(DISPLAY_MAX_TRIANGLES),
                     };
                     Scene {
                         preview: true,
-                        ..build(doc, regen, revision, sampling, None).0
+                        ..build(doc, regen, revision, sampling, None, &meshes).0
                     }
                 });
             }
             SceneQuality::Picture(tolerance) => {
                 return self.build_and_keep(key, |doc, regen| {
-                    picture_scene_of(doc, regen, revision, tolerance)
+                    picture_scene_of(doc, regen, revision, tolerance, &meshes)
                 });
             }
             SceneQuality::Automatic | SceneQuality::Tolerance(_) => {
@@ -1971,7 +2004,15 @@ impl Session {
                         SceneQuality::Tolerance(t) => t,
                         _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
                     };
-                    build(doc, regen, revision, Sampling::plain(tolerance), None).0
+                    build(
+                        doc,
+                        regen,
+                        revision,
+                        Sampling::plain(tolerance),
+                        None,
+                        &meshes,
+                    )
+                    .0
                 });
             }
         };
@@ -2030,6 +2071,7 @@ impl Session {
         max_angle: Option<f64>,
         preview: Arc<Scene>,
     ) -> Option<Refinement> {
+        let meshes = self.scene.meshes.clone();
         let open = self.documents.get_mut(self.active)?;
         Some(Refinement {
             doc: Arc::clone(open.history.current()),
@@ -2039,6 +2081,7 @@ impl Session {
             max_triangles,
             max_angle,
             preview,
+            meshes,
         })
     }
 
@@ -2095,14 +2138,27 @@ impl Session {
     /// The most bytes of scenes kept for the open documents and their
     /// earlier states ([`DEFAULT_SCENE_BUDGET`]); the least recently shown
     /// go first. The active document's scenes are kept whatever they hold.
+    /// The meshes of the bodies are kept within a budget of the same size
+    /// of their own ([`Self::mesh_bytes`]); as the kept scenes hold their
+    /// meshes from that store, the two overlap, and the memory is at most
+    /// their sum: twice `bytes`.
     pub fn set_scene_budget(&mut self, bytes: usize) {
         self.scene.budget = bytes;
         self.scene.evict();
+        self.scene.meshes.set_budget(bytes);
     }
 
-    /// The bytes of the scenes kept now ([`Scene::bytes`]).
+    /// The bytes of the scenes kept now ([`Scene::bytes`], which counts
+    /// the mesh of a body once per scene that has it).
     pub fn scene_bytes(&self) -> usize {
         self.scene.bytes()
+    }
+
+    /// The bytes of the meshes of bodies kept now, by body and sampling,
+    /// which the scenes share: a scene rebuilt after an edit meshes only
+    /// the bodies the edit changed.
+    pub fn mesh_bytes(&self) -> usize {
+        self.scene.meshes.bytes()
     }
 
     /// True when [`Self::scene_with`] for `quality` would answer at once:
@@ -2593,6 +2649,40 @@ mod tests {
             .unwrap();
         assert!(!shown.preview);
         assert_eq!(BUILDS.get(), builds);
+    }
+
+    /// The ladder: every rung is `2^(k/8)` times a power of two, the
+    /// nearest rung is within 4.5 % either way, a number on a rung stays
+    /// where it is, and a number that is no tolerance is left alone.
+    #[test]
+    fn the_ladder_has_eight_rungs_to_an_octave() {
+        let ratio = 2f64.powf(0.125);
+        for k in -40..40 {
+            let rung = ratio.powi(k);
+            let on = on_rung(rung);
+            assert!((on / rung - 1.0).abs() < 1e-12, "{rung} -> {on}");
+            // Within the octave the rung is exact: the one `RUNGS` holds.
+            let (octave, step) = (k.div_euclid(8), k.rem_euclid(8) as usize);
+            assert_eq!(on, RUNGS[step] * 2f64.powi(octave));
+            // Up to just under half a rung away, the same rung.
+            for fraction in [-0.49, -0.25, 0.25, 0.49] {
+                let near = rung * ratio.powf(fraction);
+                assert_eq!(on_rung(near), on, "{near} near {rung}");
+            }
+        }
+        for t in [1e-9, 3.7e-3, 0.0147, 0.25, 1.0, 1.99, 2.0, 12345.678, 1e9] {
+            let on = on_rung(t);
+            assert!((on / t - 1.0).abs() <= 0.0443, "{t} -> {on}");
+            assert_eq!(on_rung(on), on, "on a rung already");
+        }
+        assert_eq!(on_rung(1.0), 1.0);
+        assert_eq!(on_rung(2.0), 2.0);
+        assert_eq!(on_rung(0.5), 0.5);
+        for not in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MIN_POSITIVE / 2.0] {
+            let same = on_rung(not);
+            assert!(same.to_bits() == not.to_bits(), "{not} -> {same}");
+        }
+        assert_eq!(on_rung(f64::MAX), f64::MAX, "no rung above the range");
     }
 
     /// The closed form: n chords over a sweep are each `sweep / n` wide, and

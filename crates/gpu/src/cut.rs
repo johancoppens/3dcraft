@@ -12,7 +12,11 @@
 //!   what was there": after it the target holds, per sample, whether the
 //!   number of surfaces left out there is odd. A blend and not a stencil
 //!   buffer, because the depth buffer is `Depth32Float` on every backend
-//!   and has none.
+//!   and has none. With several samples per pixel the pass runs per
+//!   sample, with a vertex stage of its own (`vs_parity`) that
+//!   interpolates the distance from the plane at the sample, on a device
+//!   that shades per sample (`DownlevelFlags::MULTISAMPLED_SHADING`;
+//!   without it the count is decided at the pixel's centre as before).
 //! - **The cap.** One triangle in the plane, large enough to hold the box
 //!   around the mesh, drawn after the triangles of the mesh in every pass
 //!   that draws them, through the same vertex stage and the same depth
@@ -26,7 +30,9 @@
 //! cut-open frame.
 
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
-use crate::renderer::{MESH_ATTRIBUTES, float_bytes, scene_depth, scene_primitive, scene_source};
+use crate::renderer::{
+    MESH_ATTRIBUTES, float_bytes, fragment_depth, scene_depth, scene_primitive, scene_source_for,
+};
 use craft3d_math::Vec3;
 use craft3d_render::{Cut, RenderParams, SECTION_FACE, SECTION_MARGIN};
 
@@ -147,8 +153,14 @@ pub(crate) fn cap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 }
 
 /// `scene.wgsl`, the passes of a see-through picture and the passes of a
-/// cut-open one, for one sample per pixel or for several.
-pub(crate) fn module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
+/// cut-open one, for one sample per pixel or for several; with several,
+/// the count per sample where the device shades per sample
+/// (`per_sample`, `Onscreen::new`).
+pub(crate) fn module(
+    device: &wgpu::Device,
+    multisampled: bool,
+    per_sample: bool,
+) -> wgpu::ShaderModule {
     let (peel, cap) = if multisampled {
         (
             include_str!("peel_samples.wgsl"),
@@ -157,7 +169,12 @@ pub(crate) fn module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderM
     } else {
         (include_str!("peel.wgsl"), include_str!("cut_flat.wgsl"))
     };
-    let source = scene_source(device, &[peel, include_str!("cut.wgsl"), cap]);
+    let source = scene_source_for(
+        fragment_depth(device),
+        multisampled,
+        per_sample,
+        &[peel, include_str!("cut.wgsl"), cap],
+    );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("craft3d scene, cut open"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -245,8 +262,9 @@ pub(crate) fn parity_target() -> Option<wgpu::ColorTargetState> {
 }
 
 /// A pipeline over triangles of the mesh's layout with the vertex stage of
-/// a cut-open picture (`vs_cut`). With `depth` it has the depth test of
-/// every scene pass; the count has none.
+/// a cut-open picture (`vs_cut`; the count, `fs_parity`, has its own,
+/// `vs_parity`). With `depth` it has the depth test of every scene pass;
+/// the count has none.
 pub(crate) fn pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,
@@ -257,6 +275,11 @@ pub(crate) fn pipeline(
     depth: bool,
 ) -> wgpu::RenderPipeline {
     let label = format!("craft3d cut {entry}");
+    let vertex = if entry == "fs_parity" {
+        "vs_parity"
+    } else {
+        "vs_cut"
+    };
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(&label),
         bind_group_layouts: groups,
@@ -267,7 +290,7 @@ pub(crate) fn pipeline(
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module,
-            entry_point: Some("vs_cut"),
+            entry_point: Some(vertex),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: VERTEX_BYTES as u64,

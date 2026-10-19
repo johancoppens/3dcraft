@@ -33,18 +33,46 @@ use craft3d_doc::{
     PersistentName,
 };
 use craft3d_regen::Regen;
+use std::collections::BTreeMap;
+
+/// What the walks below ask of the document and the regeneration, by
+/// feature, found once per walk: each is a function of the document and
+/// the regeneration, so what is remembered is what asking again gives.
+/// A body of many faces asks the same questions for every face (a scene
+/// colours tens of thousands of faces), and each asks for a feature's
+/// result and definition, which the regeneration and the document find
+/// by a search through the features.
+#[derive(Default)]
+struct Memo {
+    /// [`sources`] of a feature.
+    sources: BTreeMap<FeatureId, Vec<FeatureId>>,
+    /// Whether a feature's definition is a subtraction, for
+    /// [`keeps_material`].
+    subtracts: BTreeMap<FeatureId, bool>,
+    /// [`body_appearance`] of a feature.
+    bodies: BTreeMap<FeatureId, Option<Appearance>>,
+}
+
+/// The definition of `feature` as it was built (with its references
+/// followed to the newest body, when they were), else as it stands.
+fn built<'a>(doc: &'a Document, regen: &'a Regen, feature: FeatureId) -> Option<&'a Feature> {
+    regen
+        .feature(feature)
+        .and_then(|result| result.followed.as_deref())
+        .or_else(|| doc.feature(feature))
+}
 
 /// The features whose bodies `feature` was made from, in instance order
-/// (for a boolean the target, then the tool), as it was built (with its
-/// references followed to the newest body, when they were).
-fn sources(doc: &Document, regen: &Regen, feature: FeatureId) -> Vec<FeatureId> {
-    let built: Option<&Feature> = regen
-        .feature(feature)
-        .and_then(|result| result.followed.as_deref());
-    built
-        .or_else(|| doc.feature(feature))
+/// (for a boolean the target, then the tool), as it was built.
+fn sources(doc: &Document, regen: &Regen, memo: &mut Memo, feature: FeatureId) -> Vec<FeatureId> {
+    if let Some(found) = memo.sources.get(&feature) {
+        return found.clone();
+    }
+    let found: Vec<FeatureId> = built(doc, regen, feature)
         .map(|f| f.kind.sources().into_iter().map(|(id, _)| id).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    memo.sources.insert(feature, found.clone());
+    found
 }
 
 /// The feature whose body is instance `instance` of `feature`'s: the
@@ -53,10 +81,11 @@ fn sources(doc: &Document, regen: &Regen, feature: FeatureId) -> Vec<FeatureId> 
 fn source_of(
     doc: &Document,
     regen: &Regen,
+    memo: &mut Memo,
     feature: FeatureId,
     instance: u64,
 ) -> Option<FeatureId> {
-    let sources = sources(doc, regen, feature);
+    let sources = sources(doc, regen, memo, feature);
     usize::try_from(instance)
         .ok()
         .and_then(|i| sources.get(i))
@@ -68,14 +97,25 @@ fn source_of(
 /// `instance`, so that a face that came through it still bounds that
 /// body's material: every instance of every feature but the tools of a
 /// subtraction (whose faces bound the target's material, inside out).
-fn keeps_material(doc: &Document, regen: &Regen, feature: FeatureId, instance: u64) -> bool {
-    let built: Option<&Feature> = regen
-        .feature(feature)
-        .and_then(|result| result.followed.as_deref());
-    match built.or_else(|| doc.feature(feature)).map(|f| &f.kind) {
-        Some(FeatureKind::Boolean(b)) => b.op != BooleanOp::Subtract || instance == 0,
-        _ => true,
-    }
+fn keeps_material(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    instance: u64,
+) -> bool {
+    let subtracts = match memo.subtracts.get(&feature) {
+        Some(&subtracts) => subtracts,
+        None => {
+            let subtracts = matches!(
+                built(doc, regen, feature).map(|f| &f.kind),
+                Some(FeatureKind::Boolean(b)) if b.op == BooleanOp::Subtract
+            );
+            memo.subtracts.insert(feature, subtracts);
+            subtracts
+        }
+    };
+    !subtracts || instance == 0
 }
 
 /// The first of what `pick` finds on the way from `feature` back through
@@ -83,6 +123,7 @@ fn keeps_material(doc: &Document, regen: &Regen, feature: FeatureId, instance: u
 fn along_instance_zero<T>(
     doc: &Document,
     regen: &Regen,
+    memo: &mut Memo,
     feature: FeatureId,
     pick: impl Fn(FeatureId) -> Option<T>,
 ) -> Option<T> {
@@ -92,7 +133,7 @@ fn along_instance_zero<T>(
         if let Some(found) = pick(at) {
             return Some(found);
         }
-        at = source_of(doc, regen, at, 0)?;
+        at = source_of(doc, regen, memo, at, 0)?;
     }
     None
 }
@@ -104,7 +145,21 @@ fn own_appearance(doc: &Document, feature: FeatureId) -> Option<Appearance> {
 /// The appearance of the body `feature` makes (see the module
 /// documentation); `None` for the default look.
 pub fn body_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
-    along_instance_zero(doc, regen, feature, |at| own_appearance(doc, at))
+    body_appearance_with(doc, regen, &mut Memo::default(), feature)
+}
+
+fn body_appearance_with(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+) -> Option<Appearance> {
+    if let Some(&found) = memo.bodies.get(&feature) {
+        return found;
+    }
+    let found = along_instance_zero(doc, regen, memo, feature, |at| own_appearance(doc, at));
+    memo.bodies.insert(feature, found);
+    found
 }
 
 /// The material of the body `feature` makes, and the feature it was given
@@ -114,7 +169,7 @@ pub fn body_material(
     regen: &Regen,
     feature: FeatureId,
 ) -> Option<(FeatureId, Material)> {
-    along_instance_zero(doc, regen, feature, |at| {
+    along_instance_zero(doc, regen, &mut Memo::default(), feature, |at| {
         Some((at, doc.body_properties(at)?.material.clone()?))
     })
 }
@@ -122,9 +177,10 @@ pub fn body_material(
 /// The appearance of one face of the body of `feature`, named `name` there
 /// (see the module documentation), when its way meets one; the caller
 /// falls back to the body's.
-pub fn face_appearance(
+fn face_appearance(
     doc: &Document,
     regen: &Regen,
+    memo: &mut Memo,
     feature: FeatureId,
     name: &PersistentName,
 ) -> Option<Appearance> {
@@ -149,21 +205,21 @@ pub fn face_appearance(
             } else {
                 // Made here (or named in a way that does not say): the
                 // body's colour.
-                return body_appearance(doc, regen, at);
+                return body_appearance_with(doc, regen, memo, at);
             }
         }
         let Some((path, of)) = way.take() else {
-            return body_appearance(doc, regen, at);
+            return body_appearance_with(doc, regen, memo, at);
         };
         let Some((&first, rest)) = path.split_first() else {
-            return body_appearance(doc, regen, at);
+            return body_appearance_with(doc, regen, memo, at);
         };
-        if !keeps_material(doc, regen, at, first) {
+        if !keeps_material(doc, regen, memo, at, first) {
             // Cut by a tool: the face bounds this body's material.
-            return body_appearance(doc, regen, at);
+            return body_appearance_with(doc, regen, memo, at);
         }
-        let Some(next) = source_of(doc, regen, at, first) else {
-            return body_appearance(doc, regen, at);
+        let Some(next) = source_of(doc, regen, memo, at, first) else {
+            return body_appearance_with(doc, regen, memo, at);
         };
         at = next;
         if path == [0] && next != of.feature {
@@ -176,7 +232,7 @@ pub fn face_appearance(
             current = of;
         }
     }
-    body_appearance(doc, regen, feature)
+    body_appearance_with(doc, regen, memo, feature)
 }
 
 /// The appearance of every face of the body of `feature`, in the order of
@@ -190,16 +246,24 @@ pub fn face_appearances(
     if doc.bodies.is_empty() {
         return vec![None; faces];
     }
-    let body = body_appearance(doc, regen, feature);
+    let mut memo = Memo::default();
+    let body = body_appearance_with(doc, regen, &mut memo, feature);
     let names = regen
         .feature(feature)
         .and_then(|result| result.names.as_deref())
         .map(|names| names.faces.as_slice())
         .unwrap_or_default();
+    // A face whose name does not say it came in through an instance of
+    // this feature has the body's colour, as the walk would find at its
+    // first step (and when the feature has an appearance of its own,
+    // every face has that: the body's).
+    let walks = own_appearance(doc, feature).is_none();
     (0..faces)
         .map(|face| match names.get(face) {
-            Some(name) => face_appearance(doc, regen, feature, name).or(body),
-            None => body,
+            Some(name) if walks && name.role == NameRole::Copy && name.feature == feature => {
+                face_appearance(doc, regen, &mut memo, feature, name).or(body)
+            }
+            _ => body,
         })
         .collect()
 }

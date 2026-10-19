@@ -353,9 +353,10 @@ impl CutPipelines {
         scene_layout: &wgpu::BindGroupLayout,
         peel_layout: Option<&wgpu::BindGroupLayout>,
         samples: u32,
+        per_sample: bool,
     ) -> CutPipelines {
         let multisampled = samples > 1;
-        let module = cut::module(device, multisampled);
+        let module = cut::module(device, multisampled, per_sample);
         let cap_layout = cut::cap_layout(device, multisampled, false);
         let scene = [Some(scene_layout)];
         let capped = [Some(scene_layout), Some(&cap_layout)];
@@ -418,7 +419,7 @@ impl CutPipelines {
             true,
         );
         // The capture has one sample per pixel whatever the renderer has.
-        let flat_module = multisampled.then(|| cut::module(device, false));
+        let flat_module = multisampled.then(|| cut::module(device, false, false));
         let cap_flat_layout = multisampled.then(|| cut::cap_layout(device, false, false));
         let flat = flat_module.as_ref().unwrap_or(&module);
         let capped_flat = [
@@ -607,6 +608,13 @@ pub struct Onscreen {
     device: wgpu::Device,
     queue: wgpu::Queue,
     samples: u32,
+    /// Whether the count of a section is per sample (`cut.wgsl`,
+    /// `vs_parity`): with several samples per pixel on a device that can
+    /// shade per sample (`DownlevelFlags::MULTISAMPLED_SHADING`); without
+    /// that the count is decided at the pixel's centre as before, and the
+    /// cap may miss a lone sample along a silhouette
+    /// (docs/design/rendering.md, 2026-10-19).
+    per_sample: bool,
     scene_uniforms: wgpu::Buffer,
     scene_layout: wgpu::BindGroupLayout,
     scene_bind: wgpu::BindGroup,
@@ -690,20 +698,39 @@ impl Onscreen {
         } else {
             1
         };
-        Self::with_samples(device, queue, samples)
+        let per_sample = samples > 1
+            && adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
+        Self::shaded(device, queue, samples, per_sample)
     }
 
     /// A renderer with `samples` samples per pixel (1, 2, 4 or 8; the
-    /// device must support them for `Rgba8Unorm` and `Depth32Float`).
+    /// device must support them for `Rgba8Unorm` and `Depth32Float`, and
+    /// with several it is taken to shade per sample, which
+    /// [`Onscreen::new`] checks on the adapter: a device that cannot
+    /// refuses a cut-open picture then).
     pub fn with_samples(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         samples: u32,
     ) -> Result<Onscreen, GpuError> {
+        Self::shaded(device, queue, samples, samples > 1)
+    }
+
+    /// [`Onscreen::with_samples`], with whether the count of a section is
+    /// per sample (`per_sample`).
+    fn shaded(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        samples: u32,
+        per_sample: bool,
+    ) -> Result<Onscreen, GpuError> {
         if !matches!(samples, 1 | 2 | 4 | 8) {
             return Err(GpuError::Unsupported("that number of samples per pixel"));
         }
-        let mut onscreen = guarded(device, || Self::build(device, queue, samples))?;
+        let mut onscreen = guarded(device, || Self::build(device, queue, samples, per_sample))?;
         // On its own: a device that cannot do this still draws opaque
         // pictures, and says why when asked for a see-through one.
         onscreen.see_through = guarded(device, || {
@@ -726,7 +753,13 @@ impl Onscreen {
         if self.cut.is_none() {
             let peel_layout = self.see_through.as_ref().ok().map(|s| &s.peel_layout);
             let built = guarded(&self.device, || {
-                CutPipelines::build(&self.device, &self.scene_layout, peel_layout, self.samples)
+                CutPipelines::build(
+                    &self.device,
+                    &self.scene_layout,
+                    peel_layout,
+                    self.samples,
+                    self.per_sample,
+                )
             })
             .map_err(|e| e.to_string());
             self.cut = Some(built);
@@ -753,7 +786,12 @@ impl Onscreen {
             .map_err(String::as_str)
     }
 
-    fn build(device: &wgpu::Device, queue: &wgpu::Queue, samples: u32) -> Onscreen {
+    fn build(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        samples: u32,
+        per_sample: bool,
+    ) -> Onscreen {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
             source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
@@ -1037,6 +1075,7 @@ impl Onscreen {
             device: device.clone(),
             queue: queue.clone(),
             samples,
+            per_sample,
             scene_uniforms,
             scene_layout,
             scene_bind,

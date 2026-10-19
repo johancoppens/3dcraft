@@ -27,6 +27,7 @@ mod helix_cmds;
 mod interference_cmds;
 mod loft_cmds;
 mod mass;
+mod meshes;
 mod offset_cmds;
 mod params;
 mod pick_cmds;
@@ -50,6 +51,7 @@ mod sweep_path_cmds;
 mod typed;
 mod workspace;
 
+pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
     SceneFaces, SceneNear, ScenePick, ScenePointed, SceneVertices,

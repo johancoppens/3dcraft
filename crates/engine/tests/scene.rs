@@ -695,7 +695,7 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
     // The post: two circles of radius 6 about (15, 20), at z = 8 and 38.
     assert_eq!(post.edges.len(), 2);
     let mut heights = Vec::new();
-    for circle in &post.edges {
+    for circle in post.edges.iter() {
         let z = circle[0].z;
         heights.push(z);
         assert!(near(circle[0], *circle.last().unwrap()), "closed");
@@ -772,10 +772,19 @@ fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Sc
         .expect("a document")
 }
 
+/// A number on the ladder of the display rule's and the first picture's
+/// tolerances: `2^(k/8)` for an integer `k` (`crate::scene::on_rung`).
+fn on_a_rung(tolerance: f64) -> bool {
+    let k = tolerance.log2() * 8.0;
+    (k - k.round()).abs() < 1e-9
+}
+
 /// The display rule: a fraction of the model's size, the side of a
 /// square with the area of the quick first picture's mesh, which is the
 /// size the automatic tolerance is a fraction of (the exact area) within
-/// the first picture's tolerance.
+/// the first picture's tolerance; on the nearest rung of the ladder
+/// (within 4.5 %), as the first picture's is, so that an edit that moves
+/// the size a little does not move the tolerance (since 2026-10-19).
 #[test]
 fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
     let mut s = session();
@@ -785,12 +794,14 @@ fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
     assert!(!automatic.coarsened);
     assert!(!scene(&mut s, Some(0.05)).coarsened);
     let first = first_picture(&mut s);
+    assert!(on_a_rung(first.tolerance), "{}", first.tolerance);
     let size = mesh_area(&first).sqrt();
     assert!((size - exact).abs() < 1e-3 * exact, "{size} vs {exact}");
     let shown = s.scene_with(SceneQuality::display()).unwrap().unwrap();
     assert!(!shown.preview);
     assert!(
-        (shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 1e-12 * size,
+        (shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 0.0443 * shown.tolerance
+            && on_a_rung(shown.tolerance),
         "{} for a size of {size}",
         shown.tolerance
     );
@@ -839,11 +850,17 @@ fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
     assert!(!Arc::ptr_eq(&after, &shown));
     assert_eq!(after.revision, shown.revision + 1);
 
-    // A request coarser than the first picture is what it asks for: no
-    // budget applies there, and nothing was coarsened.
+    // A request coarser than the first picture is what it asks for (on
+    // its rung): no budget applies there, and nothing was coarsened.
     let coarse = display(&mut s, 5.0 * AUTOMATIC_RELATIVE_TOLERANCE, 10);
     let automatic = scene(&mut s, None);
-    assert!((coarse.tolerance - 5.0 * AUTOMATIC_RELATIVE_TOLERANCE * size).abs() <= 1e-12 * size);
+    assert!(
+        (coarse.tolerance - 5.0 * AUTOMATIC_RELATIVE_TOLERANCE * size).abs()
+            <= 0.0443 * coarse.tolerance
+            && on_a_rung(coarse.tolerance),
+        "{} for a size of {size}",
+        coarse.tolerance
+    );
     assert!(!coarse.coarsened);
     assert!(coarse.triangles() > 10);
     assert!(coarse.triangles() < automatic.triangles());
