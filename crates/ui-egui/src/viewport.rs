@@ -884,7 +884,7 @@ fn build_overlay(
         None => Some([a, b]),
     };
     for body in scene.into_iter().flat_map(|scene| scene.bodies.iter()) {
-        for edge in &body.edges {
+        for edge in body.edges.iter() {
             for pair in edge.windows(2) {
                 if let [a, b] = *pair
                     && let Some([a, b]) = kept(a, b)

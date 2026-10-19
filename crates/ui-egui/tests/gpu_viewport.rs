@@ -1247,10 +1247,21 @@ fn a_change_of_display_quality_reaches_the_direct_path() {
     );
     window.frame(&mut shell, &mut session, Vec::new());
     assert_eq!(shell.render_count(), renders + 1);
+    // The display scene at the new quality: the automatic fraction of
+    // the model's size, on the display rule's ladder (2026-10-19), so
+    // about the automatic scene's triangles, fewer than the fine scene's.
+    let coarser = scene(&mut session, shell.scene_quality());
+    assert!(coarser.triangles() < shown.triangles());
+    assert!(
+        coarser.triangles().abs_diff(automatic.triangles()) * 4 <= automatic.triangles(),
+        "{} against {} automatic",
+        coarser.triangles(),
+        automatic.triangles()
+    );
     let stats = shell.render_stats().unwrap();
     assert_eq!(
         (stats.renderer, stats.triangles),
-        (Backend::Gpu, automatic.triangles())
+        (Backend::Gpu, coarser.triangles())
     );
     let (_, _, coarse) = shell.direct_picture().unwrap().unwrap();
     assert!(fine != coarse, "the coarser mesh is another picture");
@@ -1454,7 +1465,7 @@ fn the_flange_holes_are_round_at_the_display_quality() {
             let rim_sag_mm = scene
                 .bodies
                 .iter()
-                .flat_map(|body| &body.edges)
+                .flat_map(|body| body.edges.iter())
                 .filter(|edge| {
                     edge.len() > 2
                         && edge.iter().all(|p| {
