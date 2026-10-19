@@ -381,6 +381,7 @@ mod native {
             Some(_) => return fail("view.replay: `tolerance` must be positive"),
             None => None,
         };
+        let meshes = session.scene.meshes.clone();
 
         let open = session.document_mut()?;
         // The document's own regeneration, so its cache holds every
@@ -517,7 +518,7 @@ mod native {
                     // Both are within 16..=4096.
                     crate::scene::pixel_footprint(&camera, height as u32, model)
                 });
-                let settled = crate::scene::picture_scene_of(&doc, &final_regen, 0, rung);
+                let settled = crate::scene::picture_scene_of(&doc, &final_regen, 0, rung, &meshes);
                 if let Some(problem) = settled.problems.first() {
                     return fail(format!("view.replay: {problem}"));
                 }

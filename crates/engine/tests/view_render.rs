@@ -674,10 +674,12 @@ fn render_and_pick_agree_on_the_tolerance_of_a_picture() {
 /// angle decides, a sphere's mesh has triangles in proportion to one over
 /// the tolerance. The picture's tolerance is here some sixteen times the
 /// window's (between a quarter and half a pixel of a 120-pixel picture of
-/// the ball, against 2e-4 of the side of a square with the ball's area),
-/// held to at least twelve times; so its mesh has at least eight times
-/// fewer triangles, the rest of the factor left for the angle and the
-/// rounding of the counts.
+/// the ball, against 2e-4 of the side of a square with the ball's area,
+/// on the display rule's ladder: up to 4.4 % coarser, 2026-10-19), held
+/// to at least twelve times; so its mesh has at least seven times fewer
+/// triangles (eight before the ladder; 7.9 at the smallest scale now),
+/// the rest of the factor left for the angle and the rounding of the
+/// counts.
 #[test]
 fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
     for k in [1e-3, 1.0, 1e3] {
@@ -697,7 +699,7 @@ fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
         );
         let triangles = drawn["triangles"].as_u64().unwrap();
         assert!(
-            triangles * 8 <= window.triangles() as u64,
+            triangles * 7 <= window.triangles() as u64,
             "size {k}: {triangles} triangles for the picture, {} for the window",
             window.triangles()
         );

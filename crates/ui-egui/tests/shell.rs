@@ -1199,9 +1199,12 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     assert_eq!(shell.scene_quality(), SceneQuality::display());
     // The display rule's size is the area of its quick first picture's
     // mesh, which is the exact area (the automatic tolerance's size)
-    // within that picture's tolerance.
+    // within that picture's tolerance; the tolerance is on the nearest
+    // rung of the engine's ladder, within 4.5 % (2026-10-19).
     let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
-    assert!((shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 2e-3 * shown.tolerance);
+    assert!(
+        (shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 0.0443 * shown.tolerance
+    );
     assert!(!shown.coarsened);
     assert!(shown.triangles() > automatic.triangles());
     assert!(shown.triangles() > 1000);
@@ -1221,8 +1224,9 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     assert_eq!(got["scene"]["triangles"], shown.triangles());
 
     // The automatic tolerance as the display quality: the automatic
-    // scene's tolerance (within the first picture's measure of the size),
-    // the scene at that tolerance bit for bit, and a new picture of it.
+    // scene's tolerance (within the first picture's measure of the size,
+    // on the display rule's ladder: within 4.5 %, 2026-10-19), the scene
+    // at that tolerance bit for bit, and a new picture of it.
     let rendered = shell.render_count();
     let set = call(
         &mut shell,
@@ -1237,7 +1241,7 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     );
     window.idle(&mut shell, &mut session, 2);
     let coarse = shell.sync(&mut session).unwrap();
-    assert!((coarse.tolerance - automatic.tolerance).abs() <= 2e-3 * automatic.tolerance);
+    assert!((coarse.tolerance - automatic.tolerance).abs() <= 0.0443 * automatic.tolerance);
     assert_eq!(
         coarse.mesh,
         session.scene(Some(coarse.tolerance)).unwrap().unwrap().mesh
