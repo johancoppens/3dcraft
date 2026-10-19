@@ -20,8 +20,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a feature whose body is the body of source, turned by angle about the line through pivot along axis (counter-clockwise seen from the tip of axis) and then shifted by translate. The source's body goes into it; with keep the source keeps its body and this is a moved copy. Faces keep their names with a prefix: \"F5:copy(0)/F2:side(e7)\".", doc: true, feature_transform),
     spec!("feature.mirror", "Mirror Body", r#"{"source": id or name, "normal": [number, number, number], "point": [expr, expr, expr] = [0, 0, 0], "plane": datum plane id or name, "keep": boolean = false, "name": string = automatic}"#,
         "Adds a feature whose body is the body of source mirrored in a plane: the plane through point with the given normal, or a datum plane (plane, instead of normal and point; the mirror follows the datum). With keep the source keeps its body and this is a mirrored copy.", doc: true, feature_mirror),
-    spec!("feature.pattern", "Pattern", r#"{"source": id or name, "count": expr, "step": [expr, expr, expr], "angle": expr, "axis": [number, number, number] or datum axis = [0, 0, 1], "point": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
-        "Adds a feature whose body is count instances of the body of source, the source included. Linear: give step, the shift from one instance to the next. Circular: give angle, the turn from one instance to the next about the line through point along axis (\"360 deg / n\" with count n goes evenly round), or about a datum axis (axis: its name or id, without point; the pattern follows the datum). count is a whole number and may be a formula of variables. Instances that touch or overlap are joined into one piece. The faces of instance i are named \"F5:copy(i)/...\".", doc: true, feature_pattern),
+    spec!("feature.pattern", "Pattern", r#"{"source": id or name, "count": expr, "step": [expr, expr, expr] or, with angle, expr, "angle": expr, "axis": [number, number, number] or datum axis = [0, 0, 1], "point": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
+        "Adds a feature whose body is count instances of the body of source, the source included. Linear: give step, the shift from one instance to the next. Circular: give angle, the turn from one instance to the next about the line through point along axis (\"360 deg / n\" with count n goes evenly round), or about a datum axis (axis: its name or id, without point; the pattern follows the datum). Screw (a spiral stair, a helical ladder, a conveyor's flights): give angle and step, where step is one length: instance i is turned by i times angle about the axis and moved by i times step along it (negative: the other way along axis; the turn and the shift commute, so either order gives the same instance); with a step, count times angle may go past a full turn. count is a whole number and may be a formula of variables. Instances that touch or overlap are joined into one piece. The faces of instance i are named \"F5:copy(i)/...\".", doc: true, feature_pattern),
     spec!("feature.boolean", "Boolean", r#"{"op": "union|subtract|intersect", "target": id or name, "tool": id or name, "keepTool": boolean = false, "name": string = automatic}"#,
         "Adds a feature whose body is the bodies of target and tool combined: union is everything in either, subtract is the target without what the tool covers, intersect is what is in both. Both bodies go into it; with keepTool the tool keeps its body, to use it again. Faces keep their names with a prefix: \"F7:copy(0)/...\" for a face of the target, \"F7:copy(1)/...\" for one of the tool. With a sheet (feature.fill): a sheet target is trimmed by a solid tool (intersect keeps the part inside, subtract the part outside); a solid target is cut by a sheet tool that reaches across it (subtract keeps the part in front of the sheet, where its normal points, intersect the part behind); union with a sheet and two sheets are refused. What the kernel cannot combine yet fails with the reason and the faces involved.", doc: true, feature_boolean),
 ];
@@ -124,26 +124,34 @@ fn feature_pattern(session: &mut Session, params: &Value) -> Run {
     let doc = session.document()?.history.current();
     let source = feature_ref(doc, &p, ID, "source")?;
     let count = required(&p, "count")?;
-    let layout = match (p.expr3("step")?, p.expr("angle")?) {
-        (Some(_), Some(_)) => {
-            return fail(format!(
-                "{ID}: give either `step` (a linear pattern) or `angle` (a circular one), not both"
-            ));
-        }
+    let layout = match (p.get("step"), p.expr("angle")?) {
         (None, None) => {
             return fail(format!(
-                "{ID}: give `step` (the shift between instances of a linear pattern) or `angle` (the turn between instances of a circular one)"
+                "{ID}: give `step` (the shift between instances of a linear pattern) or `angle` (the turn between instances of a circular one), or both for a screw (step one length along the axis)"
             ));
         }
-        (Some(step), None) => {
+        (Some(_), None) => {
             if let Some(key) = ["axis", "point"].into_iter().find(|key| p.has(key)) {
                 return fail(format!(
                     "{ID}: `{key}` belongs to a circular pattern (with `angle`), not to one with `step`"
                 ));
             }
+            let Some(step) = p.expr3("step")? else {
+                return fail(format!("{ID}: `step` is missing"));
+            };
             PatternLayout::Linear { step: exprs(step) }
         }
-        (None, Some(angle)) => {
+        (Some(Value::Array(_)), Some(_)) => {
+            return fail(format!(
+                "{ID}: with `angle`, `step` is one length along the axis (a screw: instance i is turned by i times `angle` and moved by i times `step` along the axis), not a shift [x, y, z]; give e.g. `\"step\": \"180 mm\"`"
+            ));
+        }
+        (rise, Some(angle)) => {
+            // A screw climbs `step` along the axis with every instance.
+            let rise = match rise {
+                Some(_) => p.expr("step")?.map(Expr::new),
+                None => None,
+            };
             // A datum axis by name, or a direction with a point.
             let about = match p.get("axis") {
                 Some(Value::String(_)) => Some(crate::datum_cmds::datum_ref(
@@ -170,6 +178,7 @@ fn feature_pattern(session: &mut Session, params: &Value) -> Run {
                 },
                 angle: Expr::new(angle),
                 about,
+                step: rise,
             }
         }
     };

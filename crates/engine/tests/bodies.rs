@@ -635,7 +635,7 @@ fn malformed_requests_are_refused_and_change_nothing() {
         (
             "feature.pattern",
             json!({"source": "Bar", "count": 2, "step": [1, 0, 0], "angle": "10 deg"}),
-            vec!["either `step`", "not both"],
+            vec!["one length along the axis"],
         ),
         (
             "feature.pattern",
@@ -818,4 +818,279 @@ fn a_chain_of_copies_saves_reopens_and_regenerates_the_same() {
     assert_eq!(after["bodies"], before["bodies"]);
     assert_eq!(after["features"], before["features"]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A tread of a spiral stair: a block 800 x 250 x 30 mm (volume 6e6)
+/// from radius 100 to 900 mm about the Z axis, its centroid at
+/// (500, 0, 15); with `storey` and `n` as variables.
+fn tread() -> Session {
+    let mut s = Session::new(Workspace {
+        read: Access::None,
+        write: Access::None,
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "storey", "expr": "2.8 m"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "n", "expr": "28"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["0.8 m", "250 mm", "30 mm"], "position": ["100 mm", "-125 mm", 0],
+               "name": "Tread"}),
+    );
+    s
+}
+
+/// The mean of the tread centroids of instances 0..count of a screw of
+/// `angle` degrees and `rise` mm per instance about Z.
+fn stair_centroid(count: u32, angle: f64, rise: f64) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    for k in 0..count {
+        let (s, c) = (angle * k as f64).to_radians().sin_cos();
+        sum[0] += 500.0 * c;
+        sum[1] += 500.0 * s;
+        sum[2] += 15.0 + rise * k as f64;
+    }
+    sum.map(|v| v / count as f64)
+}
+
+#[test]
+fn a_screw_pattern_turns_and_climbs() {
+    let mut s = tread();
+    let made = run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": "n", "angle": "360 deg / n", "step": "storey / n",
+               "name": "Stair"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    // A full turn of 28 treads, 100 mm up each: the centroid is on the
+    // axis, halfway up.
+    assert_body(&mut s, "Stair", 28.0 * 6e6, [0.0, 0.0, 15.0 + 100.0 * 13.5]);
+    let found = body(&mut s, "Stair").unwrap();
+    assert_eq!(found["faces"], 28 * 6);
+    let names = found["faceNames"].as_array().unwrap();
+    for k in 0..28 {
+        for face in 0..6 {
+            let name = format!("F2:copy({k})/F1:face({face})");
+            assert!(names.contains(&json!(name)), "{name} is not in {names:?}");
+        }
+    }
+    // Seven treads of the same stair: the centroid pins the angle, the
+    // radius and the rise.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "count": 7}),
+    );
+    assert_body(
+        &mut s,
+        "Stair",
+        7.0 * 6e6,
+        stair_centroid(7, 360.0 / 28.0, 100.0),
+    );
+    // The step follows its variables, with units.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "storey", "expr": "5.6 m"}),
+    );
+    assert_body(
+        &mut s,
+        "Stair",
+        7.0 * 6e6,
+        stair_centroid(7, 360.0 / 28.0, 200.0),
+    );
+    // A negative step climbs the other way; a step is edited like the rest.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "step": "-0.1 m"}),
+    );
+    assert_body(
+        &mut s,
+        "Stair",
+        7.0 * 6e6,
+        stair_centroid(7, 360.0 / 28.0, -100.0),
+    );
+    // With a step the treads may go round more than once: a quarter turn
+    // each, three turns.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "count": 12, "angle": "90 deg", "step": "200 mm"}),
+    );
+    assert_body(&mut s, "Stair", 12.0 * 6e6, stair_centroid(12, 90.0, 200.0));
+    let params = feature(&mut s, "Stair")["params"].clone();
+    assert_eq!(params["layout"]["step"], "200 mm", "{params}");
+    // Without one they may not.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "step": null}),
+    );
+    assert_failed(&mut s, "Stair", &["more than a full turn"]);
+    let params = feature(&mut s, "Stair")["params"].clone();
+    assert!(params["layout"]["step"].is_null(), "{params}");
+}
+
+#[test]
+fn a_screw_with_a_zero_step_is_the_plain_turn_and_comes_back_to_it() {
+    let mut s = bar(20.0, -2.0);
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bar", "count": 6, "angle": "60 deg", "name": "Ring"}),
+    );
+    let plain = run(&mut s, "document.inspect", json!({}))["bodies"].clone();
+    assert_body(&mut s, "Ring", 480.0, [0.0, 0.0, 1.0]);
+    for step in [json!("0 mm"), json!(0), json!("0 * 3 mm")] {
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Ring", "step": step}),
+        );
+        let now = run(&mut s, "document.inspect", json!({}))["bodies"].clone();
+        assert_eq!(now, plain, "step {step}");
+    }
+    // A screw, then a plain turn again.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Ring", "step": "4 mm"}),
+    );
+    assert_body(&mut s, "Ring", 480.0, [0.0, 0.0, 1.0 + 4.0 * 2.5]);
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Ring", "step": null}),
+    );
+    assert_eq!(run(&mut s, "document.inspect", json!({}))["bodies"], plain);
+    // Downstream references follow the instances through every edit: the
+    // top of instance 4 keeps its name.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Ring", "step": "4 mm"}),
+    );
+    let seat = run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Seat", "face": "F3:copy(4)/F2:endCap(e5,e6,e7,e8)"}),
+    );
+    assert_eq!(seat["status"], "ok", "{seat}");
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Seat", "center": [25, 0], "radius": 1}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Seat", "distance": 4, "name": "Boss"}),
+    );
+    // Instance 4 is turned by 240 degrees and 16 up: the boss stands on
+    // its top (z = 18) and its centroid is 2 above.
+    let turned = 240f64.to_radians();
+    assert_body(
+        &mut s,
+        "Boss",
+        4.0 * PI,
+        [25.0 * turned.cos(), 25.0 * turned.sin(), 20.0],
+    );
+    // A different step moves the boss along: the reference holds.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Ring", "step": "-2 mm"}),
+    );
+    assert_body(
+        &mut s,
+        "Boss",
+        4.0 * PI,
+        [25.0 * turned.cos(), 25.0 * turned.sin(), 2.0 - 8.0 + 2.0],
+    );
+}
+
+#[test]
+fn a_screw_pattern_saves_reopens_and_regenerates_the_same() {
+    let dir = std::env::temp_dir().join(format!("craft3d-screw-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = tread();
+    s.set_workspace(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": "n", "angle": "360 deg / n", "step": "storey / n",
+               "name": "Stair"}),
+    );
+    assert_body(&mut s, "Stair", 28.0 * 6e6, [0.0, 0.0, 15.0 + 100.0 * 13.5]);
+    let before = run(&mut s, "document.inspect", json!({}));
+    run(&mut s, "file.save", json!({"path": "stair.3dcraft"}));
+    run(&mut s, "file.open", json!({"path": "stair.3dcraft"}));
+    let after = run(&mut s, "document.inspect", json!({}));
+    assert_eq!(after["bodies"], before["bodies"]);
+    assert_eq!(after["features"], before["features"]);
+    // The step is still an expression of the variables.
+    run(&mut s, "variable.set", json!({"name": "n", "expr": "7"}));
+    assert_body(
+        &mut s,
+        "Stair",
+        7.0 * 6e6,
+        stair_centroid(7, 360.0 / 7.0, 400.0),
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_screw_pattern_refuses_what_it_cannot_make() {
+    let mut s = tread();
+    // A shift [x, y, z] goes with a linear pattern; a screw's step is a
+    // length along the axis.
+    let e = error(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": 4, "angle": "10 deg", "step": [0, 0, "100 mm"]}),
+    );
+    assert!(e.contains("one length along the axis"), "{e}");
+    // Not a length: the feature fails and says so.
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": 4, "angle": "10 deg", "step": "5 deg", "name": "Stair"}),
+    );
+    assert_failed(&mut s, "Stair", &["step", "length is needed"]);
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "step": "nope"}),
+    );
+    assert_failed(&mut s, "Stair", &["step", "nope"]);
+    // Wrong types are refused before anything changes.
+    for step in [json!([0, 0, 1]), json!(true), json!({"z": 1})] {
+        let e = error(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Stair", "step": step}),
+        );
+        assert!(e.contains("step"), "{e}");
+    }
+    // A linear pattern has no step along an axis to edit into a screw.
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": 3, "step": [0, 0, "100 mm"], "name": "Row"}),
+    );
+    let e = error(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "angle": "10 deg"}),
+    );
+    assert!(e.contains("not a parameter of a linear pattern"), "{e}");
 }

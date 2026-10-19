@@ -506,6 +506,13 @@ pub enum PatternLayout {
         /// line back.
         #[serde(default)]
         about: Option<FeatureId>,
+        /// A screw: instance `i` is also moved by `i * step` along the
+        /// axis it is turned about (a length; negative goes the other way
+        /// along `axis`). The turn and the shift commute, as the shift is
+        /// along the line turned about, so either order gives the same
+        /// instance. `None` is a plain turn.
+        #[serde(default)]
+        step: Option<Expr>,
     },
 }
 
@@ -1167,11 +1174,16 @@ impl FeatureKind {
                 match &p.layout {
                     PatternLayout::Linear { step } => out.extend(triple("step", step)),
                     PatternLayout::Circular {
-                        point, axis, angle, ..
+                        point,
+                        axis,
+                        angle,
+                        step,
+                        ..
                     } => {
                         out.extend(triple("point", point));
                         out.extend(triple("axis", axis));
                         out.push(named("angle", angle));
+                        out.extend(step.as_ref().map(|step| named("step", step)));
                     }
                 }
             }
@@ -1263,11 +1275,16 @@ impl FeatureKind {
                 match &mut p.layout {
                     PatternLayout::Linear { step } => out.extend(step.iter_mut()),
                     PatternLayout::Circular {
-                        point, axis, angle, ..
+                        point,
+                        axis,
+                        angle,
+                        step,
+                        ..
                     } => {
                         out.extend(point.iter_mut());
                         out.extend(axis.iter_mut());
                         out.push(angle);
+                        out.extend(step.as_mut());
                     }
                 }
                 out
@@ -1866,6 +1883,51 @@ mod tests {
         )
         .unwrap();
         doc
+    }
+
+    #[test]
+    fn a_screw_pattern_lists_its_step_after_its_angle_and_follows_a_rename() {
+        let mut doc = Document::new(Units::default());
+        doc.variables.push(Variable {
+            name: "rise".to_string(),
+            expr: Expr::new("100 mm"),
+        });
+        doc.add_feature(None, block(["10", "10", "10"])).unwrap();
+        let circular = |step: Option<&str>| {
+            FeatureKind::Pattern(Pattern {
+                source: FeatureId(1),
+                count: Expr::new("4"),
+                layout: PatternLayout::Circular {
+                    point: exprs(["0", "0", "0"]),
+                    axis: exprs(["0", "0", "1"]),
+                    angle: Expr::new("90 deg"),
+                    about: None,
+                    step: step.map(Expr::new),
+                },
+            })
+        };
+        doc.add_feature(None, circular(Some("rise / 4"))).unwrap();
+        doc.add_feature(None, circular(None)).unwrap();
+        let names = |kind: &FeatureKind| -> Vec<String> {
+            kind.exprs().into_iter().map(|(name, _)| name).collect()
+        };
+        // A plain turn has no `step`; a screw lists it last.
+        assert_eq!(
+            names(&doc.features[2].kind),
+            [
+                "count", "point.x", "point.y", "point.z", "axis.x", "axis.y", "axis.z", "angle"
+            ]
+        );
+        assert_eq!(
+            names(&doc.features[1].kind),
+            [
+                "count", "point.x", "point.y", "point.z", "axis.x", "axis.y", "axis.z", "angle",
+                "step"
+            ]
+        );
+        doc.rename_variable("rise", "storey").unwrap();
+        let (_, step) = doc.features[1].kind.exprs().pop().unwrap();
+        assert_eq!(step.source(), "storey / 4");
     }
 
     #[test]
