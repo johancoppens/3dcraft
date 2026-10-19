@@ -429,10 +429,6 @@ pub struct Renderer {
     token: Arc<()>,
 }
 
-/// The state every pass over the triangles shares: both sides of every
-/// triangle (sheets are seen from either side, as on the CPU), and
-/// `Greater` (the depth is reversed, `scene.wgsl`), so that on a tie the
-/// triangle drawn first stays.
 /// Whether the scene passes on `device` write their depth in the fragment
 /// shader (`scene.wgsl`, `depth_key`) instead of taking the rasteriser's.
 ///
@@ -459,12 +455,20 @@ pub(crate) fn fragment_depth(device: &wgpu::Device) -> bool {
 /// `scene.wgsl` followed by `more`, with its template filled in for
 /// `device` ([`fragment_depth`]).
 pub(crate) fn scene_source(device: &wgpu::Device, more: &[&str]) -> String {
+    scene_source_for(fragment_depth(device), more)
+}
+
+/// [`scene_source`] for a backend that does (`fragment_depth`) or does
+/// not write the depth in the fragment shader: both variants of every
+/// composition are checked by the tests below, so that a machine without
+/// an OpenGL adapter still validates the OpenGL shaders.
+pub(crate) fn scene_source_for(fragment_depth: bool, more: &[&str]) -> String {
     let mut source = include_str!("scene.wgsl").to_string();
     for part in more {
         source.push('\n');
         source.push_str(part);
     }
-    let (declare, set, stored) = if fragment_depth(device) {
+    let (declare, set, stored) = if fragment_depth {
         (
             "@builtin(frag_depth) depth: f32,",
             "out.depth = depth_key(in.dist);",
@@ -479,6 +483,10 @@ pub(crate) fn scene_source(device: &wgpu::Device, more: &[&str]) -> String {
         .replace("{{STORED_DEPTH}}", stored)
 }
 
+/// The state every pass over the triangles shares: both sides of every
+/// triangle (sheets are seen from either side, as on the CPU), and
+/// `Greater` (the depth is reversed, `scene.wgsl`), so that on a tie the
+/// triangle drawn first stays.
 pub(crate) fn scene_primitive() -> wgpu::PrimitiveState {
     wgpu::PrimitiveState {
         topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1522,6 +1530,97 @@ mod tests {
                 true,
             );
             assert!(near > 0.0 && far > near, "{near} {far}");
+        }
+    }
+}
+
+/// The shader template in both variants: what a machine without an
+/// OpenGL adapter never compiles at runtime is parsed and validated here.
+#[cfg(test)]
+mod template_tests {
+    use super::scene_source_for;
+    use wgpu::naga;
+
+    /// The five compositions the renderers make of `scene.wgsl`
+    /// (`Renderer`/`Onscreen`, `peel::scene_module` and `cut::module`,
+    /// each for one sample per pixel or for several).
+    fn compositions() -> Vec<(&'static str, Vec<&'static str>)> {
+        let peel = include_str!("peel.wgsl");
+        let peel_samples = include_str!("peel_samples.wgsl");
+        let cut = include_str!("cut.wgsl");
+        vec![
+            ("scene", vec![]),
+            ("scene + peel", vec![peel]),
+            ("scene + peel_samples", vec![peel_samples]),
+            (
+                "scene + peel + cut + cut_flat",
+                vec![peel, cut, include_str!("cut_flat.wgsl")],
+            ),
+            (
+                "scene + peel_samples + cut + cut_samples",
+                vec![peel_samples, cut, include_str!("cut_samples.wgsl")],
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_composition_validates_in_both_variants() {
+        for (name, more) in compositions() {
+            for fragment_depth in [false, true] {
+                let label = format!("{name}, fragment depth {fragment_depth}");
+                let source = scene_source_for(fragment_depth, &more);
+                assert!(
+                    !source.contains("{{"),
+                    "{label}: a marker was left: {source}"
+                );
+                let module = naga::front::wgsl::parse_str(&source)
+                    .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(&source)));
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(&source)));
+                let entries: Vec<&str> = module
+                    .entry_points
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect();
+                // Every fragment entry that draws with the depth test writes
+                // the depth in the fragment-depth variant, and none without.
+                let writes_depth = module
+                    .entry_points
+                    .iter()
+                    .filter(|e| e.stage == naga::ShaderStage::Fragment)
+                    .filter(|e| {
+                        e.function
+                            .result
+                            .as_ref()
+                            .is_some_and(|r| match &r.binding {
+                                Some(naga::Binding::BuiltIn(naga::BuiltIn::FragDepth)) => true,
+                                _ => match &module.types[r.ty].inner {
+                                    naga::TypeInner::Struct { members, .. } => {
+                                        members.iter().any(|m| {
+                                            matches!(
+                                                m.binding,
+                                                Some(naga::Binding::BuiltIn(
+                                                    naga::BuiltIn::FragDepth
+                                                ))
+                                            )
+                                        })
+                                    }
+                                    _ => false,
+                                },
+                            })
+                    })
+                    .count();
+                let fragments = entries.iter().filter(|e| e.starts_with("fs_")).count();
+                // The count pass of a section (`fs_parity`) draws without a
+                // depth attachment and never writes a depth.
+                let with_depth = fragments - usize::from(entries.contains(&"fs_parity"));
+                let expected = if fragment_depth { with_depth } else { 0 };
+                assert_eq!(writes_depth, expected, "{label}: entries {entries:?}");
+            }
         }
     }
 }

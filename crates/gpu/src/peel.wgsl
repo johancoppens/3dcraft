@@ -18,10 +18,11 @@
 // triangles with the same vertex stage on the same device (and where the
 // fragment writes its depth, `stored_depth`, with the same arithmetic),
 // so the depth of a triangle at a sample is the same number in both, and
-// the front surface is never its own "behind". Every other fragment at the sample is at or
-// behind the front (the front is the nearest), so "greater" only sorts out
-// the front itself and what ties with it: two surfaces closer together
-// than the depth buffer resolves have equal depths, and then there is
+// the front surface is never its own "behind". Every other fragment at
+// the sample is at or behind the front (the front is the nearest), so
+// "greater" only sorts out the front itself and what ties with it: two
+// surfaces closer together than the depth buffer resolves have equal
+// depths, and then there is
 // nothing behind, as on the CPU when two keys are equal.
 //
 // This file is for a depth buffer with one sample per pixel, where the

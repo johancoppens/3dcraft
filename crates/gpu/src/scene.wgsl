@@ -7,10 +7,10 @@
 // backend whose clip space has its depth in -1..1 (OpenGL), where the
 // `0..1` depth of `vertex` is converted by `z * 2 - w` and that conversion
 // loses the key's precision, every fragment entry writes the key itself
-// as the fragment's depth (`{{FRAG_DEPTH}}` declares the output,
-// `{{SET_DEPTH}}` sets it, `{{STORED_DEPTH}}` is the number the depth
-// test stored for a fragment); elsewhere the markers are empty and the
-// rasteriser's own depth is the key.
+// as the fragment's depth (the marker FRAG_DEPTH declares the output,
+// SET_DEPTH sets it, STORED_DEPTH is the number the depth test stored
+// for a fragment); elsewhere the markers are empty and the rasteriser's
+// own depth is the key.
 
 struct Scene {
     // xyz: camera right axis. w: clip x per model unit (1 / (half * aspect)).

@@ -2,9 +2,10 @@
 // back (`Onscreen::read_depth`), as the lines' depth test reads it: the
 // mean of the pixel's samples (`surface_at` of depth_test.wgsl), 0 where
 // any sample shows nothing, as the bits of the `f32` in an integer target
-// (renderable on every backend, where `R32Float` is not). The source is a template like lines.wgsl:
-// `{{DEPTH}}` and `{{LOAD}}` are filled in for a multisampled or a
-// single-sampled depth texture; the bind group is the lines'.
+// (renderable on every backend, where `R32Float` is not). The source is a
+// template like lines.wgsl: `{{DEPTH}}` and `{{LOAD}}` are filled in for a
+// multisampled or a single-sampled depth texture; the bind group is the
+// lines'.
 
 struct Lines {
     size: vec4<f32>,
