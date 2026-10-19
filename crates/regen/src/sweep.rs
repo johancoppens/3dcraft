@@ -7,12 +7,13 @@ use crate::datum::datum_helix;
 use crate::extrude::{drawn, name_of, profile_error, swept};
 use crate::selfcheck::{Crossing, crossing};
 use crate::sketch_pattern::CurveIds;
-use crate::{FeatureResult, Names, SweepReport, entity};
+use crate::{FeatureResult, Names, SweepReport};
 use craft3d_doc::{Document, FeatureId, FeatureKind, NameRole, PersistentName, Sweep};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::helix::sweep_helix;
 use craft3d_kernel::sweep::sweep;
 use craft3d_topo::Body;
+use std::sync::Arc;
 
 pub(crate) fn build(
     doc: &Document,
@@ -112,7 +113,7 @@ pub(crate) fn build(
         for face in &mut faces {
             let mut link = face;
             while link.role == NameRole::Piece {
-                let Some(next) = link.of.as_deref_mut() else {
+                let Some(next) = link.of.as_mut().map(Arc::make_mut) else {
                     break;
                 };
                 link = next;
@@ -161,13 +162,7 @@ pub(crate) fn build(
         }
     }
 
-    let by_faces = entity::by_faces(id, &swept.body, &faces, made.tolerance.linear);
-    let names = Names {
-        faces,
-        edges: by_faces.edges,
-        vertices: by_faces.vertices,
-        ..Names::default()
-    };
+    let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear)?;
     let report = SweepReport {
         closed: swept.closed,
         length: swept.length,

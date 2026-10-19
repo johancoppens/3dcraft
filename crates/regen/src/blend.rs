@@ -288,7 +288,7 @@ pub(crate) fn name(
         &kept_of(&edges),
         &kept_of(&vertices),
         |_| Some(names),
-    );
+    )?;
     Ok(Some(named))
 }
 

@@ -78,6 +78,8 @@ Geometry code is slow at `opt-level 0`, so the workspace profile builds dependen
 
 **Autosave and crash recovery.** The app autosaves documents with unsaved changes into `3dcraft/recovery` in the per-user state directory (`~/.local/state` on Linux), 30 s after a change, and a start after a crash or a kill shows a bar with what was left there: Recover, Discard (asks twice), Later. The status bar says `autosaved 2 min ago`, or why autosave failed. `--recovery-dir DIR|none` and `--autosave-interval SECONDS` (or `CRAFT3D_RECOVERY_DIR`, `CRAFT3D_AUTOSAVE_INTERVAL`) change that; closing the window, or `ui.quit`, is a clean end and leaves nothing. **A window started for a test or by an agent, and ended by killing it, would leave its documents in the developer's own recovery directory: start it with `--recovery-dir none` or a directory of the test's own** (`apps/craft3d/tests/hidden_window.rs` and `killed_window.rs` do). The recovery directory is described in [`file-formats.md`](file-formats.md), the three `recovery.*` commands in [`control-protocol.md`](control-protocol.md).
 
+**Memory.** The bodies that went into later features are kept between commands within a budget, 1 GiB by default; `CRAFT3D_BODY_BUDGET_MB=256` lowers it for a small machine, and a body let go of is derived again when an edit needs it (`docs/design/regeneration.md` › *A chain of unions costs memory quadratically*).
+
 The dev profile builds with `debug = "line-tables-only"`: backtraces keep file and line, and test binaries link faster. To inspect local variables in a debugger, build with `CARGO_PROFILE_DEV_DEBUG=true`.
 
 ### Faster test loops

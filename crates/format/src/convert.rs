@@ -891,7 +891,7 @@ fn name_to_doc_with(name: manifest::Name, lists: bool) -> doc::PersistentName {
     }
     let mut built: Option<doc::PersistentName> = None;
     while let Some(mut link) = links.pop() {
-        link.of = built.take().map(Box::new);
+        link.of = built.take().map(std::sync::Arc::new);
         built = Some(link);
     }
     // There is always at least one link; the fallback is never used.

@@ -6,7 +6,7 @@
 //! edges in a way that survives upstream edits. Several edges can lie
 //! between two faces, and after a boolean several faces can share one
 //! name: the answer is a list. (One edge of that list is told from the
-//! others by its own name, [`crate::Names::edges`], which after a boolean
+//! others by its own name, [`crate::Names::edge_name`], which after a boolean
 //! is made of the same two faces: `crate::entity`.)
 
 use crate::Names;

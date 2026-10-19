@@ -497,9 +497,11 @@ fn datum_references(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "datum.references";
     let p = Params::new(ID, params, &["feature"])?;
     let open = session.document_mut()?;
-    let regen = open.regen();
+    let id = feature_ref(open.history.current(), &p, ID, "feature")?;
+    // Also of a body that went into a later feature, which the cache may
+    // have let go of.
+    let regen = open.regen_needing(craft3d_regen::Need::These(&[id]));
     let doc = open.history.current();
-    let id = feature_ref(doc, &p, ID, "feature")?;
     let name = doc
         .feature(id)
         .map_or_else(|| id.to_string(), |f| f.name.clone());

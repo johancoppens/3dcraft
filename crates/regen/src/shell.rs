@@ -70,7 +70,7 @@ pub(crate) fn build(
         &kept(&edges),
         &kept(&vertices),
         |_| Some(source.names),
-    );
+    )?;
     face_ops::not_through_itself(
         &made.body,
         &names.faces,

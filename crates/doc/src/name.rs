@@ -35,6 +35,7 @@ use crate::FeatureId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 /// Most sources a name carries (a cap is named after every curve of its
 /// outer loop).
@@ -905,7 +906,7 @@ pub struct PersistentName {
     /// For a derived role (a copy, a piece): the name of the entity this
     /// one is the image of, in the body the way of the copy ends in (see
     /// [`NameRole::Copy`]). `None` for every other role.
-    pub of: Option<Box<PersistentName>>,
+    pub of: Option<Arc<PersistentName>>,
     /// For an edge or a vertex named by its faces (`between`, `corner`)
     /// that lists any: the faces. `None` for every other role. Behind a
     /// pointer, because most names are of faces and there are many.
@@ -923,6 +924,12 @@ pub struct FaceLists {
     /// other faces near it (at the ends of the edge, at the other ends
     /// of the vertex's edges, or further away), in ascending order.
     pub near: Vec<PersistentName>,
+}
+
+/// The name an `Arc` holds, taken out of it when nothing else holds it
+/// and cloned otherwise.
+fn unshared(name: Arc<PersistentName>) -> PersistentName {
+    Arc::try_unwrap(name).unwrap_or_else(|shared| (*shared).clone())
 }
 
 impl PersistentName {
@@ -979,10 +986,10 @@ impl PersistentName {
                         by: None,
                         feature: inner_feature,
                     };
-                    (path, Box::new(inner))
+                    (path, Arc::new(inner))
                 }
             }
-            of => (path, Box::new(of)),
+            of => (path, Arc::new(of)),
         };
         Self {
             of: Some(of),
@@ -1011,7 +1018,7 @@ impl PersistentName {
         let mut links = Vec::new();
         let mut next = Some(self);
         while let Some(mut link) = next {
-            next = link.of.take().map(|boxed| *boxed);
+            next = link.of.take().map(unshared);
             links.push(link);
         }
         let mut built: Option<PersistentName> = None;
@@ -1028,7 +1035,7 @@ impl PersistentName {
                     Self::copy_along(link.feature, link.sources, of)
                 }
                 of => {
-                    link.of = of.map(Box::new);
+                    link.of = of.map(Arc::new);
                     link
                 }
             };
@@ -1044,9 +1051,10 @@ impl PersistentName {
         if piece == 0 {
             return of;
         }
+        let feature = of.feature;
         Self {
-            of: Some(Box::new(of.clone())),
-            ..Self::new(of.feature, NameRole::Piece, vec![u64::from(piece)])
+            of: Some(Arc::new(of)),
+            ..Self::new(feature, NameRole::Piece, vec![u64::from(piece)])
         }
     }
 
@@ -1570,7 +1578,7 @@ fn parse_chain(
     let mut name: Option<PersistentName> = None;
     while let Some(mut link) = links.pop() {
         match (link.role.is_derived(), name.take()) {
-            (true, Some(of)) => link.of = Some(Box::new(of)),
+            (true, Some(of)) => link.of = Some(Arc::new(of)),
             (true, None) => {
                 return Err(wrong(
                     "a copy is followed by `/` and the name it is a copy of",
@@ -1708,7 +1716,7 @@ mod tests {
         none.sources.clear();
         assert!(none.check().is_err());
         let mut tail = side.clone();
-        tail.of = Some(Box::new(side.clone()));
+        tail.of = Some(Arc::new(side.clone()));
         assert!(tail.check().is_err());
         let mut wide = side.clone();
         wide.sources = vec![1; MAX_NAME_SOURCES + 1];
@@ -1717,7 +1725,7 @@ mod tests {
         let mut deep = side.clone();
         for _ in 0..MAX_NAME_DEPTH {
             deep = PersistentName {
-                of: Some(Box::new(deep)),
+                of: Some(Arc::new(deep)),
                 ..PersistentName::new(FeatureId(2), NameRole::Piece, vec![1])
             };
         }
@@ -1800,8 +1808,8 @@ mod tests {
         }
         // A file has the long form link by link; built so, it is the same.
         let built = PersistentName {
-            of: Some(Box::new(PersistentName {
-                of: Some(Box::new(side.clone())),
+            of: Some(Arc::new(PersistentName {
+                of: Some(Arc::new(side.clone())),
                 ..PersistentName::new(FeatureId(5), NameRole::Copy, vec![1])
             })),
             ..PersistentName::new(FeatureId(9), NameRole::Copy, vec![2])
@@ -1833,7 +1841,7 @@ mod tests {
         let mut deep = side.clone();
         for _ in 0..100_000 {
             deep = PersistentName {
-                of: Some(Box::new(deep)),
+                of: Some(Arc::new(deep)),
                 ..PersistentName::new(FeatureId(1), NameRole::Copy, vec![0])
             };
         }

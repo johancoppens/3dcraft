@@ -12,6 +12,7 @@ use craft3d_expr::Evaluation;
 use craft3d_math::{Transform, Vec3};
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 /// Most instances one pattern makes.
 pub const MAX_PATTERN_INSTANCES: u64 = 10_000;
@@ -570,7 +571,7 @@ pub(crate) fn build(
                 &edges,
                 &vertices,
                 |_| source.names.as_deref(),
-            );
+            )?;
         }
         // Each instance is the source moved, which does not pass through
         // itself: what is looked at is where instances meet.
@@ -604,38 +605,12 @@ pub(crate) fn build(
     // of instance i - 1 in the same order as in the source.
     let names = match &source.names {
         None => None,
-        Some(names) => {
-            let mut out = Names::default();
-            for instance in 0..maps.len() as u64 {
-                // What an entity answers to besides its own name, its
-                // copy answers to as a copy.
-                copied_aliases(
-                    feature.id,
-                    instance,
-                    &names.aliases,
-                    out.faces.len(),
-                    &mut out.aliases,
-                );
-                copied_aliases(
-                    feature.id,
-                    instance,
-                    &names.edge_aliases,
-                    out.edges.len(),
-                    &mut out.edge_aliases,
-                );
-                copied_aliases(
-                    feature.id,
-                    instance,
-                    &names.vertex_aliases,
-                    out.vertices.len(),
-                    &mut out.vertex_aliases,
-                );
-                copied(feature.id, instance, &names.faces, &mut out.faces)?;
-                copied(feature.id, instance, &names.edges, &mut out.edges)?;
-                copied(feature.id, instance, &names.vertices, &mut out.vertices)?;
-            }
-            Some(out)
-        }
+        Some(names) => Some(Names::copied(
+            feature.id,
+            (0..maps.len() as u64)
+                .map(|instance| (instance, Arc::clone(names)))
+                .collect(),
+        )?),
     };
     Ok(Derived {
         body: result,
