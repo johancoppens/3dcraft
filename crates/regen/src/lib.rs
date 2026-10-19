@@ -47,7 +47,7 @@ mod thicken;
 mod thread;
 pub mod work;
 
-pub use cache::RegenCache;
+pub use cache::{DEFAULT_BODY_BUDGET, Need, RegenCache};
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
@@ -86,6 +86,7 @@ use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
+use entity::Entities;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -141,14 +142,11 @@ pub struct Names {
     /// it answers to, in the kernel's order. Empty for a body no boolean
     /// merged faces in.
     pub aliases: BTreeMap<usize, Vec<PersistentName>>,
-    pub edges: Vec<PersistentName>,
-    pub vertices: Vec<PersistentName>,
-    /// Per edge that has them (by its index in `edges`), the other names
-    /// it answers to: the names it had in the bodies it came from. No two
-    /// edges answer to one name.
-    pub edge_aliases: BTreeMap<usize, Vec<PersistentName>>,
-    /// The same per vertex, by its index in `vertices`.
-    pub vertex_aliases: BTreeMap<usize, Vec<PersistentName>>,
+    /// The names of the edges and of the vertices, and what each kept
+    /// from the body it came from, in the form that takes the least room
+    /// (`entity::Entities`): a name is made when it is asked for
+    /// ([`Names::edge_name`]).
+    entities: Entities,
 }
 
 /// For every edge or vertex of a body the kernel put together: the
@@ -163,6 +161,258 @@ pub(crate) type Kept = Vec<Option<(u64, usize)>>;
 pub(crate) type Contributors = Vec<Vec<(u64, usize)>>;
 
 impl Names {
+    /// Names given outright: a primitive's, a sweep's, each entity by
+    /// where it came from.
+    pub fn listed(
+        faces: Vec<PersistentName>,
+        edges: Vec<PersistentName>,
+        vertices: Vec<PersistentName>,
+    ) -> Self {
+        Self {
+            faces,
+            aliases: BTreeMap::new(),
+            entities: Entities::Listed { edges, vertices },
+        }
+    }
+
+    /// Faces named `faces`, and the edges and vertices of `body` named by
+    /// the faces they lie on (`entity::by_faces`), keeping nothing from
+    /// other bodies.
+    pub(crate) fn by_faces(
+        feature: FeatureId,
+        body: &Body,
+        faces: Vec<PersistentName>,
+        tolerance: f64,
+    ) -> Result<Self, String> {
+        let made = entity::by_faces(feature, body, &faces, tolerance)?;
+        Ok(Self {
+            faces,
+            aliases: BTreeMap::new(),
+            entities: Entities::ByFaces(Box::new(made)),
+        })
+    }
+
+    /// The names of a body whose entities are, instance by instance,
+    /// copies of the entities of other bodies (a transform, a mirror, a
+    /// pattern whose instances stay apart; an offset face, which keeps
+    /// every entity under its number): for `(instance, source)` of
+    /// `instances`, in order, every entity of the body `source` names, in
+    /// its order, as the copy of what it was. What an entity answered to
+    /// besides its own name, its copy answers to as a copy. The names of
+    /// the faces are made now (a name too long to write is an error, as
+    /// for any copy); the edges and vertices stay as `source` has them
+    /// and are copied when asked for.
+    pub(crate) fn copied(
+        feature: FeatureId,
+        instances: Vec<(u64, Arc<Names>)>,
+    ) -> Result<Self, String> {
+        let mut out = Names::default();
+        let mut edge_starts = Vec::with_capacity(instances.len().saturating_add(1));
+        let mut vertex_starts = Vec::with_capacity(instances.len().saturating_add(1));
+        let (mut edges, mut vertices) = (0usize, 0usize);
+        for (instance, source) in &instances {
+            derive::copied_aliases(
+                feature,
+                *instance,
+                &source.aliases,
+                out.faces.len(),
+                &mut out.aliases,
+            );
+            derive::copied(feature, *instance, &source.faces, &mut out.faces)?;
+            edge_starts.push(edges);
+            vertex_starts.push(vertices);
+            edges = edges.saturating_add(source.edge_count());
+            vertices = vertices.saturating_add(source.vertex_count());
+        }
+        edge_starts.push(edges);
+        vertex_starts.push(vertices);
+        out.entities = Entities::Copied {
+            feature,
+            instances,
+            edge_starts,
+            vertex_starts,
+        };
+        // A copy of an edge's or a vertex's name is held to the caps of a
+        // name as the faces' are, as when every copy was written out.
+        for name in out.edge_names().chain(out.vertex_names()) {
+            name.check().map_err(too_long)?;
+        }
+        Ok(out)
+    }
+
+    /// These names with those of the edges and the vertices let go of
+    /// (`Entities::Dropped`): the faces' names and aliases stay, which is
+    /// what following a name through the bodies it went into needs.
+    pub fn without_entities(&self) -> Self {
+        Self {
+            faces: self.faces.clone(),
+            aliases: self.aliases.clone(),
+            entities: Entities::Dropped {
+                edges: self.edge_count(),
+                vertices: self.vertex_count(),
+            },
+        }
+    }
+
+    /// False when the names of the edges and the vertices were let go of.
+    pub fn has_entities(&self) -> bool {
+        !matches!(self.entities, Entities::Dropped { .. })
+    }
+
+    /// The listed names of the edges and the vertices, to change, for a
+    /// body whose names were given outright ([`Names::listed`]); `None`
+    /// for one named otherwise.
+    pub(crate) fn listed_mut(
+        &mut self,
+    ) -> Option<(&mut Vec<PersistentName>, &mut Vec<PersistentName>)> {
+        match &mut self.entities {
+            Entities::Listed { edges, vertices } => Some((edges, vertices)),
+            _ => None,
+        }
+    }
+
+    /// For entity `index` of a body of copies: the instance it is in, the
+    /// names of that instance's source and its index there. `starts` is
+    /// where each instance's entities start, with the total at the end.
+    fn copied_at<'a>(
+        feature: FeatureId,
+        instances: &'a [(u64, Arc<Names>)],
+        starts: &[usize],
+        index: usize,
+    ) -> Option<(FeatureId, u64, &'a Arc<Names>, usize)> {
+        let which = starts
+            .partition_point(|start| *start <= index)
+            .checked_sub(1)?;
+        let (instance, source) = instances.get(which)?;
+        let start = *starts.get(which)?;
+        (index < *starts.get(which.saturating_add(1))?)
+            .then(|| (feature, *instance, source, index.saturating_sub(start)))
+    }
+
+    /// The entity of a body of copies called `name`: in the instance the
+    /// name says (the first number of a copy is its instance), the one
+    /// whose name copied is `name`.
+    fn copied_named(
+        feature: FeatureId,
+        instances: &[(u64, Arc<Names>)],
+        starts: &[usize],
+        name: &PersistentName,
+        name_of: fn(&Names, usize) -> Option<PersistentName>,
+    ) -> Option<usize> {
+        if name.feature != feature || name.role != NameRole::Copy {
+            return None;
+        }
+        let wanted = *name.sources.first()?;
+        for (which, (instance, source)) in instances.iter().enumerate() {
+            if *instance != wanted {
+                continue;
+            }
+            let start = *starts.get(which)?;
+            let count = starts.get(which.saturating_add(1))?.saturating_sub(start);
+            if let Some(there) = (0..count).find(|there| {
+                name_of(source, *there)
+                    .is_some_and(|own| PersistentName::copy(feature, *instance, own) == *name)
+            }) {
+                return Some(start.saturating_add(there));
+            }
+        }
+        None
+    }
+
+    pub fn edge_count(&self) -> usize {
+        match &self.entities {
+            Entities::Listed { edges, .. } => edges.len(),
+            Entities::Dropped { edges, .. } => *edges,
+            Entities::ByFaces(by) => by.edge_count(),
+            Entities::Copied { edge_starts, .. } => edge_starts.last().copied().unwrap_or(0),
+        }
+    }
+
+    pub fn vertex_count(&self) -> usize {
+        match &self.entities {
+            Entities::Listed { vertices, .. } => vertices.len(),
+            Entities::Dropped { vertices, .. } => *vertices,
+            Entities::ByFaces(by) => by.vertex_count(),
+            Entities::Copied { vertex_starts, .. } => vertex_starts.last().copied().unwrap_or(0),
+        }
+    }
+
+    /// The name of edge `edge` (by its index in the body), made from
+    /// what is stored.
+    pub fn edge_name(&self, edge: usize) -> Option<PersistentName> {
+        match &self.entities {
+            Entities::Listed { edges, .. } => edges.get(edge).cloned(),
+            Entities::Dropped { .. } => None,
+            Entities::ByFaces(by) => by.edge(&self.faces, edge),
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => {
+                let (feature, instance, source, there) =
+                    Self::copied_at(*feature, instances, edge_starts, edge)?;
+                Some(PersistentName::copy(
+                    feature,
+                    instance,
+                    source.edge_name(there)?,
+                ))
+            }
+        }
+    }
+
+    /// The name of vertex `vertex`.
+    pub fn vertex_name(&self, vertex: usize) -> Option<PersistentName> {
+        match &self.entities {
+            Entities::Listed { vertices, .. } => vertices.get(vertex).cloned(),
+            Entities::Dropped { .. } => None,
+            Entities::ByFaces(by) => by.vertex(&self.faces, vertex),
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => {
+                let (feature, instance, source, there) =
+                    Self::copied_at(*feature, instances, vertex_starts, vertex)?;
+                Some(PersistentName::copy(
+                    feature,
+                    instance,
+                    source.vertex_name(there)?,
+                ))
+            }
+        }
+    }
+
+    /// The names of every edge, in the body's order: for a body of
+    /// copies instance by instance, each the source's names copied.
+    pub fn edge_names(&self) -> Box<dyn Iterator<Item = PersistentName> + '_> {
+        match &self.entities {
+            Entities::Copied {
+                feature, instances, ..
+            } => Box::new(instances.iter().flat_map(move |(instance, source)| {
+                source
+                    .edge_names()
+                    .map(move |name| PersistentName::copy(*feature, *instance, name))
+            })),
+            _ => Box::new((0..self.edge_count()).filter_map(|edge| self.edge_name(edge))),
+        }
+    }
+
+    /// The names of every vertex, in the body's order.
+    pub fn vertex_names(&self) -> Box<dyn Iterator<Item = PersistentName> + '_> {
+        match &self.entities {
+            Entities::Copied {
+                feature, instances, ..
+            } => Box::new(instances.iter().flat_map(move |(instance, source)| {
+                source
+                    .vertex_names()
+                    .map(move |name| PersistentName::copy(*feature, *instance, name))
+            })),
+            _ => Box::new((0..self.vertex_count()).filter_map(|vertex| self.vertex_name(vertex))),
+        }
+    }
+
     /// The other names face `face` answers to besides `faces[face]`.
     pub fn aliases_of(&self, face: usize) -> &[PersistentName] {
         self.aliases.get(&face).map_or(&[], Vec::as_slice)
@@ -186,54 +436,145 @@ impl Names {
         self.names_of(face).any(|n| n == name)
     }
 
-    /// The other names edge `edge` answers to besides `edges[edge]`.
-    pub fn edge_aliases_of(&self, edge: usize) -> &[PersistentName] {
-        self.edge_aliases.get(&edge).map_or(&[], Vec::as_slice)
+    /// The other names edge `edge` answers to besides its own: the names
+    /// it kept from the bodies it came from.
+    pub fn edge_aliases_of(&self, edge: usize) -> Vec<PersistentName> {
+        match &self.entities {
+            Entities::Listed { .. } | Entities::Dropped { .. } => Vec::new(),
+            Entities::ByFaces(by) => by.edge_aliases.of(edge).to_vec(),
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_at(*feature, instances, edge_starts, edge)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.edge_aliases_of(there))
+                })
+                .unwrap_or_default(),
+        }
     }
 
-    /// The other names vertex `vertex` answers to besides
-    /// `vertices[vertex]`.
-    pub fn vertex_aliases_of(&self, vertex: usize) -> &[PersistentName] {
-        self.vertex_aliases.get(&vertex).map_or(&[], Vec::as_slice)
+    /// The other names vertex `vertex` answers to besides its own.
+    pub fn vertex_aliases_of(&self, vertex: usize) -> Vec<PersistentName> {
+        match &self.entities {
+            Entities::Listed { .. } | Entities::Dropped { .. } => Vec::new(),
+            Entities::ByFaces(by) => by.vertex_aliases.of(vertex).to_vec(),
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_at(*feature, instances, vertex_starts, vertex)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.vertex_aliases_of(there))
+                })
+                .unwrap_or_default(),
+        }
     }
 
     /// Every name edge `edge` answers to: its own first.
-    pub fn edge_names_of(&self, edge: usize) -> impl Iterator<Item = &PersistentName> {
-        self.edges
-            .get(edge)
-            .into_iter()
-            .chain(self.edge_aliases_of(edge))
+    pub fn edge_names_of(&self, edge: usize) -> Vec<PersistentName> {
+        let mut names: Vec<PersistentName> = self.edge_name(edge).into_iter().collect();
+        names.extend(self.edge_aliases_of(edge));
+        names
     }
 
     /// Every name vertex `vertex` answers to: its own first.
-    pub fn vertex_names_of(&self, vertex: usize) -> impl Iterator<Item = &PersistentName> {
-        self.vertices
-            .get(vertex)
-            .into_iter()
-            .chain(self.vertex_aliases_of(vertex))
+    pub fn vertex_names_of(&self, vertex: usize) -> Vec<PersistentName> {
+        let mut names: Vec<PersistentName> = self.vertex_name(vertex).into_iter().collect();
+        names.extend(self.vertex_aliases_of(vertex));
+        names
+    }
+
+    /// The names edge `edge` answers to that a primitive or a sweep gave
+    /// (its own when it is one, and those it kept): what an entity made
+    /// from it keeps. A name by faces is not among them: what an edge
+    /// was called by its faces in a body in between says nothing the
+    /// faces of the new body do not say, and the lists would grow with
+    /// every boolean.
+    pub(crate) fn edge_kept_names(&self, edge: usize) -> Vec<PersistentName> {
+        match &self.entities {
+            Entities::Dropped { .. } => Vec::new(),
+            Entities::Listed { edges, .. } => edges
+                .get(edge)
+                .filter(|name| !name.root().role.is_by_faces())
+                .cloned()
+                .into_iter()
+                .collect(),
+            Entities::ByFaces(by) => by.edge_aliases.of(edge).to_vec(),
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_at(*feature, instances, edge_starts, edge)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.edge_kept_names(there))
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The names vertex `vertex` answers to that a primitive or a sweep
+    /// gave ([`Names::edge_kept_names`]).
+    pub(crate) fn vertex_kept_names(&self, vertex: usize) -> Vec<PersistentName> {
+        match &self.entities {
+            Entities::Dropped { .. } => Vec::new(),
+            Entities::Listed { vertices, .. } => vertices
+                .get(vertex)
+                .filter(|name| !name.root().role.is_by_faces())
+                .cloned()
+                .into_iter()
+                .collect(),
+            Entities::ByFaces(by) => by.vertex_aliases.of(vertex).to_vec(),
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_at(*feature, instances, vertex_starts, vertex)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.vertex_kept_names(there))
+                })
+                .unwrap_or_default(),
+        }
     }
 
     /// The edge called `name`, by its own name or an alias: its index.
     pub fn edge_named(&self, name: &PersistentName) -> Option<usize> {
-        self.edges.iter().position(|own| own == name).or_else(|| {
-            self.edge_aliases
-                .iter()
-                .find(|(_, aliases)| aliases.contains(name))
-                .map(|(index, _)| *index)
+        let own = match &self.entities {
+            Entities::Listed { edges, .. } => edges.iter().position(|own| own == name),
+            Entities::Dropped { .. } => None,
+            Entities::ByFaces(by) => by.edge_named(&self.faces, name),
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_named(*feature, instances, edge_starts, name, Names::edge_name),
+        };
+        own.or_else(|| {
+            (0..self.edge_count()).find(|edge| self.edge_aliases_of(*edge).contains(name))
         })
     }
 
     /// The vertex called `name`, by its own name or an alias: its index.
     pub fn vertex_named(&self, name: &PersistentName) -> Option<usize> {
-        self.vertices
-            .iter()
-            .position(|own| own == name)
-            .or_else(|| {
-                self.vertex_aliases
-                    .iter()
-                    .find(|(_, aliases)| aliases.contains(name))
-                    .map(|(index, _)| *index)
-            })
+        let own = match &self.entities {
+            Entities::Listed { vertices, .. } => vertices.iter().position(|own| own == name),
+            Entities::Dropped { .. } => None,
+            Entities::ByFaces(by) => by.vertex_named(&self.faces, name),
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_named(*feature, instances, vertex_starts, name, Names::vertex_name),
+        };
+        own.or_else(|| {
+            (0..self.vertex_count()).find(|vertex| self.vertex_aliases_of(*vertex).contains(name))
+        })
     }
 
     /// Names the edges and vertices of `body`, whose faces these names
@@ -248,20 +589,18 @@ impl Names {
         kept_edges: &Kept,
         kept_vertices: &Kept,
         source: impl Fn(u64) -> Option<&'a Names>,
-    ) {
-        let made = entity::by_faces(feature, body, &self.faces, tolerance);
-        self.edges = made.edges;
-        self.vertices = made.vertices;
-        self.edge_aliases = entity::kept_names(feature, kept_edges, |instance, edge| {
-            source(instance)
-                .into_iter()
-                .flat_map(move |names| names.edge_names_of(edge))
+    ) -> Result<(), String> {
+        let mut made = entity::by_faces(feature, body, &self.faces, tolerance)?;
+        let edges = entity::kept_names(feature, kept_edges, |instance, edge| {
+            source(instance).map_or_else(Vec::new, |names| names.edge_kept_names(edge))
         });
-        self.vertex_aliases = entity::kept_names(feature, kept_vertices, |instance, vertex| {
-            source(instance)
-                .into_iter()
-                .flat_map(move |names| names.vertex_names_of(vertex))
+        let vertices = entity::kept_names(feature, kept_vertices, |instance, vertex| {
+            source(instance).map_or_else(Vec::new, |names| names.vertex_kept_names(vertex))
         });
+        made.edge_aliases = entity::Aliases::from_map(&edges, body.edges.len())?;
+        made.vertex_aliases = entity::Aliases::from_map(&vertices, body.vertices.len())?;
+        self.entities = Entities::ByFaces(Box::new(made));
+        Ok(())
     }
 
     /// The names of faces that are copies of the faces of an earlier body:
@@ -333,27 +672,33 @@ impl Names {
                 .map(|i| PersistentName::new(feature, role, vec![i]))
                 .collect()
         };
-        Self {
-            faces: named(NameRole::Face, body.faces.len()),
-            aliases: BTreeMap::new(),
-            edges: named(NameRole::Edge, body.edges.len()),
-            vertices: named(NameRole::Vertex, body.vertices.len()),
-            ..Self::default()
-        }
+        Self::listed(
+            named(NameRole::Face, body.faces.len()),
+            named(NameRole::Edge, body.edges.len()),
+            named(NameRole::Vertex, body.vertices.len()),
+        )
     }
 
     /// The names an extrusion (or another operation that reports where
     /// its entities came from) gives the entities of feature `feature`.
     pub fn of_origins(feature: FeatureId, origins: &Origins) -> Self {
         let named = |list: &[Origin]| list.iter().map(|o| name_of(feature, o)).collect();
-        Self {
-            faces: named(&origins.faces),
-            aliases: BTreeMap::new(),
-            edges: named(&origins.edges),
-            vertices: named(&origins.vertices),
-            ..Self::default()
-        }
+        Self::listed(
+            named(&origins.faces),
+            named(&origins.edges),
+            named(&origins.vertices),
+        )
     }
+}
+
+/// `names` as copies in instance `instance` of `feature`, those that can
+/// be written.
+fn copies(feature: FeatureId, instance: u64, names: Vec<PersistentName>) -> Vec<PersistentName> {
+    names
+        .into_iter()
+        .map(|name| PersistentName::copy(feature, instance, name))
+        .filter(|copy| copy.check().is_ok())
+        .collect()
 }
 
 /// What a sweep says of itself.
@@ -540,7 +885,7 @@ pub(crate) fn collapse_runs(
             // The link the kernel's numbers are in: under a piece, if any.
             let mut link = name;
             while link.role == NameRole::Piece {
-                let Some(next) = link.of.as_deref_mut() else {
+                let Some(next) = link.of.as_mut().map(Arc::make_mut) else {
                     break;
                 };
                 link = next;
@@ -716,13 +1061,32 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
 }
 
 /// Never hand on an invalid body (docs/design/kernel.md).
-fn checked(doc: &Document, body: Body) -> Result<Body, String> {
+fn checked(doc: &Document, mut body: Body) -> Result<Body, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     // Remembered: a body the operation that made it checked already
     // (every boolean does) is not checked again.
     match craft3d_topo::check_remembered(&body, &tolerance).first() {
-        None => Ok(body),
+        None => {
+            // Kept as long as the document is open, and as it was built
+            // its vectors hold the room they grew by: a third of a body
+            // (2026-10-19, docs/design/regeneration.md).
+            body.vertices.shrink_to_fit();
+            body.edges.shrink_to_fit();
+            body.faces.shrink_to_fit();
+            body.loops.shrink_to_fit();
+            body.shells.shrink_to_fit();
+            for l in &mut body.loops {
+                l.coedges.shrink_to_fit();
+            }
+            for face in &mut body.faces {
+                face.loops.shrink_to_fit();
+            }
+            for shell in &mut body.shells {
+                shell.faces.shrink_to_fit();
+            }
+            Ok(body)
+        }
         Some(defect) => Err(format!("the result is not a valid body: {defect}")),
     }
 }
@@ -771,6 +1135,14 @@ pub fn regenerate(doc: &Document) -> Regen {
 /// can differ from what `cache` remembers of the last regeneration. The
 /// result is exactly that of [`regenerate`].
 pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
+    regenerate_cached_needing(doc, cache, Need::Bodies)
+}
+
+/// [`regenerate_cached`], with the bodies `need` asks for derived again
+/// where the cache had let go of them to stay within its budget
+/// ([`RegenCache::set_body_budget`]): with [`Need::All`] the result is
+/// that of [`regenerate`] body for body.
+pub fn regenerate_cached_needing(doc: &Document, cache: &mut RegenCache, need: Need) -> Regen {
     let evaluation = match doc.variable_table() {
         Ok(table) => table.evaluate(),
         // An invalid table (a hand-edited file): every variable fails the
@@ -788,7 +1160,12 @@ pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
                 .collect();
             return Regen {
                 variables,
-                features: features(doc, &craft3d_expr::VariableTable::new().evaluate(), cache),
+                features: features(
+                    doc,
+                    &craft3d_expr::VariableTable::new().evaluate(),
+                    cache,
+                    need,
+                ),
             };
         }
     };
@@ -809,15 +1186,90 @@ pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
         .collect();
     Regen {
         variables,
-        features: features(doc, &evaluation, cache),
+        features: features(doc, &evaluation, cache, need),
     }
 }
 
-fn features(doc: &Document, variables: &Evaluation, cache: &mut RegenCache) -> Vec<FeatureResult> {
+/// About what `body` takes in memory: its entities, and the control nets
+/// and knots of its freeform surfaces and curves. What the cache counts
+/// against its budget of bodies ([`RegenCache::set_body_budget`]).
+pub fn body_bytes(body: &Body) -> usize {
+    use craft3d_geom::{Curve3, Surface};
+    use craft3d_math::Bits;
+    use std::mem::size_of;
+    let mut words = Vec::new();
+    let mut bytes = body
+        .vertices
+        .len()
+        .saturating_mul(size_of::<craft3d_topo::Vertex>())
+        .saturating_add(
+            body.edges
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::Edge>()),
+        )
+        .saturating_add(
+            body.faces
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::Face>()),
+        )
+        .saturating_add(
+            body.loops
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::Loop>()),
+        )
+        .saturating_add(
+            body.shells
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::Shell>()),
+        );
+    for l in &body.loops {
+        bytes = bytes.saturating_add(
+            l.coedges
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::Coedge>()),
+        );
+    }
+    for shell in &body.shells {
+        bytes = bytes.saturating_add(
+            shell
+                .faces
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::FaceId>()),
+        );
+    }
+    for face in &body.faces {
+        bytes = bytes.saturating_add(
+            face.loops
+                .len()
+                .saturating_mul(size_of::<craft3d_topo::LoopId>()),
+        );
+        if matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+            words.clear();
+            face.surface.push_bits(&mut words);
+            bytes = bytes.saturating_add(words.len().saturating_mul(size_of::<u64>()));
+        }
+    }
+    for edge in &body.edges {
+        if matches!(edge.curve, Curve3::Nurbs(_)) {
+            words.clear();
+            edge.curve.push_bits(&mut words);
+            bytes = bytes.saturating_add(words.len().saturating_mul(size_of::<u64>()));
+        }
+    }
+    bytes
+}
+
+fn features(
+    doc: &Document,
+    variables: &Evaluation,
+    cache: &mut RegenCache,
+    need: Need,
+) -> Vec<FeatureResult> {
     cache::features(
         doc,
         variables,
         cache,
+        need,
         |feature, rolled_back, earlier, cache| {
             build_feature(doc, variables, feature, rolled_back, earlier, cache)
         },
@@ -941,13 +1393,15 @@ fn build_feature(
                         &mut named.faces,
                         &[NameRole::StartCap, NameRole::EndCap],
                     );
-                    collapse_runs(doc, earlier, sketch, &mut named.edges, &[]);
-                    collapse_runs(doc, earlier, sketch, &mut named.vertices, &[]);
                     // Swept from an offset: named after its curves.
                     let caps = [NameRole::StartCap, NameRole::EndCap];
                     offset_profile::rename(doc, earlier, sketch, &mut named.faces, &caps)?;
-                    offset_profile::rename(doc, earlier, sketch, &mut named.edges, &caps)?;
-                    offset_profile::rename(doc, earlier, sketch, &mut named.vertices, &caps)?;
+                    if let Some((edges, vertices)) = named.listed_mut() {
+                        collapse_runs(doc, earlier, sketch, edges, &[]);
+                        collapse_runs(doc, earlier, sketch, vertices, &[]);
+                        offset_profile::rename(doc, earlier, sketch, edges, &caps)?;
+                        offset_profile::rename(doc, earlier, sketch, vertices, &caps)?;
+                    }
                 }
                 if up_to {
                     extrude::not_through_itself(&body, &origins, &named, doc.tolerance.linear)?;

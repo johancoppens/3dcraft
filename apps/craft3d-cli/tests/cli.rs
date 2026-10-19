@@ -1113,24 +1113,33 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
     let dir = workdir("bridge");
     let token = path(&dir, "control.token");
     std::fs::write(&token, format!("{}\n", "ab".repeat(32))).unwrap();
-    // A port nothing listens on: bound once to find a free one, then
-    // closed again.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-        .to_string();
-
     let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#;
     let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let input = format!("{request}\n{notification}\n{request}\n");
-    let ran = cli_in(
-        &dir,
-        &["mcp", "--bridge", &port, "--control-token-file", &token],
-        Some(&input),
-    )
-    .ok();
+    // A port nothing listens on: bound once to find a free one, then
+    // closed again. Another process (a parallel test) may take it in
+    // between; then the bridge rightly reports a peer that is not the
+    // window, so the run is made again on a new port, a few times at most.
+    let mut attempt = 0;
+    let (port, ran) = loop {
+        attempt += 1;
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string();
+        let ran = cli_in(
+            &dir,
+            &["mcp", "--bridge", &port, "--control-token-file", &token],
+            Some(&input),
+        )
+        .ok();
+        let taken = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok();
+        if !taken || attempt == 5 {
+            break (port, ran);
+        }
+    };
     let replies = ran.json_lines();
     assert_eq!(replies.len(), 2, "{}", ran.stdout);
     for reply in &replies {

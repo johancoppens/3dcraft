@@ -129,7 +129,7 @@ impl BodyFacts {
             })
             .unwrap_or_default();
         let edge_names: Vec<String> = names
-            .map(|names| names.edges.iter().map(ToString::to_string).collect())
+            .map(|names| names.edge_names().map(|name| name.to_string()).collect())
             .unwrap_or_default();
         let edge_faces: Vec<Vec<usize>> = craft3d_regen::faces_of_edges(body)
             .into_iter()
@@ -137,7 +137,7 @@ impl BodyFacts {
             .collect();
         let vertices: Vec<Vec3> = body.vertices.iter().map(|v| v.point).collect();
         let vertex_names: Vec<String> = names
-            .map(|names| names.vertices.iter().map(ToString::to_string).collect())
+            .map(|names| names.vertex_names().map(|name| name.to_string()).collect())
             .unwrap_or_default();
         let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); vertices.len()];
         for (edge, faces) in body.edges.iter().zip(&edge_faces) {

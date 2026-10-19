@@ -31,11 +31,12 @@ use craft3d_doc::{Document, FeatureId, PersistentName};
 use craft3d_kernel::KernelError;
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId};
+use std::sync::Arc;
 
 /// The body a face operation works on, with what its entities are called.
 pub(crate) struct Source<'a> {
     pub body: &'a Body,
-    pub names: &'a Names,
+    pub names: &'a Arc<Names>,
     /// The name of the feature that made it.
     pub made_by: String,
     pub tolerance: Tolerance,

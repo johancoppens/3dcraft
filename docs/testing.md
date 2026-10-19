@@ -91,7 +91,7 @@ The suites, in `crates/tess/tests/` unless said otherwise: `oracle.rs` and `fixt
 ### Oracle 5: determinism and round trips
 
 - regenerate twice → byte-identical bodies
-- incremental regeneration after an edit = full regeneration from scratch (built: `Session::regeneration_matches_a_full_one()`; the `run` helper of the engine suites (`crates/engine/tests/common`, `common::checked::run`) asserts it after every command (except a command that only reads, such as `document.inspect`, on the document the previous check found sound at the same revision: the same comparison again), and `crates/engine/tests/regen_cache.rs` adds a seeded random walk of edits and the counts of rebuilt features)
+- incremental regeneration after an edit = full regeneration from scratch (built: `Session::regeneration_matches_a_full_one()`, which first derives again the bodies the cache let go of to stay within its budget (`craft3d_regen::Need::All`, 2026-10-19), so the comparison is body for body; the `run` helper of the engine suites (`crates/engine/tests/common`, `common::checked::run`) asserts it after every command (except a command that only reads, such as `document.inspect`, on the document the previous check found sound at the same revision: the same comparison again), and `crates/engine/tests/regen_cache.rs` adds a seeded random walk of edits and the counts of rebuilt features)
 - save → load → regenerate → same bodies (compared by a canonical hash) and same feature statuses
 - strip every cache from a `.3dcraft` → still opens to the same model
 - replay a recorded command script → same document

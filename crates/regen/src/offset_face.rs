@@ -2,32 +2,20 @@
 //! are moved along their normals. How a face is referred to and how the
 //! result is named is in [`crate::face_ops`].
 
-use crate::derive::{copied, copied_aliases};
 use crate::face_ops::{self, explain};
 use crate::{FeatureResult, Names, length};
 use craft3d_doc::{Document, FeatureId, OffsetFace};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::offset_face::{FaceOffset, offset_faces_with};
 use craft3d_topo::Body;
+use std::sync::Arc;
 
 const NOUN: &str = "an offset";
 
 /// The names of a body that has the entities of the body `names` names,
 /// each under its own number: every one is the copy of what it was.
-pub(crate) fn same_entities(feature: FeatureId, names: &Names) -> Result<Names, String> {
-    let mut made = Names::default();
-    copied(feature, 0, &names.faces, &mut made.faces)?;
-    copied(feature, 0, &names.edges, &mut made.edges)?;
-    copied(feature, 0, &names.vertices, &mut made.vertices)?;
-    copied_aliases(feature, 0, &names.aliases, 0, &mut made.aliases);
-    copied_aliases(feature, 0, &names.edge_aliases, 0, &mut made.edge_aliases);
-    copied_aliases(
-        feature,
-        0,
-        &names.vertex_aliases,
-        0,
-        &mut made.vertex_aliases,
-    );
+pub(crate) fn same_entities(feature: FeatureId, names: &Arc<Names>) -> Result<Names, String> {
+    let made = Names::copied(feature, vec![(0, Arc::clone(names))])?;
     Ok(made)
 }
 

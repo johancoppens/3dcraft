@@ -77,7 +77,7 @@ pub use workspace::{Access, Workspace};
 
 use craft3d_doc::Document;
 use craft3d_ops::History;
-use craft3d_regen::Regen;
+use craft3d_regen::{Need, Regen};
 use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
@@ -146,6 +146,23 @@ pub(crate) struct OpenDocument {
     pub(crate) cache: craft3d_regen::RegenCache,
 }
 
+/// A regeneration cache with the budget of bodies the environment asks
+/// for: `CRAFT3D_BODY_BUDGET_MB` is the most megabytes of bodies that went
+/// into later features that are kept between commands
+/// (`craft3d_regen::DEFAULT_BODY_BUDGET` otherwise; what a bigger history
+/// costs is derived again when an edit needs it).
+fn new_cache() -> craft3d_regen::RegenCache {
+    let mut cache = craft3d_regen::RegenCache::default();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(megabytes) = std::env::var("CRAFT3D_BODY_BUDGET_MB")
+        .ok()
+        .and_then(|text| text.trim().parse::<usize>().ok())
+    {
+        cache.set_body_budget(megabytes.saturating_mul(1 << 20));
+    }
+    cache
+}
+
 /// The id of the next open document.
 fn next_document_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -164,7 +181,7 @@ impl OpenDocument {
             disk: None,
             recovered: None,
             regen: None,
-            cache: craft3d_regen::RegenCache::default(),
+            cache: new_cache(),
         }
     }
 
@@ -179,15 +196,37 @@ impl OpenDocument {
         self.dirty() && (self.path.is_some() || !self.history.current().features.is_empty())
     }
 
-    /// The bodies and statuses of the current document.
+    /// The bodies and statuses of the current document. A body that went
+    /// into a later feature may be missing when the cache let go of it to
+    /// stay within its budget ([`OpenDocument::regen_needing`] derives it
+    /// again).
     pub(crate) fn regen(&mut self) -> Arc<Regen> {
+        self.regen_needing(Need::Bodies)
+    }
+
+    /// [`OpenDocument::regen`] with the bodies `need` asks for present:
+    /// bodies the cache had let go of are derived again, the same bits.
+    pub(crate) fn regen_needing(&mut self, need: Need) -> Arc<Regen> {
         let revision = self.history.revision();
+        let missing = |regen: &Regen| {
+            regen.features.iter().any(|f| {
+                f.body.is_none()
+                    && f.consumed_by.is_some()
+                    && matches!(f.status, craft3d_regen::Status::Ok)
+                    && match need {
+                        Need::Bodies => false,
+                        Need::All => true,
+                        Need::These(ids) => ids.contains(&f.id),
+                    }
+            })
+        };
         match &self.regen {
-            Some((cached, regen)) if *cached == revision => Arc::clone(regen),
+            Some((cached, regen)) if *cached == revision && !missing(regen) => Arc::clone(regen),
             _ => {
-                let regen = Arc::new(craft3d_regen::regenerate_cached(
+                let regen = Arc::new(craft3d_regen::regenerate_cached_needing(
                     self.history.current(),
                     &mut self.cache,
+                    need,
                 ));
                 self.regen = Some((revision, Arc::clone(&regen)));
                 regen
@@ -213,6 +252,8 @@ pub struct Session {
     /// the kernel last let go of the trees of surfaces no body holds
     /// ([`Session::release_unused_trees`]).
     trees_held_for: Vec<(u64, Option<u64>)>,
+    /// [`Session::set_body_budget`], for documents opened later.
+    body_budget: Option<usize>,
 }
 
 /// Most documents open at once.
@@ -227,6 +268,7 @@ impl Session {
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
+            body_budget: None,
         }
     }
 
@@ -307,8 +349,31 @@ impl Session {
     /// when no document is open. For tests: the two must never differ.
     pub fn regeneration_matches_a_full_one(&mut self) -> Option<bool> {
         let open = self.documents.get_mut(self.active)?;
-        let held = open.regen();
+        let held = open.regen_needing(Need::All);
         Some(*held == craft3d_regen::regenerate(open.history.current()))
+    }
+
+    /// Sets, for every open document and those opened later, the most
+    /// bytes of bodies that went into later features that are kept
+    /// between commands ([`craft3d_regen::RegenCache::set_body_budget`]).
+    pub fn set_body_budget(&mut self, bytes: usize) {
+        self.body_budget = Some(bytes);
+        for document in &mut self.documents {
+            document.cache.set_body_budget(bytes);
+        }
+    }
+
+    /// About how many bytes the bodies kept take that went into later
+    /// features of the active document, and how many such bodies the
+    /// cache let go of; `None` without a document.
+    pub fn bodies_held(&self) -> Option<(usize, usize)> {
+        Some(self.documents.get(self.active)?.cache.bodies_held())
+    }
+
+    /// How many bodies the last regeneration of the active document
+    /// derived again, having let go of them.
+    pub fn last_regeneration_rederived(&self) -> Option<usize> {
+        Some(self.documents.get(self.active)?.cache.last_run_rederived())
     }
 
     /// How many features the last regeneration of the active document
@@ -396,6 +461,10 @@ impl Session {
             return Err(CommandError::new(format!(
                 "{MAX_DOCUMENTS} documents are open already; close one with file.close first"
             )));
+        }
+        let mut document = document;
+        if let Some(budget) = self.body_budget {
+            document.cache.set_body_budget(budget);
         }
         self.documents.push(document);
         self.active = self.documents.len() - 1;

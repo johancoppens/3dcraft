@@ -78,6 +78,14 @@ struct Entry {
     /// As built: before a later feature took the body.
     result: FeatureResult,
     stamp: u64,
+    /// About what the result's body takes in memory (`crate::body_bytes`);
+    /// 0 without one.
+    bytes: usize,
+    /// The body was let go of to stay within [`RegenCache::body_budget`]
+    /// (`result.body` is `None`, and its names are without those of its
+    /// edges and vertices); it is derived again from the results before
+    /// it when a feature built from it needs it, the same bits.
+    evicted: bool,
 }
 
 /// A sketch as it was solved, and how it solved on the flat plane (where a
@@ -110,6 +118,48 @@ pub struct RegenCache {
     /// How many entries of what features are made from the last
     /// regeneration looked at ([`RegenCache::last_run_work`]).
     work: usize,
+    /// Most bytes of bodies that went into later features that are kept
+    /// ([`RegenCache::set_body_budget`]); `None` for the default.
+    body_budget: Option<usize>,
+    /// Bodies the last regeneration derived again because a feature built
+    /// from them needed them.
+    rederived: usize,
+}
+
+/// Most bytes of bodies that went into later features that a cache keeps
+/// by default: enough for every body of a history of hundreds of unions
+/// of a thousand faces each, and bounded, so that a history whose bodies
+/// together take more (a chain of unions stores one body per step, each
+/// as big as everything before it) does not grow without end.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_BODY_BUDGET: usize = 1 << 30;
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_BODY_BUDGET: usize = 1 << 28;
+
+/// Which bodies a regeneration must leave in its result, besides those
+/// of the document (the bodies no later feature took, which are always
+/// there): a body that went into a later feature may have been let go of
+/// to stay within the cache's budget ([`RegenCache::set_body_budget`]),
+/// and is derived again on request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Need<'a> {
+    /// Only what regeneration itself needs.
+    #[default]
+    Bodies,
+    /// Every feature's body: what [`crate::regenerate`] gives.
+    All,
+    /// The bodies of these features.
+    These(&'a [FeatureId]),
+}
+
+impl Need<'_> {
+    fn includes(&self, id: FeatureId) -> bool {
+        match self {
+            Need::Bodies => false,
+            Need::All => true,
+            Need::These(ids) => ids.contains(&id),
+        }
+    }
 }
 
 /// What a regeneration found of one feature that the features after it
@@ -140,6 +190,49 @@ impl RegenCache {
     /// history and not with its square when one feature is added.
     pub fn last_run_work(&self) -> usize {
         self.work
+    }
+
+    /// How many bodies the last regeneration derived again, having let go
+    /// of them to stay within the budget, because a feature built from
+    /// them needed them.
+    pub fn last_run_rederived(&self) -> usize {
+        self.rederived
+    }
+
+    /// Most bytes of bodies that went into later features that are kept
+    /// between regenerations ([`DEFAULT_BODY_BUDGET`] unless set). The
+    /// bodies of the document itself are always kept. Beyond the budget
+    /// the oldest in the history are let go of first, and derived again
+    /// from the results before them when an edit needs them: an edit
+    /// near the end of a long history then costs what it costs, and one
+    /// further up at most a full regeneration more. Results do not
+    /// change: a body derived again is the same bits.
+    pub fn set_body_budget(&mut self, bytes: usize) {
+        self.body_budget = Some(bytes);
+    }
+
+    pub fn body_budget(&self) -> usize {
+        self.body_budget.unwrap_or(DEFAULT_BODY_BUDGET)
+    }
+
+    /// About how many bytes the bodies kept take that went into later
+    /// features, and how many such bodies were let go of.
+    pub fn bodies_held(&self) -> (usize, usize) {
+        let taken: BTreeSet<FeatureId> = self
+            .trail
+            .iter()
+            .flat_map(|(_, step)| step.takes.iter().copied())
+            .collect();
+        self.entries
+            .iter()
+            .filter(|(id, _)| taken.contains(id))
+            .fold((0, 0), |(bytes, gone), (_, entry)| {
+                if entry.evicted {
+                    (bytes, gone.saturating_add(1))
+                } else {
+                    (bytes.saturating_add(entry.bytes), gone)
+                }
+            })
     }
 
     /// Solves `sketch` on the flat plane, or returns how it solved the
@@ -403,6 +496,7 @@ pub(crate) fn features(
     doc: &Document,
     variables: &Evaluation,
     cache: &mut RegenCache,
+    need: Need,
     mut build: impl FnMut(
         &Feature,
         bool,
@@ -413,6 +507,7 @@ pub(crate) fn features(
     cache.prune(doc);
     cache.rebuilt = 0;
     cache.reused = 0;
+    cache.rederived = 0;
     let mut results: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
     // Where each feature's result is in `results`.
     let mut at: BTreeMap<FeatureId, usize> = BTreeMap::new();
@@ -553,15 +648,24 @@ pub(crate) fn features(
                                 consumed_by: None,
                                 followed: None,
                             },
-                            Ok(as_built) => FeatureResult {
-                                followed: as_built.clone().map(Arc::new),
-                                ..build(feature, rolled_back, &results, cache).0
-                            },
+                            Ok(as_built) => {
+                                rederive(doc, &mut results, &at, cache, &mut build, feature);
+                                FeatureResult {
+                                    followed: as_built.clone().map(Arc::new),
+                                    ..build(feature, rolled_back, &results, cache).0
+                                }
+                            }
                         };
                         // The same definition giving the same result keeps
                         // its stamp: nothing made from it has to be rebuilt.
                         let stamp = match cache.entries.get(&feature.id) {
-                            Some(old) if old.feature == *stated && old.result == result => {
+                            // An old body let go of cannot be compared:
+                            // what is made from this feature is rebuilt.
+                            Some(old)
+                                if old.feature == *stated
+                                    && !old.evicted
+                                    && old.result == result =>
+                            {
                                 old.stamp
                             }
                             _ => {
@@ -574,6 +678,8 @@ pub(crate) fn features(
                             Entry {
                                 feature: stated.clone(),
                                 context,
+                                bytes: result.body.as_deref().map_or(0, crate::body_bytes),
+                                evicted: false,
                                 result: result.clone(),
                                 stamp,
                             },
@@ -625,8 +731,205 @@ pub(crate) fn features(
     }
     cache.trail = trail;
     cache.work = lookup.work;
+    // A body let go of while a later feature had taken it is the
+    // document's own again when that feature no longer takes it.
+    let live: Vec<FeatureId> = results
+        .iter()
+        .filter(|r| r.consumed_by.is_none() && r.body.is_none())
+        .filter(|r| cache.entries.get(&r.id).is_some_and(|entry| entry.evicted))
+        .map(|r| r.id)
+        .collect();
+    rederive_all(doc, &mut results, &at, cache, &mut build, &live);
+    match need {
+        Need::Bodies => {}
+        Need::All => {
+            let all: Vec<FeatureId> = results.iter().map(|r| r.id).collect();
+            rederive_all(doc, &mut results, &at, cache, &mut build, &all);
+        }
+        Need::These(ids) => rederive_all(doc, &mut results, &at, cache, &mut build, ids),
+    }
+    evict(cache, &mut results, need);
     crate::work::regeneration(cache.rebuilt, cache.reused, cache.work);
     results
+}
+
+/// Derives again, before `feature` is built, the bodies of the features
+/// it is made from that were let go of, and of those they are made from,
+/// in history order (what a feature is made from comes before it, or it
+/// has no body to let go of): each is built from the results before it,
+/// as it was, and gives the same bits.
+fn rederive(
+    doc: &Document,
+    results: &mut [FeatureResult],
+    at: &BTreeMap<FeatureId, usize>,
+    cache: &mut RegenCache,
+    build: &mut impl FnMut(
+        &Feature,
+        bool,
+        &[FeatureResult],
+        &mut RegenCache,
+    ) -> (FeatureResult, Option<FeatureId>),
+    feature: &Feature,
+) {
+    let inputs = feature.kind.inputs();
+    rederive_all(doc, results, at, cache, build, &inputs);
+}
+
+/// [`rederive`] for the bodies of `ids` and what they are made from.
+fn rederive_all(
+    doc: &Document,
+    results: &mut [FeatureResult],
+    at: &BTreeMap<FeatureId, usize>,
+    cache: &mut RegenCache,
+    build: &mut impl FnMut(
+        &Feature,
+        bool,
+        &[FeatureResult],
+        &mut RegenCache,
+    ) -> (FeatureResult, Option<FeatureId>),
+    ids: &[FeatureId],
+) {
+    // The features let go of that `ids` are made from, directly or
+    // through others that were let go of; each looked at once.
+    let gone = |cache: &RegenCache, id: FeatureId| -> Option<Feature> {
+        let entry = cache.entries.get(&id).filter(|entry| entry.evicted)?;
+        let index = *at.get(&id)?;
+        let result = results.get(index)?;
+        if result.body.is_some() || !matches!(result.status, Status::Ok) {
+            return None;
+        }
+        Some(
+            entry
+                .result
+                .followed
+                .as_deref()
+                .cloned()
+                .unwrap_or_else(|| entry.feature.clone()),
+        )
+    };
+    let mut needed: BTreeMap<usize, Feature> = BTreeMap::new();
+    let mut open: Vec<FeatureId> = ids.to_vec();
+    let mut seen: BTreeSet<FeatureId> = BTreeSet::new();
+    while let Some(id) = open.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(feature) = gone(cache, id) else {
+            continue;
+        };
+        open.extend(feature.kind.inputs());
+        if let Some(index) = at.get(&id) {
+            needed.insert(*index, feature);
+        }
+    }
+    for (index, feature) in needed {
+        let (earlier, rest) = results.split_at_mut(index);
+        let Some(result) = rest.first_mut() else {
+            continue;
+        };
+        crate::progress::report(&crate::progress::Progress {
+            phase: "deriving again",
+            feature: Some(feature.id.to_string()),
+            name: Some(feature.name.clone()),
+            step: index.saturating_add(1),
+            steps: doc.features.len(),
+        });
+        // Built as it was the first time: nothing that this feature or a
+        // later one takes (its own sources, and a source it keeps that a
+        // later feature took) was taken yet.
+        let taken: Vec<(usize, FeatureId)> = earlier
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let taker = r.consumed_by?;
+                (*at.get(&taker)? >= index).then_some((i, taker))
+            })
+            .collect();
+        for (i, _) in &taken {
+            if let Some(source) = earlier.get_mut(*i) {
+                source.consumed_by = None;
+            }
+        }
+        let made = build(&feature, false, earlier, cache).0;
+        for (i, taker) in &taken {
+            if let Some(source) = earlier.get_mut(*i) {
+                source.consumed_by = Some(*taker);
+            }
+        }
+        cache.rederived = cache.rederived.saturating_add(1);
+        let Some(body) = made.body else {
+            // Never silently: the result says so, differs from a full
+            // regeneration (the oracle finds it), and the entry stays as
+            // it is, to be derived again next time.
+            let why = match &made.status {
+                Status::Failed(reason) => reason.clone(),
+                other => format!("{other:?} and no body"),
+            };
+            result.status = Status::Failed(format!(
+                "the body of `{}` could not be derived again from what it is made from ({why}); this is a bug of the regeneration cache",
+                feature.name
+            ));
+            continue;
+        };
+        result.body = Some(Arc::clone(&body));
+        result.names.clone_from(&made.names);
+        result.instances.clone_from(&made.instances);
+        if let Some(entry) = cache.entries.get_mut(&feature.id) {
+            entry.result.body = Some(body);
+            entry.result.names = made.names;
+            entry.result.instances = made.instances;
+            entry.evicted = false;
+        }
+    }
+}
+
+/// Lets go of the bodies that went into later features beyond the budget,
+/// in the cache and in `results` alike; those `need` asks for are kept.
+/// The bodies the latest features took are kept first: an edit of a
+/// feature near the end of the history then finds what it is made from
+/// (the target and the tool of the last union, wherever in the history
+/// the tool was made), and what the earliest features took goes first.
+fn evict(cache: &mut RegenCache, results: &mut [FeatureResult], need: Need) {
+    if need == Need::All {
+        return;
+    }
+    let budget = cache.body_budget();
+    let at: BTreeMap<FeatureId, usize> = results
+        .iter()
+        .enumerate()
+        .map(|(index, r)| (r.id, index))
+        .collect();
+    // (where the taker stands, where the body stands), latest first.
+    let mut taken: Vec<(usize, usize)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.body.is_some())
+        .filter_map(|(index, r)| Some((*at.get(&r.consumed_by?)?, index)))
+        .collect();
+    taken.sort_unstable_by(|a, b| b.cmp(a));
+    let mut held = 0usize;
+    for (_, index) in taken {
+        let Some(result) = results.get_mut(index) else {
+            continue;
+        };
+        let Some(entry) = cache.entries.get_mut(&result.id) else {
+            continue;
+        };
+        held = held.saturating_add(entry.bytes);
+        if held > budget && !need.includes(result.id) {
+            entry.result.body = None;
+            entry.evicted = true;
+            result.body = None;
+            // The names of its edges and vertices go with it (derived
+            // from the body and the faces' names); the faces' names
+            // stay, so that a name can be followed through it.
+            if let Some(names) = result.names.as_deref().filter(|names| names.has_entities()) {
+                let kept = Arc::new(names.without_entities());
+                result.names = Some(Arc::clone(&kept));
+                entry.result.names = Some(kept);
+            }
+        }
+    }
 }
 
 /// The full context of the feature at `index` of the history (`stated`,
