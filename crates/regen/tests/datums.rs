@@ -235,6 +235,7 @@ fn a_datum_of_another_kind_or_a_body_is_refused_with_what_it_is() {
                     point: exprs(["0", "0", "0"]),
                     axis: exprs(["0", "0", "1"]),
                     angle: Expr::new("90 deg"),
+                    step: None,
                     about: Some(plane),
                 },
             }),

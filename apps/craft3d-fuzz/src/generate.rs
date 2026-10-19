@@ -688,10 +688,15 @@ impl Generator {
             self.axis()
         };
         let p = self.anchor(runner, std::slice::from_ref(&body));
-        vec![cmd(
-            "feature.pattern",
-            json!({"source": body.name, "count": count, "angle": angle, "axis": axis, "point": p, "name": name}),
-        )]
+        let mut params = json!({"source": body.name, "count": count, "angle": angle, "axis": axis, "point": p, "name": name});
+        // A screw now and then: the instances climb along the axis.
+        if self.rng.chance(25) {
+            let along = self.step_along(&body, 2);
+            if let Some(map) = params.as_object_mut() {
+                map.insert("step".into(), json!(along));
+            }
+        }
+        vec![cmd("feature.pattern", params)]
     }
 
     fn mirror(&mut self, runner: &mut Runner, bodies: &[Body], name: &str) -> Vec<Cmd> {

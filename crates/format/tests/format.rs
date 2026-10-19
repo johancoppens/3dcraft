@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 22,
+  "format_version": 23,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 23"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 24"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 23,
+            file: 24,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 23")
+        text.contains("version 24")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1433,6 +1433,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
                 source: body,
                 count: Expr::new("teeth"),
                 layout: PatternLayout::Circular {
+                    step: None,
                     about: None,
                     point: exprs(["0", "0", "0"]),
                     axis: exprs(["0", "0", "1"]),
@@ -1655,7 +1656,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 22);
+    assert_eq!(value["format_version"], 23);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1841,7 +1842,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 22);
+    assert_eq!(value["format_version"], 23);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2225,6 +2226,7 @@ fn datum_axes_are_written_like_this_and_round_trip() {
                 point: exprs(["0", "0", "0"]),
                 axis: exprs(["0", "0", "1"]),
                 angle: Expr::new("120 deg"),
+                step: None,
                 about,
             },
         })
@@ -2856,7 +2858,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 22);
+    assert_eq!(value["format_version"], 23);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3649,7 +3651,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 22);
+    assert_eq!(value["format_version"], 23);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3762,7 +3764,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 22);
+    assert_eq!(FORMAT_VERSION, 23);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -3778,6 +3780,57 @@ fn a_fill_is_written_like_this_and_round_trips() {
     // A version-21 file opens as it was and is saved as version 22.
     let older = to_manifest_json(&small()).unwrap();
     let old = older.replacen(&version_field(), "\"format_version\": 21", 1);
+    assert_ne!(old, older);
+    let opened = from_manifest_json(old.as_bytes()).unwrap();
+    assert_eq!(opened, small());
+    assert_eq!(to_manifest_json(&opened).unwrap(), older);
+}
+
+#[test]
+fn a_screw_pattern_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Pattern, PatternLayout};
+    let mut doc = small();
+    doc.set_variable("storey", "2.8 m").unwrap();
+    let circular = |step: Option<&str>| {
+        FeatureKind::Pattern(Pattern {
+            source: FeatureId(1),
+            count: Expr::new("28"),
+            layout: PatternLayout::Circular {
+                point: exprs(["0", "0", "0"]),
+                axis: exprs(["0", "0", "1"]),
+                angle: Expr::new("360 deg / 28"),
+                about: None,
+                step: step.map(Expr::new),
+            },
+        })
+    };
+    doc.add_feature(Some("Stair"), circular(Some("storey / 28")))
+        .unwrap();
+    doc.add_feature(Some("Ring"), circular(None)).unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(FORMAT_VERSION, 23);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[1]["kind"],
+        serde_json::json!({"type": "pattern", "source": 1, "count": "28",
+            "layout": {"type": "circular", "point": ["0", "0", "0"], "axis": ["0", "0", "1"],
+                       "angle": "360 deg / 28", "step": "storey / 28"}})
+    );
+    // A plain turn is written as it always was: no `step`.
+    assert_eq!(
+        features[2]["kind"],
+        serde_json::json!({"type": "pattern", "source": 1, "count": "28",
+            "layout": {"type": "circular", "point": ["0", "0", "0"], "axis": ["0", "0", "1"],
+                       "angle": "360 deg / 28"}})
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A version-22 file opens as it was and is saved as version 23.
+    let older = to_manifest_json(&small()).unwrap();
+    let old = older.replacen(&version_field(), "\"format_version\": 22", 1);
     assert_ne!(old, older);
     let opened = from_manifest_json(old.as_bytes()).unwrap();
     assert_eq!(opened, small());

@@ -197,12 +197,37 @@ fn instances(
                     axis,
                     angle: step,
                     about,
+                    step: rise,
                 } => {
                     let step = angle(doc, variables, "angle", step)?;
                     if !step.is_finite() {
                         return Err("angle is not finite".to_string());
                     }
-                    if n > 1 {
+                    // A screw: each instance also climbs `rise` along the
+                    // axis. A step of exactly zero is no step, and the
+                    // pattern is the plain turn it was before the step
+                    // existed, map for map; one within the tolerance is
+                    // neither a climb nor nothing, and is refused as the
+                    // linear pattern refuses such a step.
+                    let rise = match rise {
+                        Some(rise) => length(doc, variables, "step", rise)?,
+                        None => 0.0,
+                    };
+                    if !rise.is_finite() {
+                        return Err("step is not finite".to_string());
+                    }
+                    if rise != 0.0 && rise.abs() <= doc.tolerance.linear {
+                        let unit = doc.units.length.symbol();
+                        return Err(format!(
+                            "step {rise} {unit} is within the tolerance {} {unit}: give none (step: null) for a plain turn",
+                            doc.tolerance.linear
+                        ));
+                    }
+                    let screw = rise != 0.0;
+                    // Instances of a plain turn land on each other when
+                    // the turn is nothing or goes past a full circle; a
+                    // screw's instances climb past each other.
+                    if n > 1 && !screw {
                         if step.abs() <= doc.tolerance.angular {
                             return Err(
                                 "angle is zero: the instances would lie on top of each other"
@@ -233,11 +258,31 @@ fn instances(
                         ),
                     };
                     for i in 0..n {
-                        maps.push(if i == 0 {
+                        // A screw may go round many times: its angle is
+                        // brought back into one turn so a long screw keeps
+                        // its precision. (Only there: the plain turn's
+                        // maps stay what they were, bit for bit.)
+                        let turn = if screw {
+                            (step * i as f64).rem_euclid(TAU)
+                        } else {
+                            step * i as f64
+                        };
+                        let turned = if i == 0 {
                             Transform::IDENTITY
                         } else {
-                            Transform::rotation_about(point, axis, step * i as f64)
+                            Transform::rotation_about(point, axis, turn)
                                 .ok_or_else(|| degenerate("the rotation"))?
+                        };
+                        maps.push(if screw && i > 0 {
+                            // The shift is along the axis turned about,
+                            // so it commutes with the turn.
+                            let shift = axis * (rise * i as f64);
+                            if !shift.is_finite() {
+                                return Err(degenerate("the step"));
+                            }
+                            turned.then(&Transform::translation(shift))
+                        } else {
+                            turned
                         });
                     }
                 }

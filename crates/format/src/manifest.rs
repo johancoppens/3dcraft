@@ -621,6 +621,10 @@ pub enum PatternLayout {
         /// `axis` are then kept, unused. Written only when set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<u64>,
+        /// A screw: the length each instance is moved along the axis
+        /// beyond its turn (an expression). Written only when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
     },
 }
 
