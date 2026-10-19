@@ -33,14 +33,14 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// A body's edges as polylines, one per edge in the order of the B-rep
 /// (`craft3d_tess::tessellate_edges`).
-pub type Edges = Vec<Vec<Vec3>>;
+pub type EdgePolylines = Vec<Vec<Vec3>>;
 
 /// A body meshed: shared, so that the scenes of several states of a
 /// document hold one copy of the mesh of a body they have in common.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BodyMesh {
     pub mesh: Arc<Mesh>,
-    pub edges: Arc<Edges>,
+    pub edges: Arc<EdgePolylines>,
     /// True when the body was meshed at a coarser tolerance than asked
     /// for, to stay within what the tessellator can do or within its own
     /// budget ([`Limit::Own`]).
@@ -193,13 +193,15 @@ impl BodyFacts {
     }
 }
 
-/// How a kept mesh was sampled: the tolerance and the angle as bits, and
-/// for a mesh that is not the plain one at that tolerance (coarsened for
-/// a budget of the body's own, or an error) that budget.
+/// How a kept mesh was sampled: the tolerance and the angle as bits, the
+/// most segments a patch may have, and for a mesh that is not the plain
+/// one at that sampling (coarsened for a budget of the body's own, or an
+/// error) that budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MeshKey {
     tolerance: u64,
     angle: Option<u64>,
+    max_segments: u32,
     own: Option<usize>,
 }
 
@@ -313,6 +315,7 @@ impl MeshStore {
         let plain = MeshKey {
             tolerance: params.chordal_tolerance.to_bits(),
             angle: params.max_angle.map(f64::to_bits),
+            max_segments: params.max_segments,
             own: None,
         };
         let exact = match limit {
@@ -373,22 +376,8 @@ impl MeshStore {
                 })
             }),
         };
-        let key = match (&made, exact) {
-            // The plain mesh at the tolerance: within the limit it was
-            // made under, so the mesh made without one.
-            (Ok(meshed), _) if !meshed.coarsened && limit.allows(meshed.mesh.triangles.len()) => {
-                Some(plain)
-            }
-            // Coarsened for a budget of its own, or failed under it (or
-            // under none): what that limit gives, and only it.
-            (_, Some(exact)) => Some(exact),
-            // Over what the scene had left by a handful (faces parted
-            // after the budget was looked at), or the budget's error:
-            // the scene discards it, and so does the store.
-            (_, None) => None,
-        };
-        if let Some(key) = key {
-            let bytes = made.as_ref().map_or(0, body_mesh_bytes);
+        if let Some(key) = key_to_keep(&made, limit, plain, exact) {
+            let bytes = entry_bytes(made.as_ref().map_or(0, body_mesh_bytes), &made);
             self.lock()
                 .keep(body, Key::Mesh(key), Kept::Mesh(made.clone()), bytes);
         }
@@ -403,11 +392,52 @@ impl MeshStore {
             return found;
         }
         let facts = Arc::new(BodyFacts::of(body, names.map(Arc::as_ref)));
-        let bytes = facts.bytes();
+        let bytes = facts.bytes().saturating_add(std::mem::size_of::<Entry>());
         self.lock()
             .keep(body, key, Kept::Facts(Arc::clone(&facts)), bytes);
         facts
     }
+}
+
+/// Under which key what the tessellator made for `limit` is kept, or
+/// `None` for what is not kept: `plain` is the key of the mesh at the
+/// sampling without a budget, `exact` the key of the limit itself when
+/// it has one (none for what a scene's budget has left).
+fn key_to_keep(
+    made: &Result<BodyMesh, TessError>,
+    limit: Limit,
+    plain: MeshKey,
+    exact: Option<MeshKey>,
+) -> Option<MeshKey> {
+    match (made, exact) {
+        // The plain mesh at the tolerance: within the limit it was made
+        // under, so the mesh made without one.
+        (Ok(meshed), _) if !meshed.coarsened && limit.allows(meshed.mesh.triangles.len()) => {
+            Some(plain)
+        }
+        // The work allowance of the operation that asked ran out
+        // (`craft3d_geom::allowance`): a state of the caller, not of the
+        // body; asked again with the allowance of another operation, the
+        // body may well mesh.
+        (Err(TessError::Spent), _) => None,
+        // Coarsened for a budget of its own, or failed under it (or under
+        // none): what that limit gives, and only it.
+        (_, Some(exact)) => Some(exact),
+        // Over what the scene had left by a handful (faces parted after
+        // the budget was looked at), or the budget's error: the scene
+        // discards it, and so does the store.
+        (_, None) => None,
+    }
+}
+
+/// What an entry of `payload` bytes of meshes or facts weighs in the
+/// budget: the entry itself and, for an error, its text too, so that an
+/// error weighs something and a body that is refused at many samplings
+/// cannot fill the store with entries that are never let go.
+fn entry_bytes<T>(payload: usize, made: &Result<T, TessError>) -> usize {
+    let own = std::mem::size_of::<Entry>();
+    let text = made.as_ref().err().map_or(0, |e| e.to_string().len());
+    payload.saturating_add(own).saturating_add(text)
 }
 
 impl Inner {
@@ -679,15 +709,96 @@ mod tests {
         assert!(store.bytes() > 0);
     }
 
-    /// An error is remembered for the limit it was made under.
+    /// An error is remembered for the limit it was made under, and
+    /// weighs something: a body that is refused at many samplings is
+    /// held to the budget like meshes are.
     #[test]
-    fn an_error_is_remembered_for_its_limit() {
+    fn an_error_is_remembered_for_its_limit_and_weighs_something() {
         let store = MeshStore::new(usize::MAX);
         let body = block(2.0);
         let invalid = params(f64::NAN);
         assert!(store.mesh(&body, &invalid, Limit::None).is_err());
         assert!(store.mesh(&body, &invalid, Limit::None).is_err());
         assert_eq!(store.len(), 1);
+        let each = store.bytes();
+        assert!(each >= std::mem::size_of::<Entry>(), "{each} bytes");
+
+        // A body with a face that cannot be meshed (its loop names an
+        // edge that is not there), asked for at a hundred tolerances:
+        // within a budget of ten entries' worth.
+        let mut broken = (*block(3.0)).clone();
+        broken.loops[0].coedges[0].edge = craft3d_topo::EdgeId(99);
+        let broken = Arc::new(broken);
+        let store = MeshStore::new(each * 10);
+        for k in 1..=100 {
+            let refused = store.mesh(&broken, &params(1e-3 * k as f64), Limit::None);
+            assert!(
+                matches!(refused, Err(TessError::InvalidBody(_))),
+                "{refused:?}"
+            );
+        }
+        assert!(store.len() <= 10, "{} entries", store.len());
+        assert!(store.bytes() <= each * 10);
+    }
+
+    /// The limit on segments is part of the sampling: another limit is
+    /// another mesh.
+    #[test]
+    fn the_segment_limit_is_part_of_the_sampling() {
+        let store = MeshStore::new(usize::MAX);
+        let body = Arc::new(primitives::cylinder(&frame(), 1.0, 2.0).expect("a cylinder"));
+        let fine = params(1e-5);
+        let meshed = store.mesh(&body, &fine, Limit::None).unwrap();
+        let few = TessParams {
+            max_segments: 8,
+            ..fine
+        };
+        let coarse = store.mesh(&body, &few, Limit::None).unwrap();
+        assert_eq!(store.len(), 2);
+        assert!(!Arc::ptr_eq(&meshed.mesh, &coarse.mesh));
+        assert!(coarse.coarsened || coarse.mesh.triangles.len() < meshed.mesh.triangles.len());
+        let again = store.mesh(&body, &few, Limit::None).unwrap();
+        assert!(Arc::ptr_eq(&coarse.mesh, &again.mesh));
+    }
+
+    /// A body the tessellator could not finish within the work allowance
+    /// of the operation that asked (`TessError::Spent`) is not remembered
+    /// as refused: with another allowance it meshes.
+    #[test]
+    fn running_out_of_the_work_allowance_is_not_remembered() {
+        let store = MeshStore::new(usize::MAX);
+        let body = Arc::new(primitives::cylinder(&frame(), 1.0, 2.0).expect("a cylinder"));
+        let spent =
+            craft3d_geom::allowance::within(1, || store.mesh(&body, &params(1e-4), Limit::None));
+        assert!(matches!(spent, Err(TessError::Spent)), "{spent:?}");
+        assert_eq!(store.len(), 0);
+        assert!(store.mesh(&body, &params(1e-4), Limit::None).is_ok());
+        assert_eq!(store.len(), 1);
+        // The rule itself, for an allowance that runs out under any limit.
+        let plain = MeshKey {
+            tolerance: 1.0f64.to_bits(),
+            angle: None,
+            max_segments: 1024,
+            own: None,
+        };
+        for limit in [Limit::None, Limit::Own(10), Limit::Left(10)] {
+            let exact = match limit {
+                Limit::None => Some(plain),
+                Limit::Own(cap) => Some(MeshKey {
+                    own: Some(cap),
+                    ..plain
+                }),
+                Limit::Left(_) => None,
+            };
+            assert_eq!(
+                key_to_keep(&Err(TessError::Spent), limit, plain, exact),
+                None
+            );
+            assert_eq!(
+                key_to_keep(&Err(TessError::TooManyVertices), limit, plain, exact),
+                exact
+            );
+        }
     }
 
     /// Within the budget the least recently used meshes go first, and the

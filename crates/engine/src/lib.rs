@@ -51,7 +51,7 @@ mod sweep_path_cmds;
 mod typed;
 mod workspace;
 
-pub use meshes::{BodyFacts, Edges};
+pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
     SceneFaces, SceneNear, ScenePick, ScenePointed, SceneVertices,

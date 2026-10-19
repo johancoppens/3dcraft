@@ -8,7 +8,9 @@
 //! Nothing here can change a document: edits are commands.
 
 use crate::mass::mass_of;
-use crate::meshes::{BodyFacts, Edges, Limit, MeshStore, mesh_bytes, points_bytes, text_bytes};
+use crate::meshes::{
+    BodyFacts, EdgePolylines, Limit, MeshStore, mesh_bytes, points_bytes, text_bytes,
+};
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
@@ -293,7 +295,7 @@ pub struct SceneBody {
     /// points the mesh has along each edge, so a line drawn through them
     /// lies on the border between the faces it separates. Shared like
     /// [`Self::mesh`].
-    pub edges: Arc<Edges>,
+    pub edges: Arc<EdgePolylines>,
     /// The names of the body's faces, edges and vertices, which faces
     /// each edge lies between and which meet in each vertex, and its
     /// vertices: worked out once per body and shared like
@@ -1680,7 +1682,10 @@ pub(crate) fn picture_scene_of(
         let Some(factor) = coarser_by(&stop, DISPLAY_MAX_TRIANGLES) else {
             return scene;
         };
-        let next = tolerance * factor;
+        // Each rung at least twice as coarse, on the ladder's rungs (the
+        // estimate moves with every edit; `on_rung`): still above the
+        // tolerance, as a rung's nearest neighbour is within 4.5 %.
+        let next = on_rung(tolerance * factor);
         if !(next.is_finite() && next > tolerance) {
             scene.problems.push(format!(
                 "the picture has more than {DISPLAY_MAX_TRIANGLES} triangles at any chordal tolerance"
@@ -1707,7 +1712,8 @@ struct DisplayRule {
 /// next tolerance is coarser by that ratio (triangles grow as the inverse
 /// of the tolerance at worst, so the estimate errs towards another
 /// attempt, never towards a coarser mesh than needed), at least twice as
-/// coarse and at most 64 times. At or beyond `cap` no budget applies, and
+/// coarse and at most 64 times, on the ladder's rungs ([`on_rung`]). At or
+/// beyond `cap` no budget applies, and
 /// the scene is the first picture itself: the same tolerance gives the
 /// same mesh. `None` when `cancel` was set meanwhile.
 fn build_for_display(
@@ -1742,7 +1748,10 @@ fn build_for_display(
             });
         };
         let factor = coarser_by(&stop, max_triangles)?;
-        tolerance = (tolerance * factor).min(cap);
+        // On the ladder's rung, like the first attempt (`on_rung`): the
+        // estimate moves a little with every edit, and a model over the
+        // budget would otherwise be meshed again whole at every step.
+        tolerance = on_rung((tolerance * factor).min(cap));
     }
     // At the cap, out of attempts below it, or asked for something
     // coarser from the start: no budget.
@@ -2129,8 +2138,10 @@ impl Session {
     /// The most bytes of scenes kept for the open documents and their
     /// earlier states ([`DEFAULT_SCENE_BUDGET`]); the least recently shown
     /// go first. The active document's scenes are kept whatever they hold.
-    /// The meshes of the bodies, which the scenes share, are kept within
-    /// the same number of bytes ([`Self::mesh_bytes`]).
+    /// The meshes of the bodies are kept within a budget of the same size
+    /// of their own ([`Self::mesh_bytes`]); as the kept scenes hold their
+    /// meshes from that store, the two overlap, and the memory is at most
+    /// their sum: twice `bytes`.
     pub fn set_scene_budget(&mut self, bytes: usize) {
         self.scene.budget = bytes;
         self.scene.evict();

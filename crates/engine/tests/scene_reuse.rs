@@ -306,6 +306,79 @@ fn budgeted_and_plain_builds_share_their_meshes() {
     );
 }
 
+/// A display quality the ladder has to climb (a budget the fine scene is
+/// over, so two attempts at least): the rungs it climbs to stand on the
+/// ladder, so a rollback that moves the estimate a little (a pearl of
+/// one face rolled back among two hundred faces) leaves the tolerance,
+/// and the bodies that stay keep their meshes. (Before 2026-10-19 the
+/// second attempt's tolerance was the first times a factor from the
+/// estimate, another number after every edit, and a model over the
+/// budget was meshed again whole at every step.)
+#[test]
+fn a_climbed_ladder_keeps_the_meshes_of_the_bodies_that_stay() {
+    let mut steps = script();
+    steps.push((
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [-30, -30, 1], "name": "Tile"}),
+    ));
+    steps.push((
+        "feature.pattern",
+        json!({"source": "Tile", "count": 24, "step": [2.5, 0, 0], "name": "Tiles"}),
+    ));
+    for (k, name) in ["Pearl1", "Pearl2"].into_iter().enumerate() {
+        steps.push((
+            "feature.sphere",
+            json!({"radius": 1.5, "position": [-20.0 + 10.0 * k as f64, 25, 5], "name": name}),
+        ));
+    }
+    let mut warm = fresh(&steps);
+    let fine = SceneQuality::Display {
+        relative: 1e-5,
+        max_triangles: usize::MAX,
+        max_angle: None,
+    };
+    let unbounded = scene(&mut warm, fine);
+    let budget = unbounded.triangles() / 3;
+    let climbed = SceneQuality::Display {
+        relative: 1e-5,
+        max_triangles: budget,
+        max_angle: None,
+    };
+    let shown = scene(&mut warm, climbed);
+    assert!(shown.coarsened && shown.triangles() <= budget);
+    assert!(shown.tolerance > unbounded.tolerance);
+    // Back past the second pearl, then past both.
+    let steps_back = ["Pearl1", "Ring"];
+    let mut kept = 0;
+    let mut stayed = 0;
+    for name in steps_back {
+        run(&mut warm, "history.rollback", json!({"feature": name}));
+        let now = scene(&mut warm, climbed);
+        let mut cold = fresh(&steps);
+        for earlier in steps_back.iter().take_while(|n| **n != name) {
+            run(&mut cold, "history.rollback", json!({"feature": earlier}));
+        }
+        run(&mut cold, "history.rollback", json!({"feature": name}));
+        assert_same(&scene(&mut cold, climbed), &now, &format!("{name} climbed"));
+        assert!(now.coarsened);
+        let (same, other) = shared(&shown, &now);
+        println!(
+            "rolled back to {name}: tolerance {} (was {}), {same} bodies kept their mesh, {other} meshed again",
+            now.tolerance, shown.tolerance
+        );
+        if now.tolerance == shown.tolerance {
+            assert_eq!(other, 0, "{name}: a body that stayed was meshed again");
+            kept += same;
+            stayed += 1;
+        }
+    }
+    assert!(
+        stayed >= 1,
+        "the climbed tolerance stayed through {stayed} steps"
+    );
+    assert!(kept >= 4, "{kept} bodies kept their mesh");
+}
+
 /// The meshes kept stay within the budget the scenes have, and go with
 /// the states that are no longer held.
 #[test]

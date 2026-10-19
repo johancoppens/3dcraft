@@ -1249,11 +1249,19 @@ fn a_change_of_display_quality_reaches_the_direct_path() {
     assert_eq!(shell.render_count(), renders + 1);
     // The display scene at the new quality: the automatic fraction of
     // the model's size, on the display rule's ladder (2026-10-19), so
-    // about the automatic scene's triangles, fewer than the fine scene's.
+    // nearly the automatic scene's triangles, fewer than the fine
+    // scene's. How near: the tolerance is within 4.43 % of the automatic
+    // one (the nearest rung, plus the size taken from the first picture's
+    // mesh, within its chordal tolerance of the exact area: under 0.1 %);
+    // a circle's segments grow as the inverse square root of the
+    // tolerance and a sphere's triangles as its inverse, so at most
+    // 4.43 % of the triangles, plus the rounding of each circle's segment
+    // count to a whole number (one segment in about thirty, 3.3 %, for
+    // the post, the hole and the fillet): under 10 %.
     let coarser = scene(&mut session, shell.scene_quality());
     assert!(coarser.triangles() < shown.triangles());
     assert!(
-        coarser.triangles().abs_diff(automatic.triangles()) * 4 <= automatic.triangles(),
+        coarser.triangles().abs_diff(automatic.triangles()) * 10 <= automatic.triangles(),
         "{} against {} automatic",
         coarser.triangles(),
         automatic.triangles()
