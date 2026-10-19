@@ -2,13 +2,15 @@
 // passes of a see-through picture that is cut open. This source follows
 // `scene.wgsl`, `peel_samples.wgsl` and `cut.wgsl` in one module.
 //
-// A fragment is shaded once per pixel, so whether it is cut away is
-// decided at the pixel's centre for all of its samples, in the pass that
-// counts and in the pass that draws alike: per sample the count is of the
-// fragments that were left out there, and the cap takes the samples where
-// it is odd, through its sample mask. Along the cut the picture is
-// therefore decided per pixel (the outline of the cap is drawn over it as
-// lines); the silhouettes keep their samples.
+// The count is per sample (`vs_parity`, `fs_parity` in cut.wgsl: the
+// distance from the plane interpolated at the sample), so per sample the
+// count is of exactly the surfaces that are cut away at its own point,
+// and the cap takes the samples where it is odd, through its sample mask.
+// A fragment that draws is shaded once per pixel, so whether it is cut
+// away is decided once for all of its samples, at the centroid of the
+// ones it covers: along the cut a surface is therefore cut per fragment,
+// within the pixel (the outline of the cap is drawn over it as lines);
+// the silhouettes keep their samples.
 
 // The count of `fs_parity`, per sample: 1 where the number of fragments
 // left out there is odd.

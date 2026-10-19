@@ -13,6 +13,22 @@
 // there", and the cap is then a quad in the plane, drawn after the
 // triangles and kept on the samples where the count is odd
 // (`cut_flat.wgsl`, `cut_samples.wgsl`).
+//
+// Where in the pixel the distance from the plane is taken decides the
+// count, and the source is a template for it (the markers SIDE_SAMPLE and
+// SIDE_CENTROID, filled by `craft3d_gpu::renderer::scene_source_for`).
+// With several samples per pixel the count is per sample: the count pass
+// has a vertex stage of its own (`vs_parity`) whose distance is
+// interpolated at the sample, so a sample is counted by exactly the
+// surfaces that are cut away at its own point, as the CPU counts; and the
+// passes that draw take the distance at the centroid of the covered
+// samples, never beyond the triangle. Taken at the pixel's centre, as it
+// was, the distance of a sliver triangle (the silhouette of a curved face
+// seen edge-on) is extrapolated past its edge and changes sign there, and
+// a sample it covers is counted or kept wrongly: a lone sample of the cap
+// missing well away from the cut's outline (docs/design/rendering.md,
+// 2026-10-19). With one sample per pixel the centre is the sample and the
+// markers are empty.
 
 // `craft3d_render::SECTION_PARALLEL`.
 const PARALLEL: f32 = 0.9999847412109375;
@@ -27,9 +43,15 @@ struct CutOut {
     @location(3) @interpolate(flat) face: u32,
     @location(4) dist: f32,
     // The distance from the plane, positive in the half that is cut away
-    // (`Cut::side`).
-    @location(5) side: f32,
+    // (`Cut::side`); within the triangle's covered samples where there
+    // are several.
+    @location(5) {{SIDE_CENTROID}} side: f32,
     @location(6) @interpolate(flat) color: u32,
+}
+
+// `Cut::side` at a corner.
+fn side_of(in: VertexIn) -> f32 {
+    return dot(in.position, scene.section.xyz) - scene.section.w;
 }
 
 @vertex
@@ -43,7 +65,24 @@ fn vs_cut(in: VertexIn) -> CutOut {
     out.face = whole.face;
     out.dist = whole.dist;
     out.color = whole.color;
-    out.side = dot(in.position, scene.section.xyz) - scene.section.w;
+    out.side = side_of(in);
+    return out;
+}
+
+// What the count pass needs of a vertex: the triangle's own normal and
+// the distance from the plane, at the sample where there are several.
+struct ParityOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) flat_normal: vec3<f32>,
+    @location(1) {{SIDE_SAMPLE}} side: f32,
+}
+
+@vertex
+fn vs_parity(in: VertexIn) -> ParityOut {
+    var out: ParityOut;
+    out.clip = vertex(in).clip;
+    out.flat_normal = in.flat_normal;
+    out.side = side_of(in);
     return out;
 }
 
@@ -60,14 +99,20 @@ fn whole_of(in: CutOut) -> VertexOut {
     return out;
 }
 
-// `Cut::clips`: true where the fragment is cut away. A side that is not a
-// number fails both comparisons and is kept, as on the CPU.
-fn clipped(in: CutOut) -> bool {
-    let facing = dot(in.flat_normal, scene.section.xyz);
-    if abs(in.side) <= scene.section_cap.w && abs(facing) >= PARALLEL {
+// `Cut::clips`: true where a point of a triangle with the normal
+// `flat_normal` at the distance `side` from the plane is cut away. A side
+// that is not a number fails both comparisons and is kept, as on the CPU.
+fn clips(side: f32, flat_normal: vec3<f32>) -> bool {
+    let facing = dot(flat_normal, scene.section.xyz);
+    if abs(side) <= scene.section_cap.w && abs(facing) >= PARALLEL {
         return facing < 0.0;
     }
-    return in.side > 0.0;
+    return side > 0.0;
+}
+
+// True where the fragment is cut away.
+fn clipped(in: CutOut) -> bool {
+    return clips(in.side, in.flat_normal);
 }
 
 // `Cut::holds_cap`: the cap stays within the box around the mesh.
@@ -88,10 +133,11 @@ fn cap_data(in: CutOut) -> vec2<u32> {
 }
 
 // Counts the fragments that are left out, modulo two: the target's blend
-// is "one minus what was there".
+// is "one minus what was there". Per sample where there are several
+// (`ParityOut`).
 @fragment
-fn fs_parity(in: CutOut) -> @location(0) vec4<f32> {
-    if !clipped(in) {
+fn fs_parity(in: ParityOut) -> @location(0) vec4<f32> {
+    if !clips(in.side, in.flat_normal) {
         discard;
     }
     return vec4<f32>(1.0);

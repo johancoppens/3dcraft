@@ -453,16 +453,19 @@ pub(crate) fn fragment_depth(device: &wgpu::Device) -> bool {
 }
 
 /// `scene.wgsl` followed by `more`, with its template filled in for
-/// `device` ([`fragment_depth`]).
+/// `device` ([`fragment_depth`]) and one sample per pixel.
 pub(crate) fn scene_source(device: &wgpu::Device, more: &[&str]) -> String {
-    scene_source_for(fragment_depth(device), more)
+    scene_source_for(fragment_depth(device), false, more)
 }
 
 /// [`scene_source`] for a backend that does (`fragment_depth`) or does
-/// not write the depth in the fragment shader: both variants of every
-/// composition are checked by the tests below, so that a machine without
-/// an OpenGL adapter still validates the OpenGL shaders.
-pub(crate) fn scene_source_for(fragment_depth: bool, more: &[&str]) -> String {
+/// not write the depth in the fragment shader, and for a renderer with
+/// several samples per pixel (`multisampled`: the count of a section is
+/// then per sample and a drawn fragment's cut is decided at its centroid,
+/// `cut.wgsl`) or with one. Every variant of every composition is checked
+/// by the tests below, so that a machine without an OpenGL adapter still
+/// validates the OpenGL shaders.
+pub(crate) fn scene_source_for(fragment_depth: bool, multisampled: bool, more: &[&str]) -> String {
     let mut source = include_str!("scene.wgsl").to_string();
     for part in more {
         source.push('\n');
@@ -477,10 +480,20 @@ pub(crate) fn scene_source_for(fragment_depth: bool, more: &[&str]) -> String {
     } else {
         ("", "", "clip_z")
     };
+    let (sample, centroid) = if multisampled {
+        (
+            "@interpolate(perspective, sample)",
+            "@interpolate(perspective, centroid)",
+        )
+    } else {
+        ("", "")
+    };
     source
         .replace("{{FRAG_DEPTH}}", declare)
         .replace("{{SET_DEPTH}}", set)
         .replace("{{STORED_DEPTH}}", stored)
+        .replace("{{SIDE_SAMPLE}}", sample)
+        .replace("{{SIDE_CENTROID}}", centroid)
 }
 
 /// The state every pass over the triangles shares: both sides of every
@@ -1543,21 +1556,24 @@ mod template_tests {
 
     /// The five compositions the renderers make of `scene.wgsl`
     /// (`Renderer`/`Onscreen`, `peel::scene_module` and `cut::module`,
-    /// each for one sample per pixel or for several).
-    fn compositions() -> Vec<(&'static str, Vec<&'static str>)> {
+    /// each for one sample per pixel or for several), with whether they
+    /// are the multisampled ones.
+    fn compositions() -> Vec<(&'static str, bool, Vec<&'static str>)> {
         let peel = include_str!("peel.wgsl");
         let peel_samples = include_str!("peel_samples.wgsl");
         let cut = include_str!("cut.wgsl");
         vec![
-            ("scene", vec![]),
-            ("scene + peel", vec![peel]),
-            ("scene + peel_samples", vec![peel_samples]),
+            ("scene", false, vec![]),
+            ("scene + peel", false, vec![peel]),
+            ("scene + peel_samples", true, vec![peel_samples]),
             (
                 "scene + peel + cut + cut_flat",
+                false,
                 vec![peel, cut, include_str!("cut_flat.wgsl")],
             ),
             (
                 "scene + peel_samples + cut + cut_samples",
+                true,
                 vec![peel_samples, cut, include_str!("cut_samples.wgsl")],
             ),
         ]
@@ -1565,13 +1581,20 @@ mod template_tests {
 
     #[test]
     fn every_composition_validates_in_both_variants() {
-        for (name, more) in compositions() {
+        for (name, multisampled, more) in compositions() {
             for fragment_depth in [false, true] {
                 let label = format!("{name}, fragment depth {fragment_depth}");
-                let source = scene_source_for(fragment_depth, &more);
+                let source = scene_source_for(fragment_depth, multisampled, &more);
                 assert!(
                     !source.contains("{{"),
                     "{label}: a marker was left: {source}"
+                );
+                // The count of a section is per sample where there are
+                // several, and nowhere else.
+                assert_eq!(
+                    source.contains("@interpolate(perspective, sample)"),
+                    multisampled && more.len() > 1,
+                    "{label}"
                 );
                 let module = naga::front::wgsl::parse_str(&source)
                     .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(&source)));
