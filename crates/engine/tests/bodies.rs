@@ -1059,6 +1059,13 @@ fn a_screw_pattern_refuses_what_it_cannot_make() {
         json!({"source": "Tread", "count": 4, "angle": "10 deg", "step": [0, 0, "100 mm"]}),
     );
     assert!(e.contains("one length along the axis"), "{e}");
+    // One length without an angle: a screw's step, told to give the angle.
+    let e = error(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tread", "count": 4, "step": "100 mm"}),
+    );
+    assert!(e.contains("needs `angle`"), "{e}");
     // Not a length: the feature fails and says so.
     run(
         &mut s,
@@ -1066,6 +1073,18 @@ fn a_screw_pattern_refuses_what_it_cannot_make() {
         json!({"source": "Tread", "count": 4, "angle": "10 deg", "step": "5 deg", "name": "Stair"}),
     );
     assert_failed(&mut s, "Stair", &["step", "length is needed"]);
+    // Within the tolerance: neither a climb nor nothing, so refused, not
+    // dropped (an exact zero is a plain turn).
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Stair", "step": "1e-7 mm"}),
+    );
+    assert_failed(
+        &mut s,
+        "Stair",
+        &["step", "within the tolerance", "step: null"],
+    );
     run(
         &mut s,
         "feature.edit",

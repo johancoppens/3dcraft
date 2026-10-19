@@ -136,6 +136,11 @@ fn feature_pattern(session: &mut Session, params: &Value) -> Run {
                     "{ID}: `{key}` belongs to a circular pattern (with `angle`), not to one with `step`"
                 ));
             }
+            if !matches!(p.get("step"), Some(Value::Array(_))) {
+                return fail(format!(
+                    "{ID}: `step` as one length is the step of a screw and needs `angle` (the turn between instances); a linear pattern's `step` is a shift [x, y, z]"
+                ));
+            }
             let Some(step) = p.expr3("step")? else {
                 return fail(format!("{ID}: `step` is missing"));
             };

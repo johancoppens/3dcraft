@@ -163,7 +163,7 @@ fn a_screw_climbs_the_other_way_with_a_negative_step() {
 }
 
 #[test]
-fn without_a_step_or_with_one_within_the_tolerance_it_is_the_plain_turn() {
+fn without_a_step_or_with_a_step_of_zero_it_is_the_plain_turn() {
     let (mut doc, block, _) = block_and_axis();
     let id = doc
         .add_feature(None, screw(block, None, "6", "60 deg", None))
@@ -173,7 +173,7 @@ fn without_a_step_or_with_one_within_the_tolerance_it_is_the_plain_turn() {
     // text is equal bits.
     let plain_maps = format!("{:?}", plain.feature(id).unwrap().instances);
     let plain_body = format!("{:?}", plain.feature(id).unwrap().body);
-    for step in ["0", "0 mm", "1e-9"] {
+    for step in ["0", "0 mm", "0 * 3 mm"] {
         let (mut doc, block, _) = block_and_axis();
         let id = doc
             .add_feature(None, screw(block, None, "6", "60 deg", Some(step)))
@@ -184,16 +184,29 @@ fn without_a_step_or_with_one_within_the_tolerance_it_is_the_plain_turn() {
             "{step}: {:?}",
             regen.feature(id).unwrap().status
         );
-        assert_eq!(
-            format!("{:?}", regen.feature(id).unwrap().instances),
-            plain_maps,
-            "{step}"
-        );
-        assert_eq!(
-            format!("{:?}", regen.feature(id).unwrap().body),
-            plain_body,
-            "{step}"
-        );
+        let result = regen.feature(id).unwrap();
+        assert_eq!(format!("{:?}", result.instances), plain_maps, "{step}");
+        assert_eq!(format!("{:?}", result.body), plain_body, "{step}");
+    }
+}
+
+#[test]
+fn a_step_within_the_tolerance_is_refused_not_dropped() {
+    // Neither a climb nor nothing: dropping it would show a step in the
+    // document that the body does not have. Refused, as the linear
+    // pattern refuses a step within the tolerance.
+    for step in ["1e-9", "-1e-7 mm", "0.5e-6"] {
+        let (mut doc, block, _) = block_and_axis();
+        let id = doc
+            .add_feature(None, screw(block, None, "6", "60 deg", Some(step)))
+            .unwrap();
+        let reason = reason(&regenerate(&doc), id);
+        for word in ["step", "within the tolerance", "step: null"] {
+            assert!(
+                reason.contains(word),
+                "{step}: `{word}` is not in: {reason}"
+            );
+        }
     }
 }
 
@@ -215,7 +228,7 @@ fn a_screw_may_go_past_a_full_turn_but_a_plain_turn_may_not() {
         mass.volume
     );
     assert_eq!(body.faces.len(), 90);
-    for step in [None, Some("1e-9")] {
+    for step in [None, Some("0")] {
         let (mut doc, block, axis) = block_and_axis();
         let id = doc
             .add_feature(None, screw(block, Some(axis), "15", "90 deg", step))
@@ -225,6 +238,29 @@ fn a_screw_may_go_past_a_full_turn_but_a_plain_turn_may_not() {
         assert!(
             reason.contains("more than a full turn"),
             "{step:?}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn a_long_screw_keeps_its_precision() {
+    // Two thousand instances a quarter turn each, 500 turns in all: every
+    // fourth instance lies right above instance 0, and the angle brought
+    // back into one turn keeps it there to the bit of a short screw.
+    let (mut doc, block, axis) = block_and_axis();
+    let id = doc
+        .add_feature(None, screw(block, Some(axis), "2000", "90 deg", Some("25")))
+        .unwrap();
+    let regen = regenerate(&doc);
+    assert!(regen.is_ok(), "{:?}", regen.feature(id).unwrap().status);
+    let maps = regen.feature(id).unwrap().instances.clone().unwrap();
+    let source = Vec3::new(40.0, 0.0, 2.0);
+    for k in (0..2000).step_by(4) {
+        let landed = maps[k].point(source);
+        let on = Vec3::new(40.0, 0.0, 2.0 + 25.0 * k as f64);
+        assert!(
+            (landed - on).length() <= 1e-9 * (1.0 + on.length()),
+            "instance {k}: {landed:?}, expected {on:?}"
         );
     }
 }

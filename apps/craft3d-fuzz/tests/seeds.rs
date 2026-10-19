@@ -6,6 +6,13 @@
 //! The seeds are the first ones that passed when the oracle was built;
 //! a seed that fails later is a regression. A seed found failing by the
 //! large run goes into the findings (`target/fuzz`), not into this list.
+//!
+//! The design a seed gives changes when the generator draws differently
+//! (log/devlog.md › Expectation change): since 2026-10-19 a circular
+//! pattern draws one more chance (a screw, `step` along the axis), so
+//! seeds 3, 10, 12, 13 and 16 give other designs than before that date
+//! (12, 13 and 16 get a screw); all pass. A later failure of one of them
+//! is a regression of the new design, not of the old.
 
 use craft3d_fuzz::{Deep, Design, Generator, Options, Setup, run_design, run_seed};
 use serde_json::json;
