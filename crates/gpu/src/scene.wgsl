@@ -2,6 +2,15 @@
 // colour; the face id with the view distance) and a depth buffer. It follows
 // `craft3d_render::render` step by step; the comments name the line of the
 // CPU renderer each step mirrors.
+//
+// The source is a template (`craft3d_gpu::renderer::scene_source`): on a
+// backend whose clip space has its depth in -1..1 (OpenGL), where the
+// `0..1` depth of `vertex` is converted by `z * 2 - w` and that conversion
+// loses the key's precision, every fragment entry writes the key itself
+// as the fragment's depth (`{{FRAG_DEPTH}}` declares the output,
+// `{{SET_DEPTH}}` sets it, `{{STORED_DEPTH}}` is the number the depth
+// test stored for a fragment); elsewhere the markers are empty and the
+// rasteriser's own depth is the key.
 
 struct Scene {
     // xyz: camera right axis. w: clip x per model unit (1 / (half * aspect)).
@@ -115,6 +124,40 @@ struct FragmentOut {
     // x: the face id. y: the bits of the view distance as an f32. An
     // integer target is renderable on every backend and keeps both exactly.
     @location(1) data: vec2<u32>,
+    {{FRAG_DEPTH}}
+}
+
+// The colour alone: the picture a viewport shows.
+struct ColorOut {
+    @location(0) color: vec4<f32>,
+    {{FRAG_DEPTH}}
+}
+
+// The data alone: a viewport's capture.
+struct DataOut {
+    @location(0) data: vec2<u32>,
+    {{FRAG_DEPTH}}
+}
+
+// The depth key of `vertex` for a fragment at view distance `dist`: 1 at
+// the near plane, towards 0 far away, as the rasteriser interpolates it
+// from the corners (the key is affine in screen space, `dist` is
+// interpolated perspective-correct, and the arithmetic is the same `f32`
+// division). Clamped: a fragment on the near plane rounds past 1.
+fn depth_key(dist: f32) -> f32 {
+    var key = 0.0;
+    if scene.forward.w > 0.5 {
+        key = scene.depth.x / dist;
+    } else {
+        key = (scene.depth.x - dist) * scene.depth.y;
+    }
+    return clamp(key, 0.0, 1.0);
+}
+
+// The number the depth test stored for a fragment with the rasteriser's
+// depth `clip_z` at view distance `dist`: the depth it wrote.
+fn stored_depth(clip_z: f32, dist: f32) -> f32 {
+    return {{STORED_DEPTH}};
 }
 
 // x to a non-negative integer power by squaring: exact where `pow` is
@@ -227,18 +270,25 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
     out.data = data_of(in);
     out.color = shade_of(in);
+    {{SET_DEPTH}}
     return out;
 }
 
 // Colour only: the picture a viewport shows, into a multisampled target.
 @fragment
-fn fs_color(in: VertexOut) -> @location(0) vec4<f32> {
-    return shade_of(in);
+fn fs_color(in: VertexOut) -> ColorOut {
+    var out: ColorOut;
+    out.color = shade_of(in);
+    {{SET_DEPTH}}
+    return out;
 }
 
 // Data only: face ids and distances at one sample per pixel, for picking
 // and for the tests of the viewport's picture.
 @fragment
-fn fs_data(in: VertexOut) -> @location(0) vec2<u32> {
-    return data_of(in);
+fn fs_data(in: VertexOut) -> DataOut {
+    var out: DataOut;
+    out.data = data_of(in);
+    {{SET_DEPTH}}
+    return out;
 }

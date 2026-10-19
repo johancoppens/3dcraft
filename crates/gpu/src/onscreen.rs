@@ -56,7 +56,7 @@ use crate::peel;
 use crate::readback;
 use crate::renderer::{
     COLOR_FORMAT, DATA_FORMAT, DEPTH_FORMAT, MESH_ATTRIBUTES, SCENE_FLOATS, check_params,
-    float_bytes, guarded, scene_pipeline, scene_uniforms, target, uniform_entry,
+    float_bytes, guarded, scene_pipeline, scene_source, scene_uniforms, target, uniform_entry,
 };
 use crate::{GpuError, Mesh};
 use craft3d_math::{Bbox3, Vec3};
@@ -252,6 +252,40 @@ fn pack_segment(segment: &Segment, origin: Vec3, axis_length: f64) -> Option<[u8
         vertex.copy_from_slice(&bytes);
     }
     Some(out)
+}
+
+/// The depth buffer of a draw, read back ([`Onscreen::read_depth`]):
+/// the reversed depth of `scene.wgsl` per pixel, with the numbers that
+/// turn it back into a view distance as `depth_test.wgsl` does.
+#[derive(Clone, Debug)]
+pub struct DepthBuffer {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major, top row first; 0 where nothing was drawn.
+    pub values: Vec<f32>,
+    pub perspective: bool,
+    /// The near distance in perspective, the far one in orthographic.
+    pub near_or_far: f32,
+    /// The depth scale of an orthographic view.
+    pub scale: f32,
+}
+
+impl DepthBuffer {
+    /// The view distance the lines' depth test reads at pixel `i`
+    /// (`surface_at` of `depth_test.wgsl`, in `f32` as there); `None`
+    /// where nothing was drawn.
+    pub fn distance(&self, i: usize) -> Option<f32> {
+        let z = *self.values.get(i)?;
+        // Not a number, or the cleared 0: nothing was drawn.
+        if z.is_nan() || z <= 0.0 {
+            return None;
+        }
+        Some(if self.perspective {
+            self.near_or_far / z
+        } else {
+            self.near_or_far - z / self.scale
+        })
+    }
 }
 
 /// The targets of one image size.
@@ -600,6 +634,16 @@ pub struct Onscreen {
     staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
     captured: bool,
+    /// The depth numbers of the last draw (`scene.wgsl`: forward.w,
+    /// depth.x, depth.y), to turn the depth buffer back into distances.
+    depth_numbers: [f32; 3],
+    /// The template of `depth_read.wgsl` filled in for this renderer's
+    /// samples, and its pipeline, made for the first
+    /// [`Onscreen::read_depth`].
+    #[cfg(not(target_arch = "wasm32"))]
+    depth_read_source: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    depth_read_pipeline: Option<wgpu::RenderPipeline>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
 }
@@ -712,7 +756,7 @@ impl Onscreen {
     fn build(device: &wgpu::Device, queue: &wgpu::Queue, samples: u32) -> Onscreen {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
         });
         // The depth buffer is bound as an unfilterable float texture, not
         // as a depth texture: naga's GLSL backend cannot `textureLoad` a
@@ -1012,6 +1056,13 @@ impl Onscreen {
             staging: Mutex::new(None),
             drawn: false,
             captured: false,
+            depth_numbers: [0.0; 3],
+            #[cfg(not(target_arch = "wasm32"))]
+            depth_read_source: include_str!("depth_read.wgsl")
+                .replace("{{DEPTH}}", depth_type)
+                .replace("{{LOAD}}", load),
+            #[cfg(not(target_arch = "wasm32"))]
+            depth_read_pipeline: None,
             token: Arc::new(()),
         }
     }
@@ -1183,6 +1234,7 @@ impl Onscreen {
             self.ensure_cut()?;
         }
         let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
+        self.depth_numbers = [scene[11], scene[20], scene[21]];
         let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
         let device = self.device.clone();
         guarded(&device, || {
@@ -1289,6 +1341,181 @@ impl Onscreen {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_frame(&self) -> Result<Frame, GpuError> {
         pollster::block_on(self.read_frame_async())
+    }
+
+    /// Reads the depth buffer of the last draw back as the lines' depth
+    /// test reads it (`depth_read.wgsl`: the mean of a pixel's samples,
+    /// 0 where any shows nothing): for tests of that test.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_depth(&mut self) -> Result<DepthBuffer, GpuError> {
+        let device = self.device.clone();
+        let (width, height, values) = guarded(&device, || self.copy_depth(&device))??;
+        let [perspective, x, y] = self.depth_numbers;
+        Ok(DepthBuffer {
+            width,
+            height,
+            values,
+            perspective: perspective > 0.5,
+            near_or_far: x,
+            scale: y,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_depth(&mut self, device: &wgpu::Device) -> Result<(u32, u32, Vec<f32>), GpuError> {
+        let targets = self
+            .targets
+            .as_ref()
+            .filter(|_| self.drawn)
+            .ok_or(GpuError::NothingDrawn)?;
+        let (width, height) = (targets.width, targets.height);
+        let too_large = || GpuError::Readback(format!("a {width}x{height} image is too large"));
+        let stride = width
+            .checked_mul(4)
+            .and_then(|row| row.checked_next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+            .ok_or_else(too_large)?;
+        let size = u64::from(stride) * u64::from(height);
+        if size > device.limits().max_buffer_size {
+            return Err(too_large());
+        }
+        let pipeline = match &self.depth_read_pipeline {
+            Some(pipeline) => pipeline,
+            None => {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("craft3d depth read"),
+                    source: wgpu::ShaderSource::Wgsl(self.depth_read_source.as_str().into()),
+                });
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("craft3d depth read"),
+                    bind_group_layouts: &[Some(&self.lines_layout)],
+                    immediate_size: 0,
+                });
+                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("craft3d depth read"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::R32Uint,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                self.depth_read_pipeline.insert(pipeline)
+            }
+        };
+        let copy = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("craft3d depth read"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let copy_view = copy.create_view(&wgpu::TextureViewDescriptor::default());
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("craft3d depth read"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("craft3d depth read"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d depth read"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &copy_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &targets.lines_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &copy,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                // The receiver may be gone; nothing to do then.
+                let _ = sender.send(result);
+            });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| GpuError::Readback(e.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|e| GpuError::Readback(e.to_string()))?
+            .map_err(|e| GpuError::Readback(e.to_string()))?;
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| GpuError::Readback(e.to_string()))?;
+        let mut values = Vec::with_capacity((width as usize).saturating_mul(height as usize));
+        for row in mapped.chunks(stride as usize).take(height as usize) {
+            let (fours, _) = row.as_chunks::<4>();
+            values.extend(
+                fours
+                    .iter()
+                    .take(width as usize)
+                    .map(|b| f32::from_le_bytes(*b)),
+            );
+        }
+        drop(mapped);
+        buffer.unmap();
+        Ok((width, height, values))
     }
 
     fn ensure_targets(&mut self, params: &RenderParams, capture: bool) {

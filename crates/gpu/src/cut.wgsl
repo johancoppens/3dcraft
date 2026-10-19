@@ -107,23 +107,30 @@ fn fs_main_cut(in: CutOut) -> FragmentOut {
     var out: FragmentOut;
     out.data = data_of(whole);
     out.color = shade_of(whole);
+    {{SET_DEPTH}}
     return out;
 }
 
 // `fs_color` of a cut-open picture.
 @fragment
-fn fs_color_cut(in: CutOut) -> @location(0) vec4<f32> {
+fn fs_color_cut(in: CutOut) -> ColorOut {
     if clipped(in) {
         discard;
     }
-    return shade_of(whole_of(in));
+    var out: ColorOut;
+    out.color = shade_of(whole_of(in));
+    {{SET_DEPTH}}
+    return out;
 }
 
 // `fs_data` of a cut-open picture.
 @fragment
-fn fs_data_cut(in: CutOut) -> @location(0) vec2<u32> {
+fn fs_data_cut(in: CutOut) -> DataOut {
     if clipped(in) {
         discard;
     }
-    return data_of(whole_of(in));
+    var out: DataOut;
+    out.data = data_of(whole_of(in));
+    {{SET_DEPTH}}
+    return out;
 }

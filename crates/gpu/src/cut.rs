@@ -26,7 +26,7 @@
 //! cut-open frame.
 
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
-use crate::renderer::{MESH_ATTRIBUTES, float_bytes, scene_depth, scene_primitive};
+use crate::renderer::{MESH_ATTRIBUTES, float_bytes, scene_depth, scene_primitive, scene_source};
 use craft3d_math::Vec3;
 use craft3d_render::{Cut, RenderParams, SECTION_FACE, SECTION_MARGIN};
 
@@ -157,11 +157,7 @@ pub(crate) fn module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderM
     } else {
         (include_str!("peel.wgsl"), include_str!("cut_flat.wgsl"))
     };
-    let source = format!(
-        "{}\n{peel}\n{}\n{cap}",
-        include_str!("scene.wgsl"),
-        include_str!("cut.wgsl")
-    );
+    let source = scene_source(device, &[peel, include_str!("cut.wgsl"), cap]);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("craft3d scene, cut open"),
         source: wgpu::ShaderSource::Wgsl(source.into()),

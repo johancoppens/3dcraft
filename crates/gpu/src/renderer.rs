@@ -433,6 +433,52 @@ pub struct Renderer {
 /// triangle (sheets are seen from either side, as on the CPU), and
 /// `Greater` (the depth is reversed, `scene.wgsl`), so that on a tie the
 /// triangle drawn first stays.
+/// Whether the scene passes on `device` write their depth in the fragment
+/// shader (`scene.wgsl`, `depth_key`) instead of taking the rasteriser's.
+///
+/// They do on the OpenGL backend, whose clip space has its depth in
+/// -1..1 where WebGPU's has 0..1: wgpu's shader translation converts the
+/// vertex stage's `z` by `z * 2 - w` in `f32`, and the hardware maps the
+/// result back to 0..1. The reversed key `near / dist` is tiny far away
+/// (a near plane right in front of the eye, as a camera inside a model
+/// needs, makes it near / far, 1e-6 at the least), and a number that
+/// small does not survive the trip: whatever the key, the depth that
+/// comes out of the conversion is only exact to about 2⁻²⁵ in 0..1 (the
+/// spacing of an `f32` next to 1), which at `near / far` of 1e-6 is 3 %
+/// of the key, or a metre at 43 m (measured on a Radeon 8060S: every
+/// pixel of a building 1 m nearer than its own surface; on an Intel MTL
+/// up to 0.6 m, 2 cm at 30 m). Writing the key from the interpolated
+/// distance in the fragment shader is exact to the `f32` division on
+/// every GPU; it costs the early depth test, so only the backend whose
+/// conversion loses the key pays it. docs/design/rendering.md
+/// (2026-10-19) has the measurements.
+pub(crate) fn fragment_depth(device: &wgpu::Device) -> bool {
+    device.adapter_info().backend == wgpu::Backend::Gl
+}
+
+/// `scene.wgsl` followed by `more`, with its template filled in for
+/// `device` ([`fragment_depth`]).
+pub(crate) fn scene_source(device: &wgpu::Device, more: &[&str]) -> String {
+    let mut source = include_str!("scene.wgsl").to_string();
+    for part in more {
+        source.push('\n');
+        source.push_str(part);
+    }
+    let (declare, set, stored) = if fragment_depth(device) {
+        (
+            "@builtin(frag_depth) depth: f32,",
+            "out.depth = depth_key(in.dist);",
+            "depth_key(dist)",
+        )
+    } else {
+        ("", "", "clip_z")
+    };
+    source
+        .replace("{{FRAG_DEPTH}}", declare)
+        .replace("{{SET_DEPTH}}", set)
+        .replace("{{STORED_DEPTH}}", stored)
+}
+
 pub(crate) fn scene_primitive() -> wgpu::PrimitiveState {
     wgpu::PrimitiveState {
         topology: wgpu::PrimitiveTopology::TriangleList,
@@ -628,7 +674,7 @@ impl Renderer {
     fn build(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
         });
         let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d resolve"),
