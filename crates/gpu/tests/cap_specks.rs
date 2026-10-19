@@ -260,8 +260,10 @@ fn at_one_sample_the_cap_is_the_cpu_renderers_pixel_for_pixel() {
 /// A sample exactly on an edge two triangles share is counted once: a
 /// block seen straight from above, framed so that the diagonal of its top
 /// face runs through the centres of the pixels along it, cut through its
-/// middle. The cap is whole on both renderers, with one sample per pixel
-/// and with the window's renderer (several where the adapter has them).
+/// middle. The cap is whole on both renderers at one sample per pixel,
+/// where the sample is the centre; with the window's renderer (several
+/// samples where the adapter has them) the cap is whole too, though its
+/// samples lie off the diagonal.
 #[test]
 fn a_sample_on_a_shared_edge_is_counted_once() {
     // A 10 × 10 × 4 block; the picture 200 × 200 pixels of a 20 × 20

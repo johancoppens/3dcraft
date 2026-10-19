@@ -14,7 +14,9 @@
 //!   buffer, because the depth buffer is `Depth32Float` on every backend
 //!   and has none. With several samples per pixel the pass runs per
 //!   sample, with a vertex stage of its own (`vs_parity`) that
-//!   interpolates the distance from the plane at the sample.
+//!   interpolates the distance from the plane at the sample, on a device
+//!   that shades per sample (`DownlevelFlags::MULTISAMPLED_SHADING`;
+//!   without it the count is decided at the pixel's centre as before).
 //! - **The cap.** One triangle in the plane, large enough to hold the box
 //!   around the mesh, drawn after the triangles of the mesh in every pass
 //!   that draws them, through the same vertex stage and the same depth
@@ -151,8 +153,14 @@ pub(crate) fn cap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 }
 
 /// `scene.wgsl`, the passes of a see-through picture and the passes of a
-/// cut-open one, for one sample per pixel or for several.
-pub(crate) fn module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
+/// cut-open one, for one sample per pixel or for several; with several,
+/// the count per sample where the device shades per sample
+/// (`per_sample`, `Onscreen::new`).
+pub(crate) fn module(
+    device: &wgpu::Device,
+    multisampled: bool,
+    per_sample: bool,
+) -> wgpu::ShaderModule {
     let (peel, cap) = if multisampled {
         (
             include_str!("peel_samples.wgsl"),
@@ -164,6 +172,7 @@ pub(crate) fn module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderM
     let source = scene_source_for(
         fragment_depth(device),
         multisampled,
+        per_sample,
         &[peel, include_str!("cut.wgsl"), cap],
     );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
