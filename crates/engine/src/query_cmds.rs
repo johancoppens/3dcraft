@@ -71,9 +71,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         Some(_) => return fail(format!("{ID}: `between` takes two face names")),
     };
     let open = session.document_mut()?;
-    // Also of a body that went into a later feature, which the cache may
-    // have let go of.
-    let regen = open.regen_needing(craft3d_regen::Need::These(&[feature]));
+    let regen = open.regen();
     let doc = open.history.current();
     let made_by = doc
         .feature(feature)

@@ -10,7 +10,8 @@
 )]
 
 use craft3d_doc::{
-    Block, Boolean, BooleanOp, Document, Expr, FeatureId, FeatureKind, Orientation, Units,
+    Block, Boolean, BooleanOp, Document, Expr, FeatureId, FeatureKind, Orientation, Transform,
+    Units,
 };
 use craft3d_regen::{Need, Regen, RegenCache, Status, regenerate, regenerate_cached};
 
@@ -246,4 +247,94 @@ fn a_body_let_go_of_is_the_documents_own_again_when_its_taker_goes() {
         full.feature(unions[1]).unwrap().body
     );
     assert!(held.feature(unions[0]).unwrap().body.is_none());
+}
+
+/// A source a feature keeps (a union's tool with `keepTool`, a transform
+/// with `keep`) that a later feature takes: derived again, the feature
+/// is built as the first time, when nothing after it had taken anything.
+#[test]
+fn a_kept_source_that_a_later_feature_took_is_derived_again_as_the_first_time() {
+    let mut doc = Document::new(Units::default());
+    let b0 = block(&mut doc, "B0", "0", "10");
+    let b1 = block(&mut doc, "B1", "20", "10");
+    let b2 = block(&mut doc, "B2", "40", "10");
+    // U1 keeps its tool B1; T keeps its source B1; then P takes B1.
+    let u1 = doc
+        .add_feature(
+            Some("U1"),
+            FeatureKind::Boolean(Boolean {
+                op: BooleanOp::Union,
+                target: b0,
+                tool: b1,
+                keep_tool: true,
+            }),
+        )
+        .unwrap();
+    let transform = |source: FeatureId, keep: bool| {
+        FeatureKind::Transform(Transform {
+            source,
+            translate: exprs(["0", "30", "0"]),
+            pivot: exprs(["0", "0", "0"]),
+            axis: exprs(["0", "0", "1"]),
+            angle: Expr::new("0"),
+            keep,
+        })
+    };
+    let t = doc.add_feature(Some("T"), transform(b1, true)).unwrap();
+    let p = doc.add_feature(Some("P"), transform(b1, false)).unwrap();
+    // U2 takes U1; T2 takes T.
+    let u2 = doc
+        .add_feature(
+            Some("U2"),
+            FeatureKind::Boolean(Boolean {
+                op: BooleanOp::Union,
+                target: u1,
+                tool: b2,
+                keep_tool: false,
+            }),
+        )
+        .unwrap();
+    let t2 = doc.add_feature(Some("T2"), transform(t, false)).unwrap();
+    let full = regenerate(&doc);
+    assert!(full.is_ok(), "{full:?}");
+    let mut cache = RegenCache::default();
+    cache.set_body_budget(0);
+    let held = regenerate_cached(&doc, &mut cache);
+    assert_eq!(cache.bodies_held(), (0, 5), "{:?}", bodies(&held));
+    // Every body asked for again is the one a full regeneration gives:
+    // U1 is built with B1 not yet taken by P, T likewise.
+    let all = craft3d_regen::regenerate_cached_needing(&doc, &mut cache, Need::All);
+    assert_eq!(all, full);
+    for id in [b0, b1, b2, u1, t, p, u2, t2] {
+        assert_eq!(all.feature(id).unwrap().status, Status::Ok, "{id}");
+    }
+    // An edit of U2's tool rebuilds U2, which needs U1, derived again
+    // from B0 and B1 (B1 taken by P, which comes after U1).
+    let held = regenerate_cached(&doc, &mut cache);
+    assert_eq!(cache.bodies_held(), (0, 5), "{:?}", bodies(&held));
+    if let FeatureKind::Block(b) = &mut doc.feature_mut(b2).unwrap().kind {
+        b.size = exprs(["12", "10", "10"]);
+    }
+    let held = regenerate_cached(&doc, &mut cache);
+    let full = regenerate(&doc);
+    assert_eq!(held.feature(u2).unwrap().status, Status::Ok);
+    assert_eq!(
+        held.feature(u2).unwrap().body,
+        full.feature(u2).unwrap().body
+    );
+    assert_eq!(cache.last_run_rederived(), 3);
+    // T2's source T changes: T is rebuilt from B1 (taken by P, later).
+    if let FeatureKind::Transform(moved) = &mut doc.feature_mut(t).unwrap().kind {
+        moved.translate = exprs(["0", "31", "0"]);
+    }
+    let held = regenerate_cached(&doc, &mut cache);
+    let full = regenerate(&doc);
+    assert_eq!(
+        held.feature(t2).unwrap().body,
+        full.feature(t2).unwrap().body
+    );
+    assert_eq!(
+        craft3d_regen::regenerate_cached_needing(&doc, &mut cache, Need::All),
+        full
+    );
 }

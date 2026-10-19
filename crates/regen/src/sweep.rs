@@ -162,7 +162,7 @@ pub(crate) fn build(
         }
     }
 
-    let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear);
+    let names = Names::by_faces(id, &swept.body, faces, made.tolerance.linear)?;
     let report = SweepReport {
         closed: swept.closed,
         length: swept.length,

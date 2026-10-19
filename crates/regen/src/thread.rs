@@ -486,8 +486,8 @@ pub(crate) fn build(
         let count = |n: usize| -> Kept { (0..n).map(|i| Some((0, i))).collect() };
         let contributors: Vec<Vec<(u64, usize)>> =
             (0..source.body.faces.len()).map(|i| vec![(0, i)]).collect();
-        let names = Names::copied_faces(feature, &contributors, |_| Some(source.names))?.map(
-            |mut names| {
+        let names = Names::copied_faces(feature, &contributors, |_| Some(source.names))?
+            .map(|mut names| {
                 names.name_entities(
                     feature,
                     source.body,
@@ -495,10 +495,10 @@ pub(crate) fn build(
                     &count(source.body.edges.len()),
                     &count(source.body.vertices.len()),
                     |_| Some(source.names),
-                );
-                names
-            },
-        );
+                )?;
+                Ok::<Names, String>(names)
+            })
+            .transpose()?;
         return Ok((source.body.clone(), names, report));
     }
 
@@ -588,7 +588,7 @@ pub(crate) fn build(
         &made.edges,
         &made.vertices,
         operand,
-    );
+    )?;
     groove_is_new(Some(&names))?;
     Ok((made.body, Some(names), report))
 }

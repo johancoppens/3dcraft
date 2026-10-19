@@ -68,6 +68,10 @@ pub(crate) enum Entities {
     Copied {
         feature: FeatureId,
         instances: Vec<(u64, Arc<Names>)>,
+        /// Where each instance's edges start, with the total at the end;
+        /// the same for its vertices.
+        edge_starts: Vec<usize>,
+        vertex_starts: Vec<usize>,
     },
     /// Let go of with the body, to stay within the cache's budget
     /// ([`crate::RegenCache::set_body_budget`]): only how many there were.
@@ -126,7 +130,10 @@ pub(crate) struct Aliases {
 
 impl Aliases {
     /// The lists of `map` for entities `0..count`.
-    pub(crate) fn from_map(map: &BTreeMap<usize, Vec<PersistentName>>, count: usize) -> Self {
+    pub(crate) fn from_map(
+        map: &BTreeMap<usize, Vec<PersistentName>>,
+        count: usize,
+    ) -> Result<Self, String> {
         let mut out = Aliases {
             names: Vec::new(),
             ends: Vec::with_capacity(count),
@@ -136,9 +143,9 @@ impl Aliases {
                 out.names.extend(list.iter().cloned());
             }
             out.ends
-                .push(u32::try_from(out.names.len()).unwrap_or(u32::MAX));
+                .push(u32::try_from(out.names.len()).map_err(|_| TOO_MANY.to_string())?);
         }
-        out
+        Ok(out)
     }
 
     /// The names entity `index` kept.
@@ -378,14 +385,14 @@ fn named(
     reach: usize,
     tolerance: f64,
     ranks: &mut Vec<u32>,
-) -> Vec<Item> {
+) -> Result<Vec<Item>, String> {
     let mut names: Vec<Option<Item>> = vec![None; items.len()];
     let mut put = |index: usize, on: &[u32], near: &[u32], number: Option<u64>| {
-        let start = u32::try_from(ranks.len()).unwrap_or(u32::MAX);
-        let (Ok(on_count), Ok(near_count)) = (u16::try_from(on.len()), u16::try_from(near.len()))
-        else {
-            return;
-        };
+        // Never silently another name: a body too big to name is an
+        // error (none fits in memory; the caps are for hostile input).
+        let start = u32::try_from(ranks.len()).map_err(|_| TOO_MANY.to_string())?;
+        let on_count = u16::try_from(on.len()).map_err(|_| TOO_MANY.to_string())?;
+        let near_count = u16::try_from(near.len()).map_err(|_| TOO_MANY.to_string())?;
         ranks.extend_from_slice(on);
         ranks.extend_from_slice(near);
         if let Some(slot) = names.get_mut(index) {
@@ -396,6 +403,7 @@ fn named(
                 number,
             });
         }
+        Ok::<(), String>(())
     };
     let mut same_faces: BTreeMap<&[u32], Vec<usize>> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
@@ -403,7 +411,7 @@ fn named(
     }
     for (on, group) in same_faces {
         if let [only] = group.as_slice() {
-            put(*only, on, &[], None);
+            put(*only, on, &[], None)?;
             continue;
         }
         // All of the group say what is near them equally far away: the
@@ -430,17 +438,17 @@ fn named(
         }
         for (near, mut tied) in best {
             if let [(only, _)] = tied.as_slice() {
-                put(*only, on, &near, None);
+                put(*only, on, &near, None)?;
                 continue;
             }
             sort_in_space(&mut tied, tolerance, 0);
             for (number, (index, _)) in tied.iter().enumerate() {
-                put(*index, on, &near, Some(number as u64));
+                put(*index, on, &near, Some(number as u64))?;
             }
         }
     }
     // Every item was in one group; the fallback is never used.
-    names
+    Ok(names
         .into_iter()
         .enumerate()
         .map(|(index, name)| {
@@ -451,8 +459,12 @@ fn named(
                 number: Some(index as u64),
             })
         })
-        .collect()
+        .collect())
 }
+
+/// Why a body cannot be named: more faces, edges or vertices than a
+/// name's parts can count (`u16`, `u32`), which no body in memory has.
+const TOO_MANY: &str = "the body has too many entities to name";
 
 /// Names every edge and every vertex of `body` by the faces it lies on:
 /// `faces[i]` is the name of face `i`. No two edges get one name, and no
@@ -465,7 +477,7 @@ pub(crate) fn by_faces(
     body: &Body,
     faces: &[PersistentName],
     tolerance: f64,
-) -> ByFaces {
+) -> Result<ByFaces, String> {
     // Names are compared often and are long: each face gets the rank of
     // its name among the names, and equal names (the pieces of one face)
     // get one rank.
@@ -482,7 +494,7 @@ pub(crate) fn by_faces(
             && let Some(slot) = ranked.get_mut(rank as usize)
             && *slot == u32::MAX
         {
-            *slot = u32::try_from(index).unwrap_or(u32::MAX);
+            *slot = u32::try_from(index).map_err(|_| TOO_MANY.to_string())?;
         }
     }
 
@@ -558,10 +570,10 @@ pub(crate) fn by_faces(
         })
         .collect();
     let mut ranks = Vec::new();
-    let edges = named(&edges, &around, 0, tolerance, &mut ranks);
-    let vertices = named(&vertices, &around, 1, tolerance, &mut ranks);
+    let edges = named(&edges, &around, 0, tolerance, &mut ranks)?;
+    let vertices = named(&vertices, &around, 1, tolerance, &mut ranks)?;
     ranks.shrink_to_fit();
-    ByFaces {
+    Ok(ByFaces {
         feature,
         ranked,
         ranks,
@@ -569,7 +581,7 @@ pub(crate) fn by_faces(
         vertices,
         edge_aliases: Aliases::default(),
         vertex_aliases: Aliases::default(),
-    }
+    })
 }
 
 /// The names entities keep from the bodies they came from. `kept[i]` is,
@@ -825,7 +837,10 @@ mod tests {
         for halved in [false, true] {
             let (body, names) = cut(halved);
             let feature = names.faces[0].feature;
-            let made = written(&by_faces(feature, &body, &names.faces, 1e-6), &names.faces);
+            let made = written(
+                &by_faces(feature, &body, &names.faces, 1e-6).unwrap(),
+                &names.faces,
+            );
             // What regeneration stored is what this gives.
             assert_eq!(
                 made,
@@ -857,7 +872,10 @@ mod tests {
             }
             let (other, other_faces, shuffle) = shuffled(&body, &names.faces);
             assert_eq!(shuffle.faces.len(), other_faces.len());
-            let again = written(&by_faces(feature, &other, &other_faces, 1e-6), &other_faces);
+            let again = written(
+                &by_faces(feature, &other, &other_faces, 1e-6).unwrap(),
+                &other_faces,
+            );
             for (old, new) in shuffle.edges.iter().enumerate() {
                 assert_eq!(again.0[*new], made.0[old], "edge {old}");
             }
@@ -876,7 +894,7 @@ mod tests {
         body.loops[0].coedges[0].edge = EdgeId(u32::MAX);
         body.faces[1].loops.push(craft3d_topo::LoopId(u32::MAX));
         body.vertices[0].point = Vec3::new(f64::NAN, f64::INFINITY, 0.0);
-        let made = by_faces(feature, &body, &names.faces[..3], f64::NAN);
+        let made = by_faces(feature, &body, &names.faces[..3], f64::NAN).unwrap();
         assert_eq!(made.edge_count(), body.edges.len());
         assert_eq!(made.vertex_count(), body.vertices.len());
         let empty = by_faces(
@@ -884,7 +902,8 @@ mod tests {
             &Body::new(craft3d_topo::BodyKind::Solid),
             &[],
             1e-6,
-        );
+        )
+        .unwrap();
         assert!(empty.edge_count() == 0 && empty.vertex_count() == 0);
     }
 

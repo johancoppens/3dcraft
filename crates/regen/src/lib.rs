@@ -183,13 +183,13 @@ impl Names {
         body: &Body,
         faces: Vec<PersistentName>,
         tolerance: f64,
-    ) -> Self {
-        let made = entity::by_faces(feature, body, &faces, tolerance);
-        Self {
+    ) -> Result<Self, String> {
+        let made = entity::by_faces(feature, body, &faces, tolerance)?;
+        Ok(Self {
             faces,
             aliases: BTreeMap::new(),
             entities: Entities::ByFaces(Box::new(made)),
-        }
+        })
     }
 
     /// The names of a body whose entities are, instance by instance,
@@ -207,6 +207,9 @@ impl Names {
         instances: Vec<(u64, Arc<Names>)>,
     ) -> Result<Self, String> {
         let mut out = Names::default();
+        let mut edge_starts = Vec::with_capacity(instances.len().saturating_add(1));
+        let mut vertex_starts = Vec::with_capacity(instances.len().saturating_add(1));
+        let (mut edges, mut vertices) = (0usize, 0usize);
         for (instance, source) in &instances {
             derive::copied_aliases(
                 feature,
@@ -216,8 +219,24 @@ impl Names {
                 &mut out.aliases,
             );
             derive::copied(feature, *instance, &source.faces, &mut out.faces)?;
+            edge_starts.push(edges);
+            vertex_starts.push(vertices);
+            edges = edges.saturating_add(source.edge_count());
+            vertices = vertices.saturating_add(source.vertex_count());
         }
-        out.entities = Entities::Copied { feature, instances };
+        edge_starts.push(edges);
+        vertex_starts.push(vertices);
+        out.entities = Entities::Copied {
+            feature,
+            instances,
+            edge_starts,
+            vertex_starts,
+        };
+        // A copy of an edge's or a vertex's name is held to the caps of a
+        // name as the faces' are, as when every copy was written out.
+        for name in out.edge_names().chain(out.vertex_names()) {
+            name.check().map_err(too_long)?;
+        }
         Ok(out)
     }
 
@@ -253,19 +272,49 @@ impl Names {
     }
 
     /// For entity `index` of a body of copies: the instance it is in, the
-    /// names of that instance's source and its index there.
-    fn copied_at(
+    /// names of that instance's source and its index there. `starts` is
+    /// where each instance's entities start, with the total at the end.
+    fn copied_at<'a>(
+        feature: FeatureId,
+        instances: &'a [(u64, Arc<Names>)],
+        starts: &[usize],
+        index: usize,
+    ) -> Option<(FeatureId, u64, &'a Arc<Names>, usize)> {
+        let which = starts
+            .partition_point(|start| *start <= index)
+            .checked_sub(1)?;
+        let (instance, source) = instances.get(which)?;
+        let start = *starts.get(which)?;
+        (index < *starts.get(which.saturating_add(1))?)
+            .then(|| (feature, *instance, source, index.saturating_sub(start)))
+    }
+
+    /// The entity of a body of copies called `name`: in the instance the
+    /// name says (the first number of a copy is its instance), the one
+    /// whose name copied is `name`.
+    fn copied_named(
         feature: FeatureId,
         instances: &[(u64, Arc<Names>)],
-        mut index: usize,
-        count: fn(&Names) -> usize,
-    ) -> Option<(FeatureId, u64, &Arc<Names>, usize)> {
-        for (instance, source) in instances {
-            let n = count(source);
-            if index < n {
-                return Some((feature, *instance, source, index));
+        starts: &[usize],
+        name: &PersistentName,
+        name_of: fn(&Names, usize) -> Option<PersistentName>,
+    ) -> Option<usize> {
+        if name.feature != feature || name.role != NameRole::Copy {
+            return None;
+        }
+        let wanted = *name.sources.first()?;
+        for (which, (instance, source)) in instances.iter().enumerate() {
+            if *instance != wanted {
+                continue;
             }
-            index = index.checked_sub(n)?;
+            let start = *starts.get(which)?;
+            let count = starts.get(which.saturating_add(1))?.saturating_sub(start);
+            if let Some(there) = (0..count).find(|there| {
+                name_of(source, *there)
+                    .is_some_and(|own| PersistentName::copy(feature, *instance, own) == *name)
+            }) {
+                return Some(start.saturating_add(there));
+            }
         }
         None
     }
@@ -275,11 +324,7 @@ impl Names {
             Entities::Listed { edges, .. } => edges.len(),
             Entities::Dropped { edges, .. } => *edges,
             Entities::ByFaces(by) => by.edge_count(),
-            Entities::Copied { instances, .. } => {
-                instances.iter().fold(0usize, |n, (_, source)| {
-                    n.saturating_add(source.edge_count())
-                })
-            }
+            Entities::Copied { edge_starts, .. } => edge_starts.last().copied().unwrap_or(0),
         }
     }
 
@@ -288,11 +333,7 @@ impl Names {
             Entities::Listed { vertices, .. } => vertices.len(),
             Entities::Dropped { vertices, .. } => *vertices,
             Entities::ByFaces(by) => by.vertex_count(),
-            Entities::Copied { instances, .. } => {
-                instances.iter().fold(0usize, |n, (_, source)| {
-                    n.saturating_add(source.vertex_count())
-                })
-            }
+            Entities::Copied { vertex_starts, .. } => vertex_starts.last().copied().unwrap_or(0),
         }
     }
 
@@ -303,9 +344,14 @@ impl Names {
             Entities::Listed { edges, .. } => edges.get(edge).cloned(),
             Entities::Dropped { .. } => None,
             Entities::ByFaces(by) => by.edge(&self.faces, edge),
-            Entities::Copied { feature, instances } => {
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => {
                 let (feature, instance, source, there) =
-                    Self::copied_at(*feature, instances, edge, Names::edge_count)?;
+                    Self::copied_at(*feature, instances, edge_starts, edge)?;
                 Some(PersistentName::copy(
                     feature,
                     instance,
@@ -321,9 +367,14 @@ impl Names {
             Entities::Listed { vertices, .. } => vertices.get(vertex).cloned(),
             Entities::Dropped { .. } => None,
             Entities::ByFaces(by) => by.vertex(&self.faces, vertex),
-            Entities::Copied { feature, instances } => {
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => {
                 let (feature, instance, source, there) =
-                    Self::copied_at(*feature, instances, vertex, Names::vertex_count)?;
+                    Self::copied_at(*feature, instances, vertex_starts, vertex)?;
                 Some(PersistentName::copy(
                     feature,
                     instance,
@@ -333,14 +384,33 @@ impl Names {
         }
     }
 
-    /// The names of every edge, in the body's order.
-    pub fn edge_names(&self) -> impl Iterator<Item = PersistentName> + '_ {
-        (0..self.edge_count()).filter_map(|edge| self.edge_name(edge))
+    /// The names of every edge, in the body's order: for a body of
+    /// copies instance by instance, each the source's names copied.
+    pub fn edge_names(&self) -> Box<dyn Iterator<Item = PersistentName> + '_> {
+        match &self.entities {
+            Entities::Copied {
+                feature, instances, ..
+            } => Box::new(instances.iter().flat_map(move |(instance, source)| {
+                source
+                    .edge_names()
+                    .map(move |name| PersistentName::copy(*feature, *instance, name))
+            })),
+            _ => Box::new((0..self.edge_count()).filter_map(|edge| self.edge_name(edge))),
+        }
     }
 
     /// The names of every vertex, in the body's order.
-    pub fn vertex_names(&self) -> impl Iterator<Item = PersistentName> + '_ {
-        (0..self.vertex_count()).filter_map(|vertex| self.vertex_name(vertex))
+    pub fn vertex_names(&self) -> Box<dyn Iterator<Item = PersistentName> + '_> {
+        match &self.entities {
+            Entities::Copied {
+                feature, instances, ..
+            } => Box::new(instances.iter().flat_map(move |(instance, source)| {
+                source
+                    .vertex_names()
+                    .map(move |name| PersistentName::copy(*feature, *instance, name))
+            })),
+            _ => Box::new((0..self.vertex_count()).filter_map(|vertex| self.vertex_name(vertex))),
+        }
     }
 
     /// The other names face `face` answers to besides `faces[face]`.
@@ -372,13 +442,16 @@ impl Names {
         match &self.entities {
             Entities::Listed { .. } | Entities::Dropped { .. } => Vec::new(),
             Entities::ByFaces(by) => by.edge_aliases.of(edge).to_vec(),
-            Entities::Copied { feature, instances } => {
-                Self::copied_at(*feature, instances, edge, Names::edge_count)
-                    .map(|(feature, instance, source, there)| {
-                        copies(feature, instance, source.edge_aliases_of(there))
-                    })
-                    .unwrap_or_default()
-            }
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_at(*feature, instances, edge_starts, edge)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.edge_aliases_of(there))
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -387,13 +460,16 @@ impl Names {
         match &self.entities {
             Entities::Listed { .. } | Entities::Dropped { .. } => Vec::new(),
             Entities::ByFaces(by) => by.vertex_aliases.of(vertex).to_vec(),
-            Entities::Copied { feature, instances } => {
-                Self::copied_at(*feature, instances, vertex, Names::vertex_count)
-                    .map(|(feature, instance, source, there)| {
-                        copies(feature, instance, source.vertex_aliases_of(there))
-                    })
-                    .unwrap_or_default()
-            }
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_at(*feature, instances, vertex_starts, vertex)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.vertex_aliases_of(there))
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -427,13 +503,16 @@ impl Names {
                 .into_iter()
                 .collect(),
             Entities::ByFaces(by) => by.edge_aliases.of(edge).to_vec(),
-            Entities::Copied { feature, instances } => {
-                Self::copied_at(*feature, instances, edge, Names::edge_count)
-                    .map(|(feature, instance, source, there)| {
-                        copies(feature, instance, source.edge_kept_names(there))
-                    })
-                    .unwrap_or_default()
-            }
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_at(*feature, instances, edge_starts, edge)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.edge_kept_names(there))
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -449,13 +528,16 @@ impl Names {
                 .into_iter()
                 .collect(),
             Entities::ByFaces(by) => by.vertex_aliases.of(vertex).to_vec(),
-            Entities::Copied { feature, instances } => {
-                Self::copied_at(*feature, instances, vertex, Names::vertex_count)
-                    .map(|(feature, instance, source, there)| {
-                        copies(feature, instance, source.vertex_kept_names(there))
-                    })
-                    .unwrap_or_default()
-            }
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_at(*feature, instances, vertex_starts, vertex)
+                .map(|(feature, instance, source, there)| {
+                    copies(feature, instance, source.vertex_kept_names(there))
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -465,9 +547,12 @@ impl Names {
             Entities::Listed { edges, .. } => edges.iter().position(|own| own == name),
             Entities::Dropped { .. } => None,
             Entities::ByFaces(by) => by.edge_named(&self.faces, name),
-            Entities::Copied { feature, .. } => (name.feature == *feature)
-                .then(|| self.edge_names().position(|own| own == *name))
-                .flatten(),
+            Entities::Copied {
+                feature,
+                instances,
+                edge_starts,
+                ..
+            } => Self::copied_named(*feature, instances, edge_starts, name, Names::edge_name),
         };
         own.or_else(|| {
             (0..self.edge_count()).find(|edge| self.edge_aliases_of(*edge).contains(name))
@@ -480,9 +565,12 @@ impl Names {
             Entities::Listed { vertices, .. } => vertices.iter().position(|own| own == name),
             Entities::Dropped { .. } => None,
             Entities::ByFaces(by) => by.vertex_named(&self.faces, name),
-            Entities::Copied { feature, .. } => (name.feature == *feature)
-                .then(|| self.vertex_names().position(|own| own == *name))
-                .flatten(),
+            Entities::Copied {
+                feature,
+                instances,
+                vertex_starts,
+                ..
+            } => Self::copied_named(*feature, instances, vertex_starts, name, Names::vertex_name),
         };
         own.or_else(|| {
             (0..self.vertex_count()).find(|vertex| self.vertex_aliases_of(*vertex).contains(name))
@@ -501,17 +589,18 @@ impl Names {
         kept_edges: &Kept,
         kept_vertices: &Kept,
         source: impl Fn(u64) -> Option<&'a Names>,
-    ) {
-        let mut made = entity::by_faces(feature, body, &self.faces, tolerance);
+    ) -> Result<(), String> {
+        let mut made = entity::by_faces(feature, body, &self.faces, tolerance)?;
         let edges = entity::kept_names(feature, kept_edges, |instance, edge| {
             source(instance).map_or_else(Vec::new, |names| names.edge_kept_names(edge))
         });
         let vertices = entity::kept_names(feature, kept_vertices, |instance, vertex| {
             source(instance).map_or_else(Vec::new, |names| names.vertex_kept_names(vertex))
         });
-        made.edge_aliases = entity::Aliases::from_map(&edges, body.edges.len());
-        made.vertex_aliases = entity::Aliases::from_map(&vertices, body.vertices.len());
+        made.edge_aliases = entity::Aliases::from_map(&edges, body.edges.len())?;
+        made.vertex_aliases = entity::Aliases::from_map(&vertices, body.vertices.len())?;
         self.entities = Entities::ByFaces(Box::new(made));
+        Ok(())
     }
 
     /// The names of faces that are copies of the faces of an earlier body:

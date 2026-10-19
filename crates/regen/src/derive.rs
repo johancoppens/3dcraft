@@ -526,7 +526,7 @@ pub(crate) fn build(
                 &edges,
                 &vertices,
                 |_| source.names.as_deref(),
-            );
+            )?;
         }
         // Each instance is the source moved, which does not pass through
         // itself: what is looked at is where instances meet.

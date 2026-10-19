@@ -160,7 +160,7 @@ pub(crate) fn build(
             &made.edges,
             &made.vertices,
             operand,
-        );
+        )?;
     }
     not_through_itself(&made, names.as_ref(), tolerance.linear, &[])?;
     Ok((made.body, names))

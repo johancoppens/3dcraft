@@ -147,6 +147,6 @@ pub(crate) fn build(
         }
     }
 
-    let names = Names::by_faces(id, &made.body, faces, tolerance.linear);
+    let names = Names::by_faces(id, &made.body, faces, tolerance.linear)?;
     Ok((made.body, names))
 }

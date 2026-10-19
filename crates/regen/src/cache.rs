@@ -834,32 +834,41 @@ fn rederive_all(
             step: index.saturating_add(1),
             steps: doc.features.len(),
         });
-        // Built as it was the first time: the bodies it took were not
-        // taken yet.
-        let taken: Vec<usize> = feature
-            .kind
-            .sources()
-            .into_iter()
-            .filter_map(|(source, _)| at.get(&source).copied())
-            .filter(|i| {
-                earlier
-                    .get(*i)
-                    .is_some_and(|r| r.consumed_by == Some(feature.id))
+        // Built as it was the first time: nothing that this feature or a
+        // later one takes (its own sources, and a source it keeps that a
+        // later feature took) was taken yet.
+        let taken: Vec<(usize, FeatureId)> = earlier
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let taker = r.consumed_by?;
+                (*at.get(&taker)? >= index).then_some((i, taker))
             })
             .collect();
-        for i in &taken {
+        for (i, _) in &taken {
             if let Some(source) = earlier.get_mut(*i) {
                 source.consumed_by = None;
             }
         }
         let made = build(&feature, false, earlier, cache).0;
-        for i in &taken {
+        for (i, taker) in &taken {
             if let Some(source) = earlier.get_mut(*i) {
-                source.consumed_by = Some(feature.id);
+                source.consumed_by = Some(*taker);
             }
         }
         cache.rederived = cache.rederived.saturating_add(1);
         let Some(body) = made.body else {
+            // Never silently: the result says so, differs from a full
+            // regeneration (the oracle finds it), and the entry stays as
+            // it is, to be derived again next time.
+            let why = match &made.status {
+                Status::Failed(reason) => reason.clone(),
+                other => format!("{other:?} and no body"),
+            };
+            result.status = Status::Failed(format!(
+                "the body of `{}` could not be derived again from what it is made from ({why}); this is a bug of the regeneration cache",
+                feature.name
+            ));
             continue;
         };
         result.body = Some(Arc::clone(&body));
