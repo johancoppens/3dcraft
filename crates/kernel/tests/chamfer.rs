@@ -1142,11 +1142,12 @@ fn a_rim_chain_round_shallow_tangent_arcs() {
 /// upper corners are rounded (by 1.4) and whose two lower ones are sharp,
 /// its cap rim chamfered as one chain from the right side round to the
 /// left, ending in the two sharp corners; the outline drawn with its arcs
-/// and made by filleting the sharp plate. The chain's tools are joined
-/// into one: chamfered one by one, the plane of a line's chamfer and the
-/// cone of the arc's touch along their shared ruling and the boolean
-/// refused at the finding's tolerance ("two points closer together than the tolerance can tell
-/// apart").
+/// and made by filleting the sharp plate. The chain is chamfered one tool
+/// at a time: the plane of a line's chamfer and the cone of the arc's
+/// touch along their shared ruling, a contact the boolean refused at the
+/// finding's tolerance when this was written ("two points closer together
+/// than the tolerance can tell apart"; the chain's tools were joined into
+/// one by `blend::join` until 2026-10-18) and takes since.
 #[test]
 fn a_rim_chain_that_ends_in_two_sharp_corners() {
     let (curves, area, lines, turns, sharp) = common::plate_e1();

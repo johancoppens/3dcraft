@@ -1207,25 +1207,18 @@ fn trim(
     };
     let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
     let mut slope = None;
-    let mut caps = Vec::new();
     for (index, source) in result.faces.iter().enumerate() {
-        if source.operand != Operand::A {
+        if source.operand != Operand::A || source.face != tool.slope {
             continue;
         }
-        let id = FaceId(index_u32(index));
-        if source.face == tool.slope {
-            if slope.is_some() {
-                return Err(lost());
-            }
-            slope = Some(id);
-        } else if tool.caps.contains(&source.face) {
-            caps.push(id);
+        if slope.is_some() {
+            return Err(lost());
         }
+        slope = Some(FaceId(index_u32(index)));
     }
     Ok(Tool {
         body: result.body,
         slope: slope.ok_or_else(lost)?,
-        caps,
     })
 }
 
@@ -1233,8 +1226,6 @@ fn trim(
 struct Tool {
     body: Body,
     slope: FaceId,
-    /// The faces at its two ends, when it has ends.
-    caps: Vec<FaceId>,
 }
 
 fn line(id: u64, start: [f64; 2], end: [f64; 2]) -> SketchCurve {
@@ -1252,18 +1243,9 @@ fn slope_of(result: crate::extrude::OpResult) -> Result<Tool, BlendError> {
         .iter()
         .position(|o| o.role == Role::Side && o.sources == [1])
         .ok_or_else(lost)?;
-    let caps = result
-        .origins
-        .faces
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| matches!(o.role, Role::StartCap | Role::EndCap))
-        .map(|(index, _)| FaceId(index_u32(index)))
-        .collect();
     Ok(Tool {
         body: result.body,
         slope: FaceId(index_u32(slope)),
-        caps,
     })
 }
 
@@ -1417,307 +1399,6 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
             )?)
         }
     }
-}
-
-/// A vertex where one filleted edge goes on smoothly in another: the
-/// vertex and the two plans.
-struct Joint {
-    vertex: VertexId,
-    plans: [usize; 2],
-}
-
-/// The vertices at which two fillets continue each other: exactly two
-/// filleted edges of one kind end there, and one leaves where the other
-/// arrives. Their two faces (a cylinder and a torus along the rim of a
-/// slot) are tangent along the border they share, which no boolean
-/// between two separate tools is asked to find: the tools are joined
-/// into one first ([`join`]).
-fn joints(
-    body: &Body,
-    uses: &[Vec<Use>],
-    at: &[Vec<EdgeId>],
-    plans: &[Plan],
-) -> Result<Vec<Joint>, BlendError> {
-    let planned = by_edge(plans);
-    let mut found = Vec::new();
-    for index in 0..body.vertices.len() {
-        let vertex = VertexId(index_u32(index));
-        let away: Vec<(usize, Vec3)> = leaving(body, uses, at, vertex)?
-            .into_iter()
-            .filter_map(|l| planned.get(&l.edge).map(|i| (*i, l.direction)))
-            .collect();
-        let [(i, one), (j, two)] = away.as_slice() else {
-            continue;
-        };
-        let (Some(a), Some(b)) = (plans.get(*i), plans.get(*j)) else {
-            continue;
-        };
-        // Two chamfers whose sections are the same triangle at the
-        // vertex: one distance on both sides of both edges.
-        let same_chamfer = || {
-            let d = a.distances[0];
-            [a.distances, b.distances]
-                .iter()
-                .flatten()
-                .all(|x| (x - d).abs() <= 1e-12 * d.abs())
-        };
-        let kinds = match (a.round, b.round) {
-            (Some(_), Some(_)) => true,
-            (None, None) => same_chamfer(),
-            _ => false,
-        };
-        if i != j && kinds && a.convex == b.convex && straight_on(-*one, *two) {
-            found.push(Joint {
-                vertex,
-                plans: [*i, *j],
-            });
-        }
-    }
-    Ok(found)
-}
-
-/// Several tools as one body: the tools of edges that continue each other
-/// smoothly, with the two ends that lie against each other at every joint
-/// taken out and their borders made one. `blends[i]` is the plan whose
-/// blend face `FaceId(i)` is.
-struct Joined {
-    body: Body,
-    blends: Vec<Option<usize>>,
-}
-
-/// The loop of an end of a tool: its edges, and their vertices.
-fn end_of(body: &Body, face: FaceId) -> Option<(Vec<EdgeId>, Vec<VertexId>)> {
-    let [only] = body.face(face)?.loops.as_slice() else {
-        return None;
-    };
-    let mut edges = Vec::new();
-    let mut vertices = Vec::new();
-    for coedge in &body.loop_(*only)?.coedges {
-        let data = body.edge(coedge.edge)?;
-        edges.push(coedge.edge);
-        for vertex in [data.start, data.end] {
-            if !vertices.contains(&vertex) {
-                vertices.push(vertex);
-            }
-        }
-    }
-    Some((edges, vertices))
-}
-
-fn join(
-    body: &Body,
-    members: &[(usize, Tool)],
-    joints: &[&Joint],
-    tolerance: &Tolerance,
-) -> Result<Joined, BlendError> {
-    let near = 4.0 * tolerance.linear;
-    // All the tools side by side in one body.
-    let mut all = Body {
-        kind: BodyKind::Solid,
-        vertices: Vec::new(),
-        edges: Vec::new(),
-        loops: Vec::new(),
-        faces: Vec::new(),
-        shells: Vec::new(),
-    };
-    let mut blends: Vec<Option<usize>> = Vec::new();
-    // Per member, its ends as faces of `all`.
-    let mut ends: BTreeMap<usize, Vec<FaceId>> = BTreeMap::new();
-    for (plan, tool) in members {
-        let (v0, e0, l0, f0) = (
-            index_u32(all.vertices.len()),
-            index_u32(all.edges.len()),
-            index_u32(all.loops.len()),
-            index_u32(all.faces.len()),
-        );
-        all.vertices.extend(tool.body.vertices.iter().cloned());
-        for edge in &tool.body.edges {
-            let mut edge = edge.clone();
-            edge.start = VertexId(edge.start.0.saturating_add(v0));
-            edge.end = VertexId(edge.end.0.saturating_add(v0));
-            all.edges.push(edge);
-        }
-        for ring in &tool.body.loops {
-            let mut ring = ring.clone();
-            for coedge in &mut ring.coedges {
-                coedge.edge = EdgeId(coedge.edge.0.saturating_add(e0));
-            }
-            all.loops.push(ring);
-        }
-        for (index, face) in tool.body.faces.iter().enumerate() {
-            let mut face = face.clone();
-            for id in &mut face.loops {
-                id.0 = id.0.saturating_add(l0);
-            }
-            all.faces.push(face);
-            blends.push((FaceId(index_u32(index)) == tool.slope).then_some(*plan));
-        }
-        ends.insert(
-            *plan,
-            tool.caps
-                .iter()
-                .map(|f| FaceId(f.0.saturating_add(f0)))
-                .collect(),
-        );
-    }
-    let mut dead_faces: BTreeSet<FaceId> = BTreeSet::new();
-    let mut dead_edges: BTreeMap<EdgeId, (EdgeId, bool)> = BTreeMap::new();
-    let mut dead_vertices: BTreeMap<VertexId, VertexId> = BTreeMap::new();
-    for joint in joints {
-        let place = body.vertex(joint.vertex).ok_or_else(lost)?.point;
-        // The end of each of the two tools that has the vertex in it.
-        let end_at = |plan: usize| -> Option<(FaceId, Vec<EdgeId>, Vec<VertexId>)> {
-            ends.get(&plan)?.iter().find_map(|face| {
-                if dead_faces.contains(face) {
-                    return None;
-                }
-                let (edges, vertices) = end_of(&all, *face)?;
-                vertices
-                    .iter()
-                    .any(|v| {
-                        all.vertex(*v)
-                            .is_some_and(|v| v.point.distance(place) <= near)
-                    })
-                    .then_some((*face, edges, vertices))
-            })
-        };
-        let [first, second] = joint.plans;
-        let (Some((face_a, edges_a, vertices_a)), Some((face_b, edges_b, vertices_b))) =
-            (end_at(first), end_at(second))
-        else {
-            return Err(lost());
-        };
-        // The vertices and edges of the second end, as those of the first.
-        let mut same_vertex: BTreeMap<VertexId, VertexId> = BTreeMap::new();
-        for vb in &vertices_b {
-            let point = all.vertex(*vb).ok_or_else(lost)?.point;
-            let twin = vertices_a.iter().copied().find(|va| {
-                all.vertex(*va)
-                    .is_some_and(|v| v.point.distance(point) <= near)
-            });
-            same_vertex.insert(*vb, twin.ok_or_else(lost)?);
-        }
-        let middle = |edge: EdgeId| {
-            all.edge(edge)
-                .map(|e| e.curve.eval(0.5 * (e.range.0 + e.range.1)))
-        };
-        let mut same_edge: BTreeMap<EdgeId, (EdgeId, bool)> = BTreeMap::new();
-        for eb in &edges_b {
-            let data = all.edge(*eb).ok_or_else(lost)?;
-            let (Some(start), Some(end)) =
-                (same_vertex.get(&data.start), same_vertex.get(&data.end))
-            else {
-                return Err(lost());
-            };
-            let at_b = middle(*eb).ok_or_else(lost)?;
-            let twin = edges_a.iter().copied().find_map(|ea| {
-                let other = all.edge(ea)?;
-                let along = other.start == *start && other.end == *end;
-                let against = other.start == *end && other.end == *start;
-                ((along || against) && middle(ea)?.distance(at_b) <= near).then_some((ea, against))
-            });
-            same_edge.insert(*eb, twin.ok_or_else(lost)?);
-        }
-        if same_edge.len() != edges_a.len() || same_vertex.len() != vertices_a.len() {
-            return Err(lost());
-        }
-        for ring in &mut all.loops {
-            for coedge in &mut ring.coedges {
-                if let Some((twin, against)) = same_edge.get(&coedge.edge) {
-                    coedge.edge = *twin;
-                    coedge.reversed ^= *against;
-                }
-            }
-        }
-        for edge in &mut all.edges {
-            if let Some(twin) = same_vertex.get(&edge.start) {
-                edge.start = *twin;
-            }
-            if let Some(twin) = same_vertex.get(&edge.end) {
-                edge.end = *twin;
-            }
-        }
-        dead_faces.extend([face_a, face_b]);
-        dead_edges.extend(same_edge);
-        dead_vertices.extend(same_vertex);
-    }
-    // What is left, counted anew.
-    let mut vertex_now: Vec<Option<VertexId>> = Vec::with_capacity(all.vertices.len());
-    let mut vertices = Vec::new();
-    for (index, vertex) in all.vertices.iter().enumerate() {
-        if dead_vertices.contains_key(&VertexId(index_u32(index))) {
-            vertex_now.push(None);
-        } else {
-            vertex_now.push(Some(VertexId(index_u32(vertices.len()))));
-            vertices.push(vertex.clone());
-        }
-    }
-    let renamed_vertex = |id: VertexId| {
-        vertex_now
-            .get(id.0 as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(lost)
-    };
-    let mut edge_now: Vec<Option<EdgeId>> = Vec::with_capacity(all.edges.len());
-    let mut edges = Vec::new();
-    for (index, edge) in all.edges.iter().enumerate() {
-        if dead_edges.contains_key(&EdgeId(index_u32(index))) {
-            edge_now.push(None);
-        } else {
-            edge_now.push(Some(EdgeId(index_u32(edges.len()))));
-            let mut edge = edge.clone();
-            edge.start = renamed_vertex(edge.start)?;
-            edge.end = renamed_vertex(edge.end)?;
-            edges.push(edge);
-        }
-    }
-    let mut loops = Vec::new();
-    let mut faces = Vec::new();
-    let mut kept_blends = Vec::new();
-    for (index, face) in all.faces.iter().enumerate() {
-        if dead_faces.contains(&FaceId(index_u32(index))) {
-            continue;
-        }
-        let mut face = face.clone();
-        for id in &mut face.loops {
-            let mut ring = all.loop_(*id).ok_or_else(lost)?.clone();
-            for coedge in &mut ring.coedges {
-                coedge.edge = edge_now
-                    .get(coedge.edge.0 as usize)
-                    .copied()
-                    .flatten()
-                    .ok_or_else(lost)?;
-            }
-            *id = craft3d_topo::LoopId(index_u32(loops.len()));
-            loops.push(ring);
-        }
-        faces.push(face);
-        kept_blends.push(blends.get(index).copied().flatten());
-    }
-    let shell = craft3d_topo::Shell {
-        faces: (0..faces.len()).map(|i| FaceId(index_u32(i))).collect(),
-    };
-    let joined = Body {
-        kind: BodyKind::Solid,
-        vertices,
-        edges,
-        loops,
-        faces,
-        shells: vec![shell],
-    };
-    let mut defects = craft3d_topo::check_remembered(&joined, tolerance);
-    if !defects.is_empty() {
-        defects.truncate(crate::MAX_REPORTED);
-        return Err(BlendError::Kernel(KernelError::InvalidBody {
-            operation: "joining the tools of a chain of blends",
-            defects,
-        }));
-    }
-    Ok(Joined {
-        body: joined,
-        blends: kept_blends,
-    })
 }
 
 /// What a face of the body under construction is made of.
@@ -1975,7 +1656,6 @@ fn corner_tool(
     Ok(Tool {
         body: block,
         slope: FaceId(0),
-        caps: Vec::new(),
     })
 }
 
@@ -2154,7 +1834,6 @@ fn ball_tool(
     Ok(Tool {
         body: cut.body,
         slope: FaceId(index_u32(*slope)),
-        caps: Vec::new(),
     })
 }
 
@@ -2896,84 +2575,25 @@ fn build(
             .map(|i| Some(VertexId(index_u32(i))))
             .collect(),
     };
-    // Blends that continue each other are one tool (see `joints`).
-    let joined = joints(body, uses, at, &plans)?;
-    // Per plan, the least plan it is joined to, through any number of
-    // joints.
-    let mut group: Vec<usize> = (0..plans.len()).collect();
-    for _ in 0..plans.len() {
-        let mut changed = false;
-        for joint in &joined {
-            let [a, b] = joint.plans;
-            let least = group
-                .get(a)
-                .copied()
-                .unwrap_or(a)
-                .min(group.get(b).copied().unwrap_or(b));
-            for index in [a, b] {
-                if let Some(slot) = group.get_mut(index)
-                    && *slot != least
-                {
-                    *slot = least;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let blend_of = |index: usize| Made {
-        blends: BTreeSet::from([index]),
-        ..Made::default()
-    };
+    // One tool per edge, combined one by one: where two blends continue
+    // each other (a cylinder that goes on in a torus along the rim of a
+    // slot) the boolean takes the contact of their tools.
     let mut first = true;
     for (index, plan) in plans.iter().enumerate() {
-        if group.get(index) != Some(&index) {
-            // Made with the least of its group.
-            continue;
-        }
-        let members: Vec<usize> = (index..plans.len())
-            .filter(|i| group.get(*i) == Some(&index))
-            .collect();
-        if let [_] = members.as_slice() {
-            let made = tool(plan, tolerance).map_err(at_edge(plan.edge))?;
-            combine(
-                &mut state,
-                &made.body,
-                !plan.convex,
-                &BTreeMap::from([(made.slope, blend_of(index))]),
-                first,
-                (index, plan.edge),
-                tolerance,
-            )?;
-        } else {
-            let mut tools = Vec::with_capacity(members.len());
-            for member in &members {
-                let plan = plans.get(*member).ok_or_else(lost)?;
-                tools.push((*member, tool(plan, tolerance).map_err(at_edge(plan.edge))?));
-            }
-            let between: Vec<&Joint> = joined
-                .iter()
-                .filter(|j| j.plans.iter().any(|p| members.contains(p)))
-                .collect();
-            let made = join(body, &tools, &between, tolerance).map_err(at_edge(plan.edge))?;
-            let marks: BTreeMap<FaceId, Made> = made
-                .blends
-                .iter()
-                .enumerate()
-                .filter_map(|(face, plan)| Some((FaceId(index_u32(face)), blend_of((*plan)?))))
-                .collect();
-            combine(
-                &mut state,
-                &made.body,
-                !plan.convex,
-                &marks,
-                first,
-                (index, plan.edge),
-                tolerance,
-            )?;
-        }
+        let made = tool(plan, tolerance).map_err(at_edge(plan.edge))?;
+        let marked = Made {
+            blends: BTreeSet::from([index]),
+            ..Made::default()
+        };
+        combine(
+            &mut state,
+            &made.body,
+            !plan.convex,
+            &BTreeMap::from([(made.slope, marked)]),
+            first,
+            (index, plan.edge),
+            tolerance,
+        )?;
         first = false;
     }
     for corner in &found {
