@@ -33,6 +33,7 @@ fn cap_mask(in: CutOut) -> u32 {
 struct CapOut {
     @location(0) color: vec4<f32>,
     @builtin(sample_mask) mask: u32,
+    {{FRAG_DEPTH}}
 }
 
 // The cap of an opaque picture.
@@ -45,6 +46,7 @@ fn fs_cap_samples(in: CutOut) -> CapOut {
     var out: CapOut;
     out.color = cap_color();
     out.mask = mask;
+    {{SET_DEPTH}}
     return out;
 }
 
@@ -52,6 +54,7 @@ struct CapFrontOut {
     @location(0) color: vec4<f32>,
     @location(1) key: vec4<f32>,
     @builtin(sample_mask) mask: u32,
+    {{FRAG_DEPTH}}
 }
 
 fn key_bytes(key: u32) -> vec4<f32> {
@@ -74,6 +77,7 @@ fn fs_cap_front_samples(in: CutOut) -> CapFrontOut {
     out.color = cap_color();
     out.key = key_bytes(bitcast<u32>(in.clip.z));
     out.mask = mask;
+    {{SET_DEPTH}}
     return out;
 }
 
@@ -90,6 +94,7 @@ fn fs_front_samples_cut(in: CutOut) -> FrontOut {
         out.color.a = 0.0;
     }
     out.key = key_bytes(key_of(whole));
+    {{SET_DEPTH}}
     return out;
 }
 
@@ -123,6 +128,7 @@ fn fs_behind_samples_cut(in: CutOut) -> BehindOut {
     var out: BehindOut;
     out.color = shade_of(whole);
     out.mask = mask;
+    {{SET_DEPTH}}
     return out;
 }
 
@@ -137,5 +143,6 @@ fn fs_cap_behind_samples(in: CutOut) -> BehindOut {
     var out: BehindOut;
     out.color = cap_color();
     out.mask = mask;
+    {{SET_DEPTH}}
     return out;
 }

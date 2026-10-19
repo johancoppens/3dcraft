@@ -40,6 +40,7 @@ struct FrontOut {
     // not (a highlighted face).
     @location(0) color: vec4<f32>,
     @location(1) key: vec4<f32>,
+    {{FRAG_DEPTH}}
 }
 
 // The front: the opaque picture with its key.
@@ -57,12 +58,14 @@ fn fs_front_samples(in: VertexOut) -> FrontOut {
         f32((key >> 16u) & 255u),
         f32(key >> 24u),
     ) / 255.0;
+    {{SET_DEPTH}}
     return out;
 }
 
 struct BehindOut {
     @location(0) color: vec4<f32>,
     @builtin(sample_mask) mask: u32,
+    {{FRAG_DEPTH}}
 }
 
 // The surface behind the front one: on the samples where this triangle is
@@ -86,5 +89,6 @@ fn fs_behind_samples(in: VertexOut) -> BehindOut {
     var out: BehindOut;
     out.color = shade_of(in);
     out.mask = mask;
+    {{SET_DEPTH}}
     return out;
 }

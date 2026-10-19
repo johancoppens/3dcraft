@@ -24,25 +24,32 @@ fn fs_cap(in: CutOut) -> FragmentOut {
     var out: FragmentOut;
     out.color = cap_color();
     out.data = cap_data(in);
+    {{SET_DEPTH}}
     return out;
 }
 
 // The cap, colour only: a viewport.
 @fragment
-fn fs_cap_color(in: CutOut) -> @location(0) vec4<f32> {
+fn fs_cap_color(in: CutOut) -> ColorOut {
     if !cap_here(in) {
         discard;
     }
-    return cap_color();
+    var out: ColorOut;
+    out.color = cap_color();
+    {{SET_DEPTH}}
+    return out;
 }
 
 // The cap, data only: a viewport's capture.
 @fragment
-fn fs_cap_data(in: CutOut) -> @location(0) vec2<u32> {
+fn fs_cap_data(in: CutOut) -> DataOut {
     if !cap_here(in) {
         discard;
     }
-    return cap_data(in);
+    var out: DataOut;
+    out.data = cap_data(in);
+    {{SET_DEPTH}}
+    return out;
 }
 
 // `fs_front` of a cut-open picture.
@@ -55,42 +62,52 @@ fn fs_front_cut(in: CutOut) -> FragmentOut {
     var out: FragmentOut;
     out.data = data_of(whole);
     out.color = front_of(whole);
+    {{SET_DEPTH}}
     return out;
 }
 
 // `fs_front_color` of a cut-open picture.
 @fragment
-fn fs_front_color_cut(in: CutOut) -> @location(0) vec4<f32> {
+fn fs_front_color_cut(in: CutOut) -> ColorOut {
     if clipped(in) {
         discard;
     }
-    return front_of(whole_of(in));
+    var out: ColorOut;
+    out.color = front_of(whole_of(in));
+    {{SET_DEPTH}}
+    return out;
 }
 
 // `fs_behind` of a cut-open picture.
 @fragment
-fn fs_behind_cut(in: CutOut) -> @location(0) vec4<f32> {
+fn fs_behind_cut(in: CutOut) -> ColorOut {
     if clipped(in) {
         discard;
     }
     let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
-    if !(in.clip.z < front) {
+    if !(stored_depth(in.clip.z, in.dist) < front) {
         discard;
     }
-    return shade_of(whole_of(in));
+    var out: ColorOut;
+    out.color = shade_of(whole_of(in));
+    {{SET_DEPTH}}
+    return out;
 }
 
 // The cap as the surface behind the front one. Where the cap is the front
 // itself its depth here is the depth the front pass stored (the same quad
 // through the same vertex stage), so it is not behind itself.
 @fragment
-fn fs_cap_behind(in: CutOut) -> @location(0) vec4<f32> {
+fn fs_cap_behind(in: CutOut) -> ColorOut {
     if !cap_here(in) {
         discard;
     }
     let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
-    if !(in.clip.z < front) {
+    if !(stored_depth(in.clip.z, in.dist) < front) {
         discard;
     }
-    return cap_color();
+    var out: ColorOut;
+    out.color = cap_color();
+    {{SET_DEPTH}}
+    return out;
 }

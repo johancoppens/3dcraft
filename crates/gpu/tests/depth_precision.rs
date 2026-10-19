@@ -23,6 +23,7 @@ use common::{compare, offscreens, params, write_evidence};
 use craft3d_gpu::{Camera, DrawOptions, Mesh, Onscreen, OverlayParams, Projection, Segment};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
+use craft3d_render::SUBPIXEL_GRAIN;
 use craft3d_tess::{TessParams, tessellate_body};
 use devices::devices;
 
@@ -257,6 +258,101 @@ fn inside_a_building_lines_on_the_faces_stay_whole() {
         if lost > 0 {
             failed.push(format!(
                 "{name}: {lost} of {drawn} pixels of line are hidden by their own face"
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// The depth buffer as the lines' depth test reads it back
+/// (`Onscreen::read_depth`), against the distance the very same fragment
+/// wrote to the data target: at every pixel the two agree within the depth
+/// test's own allowance (the window's slack, [`overlay`], plus the
+/// surface's change over `SUBPIXEL_GRAIN` of a pixel, here taken over the
+/// pixel's four neighbours, which covers how the rasteriser places its
+/// depth against its attributes). At one sample per pixel, so that the
+/// depth read is the centre's, where the capture is (with several, a pixel
+/// whose samples straddle two surfaces reads their mean). A depth buffer
+/// that loses the key on its way through the backend fails this at the
+/// far end of the screed, where the key is a millionth: before the
+/// fragment wrote its own depth on OpenGL (`scene_source`), a Radeon 8060S
+/// put every pixel 2 to 3 % nearer than its surface (a metre at 43 m) and
+/// an Intel MTL up to 0.6 m.
+#[test]
+fn inside_a_building_the_depth_buffer_holds_the_fragments_distance() {
+    let mesh = building();
+    let camera = along_the_edge();
+    let p = params(400, 300, 1);
+    let slack = overlay(&mesh, &camera).slack;
+    let mut failed = Vec::new();
+    for (adapter, device, queue) in devices() {
+        let name = format!(
+            "{} ({:?})",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
+        let mut onscreen = Onscreen::with_samples(&device, &queue, 1).unwrap();
+        let uploaded = onscreen.upload(&mesh).unwrap();
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        onscreen
+            .draw(
+                &uploaded,
+                &lines,
+                &camera,
+                &p,
+                &overlay(&mesh, &camera),
+                DrawOptions {
+                    capture: true,
+                    ..DrawOptions::default()
+                },
+            )
+            .unwrap();
+        let frame = onscreen.read_frame().unwrap();
+        let depth = onscreen.read_depth().unwrap();
+        assert_eq!((depth.width, depth.height), (p.width, p.height));
+        let (w, h) = (p.width as usize, p.height as usize);
+        let at = |x: usize, y: usize| -> Option<f64> {
+            let d = frame.depth[y * w + x];
+            d.is_finite().then_some(d)
+        };
+        let (mut compared, mut over, mut worst) = (0, 0, (0.0f64, 0usize));
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let i = y * w + x;
+                let (Some(written), Some(read)) = (at(x, y), depth.distance(i)) else {
+                    continue;
+                };
+                // The allowance needs the neighbours; at the outline of a
+                // face there is none and the depth test hides nothing.
+                let neighbours = [at(x - 1, y), at(x + 1, y), at(x, y - 1), at(x, y + 1)];
+                let Some(change) = neighbours
+                    .iter()
+                    .map(|n| n.map(|n| (n - written).abs()))
+                    .try_fold(0.0f64, |m, n| n.map(|n| m.max(n)))
+                else {
+                    continue;
+                };
+                compared += 1;
+                let error = (f64::from(read) - written).abs();
+                if error > worst.0 {
+                    worst = (error, i);
+                }
+                if error > slack + change * SUBPIXEL_GRAIN {
+                    over += 1;
+                }
+            }
+        }
+        println!(
+            "{name}: {compared} pixels compared, {over} beyond the allowance, worst {:.3} mm at ({}, {}) where the fragment wrote {:.4} m",
+            worst.0 * 1e3,
+            worst.1 % w,
+            worst.1 / w,
+            frame.depth[worst.1]
+        );
+        assert!(compared > 50_000, "{name}: {compared} pixels compared");
+        if over > 0 {
+            failed.push(format!(
+                "{name}: {over} of {compared} pixels of the depth buffer lie beyond the depth test's allowance from their fragment's distance"
             ));
         }
     }

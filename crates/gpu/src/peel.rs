@@ -13,7 +13,7 @@
 //! that the first pass stored per sample (`peel_samples.wgsl`). Both files
 //! say why; docs/design/rendering.md has the measurements.
 
-use crate::renderer::{COLOR_FORMAT, DATA_FORMAT, texture_entry, uniform_entry};
+use crate::renderer::{COLOR_FORMAT, DATA_FORMAT, scene_source, texture_entry, uniform_entry};
 use std::cell::Cell;
 
 /// Levels of a colour channel.
@@ -105,7 +105,7 @@ pub(crate) fn scene_module(device: &wgpu::Device, multisampled: bool) -> wgpu::S
     } else {
         include_str!("peel.wgsl")
     };
-    let source = format!("{}\n{peel}", include_str!("scene.wgsl"));
+    let source = scene_source(device, &[peel]);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("craft3d scene, see-through"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
