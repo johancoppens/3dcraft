@@ -35,7 +35,7 @@ use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, PersistentName, Spl
 use craft3d_kernel::lumps::{Lump, lumps};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, ShellId, mass_properties, shell_alone, shells_alone};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// The lumps of a body, with the lump each face is in.
@@ -144,14 +144,30 @@ pub(crate) fn sorted(doc: &Document, body: &Body) -> Result<Sorted, String> {
     })
 }
 
-/// The lumps (ascending, each once) that hold a face answering to `name`
-/// by its own name or an alias.
-fn holding(sorted: &Sorted, names: &Names, name: &PersistentName) -> Vec<usize> {
-    let set: BTreeSet<usize> = (0..names.faces.len())
-        .filter(|&face| names.face_answers_to(face, name))
-        .filter_map(|face| sorted.lump_of_face.get(face).copied().flatten())
-        .collect();
-    set.into_iter().collect()
+/// Per name a face answers to (its own or an alias), the lumps
+/// (ascending, each once) that hold such a face: made once per body and
+/// names, so that finding the lump of a face costs a lookup, whatever
+/// the number of splits that ask.
+type ByName<'a> = BTreeMap<&'a PersistentName, Vec<usize>>;
+
+fn by_name<'a>(sorted: &Sorted, names: &'a Names) -> ByName<'a> {
+    let mut map: BTreeMap<&PersistentName, BTreeSet<usize>> = BTreeMap::new();
+    for face in 0..names.faces.len() {
+        let Some(lump) = sorted.lump_of_face.get(face).copied().flatten() else {
+            continue;
+        };
+        for name in names.names_of(face) {
+            map.entry(name).or_default().insert(lump);
+        }
+    }
+    map.into_iter()
+        .map(|(name, lumps)| (name, lumps.into_iter().collect()))
+        .collect()
+}
+
+/// The lumps that hold a face answering to `name`.
+fn holding<'a>(by_name: &'a ByName<'_>, name: &PersistentName) -> &'a [usize] {
+    by_name.get(name).map_or(&[], Vec::as_slice)
 }
 
 /// `which` (lumps of `sorted`) in the order of where they lie in space:
@@ -189,12 +205,13 @@ fn find(
     doc: &Document,
     body: &Body,
     names: &Names,
+    by_name: &ByName<'_>,
     sorted: &Sorted,
     made_by: &str,
     split: &Split,
 ) -> Result<usize, String> {
     let face = &split.face;
-    let lumps = holding(sorted, names, face);
+    let lumps = holding(by_name, face);
     let Some(&first) = lumps.first() else {
         return Err(format!(
             "face: `{made_by}` has no face {face}; its faces are: {}",
@@ -211,7 +228,7 @@ fn find(
             "number: the face {face} lies in one lump of `{made_by}` now, so there is nothing to number; split `{made_by}` again"
         )),
         Some(number) => {
-            let ordered = in_space(doc, body, sorted, &lumps)?;
+            let ordered = in_space(doc, body, sorted, lumps)?;
             usize::try_from(number)
                 .ok()
                 .and_then(|n| ordered.get(n).copied())
@@ -246,16 +263,19 @@ fn anchors_sorted(
     names: &Names,
     sorted: &Sorted,
 ) -> Result<Vec<(PersistentName, Option<u64>)>, String> {
+    let by_name = by_name(sorted, names);
+    // The names of each lump's faces, least first, each once.
+    let mut own: Vec<BTreeSet<&PersistentName>> = vec![BTreeSet::new(); sorted.lumps.len()];
+    for (face, name) in names.faces.iter().enumerate() {
+        if let Some(lump) = sorted.lump_of_face.get(face).copied().flatten()
+            && let Some(set) = own.get_mut(lump)
+        {
+            set.insert(name);
+        }
+    }
     let mut out = Vec::with_capacity(sorted.lumps.len());
-    for lump in 0..sorted.lumps.len() {
-        // The names of the lump's faces, least first, each once.
-        let own: BTreeSet<&PersistentName> = (0..names.faces.len())
-            .filter(|&face| sorted.lump_of_face.get(face).copied().flatten() == Some(lump))
-            .filter_map(|face| names.faces.get(face))
-            .collect();
-        let alone = own
-            .iter()
-            .find(|name| holding(sorted, names, name) == [lump]);
+    for (lump, own) in own.iter().enumerate() {
+        let alone = own.iter().find(|name| holding(&by_name, name) == [lump]);
         if let Some(name) = alone {
             out.push(((*name).clone(), None));
             continue;
@@ -263,7 +283,7 @@ fn anchors_sorted(
         let Some(&name) = own.first() else {
             return Err(format!("lump {lump} has no face to tell it by"));
         };
-        let ordered = in_space(doc, body, sorted, &holding(sorted, names, name))?;
+        let ordered = in_space(doc, body, sorted, holding(&by_name, name))?;
         let number = ordered
             .iter()
             .position(|&l| l == lump)
@@ -301,7 +321,8 @@ pub(crate) fn build(
         .as_ref()
         .as_ref()
         .map_err(|reason| format!("source: {reason}"))?;
-    let lump = find(doc, body, names, sorted, &made_by, split)?;
+    let by_name = by_name(sorted, names);
+    let lump = find(doc, body, names, &by_name, sorted, &made_by, split)?;
     // A lump is one split's: when a split of the same body built before
     // this one holds the same lump (the pieces grew together, or the
     // body is one lump now), this one is not the piece it was made for
@@ -314,7 +335,7 @@ pub(crate) fn build(
         r.names.is_some()
             && matches!(doc.feature(r.id).map(|f| &f.kind), Some(FeatureKind::Split(sibling))
                 if sibling.source == split.source
-                    && find(doc, body, names, sorted, &made_by, sibling) == Ok(lump))
+                    && find(doc, body, names, &by_name, sorted, &made_by, sibling) == Ok(lump))
     });
     if let Some(claimed) = claimed {
         let by = doc
