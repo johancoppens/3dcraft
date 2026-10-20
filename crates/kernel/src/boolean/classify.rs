@@ -151,11 +151,35 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
     Err(Stop::of(NO_RAY))
 }
 
+/// How far from its boundary, in tolerances, a point that tells where a
+/// region is must lie: away from the arcs along which the other body
+/// passes through the face, which are on the other body.
+const MARGIN: f64 = 4.0;
+
+/// Up to `want` points of `region` to tell where it is by: at the margin
+/// from its boundary, or, for a region that holds none there and that the
+/// other body does not pass through (`crossed` is false: no arc of it is
+/// on the other body, so it lies on one side of that body as a whole, and
+/// any point of it that the ray classification accepts decides), as close
+/// to its boundary as a sixteenth of the margin, the distance
+/// [`outline::left_of`] reads a loop's witness at: which side of its own
+/// loop a point is on is a question of the loop's pieces as they are, and
+/// a point within the tolerance of the boundary is not taken
+/// (`Outline::side` says `On` there). The point at the margin comes first,
+/// so a region that one decides is decided as it was.
+fn samples(region: &Outline, tol: f64, want: usize, crossed: bool) -> Result<Vec<Vec3>, Reason> {
+    match region.interior_points(tol, MARGIN * tol, want) {
+        Err(SLIVER) if !crossed => region.interior_points(tol, MARGIN * tol / 16.0, want),
+        found => found,
+    }
+}
+
 /// Where a region of a face of `own` is with respect to `other`: by a
 /// point well inside it, or, when the region holds no such point, read at
-/// its boundary ([`at_boundary`]). `loops` are the region's loops of
-/// arcs, in the order of `region`'s, and `across` the arcs that lie
-/// inside the face.
+/// its boundary ([`at_boundary`]) where the other body passes through
+/// it, and by a point closer to its boundary where it does not
+/// ([`samples`]). `loops` are the region's loops of arcs, in the order of
+/// `region`'s, and `across` the arcs that lie inside the face.
 fn classify(
     region: &Outline,
     loops: &[Vec<Half>],
@@ -166,14 +190,17 @@ fn classify(
 ) -> Result<Class, Stop> {
     let tol = tolerance.linear;
     let mut failure = None;
+    // The other body passes through the face along an arc of this region:
+    // the region is read at that arc when no point at the margin tells it.
+    let crossed = loops.iter().flatten().any(|(arc, _)| across.contains(arc));
     // One point decides, nearly always: the others are looked for only
     // when it does not. (The points for a greater number begin with those
     // for a smaller one.)
     let mut tried = 0;
     'points: for want in [1, TRIES] {
-        let candidates = match region.interior_points(tol, 4.0 * tol, want) {
+        let candidates = match samples(region, tol, want, crossed) {
             Ok(candidates) => candidates,
-            Err(SLIVER) if tried == 0 => {
+            Err(SLIVER) if tried == 0 && crossed => {
                 return at_boundary(region, loops, across, other, coincident, tolerance);
             }
             Err(reason) => return Err(Stop::of(reason)),
@@ -673,7 +700,7 @@ pub(super) fn select(
                     );
                 }
                 made = outline
-                    .piece(segs, 4.0 * tol)
+                    .piece(segs, MARGIN * tol)
                     .map_err(|r| Stop::of(r).at(&named))?;
                 Some(&made)
             };
