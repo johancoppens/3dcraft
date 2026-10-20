@@ -119,8 +119,11 @@ pub enum Defect {
         vertex: VertexId,
         ends: usize,
     },
-    /// A shell of a sheet with no boundary edge: a closed shell bounds a
-    /// solid (it has an inside), and a sheet is an open shell.
+    /// A shell of a sheet with edges but no boundary edge: a closed shell
+    /// bounds a solid (it has an inside), and a sheet is an open shell.
+    /// (A shell of faces without loops has no edge to tell by: a face on
+    /// a surface without an end is unbounded, which the exporters and the
+    /// measure refuse.)
     SheetClosed {
         shell: ShellId,
     },
@@ -790,9 +793,10 @@ fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
             };
             let boundary = if sheet {
                 match crate::shells::boundary_loops(body, shell) {
-                    // A sheet's shell has a boundary: one without is a
-                    // solid's shell (it has an inside).
-                    Some(0) => {
+                    // A sheet's shell has a boundary: one with edges and
+                    // none on the boundary is a solid's shell (it has an
+                    // inside).
+                    Some(0) if edges > 0 => {
                         defects.push(Defect::SheetClosed { shell });
                         continue;
                     }
