@@ -426,6 +426,163 @@ fn a_name_follows_through_a_split_that_is_not_the_last_and_on() {
     }
 }
 
+/// A block of 10 (F1) cut by `n` slabs of 1 at z = 3, 6, … (a pattern
+/// F3 of the slab F2, cut out as F4): `n + 1` lumps.
+fn cut_by_slabs(s: &mut Session, n: u64, k: f64) {
+    run(
+        &mut *s,
+        "variable.set",
+        json!({"name": "n", "expr": n.to_string()}),
+    );
+    block(s, "A", [10.0, 10.0, 10.0], [0.0; 3], k);
+    block(s, "Slab", [12.0, 12.0, 1.0], [-1.0, -1.0, 3.0], k);
+    built(
+        s,
+        "feature.pattern",
+        json!({"source": "Slab", "count": "n", "step": [0, 0, 3.0 * k], "name": "Slabs"}),
+    );
+    subtract(s, "A", "Slabs", "Cut");
+}
+
+#[test]
+fn a_lump_no_split_holds_fails_the_last_split_until_the_body_is_split_again() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        cut_by_slabs(&mut s, 1, k);
+        run(
+            &mut s,
+            "body.split",
+            json!({"source": "Cut", "names": ["Lower", "Upper"]}),
+        );
+        assert_solid(&mut s, "Lower", 300.0, None, k);
+        assert_solid(&mut s, "Upper", 600.0, None, k);
+        assert_eq!(feature_json(&mut s, "Cut")["bodyUsedBy"], "F5, F6");
+        // A second slab: three lumps, and the middle one is no split's.
+        // The last split says so rather than letting 200 go missing.
+        run(&mut s, "variable.set", json!({"name": "n", "expr": "2"}));
+        assert_close(
+            &body(&mut s, "Lower")["volume"],
+            300.0 * k * k * k,
+            "the lower piece",
+        );
+        let reason = failure(&mut s, "Upper");
+        assert!(
+            reason.starts_with("face: `Cut` has 3 lumps and 2 of them are split; the lump holding F4:copy(0)/F1:face(2)")
+                && reason.ends_with("split `Cut` again to add it"),
+            "{reason}"
+        );
+        assert_eq!(bodies(&mut s), ["Lower"]);
+        assert_eq!(feature_json(&mut s, "Cut")["bodyUsedBy"], "F5");
+        // Split again: one split is added, for the middle lump, said by
+        // the top of the first slab; the upper split is whole again.
+        let result = run(
+            &mut s,
+            "body.split",
+            json!({"source": "Cut", "names": ["Middle"]}),
+        );
+        let added = pieces(&result);
+        assert_eq!(added.len(), 1, "{result}");
+        assert_eq!(added[0].0, "Middle");
+        assert_eq!(added[0].1, "F4:copy(1)/F3:copy(0)/F2:face(1)");
+        assert_solid(&mut s, "Lower", 300.0, None, k);
+        assert_solid(&mut s, "Middle", 200.0, None, k);
+        assert_solid(&mut s, "Upper", 300.0, None, k);
+        assert_eq!(bodies(&mut s), ["Lower", "Upper", "Middle"]);
+        assert_eq!(feature_json(&mut s, "Cut")["bodyUsedBy"], "F5, F6, F7");
+        // Split already: refused, naming the splits.
+        let reason = refused(&mut s, "body.split", json!({"source": "Cut"}));
+        assert!(
+            reason.contains("`Cut` is split already, into `Lower`, `Upper`, `Middle`"),
+            "{reason}"
+        );
+        // Back to one slab: the middle lump's face bounds the upper lump
+        // now, which `Upper` holds already, so `Middle` fails; the two
+        // lumps there are have their splits, nothing is missing.
+        run(&mut s, "variable.set", json!({"name": "n", "expr": "1"}));
+        assert_close(
+            &body(&mut s, "Lower")["volume"],
+            300.0 * k * k * k,
+            "the lower piece",
+        );
+        assert_close(
+            &body(&mut s, "Upper")["volume"],
+            600.0 * k * k * k,
+            "the upper piece, whole again",
+        );
+        let reason = failure(&mut s, "Middle");
+        assert!(
+            reason.contains("is the body of `Upper` already"),
+            "{reason}"
+        );
+        assert_eq!(bodies(&mut s), ["Lower", "Upper"]);
+    }
+}
+
+#[test]
+fn deleting_a_split_leaves_its_lump_no_ones_until_the_body_is_split_again() {
+    let k = 1.0;
+    let mut s = session();
+    new_document(&mut s, k);
+    cut_in_two(&mut s, k);
+    run(
+        &mut s,
+        "body.split",
+        json!({"source": "Cut", "names": ["Lower", "Upper"]}),
+    );
+    run(&mut s, "feature.delete", json!({"feature": "Lower"}));
+    // The lower lump is no split's: the one split left says so.
+    let reason = failure(&mut s, "Upper");
+    assert!(
+        reason.starts_with("face: `Cut` has 2 lumps and 1 of them are split; the lump holding F3:copy(0)/F1:face(0)"),
+        "{reason}"
+    );
+    assert_eq!(bodies(&mut s), ["Cut"]);
+    // Split again: the lower lump gets its split back, after the upper.
+    let result = run(&mut s, "body.split", json!({"source": "Cut"}));
+    assert_eq!(
+        pieces(&result),
+        [(
+            "Split1".to_string(),
+            "F3:copy(0)/F1:face(0)".to_string(),
+            None
+        )],
+        "{result}"
+    );
+    assert_solid(&mut s, "Upper", 400.0, Some(360.0), k);
+    assert_solid(&mut s, "Split1", 400.0, Some(360.0), k);
+    assert_eq!(bodies(&mut s), ["Upper", "Split1"]);
+    // Suppressing a split leaves its lump no one's too; the rest holds.
+    run(
+        &mut s,
+        "feature.suppress",
+        json!({"feature": "Upper", "suppressed": true}),
+    );
+    let reason = failure(&mut s, "Split1");
+    assert!(
+        reason.contains("has 2 lumps and 1 of them are split"),
+        "{reason}"
+    );
+    run(
+        &mut s,
+        "feature.suppress",
+        json!({"feature": "Upper", "suppressed": false}),
+    );
+    assert_solid(&mut s, "Split1", 400.0, Some(360.0), k);
+    assert_eq!(bodies(&mut s), ["Upper", "Split1"]);
+}
+
+/// The feature `name` as `document.inspect` lists it.
+fn feature_json(s: &mut Session, name: &str) -> Value {
+    inspect(s)["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap()
+        .clone()
+}
+
 #[test]
 fn a_split_whose_face_lands_in_several_lumps_fails_rather_than_choosing() {
     let k = 1.0;
@@ -697,7 +854,7 @@ fn what_body_split_refuses() {
         json!({"source": "Cut", "names": ["One"]}),
     );
     assert!(
-        reason.contains("`names` has 1 names for 2 lumps"),
+        reason.contains("`names` has 1 names for 2 lumps to split"),
         "{reason}"
     );
     let reason = refused(
@@ -743,7 +900,10 @@ fn what_body_split_refuses() {
     let reason = refused(&mut s, "body.split", json!({"source": "Split1"}));
     assert!(reason.contains("`Split1` is one lump"), "{reason}");
     let reason = refused(&mut s, "body.split", json!({"source": "Cut"}));
-    assert!(reason.contains("went into"), "{reason}");
+    assert!(
+        reason.contains("is split already, into `Split1`, `Split2`"),
+        "{reason}"
+    );
     // Nothing is left of the refusals in the document.
     assert_eq!(bodies(&mut s), ["Sheet", "Split1", "Split2"]);
     let check = run(&mut s, "document.check", json!({"deep": true}));

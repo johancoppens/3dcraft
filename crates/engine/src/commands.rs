@@ -1905,7 +1905,17 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(taker)) =
             (entry.as_object_mut(), outcome.and_then(|o| o.consumed_by))
         {
-            map.insert("bodyUsedBy".into(), taker.to_string().into());
+            // The splits of a body took it together: all of them, listed.
+            let takers: Vec<String> = if craft3d_regen::taken_by_its_splits(doc, feature.id, taker)
+            {
+                craft3d_regen::splits_of(doc, &regen.features, feature.id)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            } else {
+                vec![taker.to_string()]
+            };
+            map.insert("bodyUsedBy".into(), takers.join(", ").into());
         }
         features.push(entry);
         if let Some(body) = outcome.and_then(|o| o.own_body()) {

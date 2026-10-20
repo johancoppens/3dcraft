@@ -69,7 +69,10 @@ pub use sketch::{
     settle_sketches, settle_sketches_cached,
 };
 pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
-pub use split::anchors as lump_anchors;
+pub use split::{
+    SplitPlan, anchors as lump_anchors, shared_by_splits as taken_by_its_splits,
+    siblings as splits_of, split_plan,
+};
 
 /// The instances of the patterns of a solved sketch, construction curves
 /// included, each with whether it is construction: the curves a picture of

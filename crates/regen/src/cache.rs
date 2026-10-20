@@ -69,6 +69,11 @@ struct Context {
     units: Units,
     tolerance: (u64, u64),
     inputs: Vec<Input>,
+    /// For a split: the other splits of the same body as they stand,
+    /// each with whether it is built (`crate::split::group_state`), which
+    /// its result depends on (a lump is one split's, and the last split
+    /// answers for lumps none names). Empty for every other kind.
+    group: Vec<(Feature, bool)>,
 }
 
 #[derive(Clone)]
@@ -584,6 +589,7 @@ pub(crate) fn features(
             Ok(None) | Err(_) => stated,
         };
         let values = evaluated(variables, &feature.kind.exprs());
+        let group = crate::split::group_state(doc, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature
                 .kind
@@ -604,6 +610,7 @@ pub(crate) fn features(
                     && entry.context.tolerance == bits(doc.tolerance)
                     && entry.context.values == values
                     && entry.context.followed == followed
+                    && entry.context.group == group
             })
             .map(|entry| (entry.result.clone(), entry.stamp));
         let (result, stamp) = match reused {
@@ -625,6 +632,7 @@ pub(crate) fn features(
                         units: doc.units,
                         tolerance: bits(doc.tolerance),
                         inputs: Vec::new(),
+                        group,
                     },
                 );
                 let hit = cache
