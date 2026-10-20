@@ -60,6 +60,7 @@ fn parse(args: &[String]) -> Result<Config, String> {
         out: crate::health::main_checkout(&root).join("target/fuzz"),
         bin: None,
     };
+    let mut seeds_given = false;
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let value = it
@@ -71,7 +72,10 @@ fn parse(args: &[String]) -> Result<Config, String> {
                 .map_err(|_| format!("{flag}: `{value}` is not a whole number"))
         };
         match flag.as_str() {
-            "--seeds" => c.seeds = number()?,
+            "--seeds" => {
+                c.seeds = number()?;
+                seeds_given = true;
+            }
             "--from" => c.from = number()?,
             "--jobs" => {
                 c.jobs = usize::try_from(number()?).unwrap_or(1).clamp(1, MAX_JOBS);
@@ -85,6 +89,11 @@ fn parse(args: &[String]) -> Result<Config, String> {
             "--bin" => c.bin = Some(PathBuf::from(value)),
             other => return Err(format!("unknown option {other}; {USAGE}")),
         }
+    }
+    // A run for a time without a number of seeds runs until the time is up,
+    // not until the default hundred seeds are done.
+    if c.minutes.is_some() && !seeds_given {
+        c.seeds = u64::MAX;
     }
     Ok(c)
 }
@@ -799,6 +808,17 @@ mod tests {
         assert_eq!(simpler("keep", &json!(true), 10.0), vec![json!(false)]);
         assert!(simpler("keep", &json!(false), 10.0).is_empty());
         assert_eq!(simpler("angle", &json!("45 deg"), 10.0).len(), 2);
+    }
+
+    #[test]
+    fn minutes_without_seeds_run_until_the_time_is_up() {
+        let args = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let timed = parse(&args(&["--minutes", "60"])).expect("valid flags");
+        assert_eq!(timed.seeds, u64::MAX);
+        let both = parse(&args(&["--minutes", "60", "--seeds", "500"])).expect("valid flags");
+        assert_eq!(both.seeds, 500);
+        let plain = parse(&args(&[])).expect("valid flags");
+        assert_eq!(plain.seeds, 100);
     }
 
     #[test]
