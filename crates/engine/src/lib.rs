@@ -44,6 +44,7 @@ mod sketch_cmds;
 mod sketch_path_cmds;
 mod sketch_pattern_cmds;
 mod sketch_spline_cmds;
+mod split_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod step_cmds;
 mod sweep_cmds;
@@ -330,6 +331,7 @@ impl Session {
                 helix_cmds::SPECS,
                 offset_cmds::SPECS,
                 sheet_cmds::SPECS,
+                split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
                 pick_cmds::SPECS,

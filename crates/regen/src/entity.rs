@@ -73,6 +73,17 @@ pub(crate) enum Entities {
         edge_starts: Vec<usize>,
         vertex_starts: Vec<usize>,
     },
+    /// Some of the entities of one other body, each the copy in instance
+    /// 0 of `feature` of the entity of `source` it is: edge `i` of this
+    /// body is edge `edges[i]` of the source (a split: the entities of one
+    /// lump). Listed with what the source's entities are called, shared
+    /// with that source's result.
+    Picked {
+        feature: FeatureId,
+        source: Arc<Names>,
+        edges: Vec<usize>,
+        vertices: Vec<usize>,
+    },
     /// Let go of with the body, to stay within the cache's budget
     /// ([`crate::RegenCache::set_body_budget`]): only how many there were.
     /// Derived again with the body when a feature built from it needs

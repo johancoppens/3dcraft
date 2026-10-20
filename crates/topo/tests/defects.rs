@@ -395,6 +395,62 @@ fn a_shell_alone_is_a_body_of_its_faces_and_only_what_they_use() {
     assert!(craft3d_topo::shell_alone(&body, craft3d_topo::ShellId(2)).is_none());
 }
 
+#[test]
+fn shells_alone_take_several_shells_and_say_which_entity_each_was() {
+    use craft3d_topo::{EdgeId, FaceId, ShellId, VertexId, shells_alone};
+    let body = two_blocks();
+    // The second shell, then the first: the part has both, in that
+    // order, and every entity of the part is the entity of the whole it
+    // was taken from (the second block's first).
+    let (part, taken) = shells_alone(&body, &[ShellId(1), ShellId(0)]).unwrap();
+    assert_eq!(part.shells.len(), 2);
+    assert_eq!(part.faces.len(), 12);
+    assert_eq!(defects(&part), vec![]);
+    let volume = craft3d_topo::mass_properties(&part).unwrap().volume;
+    let whole = craft3d_topo::mass_properties(&body).unwrap().volume;
+    assert!(
+        (volume - whole).abs() < 1e-9 * whole,
+        "{volume} against {whole}"
+    );
+    assert_eq!(taken.faces.len(), 12);
+    assert_eq!(taken.edges.len(), 24);
+    assert_eq!(taken.vertices.len(), 16);
+    assert_eq!(taken.faces[..6], body.shells[1].faces[..]);
+    assert_eq!(taken.faces[6..], body.shells[0].faces[..]);
+    for (index, &face) in taken.faces.iter().enumerate() {
+        let there = &body.faces[face.0 as usize];
+        let here = &part.faces[index];
+        assert_eq!(here.surface, there.surface);
+        assert_eq!(here.reversed, there.reversed);
+    }
+    for (index, &edge) in taken.edges.iter().enumerate() {
+        let there = &body.edges[edge.0 as usize];
+        let here = &part.edges[index];
+        assert_eq!(here.curve, there.curve);
+        assert_eq!(
+            body.vertices[there.start.0 as usize].point,
+            part.vertices[here.start.0 as usize].point
+        );
+    }
+    for (index, &vertex) in taken.vertices.iter().enumerate() {
+        assert_eq!(
+            part.vertices[index].point,
+            body.vertices[vertex.0 as usize].point
+        );
+    }
+    // A shell listed twice is taken once; one shell is `shell_alone`.
+    let (twice, _) = shells_alone(&body, &[ShellId(0), ShellId(0)]).unwrap();
+    assert_eq!(twice.shells.len(), 1);
+    let (one, taken) = shells_alone(&body, &[ShellId(1)]).unwrap();
+    assert_eq!(one, craft3d_topo::shell_alone(&body, ShellId(1)).unwrap());
+    assert_eq!(taken.faces[0], FaceId(6));
+    assert!(taken.edges.iter().all(|e| *e != EdgeId(0)));
+    assert!(taken.vertices.iter().all(|v| *v != VertexId(0)));
+    // A shell that does not exist.
+    assert!(shells_alone(&body, &[ShellId(0), ShellId(2)]).is_none());
+    assert_eq!(shells_alone(&body, &[]).unwrap().0.shells.len(), 0);
+}
+
 /// A square sheet in the plane `z = 0` whose edge from `(3, 0, 0)` to
 /// `(1, 0, 0)` is `along`, over `range`.
 fn square_sheet(along: Curve3, range: (f64, f64)) -> Body {

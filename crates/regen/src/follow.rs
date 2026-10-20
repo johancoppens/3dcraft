@@ -202,41 +202,80 @@ pub(crate) fn face(
     }
     let mut current = name.clone();
     let mut from = start;
-    for taker in takers {
+    // Each step goes to the feature that took the body the name is of
+    // now, which comes later in the history, so the way is no longer
+    // than the history (the chain of one taker's consumption says
+    // nothing of the way through a split that is not the last).
+    for _ in 0..earlier.len() {
+        let Some(taker) = earlier
+            .iter()
+            .find(|r| r.id == current.feature)
+            .and_then(|r| r.consumed_by)
+        else {
+            break;
+        };
+        // The splits of one body took it together: the face is looked
+        // for in every one of them, as in the instances of one taker.
+        let group = if crate::split::shared_by_splits(doc, current.feature, taker) {
+            crate::split::siblings(doc, earlier, current.feature)
+        } else {
+            vec![taker]
+        };
         let by = called(doc, taker);
         let kind = doc.feature(taker).map_or("feature", |f| f.kind.type_name());
-        let Some(names) = earlier
-            .iter()
-            .find(|r| r.id == taker)
-            .and_then(|r| r.names.as_ref())
-        else {
-            return Err(format!(
-                "{role}: the body of `{from}` went into `{by}`, a {kind} that does not name its faces, so {name} cannot be followed there"
-            ));
-        };
-        let found = copies(names, taker, &current);
-        let mut found = found.into_iter();
-        match (found.next(), found.next()) {
-            (None, _) => {
+        let mut found: Vec<(FeatureId, u64)> = Vec::new();
+        let mut there: Vec<PersistentName> = Vec::new();
+        for &member in &group {
+            let Some(names) = earlier
+                .iter()
+                .find(|r| r.id == member)
+                .and_then(|r| r.names.as_ref())
+            else {
                 return Err(format!(
-                    "{role}: the face {name} is gone: the body of `{from}` went into `{by}`, a {kind}, which left no face of it; its faces are: {}",
-                    listed(&names.faces)
+                    "{role}: the body of `{from}` went into `{by}`, a {kind} that does not name its faces, so {name} cannot be followed there"
+                ));
+            };
+            found.extend(
+                copies(names, member, &current)
+                    .into_iter()
+                    .map(|k| (member, k)),
+            );
+            there.extend(names.faces.iter().cloned());
+        }
+        let group_names = || {
+            if group.len() > 1 {
+                let all: Vec<String> = group.iter().map(|&m| called(doc, m)).collect();
+                format!("the splits {}", all.join(", "))
+            } else {
+                format!("`{by}`")
+            }
+        };
+        match found.as_slice() {
+            [] => {
+                return Err(format!(
+                    "{role}: the face {name} is gone: the body of `{from}` went into {}, a {kind}, which left no face of it; its faces are: {}",
+                    group_names(),
+                    listed(&there)
                 ));
             }
-            (Some(k), None) => current = PersistentName::copy(taker, k, current),
-            (Some(first), Some(second)) => {
-                let all: Vec<String> = [first, second]
-                    .into_iter()
-                    .chain(found)
-                    .map(|k| PersistentName::copy(taker, k, current.clone()).to_string())
+            [(member, k)] => {
+                from = called(doc, *member);
+                current = PersistentName::copy(*member, *k, current);
+            }
+            _ => {
+                let all: Vec<String> = found
+                    .iter()
+                    .map(|&(member, k)| {
+                        PersistentName::copy(member, k, current.clone()).to_string()
+                    })
                     .collect();
                 return Err(format!(
-                    "{role}: the face {name} is more than one face after `{by}`, a {kind} the body of `{from}` went into: {}; give one of these names",
+                    "{role}: the face {name} is more than one face after {}, a {kind} the body of `{from}` went into: {}; give one of these names",
+                    group_names(),
                     all.join(", ")
                 ));
             }
         }
-        from = by;
     }
     Ok(Some(current))
 }

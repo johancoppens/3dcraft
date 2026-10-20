@@ -115,7 +115,7 @@ Edges first: each edge becomes points once, and both faces that share it use the
 
 ## 7. The engine and its clients
 
-- **Session** (`engine`): open documents, the command registry (71 commands in eleven families: `file`, `recovery`, `edit`, `variable`, `sketch`, `datum`, `feature`, `body`, `history`, `document`, `view`), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
+- **Session** (`engine`): open documents, the command registry (72 commands in eleven families: `file`, `recovery`, `edit`, `variable`, `sketch`, `datum`, `feature`, `body`, `history`, `document`, `view`), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
 - **Commands**: an id, a parameter string, a summary and a `run` function, in the `SPECS` of `commands.rs` or of an `<area>_cmds.rs` module; the UI, CLI, control channel and MCP all dispatch the same ones. A failed command changes nothing; a panic inside one is caught and reported. `panic_hunt` runs every command with hostile parameters.
 - **The window** (`apps/craft3d`, `ui-egui`): a thin shell. Commands, regeneration and meshing run on the engine thread; the viewport draws on the GPU (`gpu::Onscreen`), with the CPU renderer as the fallback and as the oracle for screenshots. The control channel (loopback TCP, a token) lets an agent drive the window the developer watches, also over MCP (`craft3d-cli mcp --bridge`). Details: [`design/engine.md`](design/engine.md), [`design/rendering.md`](design/rendering.md), [`control-protocol.md`](control-protocol.md).
 

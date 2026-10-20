@@ -538,6 +538,32 @@ pub struct Fill {
     pub sketch: FeatureId,
 }
 
+/// One lump of the body of an earlier feature as a body of its own: the
+/// shell that bounds the lump from outside and the cavities in it
+/// (`craft3d_kernel::lumps`). The body goes into this feature; the other
+/// lumps are split features of their own with the same source, made
+/// together by `body.split`, and the source's body is shared by all of
+/// them.
+///
+/// Which lump is said by a face of the source's body, never by the order
+/// of the shells (which the kernel's sewing sets, and an upstream edit
+/// may change): the lump that holds a piece of the face `face`. When
+/// pieces of that face lie in several lumps (a ring cut in two crescents:
+/// both have pieces of the wall and of both cut faces), `number` says
+/// which, by where the lumps lie in space (by x, then y, then z of the
+/// centre of each lump's volume, coordinates within the tolerance
+/// counting as one), as an edge or a vertex that no face tells from
+/// another is numbered. `None` means the face lies in one lump only, and
+/// the feature fails when an edit puts pieces of it in several; a number
+/// fails when the face lies in one lump, or in fewer than it counts to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Split {
+    pub source: FeatureId,
+    pub face: PersistentName,
+    #[serde(default)]
+    pub number: Option<u64>,
+}
+
 /// How two bodies are combined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -898,6 +924,7 @@ pub enum FeatureKind {
     Thread(Thread),
     OffsetProfile(OffsetProfile),
     Fill(Fill),
+    Split(Split),
 }
 
 impl FeatureKind {
@@ -933,6 +960,7 @@ impl FeatureKind {
             FeatureKind::Thread(_) => "thread",
             FeatureKind::OffsetProfile(_) => "offsetProfile",
             FeatureKind::Fill(_) => "fill",
+            FeatureKind::Split(_) => "split",
         }
     }
 
@@ -996,6 +1024,7 @@ impl FeatureKind {
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
+            FeatureKind::Split(s) => Some((s.source, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -1127,7 +1156,8 @@ impl FeatureKind {
             | FeatureKind::Loft(_)
             | FeatureKind::Sweep(_)
             | FeatureKind::DeleteFace(_)
-            | FeatureKind::Fill(_) => {
+            | FeatureKind::Fill(_)
+            | FeatureKind::Split(_) => {
                 out = Vec::new();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
@@ -1237,7 +1267,8 @@ impl FeatureKind {
             | FeatureKind::Loft(_)
             | FeatureKind::Sweep(_)
             | FeatureKind::DeleteFace(_)
-            | FeatureKind::Fill(_) => Vec::new(),
+            | FeatureKind::Fill(_)
+            | FeatureKind::Split(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -1517,6 +1548,7 @@ impl Document {
                     faces.iter().collect()
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
+                FeatureKind::Split(split) => vec![&split.face],
                 FeatureKind::Draft(draft) => {
                     if draft.faces.len() > MAX_FACE_OP_FACES {
                         return Err(DocError::Invalid(format!(

@@ -51,7 +51,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
 3. ✅ 2026-10-13 **Results without scars:** faces and edges a boolean split needlessly are merged.
 4. ⬜ **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import will bring them.
-5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built (2026-10-17); sheets are made by `feature.fill`, trimmed by a solid and cut a solid (2026-10-18, [`design/booleans.md`](design/booleans.md) › *Sheets*); two sheets and a split into both pieces are owed.
+5. 🟡 **Several lumps, cavities, sheet bodies.** Lumps and cavities are built (2026-10-17) and split into one body per lump by `body.split` (2026-10-20); sheets are made by `feature.fill`, trimmed by a solid and cut a solid (2026-10-18, [`design/booleans.md`](design/booleans.md) › *Sheets*); two sheets and a split of a solid by a sheet into both pieces in one step are owed.
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`design/regeneration.md`](design/regeneration.md) › *Never through itself*).
@@ -71,7 +71,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [x] Sheet bodies (item 5): the check of an open shell, `feature.fill`, a sheet trimmed by a solid and a solid cut by a sheet, held to closed forms, Euler with boundary loops, meshes open only at the boundary, the identities of areas and volumes and FreeCAD at three scales (2026-10-18).
 - [ ] A piece of a sheet on a face of the solid counts as inside (decided 2026-10-18, refused until built).
 - [ ] Sheets, still refused: two sheets, a lump or cavity the sheet does not cross; sheets from other commands (an open profile extruded, a face copied, a loft without caps).
-- [ ] `body.split`: one body per lump when asked, and a name for the piece of a face in one lump (decided 2026-10-18, [`decisions.md`](decisions.md)).
+- [x] `body.split`: one body per lump when asked, each said by a face of its lump (numbered by position only when no face is the lump's own), and the piece of a face in one lump named as that split's copy (2026-10-20, [`design/names.md`](design/names.md) › *Splits*).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
 - [ ] Tolerant modelling (item 4), before STEP import: a tolerance per vertex and edge, the kernel at the body's largest, a cap of 1000 times the tolerance (decided 2026-10-18, [`decisions.md`](decisions.md)); first slice owed.
@@ -306,6 +306,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Measures and the self-check's meshes faster, bit for bit: lines of a spline evaluated once per line, walks keeping their blend factors, projections and face meshes remembered, every operation's check remembered ([`design/booleans.md`](design/booleans.md) › *Second round*) (2026-10-18)
 - Several lumps and cavities proven and checked: shells one by one in `topo::check`, one rule for outsides and cavities (`kernel::lumps`, used by the STEP export and `document.check` deep), `shells` in `document.inspect` ([`design/booleans.md`](design/booleans.md) › *Lumps and cavities*) (2026-10-17)
 - Slivers a few tolerances wide (the joint of a riveted truss: three bars whose edges nearly meet in one point) classified at their boundary instead of by a point inside them, a chord read as inside where it passes within the tolerance of an edge ([`design/booleans.md`](design/booleans.md) › *Slivers read at their boundary*) (2026-10-18)
+- `body.split`: a body of several lumps becomes one split feature per lump, each said by a face of its lump, the pieces of a face named as that split's copies, held to closed forms at three scales ([`design/names.md`](design/names.md) › *Splits*, [`design/booleans.md`](design/booleans.md) › *`body.split`*) (2026-10-20)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

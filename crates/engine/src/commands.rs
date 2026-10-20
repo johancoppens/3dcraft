@@ -1320,6 +1320,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
+        FeatureKind::Split(_) => ("split", vec![("source", Slot::Elsewhere)]),
         FeatureKind::OffsetProfile(o) => (
             "offset profile",
             vec![
@@ -1664,6 +1665,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         FeatureKind::Mirror(mirror) => mirror.source = new_source.unwrap_or(mirror.source),
         FeatureKind::Pattern(pattern) => pattern.source = new_source.unwrap_or(pattern.source),
+        FeatureKind::Split(split) => split.source = new_source.unwrap_or(split.source),
         FeatureKind::Boolean(boolean) => {
             boolean.op = new_op.unwrap_or(boolean.op);
             boolean.target = new_target.unwrap_or(boolean.target);

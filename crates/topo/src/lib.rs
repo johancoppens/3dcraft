@@ -34,7 +34,7 @@ pub use mass::{
     mass_with_shells, mass_with_shells_each_while, mass_work, shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
-pub use shells::{boundary_loops, face_groups, shell_alone, shell_genera};
+pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};
 

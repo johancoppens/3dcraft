@@ -113,7 +113,19 @@ pub(crate) fn of_one_body(
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    let newest = |name: &PersistentName| craft3d_regen::newest_body(&regen.features, name.feature);
+    // The body a face is of now: where the name follows to (after a
+    // split, the one split that has the face); where it cannot be
+    // followed, the last feature the body went into, and regeneration
+    // says what is wrong.
+    let newest = |name: &PersistentName| {
+        craft3d_regen::follow_face(doc, &regen.features, name, key)
+            .ok()
+            .flatten()
+            .map_or_else(
+                || craft3d_regen::newest_body(&regen.features, name.feature),
+                |full| full.feature,
+            )
+    };
     let body = newest(first);
     let Some(other) = names.iter().find(|name| newest(name) != body) else {
         return Ok(());
