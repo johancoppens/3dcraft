@@ -32,6 +32,18 @@
 //!   passes twice through one vertex, which could not be meshed for the
 //!   self-check (the seam to the pole started from the pass that does
 //!   not open towards it): accepted and valid.
+//! - `20796666.json`, `20815546.json`, `20820477.json` (the run of
+//!   2026-10-20): a union, an intersection and a difference whose result
+//!   has a face on a torus whose boundary runs most of the way around
+//!   the axis; the bodies were right, and points were then classified
+//!   wrong against them (the chart of the face was cut open where its
+//!   boundary ran: `kernel::boolean::chart::widest_gap`), which the
+//!   boolean's own check reported: accepted and valid.
+//! - `20756595.json` (the same run): a cone less a cylinder tangent to
+//!   its base circle, whose exact difference has two slivers of a few
+//!   tolerances' thickness as lumps of their own, which the sorting into
+//!   lumps read as cavities by the sign of a volume too small to measure:
+//!   accepted and valid, three lumps.
 
 #![allow(
     clippy::unwrap_used,
@@ -156,6 +168,10 @@ fn the_fuzzers_findings_end_valid_or_refused_for_their_reason() {
         ("23080.json", &["zero thickness"][..]),
         ("25810.json", &["zero thickness"][..]),
         ("28426.json", &["zero thickness"][..]),
+        ("20796666.json", &[][..]),
+        ("20815546.json", &[][..]),
+        ("20820477.json", &[][..]),
+        ("20756595.json", &[][..]),
     ] {
         let refused = replay(file);
         assert_eq!(refused.len(), reasons.len(), "{file}: {refused:?}");

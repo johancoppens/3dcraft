@@ -59,7 +59,7 @@ pub(super) fn signed_distance(sheet: Sheet, p: Vec3) -> Option<f64> {
 
 /// An upper bound on the speed of the curve: the length travelled per unit
 /// of parameter.
-pub(super) fn speed_bound(curve: &Curve3) -> f64 {
+pub(crate) fn speed_bound(curve: &Curve3) -> f64 {
     match curve {
         Curve3::Line(_) => 1.0,
         Curve3::Circle(c) => c.radius(),

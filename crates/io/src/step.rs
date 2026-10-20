@@ -563,14 +563,16 @@ fn lumps(
     };
     // The faces measured once, summed per shell.
     let volumes = craft3d_topo::shell_volumes(body);
-    let outer = craft3d_kernel::lumps::outer_shells(body, &volumes).map_err(failed)?;
-    if let [only] = outer
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| **o)
-        .map(|(s, _)| s)
-        .collect::<Vec<_>>()
-        .as_slice()
+    let outer = craft3d_kernel::lumps::outer_shells(body, &volumes, tolerance).map_err(failed)?;
+    // Every shell's volume has a sign to read, and one faces outward.
+    if outer.iter().all(Option::is_some)
+        && let [only] = outer
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| **o == Some(true))
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>()
+            .as_slice()
     {
         // One part: every other shell is one of its cavities, without a
         // ray (what lies where is `document.check`'s to judge).
