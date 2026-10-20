@@ -283,3 +283,98 @@ fn a_fill_that_cannot_be_made_says_why() {
     );
     assert_close(&body(&mut s, "F")["area"], 4.0, "area after the edit");
 }
+
+/// A fill in the plane of a face of the part: the piece on that face
+/// counts as inside the part (decided 2026-10-18). A plate with a block on
+/// it, and a fill in the plane of the plate's top: the part is cut into
+/// the block (in front, subtract) and the plate (behind, intersect), the
+/// volumes adding up; trimmed by the part the fill keeps the plate's top
+/// with the block's footprint (12), and the rest for subtract (388). At
+/// three scales, checked deep.
+#[test]
+fn a_fill_on_a_face_of_the_part_cuts_and_is_trimmed_there() {
+    for k in SCALES {
+        let dir = workdir("sheets", &format!("on-face-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        // Three copies of the part: a plate of 4 × 3 × 1 from (−2, −1, 0)
+        // with a block of 1 × 1 × 1 on its top.
+        for part in ["Part", "PartB", "PartC"] {
+            let (plate, block) = (format!("{part} plate"), format!("{part} block"));
+            built(
+                &mut s,
+                "feature.block",
+                json!({"size": [4.0 * k, 3.0 * k, k], "position": [-2.0 * k, -k, 0.0], "name": plate}),
+            );
+            built(
+                &mut s,
+                "feature.block",
+                json!({"size": [k, k, k], "position": [-0.5 * k, 0.0, k], "name": block}),
+            );
+            built(
+                &mut s,
+                "feature.boolean",
+                json!({"op": "union", "target": plate, "tool": block, "name": part}),
+            );
+            assert_close(&body(&mut s, part)["volume"], 13.0 * k * k * k, "the part");
+        }
+        sheet(&mut s, "Wall", 1.0, 0.0, k);
+        sheet(&mut s, "WallB", 1.0, 0.0, k);
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Part", "tool": "Wall", "keepTool": true, "name": "Above"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "intersect", "target": "PartB", "tool": "Wall", "keepTool": true, "name": "Below"}),
+        );
+        let above = body(&mut s, "Above");
+        let below = body(&mut s, "Below");
+        assert_eq!(above["kind"], "solid");
+        assert_eq!(below["kind"], "solid");
+        assert_close(&above["volume"], k * k * k, "the block above the fill");
+        assert_close(
+            &below["volume"],
+            12.0 * k * k * k,
+            "the plate behind the fill",
+        );
+        assert_close(&above["area"], 6.0 * k * k, "the block's area");
+        assert_close(&below["area"], 38.0 * k * k, "the plate's area");
+        // The block's new bottom is the fill's face; the plate keeps its
+        // own top, whole.
+        let caps = |found: &Value| {
+            found["faceNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|n| n.as_str().unwrap().contains("startCap"))
+                .count()
+        };
+        assert_eq!(caps(&above), 1, "{above}");
+        assert_eq!(caps(&below), 0, "{below}");
+        assert_eq!(below["faces"], 6, "{below}");
+        deep(&mut s);
+
+        // Trimmed by the part: the top with the footprint, and the rest.
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "intersect", "target": "Wall", "tool": "PartC", "keepTool": true, "name": "Inside"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "WallB", "tool": "PartC", "keepTool": true, "name": "Outside"}),
+        );
+        let inside = body(&mut s, "Inside");
+        let outside = body(&mut s, "Outside");
+        assert_eq!(inside["kind"], "sheet");
+        assert_eq!(outside["kind"], "sheet");
+        assert_close(&inside["area"], 12.0 * k * k, "inside the part");
+        assert_close(&outside["area"], 388.0 * k * k, "outside the part");
+        assert_eq!(inside["faces"], 1, "{inside}");
+        deep(&mut s);
+    }
+}

@@ -119,6 +119,11 @@ pub enum Defect {
         vertex: VertexId,
         ends: usize,
     },
+    /// A shell of a sheet with no boundary edge: a closed shell bounds a
+    /// solid (it has an inside), and a sheet is an open shell.
+    SheetClosed {
+        shell: ShellId,
+    },
     /// The shells of a solid do not lie inside each other as the outsides
     /// of lumps and their cavities do (found by `craft3d_kernel::lumps`,
     /// which tells it from geometry: a cavity outside every lump, a lump
@@ -241,6 +246,11 @@ impl fmt::Display for Defect {
                 f,
                 "{ends} edges of the sheet's boundary end at vertex {}: the boundary touches itself there, so the sheet is pinched to a point",
                 vertex.0
+            ),
+            Defect::SheetClosed { shell } => write!(
+                f,
+                "shell {} of the sheet is closed (no edge of it is a boundary edge): a closed shell bounds a solid, and a sheet is an open shell",
+                shell.0
             ),
             Defect::ShellNesting { shell, reason } => {
                 write!(f, "shell {}: {reason}", shell.0)
@@ -780,6 +790,12 @@ fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
             };
             let boundary = if sheet {
                 match crate::shells::boundary_loops(body, shell) {
+                    // A sheet's shell has a boundary: one without is a
+                    // solid's shell (it has an inside).
+                    Some(0) => {
+                        defects.push(Defect::SheetClosed { shell });
+                        continue;
+                    }
                     Some(loops) => i64::try_from(loops).unwrap_or(i64::MAX),
                     None => continue,
                 }

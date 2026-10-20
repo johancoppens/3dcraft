@@ -6,8 +6,13 @@
 //! and to `area(S ∩ A) + area(S ∖ A) = area(S)`; a solid cut by a sheet
 //! (subtract keeps the side in front of the sheet, intersect the side
 //! behind) to closed-form volumes and to `vol(front) + vol(behind) =
-//! vol(A)`. Analytic and freeform operands (a ball, a cylinder, the spline
-//! cone of the test kit, a sheet bounded by a spline), at 1e-3, 1 and 1e6.
+//! vol(A)`. A piece of the sheet lying on a face of the solid counts as
+//! inside the solid (decided 2026-10-18): the identities hold with it, the
+//! trim keeps it for intersect, and the cut keeps the solid's face there
+//! as two solids keep a face they share. Analytic and freeform operands
+//! (a ball, a cylinder, a hemisphere, the spline cone of the test kit, a
+//! sheet bounded by a spline, a sheet that is a freeform face), at 1e-3,
+//! 1 and 1e6, and turned off-axis.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,7 +29,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, BooleanResult, boolean};
 use craft3d_kernel::extrude::fill;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
-use craft3d_math::{Frame, Tolerance, Vec3};
+use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::solids;
 use craft3d_topo::{
@@ -394,6 +399,22 @@ fn what_a_sheet_must_be() {
     // its boundary.
     let two = craft3d_topo::merge(&[&good, &disc(0.5)]).unwrap().0;
     assert_eq!(genus_and_boundary(&two), vec![(0, 1), (0, 1)]);
+
+    // A closed shell is a solid's: marked as a sheet it is refused (a
+    // sheet has no inside; this one would), and so is a boolean with it.
+    let mut closed = boxed(1.0, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+    closed.kind = BodyKind::Sheet;
+    assert_eq!(
+        check(&closed, &tol),
+        [Defect::SheetClosed { shell: ShellId(0) }]
+    );
+    let other = boxed(1.0, [0.5, 0.5, 0.5], [2.0, 2.0, 2.0]);
+    for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+        assert!(matches!(
+            boolean(&closed, &other, op, &tol),
+            Err(KernelError::InvalidBody { .. })
+        ));
+    }
 }
 
 /// The section of a solid by a horizontal plane sheet, both ways round,
@@ -635,6 +656,214 @@ fn solids_cut_by_a_sheet() {
     }
 }
 
+/// One face of `body` as a sheet of its own.
+fn face_as_sheet(body: &Body, face: usize) -> Body {
+    use craft3d_topo::VertexId;
+    let mut out = Body::new(BodyKind::Sheet);
+    let mut vertices: BTreeMap<u32, VertexId> = BTreeMap::new();
+    let mut edges = BTreeMap::new();
+    let source = &body.faces[face];
+    let mut loops = Vec::new();
+    for &l in &source.loops {
+        let mut coedges = Vec::new();
+        for c in &body.loops[l.0 as usize].coedges {
+            let edge = *edges.entry(c.edge.0).or_insert_with(|| {
+                let e = &body.edges[c.edge.0 as usize];
+                let mut vertex = |v: VertexId| {
+                    *vertices
+                        .entry(v.0)
+                        .or_insert_with(|| out.add_vertex(body.vertices[v.0 as usize].point))
+                };
+                let (start, end) = (vertex(e.start), vertex(e.end));
+                out.add_edge(e.curve.clone(), e.range, start, end)
+            });
+            coedges.push(Coedge {
+                edge,
+                reversed: c.reversed,
+            });
+        }
+        loops.push(out.add_loop(coedges));
+    }
+    let f = out.add_face(source.surface.clone(), source.reversed, loops);
+    out.add_shell(vec![f]);
+    out
+}
+
+/// A piece of the sheet lying on a face of the solid counts as inside
+/// the solid (decided 2026-10-18): a sheet in the plane of a face of the
+/// solid, reaching across the part of the solid that rises above it, is
+/// trimmed to the face plus the section, whichever way it looks, and
+/// cuts the solid there into what is above and the rest, the identities
+/// of areas and volumes holding. A step (plane faces), a round boss, a
+/// hemisphere and the spline cone (its side a freeform face) on a plate,
+/// and a sheet that is the cone's own side, on the cone of a solid that
+/// swallows half of it. At three scales, as built and turned off-axis.
+#[test]
+fn a_piece_of_the_sheet_on_a_face_of_the_solid_is_inside() {
+    let turn = Transform::rotation(Vec3::new(0.3, -0.7, 0.5), 0.9).unwrap();
+    for k in SCALES {
+        for turned in [false, true] {
+            let what = |name: &str| {
+                if turned {
+                    format!("{name}, turned")
+                } else {
+                    name.to_string()
+                }
+            };
+            let place = |body: &Body| -> Body {
+                if turned {
+                    body.transformed(&turn).unwrap()
+                } else {
+                    body.clone()
+                }
+            };
+            // The plate is 4 × 3 × 1 from (−2, −1, 0): 12 on top of it.
+            let plate = boxed(k, [-2.0, -1.0, 0.0], [2.0, 2.0, 1.0]);
+            let wide = rectangle([-10.0, -10.0], [10.0, 10.0], &level(1.0, k), k);
+            let facing_down = Frame::new(Vec3::new(0.0, 0.0, k), -Vec3::Z, Vec3::X).unwrap();
+            let wide_down = rectangle([-10.0, -10.0], [10.0, 10.0], &facing_down, k);
+            // What rises above the plate: a block of 4 × 1.5 × 1 along its
+            // back (a step), a boss of radius 0.5, a hemisphere of radius
+            // 1 and the spline cone of radius 1 and height 2 (its apex
+            // up), each standing on the plate's top.
+            let step = solve(
+                &plate,
+                &boxed(k, [-2.0, 0.5, 1.0], [2.0, 2.0, 2.0]),
+                BooleanOp::Union,
+                k,
+            )
+            .body;
+            let bossed = solve(
+                &plate,
+                &rod(k, [0.0, 0.5, 1.0], 0.5, 1.0),
+                BooleanOp::Union,
+                k,
+            )
+            .body;
+            let dome = solids::hemisphere(&Frame::WORLD.at(Vec3::new(0.0, 0.5 * k, k)).unwrap(), k)
+                .unwrap()
+                .body;
+            let domed = solve(&plate, &dome, BooleanOp::Union, k).body;
+            // The cone's frame: its y axis (the axis of the cone, apex at
+            // the origin) is the frame's z × x = y × x, down.
+            let cone = solids::spline_cone(
+                &Frame::new(Vec3::new(0.0, 0.5 * k, 3.0 * k), Vec3::Y, Vec3::X).unwrap(),
+                k,
+                2.0 * k,
+            )
+            .unwrap()
+            .body;
+            let coned = solve(&plate, &cone, BooleanOp::Union, k).body;
+            for (solid, above, name) in [
+                (&step, 6.0, "step"),
+                (&bossed, PI * 0.25, "boss"),
+                (&domed, 2.0 * PI / 3.0, "dome"),
+                (&coned, 2.0 * PI / 3.0, "spline cone"),
+            ] {
+                let solid = place(solid);
+                assert_close(mass(&solid).volume, (12.0 + above) * k * k * k, name);
+                for (sheet, front, way) in [(&wide, above, "up"), (&wide_down, 12.0, "down")] {
+                    let sheet = place(sheet);
+                    let what = what(&format!("{name}, facing {way}"));
+                    // Trimmed: the plate's top plus the section, 12.
+                    trimmed(&sheet, &solid, k, 12.0, &what);
+                    // Cut: subtract keeps the side the sheet faces.
+                    let [ahead, behind] = cut(&solid, &sheet, k, front, &what);
+                    // One cap at most on each piece (the plate's top, on
+                    // the piece that holds the plate, is the solid's own
+                    // face, merged with the cap's where both look up).
+                    for (r, piece) in [(&ahead, "ahead"), (&behind, "behind")] {
+                        let caps = r
+                            .faces
+                            .iter()
+                            .filter(|s| s.operand == craft3d_kernel::boolean::Operand::B)
+                            .count();
+                        assert!(caps <= 1, "{what}: {piece}: {caps} caps");
+                    }
+                }
+            }
+            // The cone's side is two half-turns about y = 0.5; the half
+            // towards +y as a sheet, trimmed by a solid that swallows the
+            // cone up to y = 0.8 (the other half and both seams with it):
+            // the part on the solid's own cone face counts as inside,
+            // with the part within the solid: all of it, half of
+            // π r √(r² + h²); nothing is outside.
+            let side = (0..cone.faces.len())
+                .filter(|&f| {
+                    matches!(
+                        cone.faces[f].surface,
+                        craft3d_geom::Surface::Nurbs(_) | craft3d_geom::Surface::Bezier(_)
+                    )
+                })
+                .max_by(|&f, &g| {
+                    let towards = |f: usize| {
+                        let mesh = tessellate_body(
+                            &face_as_sheet(&cone, f),
+                            &TessParams {
+                                chordal_tolerance: 1e-2 * k,
+                                ..TessParams::default()
+                            },
+                        )
+                        .unwrap();
+                        mesh.positions.iter().map(|p| p.y).sum::<f64>()
+                    };
+                    towards(f).total_cmp(&towards(g))
+                })
+                .unwrap();
+            let skin = place(&face_as_sheet(&cone, side));
+            let swallowed = solve(
+                &coned,
+                &boxed(k, [-3.0, -1.5, -0.5], [3.0, 0.8, 4.0]),
+                BooleanOp::Union,
+                k,
+            )
+            .body;
+            let swallowed = place(&swallowed);
+            let kept = solve(&skin, &swallowed, BooleanOp::Intersect, k);
+            let tol = tolerance(k);
+            assert_eq!(check(&kept.body, &tol), [], "{}", what("skin"));
+            closed_but_for_its_boundary(&kept.body, k, &what("skin"));
+            assert_close(
+                mass(&kept.body).area,
+                0.5 * PI * 5.0_f64.sqrt() * k * k,
+                &what("skin, inside"),
+            );
+            assert_empty(&skin, &swallowed, BooleanOp::Subtract, k);
+            // A sheet that ends on the plate's top, around the boss: the
+            // top beyond it is reached by no cut, so the cut is refused;
+            // trimmed, the disc is inside altogether.
+            let disc = filled(
+                &[SketchCurve {
+                    id: 1,
+                    curve: Curve2::Circle {
+                        center: [0.0, 0.5],
+                        radius: 1.2,
+                    },
+                }],
+                &level(1.0, k),
+                k,
+            );
+            let (disc, bossed) = (place(&disc), place(&bossed));
+            for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+                refused(
+                    boolean(&bossed, &disc, op, &tol),
+                    "does not cross",
+                    &what("disc"),
+                );
+            }
+            let inside = solve(&disc, &bossed, BooleanOp::Intersect, k);
+            assert_eq!(check(&inside.body, &tol), [], "{}", what("disc"));
+            closed_but_for_its_boundary(&inside.body, k, &what("disc"));
+            assert_close(
+                mass(&inside.body).area,
+                PI * 1.44 * k * k,
+                &what("disc, inside"),
+            );
+            assert_empty(&disc, &bossed, BooleanOp::Subtract, k);
+        }
+    }
+}
+
 fn refused(result: Result<BooleanResult, KernelError>, wanted: &str, what: &str) {
     match result {
         Err(KernelError::Unsupported { reason, .. }) => {
@@ -681,20 +910,16 @@ fn what_a_sheet_cannot_do_is_refused() {
         ));
         let outside = solve(&away, &block, BooleanOp::Subtract, k);
         assert_close(mass(&outside.body).area, 400.0 * k * k, "all outside");
-        // On a face of the block.
+        // On a face of the block: the piece on it counts as inside
+        // (2026-10-18), so trimmed by the block the sheet keeps the top
+        // for intersect and the rest for subtract; as a tool facing up
+        // it has the whole block behind it (nothing in front).
         let on_top = rectangle([-10.0, -10.0], [10.0, 10.0], &level(2.0, k), k);
-        for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
-            refused(
-                boolean(&block, &on_top, op, &tol),
-                "lies on a face",
-                "on top",
-            );
-            refused(
-                boolean(&on_top, &block, op, &tol),
-                "lies on a face",
-                "on top, trimmed",
-            );
-        }
+        assert_empty(&block, &on_top, BooleanOp::Subtract, k);
+        let behind = solve(&block, &on_top, BooleanOp::Intersect, k);
+        assert_mass(&behind, 24.0, 52.0, k);
+        assert_eq!(behind.body.faces.len(), 6, "on top: the block as it was");
+        trimmed(&on_top, &block, k, 12.0, "on top, trimmed");
         // Union with a sheet, two sheets.
         refused(
             boolean(&block, &big, BooleanOp::Union, &tol),

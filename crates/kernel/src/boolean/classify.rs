@@ -181,33 +181,8 @@ fn classify(
         let fresh: Vec<Vec3> = candidates.into_iter().skip(tried).collect();
         tried += fresh.len();
         for p in fresh {
-            for &(face, same_normal) in coincident {
-                let outline = other.outline(face)?;
-                // Coincident surfaces may overlap only in part: a point of
-                // this one that is not on the other's (a rational patch
-                // on the cylinder it is a quarter of, with a point of the
-                // cylinder beyond the patch) is off the face, and has no
-                // place in a chart that is taken from the patch.
-                if surface_distance(outline.sheet(), p) > tol {
-                    continue;
-                }
-                match outline
-                    .side(p, tol)
-                    .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
-                {
-                    Side::Out => {}
-                    // A boundary of the other body that was not imprinted
-                    // here: no other point of the region would mean more.
-                    Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
-                    Side::In => {
-                        let same = same_normal == (region.reversed == outline.reversed);
-                        return Ok(if same {
-                            Class::OnSame
-                        } else {
-                            Class::OnOpposite
-                        });
-                    }
-                }
+            if let Some(class) = on_coincident_at(region, p, other, coincident, tol)? {
+                return Ok(class);
             }
             // A point may by chance be where the bodies touch without
             // crossing, or have no usable ray: the next one decides as
@@ -226,6 +201,76 @@ fn classify(
         }
     }
     Err(failure.unwrap_or(Stop::of(NO_RAY)))
+}
+
+/// Whether the point `p` of a region of a face lies on a face of `other`
+/// on the same surface (`coincident`): `Some(OnSame | OnOpposite)` when
+/// it is inside one of them, `None` when it is on none.
+fn on_coincident_at(
+    region: &Outline,
+    p: Vec3,
+    other: &Solid,
+    coincident: &[(usize, bool)],
+    tol: f64,
+) -> Result<Option<Class>, Stop> {
+    for &(face, same_normal) in coincident {
+        let outline = other.outline(face)?;
+        // Coincident surfaces may overlap only in part: a point of
+        // this one that is not on the other's (a rational patch
+        // on the cylinder it is a quarter of, with a point of the
+        // cylinder beyond the patch) is off the face, and has no
+        // place in a chart that is taken from the patch.
+        if surface_distance(outline.sheet(), p) > tol {
+            continue;
+        }
+        match outline
+            .side(p, tol)
+            .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
+        {
+            Side::Out => {}
+            // A boundary of the other body that was not imprinted
+            // here: no other point of the region would mean more.
+            Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
+            Side::In => {
+                let same = same_normal == (region.reversed == outline.reversed);
+                return Ok(Some(if same {
+                    Class::OnSame
+                } else {
+                    Class::OnOpposite
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a region of a face of `own` lies on a face of `other` on the
+/// same surface, told by a point well inside the region: `Some` with its
+/// class when it does, `None` when it does not, or when the region holds
+/// no such point (a sliver, whose side the caller tells another way).
+/// Where a face of `other` passes through the region, the imprint divides
+/// it, so one point speaks for the whole region.
+pub(super) fn on_coincident(
+    region: &Outline,
+    other: &Solid,
+    coincident: &[(usize, bool)],
+    tolerance: &Tolerance,
+) -> Result<Option<Class>, Stop> {
+    if coincident.is_empty() {
+        return Ok(None);
+    }
+    let tol = tolerance.linear;
+    let candidates = match region.interior_points(tol, 4.0 * tol, 1) {
+        Ok(candidates) => candidates,
+        Err(SLIVER) => return Ok(None),
+        Err(reason) => return Err(Stop::of(reason)),
+    };
+    for p in candidates {
+        if let Some(class) = on_coincident_at(region, p, other, coincident, tol)? {
+            return Ok(Some(class));
+        }
+    }
+    Ok(None)
 }
 
 const UNREAD: Reason = "a piece of a face too thin to find a point inside it, whose boundary does not say which side of the other body it is on (at the edge of tolerance)";
@@ -522,27 +567,58 @@ pub(super) fn solids(op: BooleanOp, own: Operand, class: Class) -> Result<Option
     })
 }
 
-/// A piece of a sheet that lies on a face of the solid.
-pub(super) const SHEET_ON_FACE: Reason = "a piece of the sheet lies on a face of the solid: whether it is inside or outside is not settled (open decision D-open-14)";
-
 /// The table of a sheet's regions against a solid: the sheet is the
-/// target and is trimmed (intersect keeps what is inside the solid,
-/// subtract what is outside), or the sheet is the tool and its piece
+/// target (A) and is trimmed (intersect keeps what is inside the solid,
+/// subtract what is outside), or the sheet is the tool (B) and its piece
 /// inside the solid is the face where the solid is cut (turned inside
 /// out for subtract, which keeps the side in front of the sheet).
+///
+/// A piece of the sheet lying on a face of the solid counts as inside
+/// the solid, a closed set (decided 2026-10-18), whichever way the face
+/// looks: a trim keeps it for intersect and takes it away for subtract,
+/// so that `area(S ∩ A) + area(S ∖ A) = area(S)`. In a cut the sheet is
+/// the boundary of the material behind it, and such a piece is a face
+/// the solid and that material share: as between two solids ([`solids`])
+/// the solid's own face stands for it there (kept or not by the solid's
+/// table, [`super::cut`]), and the sheet's piece is never a cap.
 pub(super) fn sheet(op: BooleanOp, own: Operand, class: Class) -> Result<Option<bool>, Reason> {
-    match class {
-        Class::OnSame | Class::OnOpposite => Err(SHEET_ON_FACE),
-        Class::In => Ok(match (op, own) {
-            (BooleanOp::Intersect, _) => Some(false),
-            (BooleanOp::Subtract, Operand::B) => Some(true),
-            _ => None,
-        }),
-        Class::Out => Ok(match (op, own) {
-            (BooleanOp::Subtract, Operand::A) => Some(false),
-            _ => None,
-        }),
+    Ok(match (class, op, own) {
+        (Class::In | Class::OnSame | Class::OnOpposite, BooleanOp::Intersect, Operand::A) => {
+            Some(false)
+        }
+        (Class::In, BooleanOp::Intersect, Operand::B) => Some(false),
+        (Class::In, BooleanOp::Subtract, Operand::B) => Some(true),
+        (Class::Out, BooleanOp::Subtract, Operand::A) => Some(false),
+        _ => None,
+    })
+}
+
+/// The outline of a region of a face whose outline is `outline`: `None`
+/// when the region is the whole face (its own outline serves), else the
+/// piece of the face bounded by `loops`.
+pub(super) fn region_outline(
+    outline: &Outline,
+    whole: bool,
+    loops: &[Vec<Half>],
+    arcs: &Arcs,
+    vertices: &Vertices,
+    tol: f64,
+    named: &[(Operand, craft3d_topo::FaceId)],
+) -> Result<Option<Outline>, Stop> {
+    if whole {
+        return Ok(None);
     }
+    let mut segs = Vec::with_capacity(loops.len());
+    for loop_ in loops {
+        segs.push(
+            regions::segs(loop_, &arcs.arcs, &vertices.points)
+                .map_err(|r| Stop::of(r).at(named))?,
+        );
+    }
+    outline
+        .piece(segs, 4.0 * tol)
+        .map(Some)
+        .map_err(|r| Stop::of(r).at(named))
 }
 
 /// The regions of face `face` of `own`, each as its loops of arcs, and
@@ -660,23 +736,13 @@ pub(super) fn select(
         )?;
         for loops in regions {
             // A face that nothing divides is its own outline.
-            let made;
-            let region = if whole {
-                outline
-            } else {
-                let outline = outline.ok_or(Stop::of(LOST))?;
-                let mut segs = Vec::with_capacity(loops.len());
-                for loop_ in &loops {
-                    segs.push(
-                        regions::segs(loop_, &arcs.arcs, &vertices.points)
-                            .map_err(|r| Stop::of(r).at(&named))?,
-                    );
+            let made = match outline {
+                Some(outline) => {
+                    region_outline(outline, whole, &loops, arcs, vertices, tol, &named)?
                 }
-                made = outline
-                    .piece(segs, 4.0 * tol)
-                    .map_err(|r| Stop::of(r).at(&named))?;
-                Some(&made)
+                None => None,
             };
+            let region = made.as_ref().or(outline);
             let class = match (apart, region) {
                 (true, _) => Class::Out,
                 (false, Some(region)) => {

@@ -1071,6 +1071,10 @@ pub(super) fn section(
     // Pairs of faces whose surfaces only touch (points, no curve), in the
     // order they were met.
     let mut touching: Vec<(usize, usize)> = Vec::new();
+    // Pairs of faces on one surface: a boundary edge of either face that
+    // lies on the other is imprinted on it from the edge itself, once
+    // every pair has been met (`lying_edges`).
+    let mut coincident: Vec<(usize, usize)> = Vec::new();
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
@@ -1138,6 +1142,7 @@ pub(super) fn section(
                         .entry(fb)
                         .or_default()
                         .push((fa, same_normal));
+                    coincident.push((fa, fb));
                 }
                 // Points where the surfaces only touch divide nothing.
                 SurfaceMeeting::Meets(meeting) => {
@@ -1197,15 +1202,66 @@ pub(super) fn section(
         }
     }
     for (fa, fb) in touching {
-        lying_edges(a, fa, b, fb, vertices, tolerance, &mut sections)?;
+        lying_edges(
+            a,
+            fa,
+            b,
+            fb,
+            Lying::Near,
+            vertices,
+            tolerance,
+            &mut sections,
+        )?;
+    }
+    for (fa, fb) in coincident {
+        lying_edges(
+            a,
+            fa,
+            b,
+            fb,
+            Lying::Boundary,
+            vertices,
+            tolerance,
+            &mut sections,
+        )?;
     }
     Ok(sections)
+}
+
+/// Which edges of a pair of faces [`lying_edges`] looks at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lying {
+    /// Every edge of either face near the other face.
+    Near,
+    /// The edges of either face that only one face of its body uses (the
+    /// boundary of a sheet), which no second face of their own imprints.
+    Boundary,
+}
+
+/// The edges of `body` that one face uses, once.
+fn boundary_edges(body: &Body) -> BTreeSet<EdgeId> {
+    let mut uses: BTreeMap<EdgeId, usize> = BTreeMap::new();
+    for face in &body.faces {
+        for loop_ in face.loops.iter().filter_map(|&l| body.loop_(l)) {
+            for coedge in &loop_.coedges {
+                *uses.entry(coedge.edge).or_insert(0) += 1;
+            }
+        }
+    }
+    uses.into_iter()
+        .filter(|&(_, n)| n == 1)
+        .map(|(edge, _)| edge)
+        .collect()
 }
 
 /// Where the surfaces of face `fa` of A and `fb` of B only touch (geometry
 /// gave points and no curve), the edges of either face that lie on the
 /// other face's surface, imprinted on the other face from their own
-/// curves.
+/// curves; and where the faces lie on one surface (`Lying::Boundary`),
+/// the boundary edges of either face (used by one face of their body: a
+/// sheet's rim), which have no second face to imprint them, as a solid's
+/// edges have, so that the face of the other body is divided where the
+/// sheet on it ends.
 ///
 /// Two surfaces tangent along a curve with no closed form (the face of a
 /// fillet, exact or approximated, against the faces it rounds; a rational
@@ -1227,11 +1283,13 @@ pub(super) fn section(
 /// out. An edge of neither face divides nothing where surfaces only
 /// touch: on both sides of such a touch the face is on the same side of
 /// the other body.
+#[allow(clippy::too_many_arguments)]
 fn lying_edges(
     a: &Solid,
     fa: usize,
     b: &Solid,
     fb: usize,
+    which: Lying,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
     sections: &mut Sections,
@@ -1246,11 +1304,22 @@ fn lying_edges(
         return Ok(());
     };
     let reach = EDGE_REACH * tol;
+    let (boundary_a, boundary_b) = match which {
+        Lying::Near => (None, None),
+        Lying::Boundary => (Some(boundary_edges(a.body)), Some(boundary_edges(b.body))),
+    };
     // The edges of each face that come within the tolerance of the other
     // face's surface somewhere (nine places along them).
-    let close = |own: &Solid, face: usize, other: Sheet| -> Result<Vec<EdgeId>, Stop> {
+    let close = |own: &Solid,
+                 face: usize,
+                 other: Sheet,
+                 boundary: &Option<BTreeSet<EdgeId>>|
+     -> Result<Vec<EdgeId>, Stop> {
         let mut found = Vec::new();
         for id in own.edges_near(face, |bx| boxes_meet(bx, &near, reach)) {
+            if boundary.as_ref().is_some_and(|b| !b.contains(&id)) {
+                continue;
+            }
             let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
             let (t0, t1) = edge.range;
             if (0..=8).any(|k| {
@@ -1262,7 +1331,10 @@ fn lying_edges(
         }
         Ok(found)
     };
-    let (of_a, of_b) = (close(a, fa, ob.sheet())?, close(b, fb, oa.sheet())?);
+    let (of_a, of_b) = (
+        close(a, fa, ob.sheet(), &boundary_a)?,
+        close(b, fb, oa.sheet(), &boundary_b)?,
+    );
     if of_a.is_empty() && of_b.is_empty() {
         return Ok(());
     }

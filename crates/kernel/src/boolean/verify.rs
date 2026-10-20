@@ -363,8 +363,9 @@ fn unboxed() -> KernelError {
 }
 
 /// Of a solid cut by a sheet: every face of the result on the surface of
-/// a face of the sheet (the cut, a piece of the sheet's face, which no
-/// face of the solid shares: such a piece is refused) faces against the
+/// a face of the sheet and of no face of the solid (the cut, a piece of
+/// the sheet's face; a face of the solid on the sheet's surface stands
+/// for the piece of the sheet on it, and is no cut) faces against the
 /// sheet's normal for a subtract, which keeps the side the normal points
 /// to, and along it for an intersect. A result that kept the other side,
 /// consistently, has it the other way round.
