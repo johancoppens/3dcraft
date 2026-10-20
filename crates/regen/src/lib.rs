@@ -42,6 +42,7 @@ mod selfcheck;
 mod shell;
 mod sketch;
 mod sketch_pattern;
+mod split;
 mod sweep;
 mod thicken;
 mod thread;
@@ -68,6 +69,10 @@ pub use sketch::{
     settle_sketches, settle_sketches_cached,
 };
 pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
+pub use split::{
+    SplitPlan, anchors as lump_anchors, shared_by_splits as taken_by_its_splits,
+    siblings as splits_of, split_plan,
+};
 
 /// The instances of the patterns of a solved sketch, construction curves
 /// included, each with whether it is construction: the curves a picture of
@@ -240,6 +245,46 @@ impl Names {
         Ok(out)
     }
 
+    /// The names of a body whose entities are some of the entities of
+    /// the body `source` names (one lump of it, taken by
+    /// [`craft3d_topo::shells_alone`]): each the copy, in instance 0 of
+    /// `feature`, of the entity of the source it is (`taken` says which),
+    /// answering as a copy to what that entity answered to besides its
+    /// own name. The names of the faces are made now; the edges and
+    /// vertices stay as `source` has them and are copied when asked for.
+    pub(crate) fn picked(
+        feature: FeatureId,
+        source: Arc<Names>,
+        taken: &craft3d_topo::Taken,
+    ) -> Result<Self, String> {
+        let mut out = Names::default();
+        for (index, face) in taken.faces.iter().enumerate() {
+            let there = face.0 as usize;
+            let Some(name) = source.faces.get(there) else {
+                return Err(format!(
+                    "the body it is made from has no face {there} to name"
+                ));
+            };
+            let copy = PersistentName::copy(feature, 0, name.clone());
+            copy.check().map_err(too_long)?;
+            out.faces.push(copy);
+            let aliases = copies(feature, 0, source.aliases_of(there).to_vec());
+            if !aliases.is_empty() {
+                out.aliases.insert(index, aliases);
+            }
+        }
+        out.entities = Entities::Picked {
+            feature,
+            source,
+            edges: taken.edges.iter().map(|e| e.0 as usize).collect(),
+            vertices: taken.vertices.iter().map(|v| v.0 as usize).collect(),
+        };
+        for name in out.edge_names().chain(out.vertex_names()) {
+            name.check().map_err(too_long)?;
+        }
+        Ok(out)
+    }
+
     /// These names with those of the edges and the vertices let go of
     /// (`Entities::Dropped`): the faces' names and aliases stay, which is
     /// what following a name through the bodies it went into needs.
@@ -325,6 +370,7 @@ impl Names {
             Entities::Dropped { edges, .. } => *edges,
             Entities::ByFaces(by) => by.edge_count(),
             Entities::Copied { edge_starts, .. } => edge_starts.last().copied().unwrap_or(0),
+            Entities::Picked { edges, .. } => edges.len(),
         }
     }
 
@@ -334,6 +380,7 @@ impl Names {
             Entities::Dropped { vertices, .. } => *vertices,
             Entities::ByFaces(by) => by.vertex_count(),
             Entities::Copied { vertex_starts, .. } => vertex_starts.last().copied().unwrap_or(0),
+            Entities::Picked { vertices, .. } => vertices.len(),
         }
     }
 
@@ -358,6 +405,16 @@ impl Names {
                     source.edge_name(there)?,
                 ))
             }
+            Entities::Picked {
+                feature,
+                source,
+                edges,
+                ..
+            } => Some(PersistentName::copy(
+                *feature,
+                0,
+                source.edge_name(*edges.get(edge)?)?,
+            )),
         }
     }
 
@@ -381,6 +438,16 @@ impl Names {
                     source.vertex_name(there)?,
                 ))
             }
+            Entities::Picked {
+                feature,
+                source,
+                vertices,
+                ..
+            } => Some(PersistentName::copy(
+                *feature,
+                0,
+                source.vertex_name(*vertices.get(vertex)?)?,
+            )),
         }
     }
 
@@ -452,6 +519,15 @@ impl Names {
                     copies(feature, instance, source.edge_aliases_of(there))
                 })
                 .unwrap_or_default(),
+            Entities::Picked {
+                feature,
+                source,
+                edges,
+                ..
+            } => edges
+                .get(edge)
+                .map(|&there| copies(*feature, 0, source.edge_aliases_of(there)))
+                .unwrap_or_default(),
         }
     }
 
@@ -469,6 +545,15 @@ impl Names {
                 .map(|(feature, instance, source, there)| {
                     copies(feature, instance, source.vertex_aliases_of(there))
                 })
+                .unwrap_or_default(),
+            Entities::Picked {
+                feature,
+                source,
+                vertices,
+                ..
+            } => vertices
+                .get(vertex)
+                .map(|&there| copies(*feature, 0, source.vertex_aliases_of(there)))
                 .unwrap_or_default(),
         }
     }
@@ -513,6 +598,15 @@ impl Names {
                     copies(feature, instance, source.edge_kept_names(there))
                 })
                 .unwrap_or_default(),
+            Entities::Picked {
+                feature,
+                source,
+                edges,
+                ..
+            } => edges
+                .get(edge)
+                .map(|&there| copies(*feature, 0, source.edge_kept_names(there)))
+                .unwrap_or_default(),
         }
     }
 
@@ -538,6 +632,15 @@ impl Names {
                     copies(feature, instance, source.vertex_kept_names(there))
                 })
                 .unwrap_or_default(),
+            Entities::Picked {
+                feature,
+                source,
+                vertices,
+                ..
+            } => vertices
+                .get(vertex)
+                .map(|&there| copies(*feature, 0, source.vertex_kept_names(there)))
+                .unwrap_or_default(),
         }
     }
 
@@ -553,6 +656,9 @@ impl Names {
                 edge_starts,
                 ..
             } => Self::copied_named(*feature, instances, edge_starts, name, Names::edge_name),
+            Entities::Picked { edges, .. } => {
+                (0..edges.len()).find(|&edge| self.edge_name(edge).as_ref() == Some(name))
+            }
         };
         own.or_else(|| {
             (0..self.edge_count()).find(|edge| self.edge_aliases_of(*edge).contains(name))
@@ -571,6 +677,9 @@ impl Names {
                 vertex_starts,
                 ..
             } => Self::copied_named(*feature, instances, vertex_starts, name, Names::vertex_name),
+            Entities::Picked { vertices, .. } => {
+                (0..vertices.len()).find(|&vertex| self.vertex_name(vertex).as_ref() == Some(name))
+            }
         };
         own.or_else(|| {
             (0..self.vertex_count()).find(|vertex| self.vertex_aliases_of(*vertex).contains(name))
@@ -1048,7 +1157,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Draft(_)
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
-        | FeatureKind::Thread(_) => {
+        | FeatureKind::Thread(_)
+        | FeatureKind::Split(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -1563,6 +1673,19 @@ fn build_feature(
                 // a whole (`sketch::resolve_face` finds a face of the
                 // hollow where it lies).
                 instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Split(split) = &feature.kind {
+        match split::build(doc, feature, split, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // One instance, the lump where it lies.
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                taken = Some(split.source);
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

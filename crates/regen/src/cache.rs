@@ -14,7 +14,7 @@
 
 use crate::sketch::{Placement, SketchResult, solve_sketch};
 use crate::{FeatureResult, Status};
-use craft3d_doc::{Document, Feature, FeatureId, Sketch, Tolerance, Units};
+use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, Sketch, Tolerance, Units};
 use craft3d_expr::{Dimension, Evaluation};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -69,6 +69,11 @@ struct Context {
     units: Units,
     tolerance: (u64, u64),
     inputs: Vec<Input>,
+    /// For a split: the other splits of the same body as they stand,
+    /// each with whether it is built (`crate::split::group_state`), which
+    /// its result depends on (a lump is one split's, and the last split
+    /// answers for lumps none names). Empty for every other kind.
+    group: Vec<(Feature, bool)>,
 }
 
 #[derive(Clone)]
@@ -321,9 +326,10 @@ impl<'a> Lookup<'a> {
         self.by_id.get(&id).map(|(_, f)| *f)
     }
 
-    /// What a feature names, and for a feature that looks at every body
+    /// What a feature names, for a feature that looks at every body
     /// built so far (an extrusion through all) every feature before it in
-    /// the history.
+    /// the history, and for a split the splits of the same body before
+    /// it (a lump is one split's: `crate::split`).
     fn inputs(&self, feature: &Feature) -> Vec<FeatureId> {
         let mut inputs = feature.kind.inputs();
         if feature.kind.uses_all_earlier() {
@@ -332,6 +338,18 @@ impl<'a> Lookup<'a> {
                     .features
                     .iter()
                     .take_while(|f| f.id != feature.id)
+                    .map(|f| f.id),
+            );
+        }
+        if let FeatureKind::Split(split) = &feature.kind {
+            inputs.extend(
+                self.doc
+                    .features
+                    .iter()
+                    .take_while(|f| f.id != feature.id)
+                    .filter(|f| {
+                        matches!(&f.kind, FeatureKind::Split(other) if other.source == split.source)
+                    })
                     .map(|f| f.id),
             );
         }
@@ -571,6 +589,7 @@ pub(crate) fn features(
             Ok(None) | Err(_) => stated,
         };
         let values = evaluated(variables, &feature.kind.exprs());
+        let group = crate::split::group_state(doc, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature
                 .kind
@@ -591,6 +610,7 @@ pub(crate) fn features(
                     && entry.context.tolerance == bits(doc.tolerance)
                     && entry.context.values == values
                     && entry.context.followed == followed
+                    && entry.context.group == group
             })
             .map(|entry| (entry.result.clone(), entry.stamp));
         let (result, stamp) = match reused {
@@ -612,6 +632,7 @@ pub(crate) fn features(
                         units: doc.units,
                         tolerance: bits(doc.tolerance),
                         inputs: Vec::new(),
+                        group,
                     },
                 );
                 let hit = cache

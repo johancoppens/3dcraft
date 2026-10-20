@@ -290,6 +290,15 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
             }) => manifest::FeatureKind::Fill { sketch: *sketch },
+            doc::FeatureKind::Split(doc::Split {
+                source: doc::FeatureId(source),
+                face,
+                number,
+            }) => manifest::FeatureKind::Split {
+                source: *source,
+                face: name_to_manifest(face),
+                number: *number,
+            },
             doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
@@ -1447,6 +1456,15 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
             }),
             manifest::FeatureKind::Fill { sketch } => doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
+            }),
+            manifest::FeatureKind::Split {
+                source,
+                face,
+                number,
+            } => doc::FeatureKind::Split(doc::Split {
+                source: doc::FeatureId(source),
+                face: name_to_doc(face),
+                number,
             }),
             manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),

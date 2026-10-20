@@ -15,48 +15,79 @@ use std::collections::{BTreeMap, BTreeSet};
 /// they are first used. `None` for a shell, face, loop, edge or vertex
 /// that does not exist.
 pub fn shell_alone(body: &Body, shell: ShellId) -> Option<Body> {
+    shells_alone(body, &[shell]).map(|(body, _)| body)
+}
+
+/// Which entity of the body a shell was taken from each entity of a body
+/// of some of its shells is ([`shells_alone`]): `faces[i]` is the face of
+/// the whole that face `i` of the part is, and so on.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Taken {
+    pub faces: Vec<FaceId>,
+    pub edges: Vec<EdgeId>,
+    pub vertices: Vec<VertexId>,
+}
+
+/// The shells `shells` of `body`, in that order, as a body of their own
+/// (of the same kind): their faces, and only the loops, edges and
+/// vertices they use, in the order they are first used, with which
+/// entity of `body` each entity of the part is. A shell listed twice is
+/// taken once. `None` for a shell, face, loop, edge or vertex that does
+/// not exist. Shells that share an edge (which `check` refuses of a
+/// solid) share it in the part too.
+pub fn shells_alone(body: &Body, shells: &[ShellId]) -> Option<(Body, Taken)> {
     let mut out = Body::new(body.kind);
+    let mut taken = Taken::default();
     let mut vertices: BTreeMap<u32, VertexId> = BTreeMap::new();
     let mut edges: BTreeMap<u32, EdgeId> = BTreeMap::new();
-    let mut faces = Vec::new();
-    for &face_id in &body.shells.get(shell.0 as usize)?.faces {
-        let face = body.face(face_id)?;
-        let mut loops = Vec::with_capacity(face.loops.len());
-        for &loop_id in &face.loops {
-            let mut coedges = Vec::new();
-            for coedge in &body.loop_(loop_id)?.coedges {
-                let edge = match edges.get(&coedge.edge.0) {
-                    Some(&edge) => edge,
-                    None => {
-                        let old = body.edge(coedge.edge)?;
-                        let mut ends = [old.start, old.end];
-                        for end in &mut ends {
-                            *end = match vertices.get(&end.0) {
-                                Some(&vertex) => vertex,
-                                None => {
-                                    let new = out.add_vertex(body.vertex(*end)?.point);
-                                    vertices.insert(end.0, new);
-                                    new
-                                }
-                            };
-                        }
-                        let [start, end] = ends;
-                        let new = out.add_edge(old.curve.clone(), old.range, start, end);
-                        edges.insert(coedge.edge.0, new);
-                        new
-                    }
-                };
-                coedges.push(Coedge {
-                    edge,
-                    reversed: coedge.reversed,
-                });
-            }
-            loops.push(out.add_loop(coedges));
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    for shell in shells {
+        if !seen.insert(shell.0) {
+            continue;
         }
-        faces.push(out.add_face(face.surface.clone(), face.reversed, loops));
+        let mut faces = Vec::new();
+        for &face_id in &body.shells.get(shell.0 as usize)?.faces {
+            let face = body.face(face_id)?;
+            let mut loops = Vec::with_capacity(face.loops.len());
+            for &loop_id in &face.loops {
+                let mut coedges = Vec::new();
+                for coedge in &body.loop_(loop_id)?.coedges {
+                    let edge = match edges.get(&coedge.edge.0) {
+                        Some(&edge) => edge,
+                        None => {
+                            let old = body.edge(coedge.edge)?;
+                            let mut ends = [old.start, old.end];
+                            for end in &mut ends {
+                                *end = match vertices.get(&end.0) {
+                                    Some(&vertex) => vertex,
+                                    None => {
+                                        let new = out.add_vertex(body.vertex(*end)?.point);
+                                        vertices.insert(end.0, new);
+                                        taken.vertices.push(*end);
+                                        new
+                                    }
+                                };
+                            }
+                            let [start, end] = ends;
+                            let new = out.add_edge(old.curve.clone(), old.range, start, end);
+                            edges.insert(coedge.edge.0, new);
+                            taken.edges.push(coedge.edge);
+                            new
+                        }
+                    };
+                    coedges.push(Coedge {
+                        edge,
+                        reversed: coedge.reversed,
+                    });
+                }
+                loops.push(out.add_loop(coedges));
+            }
+            faces.push(out.add_face(face.surface.clone(), face.reversed, loops));
+            taken.faces.push(face_id);
+        }
+        out.add_shell(faces);
     }
-    out.add_shell(faces);
-    Some(out)
+    Some((out, taken))
 }
 
 /// The faces of `body` in groups that hang together through edges (two

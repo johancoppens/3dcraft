@@ -435,6 +435,17 @@ pub enum FeatureKind {
     /// A sheet: the flat faces the closed profiles of sketch `sketch` (or
     /// of an offset of them) bound (format version 22).
     Fill { sketch: u64 },
+    /// One lump of the body of feature `source` as a body of its own: the
+    /// lump that holds a piece of the face `face`, or, when pieces of that
+    /// face lie in several lumps, the one `number` counts to in the order
+    /// of where the lumps lie in space (format version 24). `number` is
+    /// written only when set.
+    Split {
+        source: u64,
+        face: Name,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        number: Option<u64>,
+    },
 }
 
 /// How an offset profile goes round a corner where its curves part.

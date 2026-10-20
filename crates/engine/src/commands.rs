@@ -1320,6 +1320,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
+        FeatureKind::Split(_) => ("split", vec![("source", Slot::Elsewhere)]),
         FeatureKind::OffsetProfile(o) => (
             "offset profile",
             vec![
@@ -1664,6 +1665,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         FeatureKind::Mirror(mirror) => mirror.source = new_source.unwrap_or(mirror.source),
         FeatureKind::Pattern(pattern) => pattern.source = new_source.unwrap_or(pattern.source),
+        FeatureKind::Split(split) => split.source = new_source.unwrap_or(split.source),
         FeatureKind::Boolean(boolean) => {
             boolean.op = new_op.unwrap_or(boolean.op);
             boolean.target = new_target.unwrap_or(boolean.target);
@@ -1903,7 +1905,17 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(taker)) =
             (entry.as_object_mut(), outcome.and_then(|o| o.consumed_by))
         {
-            map.insert("bodyUsedBy".into(), taker.to_string().into());
+            // The splits of a body took it together: all of them, listed.
+            let takers: Vec<String> = if craft3d_regen::taken_by_its_splits(doc, feature.id, taker)
+            {
+                craft3d_regen::splits_of(doc, &regen.features, feature.id)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            } else {
+                vec![taker.to_string()]
+            };
+            map.insert("bodyUsedBy".into(), takers.join(", ").into());
         }
         features.push(entry);
         if let Some(body) = outcome.and_then(|o| o.own_body()) {

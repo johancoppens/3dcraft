@@ -37,6 +37,19 @@ pub(crate) fn source_body<'a>(
     id: FeatureId,
     role: &str,
 ) -> Result<&'a FeatureResult, String> {
+    source_body_shared(doc, earlier, id, role, |_| false)
+}
+
+/// [`source_body`], where a body a feature took is still read when
+/// `shares(taker)` says that taker shares it: the splits of one body
+/// (`crate::split`) all read the body the first of them took.
+pub(crate) fn source_body_shared<'a>(
+    doc: &Document,
+    earlier: &'a [FeatureResult],
+    id: FeatureId,
+    role: &str,
+    shares: impl Fn(FeatureId) -> bool,
+) -> Result<&'a FeatureResult, String> {
     let Some(source) = doc.feature(id) else {
         return Err(format!(
             "{role}: there is no feature {id} (was it deleted?)"
@@ -61,7 +74,9 @@ pub(crate) fn source_body<'a>(
             source.kind.type_name()
         ));
     }
-    if let Some(taker) = outcome.consumed_by {
+    if let Some(taker) = outcome.consumed_by
+        && !shares(taker)
+    {
         let taker = doc
             .feature(taker)
             .map_or_else(|| taker.to_string(), |f| f.name.clone());

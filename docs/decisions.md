@@ -29,7 +29,7 @@ A cut of a solid by a sheet keeps one side per feature, as built (D-open-14 (a1)
 
 ### 2026-10-18: A feature whose result falls into several lumps (decided by the developer)
 
-It stays one body of several lumps (a cut through the middle, a lump left in a cavity), as a pattern's instances and a union of bodies apart already are; the kernel never splits. A command that splits a body into one body per lump when asked (`body.split`, owed) gives separate parts, so that the names of the bodies a split makes are worked out once, in that command; features that split on their own can be added later without breaking references. (Other modellers: the kernels keep several lumps in one body; SolidWorks, Fusion and Onshape split into bodies, FreeCAD does not.)
+It stays one body of several lumps (a cut through the middle, a lump left in a cavity), as a pattern's instances and a union of bodies apart already are; the kernel never splits. A command that splits a body into one body per lump when asked (`body.split`, built 2026-10-20) gives separate parts, so that the names of the bodies a split makes are worked out once, in that command; features that split on their own can be added later without breaking references. (Other modellers: the kernels keep several lumps in one body; SolidWorks, Fusion and Onshape split into bodies, FreeCAD does not.)
 
 ### 2026-10-18: A wall that thins to nothing within one shell (decided by the developer)
 
