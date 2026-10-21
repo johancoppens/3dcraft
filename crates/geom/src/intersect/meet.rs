@@ -315,10 +315,21 @@ static SHELF: Mutex<Shelf> = Mutex::new(Shelf {
 /// above keeps 4600 intersections, 3.6 million points of their curves
 /// (a couple of hundred MB at most, for the whole shelf). Fewer than its
 /// questions is no help when a boolean is asked again: they come in the
-/// same order, and each would be let go of before it is asked again.
+/// same order, and each would be let go of before it is asked again. In
+/// the browser a sixteenth of that (a few tens of MB at most), as the
+/// projections' cache in `surface.rs`: a page has a quarter GB in all.
+#[cfg(not(target_arch = "wasm32"))]
 const SHELF_SIZE: usize = 1 << 17;
+#[cfg(not(target_arch = "wasm32"))]
 const SHELF_POINTS: usize = 1 << 22;
+#[cfg(not(target_arch = "wasm32"))]
 const SHELF_BYTES: usize = 64 << 20;
+#[cfg(target_arch = "wasm32")]
+const SHELF_SIZE: usize = 1 << 13;
+#[cfg(target_arch = "wasm32")]
+const SHELF_POINTS: usize = 1 << 18;
+#[cfg(target_arch = "wasm32")]
+const SHELF_BYTES: usize = 4 << 20;
 
 /// How many points an intersection holds, roughly: what it costs to keep.
 fn weight(result: &Result<SurfaceMeeting, GeomError>) -> usize {
