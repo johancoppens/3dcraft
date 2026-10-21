@@ -735,6 +735,85 @@ fn curved_edges_that_really_cross_are_still_refused() {
     }
 }
 
+/// The rounds that cut across after halving (`tessellate_some` in
+/// `body.rs`) on a body no cutting cures: a sheet of 40 bow ties whose
+/// crossing sides are arcs, beside a disc of radius 1000 whose rim is
+/// finely sampled (thousands of points). Before the review of
+/// 2026-10-21 every edge could grow in those rounds to twice the cap of
+/// the body's widest edge (8,192 points each here); now each grows by its
+/// own need and all together by twice the caps of their own curves. The
+/// body is refused with the error the rounds of halving gave ("crosses
+/// itself"), its edges are those rounds' (the same as
+/// `tessellate_edges`), and it takes a bounded time.
+#[test]
+fn a_body_no_cutting_cures_is_refused_within_a_bound() {
+    let mut body = Body::new(BodyKind::Sheet);
+    let cells = 40;
+    let bottom: Vec<VertexId> = (0..=cells)
+        .map(|i| body.add_vertex(Vec3::new(4.0 * i as f64, 0.0, 0.0)))
+        .collect();
+    let top: Vec<VertexId> = (0..=cells)
+        .map(|i| body.add_vertex(Vec3::new(4.0 * i as f64, 4.0, 0.0)))
+        .collect();
+    let arc = |body: &mut Body, a: VertexId, b: VertexId| -> EdgeId {
+        let (p, q) = (
+            body.vertices[a.0 as usize].point,
+            body.vertices[b.0 as usize].point,
+        );
+        let radius = 10.0_f64;
+        let half = 0.5 * p.distance(q);
+        let left = Vec3::Z.cross(q - p).normalized().unwrap();
+        let centre = p.lerp(q, 0.5) + left * (radius * radius - half * half).sqrt();
+        let circle = Circle::new(Frame::new(centre, Vec3::Z, p - centre).unwrap(), radius).unwrap();
+        let sweep = 2.0 * (half / radius).asin();
+        body.add_edge(Curve3::Circle(circle), (0.0, sweep), a, b)
+    };
+    // Forward along one zigzag, back along the other: they cross in
+    // every cell.
+    let at = |i: usize, up: bool| if up { top[i] } else { bottom[i] };
+    let mut coedges = Vec::new();
+    for i in 0..cells {
+        let e = arc(&mut body, at(i, i % 2 == 1), at(i + 1, (i + 1) % 2 == 1));
+        coedges.push(forward(e));
+    }
+    let e = line(
+        &mut body,
+        at(cells, cells % 2 == 1),
+        at(cells, cells % 2 == 0),
+    );
+    coedges.push(forward(e));
+    for i in (0..cells).rev() {
+        let e = arc(&mut body, at(i + 1, (i + 1) % 2 == 0), at(i, i % 2 == 0));
+        coedges.push(forward(e));
+    }
+    let e = line(&mut body, at(0, true), at(0, false));
+    coedges.push(forward(e));
+    let loop_ = body.add_loop(coedges);
+    let ties = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![loop_]);
+    // The disc, far away.
+    let frame = Frame::WORLD.at(Vec3::new(0.0, 5000.0, 0.0)).unwrap();
+    let start = body.add_vertex(frame.origin() + frame.x() * 1000.0);
+    let rim = body.add_edge(
+        Curve3::Circle(Circle::new(frame, 1000.0).unwrap()),
+        (0.0, TAU),
+        start,
+        start,
+    );
+    let rim_loop = body.add_loop(vec![forward(rim)]);
+    let disc = body.add_face(Surface::Plane(Plane::new(frame)), false, vec![rim_loop]);
+    body.add_shell(vec![ties, disc]);
+    let tolerance = 1e-3;
+    let began = std::time::Instant::now();
+    let error = tessellate_body(&body, &params(tolerance)).unwrap_err();
+    assert!(error.to_string().contains("crosses itself"), "{error}");
+    let both = tessellate_body_and_edges(&body, &params(tolerance)).unwrap();
+    let alone = tessellate_edges(&body, &params(tolerance)).unwrap();
+    assert!(alone[rim.0 as usize].len() > 1000);
+    assert_eq!(both.edges, alone);
+    let took = began.elapsed().as_secs_f64();
+    assert!(took < 30.0, "{took} s");
+}
+
 /// The face between an arc and its chord: a sliver 2 long and 0.05 high
 /// (a circle of radius 10), or with a line on both sides, which is no
 /// face at all.
