@@ -1,0 +1,39 @@
+{
+  "format_version": 26,
+  "written_by": "a408296592b3118e6b73853907e3becb281bf74a",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v26.steps.json --out v26.3dcraft, then info v26.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Slot",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cut",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Row",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 20,
+      "edges": 48,
+      "vertices": 32,
+      "volume": 23280.000000000007,
+      "area": 7792.000000000003
+    }
+  ]
+}

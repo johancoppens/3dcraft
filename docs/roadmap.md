@@ -448,6 +448,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - Flat faces exported by followed names, in a documented upright frame that is never mirrored, and several faces laid out on one sheet (`file.export {faces, gap, width, xAxis, origin}`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-17)
 - A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md)) (2026-10-15)
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
+- A colour per face (`face.appearance`, by persistent name or the selection; format 26), following the face through edits, copies and pieces by the body rule, a face that is gone said and never retargeted, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md) › 4.2) (2026-10-21)
 - The format promise: every `.3dcraft` file a released version wrote opens in every later one, held by a frozen fixture per format version written by that version's own build and regenerated to what it made ([`file-formats.md`](file-formats.md) › *The promise*) (2026-10-21)
 - Closing the window asks Save, Don't Save or Cancel for each document with unsaved changes before it drops their autosaves, also over the channel as `ui.quit {save: "ask" | "save" | "discard"}` ([`control-protocol.md`](control-protocol.md) › *Closing the window*) (2026-10-21)
 - The task set: 22 ordinary parts (levels 1 to 4) with descriptions in English and Dutch, closed-form expectations derived by hand, reference solutions driven by variables and a variant each, scored headless by `craft3d-cli score` ([`docs/tasks/`](tasks/), [`testing.md`](testing.md) › *The task set*) (2026-10-21)
@@ -456,6 +457,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - [ ] Every task of the set built by an agent over MCP from its description alone, scored by `craft3d-cli score` (the acceptance); `shelled-case` is refused until the shell builds a wall as thick as a fillet's radius
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
+- [ ] STEP import keeps each face's own colour as a face colour (`face.appearance` data, `F5:face(i)`), once the import's colour reading (branch `step-import-2`) is merged
 - [ ] A user guide and example models
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
 
