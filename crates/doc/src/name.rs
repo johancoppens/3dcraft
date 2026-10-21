@@ -712,9 +712,13 @@ pub enum NameRole {
     /// way reaches the feature of the name after `/`; or numbers none of
     /// which is 0: the instance in this feature (for a boolean 1 is the
     /// tool), then the instance in the body that instance was made from,
-    /// and so on, the last of them made from the body the name after `/`
-    /// is of. The name after `/` is the name of the entity it is the image
-    /// of there.
+    /// and so on, the last of them made from a body that goes on through
+    /// instance 0 (none, one or several features) to the body the name
+    /// after `/` is of, when that name is no copy (2026-10-21: so every
+    /// instance of a pattern names the faces of its seed alike, as
+    /// instance 0 does, whatever took the seed's body), and directly from
+    /// that body when it is a copy. The name after `/` is the name of the
+    /// entity it is the image of there.
     Copy,
     /// One of several entities that the name after `/` would otherwise
     /// name all at once: a curve that sweeps more than one face (a spline
@@ -973,6 +977,20 @@ impl PersistentName {
                 if zero(&path) && zero(&inner) {
                     // Instance 0 on and on: the way through instance 0
                     // starts here now.
+                    (path, next)
+                } else if none_zero(&path)
+                    && zero(&inner)
+                    && !(next.role == NameRole::Copy && next.by.is_none())
+                {
+                    // Other instances, then instance 0 on and on down to a
+                    // name that is no copy: the run of instance 0 is left
+                    // out as it is in instance 0 itself, so every instance
+                    // of a pattern names a face of its seed alike
+                    // (`F4:copy(1)/F2:face(2)` as `F4:copy(0)/F2:face(2)`,
+                    // whatever took the seed's body between F2 and F4).
+                    // Before a copy that is not instance 0 the run stays
+                    // a link: the instances would otherwise read as one
+                    // way.
                     (path, next)
                 } else if none_zero(&path) && none_zero(&inner) {
                     let mut sources = path;
@@ -1732,6 +1750,43 @@ mod tests {
         assert_eq!(deep.check(), Err("it is made of too many names"));
     }
 
+    /// Every instance of a pattern names a face of its seed alike, whether
+    /// or not something took the seed's body between (a chamfer of the
+    /// seed): the run of instance 0 down to a name that is no copy is left
+    /// out in instance 0 and in the others (the Perseverance's finding,
+    /// 2026-10-21).
+    #[test]
+    fn every_instance_names_a_face_of_its_seed_alike() {
+        let face: PersistentName = "F2:face(2)".parse().unwrap();
+        let chamfered = PersistentName::copy(FeatureId(3), 0, face.clone());
+        for k in 0..8 {
+            let plain = PersistentName::copy(FeatureId(4), k, face.clone());
+            let through = PersistentName::copy(FeatureId(4), k, chamfered.clone());
+            assert_eq!(through, plain, "instance {k}");
+            assert_eq!(through.to_string(), format!("F4:copy({k})/F2:face(2)"));
+        }
+        // Before a copy that is not instance 0 the run stays a link, so
+        // the two ways through a pattern of a pattern stay apart.
+        let inner = PersistentName::copy(FeatureId(7), 2, face.clone());
+        let a = PersistentName::copy(
+            FeatureId(9),
+            1,
+            PersistentName::copy(FeatureId(8), 0, inner.clone()),
+        );
+        let b = PersistentName::copy(
+            FeatureId(9),
+            1,
+            PersistentName::copy(FeatureId(8), 2, PersistentName::copy(FeatureId(7), 0, face)),
+        );
+        assert_ne!(a, b);
+        assert_eq!(a.to_string(), "F9:copy(1)/F8:copy(0)/F7:copy(2)/F2:face(2)");
+        assert_eq!(b.to_string(), "F9:copy(1,2)/F2:face(2)");
+        for name in [a, b] {
+            assert_eq!(name.to_string().parse::<PersistentName>().unwrap(), name);
+            assert_eq!(name.clone().canonical(), name);
+        }
+    }
+
     #[test]
     fn a_copy_of_a_copy_that_goes_the_same_way_is_one_link() {
         let side: PersistentName = "F2:side(e7)".parse().unwrap();
@@ -1790,7 +1845,19 @@ mod tests {
             ),
             (
                 "F7:copy(1)/F5:copy(0)/F2:side(e7)",
-                "F7:copy(1)/F5:copy(0)/F2:side(e7)",
+                "F7:copy(1)/F2:side(e7)",
+            ),
+            (
+                "F7:copy(1)/F5:copy(0)/F4:copy(0)/F2:side(e7)",
+                "F7:copy(1)/F2:side(e7)",
+            ),
+            (
+                "F9:copy(1)/F8:copy(2)/F7:copy(0)/F2:side(e7)",
+                "F9:copy(1,2)/F2:side(e7)",
+            ),
+            (
+                "F9:copy(1)/F8:copy(0)/F7:copy(2)/F2:side(e7)",
+                "F9:copy(1)/F8:copy(0)/F7:copy(2)/F2:side(e7)",
             ),
             (
                 "F9:copy(1)/F8:copy(3)/F7:copy(0)/F6:copy(0)/F3:copy(2)/F2:piece(1)/F2:side(e7)",
@@ -1971,7 +2038,7 @@ mod tests {
                 Some(3),
             ),
             (
-                format!("F9:copy(1)/F8:copy(0)/F7:corner[{a},{b},{c}]"),
+                format!("F9:copy(1)/F7:corner[{a},{b},{c}]"),
                 NameRole::Copy,
                 3,
                 0,

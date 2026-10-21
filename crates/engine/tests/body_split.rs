@@ -484,7 +484,7 @@ fn a_lump_no_split_holds_fails_the_last_split_until_the_body_is_split_again() {
         let added = pieces(&result);
         assert_eq!(added.len(), 1, "{result}");
         assert_eq!(added[0].0, "Middle");
-        assert_eq!(added[0].1, "F4:copy(1)/F3:copy(0)/F2:face(1)");
+        assert_eq!(added[0].1, "F4:copy(1)/F2:face(1)");
         assert_solid(&mut s, "Lower", 300.0, None, k);
         assert_solid(&mut s, "Middle", 200.0, None, k);
         assert_solid(&mut s, "Upper", 300.0, None, k);
