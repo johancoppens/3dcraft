@@ -1218,3 +1218,90 @@ fn a_fillet_whose_border_crosses_onto_an_earlier_round() {
         assert_eq!(between["edges"].as_array().unwrap().len(), 1, "{between}");
     }
 }
+
+/// "Round all edges of a box in two steps" (an R1 blocker, 2026-10-21):
+/// the upright edges first, then the rim of the top as a chain, with the
+/// same radius. Each corner of the top is then a piece of the ball about
+/// the axis of the round below it; the box follows an edit of its size,
+/// is checked deep, and shells as thick as its rounds; at three scales.
+#[test]
+fn a_box_rounded_in_two_steps_of_one_radius() {
+    let closed_form = |[w, d, h]: [f64; 3], r: f64| {
+        w * d * h
+            - (4.0 - PI) * r * r * h
+            - 2.0 * (w + d - 4.0 * r) * SPANDREL * r * r
+            - 4.0 * (PI * r.powi(3) / 4.0 - PI * r.powi(3) / 6.0)
+    };
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "w", "expr": 40.0 * k}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "Box", "size": ["w", 30.0 * k, 20.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"],
+                             ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]],
+                   "radius": 2.0 * k, "name": "Upright"}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F1:face(1)", "F1:face(2)"]], "chain": true,
+                   "radius": 2.0 * k, "name": "Top"}),
+        );
+        assert_solid(&mut s, "Top", closed_form([40.0, 30.0, 20.0], 2.0), None, k);
+        let names = names_of(&body(&mut s, "Top"));
+        assert_eq!(
+            names.iter().filter(|n| n.starts_with("F3:fillet(")).count(),
+            8,
+            "{names:?}"
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "at scale {k}: {check}");
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "w", "expr": 50.0 * k}),
+        );
+        assert_solid(&mut s, "Top", closed_form([50.0, 30.0, 20.0], 2.0), None, k);
+        built(
+            &mut s,
+            "feature.shell",
+            json!({"source": "Top", "thickness": 2.0 * k, "open": ["F1:face(0)"],
+                   "name": "Case"}),
+        );
+        assert_solid(
+            &mut s,
+            "Case",
+            closed_form([50.0, 30.0, 20.0], 2.0) - 46.0 * 26.0 * 18.0,
+            None,
+            k,
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "the case at scale {k}: {check}");
+        // A radius past the rounds' is too large, and what fits is theirs.
+        let reason = failed(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Top", "radius": 3.0 * k}),
+        );
+        assert!(reason.contains("too large"), "{reason}");
+        let fits: f64 = reason
+            .rsplit("below ")
+            .next()
+            .unwrap()
+            .trim_end_matches(" mm")
+            .parse()
+            .unwrap_or_else(|_| panic!("{reason}"));
+        assert!((fits - 2.0 * k).abs() <= 1e-9 * k, "{reason}");
+    }
+}
