@@ -1,0 +1,72 @@
+{
+  "format": "craft3d-task/1",
+  "id": "phone-stand",
+  "level": 3,
+  "title": "Phone stand",
+  "units": "mm",
+  "description": {
+    "en": "A desk stand for a phone, made from one side profile extruded 70 mm along +Y (from Y = 0). In the XZ plane: a base 90 mm long (X from 0 to 90) and 5 mm thick on the XY plane; at its front (X = 0) a lip 5 mm thick rising to 12 mm above the bottom, to stop the phone sliding off; and a back rest 5 mm thick leaning back (towards +X) at 65 degrees from the base, standing on the base's top with its front lower corner at X = 25 and reaching 80 mm along its slope. The rest's top is cut level (parallel to the base). Drive it by the variables base, thick, lip, rest, angle, rest_at and width.",
+    "nl": "Een bureaustandaard voor een telefoon, gemaakt uit één zijprofiel dat 70 mm langs +Y geëxtrudeerd wordt (vanaf Y = 0). In het XZ-vlak: een voet van 90 mm lang (X van 0 tot 90) en 5 mm dik op het XY-vlak; vooraan (X = 0) een opstaande rand van 5 mm dik tot 12 mm boven de onderkant, zodat de telefoon niet wegglijdt; en een rugsteun van 5 mm dik die achterover helt (naar +X) onder 65 graden met de voet, staand op de bovenkant van de voet met zijn voorste onderhoek op X = 25 en 80 mm lang langs zijn helling. De bovenkant van de steun is waterpas afgesneden (evenwijdig aan de voet). Stuur hem met de variabelen base, thick, lip, rest, angle, rest_at en width."
+  },
+  "variables": [
+    {"name": "base", "expr": "90 mm", "meaning": "base length along X"},
+    {"name": "thick", "expr": "5 mm", "meaning": "thickness of base, lip and rest"},
+    {"name": "lip", "expr": "12 mm", "meaning": "height of the lip's top above the bottom"},
+    {"name": "rest", "expr": "80 mm", "meaning": "length of the back rest along its slope"},
+    {"name": "angle", "expr": "65 deg", "meaning": "the rest's angle from the base"},
+    {"name": "rest_at", "expr": "25 mm", "meaning": "X of the rest's front lower corner"},
+    {"name": "width", "expr": "70 mm", "meaning": "along Y"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(base * thick + thick * (lip - thick) + thick * rest) * width"},
+    {"measure": "area", "value": "2 * (base * thick + thick * (lip - thick) + thick * rest) + 2 * (base + rest + lip) * width"},
+    {"measure": "centroid", "value": ["(base * thick * base / 2 + thick * (lip - thick) * thick / 2 + thick * rest * (rest_at + thick / (2 * sin(angle)) + rest * cos(angle) / 2)) / (base * thick + thick * (lip - thick) + thick * rest)", "width / 2", "(base * thick * thick / 2 + thick * (lip - thick) * (lip + thick) / 2 + thick * rest * (thick + rest * sin(angle) / 2)) / (base * thick + thick * (lip - thick) + thick * rest)"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["max(base, rest_at + thick / sin(angle) + rest * cos(angle))", "width", "thick + rest * sin(angle)"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": 12}
+  ],
+  "derivation": [
+    "The profile is three parts that only share edges: the base L x t, the lip t x (h - t) on it, and the rest, a parallelogram with level top and bottom: bottom t / sin(a) wide, height B sin(a), so area t B.",
+    "A = L t + t (h - t) + t B = 450 + 35 + 400 = 885 mm^2; V = A w = 61950 mm^3.",
+    "Perimeter: L + t + (L - x0 - t/sin a) + B + t/sin a + B + (x0 - t) + (h - t) + t + h = 2 (L + B + h); area = 2 A + perimeter * w.",
+    "Centroid: the parallelogram's centroid is the mean of its corners, (x0 + t/(2 sin a) + B cos(a)/2, t + B sin(a)/2); the base's and lip's are their centres.",
+    "Faces: ten profile edges swept, plus the two sides."
+  ],
+  "variants": [
+    {"set": {"angle": "70 deg", "rest": "90 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "base", "expr": "90 mm"}],
+    ["variable.set", {"name": "thick", "expr": "5 mm"}],
+    ["variable.set", {"name": "lip", "expr": "12 mm"}],
+    ["variable.set", {"name": "rest", "expr": "80 mm"}],
+    ["variable.set", {"name": "angle", "expr": "65 deg"}],
+    ["variable.set", {"name": "rest_at", "expr": "25 mm"}],
+    ["variable.set", {"name": "width", "expr": "70 mm"}],
+    ["sketch.create", {"name": "Side", "plane": "zx"}],
+    ["sketch.point", {"sketch": "Side", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Side", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Side", "closed": true, "points": [[0, 0], [0, 90], [5, 90], [5, 30.516889594812458], [77.50462296293199, 64.32635053406841], [77.50462296293199, 58.809460939255956], [5, 25], [5, 5], [12, 5], [12, 0]]}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e3"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e3"], "value": "base", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e4"], "value": "thick", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e4"], "value": "base", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e5"], "value": "thick", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e5"], "value": "rest_at + thick / sin(angle)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e6"], "value": "thick + rest * sin(angle)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e6"], "value": "rest_at + thick / sin(angle) + rest * cos(angle)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e7"], "value": "thick + rest * sin(angle)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e7"], "value": "rest_at + rest * cos(angle)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e8"], "value": "thick", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e8"], "value": "rest_at", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e9"], "value": "thick", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e9"], "value": "thick", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e10"], "value": "lip", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e10"], "value": "thick", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e11"], "value": "lip", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Side", "type": "distance", "entities": ["e1", "e11"], "value": "0 mm", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "Side", "distance": "width", "name": "Stand"}]
+  ]
+}

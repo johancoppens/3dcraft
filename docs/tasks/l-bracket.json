@@ -1,0 +1,57 @@
+{
+  "format": "craft3d-task/1",
+  "id": "l-bracket",
+  "level": 1,
+  "title": "L-bracket",
+  "units": "mm",
+  "description": {
+    "en": "An L-shaped angle bracket of 4 mm stock, 25 mm wide: one leg lies flat on the XY plane and runs 40 mm along +X, the other stands up along +Z to a height of 30 mm, both legs measured to the outside of the corner, which is at the origin. The bracket runs from Y = 0 to Y = 25. Drive it by the variables leg_x, leg_z, thickness and width.",
+    "nl": "Een L-vormige hoeksteun uit 4 mm materiaal, 25 mm breed: een been ligt plat op het XY-vlak en loopt 40 mm langs +X, het andere staat rechtop langs +Z tot 30 mm hoog; beide benen zijn gemeten tot de buitenkant van de hoek, die in de oorsprong ligt. De steun loopt van Y = 0 tot Y = 25. Stuur hem met de variabelen leg_x, leg_z, thickness en width."
+  },
+  "variables": [
+    {"name": "leg_x", "expr": "40 mm", "meaning": "flat leg, outside length along X"},
+    {"name": "leg_z", "expr": "30 mm", "meaning": "upright leg, outside height along Z"},
+    {"name": "thickness", "expr": "4 mm", "meaning": "stock thickness"},
+    {"name": "width", "expr": "25 mm", "meaning": "along Y"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(leg_x * thickness + (leg_z - thickness) * thickness) * width"},
+    {"measure": "area", "value": "2 * (leg_x * thickness + (leg_z - thickness) * thickness) + 2 * (leg_x + leg_z) * width"},
+    {"measure": "centroid", "value": ["(leg_x * thickness * leg_x / 2 + (leg_z - thickness) * thickness * thickness / 2) / (leg_x * thickness + (leg_z - thickness) * thickness)", "width / 2", "(leg_x * thickness * thickness / 2 + (leg_z - thickness) * thickness * (thickness + leg_z) / 2) / (leg_x * thickness + (leg_z - thickness) * thickness)"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["leg_x", "width", "leg_z"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": 8}
+  ],
+  "derivation": [
+    "Split the L profile into the flat leg a x t and the upright leg above it, t x (b - t): A = a t + (b - t) t = 160 + 104 = 264 mm^2; V = A w = 6600 mm^3.",
+    "Area: two profile faces 2 A, plus the profile's perimeter times the width. The perimeter of an L whose sides are all along X or Z is 2 (a + b).",
+    "Centroid: the area-weighted mean of the two rectangles' centres, (a/2, t/2) and (t/2, t + (b - t)/2) in (X, Z); Y = w/2.",
+    "Faces: 6 profile edges swept, plus the two ends."
+  ],
+  "variants": [
+    {"set": {"leg_x": "60 mm", "thickness": "5 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "leg_x", "expr": "40 mm"}],
+    ["variable.set", {"name": "leg_z", "expr": "30 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "4 mm"}],
+    ["variable.set", {"name": "width", "expr": "25 mm"}],
+    ["sketch.create", {"name": "Profile", "plane": "zx"}],
+    ["sketch.point", {"sketch": "Profile", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [[0, 0], [0, 40], [4, 40], [4, 4], [30, 4], [30, 0]]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "leg_x", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "thickness", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "leg_x", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "thickness", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "thickness", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "leg_z", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "thickness", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "leg_z", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "0 mm", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "Profile", "distance": "width", "name": "Bracket"}]
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "format": "craft3d-task/1",
+  "id": "countersunk-panel",
+  "level": 2,
+  "title": "Panel with countersunk holes",
+  "units": "mm",
+  "description": {
+    "en": "A cover panel 120 x 80 x 3 mm (corner at the origin, along +X, +Y, +Z) with four holes for M3 countersunk screws, one 10 mm in from each corner (from both edges): a 3.4 mm through hole with a 90 degree countersink from the top face (Z = 3) to 6.4 mm diameter. Drive it by the variables length, width, thickness, hole_d, csk_d and edge.",
+    "nl": "Een afdekpaneel van 120 x 80 x 3 mm (hoek in de oorsprong, langs +X, +Y, +Z) met vier gaten voor M3-verzonken schroeven, elk 10 mm van een hoek (van beide randen): een doorgaand gat van 3,4 mm met een verzinking van 90 graden vanaf de bovenkant (Z = 3) tot 6,4 mm diameter. Stuur het met de variabelen length, width, thickness, hole_d, csk_d en edge."
+  },
+  "variables": [
+    {"name": "length", "expr": "120 mm", "meaning": "along X"},
+    {"name": "width", "expr": "80 mm", "meaning": "along Y"},
+    {"name": "thickness", "expr": "3 mm", "meaning": "along Z"},
+    {"name": "hole_d", "expr": "3.4 mm", "meaning": "through hole diameter"},
+    {"name": "csk_d", "expr": "6.4 mm", "meaning": "countersink diameter at the top face"},
+    {"name": "edge", "expr": "10 mm", "meaning": "hole centre to each nearby edge"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "length * width * thickness - 4 * (pi * (hole_d / 2)^2 * (thickness - ((csk_d / 2) - (hole_d / 2))) + pi * ((csk_d / 2) - (hole_d / 2)) / 3 * ((csk_d / 2)^2 + (csk_d / 2) * (hole_d / 2) + (hole_d / 2)^2))"},
+    {"measure": "area", "value": "2 * length * width + 2 * (length + width) * thickness - 4 * (pi * (csk_d / 2)^2 + pi * (hole_d / 2)^2) + 4 * (2 * pi * (hole_d / 2) * (thickness - ((csk_d / 2) - (hole_d / 2))) + pi * ((csk_d / 2) + (hole_d / 2)) * ((csk_d / 2) - (hole_d / 2)) * sqrt(2))"},
+    {"measure": "centroid", "value": ["length / 2", "width / 2", "(length * width * thickness^2 / 2 - 4 * (pi * (hole_d / 2)^2 * (thickness - ((csk_d / 2) - (hole_d / 2)))^2 / 2 + pi * ((thickness - ((csk_d / 2) - (hole_d / 2))) * (((hole_d / 2) + ((csk_d / 2) - (hole_d / 2)))^3 - (hole_d / 2)^3) / 3 + (hole_d / 2)^2 * ((csk_d / 2) - (hole_d / 2))^2 / 2 + 2 * (hole_d / 2) * ((csk_d / 2) - (hole_d / 2))^3 / 3 + ((csk_d / 2) - (hole_d / 2))^4 / 4))) / (length * width * thickness - 4 * (pi * (hole_d / 2)^2 * (thickness - ((csk_d / 2) - (hole_d / 2))) + pi * ((csk_d / 2) - (hole_d / 2)) / 3 * ((csk_d / 2)^2 + (csk_d / 2) * (hole_d / 2) + (hole_d / 2)^2)))"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "thickness"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "A 90 degree countersink narrows by 1 mm in radius per mm of depth, so it meets the through hole hc = (D - d)/2 = 1.5 mm below the top.",
+    "One hole removes the cylinder pi r^2 (t - hc) under the countersink plus the frustum pi hc / 3 (R^2 + R r + r^2) (R = D/2, r = d/2): 13.62 + 29.17 = 42.79 mm^3; V = L W t - 4 * that = 28628.9 mm^3.",
+    "Area: the block's 2 L W + 2 (L + W) t, less a disc of radius R on top and r below per hole, plus the hole's wall 2 pi r (t - hc) and the cone pi (R + r) times the slant hc sqrt(2).",
+    "Centroid Z: the block's moment less the holes'. The cylinder part has its centre at (t - hc)/2; the frustum, with radius r + u at height t - hc + u, has moment pi int_0^hc (r + u)^2 (t - hc + u) du = pi ((t - hc)((r + hc)^3 - r^3)/3 + r^2 hc^2/2 + 2 r hc^3/3 + hc^4/4)."
+  ],
+  "variants": [
+    {"set": {"length": "150 mm", "edge": "12 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "120 mm"}],
+    ["variable.set", {"name": "width", "expr": "80 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+    ["variable.set", {"name": "hole_d", "expr": "3.4 mm"}],
+    ["variable.set", {"name": "csk_d", "expr": "6.4 mm"}],
+    ["variable.set", {"name": "edge", "expr": "10 mm"}],
+    ["feature.block", {"size": ["length", "width", "thickness"], "name": "Panel"}],
+    ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness", "position": ["edge", "edge", 0], "name": "Shank"}],
+    ["feature.cone", {"radius": "csk_d / 2", "height": "csk_d / 2", "position": ["edge", "edge", "thickness"], "axis": [0, 0, -1], "name": "Sink"}],
+    ["feature.boolean", {"op": "union", "target": "Shank", "tool": "Sink", "name": "HoleTool"}],
+    ["feature.pattern", {"source": "HoleTool", "count": 2, "step": ["length - 2 * edge", 0, 0], "name": "Row"}],
+    ["feature.pattern", {"source": "Row", "count": 2, "step": [0, "width - 2 * edge", 0], "name": "Grid"}],
+    ["feature.boolean", {"op": "subtract", "target": "Panel", "tool": "Grid", "name": "Drilled"}]
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "format": "craft3d-task/1",
+  "id": "cable-clip",
+  "level": 2,
+  "title": "Cable clip",
+  "units": "mm",
+  "description": {
+    "en": "A snap-in cable clip, 10 mm long along +Y (from Y = 0). Its section in the XZ plane: a base 30 mm wide (X from 0 to 30) and 3 mm thick, and on it, centred, a body 16 mm wide reaching 12 mm high overall. A channel of 8 mm diameter runs through the body along Y, its axis at X = 15, Z = 10, so it breaks out through the top and leaves a narrower mouth the cable snaps through. Each wing of the base has a 3.5 mm screw hole straight down, centred on the wing (X = 3.5 and X = 26.5) and on the clip's length. Drive it by the variables base_w, base_t, body_w, body_h, length, channel_d, channel_z and hole_d.",
+    "nl": "Een kabelclip om in te klikken, 10 mm lang langs +Y (vanaf Y = 0). De doorsnede in het XZ-vlak: een voet van 30 mm breed (X van 0 tot 30) en 3 mm dik, met daarop, in het midden, een lichaam van 16 mm breed dat in totaal 12 mm hoog reikt. Een kanaal van 8 mm diameter loopt langs Y door het lichaam, met de as op X = 15, Z = 10, zodat het bovenaan doorbreekt en een smallere opening laat waar de kabel door klikt. Elke vleugel van de voet heeft een schroefgat van 3,5 mm recht naar beneden, in het midden van de vleugel (X = 3,5 en X = 26,5) en van de lengte van de clip. Stuur hem met de variabelen base_w, base_t, body_w, body_h, length, channel_d, channel_z en hole_d."
+  },
+  "variables": [
+    {"name": "base_w", "expr": "30 mm", "meaning": "base width along X"},
+    {"name": "base_t", "expr": "3 mm", "meaning": "base thickness"},
+    {"name": "body_w", "expr": "16 mm", "meaning": "body width along X"},
+    {"name": "body_h", "expr": "12 mm", "meaning": "overall height"},
+    {"name": "length", "expr": "10 mm", "meaning": "along Y"},
+    {"name": "channel_d", "expr": "8 mm", "meaning": "channel diameter"},
+    {"name": "channel_z", "expr": "10 mm", "meaning": "height of the channel's axis"},
+    {"name": "hole_d", "expr": "3.5 mm", "meaning": "screw hole diameter"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "length * (base_w * base_t + body_w * (body_h - base_t) - (pi * (channel_d / 2)^2 - ((channel_d / 2)^2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad) - ((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) * sqrt(2 * (channel_d / 2) * ((channel_d / 2) - (body_h - channel_z)) - ((channel_d / 2) - (body_h - channel_z))^2)))) - 2 * pi / 4 * hole_d^2 * base_t"},
+    {"measure": "area", "value": "2 * (base_w * base_t + body_w * (body_h - base_t) - (pi * (channel_d / 2)^2 - ((channel_d / 2)^2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad) - ((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) * sqrt(2 * (channel_d / 2) * ((channel_d / 2) - (body_h - channel_z)) - ((channel_d / 2) - (body_h - channel_z))^2)))) + (2 * (base_w + body_h) - 2 * sqrt((channel_d / 2)^2 - ((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z)))^2) + (channel_d / 2) * (2 * pi - 2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad))) * length + 2 * (pi * hole_d * base_t - 2 * pi / 4 * hole_d^2)"},
+    {"measure": "centroid", "value": ["base_w / 2", "length / 2", "(length * (base_w * base_t * base_t / 2 + body_w * (body_h - base_t) * (body_h + base_t) / 2 - (pi * (channel_d / 2)^2 * channel_z - ((channel_d / 2)^2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad) - ((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) * sqrt(2 * (channel_d / 2) * ((channel_d / 2) - (body_h - channel_z)) - ((channel_d / 2) - (body_h - channel_z))^2)) * (channel_z + (4 * (channel_d / 2) * sin(acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)))^3 / (3 * (2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad) - sin(2 * acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2))))))))) - 2 * pi / 4 * hole_d^2 * base_t * base_t / 2) / (length * (base_w * base_t + body_w * (body_h - base_t) - (pi * (channel_d / 2)^2 - ((channel_d / 2)^2 * (acos(((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) / (channel_d / 2)) / 1 rad) - ((channel_d / 2) - ((channel_d / 2) - (body_h - channel_z))) * sqrt(2 * (channel_d / 2) * ((channel_d / 2) - (body_h - channel_z)) - ((channel_d / 2) - (body_h - channel_z))^2)))) - 2 * pi / 4 * hole_d^2 * base_t)"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["base_w", "length", "body_h"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "The channel circle (radius r = 4) pokes out of the top by hs = r - (H - zc) = 2. The cap of the circle above the top is a segment of height hs: S = r^2 th - (r - hs) sqrt(2 r hs - hs^2), th = acos((r - hs)/r) (half the angle it spans).",
+    "Section: base bw x bt plus body Bw x (H - bt) less the channel's part inside, pi r^2 - S: Ap = 90 + 144 - (16 pi - 9.83) = 193.56 mm^2. V = Ap L less the two screw holes, 2 pi/4 dh^2 bt.",
+    "Perimeter of the section: the rectilinear outline 2 (bw + H), less the mouth (the chord 2 sqrt(r^2 - (r - hs)^2)), plus the channel's arc inside, r (2 pi - 2 th). Area = 2 Ap + perimeter * L, and each screw hole takes two discs and adds its wall pi dh bt.",
+    "Centroid Z: moments of base (bt/2), body ((H + bt)/2), less the channel: the full circle at zc less the segment, whose centroid lies 4 r sin^3(th) / (3 (2 th - sin 2 th)) above the axis; the holes at bt/2. X and Y by symmetry."
+  ],
+  "variants": [
+    {"set": {"length": "14 mm", "hole_d": "4 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "base_w", "expr": "30 mm"}],
+    ["variable.set", {"name": "base_t", "expr": "3 mm"}],
+    ["variable.set", {"name": "body_w", "expr": "16 mm"}],
+    ["variable.set", {"name": "body_h", "expr": "12 mm"}],
+    ["variable.set", {"name": "length", "expr": "10 mm"}],
+    ["variable.set", {"name": "channel_d", "expr": "8 mm"}],
+    ["variable.set", {"name": "channel_z", "expr": "10 mm"}],
+    ["variable.set", {"name": "hole_d", "expr": "3.5 mm"}],
+    ["sketch.create", {"name": "Profile", "plane": "zx"}],
+    ["sketch.point", {"sketch": "Profile", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [[0, 0], [0, 30], [3, 30], [3, 23], [12, 23], [12, 7], [3, 7], [3, 0]]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "base_w", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "base_t", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "base_w", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "base_t", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "(base_w + body_w) / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "body_h", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "(base_w + body_w) / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "body_h", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "(base_w - body_w) / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"], "value": "base_t", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"], "value": "(base_w - body_w) / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e9"], "value": "base_t", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e9"], "value": "0 mm", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "Profile", "distance": "length", "name": "Body"}],
+    ["feature.cylinder", {"radius": "channel_d / 2", "height": "length", "position": ["base_w / 2", 0, "channel_z"], "axis": [0, 1, 0], "name": "ChannelTool"}],
+    ["feature.boolean", {"op": "subtract", "target": "Body", "tool": "ChannelTool", "name": "Channel"}],
+    ["feature.cylinder", {"radius": "hole_d / 2", "height": "base_t", "position": ["(base_w - body_w) / 4", "length / 2", 0], "name": "HoleTool"}],
+    ["feature.pattern", {"source": "HoleTool", "count": 2, "step": ["(base_w + body_w) / 2", 0, 0], "name": "HoleTools"}],
+    ["feature.boolean", {"op": "subtract", "target": "Channel", "tool": "HoleTools", "name": "Clip"}]
+  ]
+}

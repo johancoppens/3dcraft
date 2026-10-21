@@ -1,0 +1,51 @@
+{
+  "format": "craft3d-task/1",
+  "id": "hole-strip",
+  "level": 2,
+  "title": "Perforated strip with a counted row of holes",
+  "units": "mm",
+  "description": {
+    "en": "A flat strip 120 x 20 x 3 mm (corner at the origin, along +X, +Y, +Z) with a row of 5 mm holes along its centre line at a 10 mm pitch: as many holes as fit with every hole centre at least 7.5 mm from the ends, and the row centred on the strip. The number of holes must follow the length: drive the strip by the variables length, width, thickness, hole_d, pitch and margin.",
+    "nl": "Een vlakke strip van 120 x 20 x 3 mm (hoek in de oorsprong, langs +X, +Y, +Z) met een rij gaten van 5 mm op de middellijn met een steek van 10 mm: zoveel gaten als er passen met elk gatmidden minstens 7,5 mm van de uiteinden, en de rij in het midden van de strip. Het aantal gaten moet de lengte volgen: stuur de strip met de variabelen length, width, thickness, hole_d, pitch en margin."
+  },
+  "variables": [
+    {"name": "length", "expr": "120 mm", "meaning": "along X"},
+    {"name": "width", "expr": "20 mm", "meaning": "along Y"},
+    {"name": "thickness", "expr": "3 mm", "meaning": "along Z"},
+    {"name": "hole_d", "expr": "5 mm", "meaning": "hole diameter"},
+    {"name": "pitch", "expr": "10 mm", "meaning": "distance between hole centres"},
+    {"name": "margin", "expr": "7.5 mm", "meaning": "least distance from a hole centre to an end"},
+    {"name": "n", "expr": "floor((length - 2 * margin) / pitch) + 1", "meaning": "the number of holes (derived; the candidate need not name it)"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(length * width - n * pi / 4 * hole_d^2) * thickness"},
+    {"measure": "area", "value": "2 * (length * width - n * pi / 4 * hole_d^2) + 2 * (length + width) * thickness + n * pi * hole_d * thickness"},
+    {"measure": "centroid", "value": ["length / 2", "width / 2", "thickness / 2"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "thickness"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": "6 + n"}
+  ],
+  "derivation": [
+    "Holes fit while (n - 1) p <= L - 2 m, so n = floor((L - 2 m) / p) + 1 = floor(10.5) + 1 = 11; centred, the first is at (L - (n - 1) p) / 2 = 10 mm.",
+    "V = (L W - n pi d^2 / 4) t = (2400 - 11 * 19.635) * 3 = 6552.0 mm^3; area as for any plate with n round through holes.",
+    "A centred row keeps the centroid at the strip's centre. Faces: 6 of the strip and one wall per hole.",
+    "The variants change the length so that n changes: 150 mm gives 14 holes, 133 mm gives 12."
+  ],
+  "variants": [
+    {"set": {"length": "150 mm"}},
+    {"set": {"length": "133 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "120 mm"}],
+    ["variable.set", {"name": "width", "expr": "20 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+    ["variable.set", {"name": "hole_d", "expr": "5 mm"}],
+    ["variable.set", {"name": "pitch", "expr": "10 mm"}],
+    ["variable.set", {"name": "margin", "expr": "7.5 mm"}],
+    ["variable.set", {"name": "n", "expr": "floor((length - 2 * margin) / pitch) + 1"}],
+    ["feature.block", {"size": ["length", "width", "thickness"], "name": "Strip"}],
+    ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness", "position": ["(length - (n - 1) * pitch) / 2", "width / 2", 0], "name": "HoleTool"}],
+    ["feature.pattern", {"source": "HoleTool", "count": "n", "step": ["pitch", 0, 0], "name": "HoleTools"}],
+    ["feature.boolean", {"op": "subtract", "target": "Strip", "tool": "HoleTools", "name": "Perforated"}]
+  ]
+}

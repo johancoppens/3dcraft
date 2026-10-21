@@ -1,0 +1,48 @@
+{
+  "format": "craft3d-task/1",
+  "id": "shelled-case",
+  "level": 3,
+  "title": "Case shelled to the fillet radius",
+  "units": "mm",
+  "description": {
+    "en": "A moulded case: outside 70 x 50 x 25 mm (corner at the origin, along +X, +Y, +Z), the top edges and the four upright corners rounded with a 2 mm radius, the bottom edges sharp, hollowed to a 2 mm wall, open at the bottom. The wall equals the radius, so the inside corners come out sharp. Drive it by the variables length, width, height, radius and wall; the expectations hold for any wall up to the radius.",
+    "nl": "Een gegoten behuizing: buitenmaat 70 x 50 x 25 mm (hoek in de oorsprong, langs +X, +Y, +Z), de randen van de bovenkant en de vier staande hoeken afgerond met een straal van 2 mm, de onderranden scherp, uitgehold tot een wand van 2 mm, open aan de onderkant. De wand is even dik als de straal, dus de binnenhoeken worden scherp. Stuur hem met de variabelen length, width, height, radius en wall; de verwachtingen gelden voor elke wand tot aan de straal."
+  },
+  "variables": [
+    {"name": "length", "expr": "70 mm", "meaning": "outside, along X"},
+    {"name": "width", "expr": "50 mm", "meaning": "outside, along Y"},
+    {"name": "height", "expr": "25 mm", "meaning": "outside, along Z"},
+    {"name": "radius", "expr": "2 mm", "meaning": "outside radius of the rounded edges"},
+    {"name": "wall", "expr": "2 mm", "meaning": "wall thickness"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(((length - 2 * radius) * (width - 2 * radius) + 2 * radius * ((length - 2 * radius) + (width - 2 * radius)) + pi * radius^2) * (height - radius) + ((length - 2 * radius) * (width - 2 * radius) * radius + pi / 2 * radius^2 * ((length - 2 * radius) + (width - 2 * radius)) + 2 / 3 * pi * radius^3)) - ((((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) + 2 * (radius - wall) * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + pi * (radius - wall)^2) * ((height - wall) - (radius - wall)) + (((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) * (radius - wall) + pi / 2 * (radius - wall)^2 * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + 2 / 3 * pi * (radius - wall)^3))"},
+    {"measure": "area", "value": "((2 * ((length - 2 * radius) + (width - 2 * radius)) + 2 * pi * radius) * (height - radius) + (length - 2 * radius) * (width - 2 * radius) + pi * radius * ((length - 2 * radius) + (width - 2 * radius)) + 2 * pi * radius^2) + ((2 * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + 2 * pi * (radius - wall)) * ((height - wall) - (radius - wall)) + ((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) + pi * (radius - wall) * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + 2 * pi * (radius - wall)^2) + ((length - 2 * radius) * (width - 2 * radius) + 2 * radius * ((length - 2 * radius) + (width - 2 * radius)) + pi * radius^2) - (((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) + 2 * (radius - wall) * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + pi * (radius - wall)^2)"},
+    {"measure": "centroid", "value": ["length / 2", "width / 2", "((((length - 2 * radius) * (width - 2 * radius) + 2 * radius * ((length - 2 * radius) + (width - 2 * radius)) + pi * radius^2) * (height - radius)^2 / 2 + (height - radius) * ((length - 2 * radius) * (width - 2 * radius) * radius + pi / 2 * radius^2 * ((length - 2 * radius) + (width - 2 * radius)) + 2 / 3 * pi * radius^3) + (length - 2 * radius) * (width - 2 * radius) * radius^2 / 2 + 2 * ((length - 2 * radius) + (width - 2 * radius)) * radius^3 / 3 + pi * radius^4 / 4) - ((((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) + 2 * (radius - wall) * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + pi * (radius - wall)^2) * ((height - wall) - (radius - wall))^2 / 2 + ((height - wall) - (radius - wall)) * (((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) * (radius - wall) + pi / 2 * (radius - wall)^2 * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + 2 / 3 * pi * (radius - wall)^3) + ((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) * (radius - wall)^2 / 2 + 2 * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) * (radius - wall)^3 / 3 + pi * (radius - wall)^4 / 4)) / ((((length - 2 * radius) * (width - 2 * radius) + 2 * radius * ((length - 2 * radius) + (width - 2 * radius)) + pi * radius^2) * (height - radius) + ((length - 2 * radius) * (width - 2 * radius) * radius + pi / 2 * radius^2 * ((length - 2 * radius) + (width - 2 * radius)) + 2 / 3 * pi * radius^3)) - ((((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) + 2 * (radius - wall) * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + pi * (radius - wall)^2) * ((height - wall) - (radius - wall)) + (((length - 2 * wall) - 2 * (radius - wall)) * ((width - 2 * wall) - 2 * (radius - wall)) * (radius - wall) + pi / 2 * (radius - wall)^2 * (((length - 2 * wall) - 2 * (radius - wall)) + ((width - 2 * wall) - 2 * (radius - wall))) + 2 / 3 * pi * (radius - wall)^3)))"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "height"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "shells", "value": 1}
+  ],
+  "derivation": [
+    "The same closed form as rounded-cover: the hollow is the outside offset inward by the wall, with radius r - t, here 0: a plain box (L - 2t) x (W - 2t) x (H - t) open at the bottom, whose formulas are the rounded ones with r = 0.",
+    "This is the classic enclosure (round the edges, then a wall as thick as the radius), and the shell refuses it today: at the radius of a rounded edge the hollow needs a sharp edge, which is not built (feature.shell; roadmap M9, shell with a wall at or above the fillet radius). Making the wall thinner changes the design, so there is no workaround a user would choose: the task is marked refused, and its test turns red when the shell learns it."
+  ],
+  "variants": [
+    {"set": {"length": "90 mm"}}
+  ],
+  "refused": {
+    "feature": "Case",
+    "error": "the face would vanish",
+    "reason": "feature.shell with a wall equal to the radius of a rounded edge (roadmap M9)"
+  },
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "70 mm"}],
+    ["variable.set", {"name": "width", "expr": "50 mm"}],
+    ["variable.set", {"name": "height", "expr": "25 mm"}],
+    ["variable.set", {"name": "radius", "expr": "2 mm"}],
+    ["variable.set", {"name": "wall", "expr": "2 mm"}],
+    ["feature.block", {"size": ["length", "width", "height"], "name": "Blank"}],
+    ["feature.fillet", {"edges": [["F1:face(1)", "F1:face(2)"], ["F1:face(1)", "F1:face(3)"], ["F1:face(1)", "F1:face(4)"], ["F1:face(1)", "F1:face(5)"], ["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "radius", "name": "Rounded"}],
+    ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F1:face(0)"], "name": "Case"}]
+  ]
+}

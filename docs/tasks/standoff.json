@@ -1,0 +1,64 @@
+{
+  "format": "craft3d-task/1",
+  "id": "standoff",
+  "level": 2,
+  "title": "Hex standoff with an M4 stud and an M4 tapped hole",
+  "units": "mm",
+  "description": {
+    "en": "A hexagonal standoff (male-female) for M4: a hex 8 mm across flats and 20 mm long standing on the XY plane, its axis the Z axis and two of its corners on the X axis. On top, an M4 stud 8 mm long (a 4 mm cylinder) with an external M4 thread over 6.5 mm from its free end; in the bottom, a tapped hole: a 3.3 mm tap drill 10 mm deep with an internal M4 thread over 8 mm from the bottom face. Threads may be cosmetic. Drive it by the variables across_flats, length, stud_len and tap_depth.",
+    "nl": "Een zeskantige afstandsbus (male-female) voor M4: een zeskant van 8 mm sleutelwijdte en 20 mm lang, staand op het XY-vlak, met de Z-as als as en twee hoekpunten op de X-as. Bovenop een M4-tapeind van 8 mm lang (een cilinder van 4 mm) met uitwendige M4-draad over 6,5 mm vanaf het vrije eind; onderin een tapgat: een boorgat van 3,3 mm, 10 mm diep, met inwendige M4-draad over 8 mm vanaf de onderkant. De draad mag cosmetisch zijn. Stuur hem met de variabelen across_flats, length, stud_len en tap_depth."
+  },
+  "variables": [
+    {"name": "across_flats", "expr": "8 mm", "meaning": "hex size across flats"},
+    {"name": "length", "expr": "20 mm", "meaning": "hex length along Z"},
+    {"name": "stud_len", "expr": "8 mm", "meaning": "stud length above the hex"},
+    {"name": "tap_depth", "expr": "10 mm", "meaning": "depth of the tap drill"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "sqrt(3) / 2 * across_flats^2 * length + pi * (2 mm)^2 * stud_len - pi * (1.65 mm)^2 * tap_depth"},
+    {"measure": "area", "value": "sqrt(3) * across_flats^2 + 2 * sqrt(3) * across_flats * length + 2 * pi * 2 mm * stud_len + 2 * pi * 1.65 mm * tap_depth"},
+    {"measure": "centroid", "value": [0, 0, "(sqrt(3) / 2 * across_flats^2 * length^2 / 2 + pi * (2 mm)^2 * stud_len * (length + stud_len / 2) - pi * (1.65 mm)^2 * tap_depth^2 / 2) / (sqrt(3) / 2 * across_flats^2 * length + pi * (2 mm)^2 * stud_len - pi * (1.65 mm)^2 * tap_depth)"]},
+    {"measure": "bbox", "min": ["-across_flats / sqrt(3)", "-across_flats / 2", 0], "max": ["across_flats / sqrt(3)", "across_flats / 2", "length + stud_len"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "threads", "value": 2}
+  ],
+  "derivation": [
+    "A regular hexagon s across flats has sides s / sqrt(3) and area sqrt(3)/2 s^2; corners on the X axis put them at X = +-s/sqrt(3), the flats at Y = +-s/2.",
+    "V = sqrt(3)/2 s^2 L + pi 2^2 ls - pi 1.65^2 dt = 1108.5 + 100.5 - 85.5 = 1123.5 mm^3. A cosmetic thread changes no volume; a modeled one would, so the threads are cosmetic here (the default).",
+    "Area: the hex's two ends sqrt(3) s^2 and six sides 6 (s/sqrt(3)) L; the stud swaps a disc of the hex top for its own top and adds its wall 2 pi 2 ls; the tap drill swaps a disc of the bottom for its floor and adds its wall.",
+    "Centroid Z: hex at L/2, stud at L + ls/2, less the drill at dt/2.",
+    "threads counts the features that put a thread on and were built: 2. The reference names the faces by the primitives they came from (F3:face(0) is the stud's wall, F3:face(2) its top; F5:face(0) the drill's wall), names that are followed through the booleans; the internal thread starts at the hex's bottom face, F2:startCap()."
+  ],
+  "variants": [
+    {"set": {"length": "25 mm", "across_flats": "10 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "across_flats", "expr": "8 mm"}],
+    ["variable.set", {"name": "length", "expr": "20 mm"}],
+    ["variable.set", {"name": "stud_len", "expr": "8 mm"}],
+    ["variable.set", {"name": "tap_depth", "expr": "10 mm"}],
+    ["sketch.create", {"name": "Hex", "plane": "xy"}],
+    ["sketch.point", {"sketch": "Hex", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Hex", "closed": true, "points": [[4.618802153517007, 0], [2.3094010767585034, 4], [-2.3094010767585034, 4], [-4.618802153517007, 0], [-2.3094010767585034, -4], [2.3094010767585034, -4]]}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e2"], "value": "across_flats / sqrt(3)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e3"], "value": "across_flats / sqrt(3) / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e3"], "value": "across_flats / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e4"], "value": "across_flats / sqrt(3) / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e4"], "value": "across_flats / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e5"], "value": "across_flats / sqrt(3)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e5"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e6"], "value": "across_flats / sqrt(3) / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e6"], "value": "across_flats / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e7"], "value": "across_flats / sqrt(3) / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Hex", "type": "distance", "entities": ["e1", "e7"], "value": "across_flats / 2", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "Hex", "distance": "length", "name": "Body"}],
+    ["feature.cylinder", {"radius": "2 mm", "height": "stud_len", "position": [0, 0, "length"], "name": "Stud"}],
+    ["feature.boolean", {"op": "union", "target": "Body", "tool": "Stud", "name": "WithStud"}],
+    ["feature.cylinder", {"radius": "3.3 mm / 2", "height": "tap_depth", "name": "TapDrill"}],
+    ["feature.boolean", {"op": "subtract", "target": "WithStud", "tool": "TapDrill", "name": "Drilled"}],
+    ["feature.thread", {"face": "F3:face(0)", "start": "F3:face(2)", "size": "M4", "length": "stud_len - 1.5 mm", "name": "StudThread"}],
+    ["feature.thread", {"face": "F5:face(0)", "start": "F2:startCap()", "size": "M4", "length": "tap_depth - 2 mm", "name": "TapThread"}]
+  ]
+}

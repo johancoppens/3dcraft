@@ -13,6 +13,7 @@
 mod args;
 mod local;
 mod replay;
+mod score;
 mod server;
 
 use args::{Arg, Args};
@@ -61,6 +62,7 @@ Subcommands:
   render     Render a document to a PNG with the CPU renderer
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
   replay     Make a video (MP4, GIF) or frames of how a document is built
+  score      Run a script for a task of the task set and print its scorecard
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
@@ -185,6 +187,29 @@ Example:
   craft3d-cli replay part.3dcraft --out part.mp4 --size 1280x720 \\
       --frames-per-step 6 --hold 60 --orbit 90";
 
+const HELP_SCORE: &str = "\
+Usage: craft3d-cli score TASK [--script FILE] [--tasks DIR]
+
+Runs a candidate script for a task of the task set headless, in a session
+that may neither read nor write files, and prints its scorecard as one line
+of JSON: every expectation of the task with the value expected and the
+value measured, whether the model is valid (document.check deep), the
+number of steps and the steps that failed, and the same again for every
+variant of the task (its variables set to other values). The format is in
+docs/testing.md, The task set. Exit code 0 when a scorecard is printed,
+whether the candidate passed or not.
+
+TASK is a task file (FILE.json) or a task id, the file ID.json in the
+tasks directory.
+
+Options:
+  --script FILE   The candidate: a JSON array of steps, as run --script
+                  takes. Default: the task's own reference solution
+  --tasks DIR     Where task ids are looked up. Default: docs/tasks
+
+Example:
+  craft3d-cli score plate-holes --script my-plate.json";
+
 const HELP_SERVE: &str = "\
 Usage: craft3d-cli serve [--automation-read-root DIR]
                          [--automation-write-root DIR]
@@ -247,6 +272,7 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ("render", HELP_RENDER),
     ("convert", HELP_CONVERT),
     ("replay", HELP_REPLAY),
+    ("score", HELP_SCORE),
     ("serve", HELP_SERVE),
     ("mcp", HELP_MCP),
 ];
@@ -316,6 +342,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
         "render" => local::render(args),
         "convert" => local::convert(args),
         "replay" => replay::replay(args),
+        "score" => score::score(args),
         "serve" => server::serve(args, server::Protocol::JsonLines),
         "mcp" => server::serve(args, server::Protocol::Mcp),
         _ => return Err(unknown_subcommand(&name)),

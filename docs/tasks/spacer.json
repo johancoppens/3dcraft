@@ -1,0 +1,45 @@
+{
+  "format": "craft3d-task/1",
+  "id": "spacer",
+  "level": 1,
+  "title": "Round spacer",
+  "units": "mm",
+  "description": {
+    "en": "A round spacer (a thick washer): outer diameter 20 mm, a through bore of 8.4 mm, 5 mm thick. Its axis is the Z axis and its bottom face lies on the XY plane. Drive it by the variables outer_d, bore_d and thickness.",
+    "nl": "Een ronde afstandsring (een dikke sluitring): buitendiameter 20 mm, een doorgaande boring van 8,4 mm, 5 mm dik. De as is de Z-as en de onderkant ligt op het XY-vlak. Stuur hem met de variabelen outer_d, bore_d en thickness."
+  },
+  "variables": [
+    {"name": "outer_d", "expr": "20 mm", "meaning": "outer diameter"},
+    {"name": "bore_d", "expr": "8.4 mm", "meaning": "bore diameter"},
+    {"name": "thickness", "expr": "5 mm", "meaning": "thickness along Z"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "pi / 4 * (outer_d^2 - bore_d^2) * thickness"},
+    {"measure": "area", "value": "2 * pi / 4 * (outer_d^2 - bore_d^2) + pi * (outer_d + bore_d) * thickness"},
+    {"measure": "centroid", "value": [0, 0, "thickness / 2"]},
+    {"measure": "bbox", "min": ["-outer_d / 2", "-outer_d / 2", 0], "max": ["outer_d / 2", "outer_d / 2", "thickness"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": 4}
+  ],
+  "derivation": [
+    "An annulus of outer diameter D and inner diameter d has area pi/4 (D^2 - d^2); extruded by t: V = pi/4 (D^2 - d^2) t = 1293.7 mm^3.",
+    "Surface: the two flat rings, 2 pi/4 (D^2 - d^2), plus the outer wall pi D t and the bore wall pi d t.",
+    "Centroid on the axis at half the thickness, by symmetry. Faces: top, bottom, outer wall, bore wall."
+  ],
+  "variants": [
+    {"set": {"outer_d": "24 mm", "thickness": "8 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "outer_d", "expr": "20 mm"}],
+    ["variable.set", {"name": "bore_d", "expr": "8.4 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "5 mm"}],
+    ["sketch.create", {"name": "Ring", "plane": "xy"}],
+    ["sketch.point", {"sketch": "Ring", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Ring", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.circle", {"sketch": "Ring", "center": "e1", "radius": 10}],
+    ["sketch.constrain", {"sketch": "Ring", "type": "diameter", "entities": ["e2"], "value": "outer_d"}],
+    ["sketch.circle", {"sketch": "Ring", "center": "e1", "radius": 4.2}],
+    ["sketch.constrain", {"sketch": "Ring", "type": "diameter", "entities": ["e3"], "value": "bore_d"}],
+    ["feature.extrude", {"sketch": "Ring", "distance": "thickness", "name": "Spacer"}]
+  ]
+}

@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) oracle 11 (random multi-step designs) and oracle 12 (the action matrix). The rest is design
+> **Last updated:** 2026-10-21 · **Status:** the loop is in use; the R1 task set and its scorer (*The task set*) are in place. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) oracle 11 (random multi-step designs) and oracle 12 (the action matrix). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -315,6 +315,69 @@ The offset's `faces`, the deletion's `faces` and the shell's `source` are rows o
 
 A seeded random walk (16 seeds of 160 steps over a part of sixteen features: deletes, suppressions, moves, rollbacks, variables, dimensions, and every repair command pointed at random entities, some of which exist) asserts all of the above after every step. `WALK="seed steps"` with the ignored test `one_walk` reproduces one seed and prints its commands. Seeded breakages that the suite was seen to catch: a failed feature that still takes its source's body (7 tests fail), a cache that ignores that an input was rebuilt (9 tests fail). The wording of the reasons has no oracle but these tests: for the wording they are regression tests. The comparisons leave out `bbox`: `document.inspect` takes it from a mesh whose tolerance follows the size of the whole model, so the box of a curved body moves in its last digits when another body comes or goes.
 **Edges and vertices (2026-10-14, `crates/engine/tests/naming_entities.rs`, 14 tests; `regen/src/entity.rs` and `regen/tests/merged_names.rs` for the parts below the commands).** The consumer is a datum point at a vertex, whose position says where a name ended up; edges are followed through `document.edges`. (a) *Complete and unique:* on the five primitives, eight sweeps (a bar, a plate with a hole, two arcs and two splines that share both ends, a ring, a quarter ring, a bowl on the axis, a post up to a tilted face), nine single booleans (flush and overlapping unions, a hole, a slot that cuts faces in two, a round notch across an edge, an intersection, a pocket with coincident faces, a cylinder cut in half lengthwise and a groove round, the two with numbered names), two and three booleans in a row, a transform, a mirror, patterns that stay apart and patterns that are joined (end to end, overlapping, round an axis): as many names as edges and vertices, no two entities answering to one name (aliases included), an edge named by its faces listing the faces on its sides, a datum point at every vertex name lying on that vertex, and every edge found by `document.edges` between its two faces. (b) *Stable:* nine edits of the sizes of a part with three booleans, at three scales, leave the record of every name (curve, faces, the names of the end vertices, the edges ending in a vertex, aliases) identical, and ten corners where a closed form says they must be. (c) *Removed:* exactly the references to what an edit removed fail, with the name, and are repaired by undoing the edit. (d) *Independent* of the scale (1e-3, 1, 1e6), of four threads building the same models at once (nothing in regeneration is parallel today, so this pins the absence of shared state, not a merge order), of unrelated features moved through the history, and (in `regen`) of the order of the entities in the body. (e) *Saved and reopened:* the same names, the same datum points, the same bytes when saved again. The limits are tests too: the numbered names that swap when the whole configuration is turned, the bare name a second edge between the same faces takes away, the two circles of a groove, and the numbered edges of a lens that still answer to the names the sweep gave them. Print the names of a body with `CRAFT3D_SHOW_NAMES=1` (or the name of one body) and `--nocapture`.
+
+## The task set (R1, and version 0 of a CAD gym)
+
+The measure of R1: ordinary parts a first user makes, each with a description and expectations worked out by hand, so a machine can tell whether a model of it is right. The same files are the core of a benchmark for agents that drive 3DCraft (a "CAD gym", a separate project on top of 3DCraft: roadmap › Ideas).
+
+**Where.** One JSON file per task in [`docs/tasks/`](tasks/) (they are documentation as much as test data, like `docs/showcase/`); the scorer is `craft3d_engine::task_score`; `crates/engine/tests/task_set.rs` replays every reference solution (one test per task, and one that the list of tests is the list of files); `craft3d-cli score` runs any candidate.
+
+| Task | Level | The part |
+|---|---|---|
+| `spacer` | 1 | round spacer, extruded annulus |
+| `plate-holes` | 1 | plate with four holes a fixed distance from the edges |
+| `l-bracket` | 1 | L-bracket, extruded profile |
+| `u-channel` | 1 | U-channel, extruded profile |
+| `slotted-plate` | 2 | plate with two round-ended slots |
+| `flanged-bushing` | 2 | flanged bushing, revolved half section |
+| `pulley-blank` | 2 | V-groove pulley blank, revolved, groove angle as a variable |
+| `bolt-flange` | 2 | flange with n bolt holes on a pitch circle (circular pattern) |
+| `hole-strip` | 2 | strip whose hole count follows its length (`floor` in a pattern count) |
+| `cable-clip` | 2 | snap-in cable clip: extruded profile, channel breaking the top, screw holes |
+| `countersunk-panel` | 2 | panel with four countersunk holes (cone and cylinder tools, a 2 x 2 pattern) |
+| `gusset-bracket` | 2 | angle bracket with a gusset and four holes |
+| `standoff` | 2 | hex standoff, M4 stud and M4 tapped hole (cosmetic threads) |
+| `stepped-shaft` | 3 | stepped shaft, chamfered ends, keyway |
+| `rounded-cover` | 3 | cover: eight edges rounded in one fillet, shelled open at the bottom |
+| `knurled-knob` | 3 | knob with n flutes and a D bore |
+| `pipe-tee` | 3 | equal pipe tee (two equal cylinders: Steinmetz curves) |
+| `phone-stand` | 3 | phone stand, profile dimensioned with trigonometry |
+| `bent-bracket` | 3 | Z-bracket as if bent from sheet (lines and arcs in one path) |
+| `shelled-case` | 3 | case shelled to its fillet radius: **refused today** |
+| `enclosure` | 4 | box with screw bosses and a separate lid with a lip: two bodies |
+| `hinge-leaf` | 4 | hinge leaf: knuckles tangent to the plate, cut-back, pin hole |
+
+**A task file** (`"format": "craft3d-task/1"`): `id` (the file's name), `level` (1 to 4), `title`, `units`, `description` (`en` and `nl`: what a person or an agent is given, with the dimensions, the placement in space and the names of the variables that must drive the part), `variables` (`name`, `expr`, `meaning`: the task's own values; a variable may be a formula of others), `expect`, `derivation` (the closed forms worked out in words, with numbers for the task's values), `variants`, optionally `refused`, and `solution` (the reference: a script of commands in the form `craft3d-cli run --script` takes). An expectation is `{"measure": m, ...}`:
+
+- `volume`, `area`: `value` is an expression of the task's variables, summed over all bodies; `tolerance` relative, default 1e-6.
+- `centroid`: `value` is three expressions, the volume-weighted centroid of all bodies; `tolerance` absolute in mm, default 1e-4.
+- `bbox`: `min` and `max`, three expressions each; the measured box comes from a tessellation and lies inside the true one by at most the body's `bboxTolerance` (`document.inspect`), which is added to `tolerance` (absolute, default 1e-4 mm).
+- `bodies`, `shells`, `faces`, `edges`, `vertices` (totals over the bodies), `threads` (thread features that built): `value` is a number or an expression; exact.
+
+Expressions use the variable syntax (`"pi / 4 * (outer_d^2 - bore_d^2) * thickness"`, `"floor((length - 2 * margin) / pitch) + 1"`) and are checked for the right dimension when the task is read, for the task's values and every variant's: a derivation with a slip in its units is a broken task (an error), not a failed candidate. A plain number where a length, area or volume is expected is in the task's units. A `variant` is `{"set": {name: expr}}`: the scorer sets those variables in the candidate's document, regenerates, scores again with the expectations evaluated for the new values, and puts the candidate's own values back. That is the robustness check: a model whose holes do not follow the plate's length, or whose hole count does not follow `floor(...)`, fails its variant. `refused` (`feature`, `error`, `reason`) marks a task the kernel refuses today with no workaround a user would choose; its test asserts that refusal (the named feature failed with that text) and turns red when the kernel learns the case: then remove the mark.
+
+How expectations are made: by hand, as closed forms (Pappus for revolutions, lens and segment areas, the Steinmetz bicylinder, the rounded-box integrals), never by reading what the kernel measured; the derivation says how. A task whose kernel result disagrees with its closed form is investigated, not adjusted (*The loop* › changing an expectation).
+
+**The scorecard** (`"format": "craft3d-scorecard/1"`), what `craft3d-cli score TASK [--script FILE]` prints as one line and `task_score::score_task(task, script)` returns. The script runs in a fresh session that may neither read nor write files (`file.new` with the task's units first); a step that fails does not stop it.
+
+```json
+{"format": "craft3d-scorecard/1", "task": "plate-holes",
+ "steps": 26, "refusals": 0,
+ "failedSteps": [{"step": 4, "command": "feature.fillet", "error": "..."}],
+ "failedFeatures": [{"feature": "F7", "name": "Case", "error": "..."}],
+ "valid": true,
+ "base": {"valid": true, "problems": [], "failedFeatures": [],
+          "expectations": [{"measure": "volume", "expected": 23178.91, "measured": 23178.91,
+                            "tolerance": {"relative": 1e-6}, "pass": true}, "..."],
+          "passed": 6, "total": 6, "pass": true},
+ "variants": [{"set": {"length": "100 mm", "hole_d": "9 mm"}, "missingVariables": [], "errors": [],
+               "valid": true, "expectations": ["..."], "passed": 6, "total": 6, "pass": true}],
+ "passed": 14, "total": 14, "score": 1.0, "pass": true}
+```
+
+`steps` counts the script's commands; `failedSteps` are commands that returned an error, `failedFeatures` features left failed in the final history (a feature command returns Ok even when the kernel refuses its feature), and `refusals` both together. `valid` is `document.check {deep: true}` clean with at least one body. Each state (the base and every variant) scores one point for validity and one per expectation; `passed` and `total` add them up, `score` is their ratio, and `pass` means every point. A variant whose variable the candidate never defined lists it under `missingVariables` and scores nothing. `craft3d-cli score` exits 0 whenever it prints a scorecard, 1 when the task or the script cannot be read, 2 on a usage error. Without `--script` it scores the task's own `solution`. Expected values are in millimetres (mm², mm³), whatever units the candidate chose.
+
+To add a task: write the file (start from one of the same kind), derive the expectations by hand, run `craft3d-cli score docs/tasks/<id>.json`, add it to `TASKS` and `task_tests!` in `crates/engine/tests/task_set.rs`. A refusal met on the way goes into the findings with a minimal script; work around it in the solution only when the workaround is what a user would do anyway, otherwise mark the task `refused`.
 
 ## Corpora
 

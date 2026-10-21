@@ -1,0 +1,60 @@
+{
+  "format": "craft3d-task/1",
+  "id": "knurled-knob",
+  "level": 3,
+  "title": "Knob with a fluted grip and a D bore",
+  "units": "mm",
+  "description": {
+    "en": "A control knob 30 mm in diameter and 16 mm high, standing on the XY plane about the Z axis. Its rim has 18 flutes for grip: round grooves of 3 mm diameter running the full height, their axes on the knob's outer circle, evenly spaced, the first on the +X axis. From the bottom face a D-shaped bore for a 6 mm D-shaft goes 12 mm deep: a 6 mm circle about the axis cut off by a flat 4.5 mm from its far side, the flat on the +X side (at X = 1.5). Drive it by the variables knob_d, height, n, groove_d, bore_d, flat and bore_depth.",
+    "nl": "Een bedieningsknop van 30 mm diameter en 16 mm hoog, staand op het XY-vlak rond de Z-as. De rand heeft 18 groeven voor de grip: ronde groeven van 3 mm diameter over de volle hoogte, met hun as op de buitencirkel van de knop, gelijk verdeeld, de eerste op de +X-as. Vanaf de onderkant gaat een D-vormige boring voor een D-as van 6 mm 12 mm diep: een cirkel van 6 mm rond de as, afgesneden door een vlak op 4,5 mm van de overkant, het vlak aan de +X-kant (op X = 1,5). Stuur hem met de variabelen knob_d, height, n, groove_d, bore_d, flat en bore_depth."
+  },
+  "variables": [
+    {"name": "knob_d", "expr": "30 mm", "meaning": "knob diameter"},
+    {"name": "height", "expr": "16 mm", "meaning": "along Z"},
+    {"name": "n", "expr": "18", "meaning": "number of flutes"},
+    {"name": "groove_d", "expr": "3 mm", "meaning": "flute diameter"},
+    {"name": "bore_d", "expr": "6 mm", "meaning": "D bore, round diameter"},
+    {"name": "flat", "expr": "4.5 mm", "meaning": "D bore, from the flat to the far side"},
+    {"name": "bore_depth", "expr": "12 mm", "meaning": "D bore depth from the bottom"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "pi * (knob_d / 2)^2 * height - n * height * ((groove_d / 2)^2 * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad + (knob_d / 2)^2 * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad - (groove_d / 2) * sqrt(4 * (knob_d / 2)^2 - (groove_d / 2)^2) / 2) - (pi * (bore_d / 2)^2 - ((bore_d / 2)^2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - (flat - (bore_d / 2)) * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2))) * bore_depth"},
+    {"measure": "area", "value": "2 * (pi * (knob_d / 2)^2 - n * ((groove_d / 2)^2 * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad + (knob_d / 2)^2 * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad - (groove_d / 2) * sqrt(4 * (knob_d / 2)^2 - (groove_d / 2)^2) / 2)) + height * (2 * pi * (knob_d / 2) - n * 2 * (knob_d / 2) * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad + n * 2 * (groove_d / 2) * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad) + bore_depth * ((bore_d / 2) * (2 * pi - 2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad)) + 2 * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2))"},
+    {"measure": "centroid", "value": ["((bore_d / 2)^2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - (flat - (bore_d / 2)) * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2)) * (4 * (bore_d / 2) * sin(acos((flat - (bore_d / 2)) / (bore_d / 2)))^3 / (3 * (2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - sin(2 * acos((flat - (bore_d / 2)) / (bore_d / 2)))))) * bore_depth / (pi * (knob_d / 2)^2 * height - n * height * ((groove_d / 2)^2 * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad + (knob_d / 2)^2 * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad - (groove_d / 2) * sqrt(4 * (knob_d / 2)^2 - (groove_d / 2)^2) / 2) - (pi * (bore_d / 2)^2 - ((bore_d / 2)^2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - (flat - (bore_d / 2)) * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2))) * bore_depth)", 0, "(pi * (knob_d / 2)^2 * height^2 / 2 - n * ((groove_d / 2)^2 * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad + (knob_d / 2)^2 * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad - (groove_d / 2) * sqrt(4 * (knob_d / 2)^2 - (groove_d / 2)^2) / 2) * height^2 / 2 - (pi * (bore_d / 2)^2 - ((bore_d / 2)^2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - (flat - (bore_d / 2)) * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2))) * bore_depth^2 / 2) / (pi * (knob_d / 2)^2 * height - n * height * ((groove_d / 2)^2 * acos((groove_d / 2) / (2 * (knob_d / 2))) / 1 rad + (knob_d / 2)^2 * acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) / 1 rad - (groove_d / 2) * sqrt(4 * (knob_d / 2)^2 - (groove_d / 2)^2) / 2) - (pi * (bore_d / 2)^2 - ((bore_d / 2)^2 * (acos((flat - (bore_d / 2)) / (bore_d / 2)) / 1 rad) - (flat - (bore_d / 2)) * sqrt((bore_d / 2)^2 - (flat - (bore_d / 2))^2))) * bore_depth)"]},
+    {"measure": "bbox", "min": ["-((knob_d / 2) * cos(max(0 deg, acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) - min(mod(180 deg, (360 deg / n)), (360 deg / n) - mod(180 deg, (360 deg / n))))))", "-((knob_d / 2) * cos(max(0 deg, acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) - min(mod(90 deg, (360 deg / n)), (360 deg / n) - mod(90 deg, (360 deg / n))))))", 0], "max": ["((knob_d / 2) * cos(max(0 deg, acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) - min(mod(0 deg, (360 deg / n)), (360 deg / n) - mod(0 deg, (360 deg / n))))))", "((knob_d / 2) * cos(max(0 deg, acos(1 - (groove_d / 2)^2 / (2 * (knob_d / 2)^2)) - min(mod(90 deg, (360 deg / n)), (360 deg / n) - mod(90 deg, (360 deg / n))))))", "height"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "Each flute removes the lens where the flute's circle (radius rg) and the knob's (radius R) overlap, their centres R apart: Al = rg^2 acos(rg / 2R) + R^2 acos(1 - rg^2 / 2R^2) - (rg/2) sqrt(4 R^2 - rg^2), the general lens formula with d = R.",
+    "The D bore is the circle of radius rb less the segment beyond the flat at e = flat - rb from the axis: S = rb^2 th - e sqrt(rb^2 - e^2), th = acos(e / rb); A_D = pi rb^2 - S.",
+    "V = pi R^2 H - n H Al - A_D depth = 11309.73 - 18*16*3.459 - 22.747*12 = 10040.5 mm^3.",
+    "Area: top and bottom lose n lenses each (the bottom also loses A_D, which the bore's ceiling gives back); the outer wall keeps 2 pi R less n arcs 2 R acos(1 - rg^2/2R^2); each flute's wall is an arc 2 rg acos(rg/2R); the bore's wall is its arc rb (2 pi - 2 th) and its flat 2 sqrt(rb^2 - e^2), over the depth.",
+    "Centroid: the flutes are symmetric about the axis; the bore is not: the segment it lacks lies on +X, its centroid 4 rb sin^3(th) / (3 (2 th - sin 2 th)) from the axis, so the knob's centroid moves to X = S x_seg depth / V. Z from the moments.",
+    "Box: a flute cuts the knob's circle over an angle +-alpha about its own direction, cos(alpha) = 1 - rg^2 / 2R^2. In a direction (0, 90 or 180 degrees) whose nearest flute is phi away the outline reaches R cos(max(0, alpha - phi)): R cos(alpha) = 14.925 on the X axis, where a flute sits, and R on the Y axis while it falls between flutes (n = 18), R cos(alpha) again when a flute sits there (n = 24)."
+  ],
+  "variants": [
+    {"set": {"n": "24"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "knob_d", "expr": "30 mm"}],
+    ["variable.set", {"name": "height", "expr": "16 mm"}],
+    ["variable.set", {"name": "n", "expr": "18"}],
+    ["variable.set", {"name": "groove_d", "expr": "3 mm"}],
+    ["variable.set", {"name": "bore_d", "expr": "6 mm"}],
+    ["variable.set", {"name": "flat", "expr": "4.5 mm"}],
+    ["variable.set", {"name": "bore_depth", "expr": "12 mm"}],
+    ["feature.cylinder", {"radius": "knob_d / 2", "height": "height", "name": "Blank"}],
+    ["feature.cylinder", {"radius": "groove_d / 2", "height": "height", "position": ["knob_d / 2", 0, 0], "name": "GrooveTool"}],
+    ["feature.pattern", {"source": "GrooveTool", "count": "n", "angle": "360 deg / n", "name": "GrooveTools"}],
+    ["feature.boolean", {"op": "subtract", "target": "Blank", "tool": "GrooveTools", "name": "Knurled"}],
+    ["sketch.create", {"name": "DBore", "plane": "xy"}],
+    ["sketch.point", {"sketch": "DBore", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "DBore", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.path", {"sketch": "DBore", "start": [1.5, -2.598076211353316], "segments": [{"line": [1.5, 2.598076211353316]}, {"arc": "start", "center": "e1"}]}],
+    ["sketch.constrain", {"sketch": "DBore", "type": "distance", "entities": ["e1", "e2"], "value": "flat - bore_d / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "DBore", "type": "distance", "entities": ["e1", "e2"], "value": "sqrt((bore_d / 2)^2 - (flat - bore_d / 2)^2)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "DBore", "type": "distance", "entities": ["e1", "e3"], "value": "flat - bore_d / 2", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "DBore", "type": "distance", "entities": ["e1", "e3"], "value": "sqrt((bore_d / 2)^2 - (flat - bore_d / 2)^2)", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "DBore", "distance": "bore_depth", "cut": "Knurled", "name": "Knob"}]
+  ]
+}

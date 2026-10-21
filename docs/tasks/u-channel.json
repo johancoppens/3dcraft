@@ -1,0 +1,60 @@
+{
+  "format": "craft3d-task/1",
+  "id": "u-channel",
+  "level": 1,
+  "title": "U-channel",
+  "units": "mm",
+  "description": {
+    "en": "A U-channel 200 mm long along +X, open at the top: 40 mm wide outside (along Y), 30 mm high outside (along Z), with a 3 mm wall on the bottom and both sides. One outside bottom corner is at the origin; the channel lies in +X, +Y, +Z. Drive it by the variables span, height, wall and length.",
+    "nl": "Een U-profiel van 200 mm lang langs +X, bovenaan open: buitenmaat 40 mm breed (langs Y) en 30 mm hoog (langs Z), met een wand van 3 mm onderaan en aan beide zijden. Een buitenste onderhoek ligt in de oorsprong; het profiel ligt in +X, +Y, +Z. Stuur het met de variabelen span, height, wall en length."
+  },
+  "variables": [
+    {"name": "span", "expr": "40 mm", "meaning": "outside width along Y"},
+    {"name": "height", "expr": "30 mm", "meaning": "outside height along Z"},
+    {"name": "wall", "expr": "3 mm", "meaning": "wall thickness, bottom and sides"},
+    {"name": "length", "expr": "200 mm", "meaning": "along X"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(span * height - (span - 2 * wall) * (height - wall)) * length"},
+    {"measure": "area", "value": "2 * (span * height - (span - 2 * wall) * (height - wall)) + (2 * span + 4 * height - 2 * wall) * length"},
+    {"measure": "centroid", "value": ["length / 2", "span / 2", "(span * height * height / 2 - (span - 2 * wall) * (height - wall) * (wall + (height - wall) / 2)) / (span * height - (span - 2 * wall) * (height - wall))"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "span", "height"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": 10}
+  ],
+  "derivation": [
+    "Profile: the outer rectangle B x H less the open inside (B - 2w) x (H - w): A = 1200 - 34*27 = 282 mm^2; V = A L = 56400 mm^3.",
+    "Perimeter: B + H + w + (H - w) + (B - 2w) + (H - w) + w + H = 2B + 4H - 2w = 194 mm; area = 2 A + perimeter * L.",
+    "Centroid Z: the outer rectangle's moment H/2 * B H less the inside's (w + (H - w)/2) * (B - 2w)(H - w), over A. X and Y by symmetry."
+  ],
+  "variants": [
+    {"set": {"wall": "4 mm", "length": "250 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "span", "expr": "40 mm"}],
+    ["variable.set", {"name": "height", "expr": "30 mm"}],
+    ["variable.set", {"name": "wall", "expr": "3 mm"}],
+    ["variable.set", {"name": "length", "expr": "200 mm"}],
+    ["sketch.create", {"name": "Profile", "plane": "yz"}],
+    ["sketch.point", {"sketch": "Profile", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [[0, 0], [40, 0], [40, 30], [37, 30], [37, 3], [3, 3], [3, 30], [0, 30]]}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "span", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "span", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e4"], "value": "height", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "span - wall", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e5"], "value": "height", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "span - wall", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e6"], "value": "wall", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "wall", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e7"], "value": "wall", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"], "value": "wall", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"], "value": "height", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e9"], "value": "0 mm", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e1", "e9"], "value": "height", "direction": "vertical"}],
+    ["feature.extrude", {"sketch": "Profile", "distance": "length", "name": "Channel"}]
+  ]
+}

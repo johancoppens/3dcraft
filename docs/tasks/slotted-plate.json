@@ -1,0 +1,48 @@
+{
+  "format": "craft3d-task/1",
+  "id": "slotted-plate",
+  "level": 2,
+  "title": "Plate with two slots",
+  "units": "mm",
+  "description": {
+    "en": "A plate 100 x 40 x 5 mm (corner at the origin, along +X, +Y, +Z) with two through slots for adjusting a mounting: each slot is 20 mm long end to end and 6 mm wide with round ends, runs along X on the plate's centre line (Y = 20), and is centred 30 mm from its end of the plate (the left slot at X = 30, the right one at X = length - 30). Drive the plate by the variables length, width and thickness; when the plate gets longer the right slot stays 30 mm from the right end.",
+    "nl": "Een plaat van 100 x 40 x 5 mm (hoek in de oorsprong, langs +X, +Y, +Z) met twee doorgaande sleuven om een bevestiging te verstellen: elke sleuf is 20 mm lang van eind tot eind en 6 mm breed met ronde uiteinden, loopt langs X op de middellijn van de plaat (Y = 20) en ligt met zijn midden 30 mm van zijn eind van de plaat (de linker op X = 30, de rechter op X = length - 30). Stuur de plaat met de variabelen length, width en thickness; als de plaat langer wordt, blijft de rechter sleuf 30 mm van het rechter eind."
+  },
+  "variables": [
+    {"name": "length", "expr": "100 mm", "meaning": "along X"},
+    {"name": "width", "expr": "40 mm", "meaning": "along Y"},
+    {"name": "thickness", "expr": "5 mm", "meaning": "along Z"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(length * width - 2 * (14 mm * 6 mm + pi * (3 mm)^2)) * thickness"},
+    {"measure": "area", "value": "2 * (length * width - 2 * (14 mm * 6 mm + pi * (3 mm)^2)) + 2 * (length + width) * thickness + 2 * (2 * 14 mm + pi * 6 mm) * thickness"},
+    {"measure": "centroid", "value": ["length / 2", "20 mm", "thickness / 2"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "thickness"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "A slot of length s and width w with round ends is a rectangle (s - w) x w and two half discs, one disc of diameter w: A = 14*6 + pi*3^2 = 112.27 mm^2. Its perimeter is 2 (s - w) + pi w.",
+    "V = (L W - 2 A_slot) t = (4000 - 224.55) * 5 = 18877.3 mm^3.",
+    "Area: top and bottom less two slots each, the four sides, and both slot walls (perimeter times t).",
+    "The slots are centred at X = 30 and X = L - 30, symmetric about X = L/2, and on Y = 20, which is the centre line while the width is 40; the centroid is (L/2, 20, t/2).",
+    "The reference makes the left slot from a sketch and the right one from a block and two cylinders whose positions follow length; both ways are fine."
+  ],
+  "variants": [
+    {"set": {"length": "140 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "100 mm"}],
+    ["variable.set", {"name": "width", "expr": "40 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "5 mm"}],
+    ["feature.block", {"size": ["length", "width", "thickness"], "name": "Plate"}],
+    ["sketch.create", {"plane": "xy", "offset": "thickness", "name": "Slot"}],
+    ["sketch.path", {"sketch": "Slot", "start": [23, 17], "segments": [{"line": [37, 17]}, {"arc": [37, 23], "center": [37, 20]}, {"line": [23, 23]}, {"arc": "start", "center": [23, 20]}]}],
+    ["feature.extrude", {"sketch": "Slot", "throughAll": true, "reversed": true, "cut": "Plate", "name": "Slot1"}],
+    ["feature.block", {"size": ["14 mm", "6 mm", "thickness"], "position": ["length - 37 mm", "17 mm", 0], "name": "Slot2Middle"}],
+    ["feature.cylinder", {"radius": "3 mm", "height": "thickness", "position": ["length - 37 mm", "20 mm", 0], "name": "Slot2End1"}],
+    ["feature.cylinder", {"radius": "3 mm", "height": "thickness", "position": ["length - 23 mm", "20 mm", 0], "name": "Slot2End2"}],
+    ["feature.boolean", {"op": "union", "target": "Slot2Middle", "tool": "Slot2End1", "name": "Slot2a"}],
+    ["feature.boolean", {"op": "union", "target": "Slot2a", "tool": "Slot2End2", "name": "Slot2Tool"}],
+    ["feature.boolean", {"op": "subtract", "target": "Slot1", "tool": "Slot2Tool", "name": "Slotted"}]
+  ]
+}

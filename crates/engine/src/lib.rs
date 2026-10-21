@@ -50,6 +50,7 @@ mod split_cmds;
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
+pub mod task_score;
 mod typed;
 mod workspace;
 

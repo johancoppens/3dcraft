@@ -450,9 +450,10 @@ The first version for people outside the project; it follows M9 and does not wai
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
 - The format promise: every `.3dcraft` file a released version wrote opens in every later one, held by a frozen fixture per format version written by that version's own build and regenerated to what it made ([`file-formats.md`](file-formats.md) › *The promise*) (2026-10-21)
 - Closing the window asks Save, Don't Save or Cancel for each document with unsaved changes before it drops their autosaves, also over the channel as `ui.quit {save: "ask" | "save" | "discard"}` ([`control-protocol.md`](control-protocol.md) › *Closing the window*) (2026-10-21)
+- The task set: 22 ordinary parts (levels 1 to 4) with descriptions in English and Dutch, closed-form expectations derived by hand, reference solutions driven by variables and a variant each, scored headless by `craft3d-cli score` ([`docs/tasks/`](tasks/), [`testing.md`](testing.md) › *The task set*) (2026-10-21)
 
 #### Open
-- [ ] A pinned set of about twenty modelling tasks (each with a drawing or description and a known volume), grown out of the field tests
+- [ ] Every task of the set built by an agent over MCP from its description alone, scored by `craft3d-cli score` (the acceptance); `shelled-case` is refused until the shell builds a wall as thick as a fillet's radius
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models

@@ -1,0 +1,64 @@
+{
+  "format": "craft3d-task/1",
+  "id": "pulley-blank",
+  "level": 2,
+  "title": "V-belt pulley blank",
+  "units": "mm",
+  "description": {
+    "en": "A pulley blank turned about the Z axis, from Z = 0 to Z = 20: outer diameter 60 mm, a 12 mm bore through it, and one V-groove round its rim in the middle of its width: 8 mm deep, its flanks 40 degrees apart (each 20 degrees off the radial direction), with a flat bottom 2 mm wide. Make it as a revolution of its half section. Drive it by the variables outer_d, width, bore_d, groove_depth, groove_angle and groove_flat.",
+    "nl": "Een poelieblank, gedraaid om de Z-as, van Z = 0 tot Z = 20: buitendiameter 60 mm, een boring van 12 mm erdoor, en één V-groef rond de rand in het midden van de breedte: 8 mm diep, de flanken 40 graden uit elkaar (elk 20 graden naast de straalrichting), met een vlakke bodem van 2 mm breed. Maak hem als omwenteling van zijn halve doorsnede. Stuur hem met de variabelen outer_d, width, bore_d, groove_depth, groove_angle en groove_flat."
+  },
+  "variables": [
+    {"name": "outer_d", "expr": "60 mm", "meaning": "outer diameter"},
+    {"name": "width", "expr": "20 mm", "meaning": "along Z"},
+    {"name": "bore_d", "expr": "12 mm", "meaning": "bore diameter"},
+    {"name": "groove_depth", "expr": "8 mm", "meaning": "radial depth of the groove"},
+    {"name": "groove_angle", "expr": "40 deg", "meaning": "included angle of the flanks"},
+    {"name": "groove_flat", "expr": "2 mm", "meaning": "width of the groove's flat bottom"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "pi * ((outer_d / 2)^2 - (bore_d / 2)^2) * width - 2 * pi * ((outer_d / 2) - groove_depth + groove_depth * (groove_flat + 2 * (groove_flat + 2 * groove_depth * tan(groove_angle / 2))) / (3 * (groove_flat + (groove_flat + 2 * groove_depth * tan(groove_angle / 2))))) * (groove_depth * ((groove_flat + 2 * groove_depth * tan(groove_angle / 2)) + groove_flat) / 2)"},
+    {"measure": "area", "value": "2 * pi * ((outer_d / 2)^2 - (bore_d / 2)^2) + 2 * pi * (bore_d / 2) * width + 2 * pi * (outer_d / 2) * (width - (groove_flat + 2 * groove_depth * tan(groove_angle / 2))) + 2 * pi * ((outer_d / 2) - groove_depth) * groove_flat + 2 * pi * (2 * (outer_d / 2) - groove_depth) * groove_depth / cos(groove_angle / 2)"},
+    {"measure": "centroid", "value": [0, 0, "width / 2"]},
+    {"measure": "bbox", "min": ["-(outer_d / 2)", "-(outer_d / 2)", 0], "max": ["(outer_d / 2)", "(outer_d / 2)", "width"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "The plain disc: pi (R^2 - rb^2) W. The groove's section is a trapezoid of height h (radially), with parallel sides f at the bottom (radius R - h) and wt = f + 2 h tan(a/2) at the rim.",
+    "Pappus: the groove removes 2 pi rg Ag, with Ag = h (wt + f) / 2 and rg = R - h + h (f + 2 wt) / (3 (f + wt)), the trapezoid's centroid radius (the centroid of a trapezoid lies h (f + 2 wt) / (3 (f + wt)) from its side f).",
+    "Area: two flat rings 2 pi (R^2 - rb^2), the bore 2 pi rb W, the rim outside the groove 2 pi R (W - wt), the groove's bottom 2 pi (R - h) f, and two cone flanks, each pi (R + (R - h)) times the slant h / cos(a/2).",
+    "The groove is in the middle, so the centroid is at Z = W/2 on the axis."
+  ],
+  "variants": [
+    {"set": {"groove_angle": "34 deg", "outer_d": "70 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "outer_d", "expr": "60 mm"}],
+    ["variable.set", {"name": "width", "expr": "20 mm"}],
+    ["variable.set", {"name": "bore_d", "expr": "12 mm"}],
+    ["variable.set", {"name": "groove_depth", "expr": "8 mm"}],
+    ["variable.set", {"name": "groove_angle", "expr": "40 deg"}],
+    ["variable.set", {"name": "groove_flat", "expr": "2 mm"}],
+    ["sketch.create", {"name": "Half", "plane": "yz"}],
+    ["sketch.point", {"sketch": "Half", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Half", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.polyline", {"sketch": "Half", "closed": true, "points": [[6, 0], [30, 0], [30, 6.088238125870381], [22, 9.0], [22, 11.0], [30, 13.911761874129619], [30, 20], [6, 20]]}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e2"], "value": "(bore_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e2"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e3"], "value": "(outer_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e3"], "value": "0 mm", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e4"], "value": "(outer_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e4"], "value": "width / 2 - groove_flat / 2 - groove_depth * tan(groove_angle / 2)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e5"], "value": "(outer_d / 2) - groove_depth", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e5"], "value": "width / 2 - groove_flat / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e6"], "value": "(outer_d / 2) - groove_depth", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e6"], "value": "width / 2 + groove_flat / 2", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e7"], "value": "(outer_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e7"], "value": "width / 2 + groove_flat / 2 + groove_depth * tan(groove_angle / 2)", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e8"], "value": "(outer_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e8"], "value": "width", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e9"], "value": "(bore_d / 2)", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Half", "type": "distance", "entities": ["e1", "e9"], "value": "width", "direction": "vertical"}],
+    ["feature.revolve", {"sketch": "Half", "axis": "y", "name": "Pulley"}]
+  ]
+}
