@@ -1,0 +1,9 @@
+[
+  ["variable.set", {"name": "r", "expr": "3 mm"}],
+  ["feature.block", {"size": ["40 mm", "20 mm", "10 mm"], "name": "Plate"}],
+  ["feature.fillet", {"edges": [["F1:face(1)", "F1:face(2)"]], "radius": "r", "name": "Round"}],
+  ["feature.block", {"size": ["20 mm", "20 mm", "20 mm"], "position": ["60 mm", "0", "0"], "name": "Cube"}],
+  ["feature.fillet", {"edges": [["F3:face(1)", "F3:face(2)"], ["F3:face(1)", "F3:face(4)"], ["F3:face(2)", "F3:face(4)"]], "radius": "4 mm", "name": "Corner"}],
+  ["feature.block", {"size": ["30 mm", "30 mm", "8 mm"], "position": ["0", "40 mm", "0"], "name": "Tile"}],
+  ["feature.fillet", {"edges": [["F5:face(1)", "F5:face(2)"]], "radius": "2 mm", "chain": true, "name": "Rim"}]
+]

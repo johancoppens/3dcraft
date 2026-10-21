@@ -1,0 +1,14 @@
+[
+  ["sketch.create", {"plane": "xy", "name": "Path"}],
+  ["sketch.line", {"sketch": "Path", "from": [0, 0], "to": [30, 0]}],
+  ["sketch.arc", {"sketch": "Path", "center": [30, 10], "start": "e2", "end": [40, 10]}],
+  ["sketch.create", {"plane": "yz", "name": "Profile"}],
+  ["sketch.circle", {"sketch": "Profile", "center": [0, 0], "radius": 2}],
+  ["feature.sweep", {"sketch": "Profile", "path": "Path", "name": "Pipe"}],
+  ["feature.block", {"size": ["20 mm", "10 mm", "10 mm"], "position": ["-5 mm", "-5 mm", "-12 mm"], "name": "Base"}],
+  ["sketch.create", {"plane": "yz", "offset": "-5 mm", "name": "Groove"}],
+  ["sketch.polyline", {"sketch": "Groove", "closed": true, "points": [[-1, -3], [1, -3], [1, -2], [-1, -2]]}],
+  ["sketch.create", {"plane": "xy", "offset": "-2 mm", "name": "Run"}],
+  ["sketch.line", {"sketch": "Run", "from": [-5, 0], "to": [15, 0]}],
+  ["feature.sweep", {"sketch": "Groove", "path": "Run", "cut": "Base", "name": "Slot"}]
+]

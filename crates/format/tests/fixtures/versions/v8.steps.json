@@ -1,0 +1,14 @@
+[
+  ["sketch.create", {"plane": "xy", "name": "Bottom"}],
+  ["sketch.polyline", {"sketch": "Bottom", "closed": true, "points": [[-10, -10], [10, -10], [10, 10], [-10, 10]]}],
+  ["sketch.create", {"plane": "xy", "offset": "20 mm", "name": "Middle"}],
+  ["sketch.polyline", {"sketch": "Middle", "closed": true, "points": [[-5, -5], [5, -5], [5, 5], [-5, 5]]}],
+  ["sketch.create", {"plane": "xy", "offset": "35 mm", "name": "Top"}],
+  ["sketch.polyline", {"sketch": "Top", "closed": true, "points": [[-8, -8], [8, -8], [8, 8], [-8, 8]]}],
+  ["feature.loft", {"sections": ["Bottom", "Middle", {"sketch": "Top", "start": "e6"}], "name": "Vase"}],
+  ["sketch.create", {"plane": "xy", "offset": "-30 mm", "name": "Low"}],
+  ["sketch.polyline", {"sketch": "Low", "closed": true, "points": [[-10, -10], [10, -10], [10, 10], [-10, 10]]}],
+  ["sketch.create", {"plane": "xy", "offset": "-10 mm", "name": "High"}],
+  ["sketch.polyline", {"sketch": "High", "closed": true, "points": [[-4, -6], [4, -6], [4, 6], [-4, 6]]}],
+  ["feature.loft", {"sections": ["Low", "High"], "ruled": true, "name": "Frustum"}]
+]

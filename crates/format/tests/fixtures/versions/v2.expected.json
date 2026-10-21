@@ -1,0 +1,66 @@
+{
+  "format_version": 2,
+  "written_by": "b8196c4d3a851e29a5a3c95bf3f4919d88091e8f",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v2.steps.json --out v2.3dcraft, then info v2.3dcraft",
+  "rollback": "F4",
+  "features": [
+    {
+      "id": "F1",
+      "name": "Cone",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Ring",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Turned",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Leaning",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 2,
+      "edges": 1,
+      "vertices": 1,
+      "volume": 1072.3302924253176,
+      "area": 650.6500726163531
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 1,
+      "edges": 0,
+      "vertices": 0,
+      "volume": 6316.546816697188,
+      "area": 3158.273408348596
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1200.000000000001,
+      "area": 920.0000000000006
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 1256.6370614359153,
+      "area": 728.849495632833
+    }
+  ]
+}

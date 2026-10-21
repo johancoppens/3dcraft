@@ -1,0 +1,50 @@
+{
+  "format_version": 18,
+  "written_by": "4b04b95e69fcc8870c19c5bb0a263c458d3b82ca",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v18.steps.json --out v18.3dcraft, then info v18.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok",
+      "dof": 11
+    },
+    {
+      "id": "F2",
+      "name": "Perforated",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Ring",
+      "status": "ok",
+      "dof": 6
+    },
+    {
+      "id": "F4",
+      "name": "Flange",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 12,
+      "edges": 24,
+      "vertices": 20,
+      "volume": 2173.805328941537,
+      "area": 2035.3982236861552
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 9,
+      "edges": 14,
+      "vertices": 14,
+      "volume": 2525.8404934861956,
+      "area": 1941.5042599184935
+    }
+  ]
+}

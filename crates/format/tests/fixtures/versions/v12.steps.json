@@ -1,0 +1,9 @@
+[
+  ["feature.block", {"size": ["40 mm", "20 mm", "5 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"radius": "4 mm", "height": "7 mm", "position": ["20 mm", "10 mm", "-1 mm"], "name": "Drill"}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Hole"}],
+  ["feature.block", {"size": ["20 mm", "20 mm", "20 mm"], "position": ["60 mm", "0", "0"], "name": "Cube"}],
+  ["feature.chamfer", {"edges": [["F4:face(1)", "F4:face(2)"]], "distance": "3 mm", "name": "Bevel"}],
+  ["feature.deleteFace", {"faces": ["F3:copy(1)/F2:face(0)"], "name": "Filled"}],
+  ["feature.deleteFace", {"faces": ["F5:chamfer(0)"], "name": "Sharp"}]
+]

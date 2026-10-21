@@ -1,0 +1,9 @@
+[
+  ["variable.set", {"name": "d", "expr": "10 mm"}],
+  ["feature.cylinder", {"radius": "d / 2", "height": "20 mm", "name": "Bolt"}],
+  ["feature.thread", {"face": "F1:face(0)", "start": "F1:face(1)", "length": "12 mm", "modeled": true, "name": "FromFace"}],
+  ["feature.cylinder", {"radius": "4 mm", "height": "16 mm", "position": ["30 mm", "0", "0"], "name": "Screw"}],
+  ["feature.thread", {"face": "F3:face(0)", "start": "F3:face(1)", "size": "8 mm", "length": "10 mm", "name": "Drawn"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "12 mm", "position": ["60 mm", "0", "0"], "name": "Pin"}],
+  ["feature.thread", {"face": "F5:face(0)", "start": "F5:face(1)", "size": "M6", "length": "8 mm", "modeled": true, "name": "Coarse"}]
+]

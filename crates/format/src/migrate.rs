@@ -11,7 +11,10 @@
 //! 2. raise [`FORMAT_VERSION`](crate::FORMAT_VERSION) (the crate does not
 //!    compile while the two disagree);
 //! 3. add a test with a fixture of the old version, written as a string
-//!    literal, and never edit the fixtures of earlier versions.
+//!    literal, and never edit the fixtures of earlier versions;
+//! 4. write the new version's file with the new build and freeze it
+//!    (`tests/versions.rs` fails until then: the format promise,
+//!    docs/file-formats.md).
 //!
 //! A new optional field on its own needs no step, only `#[serde(default)]`;
 //! raise the version anyway when older builds could not read what the

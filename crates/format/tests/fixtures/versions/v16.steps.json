@@ -1,0 +1,13 @@
+[
+  ["variable.set", {"name": "floor", "expr": "4 mm"}],
+  ["variable.set", {"name": "lift", "expr": "floor / 2"}],
+  ["feature.block", {"size": ["40 mm", "20 mm", "10 mm"], "name": "Plate"}],
+  ["feature.moveFace", {"faces": ["F1:face(1)"], "translate": ["0", "0", "lift"], "name": "Raised"}],
+  ["body.appearance", {"body": "Raised", "color": "#c8102e", "metallic": 0.25, "roughness": 0.4}],
+  ["body.material", {"body": "Raised", "name": "Cast iron", "density": 7200}],
+  ["feature.block", {"size": ["20 mm", "20 mm", "20 mm"], "position": ["60 mm", "0", "0"], "name": "Cube"}],
+  ["feature.draft", {"faces": ["F3:face(2)"], "neutral": "F3:face(0)", "angle": "5 deg", "name": "Tapered"}],
+  ["body.material", {"body": "Tapered", "name": "Aluminium", "density": "2.7 g/cm3"}],
+  ["feature.block", {"size": ["20 mm", "20 mm", "floor"], "position": ["0", "40 mm", "0"], "name": "Tile"}],
+  ["feature.thicken", {"faces": ["F5:face(1)"], "thickness": "floor", "name": "Thick"}]
+]

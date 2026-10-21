@@ -1,0 +1,44 @@
+{
+  "format_version": 15,
+  "written_by": "001b057222ae84474ad9f391e1858ac0db0ce9c6",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v15.steps.json --out v15.3dcraft, then info v15.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Cube",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Row",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Grid",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Bevel",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Round",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F5",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 17,
+      "vertices": 11,
+      "volume": 2239.447639117629,
+      "area": 1033.7570536730843
+    }
+  ]
+}

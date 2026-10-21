@@ -1,0 +1,67 @@
+{
+  "format_version": 24,
+  "written_by": "7aaeaf8fd5c50bd540c169fadfa40eba89a0e68c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v24.steps.json --out v24.3dcraft, then info v24.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Bar",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Saw",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cut",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Left",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Right",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Peg",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1800.000000000001,
+      "area": 920.0000000000007
+    },
+    {
+      "feature": "F5",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1800.0000000000011,
+      "area": 920.0000000000008
+    },
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 50.26548245743672,
+      "area": 75.39822368615505
+    }
+  ]
+}

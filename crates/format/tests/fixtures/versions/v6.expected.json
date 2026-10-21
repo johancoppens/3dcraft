@@ -1,0 +1,65 @@
+{
+  "format_version": 6,
+  "written_by": "7c07e0f694c795fac204dd5326e01c3c9dd7304d",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v6.steps.json --out v6.3dcraft, then info v6.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Raised",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Upright",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Mark",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Blob",
+      "status": "ok",
+      "dof": 12
+    },
+    {
+      "id": "F5",
+      "name": "Lobe",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Edge",
+      "status": "ok",
+      "dof": 10
+    },
+    {
+      "id": "F7",
+      "name": "Fin",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F5",
+      "kind": "solid",
+      "faces": 4,
+      "edges": 6,
+      "vertices": 4,
+      "volume": 4236.750000000001,
+      "area": 1989.7883915540597
+    },
+    {
+      "feature": "F7",
+      "kind": "solid",
+      "faces": 5,
+      "edges": 9,
+      "vertices": 6,
+      "volume": 3280.000000000001,
+      "area": 2099.5336741752053
+    }
+  ]
+}

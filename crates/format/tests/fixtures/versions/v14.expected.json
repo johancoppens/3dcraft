@@ -1,0 +1,67 @@
+{
+  "format_version": 14,
+  "written_by": "09060aae06ed27728b51cdda251293dc7faba8b0",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v14.steps.json --out v14.3dcraft, then info v14.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Bolt",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "FromFace",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Screw",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Drawn",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Pin",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Coarse",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 56,
+      "edges": 127,
+      "vertices": 74,
+      "volume": 1407.2684122265114,
+      "area": 958.1474866843055
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 804.2477193189878,
+      "area": 502.6548245743672
+    },
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 56,
+      "edges": 127,
+      "vertices": 74,
+      "volume": 296.0268389494869,
+      "area": 349.5136576709776
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+[
+  ["datum.plane", {"from": "xy", "distance": "10 mm", "name": "Raised"}],
+  ["datum.axis", {"through": [[0, 0, 0], [0, 0, 1]], "name": "Upright"}],
+  ["datum.point", {"at": ["5 mm", "5 mm", "0"], "name": "Mark"}],
+  ["sketch.create", {"plane": "Raised", "name": "Blob"}],
+  ["sketch.spline", {"sketch": "Blob", "through": [[0, 0], [12, -5], [24, -2], [30, 10]]}],
+  ["sketch.spline", {"sketch": "Blob", "through": ["e4", [15, 22], [-2, 12], "e1"]}],
+  ["feature.extrude", {"sketch": "Blob", "distance": "6 mm", "name": "Lobe"}],
+  ["sketch.create", {"plane": "xy", "name": "Edge"}],
+  ["sketch.polyline", {"sketch": "Edge", "points": [[40, 0], [80, 0], [80, 20]]}],
+  ["sketch.spline", {"sketch": "Edge", "control": ["e3", [70, 30], [50, 30], "e1"], "degree": 3}],
+  ["feature.extrude", {"sketch": "Edge", "distance": "4 mm", "name": "Fin"}]
+]

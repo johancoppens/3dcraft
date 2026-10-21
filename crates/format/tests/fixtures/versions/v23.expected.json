@@ -1,0 +1,43 @@
+{
+  "format_version": 23,
+  "written_by": "b55efcfd1c4066aca2034c28ef7f74f36b491400",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v23.steps.json --out v23.3dcraft, then info v23.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Post",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Tread",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Stair",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 1696.4600329384891,
+      "area": 1187.5220230569423
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 36,
+      "edges": 72,
+      "vertices": 48,
+      "volume": 1440.0000000000007,
+      "area": 2064.000000000001
+    }
+  ]
+}

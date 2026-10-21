@@ -1,0 +1,30 @@
+{
+  "format_version": 20,
+  "written_by": "8f0eaa39c758b0939295201b10fca3f800dd910e",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v20.steps.json --out v20.3dcraft, then info v20.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Edge",
+      "status": "ok",
+      "dof": 1
+    },
+    {
+      "id": "F2",
+      "name": "Body",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 22,
+      "edges": 60,
+      "vertices": 40,
+      "volume": 245.0000000000001,
+      "area": 597.9999999999991
+    }
+  ]
+}

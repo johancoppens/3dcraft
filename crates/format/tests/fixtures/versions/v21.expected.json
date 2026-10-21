@@ -1,0 +1,30 @@
+{
+  "format_version": 21,
+  "written_by": "3742fb7f9231b8ae1954ac780dca1760b1b7bdab",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v21.steps.json --out v21.3dcraft, then info v21.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok",
+      "dof": 11
+    },
+    {
+      "id": "F2",
+      "name": "Panel",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 12,
+      "edges": 24,
+      "vertices": 20,
+      "volume": 4115.176998353078,
+      "area": 4628.274333882304
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "format_version": 8,
+  "written_by": "8af1ccc310e119e6dad4b21497660bcf33d9426c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v8.steps.json --out v8.3dcraft, then info v8.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Bottom",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F2",
+      "name": "Middle",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F3",
+      "name": "Top",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F4",
+      "name": "Vase",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Low",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F6",
+      "name": "High",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F7",
+      "name": "Frustum",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 6317.052593206759,
+      "area": 2579.4323892836114
+    },
+    {
+      "feature": "F7",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 4640.000000000002,
+      "area": 1735.2698020926678
+    }
+  ]
+}

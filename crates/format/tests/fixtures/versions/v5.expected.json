@@ -1,0 +1,102 @@
+{
+  "format_version": 5,
+  "written_by": "44b28e7ea6d245d877ada83033de0c1259cd3242",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v5.steps.json --out v5.3dcraft, then info v5.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Hole",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Section",
+      "status": "ok",
+      "dof": 8
+    },
+    {
+      "id": "F5",
+      "name": "Ring",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Moved",
+      "status": "ok"
+    },
+    {
+      "id": "F7",
+      "name": "Mirrored",
+      "status": "ok"
+    },
+    {
+      "id": "F8",
+      "name": "Row",
+      "status": "ok"
+    },
+    {
+      "id": "F9",
+      "name": "Cube",
+      "status": "ok"
+    },
+    {
+      "id": "F10",
+      "name": "Ball",
+      "status": "ok"
+    },
+    {
+      "id": "F11",
+      "name": "Joined",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 3748.672587712819,
+      "area": 2225.132741228721
+    },
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 7657.632093125119,
+      "area": 4694.57925587507
+    },
+    {
+      "feature": "F8",
+      "kind": "solid",
+      "faces": 21,
+      "edges": 42,
+      "vertices": 30,
+      "volume": 11246.017763138458,
+      "area": 6675.39822368616
+    },
+    {
+      "feature": "F11",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 15,
+      "vertices": 10,
+      "volume": 1791.68134870463,
+      "area": 911.0176727053903
+    }
+  ]
+}

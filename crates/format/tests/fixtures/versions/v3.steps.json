@@ -1,0 +1,17 @@
+[
+  ["variable.set", {"name": "w", "expr": "40 mm"}],
+  ["variable.set", {"name": "h", "expr": "w / 2"}],
+  ["sketch.create", {"plane": "xy", "offset": "5 mm", "name": "Profile"}],
+  ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [[0, 0], [38, 1], [39, 19], [1, 21]]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "fixed", "entities": ["e1"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "horizontal", "entities": ["e5"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "horizontal", "entities": ["e7"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "vertical", "entities": ["e6"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "vertical", "entities": ["e8"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e5"], "value": "w"}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e6"], "value": "h"}],
+  ["sketch.circle", {"sketch": "Profile", "center": [10, 9], "radius": 3}],
+  ["sketch.create", {"plane": "zx", "name": "Side"}],
+  ["sketch.line", {"sketch": "Side", "from": [0, 0], "to": [10, 5]}],
+  ["feature.block", {"size": ["w", "h", "5 mm"], "name": "Base"}]
+]

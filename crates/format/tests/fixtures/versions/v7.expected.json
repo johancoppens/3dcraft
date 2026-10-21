@@ -1,0 +1,67 @@
+{
+  "format_version": 7,
+  "written_by": "411cfccd0aa9b72bcb2b4a21138db2a7268372e4",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v7.steps.json --out v7.3dcraft, then info v7.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Bevel",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cube",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Slope",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Other",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Uneven",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 17,
+      "vertices": 11,
+      "volume": 7882.666666666669,
+      "area": 2724.048773235281
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 15,
+      "vertices": 10,
+      "volume": 7948.038475772937,
+      "area": 2369.4448637286728
+    },
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 15,
+      "vertices": 10,
+      "volume": 7900.000000000003,
+      "area": 2357.703296142692
+    }
+  ]
+}

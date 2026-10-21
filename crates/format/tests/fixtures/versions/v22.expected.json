@@ -1,0 +1,44 @@
+{
+  "format_version": 22,
+  "written_by": "5e2a8ec69ccd5e5f092c569e271d82467ba41c17",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v22.steps.json --out v22.3dcraft, then info v22.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Outline",
+      "status": "ok",
+      "dof": 11
+    },
+    {
+      "id": "F2",
+      "name": "Sheet",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cube",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "sheet",
+      "faces": 1,
+      "edges": 5,
+      "vertices": 5,
+      "volume": 0.0,
+      "area": 749.7345175425639
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1000.0000000000005,
+      "area": 600.0000000000006
+    }
+  ]
+}

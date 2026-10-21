@@ -1,0 +1,6 @@
+[
+  ["variable.set", {"name": "storey", "expr": "30 mm"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "60 mm", "name": "Post"}],
+  ["feature.block", {"size": ["20 mm", "6 mm", "2 mm"], "position": ["0", "-3 mm", "0"], "name": "Tread"}],
+  ["feature.pattern", {"source": "Tread", "count": "6", "angle": "360 deg / 12", "step": "storey / 6", "axis": [0, 0, 1], "point": ["0", "0", "0"], "name": "Stair"}]
+]
