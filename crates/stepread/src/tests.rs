@@ -146,16 +146,111 @@ fn absurd_numbers_are_refused() {
 }
 
 #[test]
-fn assemblies_are_refused_for_now() {
+fn a_mapped_item_of_the_wrong_kinds_is_named() {
+    // A mapped item listed in the part's representation whose source is
+    // a representation, not a representation map.
     let text = file(
         "#30=CIRCLE('',#21,1.);\n#50=MAPPED_ITEM('',#5,#21);\n",
         true,
+    )
+    .replace(
+        "#5=ADVANCED_BREP_SHAPE_REPRESENTATION('part',(#10),#4);",
+        "#5=ADVANCED_BREP_SHAPE_REPRESENTATION('part',(#10,#50),#4);",
     );
     let e = match parse(text.as_bytes()) {
-        Ok(_) => panic!("an assembly was read"),
+        Ok(_) => panic!("read"),
         Err(e) => e.to_string(),
     };
-    assert!(e.contains("MAPPED_ITEM") && e.contains("assembly"), "{e}");
+    assert!(e.contains("REPRESENTATION_MAP"), "{e}");
+}
+
+/// The knots ISO 10303-42 implies for uniform, quasi-uniform and
+/// piecewise Bézier B-splines.
+#[test]
+fn implied_knots_follow_the_types() {
+    let text = file("#30=CIRCLE('',#21,1.);\n", true);
+    let parsed = parse(text.as_bytes()).unwrap();
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let knots = |form, count, degree| reader.implied_knots(1, form, count, degree);
+    use geometry::Implicit::*;
+    assert_eq!(
+        knots(Uniform, 4, 2).unwrap(),
+        [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0]
+    );
+    assert_eq!(
+        knots(QuasiUniform, 5, 2).unwrap(),
+        [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0]
+    );
+    assert_eq!(
+        knots(Bezier, 7, 3).unwrap(),
+        [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+    );
+    assert!(
+        knots(Bezier, 6, 3)
+            .unwrap_err()
+            .to_string()
+            .contains("Bézier")
+    );
+    assert!(knots(QuasiUniform, 2, 2).is_err());
+    // A polyline written as a quasi-uniform curve of degree one through
+    // three points, read and evaluated.
+    let text = file(
+        "#30=QUASI_UNIFORM_CURVE('',1,(#18,#31,#32),.POLYLINE_FORM.,.F.,.F.);\n#31=CARTESIAN_POINT('',(1.,1.,0.));\n#32=CARTESIAN_POINT('',(0.,1.,0.));\n",
+        true,
+    );
+    let parsed = parse(text.as_bytes()).unwrap();
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let curve = reader.curve(30).unwrap();
+    assert_eq!(curve.domain(), (0.0, 2.0));
+    assert!(
+        curve
+            .eval(1.5)
+            .distance(craft3d_math::Vec3::new(0.5, 1.0, 0.0))
+            < 1e-15
+    );
+    // Bézier and uniform surfaces: the net as given, the knots implied.
+    let net = "#31=CARTESIAN_POINT('',(0.,0.,0.));\n#32=CARTESIAN_POINT('',(0.,1.,0.));\n#33=CARTESIAN_POINT('',(1.,0.,0.));\n#34=CARTESIAN_POINT('',(1.,1.,1.));\n";
+    for keyword in ["BEZIER_SURFACE", "UNIFORM_SURFACE", "QUASI_UNIFORM_SURFACE"] {
+        let text = file(
+            &format!(
+                "#30=CIRCLE('',#21,1.);\n{net}#40={keyword}('',1,1,((#31,#32),(#33,#34)),.UNSPECIFIED.,.F.,.F.,.F.);\n"
+            ),
+            true,
+        );
+        let parsed = parse(text.as_bytes()).unwrap();
+        let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+        match reader.surface(40).unwrap() {
+            geometry::Read::Done(craft3d_geom::Surface::Nurbs(n), false) => {
+                assert_eq!(n.counts(), (2, 2), "{keyword}");
+                let ((u0, u1), (v0, v1)) = n.domain();
+                let corner = n.eval(u1, v1);
+                assert!(corner.distance(craft3d_math::Vec3::new(1.0, 1.0, 1.0)) < 1e-15);
+                assert!(n.eval(u0, v0).length() < 1e-15, "{keyword}");
+            }
+            other => panic!("{keyword}: {other:?}"),
+        }
+    }
+}
+
+/// Swept and offset surfaces that cannot be read are named; a swept
+/// surface of itself ends.
+#[test]
+fn swept_and_offset_surfaces_that_are_not_read_are_named() {
+    let text = file(
+        "#30=CIRCLE('',#21,1.);\n#40=OFFSET_SURFACE('',#41,1.,.F.);\n#41=OFFSET_SURFACE('',#40,1.,.F.);\n#42=SURFACE_OF_REVOLUTION('',#43,#44);\n#43=LINE('',#18,#45);\n#44=AXIS1_PLACEMENT('',#19,$);\n#45=VECTOR('',#46,1.);\n#46=DIRECTION('',(0.,1.,0.));\n#47=OFFSET_SURFACE('',#20,-5.,.F.);\n#48=SPHERICAL_SURFACE('',#21,1.);\n#49=OFFSET_SURFACE('',#48,-1.,.F.);\n",
+        true,
+    );
+    let parsed = parse(text.as_bytes()).unwrap();
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    let e = reader.surface(40).unwrap_err().to_string();
+    assert!(e.contains("more than"), "{e}");
+    // A line that does not meet the axis: a hyperboloid.
+    let e = reader.surface(42).unwrap_err().to_string();
+    assert!(e.contains("hyperboloid"), "{e}");
+    // A plane offset: read; a sphere offset through its centre: refused.
+    assert!(reader.surface(47).is_ok());
+    let e = reader.surface(49).unwrap_err().to_string();
+    assert!(e.contains("centre"), "{e}");
 }
 
 #[test]

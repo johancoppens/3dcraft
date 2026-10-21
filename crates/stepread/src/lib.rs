@@ -26,14 +26,27 @@
 //! - **Surfaces**: `PLANE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
 //!   `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE`, `B_SPLINE_SURFACE_WITH_KNOTS`
 //!   (polynomial, or rational as the complex instance with
-//!   `RATIONAL_B_SPLINE_SURFACE`), and the swept surfaces that are one of
-//!   those kinds: `SURFACE_OF_LINEAR_EXTRUSION` of a line (a plane) or of a
-//!   circle along its axis (a cylinder), `SURFACE_OF_REVOLUTION` of a line
-//!   (a cylinder, a cone or a plane) or of a circle in a plane through the
-//!   axis (a sphere or a ring torus).
+//!   `RATIONAL_B_SPLINE_SURFACE`) and the B-splines whose knots their type
+//!   implies (`UNIFORM_SURFACE`, `QUASI_UNIFORM_SURFACE`,
+//!   `BEZIER_SURFACE`); the swept surfaces: `SURFACE_OF_LINEAR_EXTRUSION`
+//!   of a line (a plane) or of a circle along its axis (a cylinder),
+//!   `SURFACE_OF_REVOLUTION` of a line (a cylinder, a cone or a plane) or
+//!   of a circle in a plane through the axis (a sphere or a ring torus),
+//!   and of any other curve read as the exact B-spline surface it is
+//!   (2026-10-21, slice 2); `OFFSET_SURFACE` of a plane, cylinder, cone,
+//!   sphere or torus (the same kind again).
 //! - **Curves**: `LINE`, `CIRCLE`, `ELLIPSE`, `POLYLINE`,
-//!   `B_SPLINE_CURVE_WITH_KNOTS` (polynomial or rational), and
-//!   `SURFACE_CURVE`, `SEAM_CURVE`, `INTERSECTION_CURVE` by their 3D curve.
+//!   `B_SPLINE_CURVE_WITH_KNOTS` (polynomial or rational), `UNIFORM_CURVE`,
+//!   `QUASI_UNIFORM_CURVE`, `BEZIER_CURVE`, and `SURFACE_CURVE`,
+//!   `SEAM_CURVE`, `INTERSECTION_CURVE` by their 3D curve.
+//! - **Assemblies** (`assembly`): every placement of a solid by
+//!   `NEXT_ASSEMBLY_USAGE_OCCURRENCE` with `CONTEXT_DEPENDENT_SHAPE_
+//!   REPRESENTATION` and a representation relationship with an
+//!   `ITEM_DEFINED_TRANSFORMATION` or a `CARTESIAN_TRANSFORMATION_
+//!   OPERATOR_3D`, or by `MAPPED_ITEM`, composed through nested
+//!   assemblies: one placed body each ([`Parsed::placed`]).
+//! - **Colours** (`style`): a solid's `STYLED_ITEM` colour, else its
+//!   faces' most common one ([`Imported::color`]).
 //! - **Placements**: `AXIS2_PLACEMENT_3D`, `AXIS1_PLACEMENT`, `DIRECTION`,
 //!   `VECTOR`, `CARTESIAN_POINT`.
 //! - **Units** of the representation context the item is in
@@ -62,20 +75,23 @@
 //! # Refused
 //!
 //! Every entity kind not listed above where a solid needs it (with its
-//! instance id and keyword), assemblies that place parts by a
-//! transformation that is not the identity (`MAPPED_ITEM`,
-//! `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION`), a context without
-//! a length unit, references to the wrong kind of entity, chains of
-//! references deeper than a few levels, non-finite or absurd numbers.
+//! instance id and keyword), placements that scale or mirror, assemblies
+//! that contain themselves or are nested or multiplied past their limits,
+//! a context without a length unit, references to the wrong kind of
+//! entity, chains of references deeper than a few levels, non-finite or
+//! absurd numbers.
 
+mod assembly;
 mod budget;
 mod geometry;
+mod style;
 mod topology;
 mod units;
 
+pub use assembly::{MAX_DEPTH, MAX_PLACEMENTS, Placed};
 pub use budget::MAX_CONTROL_POINT_USES;
 
-use craft3d_math::Tolerance;
+use craft3d_math::{Tolerance, Vec3};
 use craft3d_step::{Entity, Instance, Param, ReadLimits, Record, StepFile};
 use craft3d_topo::Body;
 use std::collections::BTreeMap;
@@ -172,11 +188,18 @@ pub struct Report {
     pub largest_tolerance: f64,
 }
 
-/// One item as a body.
+/// One placed item as a body.
 #[derive(Clone, Debug)]
 pub struct Imported {
     pub body: Body,
     pub name: String,
+    /// Where an assembly places it ([`Placed::path`]): empty when none
+    /// does.
+    pub path: String,
+    /// The colour the file gives the solid (sRGB): its own style, else
+    /// the colour most of its styled faces have (a body has one colour
+    /// here).
+    pub color: Option<[u8; 3]>,
     pub report: Report,
     /// Per face, edge and vertex of the body (by index): the instance id
     /// of the `ADVANCED_FACE`, `EDGE_CURVE` or `VERTEX_POINT` it is.
@@ -192,8 +215,13 @@ pub struct Parsed {
     /// Where each instance id is in `file.data`.
     positions: BTreeMap<u64, usize>,
     items: Vec<Item>,
+    /// Every placement of an item (`assembly`): the items' first
+    /// placements in item order, then the further ones.
+    placed: Vec<Placed>,
     /// The representation context each item is in.
     contexts: BTreeMap<u64, u64>,
+    /// The colour of each styled item (`style`), by instance id.
+    colors: BTreeMap<u64, [u8; 3]>,
 }
 
 /// Reads a file and finds its solids and sheets.
@@ -218,10 +246,14 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
         file,
         positions,
         items: Vec::new(),
+        placed: Vec::new(),
         contexts: BTreeMap::new(),
+        colors: BTreeMap::new(),
     };
     parsed.find_items()?;
+    parsed.placed = parsed.find_placements()?;
     budget::check(&parsed)?;
+    parsed.colors = style::colors(&parsed);
     Ok(parsed)
 }
 
@@ -310,6 +342,16 @@ impl Parsed {
         &self.items
     }
 
+    /// Every placed solid or sheet: each item once where no assembly
+    /// places it, else once per placement. The first `items().len()` are
+    /// the items in their order at their first placement (so a file
+    /// without assemblies has its items here, in the same positions),
+    /// then the further placements in file order. [`Parsed::build`] takes
+    /// an index into this.
+    pub fn placed(&self) -> &[Placed] {
+        &self.placed
+    }
+
     pub fn header(&self) -> Option<craft3d_step::Header> {
         self.file.header_values()
     }
@@ -346,15 +388,6 @@ impl Parsed {
         let mut product_names: BTreeMap<u64, String> = BTreeMap::new();
         for instance in &self.file.data {
             let entity = &instance.entity;
-            if entity.is("MAPPED_ITEM") {
-                return err(format!(
-                    "#{} MAPPED_ITEM: the file places parts in an assembly, which is not read yet",
-                    instance.id
-                ));
-            }
-            if entity.is("REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION") {
-                self.identity_transformation(instance)?;
-            }
             let kind = if entity.is("MANIFOLD_SOLID_BREP") || entity.is("BREP_WITH_VOIDS") {
                 Some(ItemKind::Solid)
             } else if entity.is("SHELL_BASED_SURFACE_MODEL") {
@@ -413,49 +446,20 @@ impl Parsed {
         Ok(())
     }
 
-    /// A placement of a part by a transformation: read only when it is
-    /// the identity (both placements the same frame), else refused.
-    fn identity_transformation(&self, instance: &Instance) -> Result<(), ImportError> {
-        let id = instance.id;
-        let refused = || {
-            ImportError(format!(
-                "#{id} REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION: the file places parts in an assembly, which is not read yet"
-            ))
-        };
-        let record = instance
-            .entity
-            .record("REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION")
-            .ok_or_else(refused)?;
-        let transformation = record
-            .params
-            .first()
-            .and_then(Param::as_ref)
-            .ok_or_else(refused)?;
-        let transformation = self
-            .record(transformation, "ITEM_DEFINED_TRANSFORMATION")
-            .map_err(|_| refused())?;
-        let (Some(a), Some(b)) = (
-            transformation.params.get(2).and_then(Param::as_ref),
-            transformation.params.get(3).and_then(Param::as_ref),
-        ) else {
-            return Err(refused());
-        };
-        let one = geometry::Reader::new(self, 1.0, 1.0);
-        let (fa, fb) = (one.placement(a)?, one.placement(b)?);
-        let same = |p: craft3d_math::Vec3, q: craft3d_math::Vec3| (p - q).length() <= 1e-12;
-        if same(fa.origin(), fb.origin()) && same(fa.x(), fb.x()) && same(fa.z(), fb.z()) {
-            Ok(())
-        } else {
-            Err(refused())
-        }
-    }
-
-    /// Item `index` (of [`Parsed::items`]) as a body in the caller's units.
+    /// Placed item `index` (of [`Parsed::placed`]) as a body in the
+    /// caller's units, where its assembly places it.
     pub fn build(&self, index: usize, options: &Options) -> Result<Imported, ImportError> {
-        let item = self.items.get(index).ok_or_else(|| {
+        let placed = self.placed.get(index).ok_or_else(|| {
             ImportError(format!(
-                "the file has {} solids and sheets; there is no number {index}",
-                self.items.len()
+                "the file has {} placed solids and sheets; there is no number {index}",
+                self.placed.len()
+            ))
+        })?;
+        let item = self.items.get(placed.item).ok_or_else(|| {
+            ImportError(format!(
+                "the file has {} solids and sheets; there is no number {}",
+                self.items.len(),
+                placed.item
             ))
         })?;
         if !(options.metres_per_unit.is_finite() && options.metres_per_unit > 0.0) {
@@ -496,11 +500,31 @@ impl Parsed {
             ..Report::default()
         };
         let reader = geometry::Reader::new(self, scale, units.radians_per_angle);
-        topology::build(&reader, item, options, &mut report)
+        let mut read = topology::build(&reader, item, options, &mut report)?;
+        read.color = style::color_of(self, item.id, &read.face_ids);
+        if !placed.steps.is_empty() {
+            let transform = self.placement_transform(placed, options)?;
+            // A placement where the solid already is (within 1e-12, as
+            // slice 1 accepted it) leaves the body as read, bit for bit:
+            // a document saved before assemblies were read regenerates
+            // the same bodies.
+            let unit = |v: Vec3, w: Vec3| (v - w).length() <= 1e-12;
+            let identity = transform.point(Vec3::ZERO).length() <= 1e-12
+                && unit(transform.vector(Vec3::X), Vec3::X)
+                && unit(transform.vector(Vec3::Y), Vec3::Y)
+                && unit(transform.vector(Vec3::Z), Vec3::Z);
+            if !identity {
+                read.body = read.body.transformed(&transform).map_err(|e| {
+                    ImportError(format!("`{}` placed at {}: {e}", read.name, placed.path))
+                })?;
+            }
+            read.path = placed.path.clone();
+        }
+        Ok(read)
     }
 
     /// The one context with units in the file, when there is exactly one.
-    fn only_context(&self) -> Option<u64> {
+    pub(crate) fn only_context(&self) -> Option<u64> {
         let mut found = self
             .file
             .data

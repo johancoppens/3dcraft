@@ -280,6 +280,264 @@ fn an_import_that_would_make_a_document_too_large_to_open_is_refused() {
     let _ = std::fs::remove_file(dir.join("big.3dcraft"));
 }
 
+// ------------------------------------------- assemblies and colours
+
+/// The part file `part.step` in `dir` (a coloured block), wrapped in an
+/// assembly that places it at `places` (offsets along x), written as
+/// `assembly.step`: the structure other writers use (a product per part
+/// and assembly, `NEXT_ASSEMBLY_USAGE_OCCURRENCE`,
+/// `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, a representation relationship
+/// with an `ITEM_DEFINED_TRANSFORMATION`).
+fn assembly_file(dir: &Path, places: &[f64]) {
+    use craft3d_step::{Entity, Instance, Param, Record};
+    let mut s = session_in(dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 2, 1], "name": "Peg"}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Peg", "color": "#c86432"}),
+    );
+    run(&mut s, "file.export", json!({"path": "part.step"}));
+    let mut file = craft3d_step::read(&std::fs::read(dir.join("part.step")).unwrap()).unwrap();
+    let mut next = file.data.iter().map(|i| i.id).max().unwrap() + 1;
+    let find = |file: &craft3d_step::StepFile, keyword: &str| {
+        file.data.iter().find(|i| i.entity.is(keyword)).unwrap().id
+    };
+    let mut add = |file: &mut craft3d_step::StepFile, records: Vec<Record>| {
+        let id = next;
+        next += 1;
+        let entity = if records.len() == 1 {
+            Entity::Simple(records.into_iter().next().unwrap())
+        } else {
+            Entity::Complex(records)
+        };
+        file.data.push(Instance { id, entity });
+        id
+    };
+    let r = |k: &str, p: Vec<Param>| Record::new(k, p);
+    let text = Param::string;
+    let context = find(&file, "GLOBAL_UNIT_ASSIGNED_CONTEXT");
+    let part = find(&file, "PRODUCT_DEFINITION");
+    let brep = find(&file, "ADVANCED_BREP_SHAPE_REPRESENTATION");
+    let pc = find(&file, "PRODUCT_CONTEXT");
+    let dc = find(&file, "PRODUCT_DEFINITION_CONTEXT");
+    let mut frame = |file: &mut craft3d_step::StepFile, x: f64| {
+        let o = add(
+            file,
+            vec![r(
+                "CARTESIAN_POINT",
+                vec![text(""), Param::reals([x, 0.0, 0.0])],
+            )],
+        );
+        let z = add(
+            file,
+            vec![r(
+                "DIRECTION",
+                vec![text(""), Param::reals([0.0, 0.0, 1.0])],
+            )],
+        );
+        let d = add(
+            file,
+            vec![r(
+                "DIRECTION",
+                vec![text(""), Param::reals([1.0, 0.0, 0.0])],
+            )],
+        );
+        add(
+            file,
+            vec![r(
+                "AXIS2_PLACEMENT_3D",
+                vec![text(""), Param::Ref(o), Param::Ref(z), Param::Ref(d)],
+            )],
+        )
+    };
+    let part_origin = frame(&mut file, 0.0);
+    let root_origin = frame(&mut file, 0.0);
+    let placed: Vec<u64> = places.iter().map(|&x| frame(&mut file, x)).collect();
+    let mut add = |file: &mut craft3d_step::StepFile, records: Vec<Record>| {
+        let id = next;
+        next += 1;
+        let entity = if records.len() == 1 {
+            Entity::Simple(records.into_iter().next().unwrap())
+        } else {
+            Entity::Complex(records)
+        };
+        file.data.push(Instance { id, entity });
+        id
+    };
+    let part_rep = add(
+        &mut file,
+        vec![r(
+            "SHAPE_REPRESENTATION",
+            vec![text("Peg"), Param::refs([part_origin]), Param::Ref(context)],
+        )],
+    );
+    add(
+        &mut file,
+        vec![r(
+            "SHAPE_REPRESENTATION_RELATIONSHIP",
+            vec![text(""), text(""), Param::Ref(part_rep), Param::Ref(brep)],
+        )],
+    );
+    let product = add(
+        &mut file,
+        vec![r(
+            "PRODUCT",
+            vec![text("Rack"), text("Rack"), text(""), Param::refs([pc])],
+        )],
+    );
+    let formation = add(
+        &mut file,
+        vec![r(
+            "PRODUCT_DEFINITION_FORMATION",
+            vec![text(""), text(""), Param::Ref(product)],
+        )],
+    );
+    let root = add(
+        &mut file,
+        vec![r(
+            "PRODUCT_DEFINITION",
+            vec![
+                text("design"),
+                text(""),
+                Param::Ref(formation),
+                Param::Ref(dc),
+            ],
+        )],
+    );
+    let shape = add(
+        &mut file,
+        vec![r(
+            "PRODUCT_DEFINITION_SHAPE",
+            vec![text(""), text(""), Param::Ref(root)],
+        )],
+    );
+    let mut items = vec![root_origin];
+    items.extend(&placed);
+    let root_rep = add(
+        &mut file,
+        vec![r(
+            "SHAPE_REPRESENTATION",
+            vec![text("Rack"), Param::refs(items), Param::Ref(context)],
+        )],
+    );
+    add(
+        &mut file,
+        vec![r(
+            "SHAPE_DEFINITION_REPRESENTATION",
+            vec![Param::Ref(shape), Param::Ref(root_rep)],
+        )],
+    );
+    for (k, at) in placed.iter().enumerate() {
+        let idt = add(
+            &mut file,
+            vec![r(
+                "ITEM_DEFINED_TRANSFORMATION",
+                vec![text(""), text(""), Param::Ref(*at), Param::Ref(part_origin)],
+            )],
+        );
+        let rrwt = add(
+            &mut file,
+            vec![
+                r(
+                    "REPRESENTATION_RELATIONSHIP",
+                    vec![
+                        text(""),
+                        text(""),
+                        Param::Ref(part_rep),
+                        Param::Ref(root_rep),
+                    ],
+                ),
+                r(
+                    "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+                    vec![Param::Ref(idt)],
+                ),
+                r("SHAPE_REPRESENTATION_RELATIONSHIP", vec![]),
+            ],
+        );
+        let tag = format!("{}", k + 1);
+        let nauo = add(
+            &mut file,
+            vec![r(
+                "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
+                vec![
+                    text(&tag),
+                    text(&tag),
+                    text(""),
+                    Param::Ref(root),
+                    Param::Ref(part),
+                    Param::Omitted,
+                ],
+            )],
+        );
+        let pds = add(
+            &mut file,
+            vec![r(
+                "PRODUCT_DEFINITION_SHAPE",
+                vec![text(""), text(""), Param::Ref(nauo)],
+            )],
+        );
+        add(
+            &mut file,
+            vec![r(
+                "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION",
+                vec![Param::Ref(rrwt), Param::Ref(pds)],
+            )],
+        );
+    }
+    std::fs::write(
+        dir.join("assembly.step"),
+        craft3d_step::write(&file).unwrap(),
+    )
+    .unwrap();
+}
+
+/// An assembly placing one part three times: three import features in
+/// one undo step, each body where its placement puts it, named by its
+/// place, with the part's colour; the same file again gives the same
+/// names; saved and reopened, the same bodies (one blob in the file).
+#[test]
+fn an_assembly_imports_one_feature_per_placement_with_its_colour() {
+    let dir = workdir("step-import", "assembly");
+    let places = [0.0, 10.0, 25.0];
+    assembly_file(&dir, &places);
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let result = run(&mut s, "file.import", json!({"path": "assembly.step"}));
+    let made = result["bodies"].as_array().unwrap();
+    assert_eq!(made.len(), 3, "{result}");
+    for (k, body) in made.iter().enumerate() {
+        assert_eq!(body["status"], "ok", "{body}");
+        assert_eq!(body["import"]["instance"], format!("Rack/Peg#{}", k + 1));
+        assert_eq!(body["import"]["color"], "#c86432");
+        assert_eq!(body["name"], format!("Peg#{}", k + 1));
+    }
+    let all = bodies(&mut s);
+    assert_eq!(all.len(), 3);
+    for (body, x) in all.iter().zip(places) {
+        let centroid = body["centroid"].as_array().unwrap();
+        let cx = centroid[0].as_f64().unwrap();
+        assert!((cx - (x + 2.0)).abs() < 1e-9, "{body}");
+        assert!(body.to_string().contains("#c86432"), "{body}");
+    }
+    // One undo step for the features and their colours.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(bodies(&mut s).is_empty());
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(bodies(&mut s), all);
+    // Saved and reopened without the file: the same.
+    run(&mut s, "file.save", json!({"path": "rack.3dcraft"}));
+    std::fs::remove_file(dir.join("assembly.step")).unwrap();
+    let mut t = session_in(&dir);
+    run(&mut t, "file.open", json!({"path": "rack.3dcraft"}));
+    assert_eq!(bodies(&mut t), all);
+}
+
 // ------------------------------------------------- the opt-in oracles
 
 fn showcase() -> Vec<PathBuf> {
@@ -426,6 +684,8 @@ fn every_body_of_the_showcase_reads_back() {
     }
     assert!(read > 0);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+    // Every edge proven (slice 2: 35 were accepted on samples before).
+    assert_eq!(unproven, 0, "edges accepted on samples alone");
 }
 
 /// The FreeCAD script: solids made by FreeCAD's own primitives,
@@ -594,4 +854,204 @@ fn freecad_files_read_with_freecads_volume() {
             "{must} did not read: {refused:#?}"
         );
     }
+}
+
+/// The FreeCAD script for assemblies and colours: a part placed several
+/// times by links in an `App::Part` (one level, and a sub-assembly placed
+/// twice), written by FreeCAD's own STEP writer (`Import.export`, its
+/// assembly structure with the part shared), measured by FreeCAD: the
+/// solids, their volume and their centroids where the assembly puts them.
+/// A colour is given where FreeCAD has a way to give it without its GUI;
+/// whether the file holds one is recorded, not assumed.
+const FREECAD_ASSEMBLY_SCRIPT: &str = r#"
+import os, json, traceback
+import FreeCAD, Part, Import
+from FreeCAD import Vector as V
+out = os.environ["CRAFT3D_FC_DIR"]
+cases = {}
+def colour(obj):
+    rgb = (0.8, 0.4, 0.2)
+    done = False
+    try:
+        if obj.ViewObject is not None:
+            obj.ViewObject.ShapeColor = rgb
+            done = True
+    except Exception:
+        pass
+    for prop in ("ShapeAppearance", "ShapeColor", "Color"):
+        try:
+            if hasattr(obj, prop):
+                setattr(obj, prop, rgb)
+                done = True
+        except Exception:
+            pass
+    return done
+def add(name, make):
+    try:
+        doc = FreeCAD.newDocument(name)
+        top = make(doc)
+        doc.recompute()
+        path = os.path.join(out, name + ".step")
+        Import.export([top], path)
+        shape = Part.getShape(top)
+        solids = shape.Solids
+        text = open(path).read()
+        cases[name] = {"volume": sum(s.Volume for s in solids),
+                       "solids": len(solids),
+                       "centroids": [[c.x, c.y, c.z] for c in (s.CenterOfMass for s in solids)],
+                       "colours": "COLOUR_RGB" in text,
+                       "assembly": "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in text}
+    except Exception:
+        cases[name] = {"error": traceback.format_exc()}
+def peg(doc):
+    part = doc.addObject("Part::Feature", "Peg")
+    part.Shape = Part.makeBox(4, 2, 1)
+    colour(part)
+    return part
+def placed(doc, parent, target, name, x, y, z, axis, angle):
+    link = doc.addObject("App::Link", name)
+    link.LinkedObject = target
+    link.Placement = FreeCAD.Placement(V(x, y, z), FreeCAD.Rotation(axis, angle))
+    parent.addObject(link)
+def rack(doc):
+    part = peg(doc)
+    asm = doc.addObject("App::Part", "Rack")
+    placed(doc, asm, part, "Peg1", 0, 0, 0, V(0, 0, 1), 0)
+    placed(doc, asm, part, "Peg2", 10, 0, 0, V(0, 0, 1), 90)
+    placed(doc, asm, part, "Peg3", 0, 20, 5, V(1, 1, 0), 45)
+    return asm
+def robot(doc):
+    part = peg(doc)
+    arm = doc.addObject("App::Part", "Arm")
+    placed(doc, arm, part, "PegA", 0, 0, 0, V(0, 0, 1), 30)
+    placed(doc, arm, part, "PegB", 6, 0, 0, V(0, 1, 0), 90)
+    root = doc.addObject("App::Part", "Robot")
+    placed(doc, root, arm, "Left", 0, 0, 0, V(0, 0, 1), 0)
+    placed(doc, root, arm, "Right", 30, 10, 0, V(0, 0, 1), 180)
+    return root
+add("rack", rack)
+add("robot", robot)
+with open(os.path.join(out, "cases.json"), "w") as f:
+    json.dump(cases, f)
+"#;
+
+/// FreeCAD's assemblies and colours (slice 2): each placed solid of a
+/// file FreeCAD writes reads as a body of its own where FreeCAD puts it
+/// (its count, total volume and every centroid to 1e-6), and where
+/// FreeCAD wrote a colour, the bodies have it. Never a body in the wrong
+/// place; a file without an assembly structure or a colour is said so.
+#[test]
+#[ignore = "needs FreeCAD (CRAFT3D_FREECAD): cargo xtask freecad"]
+fn freecad_assemblies_read_where_freecad_places_them() {
+    let freecad = std::env::var("CRAFT3D_FREECAD").expect(
+        "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable to run this test",
+    );
+    let dir = workdir("step-import", "freecad-assembly");
+    let script = dir.join("make_assemblies.py");
+    std::fs::write(&script, FREECAD_ASSEMBLY_SCRIPT).unwrap();
+    let mut command = std::process::Command::new(&freecad);
+    if freecad.ends_with(".AppImage") {
+        command.arg("freecadcmd");
+    }
+    let output = command
+        .arg(&script)
+        .env("CRAFT3D_FC_DIR", &dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
+    let cases: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("cases.json")).unwrap_or_else(|_| {
+            panic!(
+                "FreeCAD wrote no cases ({}):\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        }),
+    )
+    .unwrap();
+    let mut wrong = Vec::new();
+    let mut said = Vec::new();
+    for (name, case) in cases.as_object().unwrap() {
+        if let Some(e) = case.get("error") {
+            panic!("FreeCAD could not make {name}: {e}");
+        }
+        if case["assembly"] != true {
+            said.push(format!("{name}: FreeCAD wrote no assembly structure"));
+        }
+        let mut s = session_in(&dir);
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 1e-6}),
+        );
+        let result = match s.execute("file.import", &json!({"path": format!("{name}.step")})) {
+            Ok(result) => result,
+            Err(e) => {
+                wrong.push(format!("{name}: refused: {e}"));
+                continue;
+            }
+        };
+        let made = result["bodies"].as_array().unwrap();
+        if let Some(failed) = made.iter().find(|b| b["status"] != "ok") {
+            wrong.push(format!("{name}: failed: {}", failed["error"]));
+            continue;
+        }
+        let all = bodies(&mut s);
+        let volume: f64 = all.iter().map(|b| b["volume"].as_f64().unwrap()).sum();
+        let expected = case["volume"].as_f64().unwrap();
+        if all.len() as u64 != case["solids"].as_u64().unwrap()
+            || (volume - expected).abs() > 1e-6 * expected
+        {
+            wrong.push(format!(
+                "{name}: FreeCAD {} solids of {expected} in all, ours {} of {volume}",
+                case["solids"],
+                all.len()
+            ));
+            continue;
+        }
+        // Every FreeCAD centroid matched by one of ours, each used once.
+        let mut ours: Vec<[f64; 3]> = all
+            .iter()
+            .map(|b| {
+                let c = b["centroid"].as_array().unwrap();
+                [
+                    c[0].as_f64().unwrap(),
+                    c[1].as_f64().unwrap(),
+                    c[2].as_f64().unwrap(),
+                ]
+            })
+            .collect();
+        for c in case["centroids"].as_array().unwrap() {
+            let c = [
+                c[0].as_f64().unwrap(),
+                c[1].as_f64().unwrap(),
+                c[2].as_f64().unwrap(),
+            ];
+            let near = ours.iter().position(|o| {
+                ((o[0] - c[0]).powi(2) + (o[1] - c[1]).powi(2) + (o[2] - c[2]).powi(2)).sqrt()
+                    <= 1e-6 * 50.0
+            });
+            match near {
+                Some(k) => {
+                    ours.remove(k);
+                }
+                None => wrong.push(format!("{name}: no body at FreeCAD's centroid {c:?}")),
+            }
+        }
+        if case["colours"] == true {
+            for b in &all {
+                if !b.to_string().contains("#cc6633") {
+                    wrong.push(format!(
+                        "{name}: {} has not FreeCAD's colour: {b}",
+                        b["name"]
+                    ));
+                }
+            }
+        } else {
+            said.push(format!("{name}: FreeCAD wrote no colour without its GUI"));
+        }
+    }
+    println!("said: {said:#?}\nwrong: {wrong:#?}");
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
