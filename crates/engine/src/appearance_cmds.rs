@@ -305,14 +305,15 @@ pub(crate) fn measure_all_ahead<'a>(
 /// Adds to a body's entry of `document.inspect` or `document.measure`
 /// its appearance and material (and from which feature it has them,
 /// when that is another), and with a material its mass (kg) and inertia
-/// tensor about the centroid (kg · unit²).
+/// tensor about the centroid (kg · unit²); without `measured` only the
+/// appearance and the material, nothing that takes measuring the body.
 pub(crate) fn physical_fields(
     entry: &mut Map<String, Value>,
     doc: &Document,
     regen: &Regen,
-    at: FeatureId,
-    body: &Arc<Body>,
+    (at, body): (FeatureId, &Arc<Body>),
     unit: &str,
+    measured: bool,
 ) {
     if let Some(appearance) = body_appearance(doc, regen, at) {
         entry.insert("appearance".into(), appearance_json(&appearance));
@@ -323,6 +324,9 @@ pub(crate) fn physical_fields(
         return;
     };
     entry.insert("material".into(), described);
+    if !measured {
+        return;
+    }
     let m = metres_per_unit(doc.units.length);
     let per_volume = material.density * m * m * m;
     let (mass, inertia) = mass_and_inertia_of(body);

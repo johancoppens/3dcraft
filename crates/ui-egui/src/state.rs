@@ -250,6 +250,11 @@ pub struct Closing {
     pub document: usize,
     pub name: String,
     pub path: Option<String>,
+    /// Asked because the window is closing (its close button, or
+    /// `ui.quit {save: "ask"}`), not for one tab: the next document with
+    /// unsaved changes is asked about after this one, and the
+    /// application stops once none is left; Cancel keeps the window.
+    pub quitting: bool,
 }
 
 /// What the viewport draws besides the bodies and their edges.

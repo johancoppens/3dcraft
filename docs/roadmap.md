@@ -449,13 +449,13 @@ The first version for people outside the project; it follows M9 and does not wai
 - A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md)) (2026-10-15)
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
 - The format promise: every `.3dcraft` file a released version wrote opens in every later one, held by a frozen fixture per format version written by that version's own build and regenerated to what it made ([`file-formats.md`](file-formats.md) › *The promise*) (2026-10-21)
+- Closing the window asks Save, Don't Save or Cancel for each document with unsaved changes before it drops their autosaves, also over the channel as `ui.quit {save: "ask" | "save" | "discard"}` ([`control-protocol.md`](control-protocol.md) › *Closing the window*) (2026-10-21)
 
 #### Open
 - [ ] A pinned set of about twenty modelling tasks (each with a drawing or description and a known volume), grown out of the field tests
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models
-- [ ] A clean quit also drops the autosave of a document that was not saved, because the window does not ask before closing yet
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
 
 #### Acceptance

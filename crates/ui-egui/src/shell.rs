@@ -493,6 +493,12 @@ pub struct Shell {
     framed: Bbox3,
     themed: bool,
     quit: bool,
+    /// The application was asked to stop without saving (`ui.quit`, or
+    /// `ui.quit {save: "discard"}`): the autosaves go too.
+    quit_discards: bool,
+    /// Closing the window, one question per document with unsaved
+    /// changes ([`Self::request_window_close`]).
+    quitting: Option<tabs::Quitting>,
     rows: Vec<TreeRow>,
     /// What the File menu or a shortcut asked for, until the host takes it.
     file_action: Option<FileAction>,
@@ -728,6 +734,8 @@ impl Shell {
             framed: Bbox3::EMPTY,
             themed: false,
             quit: false,
+            quit_discards: false,
+            quitting: None,
             rows: Vec::new(),
             file_action: None,
             problem: None,
@@ -1039,8 +1047,25 @@ impl Shell {
         self.quit
     }
 
+    /// Stops the application without asking, dropping the unsaved
+    /// changes and their autosaves (`ui.quit`).
     pub fn request_quit(&mut self) {
         self.quit = true;
+        self.quit_discards = true;
+    }
+
+    /// Stops the application once every document was saved
+    /// (`ui.quit {save: "save"}`): nothing unsaved is left to keep.
+    pub fn request_quit_saved(&mut self) {
+        self.quit = true;
+    }
+
+    /// True when the application was asked to stop without saving: the
+    /// autosaves of what was not saved go too. Otherwise a document that
+    /// still has unsaved changes when the application ends (one changed
+    /// while it was closing) keeps its autosave, as after a crash.
+    pub fn quit_discards(&self) -> bool {
+        self.quit_discards
     }
 
     /// What the File menu or a shortcut asked for since the last call.

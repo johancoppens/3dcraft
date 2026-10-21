@@ -84,6 +84,65 @@ fn save_active(session: &mut Session) -> Result<Value, String> {
     }
 }
 
+/// Saves every document with unsaved changes worth keeping (those
+/// `file.close` refuses without `discard`) to its own file, for
+/// `ui.quit {save: "save"}` from the control channel: through the
+/// automation write root, as `file.save` does for a request, never with
+/// the person's own access (a document the person opened from outside the
+/// roots is not the channel's to overwrite). The document that was shown
+/// is shown again. Refused, with nothing saved, when one of them was
+/// never saved (there is nobody to name its file) or its file lies
+/// outside the write root. A save that fails stops there, with the
+/// documents before it saved.
+pub fn save_all(session: &mut Session) -> Result<Value, String> {
+    let statuses = session.document_statuses();
+    let unnamed: Vec<String> = craft3d_ui_egui::doc_tabs(&statuses, None)
+        .into_iter()
+        .filter(|tab| tab.asks_to_close && tab.path.is_none())
+        .map(|tab| format!("\"{}\" (document {})", tab.name, tab.document))
+        .collect();
+    if !unnamed.is_empty() {
+        return Err(format!(
+            "ui.quit: {} never saved; save it with file.save and a path first, or quit with save: \"discard\" or \"ask\"; nothing was saved",
+            unnamed.join(", ")
+        ));
+    }
+    let outside: Vec<String> = statuses
+        .iter()
+        .filter(|status| status.close_asks)
+        .filter_map(|status| status.path.as_deref())
+        .filter(|path| session.workspace().resolve_write(path).is_err())
+        .map(|path| format!("`{path}`"))
+        .collect();
+    if !outside.is_empty() {
+        return Err(format!(
+            "ui.quit: {} lies outside the automation write root, so the control channel may not save it; save it at the window, or quit with save: \"discard\" or \"ask\"; nothing was saved",
+            outside.join(", ")
+        ));
+    }
+    let before = session.document_status().map(|status| status.index);
+    let mut saved = Vec::new();
+    let mut outcome = Ok(());
+    for status in statuses.iter().filter(|status| status.close_asks) {
+        // Through the roots, as a request's `file.save`.
+        let done =
+            activate(session, status.index).and_then(|_| execute(session, "file.save", &json!({})));
+        match done {
+            Ok(_) => saved.push(status.path.clone().unwrap_or_default()),
+            Err(error) => {
+                outcome = Err(error);
+                break;
+            }
+        }
+    }
+    if let Some(before) = before
+        && session.document_status().map(|status| status.index) != Some(before)
+    {
+        let _ = activate(session, before);
+    }
+    outcome.map(|()| json!({ "quitting": true, "saved": saved }))
+}
+
 /// Closes document `document`, and activates the one that should be shown
 /// after it ([module documentation](self)).
 pub fn close(session: &mut Session, document: usize, discard: bool) -> Result<Value, String> {
@@ -196,6 +255,7 @@ mod tests {
     use crate::app::Desk;
     use crate::files::Dialogs;
     use craft3d_engine::Workspace;
+    use craft3d_ui_egui::CloseAnswer;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::{Duration, Instant};
@@ -475,5 +535,326 @@ mod tests {
         host.file_choice(choice);
         assert!(!host.close_after_save);
         assert_eq!(host.session.document_statuses().len(), 1);
+    }
+
+    /// Three documents: a ball saved to its own file and changed since,
+    /// a block never saved, and a cylinder saved with nothing unsaved.
+    fn three(dir: &Path) -> (Session, PathBuf) {
+        let own = dir.join("ball.3dcraft");
+        let mut s = two();
+        run(&mut s, "file.activate", json!({"document": 0}));
+        files::run_as_user(&mut s, "file.save", &own, true, None).unwrap();
+        run(&mut s, "feature.block", json!({"size": [4, 4, 4]}));
+        run(&mut s, "file.new", json!({}));
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 1, "height": 2}),
+        );
+        let saved = dir.join("can.3dcraft");
+        files::run_as_user(&mut s, "file.save", &saved, true, None).unwrap();
+        (s, own)
+    }
+
+    /// Turns until the window asks a question, or the application is
+    /// asked to stop.
+    fn until_asked(desk: &mut Desk) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while desk.host.shell.closing().is_none() && !desk.host.shell.quit_requested() {
+            assert!(Instant::now() < deadline, "no question, no quit");
+            let _ = desk.turn();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn features_in(file: &Path) -> Value {
+        let mut check = Session::new(Workspace::none());
+        files::run_as_user(&mut check, "file.open", file, false, None).unwrap();
+        run(&mut check, "file.list", json!({}))["documents"][0]["features"].clone()
+    }
+
+    /// Roadmap R1: the window's close button asks about each document
+    /// with unsaved changes, one after the other (Save to its own file,
+    /// Save of one never saved through the save dialog), leaves the saved
+    /// one alone, and then stops the application with nothing unsaved,
+    /// so the autosaves may go.
+    #[test]
+    fn closing_the_window_asks_about_each_unsaved_document_then_quits() {
+        let dir = workdir("quit-save");
+        let (s, own) = three(&dir);
+        let named = dir.join("block.3dcraft");
+        let mut desk = desk(s, vec![Some(named.clone())]);
+        settle(&mut desk);
+        assert!(!desk.window_close(), "two documents have unsaved changes");
+        assert!(!desk.window_close(), "asked again: still asking");
+        until_asked(&mut desk);
+        let closing = desk.host.shell.closing().unwrap().clone();
+        assert_eq!((closing.name.as_str(), closing.quitting), ("ball", true));
+        assert!(desk.host.shell.quitting() && !desk.host.shell.quit_requested());
+        desk.host.shell.answer_closing(CloseAnswer::Save);
+        settle(&mut desk);
+        until_asked(&mut desk);
+        let closing = desk.host.shell.closing().unwrap().clone();
+        assert_eq!((closing.name.as_str(), closing.path), ("Untitled 1", None));
+        desk.host.shell.answer_closing(CloseAnswer::Save);
+        settle(&mut desk);
+        until_asked(&mut desk);
+        assert!(desk.host.shell.quit_requested());
+        assert!(!desk.host.shell.quitting() && desk.host.shell.closing().is_none());
+        assert!(!desk.host.shell.quit_discards());
+        assert!(desk.may_end_recovery());
+        // Both were saved where they belong; the can stays open, as it was.
+        let statuses = desk.host.session.document_statuses();
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0]
+                .path
+                .as_deref()
+                .unwrap()
+                .ends_with("can.3dcraft")
+        );
+        assert_eq!(features_in(&own), 2);
+        assert_eq!(features_in(&named), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Don't Save closes the document without saving it; Cancel keeps the
+    /// window with what is still open; a window with nothing unsaved
+    /// closes at once.
+    #[test]
+    fn dont_save_drops_and_cancel_keeps_the_window() {
+        let dir = workdir("quit-cancel");
+        let (s, own) = three(&dir);
+        let mut desk = self::desk(s, Vec::new());
+        settle(&mut desk);
+        assert!(!desk.window_close());
+        until_asked(&mut desk);
+        desk.host.shell.answer_closing(CloseAnswer::Discard);
+        settle(&mut desk);
+        until_asked(&mut desk);
+        assert_eq!(desk.host.shell.closing().unwrap().name, "Untitled 1");
+        desk.host.shell.answer_closing(CloseAnswer::Cancel);
+        settle(&mut desk);
+        assert!(!desk.host.shell.quitting() && !desk.host.shell.quit_requested());
+        assert!(desk.host.shell.closing().is_none());
+        assert_eq!(desk.host.session.document_statuses().len(), 2);
+        // The ball's file is as it was saved: its change was dropped.
+        assert_eq!(features_in(&own), 1);
+        // Asked again: Don't Save for the block too, and the window goes;
+        // nothing unsaved is left.
+        assert!(!desk.window_close());
+        until_asked(&mut desk);
+        desk.host.shell.answer_closing(CloseAnswer::Discard);
+        settle(&mut desk);
+        until_asked(&mut desk);
+        assert!(desk.host.shell.quit_requested() && desk.may_end_recovery());
+        // A window with nothing unsaved closes at once.
+        let mut clean = Session::new(Workspace::none());
+        run(&mut clean, "file.new", json!({}));
+        let mut quiet = self::desk(clean, Vec::new());
+        settle(&mut quiet);
+        assert!(quiet.window_close());
+        assert!(quiet.host.shell.quit_requested());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save for a document never saved whose save dialog is cancelled
+    /// closes nothing, and the window stays: it does not ask again and
+    /// again.
+    #[test]
+    fn a_cancelled_save_dialog_keeps_the_window() {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        run(&mut s, "feature.block", json!({"size": [1, 1, 1]}));
+        let mut desk = desk(s, vec![None]);
+        settle(&mut desk);
+        assert!(!desk.window_close());
+        until_asked(&mut desk);
+        desk.host.shell.answer_closing(CloseAnswer::Save);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while desk.host.shell.quitting() {
+            assert!(Instant::now() < deadline, "still closing");
+            let _ = desk.turn();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        settle(&mut desk);
+        assert!(!desk.host.shell.quit_requested());
+        assert!(desk.host.shell.closing().is_none());
+        assert_eq!(desk.host.session.document_statuses().len(), 1);
+        assert!(!desk.may_end_recovery());
+    }
+
+    /// The close button while a command runs that leaves a document with
+    /// unsaved changes: nothing is decided on the tabs from before the
+    /// command; once it is done the window asks about that document.
+    #[test]
+    fn a_close_while_a_command_runs_is_decided_when_it_is_done() {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(Answers(Mutex::new(Vec::new()))), Arc::new(|| {}));
+        let mut host = Host::new(s);
+        host.shell.sync(&mut host.session);
+        let mut desk = Desk::new(host, incoming, picker)
+            .with_engine_thread(Arc::new(|| {}))
+            .with_patience(Duration::ZERO);
+        settle(&mut desk);
+        assert!(!desk.host.shell.tabs()[0].asks_to_close);
+        let (reply, _answer) = mpsc::channel();
+        requests
+            .send(crate::host::Request {
+                line: r#"{"id":1,"method":"engine.execute","params":{"command":"feature.sphere","params":{"radius":2}}}"#.to_string(),
+                reply,
+            })
+            .unwrap();
+        let _ = desk.turn();
+        assert!(desk.away(), "the command runs on the engine thread");
+        assert!(!desk.window_close(), "not decided while it runs");
+        until_asked(&mut desk);
+        assert!(!desk.host.shell.quit_requested());
+        assert_eq!(desk.host.shell.closing().unwrap().name, "Untitled 1");
+    }
+
+    /// One request over the control channel, answered by the desk.
+    fn ask(desk: &mut Desk, requests: &mpsc::Sender<crate::host::Request>, line: &str) -> Value {
+        let (reply, answer) = mpsc::channel();
+        requests
+            .send(crate::host::Request {
+                line: line.to_string(),
+                reply,
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let _ = desk.turn();
+            if let Ok(reply) = answer.try_recv() {
+                return serde_json::from_str(&reply.unwrap()).unwrap();
+            }
+            assert!(Instant::now() < deadline, "no reply to {line}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// `ui.quit` over the control channel: `save: "ask"` asks as the
+    /// close button does, `save: "save"` saves every document to its own
+    /// file and stops (refused, nothing saved, while one was never saved),
+    /// the default drops what is unsaved, and anything else is an error
+    /// that changes nothing.
+    #[test]
+    fn ui_quit_asks_saves_or_discards_over_the_control_channel() {
+        let dir = workdir("quit-channel");
+        let (s, own) = three(&dir);
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(Answers(Mutex::new(Vec::new()))), Arc::new(|| {}));
+        let mut host = Host::new(s);
+        host.shell.sync(&mut host.session);
+        let mut desk = Desk::new(host, incoming, picker)
+            .with_engine_thread(Arc::new(|| {}))
+            .with_patience(Duration::ZERO);
+        settle(&mut desk);
+        for bad in [
+            r#"{"id":1,"method":"ui.quit","params":{"save":"maybe"}}"#,
+            r#"{"id":1,"method":"ui.quit","params":{"save":true}}"#,
+            r#"{"id":1,"method":"ui.quit","params":{"keep":1}}"#,
+            r#"{"id":1,"method":"ui.quit","params":[]}"#,
+        ] {
+            let reply = ask(&mut desk, &requests, bad);
+            assert_eq!(reply["ok"], false, "{bad}: {reply}");
+            assert!(!desk.host.shell.quit_requested() && !desk.host.shell.quitting());
+        }
+        // Save: refused while the block was never saved; nothing saved.
+        let reply = ask(
+            &mut desk,
+            &requests,
+            r#"{"id":2,"method":"ui.quit","params":{"save":"save"}}"#,
+        );
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(
+            error.contains("Untitled 1") && error.contains("never saved"),
+            "{error}"
+        );
+        assert!(!desk.host.shell.quit_requested());
+        assert!(desk.host.session.document_statuses()[0].dirty);
+        // Ask: the window asks, as its close button does.
+        let reply = ask(
+            &mut desk,
+            &requests,
+            r#"{"id":3,"method":"ui.quit","params":{"save":"ask"}}"#,
+        );
+        assert_eq!(reply["result"]["quitting"], false, "{reply}");
+        // The can is shown: the ball is shown first, then asked about.
+        assert_eq!(reply["result"]["asking"], Value::Null, "{reply}");
+        until_asked(&mut desk);
+        let got = ask(&mut desk, &requests, r#"{"id":4,"method":"ui.get"}"#);
+        assert_eq!(got["result"]["quitting"], true, "{got}");
+        assert_eq!(got["result"]["closing"]["name"], "ball", "{got}");
+        assert_eq!(got["result"]["closing"]["quitting"], true, "{got}");
+        assert_eq!(active(&desk), Some(0));
+        // Asked while it asks: the same question.
+        let reply = ask(
+            &mut desk,
+            &requests,
+            r#"{"id":3,"method":"ui.quit","params":{"save":"ask"}}"#,
+        );
+        assert_eq!(reply["result"]["asking"]["name"], "ball", "{reply}");
+        desk.host.shell.answer_closing(CloseAnswer::Cancel);
+        // The block gets a file and another change; then Save saves the
+        // ball and the block, and stops.
+        let block = dir.join("block.3dcraft");
+        run(
+            &mut desk.host.session,
+            "file.activate",
+            json!({"document": 1}),
+        );
+        files::run_as_user(&mut desk.host.session, "file.save", &block, true, None).unwrap();
+        run(
+            &mut desk.host.session,
+            "feature.sphere",
+            json!({"radius": 1}),
+        );
+        // Both files were chosen by the person, and the channel has no
+        // write root: the channel may not overwrite them. Refused,
+        // nothing saved, the window stays.
+        let quit_save = r#"{"id":5,"method":"ui.quit","params":{"save":"save"}}"#;
+        let reply = ask(&mut desk, &requests, quit_save);
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(
+            error.contains("outside the automation write root"),
+            "{error}"
+        );
+        assert!(!desk.host.shell.quit_requested());
+        assert_eq!(features_in(&own), 1);
+        assert_eq!(features_in(&block), 1);
+        // A write root the files lie beneath: saved through it, and the
+        // application stops.
+        desk.host.session.set_workspace(Workspace {
+            read: craft3d_engine::Access::None,
+            write: craft3d_engine::Access::Root(dir.clone()),
+        });
+        let reply = ask(&mut desk, &requests, quit_save);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(
+            reply["result"]["saved"].as_array().unwrap().len(),
+            2,
+            "{reply}"
+        );
+        assert!(desk.host.shell.quit_requested() && !desk.host.shell.quit_discards());
+        assert!(desk.may_end_recovery());
+        assert_eq!(active(&desk), Some(1), "the document shown stays shown");
+        assert_eq!(features_in(&own), 2);
+        assert_eq!(features_in(&block), 2);
+        // The default drops what is unsaved, as before.
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        run(&mut s, "feature.block", json!({"size": [1, 1, 1]}));
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(Answers(Mutex::new(Vec::new()))), Arc::new(|| {}));
+        let mut desk = Desk::new(Host::new(s), incoming, picker);
+        let reply = ask(&mut desk, &requests, r#"{"id":6,"method":"ui.quit"}"#);
+        assert_eq!(reply["result"]["quitting"], true, "{reply}");
+        assert!(desk.host.shell.quit_discards() && desk.may_end_recovery());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

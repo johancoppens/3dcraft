@@ -579,6 +579,12 @@ struct Work {
     /// to: per sum taken, the difference its last two sums were allowed
     /// ([`Total::allowance`]). [`mass_bound`] reports their sum.
     held: [f64; 2],
+    /// On the copy a helper thread sums panels with
+    /// ([`boundary_integrals`]): the work spent at every look at the
+    /// budget, in order, so that where the face would have been given up
+    /// had the panels been summed one after the other on this thread is
+    /// known exactly. `None` elsewhere.
+    checks: Option<std::sync::Arc<std::sync::Mutex<Vec<u64>>>>,
 }
 
 impl Work {
@@ -597,6 +603,7 @@ impl Work {
             wrap: [None, None],
             limit: BUDGET,
             held: [0.0; 2],
+            checks: None,
         }
     }
 
@@ -616,6 +623,12 @@ impl Work {
 
     /// Whether the face has taken more than it may ([`Work::limit`]).
     fn spent_up(&self) -> bool {
+        if let Some(checks) = &self.checks {
+            checks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(self.spent);
+        }
         self.spent > self.limit
     }
 }
@@ -1789,6 +1802,7 @@ impl Outline<'_> {
 
 /// One boundary sample: surface parameters, and how fast they change along
 /// the edge, times the quadrature weight and the traversal direction.
+#[derive(Clone, Copy)]
 struct Sample {
     /// How far the boundary point is from its foot on the surface.
     off: f64,
@@ -3503,10 +3517,14 @@ fn cells_of(
             .get(&(loop_index, piece))
             .map(|panels| panels.iter().map(|&(_, panel)| panel).collect())
     };
-    let (mut samples, panels_at) = sampled(outline, surface, index, (rule, coarse), &which, work)?;
+    let (samples, panels_at) = sampled(outline, surface, index, (rule, coarse), &which, work)?;
     let mut seen: BTreeMap<(usize, usize), usize> = BTreeMap::new();
-    let mut found: Vec<Option<Cell>> = vec![None; wanted.len()];
-    for at in panels_at {
+    // Per panel: where it was asked for, its level and doublings, and its
+    // samples; then its sums, as many as it takes (one, or two past the
+    // doublings), in the order they were summed one by one before.
+    let mut asked_for = Vec::with_capacity(panels_at.len());
+    let mut runs: Vec<(&[Sample], u32)> = Vec::with_capacity(panels_at.len());
+    for at in &panels_at {
         let key = (at.loop_index, at.piece);
         let count = seen.entry(key).or_insert(0);
         let asked = by_piece.get(&key).and_then(|p| p.get(*count)).map(|p| p.0);
@@ -3516,26 +3534,32 @@ fn cells_of(
         else {
             return Err(MassError::Invalid { face: index });
         };
-        let Some(own) = samples.get_mut(at.range) else {
+        let Some(own) = samples.get(at.range.clone()) else {
             return Err(MassError::Invalid { face: index });
         };
-        let mut sum = |doublings: u32, own: &mut [Sample]| {
-            boundary_integral(
-                (face, outline),
-                surface,
-                rule,
-                own,
-                sense,
-                plan,
-                (true, doublings),
-                work,
-            )
-            .map_err(|error| MassError::Geometry { face: index, error })?
-            .ok_or(unsettled(index))
+        runs.push((own, doublings));
+        if level > MAX_DOUBLINGS {
+            runs.push((own, doublings.saturating_sub(1)));
+        }
+        asked_for.push((asked, key, at.panel, level, doublings, own));
+    }
+    let mut totals = boundary_integrals(
+        (face, outline),
+        surface,
+        rule,
+        &runs,
+        (sense, plan),
+        index,
+        work,
+    )?
+    .into_iter();
+    let mut found: Vec<Option<Cell>> = vec![None; wanted.len()];
+    for (asked, key, panel, level, doublings, own) in asked_for {
+        let Some(total) = totals.next() else {
+            return Err(MassError::Invalid { face: index });
         };
-        let total = sum(doublings, own)?;
         let inner_check = if level > MAX_DOUBLINGS {
-            Some(sum(doublings.saturating_sub(1), own)?)
+            Some(totals.next().ok_or(MassError::Invalid { face: index })?)
         } else {
             None
         };
@@ -3543,7 +3567,7 @@ fn cells_of(
         if let Some(slot) = found.get_mut(asked) {
             *slot = Some(Cell {
                 key,
-                panel: at.panel,
+                panel,
                 level,
                 inner: doublings,
                 total,
@@ -3598,23 +3622,24 @@ fn cell_by_cell(
     mut first_sums: Option<&mut Option<Result<Sums, MassError>>>,
 ) -> Result<Sums, MassError> {
     let at = (face, surface, outline, index);
-    let mut open = Vec::with_capacity(panels_at.len());
+    let mut runs = Vec::with_capacity(panels_at.len());
     for at in panels_at {
-        let Some(own) = first.get_mut(at.range.clone()) else {
+        let Some(own) = first.get(at.range.clone()) else {
             return Err(MassError::Invalid { face: index });
         };
-        let total = boundary_integral(
-            (face, outline),
-            surface,
-            rule,
-            own,
-            sense,
-            plan,
-            (true, 0),
-            work,
-        )
-        .map_err(|error| MassError::Geometry { face: index, error })?
-        .ok_or(unsettled(index))?;
+        runs.push((own, 0));
+    }
+    let totals = boundary_integrals(
+        (face, outline),
+        surface,
+        rule,
+        &runs,
+        (sense, plan),
+        index,
+        work,
+    )?;
+    let mut open = Vec::with_capacity(panels_at.len());
+    for ((at, total), (own, _)) in panels_at.iter().zip(totals).zip(runs) {
         open.push(Cell {
             key: (at.loop_index, at.piece),
             panel: at.panel,
@@ -3884,21 +3909,58 @@ const PARALLEL_FACES: usize = 8;
 /// thread can be started (wasm, a machine out of threads) the faces are
 /// done one after the other on this thread, with the same results.
 fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    in_order(count, PARALLEL_FACES, work)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// True on a thread that does a share of [`in_order`]'s work (and on
+    /// the thread that shares it out, while it does its own share).
+    static SHARING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The threads doing a share of [`in_order`]'s work right now, over all
+/// its calls: work within shared-out work (the panels of one slow face
+/// while the faces of its body are shared out) takes only the threads
+/// that are idle, so that the machine is not asked for threads of
+/// threads, and gets more of them as the other faces are done.
+#[cfg(not(target_arch = "wasm32"))]
+static BUSY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `work(0..count)`, in that order, shared out over as many threads as
+/// the machine has (within shared-out work already: as many as are idle),
+/// one item at a time, with at least `each` items a thread; each result
+/// goes to its own slot, so the results are the same however the items
+/// were shared out. Where no thread can be started (wasm, a machine out
+/// of threads) the items are done one after the other on this thread.
+fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Mutex, PoisonError};
-        let threads = craft3d_math::available_threads()
-            .min(count / PARALLEL_FACES.max(1) + 1)
-            .min(count);
+        let machine = craft3d_math::available_threads();
+        let room = if SHARING.with(std::cell::Cell::get) {
+            // This thread, and the idle ones.
+            machine
+                .saturating_sub(BUSY.load(Ordering::Relaxed))
+                .saturating_add(1)
+        } else {
+            machine
+        };
+        let threads = room.min(count / each.max(1) + 1).min(count);
         if threads > 1 {
             let next = AtomicUsize::new(0);
             let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
             // Each helper's count of work (`craft3d_geom::allowance`) is
             // added to this thread's when it is joined, so the count is the
-            // same however the faces were shared out.
+            // same however the items were shared out.
             let run = || {
                 let before = craft3d_geom::allowance::spent();
+                let was = SHARING.with(|sharing| sharing.replace(true));
+                if !was {
+                    BUSY.fetch_add(1, Ordering::Relaxed);
+                }
+                let _back = Restore(was);
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(slot) = slots.get(index) else {
@@ -3937,6 +3999,182 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
         }
     }
     (0..count).map(work).collect()
+}
+
+/// Puts [`SHARING`] back as it was, and counts the thread out of
+/// [`BUSY`] when it was counted in, when dropped: also when the work
+/// panics.
+#[cfg(not(target_arch = "wasm32"))]
+struct Restore(bool);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let was = self.0;
+        SHARING.with(|sharing| sharing.set(was));
+        if !was {
+            BUSY.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Panels of one face summed at once at least, a thread: enough that
+/// starting the threads is nothing against them on a spline surface,
+/// where one panel's inner integrals take thousands of evaluations.
+const PARALLEL_PANELS: usize = 4;
+
+/// What [`boundary_integral`] gave for one run of samples, on a copy of
+/// the face's work: the sum (or why there is none), the work it took, and
+/// the work it had spent at each look at the budget.
+struct RunSum {
+    total: Result<Option<Total>, GeomError>,
+    spent: u64,
+    checks: Vec<u64>,
+}
+
+/// [`boundary_integral`] of each of `runs` (the samples of a panel, and
+/// the doublings of its inner integrals), in their order: exactly what
+/// summing them one after the other on `work` gives, the work counted on
+/// it included, and the same error where that stops (the first run that
+/// fails, or the first look at the budget past it, with the work as it
+/// stood there). On a spline surface the runs are shared out over
+/// threads, each summed on a copy of `work` that only it adds to; where
+/// each looked at the budget is replayed afterwards, in order, so that
+/// the face is given up at the same place on every machine and with any
+/// number of threads (2026-10-21). Only for samples that are summed as
+/// they are (`unrolled` already, as in [`cells_of`] and
+/// [`cell_by_cell`]).
+#[allow(clippy::too_many_arguments)]
+fn boundary_integrals(
+    (face, outline): (&Face, &Outline),
+    surface: &Surface,
+    rule: &Rule,
+    runs: &[(&[Sample], u32)],
+    (sense, plan): (f64, &Plan),
+    index: usize,
+    work: &mut Work,
+) -> Result<Vec<Total>, MassError> {
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    // Not worth a thread on an analytic surface, nor for one run: one
+    // after the other on the face's own work, as always.
+    if !freeform || runs.len() < 2 {
+        let mut totals = Vec::with_capacity(runs.len());
+        for &(samples, doublings) in runs {
+            let mut samples = samples.to_vec();
+            let total = boundary_integral(
+                (face, outline),
+                surface,
+                rule,
+                &mut samples,
+                sense,
+                plan,
+                (true, doublings),
+                work,
+            )
+            .map_err(|error| MassError::Geometry { face: index, error })?
+            .ok_or(unsettled(index))?;
+            totals.push(total);
+        }
+        return Ok(totals);
+    }
+    let start = work.spent;
+    // What the face had left before the first run.
+    let room = work.limit.saturating_sub(start);
+    let base = work.clone();
+    let one = |k: usize| {
+        let mut own = base.clone();
+        own.spent = 0;
+        // A run that alone takes more than the face had left before the
+        // first of them is past the budget wherever the runs before it
+        // leave the work: it may stop there.
+        own.limit = room;
+        own.checks = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let Some(&(samples, doublings)) = runs.get(k) else {
+            return RunSum {
+                total: Ok(None),
+                spent: 0,
+                checks: Vec::new(),
+            };
+        };
+        let mut samples = samples.to_vec();
+        let total = boundary_integral(
+            (face, outline),
+            surface,
+            rule,
+            &mut samples,
+            sense,
+            plan,
+            (true, doublings),
+            &mut own,
+        );
+        let checks = own
+            .checks
+            .take()
+            .map(|checks| {
+                std::mem::take(
+                    &mut *checks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                )
+            })
+            .unwrap_or_default();
+        RunSum {
+            total,
+            spent: own.spent,
+            checks,
+        }
+    };
+    // Once the runs done so far took more than the face had left, the
+    // face is most likely given up among them: no more runs are started
+    // (a run the replay reaches all the same is summed then, so what
+    // comes out is the same).
+    let done = std::sync::atomic::AtomicU64::new(0);
+    let sums = in_order(runs.len(), PARALLEL_PANELS, |k| {
+        if done.load(std::sync::atomic::Ordering::Relaxed) > room {
+            return None;
+        }
+        let sum = one(k);
+        done.fetch_add(sum.spent, std::sync::atomic::Ordering::Relaxed);
+        Some(sum)
+    });
+    replay(sums, &one, index, work)
+}
+
+/// The runs' sums as summing them one after the other on `work` would
+/// have given them ([`boundary_integrals`]): each run's work added in
+/// turn, and the face given up at the first look at the budget that was
+/// past it, counted from where the runs before left the work.
+/// A run that was not summed (`None`: it was not started once the runs
+/// before had taken the budget) is summed by `again` when it is reached.
+fn replay(
+    sums: Vec<Option<RunSum>>,
+    again: &dyn Fn(usize) -> RunSum,
+    index: usize,
+    work: &mut Work,
+) -> Result<Vec<Total>, MassError> {
+    let mut totals = Vec::with_capacity(sums.len());
+    for (k, sum) in sums.into_iter().enumerate() {
+        let sum = sum.unwrap_or_else(|| again(k));
+        let before = work.spent;
+        // The first look at the budget past it, counted from where the
+        // runs before this one left the work: there the face is given up.
+        let limit = work.limit;
+        if let Some(&over) = sum
+            .checks
+            .iter()
+            .find(|&&at| before.saturating_add(at) > limit)
+        {
+            work.spent = before.saturating_add(over);
+            return Err(unsettled(index));
+        }
+        work.spent = before.saturating_add(sum.spent);
+        match sum.total {
+            Ok(Some(total)) => totals.push(total),
+            Ok(None) => return Err(unsettled(index)),
+            Err(error) => return Err(MassError::Geometry { face: index, error }),
+        }
+    }
+    Ok(totals)
 }
 
 /// Area, volume and centroid of `body`. The body should pass
@@ -4669,6 +4907,7 @@ mod tests {
                 wrap: [None, None],
                 limit: BUDGET,
                 held: [0.0; 2],
+                checks: None,
             };
             let sums = integrals_in(
                 (&body, face, &surface, 0),
@@ -4701,11 +4940,72 @@ mod tests {
             wrap: [None, None],
             limit: BUDGET,
             held: [0.0; 2],
+            checks: None,
         };
         assert!(matches!(
             whole_surface(&surface, 0, &rule, &mut work),
             Err(MassError::Unsupported { .. })
         ));
+    }
+
+    /// Panels summed apart (on several threads, each on a copy of the
+    /// work) are counted and given up exactly where summing them one
+    /// after the other on the face's work would have: the work of each
+    /// run added in turn, and the face given up at the first look at the
+    /// budget past it, with the work as it stood there.
+    #[test]
+    fn runs_summed_apart_are_given_up_where_one_after_the_other_would_be() {
+        let surface = turned(0.3);
+        // Three runs of 15 each, looking at the budget before their own
+        // 0, 5 and 10.
+        let run = || RunSum {
+            total: Ok(Some(Total::default())),
+            spent: 15,
+            checks: vec![0, 5, 10],
+        };
+        let again = |_: usize| run();
+        let three = || (0..3).map(|_| Some(run())).collect::<Vec<_>>();
+        let with = |spent: u64, limit: u64| {
+            let mut work = Work::new(&surface);
+            work.spent = spent;
+            work.limit = limit;
+            work
+        };
+        // One after the other the second run looks at 15, 20 and 25 (not
+        // past 25), the third at 30: given up there.
+        let mut work = with(0, 25);
+        assert!(matches!(
+            replay(three(), &again, 0, &mut work),
+            Err(MassError::Unsupported { .. })
+        ));
+        assert_eq!(work.spent, 30);
+        // With room for all three: each summed and counted.
+        let mut work = with(0, 40);
+        assert_eq!(replay(three(), &again, 0, &mut work).unwrap().len(), 3);
+        assert_eq!(work.spent, 45);
+        // Past the budget before the first: given up at its first look.
+        let mut work = with(26, 25);
+        assert!(replay(three(), &again, 0, &mut work).is_err());
+        assert_eq!(work.spent, 26);
+        // A run that stopped on its own (past what the face had left when
+        // the runs started) is given up too.
+        let mut stopped = three();
+        if let Some(sum) = stopped[1].as_mut() {
+            sum.total = Ok(None);
+        }
+        let mut work = with(0, 1000);
+        assert!(replay(stopped, &again, 0, &mut work).is_err());
+        assert_eq!(work.spent, 30);
+        // A run not started is summed when the replay reaches it: the same
+        // as when it was.
+        let mut skipped = three();
+        skipped[2] = None;
+        let mut work = with(0, 40);
+        assert_eq!(replay(skipped, &again, 0, &mut work).unwrap().len(), 3);
+        assert_eq!(work.spent, 45);
+        // Shared out or not, the items come back in their order.
+        let squares = in_order(100, 1, |k| k * k);
+        assert_eq!(squares, (0..100).map(|k| k * k).collect::<Vec<_>>());
     }
 
     /// The cap's rim in `pieces` arcs.
