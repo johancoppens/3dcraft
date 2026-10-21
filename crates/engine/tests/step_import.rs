@@ -221,15 +221,15 @@ fn what_cannot_be_imported_is_refused_and_changes_nothing() {
         assert!(e.contains(says), "{params}: {e}");
         assert!(bodies(&mut s).is_empty(), "{params} changed the document");
     }
-    // A document whose tolerance is coarser than a body's detail reads
-    // it all the same; a vertex moved off its edges is refused with the
-    // gap (crates/io/tests/step_import.rs has the file-level variants).
+    // A vertex moved off its edges by ten times the cap on an entity's
+    // tolerance is refused with the gap (crates/io/tests/step_import.rs
+    // has the file-level variants, and a gap within the cap read).
     let text = std::fs::read_to_string(dir.join("out.step")).unwrap();
-    let moved = text.replacen("CARTESIAN_POINT('',(40.,", "CARTESIAN_POINT('',(40.001,", 1);
+    let moved = text.replacen("CARTESIAN_POINT('',(40.,", "CARTESIAN_POINT('',(40.01,", 1);
     assert_ne!(moved, text);
     std::fs::write(dir.join("moved.step"), moved).unwrap();
     let e = error(&mut s, "file.import", json!({"path": "moved.step"}));
-    assert!(e.contains("tolerance per edge and vertex"), "{e}");
+    assert!(e.contains("refused rather than moved"), "{e}");
     assert!(bodies(&mut s).is_empty());
 }
 
@@ -244,6 +244,40 @@ fn import_needs_a_document_and_files() {
     run(&mut s, "file.new", json!({"units": "mm"}));
     let e = error(&mut s, "file.import", json!({"path": "a.step"}));
     assert!(!e.is_empty());
+}
+
+#[test]
+fn an_import_that_would_make_a_document_too_large_to_open_is_refused() {
+    // Three files of 90 MB (a small solid and a long comment, each
+    // different) would make a .3dcraft file over the 256 MiB that are
+    // read: the third is refused, and the document still saves.
+    let dir = workdir("step-import", "large");
+    let (_, path) = exported(&dir);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let at = text.find("DATA;").unwrap();
+    for k in 0..3 {
+        let comment = format!(
+            "/* {} */\n",
+            char::from(b'a' + k).to_string().repeat(90 << 20)
+        );
+        let padded = format!("{}{comment}{}", &text[..at], &text[at..]);
+        std::fs::write(dir.join(format!("big{k}.step")), padded).unwrap();
+    }
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "file.import", json!({"path": "big0.step"}));
+    run(&mut s, "file.import", json!({"path": "big1.step"}));
+    let e = error(&mut s, "file.import", json!({"path": "big2.step"}));
+    assert!(e.contains("opened again"), "{e}");
+    assert_eq!(bodies(&mut s).len(), 6);
+    run(&mut s, "file.save", json!({"path": "big.3dcraft"}));
+    let mut t = session_in(&dir);
+    run(&mut t, "file.open", json!({"path": "big.3dcraft"}));
+    assert_eq!(bodies(&mut t).len(), 6);
+    for k in 0..3 {
+        let _ = std::fs::remove_file(dir.join(format!("big{k}.step")));
+    }
+    let _ = std::fs::remove_file(dir.join("big.3dcraft"));
 }
 
 // ------------------------------------------------- the opt-in oracles
@@ -277,6 +311,7 @@ fn every_body_of_the_showcase_reads_back() {
     use craft3d_io::{StepBody, StepOptions, export_step};
     let mut problems = Vec::new();
     let mut read = 0;
+    let mut unproven = 0;
     for path in showcase() {
         let model = path.file_stem().unwrap().to_string_lossy().to_string();
         let doc = craft3d_format::load(&path).unwrap();
@@ -327,6 +362,7 @@ fn every_body_of_the_showcase_reads_back() {
                 let options = craft3d_stepread::Options {
                     metres_per_unit: metres,
                     tolerance,
+                    loosest: 1000.0 * tolerance.linear,
                 };
                 let (mut faces, mut edges, mut vertices, mut volume, mut area) =
                     (0, 0, 0, 0.0, 0.0);
@@ -334,6 +370,13 @@ fn every_body_of_the_showcase_reads_back() {
                 for k in 0..parsed.items().len() {
                     match parsed.build(k, &options) {
                         Ok(done) => {
+                            unproven += done.report.unproven_edges;
+                            if done.report.loose_edges + done.report.loose_vertices > 0 {
+                                problems.push(format!(
+                                    "{what} in {metres} m: our own export read with loose entities: {:?}",
+                                    done.report
+                                ));
+                            }
                             faces += done.body.faces.len();
                             edges += done.body.edges.len();
                             vertices += done.body.vertices.len();
@@ -374,7 +417,10 @@ fn every_body_of_the_showcase_reads_back() {
             }
         }
     }
-    println!("{read} bodies read back; {} problems", problems.len());
+    println!(
+        "{read} bodies read back; {} problems; {unproven} edges no proof was found for (sampled within the tolerance)",
+        problems.len()
+    );
     for p in &problems {
         println!("  {p}");
     }

@@ -100,6 +100,7 @@ pub(crate) fn import_bytes(
         craft3d_stepread::Options {
             metres_per_unit: craft3d_regen::metres_per_unit(doc.units.length),
             tolerance,
+            loosest: doc.tolerance.loosest_linear(),
         }
     };
     let mut reports = Vec::with_capacity(items.len());
@@ -127,9 +128,25 @@ pub(crate) fn import_bytes(
             "mergedEdges": r.merged_edges,
             "edgeGap": r.edge_gap,
             "turnedShells": r.turned_shells,
+            "looseEdges": r.loose_edges,
+            "looseVertices": r.loose_vertices,
+            "unprovenEdges": r.unproven_edges,
+            "largestTolerance": r.largest_tolerance,
         }));
     }
     let count = items.len();
+    // The document must still save to a file that opens again.
+    {
+        let doc = session.document()?.history.current();
+        let size = craft3d_format::size_with(doc, &blob, count)
+            .map_err(|e| CommandError::new(format!("{id}: {e}")))?;
+        if size > craft3d_format::MAX_FILE_BYTES {
+            return fail(format!(
+                "{id}: with `{file_name}` the document would be a {size}-byte .3dcraft file, and at most {} bytes are opened again; it is not imported",
+                craft3d_format::MAX_FILE_BYTES
+            ));
+        }
+    }
     let step_names: Vec<String> = items.iter().map(|item| item.name.clone()).collect();
     let label = format!("Import {file_name}");
     let ids = edit(session, id, &label, |doc| {

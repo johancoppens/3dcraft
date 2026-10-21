@@ -68,9 +68,12 @@
 //! a length unit, references to the wrong kind of entity, chains of
 //! references deeper than a few levels, non-finite or absurd numbers.
 
+mod budget;
 mod geometry;
 mod topology;
 mod units;
+
+pub use budget::MAX_CONTROL_POINT_USES;
 
 use craft3d_math::Tolerance;
 use craft3d_step::{Entity, Instance, Param, ReadLimits, Record, StepFile};
@@ -127,6 +130,11 @@ pub struct Options {
     /// The modelling tolerance, in that unit: the bodies are checked with
     /// it.
     pub tolerance: Tolerance,
+    /// The cap on any entity's own tolerance, in that unit (the
+    /// document's `loosest`): an edge or vertex of the file that lies off
+    /// its faces or edges by more than the tolerance gets what was proven
+    /// as its own tolerance, up to this; beyond it the body is refused.
+    pub loosest: f64,
 }
 
 /// How one item was read.
@@ -152,6 +160,16 @@ pub struct Report {
     /// Shells whose faces were turned over because the volume they
     /// enclose had the wrong sign (a cavity given as a plain shell).
     pub turned_shells: usize,
+    /// Edges and vertices that lie off their faces or edges by more than
+    /// the tolerance, and so have a tolerance of their own, and the
+    /// largest such tolerance (0 when there is none).
+    pub loose_edges: usize,
+    /// Edges no proof within the cap was found for, accepted because 1025
+    /// places along them all lie within the tolerance of their faces (an
+    /// arc through a sphere's pole, where the prover gives out).
+    pub unproven_edges: usize,
+    pub loose_vertices: usize,
+    pub largest_tolerance: f64,
 }
 
 /// One item as a body.
@@ -203,34 +221,52 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, ImportError> {
         contexts: BTreeMap::new(),
     };
     parsed.find_items()?;
+    budget::check(&parsed)?;
     Ok(parsed)
 }
 
-/// The last file [`parse_shared`] parsed, by its key.
-static SHARED: Mutex<Option<(String, Arc<Parsed>)>> = Mutex::new(None);
+/// The files [`parse_shared`] parsed last, by key, the most recent first.
+static SHARED: Mutex<Vec<(String, usize, Arc<Parsed>)>> = Mutex::new(Vec::new());
 
-/// [`parse`], kept for the next call with the same key (the hash of the
+/// How many parsed files [`parse_shared`] keeps, and how many bytes of
+/// files at most (a parsed file takes several times its bytes).
+const SHARED_FILES: usize = 4;
+const SHARED_BYTES: usize = MAX_IMPORT_BYTES;
+
+/// [`parse`], kept for the next calls with the same key (the hash of the
 /// bytes): one document's import features each read one solid of the same
-/// file, and the file is parsed once for all of them.
+/// file, and the file is parsed once for all of them. A few files are
+/// kept, the least recently used let go first, within [`SHARED_BYTES`].
 pub fn parse_shared(bytes: &[u8], key: &str) -> Result<Arc<Parsed>, ImportError> {
     {
-        let held = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((held_key, parsed)) = held.as_ref()
-            && held_key == key
-        {
-            return Ok(Arc::clone(parsed));
+        let mut held = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = held.iter().position(|(k, _, _)| k == key) {
+            let entry = held.remove(at);
+            let parsed = Arc::clone(&entry.2);
+            held.insert(0, entry);
+            return Ok(parsed);
         }
     }
     let parsed = Arc::new(parse(bytes)?);
     let mut held = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-    *held = Some((key.to_string(), Arc::clone(&parsed)));
+    held.insert(0, (key.to_string(), bytes.len(), Arc::clone(&parsed)));
+    let mut total = 0usize;
+    let mut keep = 0;
+    for (_, size, _) in held.iter() {
+        total = total.saturating_add(*size);
+        if keep >= SHARED_FILES || (keep > 0 && total > SHARED_BYTES) {
+            break;
+        }
+        keep += 1;
+    }
+    held.truncate(keep.max(1));
     Ok(parsed)
 }
 
-/// Lets go of the file [`parse_shared`] keeps.
+/// Lets go of the files [`parse_shared`] keeps.
 pub fn forget_shared() {
     let mut held = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-    *held = None;
+    held.clear();
 }
 
 /// The keywords of an instance, for messages: `LINE`, or
@@ -427,6 +463,11 @@ impl Parsed {
         }
         if Tolerance::new(options.tolerance.linear, options.tolerance.angular).is_none() {
             return err("the tolerance must be positive and finite");
+        }
+        if !(options.loosest.is_finite() && options.loosest >= options.tolerance.linear) {
+            return err(
+                "the cap on an entity's tolerance must be finite and at least the tolerance",
+            );
         }
         let context = match self.contexts.get(&item.id) {
             Some(&context) => context,

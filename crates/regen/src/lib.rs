@@ -1205,6 +1205,7 @@ fn imported(
     let options = craft3d_stepread::Options {
         metres_per_unit: metres_per_unit(doc.units.length),
         tolerance,
+        loosest: doc.tolerance.loosest_linear(),
     };
     let index = usize::try_from(import.solid).unwrap_or(usize::MAX);
     let read = parsed

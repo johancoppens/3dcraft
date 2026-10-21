@@ -42,6 +42,7 @@ fn options() -> Options {
     Options {
         metres_per_unit: 1e-3,
         tolerance: Tolerance::default(),
+        loosest: 1000.0 * (Tolerance::default()).linear,
     }
 }
 

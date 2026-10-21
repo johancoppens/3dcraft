@@ -3994,3 +3994,60 @@ fn the_cap_on_entity_tolerances_is_kept_and_absent_means_the_default() {
         1000.0 * craft3d_doc::Tolerance::default().linear
     );
 }
+
+/// A document whose imported files together would make a `.3dcraft` file
+/// larger than a file that is read is not saved: saving it would lose the
+/// work at the next open. `size_with` says so before an import.
+#[test]
+fn a_document_too_large_to_open_again_is_not_saved() {
+    use craft3d_doc::{Blob, Import};
+    let mut doc = small();
+    let size = 90 * 1024 * 1024;
+    for k in 0..3u8 {
+        let blob = Blob::new(vec![b'0' + k; size]);
+        if k < 2 {
+            doc.add_feature(
+                None,
+                FeatureKind::Import(Import {
+                    file_name: format!("part{k}.step"),
+                    solid: 0,
+                    data: blob,
+                }),
+            )
+            .unwrap();
+        } else {
+            // A third would not fit.
+            let total = craft3d_format::size_with(&doc, &blob, 1).unwrap();
+            assert!(total > MAX_FILE_BYTES, "{total}");
+            // The same bytes again cost nothing.
+            let again = Blob::new(vec![b'0'; size]);
+            assert!(craft3d_format::size_with(&doc, &again, 1).unwrap() <= MAX_FILE_BYTES);
+            doc.add_feature(
+                None,
+                FeatureKind::Import(Import {
+                    file_name: "part2.step".to_string(),
+                    solid: 0,
+                    data: blob,
+                }),
+            )
+            .unwrap();
+        }
+    }
+    let error = to_bytes(&doc).unwrap_err();
+    assert!(matches!(error, FormatError::TooLarge { .. }), "{error}");
+    assert!(error.to_string().contains("imported files"), "{error}");
+}
+
+/// An entry under `blobs/` that no feature names is not read: a file with
+/// a stray (even damaged) one opens.
+#[test]
+fn a_blob_no_feature_names_is_not_read() {
+    let json = to_manifest_json(&small()).unwrap();
+    let stray = format!("blobs/{}.step", "0".repeat(64));
+    let bytes = write_stored(&[
+        (MANIFEST_NAME, json.as_bytes()),
+        (stray.as_str(), b"not what the name says"),
+    ])
+    .unwrap();
+    assert_eq!(from_bytes(&bytes).unwrap(), small());
+}

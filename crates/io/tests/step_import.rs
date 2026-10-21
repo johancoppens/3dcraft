@@ -148,6 +148,7 @@ fn round_trip(name: &str, body: &Body, scale: f64, unit: Unit, problems: &mut Ve
     let read = Options {
         metres_per_unit: metres,
         tolerance: tolerance(scale),
+        loosest: 1000.0 * (tolerance(scale)).linear,
     };
     let mut imported = Vec::new();
     for (index, item) in parsed.items().iter().enumerate() {
@@ -247,6 +248,7 @@ fn a_file_in_inches_reads_back_in_millimetres() {
             &Options {
                 metres_per_unit: 1e-3,
                 tolerance: Tolerance::default(),
+                loosest: 1000.0 * (Tolerance::default()).linear,
             },
         )
         .unwrap();
@@ -284,6 +286,7 @@ fn read_all(file: &StepFile) -> Result<Vec<craft3d_stepread::Imported>, String> 
     let options = Options {
         metres_per_unit: 1e-3,
         tolerance: tolerance(1.0),
+        loosest: 1000.0 * (tolerance(1.0)).linear,
     };
     (0..parsed.items().len())
         .map(|i| parsed.build(i, &options).map_err(|e| e.to_string()))
@@ -559,11 +562,8 @@ fn a_cavity_given_as_a_plain_shell_is_turned_and_said_so() {
     assert_eq!(imported[0].report.turned_shells, 1);
 }
 
-#[test]
-fn a_vertex_off_its_edges_is_refused_with_the_gap() {
-    // One corner of a block moved by 1e-3 mm: the edges at it no longer
-    // end at it. Nothing is moved back; the body is refused, naming the
-    // vertex, the edge and the distance.
+/// A block whose first corner is moved by `by` mm in x in the file.
+fn block_with_a_moved_corner(by: f64) -> StepFile {
     let body = craft3d_kernel::primitives::block(&Frame::WORLD, 10.0, 20.0, 30.0).unwrap();
     let mut file = file_of("block", &body);
     let vertex_point = file
@@ -578,13 +578,158 @@ fn a_vertex_off_its_edges_is_refused_with_the_gap() {
             && let Param::List(xyz) = &mut record.params[1]
         {
             let x = xyz[0].as_real().unwrap();
-            xyz[0] = Param::Real(x + 1e-3);
+            xyz[0] = Param::Real(x + by);
         }
     }
-    let error = read_all(&file).unwrap_err();
-    assert!(error.contains("vertex #"), "{error}");
-    assert!(error.contains("e-3") || error.contains("e-4"), "{error}");
-    assert!(error.contains("tolerance per edge and vertex"), "{error}");
+    file
+}
+
+#[test]
+fn a_vertex_off_its_edges_by_more_than_the_cap_is_refused_with_the_gap() {
+    // One corner of a block moved by 1e-2 mm, ten times the cap: the
+    // edges at it no longer end at it. Nothing is moved back; the body is
+    // refused, naming the vertex and the distance.
+    let error = read_all(&block_with_a_moved_corner(1e-2)).unwrap_err();
+    assert!(
+        error.contains("vertex #") || error.contains("edge #"),
+        "{error}"
+    );
+    assert!(error.contains("refused rather than moved"), "{error}");
+}
+
+#[test]
+fn a_vertex_off_its_edges_within_the_cap_gets_its_gap_as_its_tolerance() {
+    // Moved by 1e-4 mm (a hundred times the tolerance, a tenth of the
+    // cap): read, nothing moved, the vertex given a tolerance of its own
+    // at least the gap, and the body checked with it.
+    let imported = read_all(&block_with_a_moved_corner(1e-4)).unwrap();
+    let one = &imported[0];
+    assert!(one.report.loose_vertices >= 1, "{:?}", one.report);
+    assert!(one.report.largest_tolerance >= 1e-4, "{:?}", one.report);
+    assert!(one.report.largest_tolerance <= 1e-3, "{:?}", one.report);
+    assert!(!one.body.tolerances.is_empty());
+    let moved = one
+        .body
+        .vertices
+        .iter()
+        .any(|v| (v.point.x - 1e-4).abs() < 1e-12);
+    assert!(moved, "the vertex stays where the file put it");
+    let defects = craft3d_topo::check_capped(&one.body, &tolerance(1.0), 1e-3);
+    assert!(defects.is_empty(), "{defects:?}");
+}
+
+const HEAD: &str = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n#1=( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n#4=( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#1)) REPRESENTATION_CONTEXT('','') );\n";
+const TAIL: &str = "ENDSEC;\nEND-ISO-10303-21;\n";
+
+/// A sheet on the plane z = 0 bounded by a polyline of 9 points whose odd
+/// points are `lift` above the plane, closed by an arc of a parabola (a
+/// quadratic B-spline) in the plane: five samples of the polyline (at
+/// its even points) see nothing.
+fn zigzag_sheet(lift: f64) -> String {
+    let mut text = String::from(HEAD);
+    let mut ids = Vec::new();
+    for k in 0..9 {
+        let id = 100 + k;
+        let z = if k % 2 == 1 { lift } else { 0.0 };
+        text.push_str(&format!(
+            "#{id}=CARTESIAN_POINT('',({}.,0.,{z:?}));\n",
+            k * 10
+        ));
+        ids.push(format!("#{id}"));
+    }
+    text.push_str(&format!(
+        "#5=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('zig',(#10),#4);\n\
+         #10=SHELL_BASED_SURFACE_MODEL('zig',(#11));\n\
+         #11=OPEN_SHELL('',(#12));\n\
+         #12=ADVANCED_FACE('',(#13),#20,.T.);\n\
+         #13=FACE_OUTER_BOUND('',#14,.T.);\n\
+         #14=EDGE_LOOP('',(#15,#16));\n\
+         #15=ORIENTED_EDGE('',*,*,#17,.T.);\n\
+         #16=ORIENTED_EDGE('',*,*,#18,.T.);\n\
+         #17=EDGE_CURVE('',#30,#31,#40,.T.);\n\
+         #18=EDGE_CURVE('',#31,#30,#41,.T.);\n\
+         #30=VERTEX_POINT('',#100);\n\
+         #31=VERTEX_POINT('',#108);\n\
+         #40=POLYLINE('',({}));\n\
+         #41=B_SPLINE_CURVE_WITH_KNOTS('',2,(#108,#50,#100),.UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.);\n\
+         #50=CARTESIAN_POINT('',(40.,30.,0.));\n\
+         #20=PLANE('',#21);\n\
+         #21=AXIS2_PLACEMENT_3D('',#22,$,$);\n\
+         #22=CARTESIAN_POINT('',(0.,0.,0.));\n{TAIL}",
+        ids.join(",")
+    ));
+    text
+}
+
+#[test]
+fn an_edge_off_its_face_between_the_samples_is_refused() {
+    let options = Options {
+        metres_per_unit: 1e-3,
+        tolerance: tolerance(1.0),
+        loosest: 1e-3,
+    };
+    // Flat: read, exact.
+    let flat = parse(zigzag_sheet(0.0).as_bytes()).unwrap();
+    let sheet = flat.build(0, &options).unwrap();
+    assert_eq!(sheet.body.kind, BodyKind::Sheet);
+    assert!(sheet.body.tolerances.is_empty(), "{:?}", sheet.report);
+    // 1 mm off the plane at every other point: a million times the
+    // tolerance, refused naming the edge.
+    let zig = parse(zigzag_sheet(1.0).as_bytes()).unwrap();
+    let error = zig.build(0, &options).unwrap_err().to_string();
+    assert!(error.contains("edge #17"), "{error}");
+    assert!(error.contains("refused rather than moved"), "{error}");
+    // Within the cap (2e-4 mm): read, the edge given its proven gap.
+    let small = parse(zigzag_sheet(2e-4).as_bytes()).unwrap();
+    let sheet = small.build(0, &options).unwrap();
+    assert_eq!(sheet.report.loose_edges, 1, "{:?}", sheet.report);
+    assert!(sheet.report.largest_tolerance >= 2e-4, "{:?}", sheet.report);
+}
+
+#[test]
+fn a_surface_shared_by_many_faces_is_refused_before_it_is_copied() {
+    // The reviewer's probe: one B-spline surface of 1000 x 1000 control
+    // points (all the same point) shared by many faces without bounds.
+    // Each face would hold a copy (some 64 MB); the file is refused when
+    // it is parsed, in bounded time and memory.
+    let faces = 150;
+    let mut text = String::from(HEAD);
+    text.push_str("#30=CARTESIAN_POINT('',(0.,0.,0.));\n");
+    let row = vec!["#30"; 1000].join(",");
+    let net = vec![format!("({row})"); 1000].join(",");
+    let values: Vec<String> = (0..1000).map(|k| format!("{k}.")).collect();
+    let mut mults = vec!["1"; 1000];
+    mults[0] = "2";
+    mults[999] = "2";
+    let (values, mults) = (values.join(","), mults.join(","));
+    text.push_str(&format!(
+        "#31=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,({net}),.UNSPECIFIED.,.F.,.F.,.F.,({mults}),({mults}),({values}),({values}),.UNSPECIFIED.);\n"
+    ));
+    let face_ids: Vec<String> = (0..faces).map(|k| format!("#{}", 1000 + k)).collect();
+    for f in &face_ids {
+        text.push_str(&format!("{f}=ADVANCED_FACE('',(),#31,.T.);\n"));
+    }
+    let shell = format!("#11=OPEN_SHELL('',({}));\n", face_ids.join(","));
+    text.push_str(&shell);
+    text.push_str(
+        "#10=SHELL_BASED_SURFACE_MODEL('probe',(#11));\n#5=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('probe',(#10),#4);\n",
+    );
+    text.push_str(TAIL);
+    let start = std::time::Instant::now();
+    let error = parse(text.as_bytes()).unwrap_err().to_string();
+    assert!(error.contains("control points"), "{error}");
+    assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    // One such face is within the budget, and refused as a face without
+    // an edge loop on a surface that does not close.
+    let one = text.replace(&shell, "#11=OPEN_SHELL('',(#1000));\n");
+    let parsed = parse(one.as_bytes()).unwrap();
+    let options = Options {
+        metres_per_unit: 1e-3,
+        tolerance: tolerance(1.0),
+        loosest: 1e-3,
+    };
+    let error = parsed.build(0, &options).unwrap_err().to_string();
+    assert!(error.contains("without an edge loop"), "{error}");
 }
 
 // --------------------------------------------------- hostile variations
@@ -612,6 +757,7 @@ fn damaged_files_are_errors_never_panics() {
     let options = Options {
         metres_per_unit: 1e-3,
         tolerance: tolerance(1.0),
+        loosest: 1000.0 * (tolerance(1.0)).linear,
     };
     let read = |bytes: &[u8]| {
         if let Ok(parsed) = parse(bytes) {

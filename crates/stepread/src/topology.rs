@@ -14,7 +14,7 @@
 
 use crate::geometry::Reader;
 use crate::{ImportError, Imported, Item, ItemKind, Options, Report, boolean, err, keywords};
-use craft3d_geom::Curve3;
+use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
 use craft3d_step::Param;
 use craft3d_topo::{Body, BodyKind, Coedge, Defect, EdgeId, FaceId, LoopId, VertexId};
@@ -38,6 +38,10 @@ struct Builder<'a, 'r> {
     grid: BTreeMap<(i64, i64, i64), Vec<VertexId>>,
     edges: BTreeMap<u64, EdgeOf>,
     faces: BTreeMap<u64, FaceId>,
+    /// Curves and surfaces read, by instance id: read once however many
+    /// edges and faces use them (`crate::budget` bounds the copies).
+    curves: BTreeMap<u64, Curve3>,
+    surfaces: BTreeMap<u64, (Surface, bool)>,
     face_ids: Vec<u64>,
     edge_ids: Vec<u64>,
     vertex_ids: Vec<u64>,
@@ -200,7 +204,14 @@ impl Builder<'_, '_> {
         let end = self.reference(id, record.params.get(2), "edge_end")?;
         let geometry = self.reference(id, record.params.get(3), "edge_geometry")?;
         let same_sense = self.flag(id, record.params.get(4), "same_sense")?;
-        let curve = self.reader.curve(geometry)?;
+        let curve = match self.curves.get(&geometry) {
+            Some(curve) => curve.clone(),
+            None => {
+                let curve = self.reader.curve(geometry)?;
+                self.curves.insert(geometry, curve.clone());
+                curve
+            }
+        };
         let (start, end) = (self.vertex(start)?, self.vertex(end)?);
         let (a, b) = if same_sense {
             (start, end)
@@ -305,7 +316,14 @@ impl Builder<'_, '_> {
         let bounds = record.params.get(1).and_then(Param::as_list).unwrap_or(&[]);
         let surface_id = self.reference(id, record.params.get(2), "face_geometry")?;
         let same_sense = self.flag(id, record.params.get(3), "same_sense")?;
-        let (surface, opposite) = self.reader.surface(surface_id)?;
+        let (surface, opposite) = match self.surfaces.get(&surface_id) {
+            Some(read) => read.clone(),
+            None => {
+                let read = self.reader.surface(surface_id)?;
+                self.surfaces.insert(surface_id, read.clone());
+                read
+            }
+        };
         let mut loops: Vec<LoopId> = Vec::with_capacity(bounds.len());
         for bound in bounds {
             let bound = self.reference(id, Some(bound), "bounds")?;
@@ -315,6 +333,22 @@ impl Builder<'_, '_> {
                 }
                 loops.push(self.body.add_loop(coedges));
             }
+        }
+        // A face without an edge loop is its whole surface: only a surface
+        // that closes all around is one (a sphere, a torus, a spline
+        // surface closed both ways).
+        let closed = match &surface {
+            Surface::Sphere(_) | Surface::Torus(_) => true,
+            other => other.period_u().is_some() && other.period_v().is_some(),
+        };
+        if loops.is_empty() && !closed {
+            return self.bad(
+                id,
+                &format!(
+                    "a face without an edge loop on a {}, which does not close all around",
+                    surface.kind()
+                ),
+            );
         }
         let reversed = !same_sense ^ opposite ^ turned;
         let face = self.body.add_face(surface, reversed, loops);
@@ -493,6 +527,41 @@ impl Builder<'_, '_> {
     }
 }
 
+/// Points along an edge, per face that uses it, all within `tolerance` of
+/// the face's surface: 1025 places along the edge (the ends included).
+fn densely_within(body: &Body, edge: EdgeId, tolerance: f64) -> bool {
+    const PLACES: u32 = 1024;
+    let Some(e) = body.edge(edge) else {
+        return false;
+    };
+    let (t0, t1) = e.range;
+    let mut any = false;
+    for face in &body.faces {
+        let uses = face.loops.iter().any(|l| {
+            body.loop_(*l)
+                .is_some_and(|l| l.coedges.iter().any(|c| c.edge == edge))
+        });
+        if !uses {
+            continue;
+        }
+        any = true;
+        for k in 0..=PLACES {
+            let p = e
+                .curve
+                .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(PLACES));
+            let near = face
+                .surface
+                .project(p)
+                .ok()
+                .map(|(u, v)| face.surface.eval(u, v).distance(p));
+            if !near.is_some_and(|d| d <= tolerance) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 /// A loop run the other way.
 fn reverse(coedges: &mut [Coedge]) {
     coedges.reverse();
@@ -587,12 +656,13 @@ pub(crate) fn build(
     report: &mut Report,
 ) -> Result<Imported, ImportError> {
     let tolerance = options.tolerance.linear;
-    // The file's uncertainty, within the tolerance and a thousand times
-    // it (docs/decisions.md, 2026-10-18: the cap of a tolerance).
+    // The file's uncertainty, within the tolerance and the document's cap
+    // on an entity's tolerance (docs/decisions.md, 2026-10-18).
+    let cap = options.loosest;
     let merge = report
         .uncertainty
         .unwrap_or(tolerance)
-        .clamp(tolerance, 1000.0 * tolerance);
+        .clamp(tolerance, cap.max(tolerance));
     let kind = match item.kind {
         ItemKind::Solid => BodyKind::Solid,
         ItemKind::Sheet => BodyKind::Sheet,
@@ -606,6 +676,8 @@ pub(crate) fn build(
         grid: BTreeMap::new(),
         edges: BTreeMap::new(),
         faces: BTreeMap::new(),
+        curves: BTreeMap::new(),
+        surfaces: BTreeMap::new(),
         face_ids: Vec::new(),
         edge_ids: Vec::new(),
         vertex_ids: Vec::new(),
@@ -637,7 +709,76 @@ pub(crate) fn build(
             }
         }
     }
-    let defects = craft3d_topo::check(&builder.body, &options.tolerance);
+    // Every edge proven on the surfaces of its faces over its whole
+    // length (not sampled), and every vertex measured against the ends of
+    // its edges: what lies off by more than the tolerance gets what was
+    // proven as its own tolerance, up to the cap; beyond it, or when no
+    // proof within the cap is found, the body is refused naming the
+    // entity. Geometry is never moved.
+    let step_id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
+    for k in 0..builder.body.edges.len() {
+        let edge = EdgeId(u32::try_from(k).unwrap_or(u32::MAX));
+        match craft3d_topo::record_edge(&mut builder.body, edge, &options.tolerance, cap) {
+            Ok(Some(t)) => {
+                builder.report.loose_edges += 1;
+                builder.report.largest_tolerance = builder.report.largest_tolerance.max(t);
+            }
+            Ok(None) => {}
+            // No proof within the cap was found. Where the prover gives
+            // out on an edge that is exact (an arc through a sphere's
+            // pole), a dense sampling within the tolerance accepts it,
+            // counted; anything sampled off by more is refused.
+            Err(craft3d_topo::ToleranceError::EdgeNotMeasured { .. })
+                if densely_within(&builder.body, edge, tolerance) =>
+            {
+                builder.report.unproven_edges += 1;
+            }
+            Err(e) => {
+                let what = match e {
+                    craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
+                        format!(
+                            "lies {:e} off the surfaces of its faces",
+                            measured / craft3d_topo::RECORD_MARGIN
+                        )
+                    }
+                    craft3d_topo::ToleranceError::EdgeNotMeasured { .. } => {
+                        "could not be proven within the cap of its faces' surfaces".to_string()
+                    }
+                    other => other.to_string(),
+                };
+                return err(format!(
+                    "`{name}`: edge #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
+                    step_id(&builder.edge_ids, edge.0)
+                ));
+            }
+        }
+    }
+    for k in 0..builder.body.vertices.len() {
+        let vertex = VertexId(u32::try_from(k).unwrap_or(u32::MAX));
+        match craft3d_topo::record_vertex(&mut builder.body, vertex, &options.tolerance, cap) {
+            Ok(Some(t)) => {
+                builder.report.loose_vertices += 1;
+                builder.report.largest_tolerance = builder.report.largest_tolerance.max(t);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let what = match e {
+                    craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
+                        format!(
+                            "lies {:e} from the ends of its edges",
+                            measured / craft3d_topo::RECORD_MARGIN
+                        )
+                    }
+                    other => other.to_string(),
+                };
+                return err(format!(
+                    "`{name}`: vertex #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
+                    step_id(&builder.vertex_ids, vertex.0)
+                ));
+            }
+        }
+    }
+    let defects = craft3d_topo::check_capped(&builder.body, &options.tolerance, cap);
     let face_of = |f: FaceId| {
         builder
             .face_ids
@@ -680,7 +821,7 @@ pub(crate) fn build(
             })
             .count();
         return err(format!(
-            "`{name}`: {what}, more than the tolerance {tolerance:e} ({gaps} such gaps, this the largest); a body whose edges and vertices lie off their faces needs a tolerance per edge and vertex, which is not built yet"
+            "`{name}`: {what}, more than its tolerance ({gaps} such gaps, this the largest); the body is refused rather than moved"
         ));
     }
     if let Some(first) = defects.first() {

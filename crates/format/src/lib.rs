@@ -297,7 +297,31 @@ pub fn to_manifest_json(document: &Document) -> Result<String, FormatError> {
 /// document gives the same bytes, on every platform.
 pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
     let json = to_manifest_json(document)?;
-    // Each imported file once, in the order of its name.
+    let blobs = blobs_of(document);
+    // A file larger than this crate reads would be a document that cannot
+    // be opened again: refused before anything is written.
+    let size = file_size(
+        json.len(),
+        blobs.iter().map(|(name, blob)| (name.len(), blob.len())),
+    );
+    if size > MAX_FILE_BYTES {
+        return Err(FormatError::TooLarge {
+            what: "the document with its imported files",
+            size,
+            max: MAX_FILE_BYTES,
+        });
+    }
+    let mut entries: Vec<(&str, &[u8])> = vec![(MANIFEST_NAME, json.as_bytes())];
+    entries.extend(
+        blobs
+            .iter()
+            .map(|(name, blob)| (name.as_str(), blob.bytes())),
+    );
+    craft3d_zipstore::write_stored(&entries).map_err(FormatError::Zip)
+}
+
+/// Each imported file of the document once, by its entry name, in order.
+fn blobs_of(document: &Document) -> BTreeMap<String, &craft3d_doc::Blob> {
     let mut blobs: BTreeMap<String, &craft3d_doc::Blob> = BTreeMap::new();
     for feature in &document.features {
         if let craft3d_doc::FeatureKind::Import(import) = &feature.kind {
@@ -309,13 +333,43 @@ pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
                 .or_insert(&import.data);
         }
     }
-    let mut entries: Vec<(&str, &[u8])> = vec![(MANIFEST_NAME, json.as_bytes())];
-    entries.extend(
-        blobs
-            .iter()
-            .map(|(name, blob)| (name.as_str(), blob.bytes())),
-    );
-    craft3d_zipstore::write_stored(&entries).map_err(FormatError::Zip)
+    blobs
+}
+
+/// Bytes a stored ZIP of a manifest of `manifest` bytes and the given
+/// entries (name length, data length) takes: the data, and per entry its
+/// name twice and the headers (30 + 46 bytes), and the end record (22).
+fn file_size(manifest: usize, entries: impl Iterator<Item = (usize, usize)>) -> u64 {
+    let entry = |name: usize, data: usize| {
+        (data as u64)
+            .saturating_add(2 * name as u64)
+            .saturating_add(76)
+    };
+    entries.fold(
+        entry(MANIFEST_NAME.len(), manifest).saturating_add(22),
+        |total, (n, d)| total.saturating_add(entry(n, d)),
+    )
+}
+
+/// How large the `.3dcraft` file of `document` would be with one more
+/// imported file of `extra` bytes (not counted when the document holds
+/// those bytes already) and `features` more features of some 300 bytes:
+/// for a command to refuse an import that would make a document that
+/// cannot be saved and opened again ([`MAX_FILE_BYTES`]).
+pub fn size_with(
+    document: &Document,
+    extra: &craft3d_doc::Blob,
+    features: usize,
+) -> Result<u64, FormatError> {
+    let json = to_manifest_json(document)?;
+    let mut blobs = blobs_of(document);
+    let name = format!("{BLOB_DIR}{}{BLOB_EXTENSION}", extra.sha256());
+    blobs.entry(name).or_insert(extra);
+    let manifest = json.len().saturating_add(features.saturating_mul(300));
+    Ok(file_size(
+        manifest,
+        blobs.iter().map(|(n, b)| (n.len(), b.len())),
+    ))
 }
 
 /// Reads the bytes of a `.3dcraft` file. Entries other than
@@ -336,24 +390,19 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
         .iter()
         .find(|entry| entry.name == MANIFEST_NAME)
         .ok_or(FormatError::MissingManifest)?;
-    let mut blobs = convert::Blobs::new();
+    // The bytes of the entries that may be imported files, by hash; only
+    // those the manifest names are hashed and read (`read_manifest`).
+    let mut raw: BTreeMap<String, (&str, &[u8])> = BTreeMap::new();
     for entry in &entries {
-        let Some(hash) = entry
+        if let Some(hash) = entry
             .name
             .strip_prefix(BLOB_DIR)
             .and_then(|rest| rest.strip_suffix(BLOB_EXTENSION))
-        else {
-            continue;
-        };
-        let blob = craft3d_doc::Blob::new(entry.data.to_vec());
-        if blob.sha256() != hash {
-            return Err(FormatError::DamagedBlob {
-                name: entry.name.to_string(),
-            });
+        {
+            raw.insert(hash.to_string(), (entry.name, entry.data));
         }
-        blobs.insert(hash.to_string(), blob);
     }
-    read_manifest(manifest.data, &blobs)
+    read_manifest(manifest.data, &raw)
 }
 
 /// What a file that is not a ZIP archive is instead, by how it starts.
@@ -407,13 +456,13 @@ pub fn from_manifest_json(json: &[u8]) -> Result<Document, FormatError> {
 /// version 17 whose name is now a function (`floor`) is renamed with
 /// every reference to it (`migrate::v16_to_v17`).
 pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
-    read_manifest(json, &convert::Blobs::new())
+    read_manifest(json, &BTreeMap::new())
 }
 
 /// [`from_manifest_json_noted`] with the imported files of the archive.
 fn read_manifest(
     json: &[u8],
-    blobs: &convert::Blobs,
+    raw: &BTreeMap<String, (&str, &[u8])>,
 ) -> Result<(Document, Vec<String>), FormatError> {
     if json.len() > MAX_MANIFEST_BYTES {
         return Err(too_large(
@@ -467,15 +516,28 @@ fn read_manifest(
         format_version: _,
         document,
     } = manifest;
+    // Each imported file the manifest names, hashed once and checked
+    // against its name; an entry no feature names is not read.
+    let mut blobs = convert::Blobs::new();
     for feature in &document.features {
         if let manifest::FeatureKind::Import { sha256, .. } = &feature.kind
             && !blobs.contains_key(sha256)
         {
-            return Err(FormatError::MissingBlob {
-                sha256: sha256.clone(),
-            });
+            let Some((name, data)) = raw.get(sha256) else {
+                return Err(FormatError::MissingBlob {
+                    sha256: sha256.clone(),
+                });
+            };
+            let blob = craft3d_doc::Blob::new(data.to_vec());
+            if blob.sha256() != *sha256 {
+                return Err(FormatError::DamagedBlob {
+                    name: (*name).to_string(),
+                });
+            }
+            blobs.insert(sha256.clone(), blob);
         }
     }
+    let blobs = &blobs;
     let mut document = convert::to_doc(document, blobs);
     let mut warnings = Vec::new();
     let read = document.tolerance.in_range();

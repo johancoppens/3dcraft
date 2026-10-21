@@ -286,11 +286,13 @@ impl<'a> Reader<'a> {
         if ids.is_empty() || ids.len() > MAX_CONTROL_POINTS {
             return self.bad(id, "the number of control points is out of range");
         }
+        // The knots first: their multiplicities must fit the number of
+        // control points before anything of that size is allocated.
+        let knot_vector = self.knots(id, knots.get(0), knots.get(1), ids.len(), degree)?;
         let mut points = Vec::with_capacity(ids.len());
         for p in ids {
             points.push(self.point(self.reference(id, Some(p), "control_points_list")?)?);
         }
-        let knot_vector = self.knots(id, knots.get(0), knots.get(1), points.len(), degree)?;
         let weights = match weights {
             None => vec![1.0; points.len()],
             Some(list) => {
@@ -486,6 +488,8 @@ impl<'a> Reader<'a> {
         if count_u == 0 || count_v == 0 || count_u.saturating_mul(count_v) > MAX_CONTROL_POINTS {
             return self.bad(id, "the net of control points is empty or too large");
         }
+        let knots_u = self.knots(id, knots.get(0), knots.get(2), count_u, degree_u)?;
+        let knots_v = self.knots(id, knots.get(1), knots.get(3), count_v, degree_v)?;
         let mut points = Vec::with_capacity(count_u * count_v);
         for row in rows {
             let row = row.as_list().unwrap_or(&[]);
@@ -496,8 +500,6 @@ impl<'a> Reader<'a> {
                 points.push(self.point(self.reference(id, Some(p), "control_points_list")?)?);
             }
         }
-        let knots_u = self.knots(id, knots.get(0), knots.get(2), count_u, degree_u)?;
-        let knots_v = self.knots(id, knots.get(1), knots.get(3), count_v, degree_v)?;
         let weights = match weights {
             None => vec![1.0; points.len()],
             Some(list) => {
