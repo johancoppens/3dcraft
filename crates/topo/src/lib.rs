@@ -115,7 +115,7 @@ pub enum BodyKind {
 /// A boundary representation. Entities refer to each other by index; the
 /// `add_*` methods return the index of what they added. Nothing is checked
 /// on construction: run [`check`] on a finished body.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Body {
     pub kind: BodyKind,
     pub vertices: Vec<Vertex>,
@@ -126,6 +126,34 @@ pub struct Body {
     /// The vertices and edges looser than the document's tolerance, with
     /// their own; empty for every body the kernel builds itself.
     pub tolerances: Tolerances,
+}
+
+/// As derived, but the table of tolerances only when it holds something:
+/// a body without loose entities prints as it did before the table
+/// existed (the boolean corpus's digest is of this text).
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Body {
+            kind,
+            vertices,
+            edges,
+            loops,
+            faces,
+            shells,
+            tolerances,
+        } = self;
+        let mut out = f.debug_struct("Body");
+        out.field("kind", kind)
+            .field("vertices", vertices)
+            .field("edges", edges)
+            .field("loops", loops)
+            .field("faces", faces)
+            .field("shells", shells);
+        if !tolerances.is_empty() {
+            out.field("tolerances", tolerances);
+        }
+        out.finish()
+    }
 }
 
 fn next_id(len: usize) -> u32 {

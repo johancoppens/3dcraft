@@ -2191,7 +2191,9 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         }
         if let Some(body) = outcome.own_body() {
             checked += 1;
-            for defect in craft3d_topo::check(body, &tolerance) {
+            for defect in
+                craft3d_topo::check_capped(body, &tolerance, doc.tolerance.loosest_linear())
+            {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("invalid body: {defect}"),
                 }));

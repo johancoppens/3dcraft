@@ -86,6 +86,12 @@ fn an_empty_table_writes_out_as_nothing() {
     let mut words = Vec::new();
     body.tolerances.push_bits(&mut words);
     assert!(words.is_empty());
+    // And the text of an exact body is what it was (the corpus's digest is
+    // of it): no table in it.
+    assert!(!format!("{body:?}").contains("tolerances"));
+    let mut loose = body.clone();
+    loose.set_edge_tolerance(EdgeId(0), 1e-5).unwrap();
+    assert!(format!("{loose:?}").contains("tolerances"));
 }
 
 #[test]
