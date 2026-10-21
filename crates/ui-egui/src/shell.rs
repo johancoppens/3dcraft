@@ -1478,9 +1478,15 @@ impl Shell {
         };
         self.file_shortcuts(ui, status.is_some());
         self.tab_shortcuts(ui);
+        let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
-            .show(ui, |ui| self.menu_bar(ui, status.is_some()));
+            .show_separator_line(false)
+            .frame(chrome_frame(tokens.menu_fill))
+            .show(ui, |ui| {
+                ui.style_mut().visuals = tokens.chrome_visuals();
+                self.menu_bar(ui, status.is_some());
+            });
         if self.file_action.is_some() || self.doc_action.is_some() {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
@@ -1501,13 +1507,12 @@ impl Shell {
         if self.tabs.is_empty() {
             self.tab_hits.clear();
         } else {
-            let tokens = self.tokens;
             egui::Panel::top("craft3d-tabs")
                 .resizable(false)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(color(tokens.panel_fill))
+                        .fill(color(tokens.menu_fill))
                         .inner_margin(egui::Margin {
                             left: 4,
                             right: 4,
@@ -1520,7 +1525,12 @@ impl Shell {
         if self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
-                .show(ui, |ui| self.status_bar(ui, status.as_ref()));
+                .show_separator_line(false)
+                .frame(chrome_frame(tokens.status_fill))
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.chrome_visuals();
+                    self.status_bar(ui, status.as_ref());
+                });
         }
         self.cause_hits.clear();
         if self.state.panels.tree {
@@ -1712,7 +1722,7 @@ impl Shell {
     /// whole text as a tooltip), then left out, so no two overlap.
     fn status_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
         let tokens = self.tokens;
-        let dim = color(tokens.text_dim);
+        let dim = color(tokens.chrome_text_dim);
         let mut items: Vec<StatusItem> = Vec::new();
         match status {
             Some(status) => {
@@ -1720,14 +1730,14 @@ impl Shell {
                 items.push(StatusItem::fixed(
                     StatusSlot::Units,
                     units,
-                    color(tokens.text),
+                    color(tokens.chrome_text),
                 ));
                 let name = status.path.as_deref().unwrap_or("untitled");
                 let dirty = if status.dirty { " *" } else { "" };
                 items.push(StatusItem::elided(
                     StatusSlot::Path,
                     format!("{name}{dirty}"),
-                    color(tokens.text),
+                    color(tokens.chrome_text),
                 ));
             }
             None => items.push(StatusItem::fixed(
@@ -1737,7 +1747,11 @@ impl Shell {
             )),
         }
         if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
-            let tint = if problem { color(tokens.failed) } else { dim };
+            let tint = if problem {
+                color(tokens.chrome_failed)
+            } else {
+                dim
+            };
             items.push(StatusItem::elided(StatusSlot::Autosave, text, tint));
             if !problem {
                 // "3 min ago" grows old without anything else to draw.
@@ -1746,7 +1760,11 @@ impl Shell {
             }
         }
         if let Some(report) = &self.last_command {
-            let tint = if report.ok { tokens.ok } else { tokens.failed };
+            let tint = if report.ok {
+                tokens.chrome_ok
+            } else {
+                tokens.chrome_failed
+            };
             items.push(StatusItem::fixed(
                 StatusSlot::Command,
                 report.label.clone(),
@@ -1832,7 +1850,7 @@ impl Shell {
                             ],
                             egui::Stroke::new(
                                 tokens.divider_width,
-                                color_alpha(tokens.text_dim, tokens.divider_opacity),
+                                color_alpha(tokens.chrome_text_dim, tokens.divider_opacity),
                             ),
                         );
                     }
@@ -2759,6 +2777,14 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
         edge: name.map(str::to_string),
         between,
     })
+}
+
+/// The frame of a chrome bar (the menu bar, the status bar): `fill`, with
+/// the margins of egui's own side panels.
+fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
+    egui::Frame::new()
+        .fill(color(fill))
+        .inner_margin(egui::Margin::symmetric(8, 2))
 }
 
 fn paint_overlay(

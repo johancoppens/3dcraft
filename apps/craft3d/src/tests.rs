@@ -1392,8 +1392,10 @@ fn an_agent_points_at_a_face_over_the_control_channel_and_over_mcp() {
         i32::from(rgb[at + 1]),
         i32::from(rgb[at + 2]),
     );
+    // The highlight's copper (Mission, 2026-10-21; it was cyan): red over
+    // green over blue, saturated, where the body is a warm grey.
     assert!(
-        g > 2 * r && b > 2 * r,
+        r > g + 30 && g > b + 30,
         "({r}, {g}, {b}) is not the highlight"
     );
     assert!(tool_json(&replies[6]).get("base64").is_none());

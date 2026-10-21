@@ -1575,8 +1575,12 @@ fn a_highlighted_face_looks_the_same_from_the_gpu_and_from_the_cpu() {
         let i = ((y * quality.width + x) * 3) as usize;
         for (which, frame) in [("cpu", &cpu_frame), ("gpu", &gpu_frame)] {
             let [r, g, b] = [frame.rgb[i], frame.rgb[i + 1], frame.rgb[i + 2]].map(i32::from);
+            // The token's hue (Mission's copper, 2026-10-21; it was cyan):
+            // red over green over blue, and saturated.
+            let [hr, hg, hb] = tokens.face_highlight.map(i32::from);
+            assert!(hr > hg && hg > hb, "the highlight token is copper");
             assert!(
-                g > 2 * r && b > 2 * r,
+                r > g && g > b && r > 2 * b,
                 "{label}: {which} has ({r}, {g}, {b})"
             );
             assert_ne!(frame.rgb[i..i + 3], plain.rgb[i..i + 3], "{label}: {which}");

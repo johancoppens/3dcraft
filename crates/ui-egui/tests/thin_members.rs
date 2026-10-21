@@ -320,6 +320,12 @@ fn edges_behind_a_thin_plate_are_hidden_at_every_zoom_and_a_hollow_stays_in_sigh
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
+    // The edges in a colour that stands out from every shade of the grey
+    // faces: in the light theme (2026-10-21) the theme's near-black edge
+    // is within a few levels of a face turned away from the light, where
+    // its ink could not be told. What is measured is where an edge is
+    // hidden, not its colour.
+    shell.tokens.edge = [255, 0, 0];
     let mut leg_session = leg();
     let mut corner_session = corner();
     let mut failures = Vec::new();

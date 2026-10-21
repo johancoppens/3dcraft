@@ -1,8 +1,8 @@
 //! Where the controls over the viewport go, and their widgets.
 //!
-//! - **The navigation cluster** in the top right corner: the view cube,
-//!   and under it, centred on it, the camera plate: *Fit* and *Iso*
-//!   (actions), a divider, *Persp* | *Ortho* (a choice).
+//! - **The navigation cluster** in the top right corner: the camera plate
+//!   (*Fit* and *Iso*, actions; a divider; *Persp* | *Ortho*, a choice) and
+//!   under it, centred on it, the view cube (2026-10-21; it was above).
 //! - **The display bar** at the bottom centre: *Sketches* and *Datums*
 //!   (toggles) and the *See-through* field, a divider, the *Section*
 //!   toggle. While the section is on its options open inline to the right
@@ -288,7 +288,7 @@ impl Nav<'_> {
         x + projection
     }
 
-    /// The cube top right over the camera plate; the display bar at the
+    /// The camera plate top right over the cube; the display bar at the
     /// bottom centre with the section inline; the triad bottom left.
     fn layout(&self) -> ControlsLayout {
         let t = self.tokens;
@@ -301,10 +301,13 @@ impl Nav<'_> {
         let camera_w = pad + fit + sp + iso + gap + projection + pad;
         let side = t.nav_cube_size;
         let middle = area.right() - camera_w.max(side) * 0.5;
-        let cube = Rect::from_min_size(pos2(middle - side * 0.5, area.top()), vec2(side, side));
         let camera = Rect::from_min_size(
-            pos2(middle - camera_w * 0.5, cube.bottom() + gap),
+            pos2(middle - camera_w * 0.5, area.top()),
             vec2(camera_w, self.plate_h()),
+        );
+        let cube = Rect::from_min_size(
+            pos2(middle - side * 0.5, camera.bottom() + gap),
+            vec2(side, side),
         );
         out.cube = Some(cube);
         out.camera_plate = Some(camera);
@@ -407,6 +410,30 @@ fn prune(layout: &mut ControlsLayout, area: Rect) {
             }
         }
     }
+    // A plate left out takes its controls with it, also one that happens
+    // to lie within the other plate.
+    if layout.camera_plate.is_none() {
+        layout.fit = None;
+        layout.iso = None;
+        layout.projection = None;
+        layout.dividers[0] = None;
+    }
+    if layout.bar.is_none() {
+        for slot in [
+            &mut layout.sketches,
+            &mut layout.datums,
+            &mut layout.see_through,
+            &mut layout.section_toggle,
+            &mut layout.axes,
+            &mut layout.offset,
+            &mut layout.side,
+        ] {
+            *slot = None;
+        }
+        for divider in layout.dividers.iter_mut().skip(1) {
+            *divider = None;
+        }
+    }
     let on_plate = |r: &Rect| kept.iter().any(|p| p.expand(0.01).contains_rect(*r));
     for slot in [
         &mut layout.sketches,
@@ -497,7 +524,11 @@ fn toggle(
             color_alpha(tokens.glass, tokens.control_opacity),
         );
     }
-    let ink = color(if on { tokens.knob } else { tokens.text_dim });
+    let ink = color(if on {
+        tokens.knob
+    } else {
+        tokens.plate_text_dim
+    });
     content(painter, rect, icon, label, named, ink, tokens);
     if named {
         response
@@ -533,7 +564,7 @@ fn button(
         icon,
         label,
         named,
-        color(tokens.text),
+        color(tokens.plate_text),
         tokens,
     );
     response
@@ -629,7 +660,7 @@ fn choice(
                 color_alpha(tokens.glass, tokens.control_opacity),
             );
         }
-        let ink = color(if on { tokens.knob } else { tokens.text });
+        let ink = color(if on { tokens.knob } else { tokens.plate_text });
         match icon {
             Some(icon) => {
                 content(&painter, cell, *icon, label, named, ink, tokens);
@@ -907,12 +938,12 @@ mod tests {
     /// At both window sizes, with the section off and on, every control
     /// is there with its name, the cube and the triad too, inside the
     /// viewport less its margin and clear of each other; the cluster is
-    /// in the top right corner with the camera plate centred under the
-    /// cube, the bar at the bottom, the triad bottom left, at the theme's
+    /// in the top right corner with the cube centred under the camera
+    /// plate, the bar at the bottom, the triad bottom left, at the theme's
     /// sizes; the Section chip stays where it is when the options open.
     #[test]
     fn every_control_is_there_and_where_it_belongs() {
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let widths = ControlWidths::fallback(&tokens);
         for viewport in viewports() {
             let area = viewport.shrink(tokens.nav_margin);
@@ -948,9 +979,10 @@ mod tests {
                 }
                 let (cube, camera) = (layout.cube.unwrap(), layout.camera_plate.unwrap());
                 assert_eq!(cube.width(), tokens.nav_cube_size);
-                assert_eq!(cube.top(), area.top());
+                // The camera plate above the cube (2026-10-21).
+                assert_eq!(camera.top(), area.top());
                 assert!((camera.right() - area.right()).abs() < 0.01);
-                assert!(camera.top() > cube.bottom());
+                assert_eq!(cube.top(), camera.bottom() + tokens.nav_gap);
                 assert!((camera.center().x - cube.center().x).abs() < 0.01);
                 assert_eq!(layout.bar.unwrap().bottom(), area.bottom());
                 let triad = layout.triad.unwrap();
@@ -974,7 +1006,7 @@ mod tests {
     /// and numbers that are not numbers give nothing that is not either.
     #[test]
     fn the_controls_never_overlap_and_stay_inside() {
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let plain = ControlWidths::fallback(&tokens);
         let wide = ControlWidths {
             sketches: 160.0,
@@ -1050,7 +1082,7 @@ mod tests {
     /// when it fits there, otherwise above the bar.
     #[test]
     fn the_problem_text_keeps_clear_of_the_bar() {
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let widths = ControlWidths::fallback(&tokens);
         for viewport in viewports() {
             for on in [false, true] {
@@ -1076,7 +1108,7 @@ mod tests {
     /// in balance with the cube.
     #[test]
     fn the_triad_is_in_balance_with_the_cube() {
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let mut camera = crate::state::CameraState::default();
         camera.set_view("iso").unwrap();
         let arms = crate::view_cube::triad(&camera).unwrap();

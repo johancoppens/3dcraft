@@ -734,7 +734,7 @@ mod tests {
     /// the front, without perspective, the numbers are in the picture.
     #[test]
     fn faces_capsules_and_circles_with_one_gap_between_them() {
-        let style = style(&Tokens::dark());
+        let style = style(&Tokens::default());
         let (c, g) = (style.chamfer, style.gap);
         let front = looking("front");
         let seen = facets_styled(&front, &style);
@@ -821,7 +821,7 @@ mod tests {
     /// standard views and in between.
     #[test]
     fn every_face_capsule_and_circle_is_hit_and_the_gaps_are_not_dead() {
-        let style = style(&Tokens::dark());
+        let style = style(&Tokens::default());
         let mut kinds = [0; 3];
         let mut views: Vec<CameraState> = crate::state::VIEWS
             .iter()
@@ -910,7 +910,7 @@ mod tests {
     /// left out.
     #[test]
     fn names_lie_in_their_face_and_are_hidden_edge_on() {
-        let hide = f64::from(Tokens::dark().view_cube_label_hide);
+        let hide = f64::from(Tokens::default().view_cube_label_hide);
         let front = looking("front");
         let face = facets(&front)
             .into_iter()
@@ -946,7 +946,7 @@ mod tests {
         // Turned until the front is nearly edge-on: no name on it.
         for yaw in [-90.0 + 80.0, -90.0 + 84.0, -90.0 + 88.0] {
             let grazing = CameraState { yaw, ..front };
-            let toward = seen(&grazing, &style(&Tokens::dark()))
+            let toward = seen(&grazing, &style(&Tokens::default()))
                 .into_iter()
                 .find(|f| f.side == [0, -1, 0])
                 .map_or(0.0, |f| f.toward);

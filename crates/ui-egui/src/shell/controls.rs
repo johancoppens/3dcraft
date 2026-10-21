@@ -305,14 +305,14 @@ fn cube_shadow(tokens: &Tokens, center: egui::Pos2, arm: f32) -> egui::Mesh {
     mesh
 }
 
-/// A glass plate behind controls: a dark base so the controls read over a
-/// light model too, the glass tint over it and a faint rim.
+/// A glass plate behind controls: a `plate_fill` base so the controls read
+/// over any model, the glass tint over it and a faint rim.
 pub(super) fn plate(painter: &egui::Painter, rect: Rect, tokens: &Tokens) {
     let radius = egui::CornerRadius::same(tokens.nav_radius);
     painter.rect_filled(
         rect,
         radius,
-        color_alpha(tokens.panel_fill, tokens.plate_opacity),
+        color_alpha(tokens.plate_fill, tokens.plate_opacity),
     );
     painter.rect_filled(
         rect,
@@ -634,7 +634,7 @@ impl Shell {
             let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
             painter.add(egui::Shape::convex_polygon(
                 points.clone(),
-                color_alpha(tokens.panel_fill, tokens.view_cube_base_opacity),
+                color_alpha(tokens.plate_fill, tokens.view_cube_base_opacity),
                 egui::Stroke::NONE,
             ));
             let shape = if over {
@@ -757,7 +757,7 @@ mod tests {
     fn no_patch_of_the_cube_is_painted_outside_its_silhouette() {
         use crate::state::{CameraState, ProjectionKind};
         use egui::epaint::{Mesh, Shape, Stroke, TessellationOptions, Tessellator};
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let style = view_cube::style(&tokens);
         let (center, arm) = (pos2(500.0, 400.0), 62.0_f32);
         let mut worst = f32::MIN;
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn the_names_lie_on_their_faces() {
         use crate::state::CameraState;
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let style = view_cube::style(&tokens);
         let (center, arm) = (pos2(300.0, 200.0), 62.0_f32);
         let mut drawn = 0;

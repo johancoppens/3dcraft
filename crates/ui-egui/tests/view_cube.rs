@@ -136,13 +136,14 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert!(viewport.contains_rect(rect), "{rect:?} in {viewport:?}");
     assert_eq!(rect.width(), tokens.nav_cube_size);
     assert_eq!(rect.height(), tokens.nav_cube_size);
-    // Top right, the margin from the top; the camera's controls on a
-    // plate under it, centred on it and at the margin from the right.
-    assert!((rect.top() - viewport.top() - tokens.nav_margin).abs() < 0.5);
+    // Top right: the camera's controls on a plate at the margin from the
+    // top and the right, the cube under it and centred on it (the
+    // developer moved the plate above the cube, 2026-10-21).
     let layout = shell.controls_layout().unwrap();
     let plate = layout.camera_plate.unwrap();
+    assert!((plate.top() - viewport.top() - tokens.nav_margin).abs() < 0.5);
     assert!(
-        (plate.top() - rect.bottom() - tokens.nav_gap).abs() < 0.5,
+        (rect.top() - plate.bottom() - tokens.nav_gap).abs() < 0.5,
         "{plate:?} {rect:?}"
     );
     assert!((viewport.right() - plate.right() - tokens.nav_margin).abs() < 0.5);
@@ -155,7 +156,7 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert_eq!(names, ["fit", "iso", "perspective", "orthographic"]);
     for (_, hit) in shell.camera_hits() {
         assert!(plate.contains_rect(*hit), "{hit:?} in {plate:?}");
-        assert!(hit.top() > rect.bottom());
+        assert!(hit.bottom() < rect.top());
     }
 }
 
@@ -330,7 +331,7 @@ fn a_drag_on_the_cube_orbits_as_a_drag_in_the_viewport_does() {
 }
 
 #[test]
-fn the_projection_buttons_under_the_cube_switch_the_projection() {
+fn the_projection_buttons_above_the_cube_switch_the_projection() {
     let (mut session, mut shell, mut window) = started();
     assert_eq!(shell.state.camera.projection, ProjectionKind::Perspective);
     let camera = shell.state.camera;

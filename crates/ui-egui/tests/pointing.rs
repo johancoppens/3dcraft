@@ -265,13 +265,14 @@ fn pixel(rgb: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
 
 /// True for a colour shaded from the highlight token and not from the
 /// body's or a line's, in the light or in the shade: shading scales the
-/// token, so its hue stays. The token has less than half as much red as
-/// green or blue and about as much green as blue; the body, the edges and
-/// the background are grey, the Z axis and construction lines are much
-/// more blue than green.
+/// token, so its hue stays. The token (Mission's copper, 2026-10-21; it
+/// was cyan) has 1.6 times as much red as green and 3 times as much green
+/// as blue; the body, the edges and the background are grey, the X axis
+/// has far more red than green, and the gold of a sketch has far less blue.
 fn is_highlight(p: [u8; 3], tokens: &Tokens) -> bool {
-    let hue =
-        |[r, g, b]: [i32; 3]| b >= 20 && g > 2 * r && b > 2 * r && (b - g).abs() <= (b / 4).max(6);
+    let hue = |[r, g, b]: [i32; 3]| {
+        b >= 8 && 4 * r >= 5 * g && 10 * r <= 21 * g && 5 * g >= 9 * b && g <= 5 * b
+    };
     assert!(hue(tokens.face_highlight.map(i32::from)), "the token");
     for other in [tokens.body, tokens.edge, tokens.viewport_background]
         .into_iter()

@@ -349,9 +349,11 @@ fn transparency_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
         json!({"face": floor, "feature": "Pocketed"}),
     );
     let marked = shot(&mut shell, &mut session, width, height);
+    // The highlight's copper (Mission, 2026-10-21; it was cyan) over the
+    // grey body: red over green over blue.
     let hue = |p: &[u8]| {
         let [r, g, b] = [i32::from(p[0]), i32::from(p[1]), i32::from(p[2])];
-        g > r + 25 && b > r + 25
+        r > g + 12 && g > b + 8
     };
     let tinted = marked.chunks(3).filter(|p| hue(p)).count();
     let tinted_before = before.chunks(3).filter(|p| hue(p)).count();
