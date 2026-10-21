@@ -958,23 +958,108 @@ fn an_l_shaped_prism_and_a_rounded_box() {
             );
             run(&mut s, "edit.undo", json!({}));
         }
-        // At the radius of the rounds the hollow would need sharp edges.
-        let reason = failed(
+        // From the radius of the rounds on (2026-10-21) the hollow has
+        // sharp upright edges: the rounds have a skin and nothing behind
+        // it.
+        built(
             &mut s,
             "feature.shell",
             json!({"source": "Round", "thickness": 2.0 * k,
                    "open": ["F2:copy(0)/F1:face(1)"], "name": "Thin"}),
         );
-        assert!(reason.starts_with("thickness: "), "{reason}");
-        assert!(reason.contains("F2:fillet("), "{reason}");
-        let fits: f64 = reason
-            .rsplit("what fits is below ")
-            .next()
-            .unwrap()
-            .trim_end_matches(" mm")
-            .parse()
-            .unwrap_or_else(|_| panic!("{reason}"));
-        assert!(fits > 1.99 * k && fits < 2.0 * k, "{reason}");
+        let sharp =
+            |t: f64| rounded(10.0, 8.0, 2.0) * 6.0 - (10.0 - 2.0 * t) * (8.0 - 2.0 * t) * (6.0 - t);
+        assert_solid(&mut s, "Thin", sharp(2.0), None, k);
+        let names = names_of(&body(&mut s, "Thin"));
+        assert!(
+            names.contains(&"F3:copy(0)/F2:fillet(0)".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("F3:copy(1)/F2:fillet")),
+            "{names:?}"
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "{check}");
+        // The sharp inner edge where the front and the left wall of the
+        // hollow meet, rounded, follows a thicker wall.
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F3:copy(1)/F1:face(2)", "F3:copy(1)/F1:face(4)"]],
+                   "radius": 0.5 * k, "name": "Inside"}),
+        );
+        let inside = |t: f64| sharp(t) + (4.0 - PI) / 4.0 * 0.25 * (6.0 - t);
+        assert_solid(&mut s, "Inside", inside(2.0), None, k);
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Thin", "thickness": 2.5 * k}),
+        );
+        assert_solid(&mut s, "Inside", inside(2.5), None, k);
+        // Thinner than the rounds again, the inner edge is a round of its
+        // own, and the fillet on it has nothing to round: it fails, it
+        // does not move to another edge.
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Thin", "thickness": 1.0 * k}),
+        );
+        assert_eq!(feature(&mut s, "Inside")["status"], "failed");
+    }
+}
+
+/// The classic enclosure (an R1 blocker, 2026-10-21): a box whose upright
+/// and bottom edges are rounded 2 mm, the balls in its four bottom
+/// corners, shelled 2 mm (and 3 mm) open at the top. The hollow is the
+/// box shrunk by the wall with sharp edges: what the rounds hold, less
+/// `(40 − 2t)(30 − 2t)(20 − t)`; checked deep, at three scales.
+#[test]
+fn the_classic_enclosure_rounded_then_shelled_as_thick_as_its_rounds() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "Box", "size": [40.0 * k, 30.0 * k, 20.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"],
+                             ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"],
+                             ["F1:face(0)", "F1:face(2)"], ["F1:face(0)", "F1:face(3)"],
+                             ["F1:face(0)", "F1:face(4)"], ["F1:face(0)", "F1:face(5)"]],
+                   "radius": 2.0 * k, "name": "Round"}),
+        );
+        let round = body(&mut s, "Round")["volume"].as_f64().unwrap() / (k * k * k);
+        built(
+            &mut s,
+            "feature.shell",
+            json!({"source": "Round", "thickness": 2.0 * k, "open": ["F1:face(1)"],
+                   "name": "Enclosure"}),
+        );
+        for t in [2.0, 3.0] {
+            if t != 2.0 {
+                built(
+                    &mut s,
+                    "feature.edit",
+                    json!({"feature": "Enclosure", "thickness": t * k}),
+                );
+            }
+            let hollow = (40.0 - 2.0 * t) * (30.0 - 2.0 * t) * (20.0 - t);
+            assert_solid(&mut s, "Enclosure", round - hollow, None, k);
+            let check = run(&mut s, "document.check", json!({"deep": true}));
+            assert_eq!(check["ok"], true, "at {t}, scale {k}: {check}");
+            // The hollow: a floor and four walls.
+            let names = names_of(&body(&mut s, "Enclosure"));
+            let inner = names
+                .iter()
+                .filter(|n| n.starts_with("F3:copy(1)/"))
+                .count();
+            assert_eq!(inner, 5, "{names:?}");
+        }
     }
 }
 

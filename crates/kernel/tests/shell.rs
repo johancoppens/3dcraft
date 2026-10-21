@@ -12,7 +12,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp;
 use craft3d_kernel::fillet::{FilletEdge, fillet};
 use craft3d_kernel::shell::{Shelled, Skin, shell};
-use craft3d_math::Vec3;
+use craft3d_math::{Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use std::f64::consts::PI;
 
@@ -201,11 +201,15 @@ fn a_rounded_box_has_inner_rounds_of_the_radius_less_the_wall() {
     for k in SCALES {
         let body = rounded(k);
         let top = face_at(&body, k, "plane", [5.0, 4.0, 6.0]);
-        for t in [0.5, 1.0, 1.5] {
+        // From the radius of the rounds on (2026-10-21), the inner rounds
+        // are gone: the hollow has sharp upright edges, the rounds
+        // collapsed into them (`shell::vanishing`).
+        for t in [0.5, 1.0, 1.5, 2.0, 2.5] {
             let made = hollowed(&body, t, &[top], k);
+            let r = (2.0 - t).max(0.0);
             let (outer, inner) = (
                 rounded_area(10.0, 8.0, 2.0),
-                rounded_area(10.0 - 2.0 * t, 8.0 - 2.0 * t, 2.0 - t),
+                rounded_area(10.0 - 2.0 * t, 8.0 - 2.0 * t, r),
             );
             let h = 6.0 - t;
             assert_mass(
@@ -214,10 +218,11 @@ fn a_rounded_box_has_inner_rounds_of_the_radius_less_the_wall() {
                 2.0 * outer - inner
                     + rounded_outline(10.0, 8.0, 2.0) * 6.0
                     + inner
-                    + rounded_outline(10.0 - 2.0 * t, 8.0 - 2.0 * t, 2.0 - t) * h,
+                    + rounded_outline(10.0 - 2.0 * t, 8.0 - 2.0 * t, r) * h,
                 k,
             );
-            // The inner rounds are cylinders of radius 2 - t.
+            // The inner rounds are cylinders of radius 2 - t, while there
+            // are any.
             let radii: Vec<f64> = made
                 .faces
                 .iter()
@@ -228,21 +233,172 @@ fn a_rounded_box_has_inner_rounds_of_the_radius_less_the_wall() {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(radii.len(), 4);
+            assert_eq!(radii.len(), if t < 2.0 { 4 } else { 0 }, "at {t}");
             for r in radii {
                 assert_close(r, (2.0 - t) * k, "inner radius");
             }
+            // The hollow: a floor, four walls and the rounds while there
+            // are any; the skin: the bottom, four walls, four rounds and
+            // the rim.
+            assert_eq!(count(&made, Skin::Inner), if t < 2.0 { 9 } else { 5 });
+            assert_eq!(count(&made, Skin::Outer), 10);
         }
-        // At the radius of the rounds the inner rounds are gone: refused
-        // with what fits.
-        for t in [2.0, 2.5] {
-            match refused(&body, t, &[top], k) {
-                KernelError::FaceOpTooFar { largest, faces, .. } => {
-                    assert!(largest > 1.99 * k && largest < 2.0 * k, "{largest}");
-                    assert!(!faces.is_empty());
-                }
-                other => panic!("{other}"),
+        // Where the walls meet, nothing is left: refused with what fits.
+        match refused(&body, 4.0, &[top], k) {
+            KernelError::FaceOpTooFar { largest, faces, .. } => {
+                assert!(largest > 3.99 * k && largest < 4.0 * k, "{largest}");
+                assert!(!faces.is_empty());
             }
+            other => panic!("{other}"),
+        }
+    }
+}
+
+/// The volume of a block `w × d × h` whose every edge is rounded with
+/// radius `r`.
+fn rounded_block_volume(w: f64, d: f64, h: f64, r: f64) -> f64 {
+    let (a, b, c) = (w - 2.0 * r, d - 2.0 * r, h - 2.0 * r);
+    a * b * c
+        + 2.0 * r * (a * b + a * c + b * c)
+        + PI * r * r * (a + b + c)
+        + 4.0 / 3.0 * PI * r.powi(3)
+}
+
+/// A block of 10 x 8 x 6 whose twelve edges are rounded with radius 2,
+/// the balls in its corners.
+fn rounded_all_round(k: f64) -> Body {
+    let block = boxed(k, [0.0, 0.0, 0.0], [10.0, 8.0, 6.0]);
+    let mut middles = Vec::new();
+    for (x, y) in [(0.0, 0.0), (10.0, 0.0), (0.0, 8.0), (10.0, 8.0)] {
+        middles.push([x, y, 3.0]);
+    }
+    for z in [0.0, 6.0] {
+        middles.extend([[5.0, 0.0, z], [5.0, 8.0, z], [0.0, 4.0, z], [10.0, 4.0, z]]);
+    }
+    let edges: Vec<FilletEdge> = middles
+        .into_iter()
+        .map(|middle| FilletEdge {
+            edge: edge_at(&block, k, middle),
+            radius: 2.0 * k,
+        })
+        .collect();
+    let made = fillet(&block, &edges, &tolerance(k)).unwrap().body;
+    assert_close(
+        mass(&made).volume,
+        rounded_block_volume(10.0, 8.0, 6.0, 2.0) * k * k * k,
+        "the rounded block",
+    );
+    made
+}
+
+/// The classic enclosure (the developer's R1 blocker, 2026-10-21): every
+/// edge rounded, then shelled as thick as the rounds or more. The hollow
+/// is the block shrunk by the wall, its edges sharp: the rounds and the
+/// balls in the corners vanish together. Below the radius they are
+/// rounds and balls of the radius less the wall. At three scales, and
+/// turned off every axis.
+#[test]
+fn a_block_rounded_all_round_shells_as_thick_as_its_rounds_and_more() {
+    let turn = Transform::rotation(Vec3::new(0.4, -1.0, 0.7), 1.1).unwrap();
+    for k in SCALES {
+        let tol = tolerance(k);
+        let upright = rounded_all_round(k);
+        let turned = upright.transformed(&turn).unwrap();
+        for (body, what) in [(&upright, "upright"), (&turned, "turned")] {
+            for t in [1.0, 2.0, 2.5] {
+                let made = match shell(body, t * k, &[], &tol) {
+                    Ok(made) => made,
+                    Err(e) => panic!("{what} at {t}, scale {k}: {e}"),
+                };
+                assert_eq!(check(&made.body, &tol), [], "{what} at {t}, scale {k}");
+                assert_eq!(made.body.shells.len(), 2);
+                let r = (2.0 - t).max(0.0);
+                let expected = rounded_block_volume(10.0, 8.0, 6.0, 2.0)
+                    - rounded_block_volume(10.0 - 2.0 * t, 8.0 - 2.0 * t, 6.0 - 2.0 * t, r);
+                let m = mass(&made.body);
+                // Exact faces, exactly placed upright; turned, within the
+                // tolerance over the area.
+                let slack = if what == "upright" {
+                    1e-9 * expected * k * k * k
+                } else {
+                    tol.linear * m.area
+                };
+                let off = m.volume - expected * k * k * k;
+                assert!(
+                    off.abs() <= slack,
+                    "{what} at {t}, scale {k}: off by {off:e}"
+                );
+                // The hollow: six faces once the rounds are gone.
+                let inner = count(&made, Skin::Inner);
+                assert_eq!(inner, if t < 2.0 { 26 } else { 6 }, "{what} at {t}");
+            }
+        }
+        // Open at the top, the top rounds run along the open face: their
+        // lip would be cut by the opening, which is not built.
+        let top = face_at(&upright, k, "plane", [5.0, 4.0, 6.0]);
+        assert!(shell(&upright, 2.0 * k, &[top], &tol).is_err());
+    }
+}
+
+/// A rod whose top rim is rounded (a torus), shelled open at its bottom
+/// as thick as the round and more: the hollow is a plain rod.
+#[test]
+fn a_rod_with_a_rounded_rim_shells_past_its_round() {
+    let (radius, height, r) = (5.0, 8.0, 1.5);
+    // Pappus's rule over the corner a ball of radius ρ takes off a rim of
+    // radius `big`.
+    let taken = |big: f64, rho: f64| {
+        let corner = rho * rho * (1.0 - PI / 4.0);
+        let from_axis = big - rho + rho.powi(3) / (6.0 * corner);
+        2.0 * PI * from_axis * corner
+    };
+    let outer = PI * radius * radius * height - taken(radius, r);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let plain = rod(k, [0.0, 0.0, 0.0], radius, height);
+        let rim = (0..plain.edges.len())
+            .map(|e| EdgeId(e as u32))
+            .find(|e| {
+                let edge = &plain.edges[e.0 as usize];
+                let p = edge.curve.eval(edge.range.0);
+                (p.z - height * k).abs() <= 1e-9 * k
+                    && matches!(edge.curve, craft3d_geom::Curve3::Circle(_))
+            })
+            .unwrap();
+        let body = fillet(
+            &plain,
+            &[FilletEdge {
+                edge: rim,
+                radius: r * k,
+            }],
+            &tol,
+        )
+        .unwrap()
+        .body;
+        assert_close(mass(&body).volume, outer * k * k * k, "the rounded rod");
+        let bottom = face_at(&body, k, "plane", [0.0, 0.0, 0.0]);
+        for t in [1.0, 1.5, 2.0] {
+            let made = hollowed(&body, t, &[bottom], k);
+            let mut hollow = PI * (radius - t).powi(2) * (height - t);
+            if t < r {
+                hollow -= taken(radius - t, r - t);
+            }
+            let m = mass(&made.body);
+            let off = m.volume - (outer - hollow) * k * k * k;
+            assert!(
+                off.abs() <= 1e-9 * outer * k * k * k,
+                "at {t}, scale {k}: off by {off:e}"
+            );
+            let tori = made
+                .faces
+                .iter()
+                .enumerate()
+                .filter(|(i, (skin, _))| {
+                    *skin == Skin::Inner
+                        && matches!(made.body.faces[*i].surface, craft3d_geom::Surface::Torus(_))
+                })
+                .count();
+            assert_eq!(tori, usize::from(t < r), "at {t}");
         }
     }
 }
