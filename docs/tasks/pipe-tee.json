@@ -1,0 +1,46 @@
+{
+  "format": "craft3d-task/1",
+  "id": "pipe-tee",
+  "level": 3,
+  "title": "Equal pipe tee",
+  "units": "mm",
+  "description": {
+    "en": "An equal tee of 20 mm tube with a 2 mm wall: the run lies along the X axis, 80 mm long and centred on the origin (X from -40 to 40); the branch rises along +Z from the run's axis to Z = 40. The bores of run and branch meet inside. Make it with cylinders and booleans. Drive it by the variables pipe_d, wall, run and branch.",
+    "nl": "Een gelijk T-stuk van buis van 20 mm met een wand van 2 mm: de doorloop ligt langs de X-as, 80 mm lang en gecentreerd op de oorsprong (X van -40 tot 40); de aftakking gaat langs +Z van de as van de doorloop tot Z = 40. De boringen van doorloop en aftakking komen binnenin samen. Maak het met cilinders en booleaanse bewerkingen. Stuur het met de variabelen pipe_d, wall, run en branch."
+  },
+  "variables": [
+    {"name": "pipe_d", "expr": "20 mm", "meaning": "outside diameter of run and branch"},
+    {"name": "wall", "expr": "2 mm", "meaning": "wall thickness"},
+    {"name": "run", "expr": "80 mm", "meaning": "length of the run along X"},
+    {"name": "branch", "expr": "40 mm", "meaning": "height of the branch's end above the run's axis"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(pi * (pipe_d / 2)^2 * (run + branch) - 8 / 3 * (pipe_d / 2)^3) - (pi * (pipe_d / 2 - wall)^2 * (run + branch) - 8 / 3 * (pipe_d / 2 - wall)^3)"},
+    {"measure": "area", "value": "2 * pi * (pipe_d / 2) * (run + branch) - 8 * (pipe_d / 2)^2 + 2 * pi * (pipe_d / 2 - wall) * (run + branch) - 8 * (pipe_d / 2 - wall)^2 + 3 * pi * ((pipe_d / 2)^2 - (pipe_d / 2 - wall)^2)"},
+    {"measure": "centroid", "value": [0, 0, "(pi * (pipe_d / 2)^2 * branch^2 / 2 - 3 * pi * (pipe_d / 2)^4 / 8 - pi * (pipe_d / 2 - wall)^2 * branch^2 / 2 + 3 * pi * (pipe_d / 2 - wall)^4 / 8) / ((pi * (pipe_d / 2)^2 * (run + branch) - 8 / 3 * (pipe_d / 2)^3) - (pi * (pipe_d / 2 - wall)^2 * (run + branch) - 8 / 3 * (pipe_d / 2 - wall)^3))"]},
+    {"measure": "bbox", "min": ["-run / 2", "-(pipe_d / 2)", "-(pipe_d / 2)"], "max": ["run / 2", "(pipe_d / 2)", "branch"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "Two cylinders of equal radius R at right angles share a Steinmetz bicylinder of volume 16 R^3 / 3; the branch starts on the run's axis, so it shares half of it, 8 R^3 / 3. The outside is pi R^2 (run + branch) - 8 R^3/3, the bore the same with r = R - wall, and the tee is the outside less the bore (the bore lies inside the outside).",
+    "Area: on each cylinder the part inside the other has area 4 R^2 (for the branch: int R sqrt(R^2 - R^2 sin^2) = R^2 int |cos| = 4 R^2; the same for the half of the run under the branch). Outside 2 pi R (run + branch) - 8 R^2, bore likewise with r, plus three end rings pi (R^2 - r^2).",
+    "Centroid Z: the branch cylinder's moment pi R^2 branch^2/2 less the shared half bicylinder's, int over the disc x^2 + y^2 <= R^2 of (R^2 - y^2)/2 = 3 pi R^4 / 8; the same for the bore, subtracted. X and Y are 0 by symmetry.",
+    "Two equal cylinders meet in curves that cross each other: a classic hard case for a boolean."
+  ],
+  "variants": [
+    {"set": {"branch": "50 mm", "pipe_d": "24 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "pipe_d", "expr": "20 mm"}],
+    ["variable.set", {"name": "wall", "expr": "2 mm"}],
+    ["variable.set", {"name": "run", "expr": "80 mm"}],
+    ["variable.set", {"name": "branch", "expr": "40 mm"}],
+    ["feature.cylinder", {"radius": "pipe_d / 2", "height": "run", "axis": [1, 0, 0], "position": ["-run / 2", 0, 0], "name": "RunOuter"}],
+    ["feature.cylinder", {"radius": "pipe_d / 2", "height": "branch", "name": "BranchOuter"}],
+    ["feature.boolean", {"op": "union", "target": "RunOuter", "tool": "BranchOuter", "name": "Outer"}],
+    ["feature.cylinder", {"radius": "pipe_d / 2 - wall", "height": "run", "axis": [1, 0, 0], "position": ["-run / 2", 0, 0], "name": "RunBore"}],
+    ["feature.boolean", {"op": "subtract", "target": "Outer", "tool": "RunBore", "name": "RunBored"}],
+    ["feature.cylinder", {"radius": "pipe_d / 2 - wall", "height": "branch", "name": "BranchBore"}],
+    ["feature.boolean", {"op": "subtract", "target": "RunBored", "tool": "BranchBore", "name": "Tee"}]
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "format": "craft3d-task/1",
+  "id": "stepped-shaft",
+  "level": 3,
+  "title": "Stepped shaft with a keyway",
+  "units": "mm",
+  "description": {
+    "en": "A stepped shaft on the X axis, starting at X = 0: 30 mm of 20 mm diameter, then 40 mm of 25 mm diameter, then 25 mm of 16 mm diameter. Both ends of the shaft get a 1 mm x 45 degree chamfer. The 25 mm section has a keyway on its top (+Z side) for a 6 mm key: 6 mm wide, 3.5 mm deep measured at the top of the shaft, 25 mm long with square ends, centred on the section's length. Drive it by the variables d1, l1, d2, l2, d3, l3, chamfer, key_w, key_depth and key_len.",
+    "nl": "Een getrapte as op de X-as, vanaf X = 0: 30 mm met diameter 20 mm, dan 40 mm met diameter 25 mm, dan 25 mm met diameter 16 mm. Beide uiteinden van de as krijgen een afschuining van 1 mm x 45 graden. Het deel van 25 mm heeft bovenaan (aan de +Z-kant) een spiebaan voor een spie van 6 mm: 6 mm breed, 3,5 mm diep gemeten vanaf de bovenkant van de as, 25 mm lang met rechte uiteinden, in het midden van de lengte van dat deel. Stuur hem met de variabelen d1, l1, d2, l2, d3, l3, chamfer, key_w, key_depth en key_len."
+  },
+  "variables": [
+    {"name": "d1", "expr": "20 mm", "meaning": "diameter of the first step"},
+    {"name": "l1", "expr": "30 mm", "meaning": "its length"},
+    {"name": "d2", "expr": "25 mm", "meaning": "diameter of the middle step"},
+    {"name": "l2", "expr": "40 mm", "meaning": "its length"},
+    {"name": "d3", "expr": "16 mm", "meaning": "diameter of the last step"},
+    {"name": "l3", "expr": "25 mm", "meaning": "its length"},
+    {"name": "chamfer", "expr": "1 mm", "meaning": "45 degree chamfer at both ends"},
+    {"name": "key_w", "expr": "6 mm", "meaning": "keyway width"},
+    {"name": "key_depth", "expr": "3.5 mm", "meaning": "keyway depth at the top of the shaft"},
+    {"name": "key_len", "expr": "25 mm", "meaning": "keyway length"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "pi * ((d1 / 2)^2 * l1 + (d2 / 2)^2 * l2 + (d3 / 2)^2 * l3) - (pi * chamfer^2 * ((d1 / 2) - chamfer / 3)) - (pi * chamfer^2 * ((d3 / 2) - chamfer / 3)) - (key_w / 2 * sqrt((d2 / 2)^2 - key_w^2 / 4) + (d2 / 2)^2 * asin(key_w / (2 * (d2 / 2))) / 1 rad - key_w * ((d2 / 2) - key_depth)) * key_len"},
+    {"measure": "area", "value": "pi * ((d1 / 2) - chamfer)^2 + pi * ((d3 / 2) - chamfer)^2 + pi * ((d2 / 2)^2 - (d1 / 2)^2) + pi * ((d2 / 2)^2 - (d3 / 2)^2) + 2 * pi * ((d1 / 2) * (l1 - chamfer) + (d2 / 2) * l2 + (d3 / 2) * (l3 - chamfer)) + pi * (2 * (d1 / 2) - chamfer) * chamfer * sqrt(2) + pi * (2 * (d3 / 2) - chamfer) * chamfer * sqrt(2) + key_len * (key_w - 2 * (d2 / 2) * asin(key_w / (2 * (d2 / 2))) / 1 rad + 2 * (sqrt((d2 / 2)^2 - key_w^2 / 4) - ((d2 / 2) - key_depth))) + 2 * (key_w / 2 * sqrt((d2 / 2)^2 - key_w^2 / 4) + (d2 / 2)^2 * asin(key_w / (2 * (d2 / 2))) / 1 rad - key_w * ((d2 / 2) - key_depth))"},
+    {"measure": "centroid", "value": ["(pi * ((d1 / 2)^2 * l1 * l1 / 2 + (d2 / 2)^2 * l2 * (l1 + l2 / 2) + (d3 / 2)^2 * l3 * (l1 + l2 + l3 / 2)) - pi * ((d1 / 2) * chamfer^3 / 3 - chamfer^4 / 12) - ((l1 + l2 + l3) * (pi * chamfer^2 * ((d3 / 2) - chamfer / 3)) - pi * ((d3 / 2) * chamfer^3 / 3 - chamfer^4 / 12)) - (key_w / 2 * sqrt((d2 / 2)^2 - key_w^2 / 4) + (d2 / 2)^2 * asin(key_w / (2 * (d2 / 2))) / 1 rad - key_w * ((d2 / 2) - key_depth)) * key_len * (l1 + l2 / 2)) / (pi * ((d1 / 2)^2 * l1 + (d2 / 2)^2 * l2 + (d3 / 2)^2 * l3) - (pi * chamfer^2 * ((d1 / 2) - chamfer / 3)) - (pi * chamfer^2 * ((d3 / 2) - chamfer / 3)) - (key_w / 2 * sqrt((d2 / 2)^2 - key_w^2 / 4) + (d2 / 2)^2 * asin(key_w / (2 * (d2 / 2))) / 1 rad - key_w * ((d2 / 2) - key_depth)) * key_len)", 0, "(-key_len * (((d2 / 2)^2 - ((d2 / 2) - key_depth)^2) * key_w - key_w^3 / 12) / 2) / (pi * ((d1 / 2)^2 * l1 + (d2 / 2)^2 * l2 + (d3 / 2)^2 * l3) - (pi * chamfer^2 * ((d1 / 2) - chamfer / 3)) - (pi * chamfer^2 * ((d3 / 2) - chamfer / 3)) - (key_w / 2 * sqrt((d2 / 2)^2 - key_w^2 / 4) + (d2 / 2)^2 * asin(key_w / (2 * (d2 / 2))) / 1 rad - key_w * ((d2 / 2) - key_depth)) * key_len)"]},
+    {"measure": "bbox", "min": [0, "-(d2 / 2)", "-(d2 / 2)"], "max": ["(l1 + l2 + l3)", "(d2 / 2)", "(d2 / 2)"]},
+    {"measure": "bodies", "value": 1}
+  ],
+  "derivation": [
+    "Three cylinders: pi (R1^2 l1 + R2^2 l2 + R3^2 l3).",
+    "A 45 degree chamfer c on the rim of radius R removes a ring of triangular section c^2/2 whose centroid is at radius R - c/3 (Pappus): pi c^2 (R - c/3).",
+    "The keyway's section is the part of the circle of radius R2 above z = R2 - k between y = -w/2 and w/2: Ak = int (sqrt(R2^2 - y^2) - (R2 - k)) dy = (w/2) sqrt(R2^2 - w^2/4) + R2^2 asin(w / (2 R2)) - w (R2 - k); it is removed over the key length.",
+    "Area: the end discs shrink to radius R - c, the shoulders are rings, the walls lose c at the ends, each chamfer is a cone of slant c sqrt(2) between radii R and R - c (pi (2R - c) c sqrt(2)); the keyway takes an arc 2 R2 asin(w/(2 R2)) of the wall over its length and adds its floor w, two side walls of height sqrt(R2^2 - w^2/4) - (R2 - k), and two end walls Ak.",
+    "Centroid X: the steps' moments, less the chamfers' (the ring at X = 0 has moment pi (R c^3/3 - c^4/12), the one at the far end mirrors it about X = L), less the keyway at the middle of its section. Z: the keyway's moment int z dA = ((R2^2 - (R2 - k)^2) w - w^3/12) / 2 times its length, removed. Y = 0 by symmetry.",
+    "The reference names the end edges by the faces of the primitives (F1:face(1) is the first cylinder's start, F1:face(0) its wall), followed through the unions."
+  ],
+  "variants": [
+    {"set": {"key_len": "30 mm", "l2": "50 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "d1", "expr": "20 mm"}],
+    ["variable.set", {"name": "l1", "expr": "30 mm"}],
+    ["variable.set", {"name": "d2", "expr": "25 mm"}],
+    ["variable.set", {"name": "l2", "expr": "40 mm"}],
+    ["variable.set", {"name": "d3", "expr": "16 mm"}],
+    ["variable.set", {"name": "l3", "expr": "25 mm"}],
+    ["variable.set", {"name": "chamfer", "expr": "1 mm"}],
+    ["variable.set", {"name": "key_w", "expr": "6 mm"}],
+    ["variable.set", {"name": "key_depth", "expr": "3.5 mm"}],
+    ["variable.set", {"name": "key_len", "expr": "25 mm"}],
+    ["feature.cylinder", {"radius": "d1 / 2", "height": "l1", "axis": [1, 0, 0], "name": "Step1"}],
+    ["feature.cylinder", {"radius": "d2 / 2", "height": "l2", "axis": [1, 0, 0], "position": ["l1", 0, 0], "name": "Step2"}],
+    ["feature.cylinder", {"radius": "d3 / 2", "height": "l3", "axis": [1, 0, 0], "position": ["l1 + l2", 0, 0], "name": "Step3"}],
+    ["feature.boolean", {"op": "union", "target": "Step1", "tool": "Step2", "name": "Steps12"}],
+    ["feature.boolean", {"op": "union", "target": "Steps12", "tool": "Step3", "name": "Shaft"}],
+    ["feature.chamfer", {"edges": [["F1:face(1)", "F1:face(0)"], ["F3:face(2)", "F3:face(0)"]], "distance": "chamfer", "name": "Ends"}],
+    ["feature.block", {"size": ["key_len", "key_w", "key_depth + 5 mm"], "position": ["l1 + (l2 - key_len) / 2", "-key_w / 2", "d2 / 2 - key_depth"], "name": "KeyTool"}],
+    ["feature.boolean", {"op": "subtract", "target": "Ends", "tool": "KeyTool", "name": "Keyed"}]
+  ]
+}

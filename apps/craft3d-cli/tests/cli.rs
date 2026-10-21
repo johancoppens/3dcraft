@@ -13,8 +13,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const SUBCOMMANDS: [&str; 8] = [
-    "commands", "run", "info", "render", "convert", "replay", "serve", "mcp",
+const SUBCOMMANDS: [&str; 9] = [
+    "commands", "run", "info", "render", "convert", "replay", "score", "serve", "mcp",
 ];
 
 /// What one run of the binary produced.
@@ -1324,4 +1324,59 @@ fn replay_writes_frames_or_a_video_and_says_when_ffmpeg_is_missing() {
     let bytes = std::fs::read(&gif).unwrap();
     assert!(bytes.starts_with(b"GIF89a"));
     assert!(!dir.join("part.gif.frames").exists());
+}
+
+/// The task set's directory, `docs/tasks`.
+fn tasks_dir() -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/tasks")
+        .to_str()
+        .expect("a UTF-8 path")
+        .to_string()
+}
+
+#[test]
+fn score_prints_a_scorecard_for_a_task_and_a_candidate() {
+    let dir = workdir("score");
+    // The task's own reference solution, by id.
+    let card = cli(&["score", "spacer", "--tasks", &tasks_dir()])
+        .ok()
+        .json_lines();
+    assert_eq!(card.len(), 1);
+    let card = &card[0];
+    assert_eq!(card["format"], "craft3d-scorecard/1");
+    assert_eq!(card["task"], "spacer");
+    assert_eq!(card["pass"], true, "{card:#}");
+    assert_eq!(card["passed"], card["total"]);
+
+    // A candidate without variables: the part is right, the variant fails.
+    let candidate = path(&dir, "candidate.json");
+    std::fs::write(
+        &candidate,
+        r#"[["sketch.create", {"name": "S"}],
+            ["sketch.circle", {"sketch": "S", "center": [0, 0], "radius": 10}],
+            ["sketch.circle", {"sketch": "S", "center": [0, 0], "radius": 4.2}],
+            ["feature.extrude", {"sketch": "S", "distance": 5}],
+            ["feature.fillet", {"edges": [], "radius": 1}]]"#,
+    )
+    .unwrap();
+    let task = format!("{}/spacer.json", tasks_dir());
+    let card = &cli(&["score", &task, "--script", &candidate])
+        .ok()
+        .json_lines()[0];
+    assert_eq!(card["steps"], 5);
+    assert_eq!(card["refusals"], 1);
+    assert_eq!(card["failedSteps"][0]["step"], 4);
+    assert_eq!(card["base"]["pass"], true, "{card:#}");
+    assert_eq!(card["variants"][0]["pass"], false);
+    assert_eq!(card["variants"][0]["missingVariables"][0], "outer_d");
+    assert_eq!(card["pass"], false);
+
+    // What cannot be scored is an error, not a card.
+    cli(&["score", "no-such-task", "--tasks", &tasks_dir()]).failed(1);
+    cli(&["score", &task, "--script", &path(&dir, "missing.json")]).failed(1);
+    std::fs::write(&candidate, "{}").unwrap();
+    cli(&["score", &task, "--script", &candidate]).failed(1);
+    cli(&["score"]).failed(2);
+    cli(&["score", "a", "b"]).failed(2);
 }

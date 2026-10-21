@@ -108,6 +108,7 @@ craft3d-cli run --new '{"units":"mm"}' \
 craft3d-cli run bracket.3dcraft --cmd variable.set --params '{"name":"width","expr":"55 mm"}' --out wider.3dcraft
 craft3d-cli render bracket.3dcraft --out shot.png --size 1200x800 --view iso    # CPU renderer, no GPU needed
 craft3d-cli replay bracket.3dcraft --out bracket.mp4 --size 1280x720 --frames-per-step 6 --hold 60   # how it is built, as a video
+craft3d-cli score plate-holes --script mine.json              # scorecard of a script for a task of docs/tasks (testing.md, The task set)
 craft3d-cli commands --filter fillet                          # the command registry with params docs
 craft3d-cli serve                                             # JSON lines on stdio (see control-protocol.md)
 craft3d-cli mcp --automation-read-root work --automation-write-root work

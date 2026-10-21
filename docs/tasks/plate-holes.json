@@ -1,0 +1,63 @@
+{
+  "format": "craft3d-task/1",
+  "id": "plate-holes",
+  "level": 1,
+  "title": "Flat plate with four holes",
+  "units": "mm",
+  "description": {
+    "en": "A flat plate 80 x 50 x 6 mm with four through holes of 6.6 mm (clearance for M6), each centred 8 mm from both edges at a corner. The plate lies with one corner at the origin, along +X (length), +Y (width) and +Z (thickness). Drive it by the variables length, width, thickness, hole_d and edge, so the holes stay 8 mm from the edges when the plate changes size.",
+    "nl": "Een vlakke plaat van 80 x 50 x 6 mm met vier doorgaande gaten van 6,6 mm (speling voor M6), elk 8 mm van beide randen in een hoek. De plaat ligt met een hoek in de oorsprong, langs +X (lengte), +Y (breedte) en +Z (dikte). Stuur hem met de variabelen length, width, thickness, hole_d en edge, zodat de gaten 8 mm van de randen blijven als de plaat van maat verandert."
+  },
+  "variables": [
+    {"name": "length", "expr": "80 mm", "meaning": "along X"},
+    {"name": "width", "expr": "50 mm", "meaning": "along Y"},
+    {"name": "thickness", "expr": "6 mm", "meaning": "along Z"},
+    {"name": "hole_d", "expr": "6.6 mm", "meaning": "hole diameter"},
+    {"name": "edge", "expr": "8 mm", "meaning": "hole centre to each nearby edge"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(length * width - 4 * pi / 4 * hole_d^2) * thickness"},
+    {"measure": "area", "value": "2 * (length * width - 4 * pi / 4 * hole_d^2) + 2 * (length + width) * thickness + 4 * pi * hole_d * thickness"},
+    {"measure": "centroid", "value": ["length / 2", "width / 2", "thickness / 2"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "thickness"]},
+    {"measure": "bodies", "value": 1},
+    {"measure": "faces", "value": 10}
+  ],
+  "derivation": [
+    "V = (L W - 4 pi d^2 / 4) t: the block less four cylinders of diameter d through the thickness t. 80*50*6 - 4*pi*3.3^2*6 = 23179.0 mm^3.",
+    "Area: top and bottom each lose four discs, the four sides 2 (L + W) t, and each hole adds its wall pi d t.",
+    "The holes sit symmetrically about the plate's middle, so the centroid is the plate's centre (L/2, W/2, t/2).",
+    "Faces: 6 of the block and 4 hole walls."
+  ],
+  "variants": [
+    {"set": {"length": "100 mm", "hole_d": "9 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "80 mm"}],
+    ["variable.set", {"name": "width", "expr": "50 mm"}],
+    ["variable.set", {"name": "thickness", "expr": "6 mm"}],
+    ["variable.set", {"name": "hole_d", "expr": "6.6 mm"}],
+    ["variable.set", {"name": "edge", "expr": "8 mm"}],
+    ["feature.block", {"size": ["length", "width", "thickness"], "name": "Plate"}],
+    ["sketch.create", {"name": "Holes", "plane": "xy", "offset": "thickness"}],
+    ["sketch.point", {"sketch": "Holes", "at": [0, 0]}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "fixed", "entities": ["e1"]}],
+    ["sketch.circle", {"sketch": "Holes", "center": [8, 8], "radius": 3.3}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e2"], "value": "edge", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e2"], "value": "edge", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "diameter", "entities": ["e3"], "value": "hole_d"}],
+    ["sketch.circle", {"sketch": "Holes", "center": [72, 8], "radius": 3.3}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e4"], "value": "length - edge", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e4"], "value": "edge", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "diameter", "entities": ["e5"], "value": "hole_d"}],
+    ["sketch.circle", {"sketch": "Holes", "center": [8, 42], "radius": 3.3}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e6"], "value": "edge", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e6"], "value": "width - edge", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "diameter", "entities": ["e7"], "value": "hole_d"}],
+    ["sketch.circle", {"sketch": "Holes", "center": [72, 42], "radius": 3.3}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e8"], "value": "length - edge", "direction": "horizontal"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e8"], "value": "width - edge", "direction": "vertical"}],
+    ["sketch.constrain", {"sketch": "Holes", "type": "diameter", "entities": ["e9"], "value": "hole_d"}],
+    ["feature.extrude", {"sketch": "Holes", "throughAll": true, "reversed": true, "cut": "Plate", "name": "Drilled"}]
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "format": "craft3d-task/1",
+  "id": "enclosure",
+  "level": 4,
+  "title": "Enclosure with screw bosses and a lid",
+  "units": "mm",
+  "description": {
+    "en": "A small electronics enclosure in two bodies. The box: outside 80 x 60 x 30 mm (corner at the origin, along +X, +Y, +Z), a 2 mm wall on the bottom and the four sides, open at the top. Inside, four screw bosses of 7 mm diameter stand on the floor and reach the rim (Z = 30); their axes are 9 mm in from both outside edges at each corner, and each has a 2.5 mm pilot hole 10 mm deep from its top. The lid: a plate 80 x 60 x 2 mm lying on the box (Z from 30 to 32), with a locating lip under it that fits inside the box's walls with 0.2 mm clearance all round: a rectangular ring 1.5 mm thick and 3 mm deep. The lid has four 3.2 mm holes over the bosses. Drive it by the variables length, width, height, wall, boss_d, boss_hole, boss_depth, inset, lid_t, lip_h, lip_t, gap and lid_hole.",
+    "nl": "Een kleine behuizing voor elektronica, in twee lichamen. De bak: buitenmaat 80 x 60 x 30 mm (hoek in de oorsprong, langs +X, +Y, +Z), een wand van 2 mm op de bodem en de vier zijden, bovenaan open. Binnenin staan vier schroefpennen (bosses) van 7 mm diameter op de bodem tot aan de rand (Z = 30); hun as ligt 9 mm van beide buitenranden in elke hoek, en elk heeft een voorboorgat van 2,5 mm, 10 mm diep vanaf de bovenkant. Het deksel: een plaat van 80 x 60 x 2 mm die op de bak ligt (Z van 30 tot 32), met eronder een centreerrand die binnen de wanden van de bak past met 0,2 mm speling rondom: een rechthoekige ring van 1,5 mm dik en 3 mm diep. Het deksel heeft vier gaten van 3,2 mm boven de pennen. Stuur het met de variabelen length, width, height, wall, boss_d, boss_hole, boss_depth, inset, lid_t, lip_h, lip_t, gap en lid_hole."
+  },
+  "variables": [
+    {"name": "length", "expr": "80 mm", "meaning": "outside, along X"},
+    {"name": "width", "expr": "60 mm", "meaning": "outside, along Y"},
+    {"name": "height", "expr": "30 mm", "meaning": "box height, the lid's underside"},
+    {"name": "wall", "expr": "2 mm", "meaning": "box wall and floor"},
+    {"name": "boss_d", "expr": "7 mm", "meaning": "boss diameter"},
+    {"name": "boss_hole", "expr": "2.5 mm", "meaning": "pilot hole diameter"},
+    {"name": "boss_depth", "expr": "10 mm", "meaning": "pilot hole depth"},
+    {"name": "inset", "expr": "9 mm", "meaning": "boss axis to each nearby outside edge"},
+    {"name": "lid_t", "expr": "2 mm", "meaning": "lid plate thickness"},
+    {"name": "lip_h", "expr": "3 mm", "meaning": "lip depth under the lid"},
+    {"name": "lip_t", "expr": "1.5 mm", "meaning": "lip thickness"},
+    {"name": "gap", "expr": "0.2 mm", "meaning": "clearance between lip and box wall"},
+    {"name": "lid_hole", "expr": "3.2 mm", "meaning": "screw clearance hole in the lid"}
+  ],
+  "expect": [
+    {"measure": "volume", "value": "(length * width * height - (length - 2 * wall) * (width - 2 * wall) * (height - wall) + 4 * (pi / 4 * boss_d^2 * (height - wall)) - 4 * (pi / 4 * boss_hole^2 * boss_depth)) + (length * width * lid_t + ((length - 2 * wall - 2 * gap) * (width - 2 * wall - 2 * gap) - ((length - 2 * wall - 2 * gap) - 2 * lip_t) * ((width - 2 * wall - 2 * gap) - 2 * lip_t)) * lip_h - 4 * (pi / 4 * lid_hole^2 * lid_t))"},
+    {"measure": "area", "value": "(2 * length * width + 2 * (length + width) * height - (length - 2 * wall) * (width - 2 * wall) + (length - 2 * wall) * (width - 2 * wall) + 2 * ((length - 2 * wall) + (width - 2 * wall)) * (height - wall) + 4 * (pi * boss_d * (height - wall) + pi * boss_hole * boss_depth)) + (2 * length * width + 2 * (length + width) * lid_t + 2 * ((length - 2 * wall - 2 * gap) + (width - 2 * wall - 2 * gap) + ((length - 2 * wall - 2 * gap) - 2 * lip_t) + ((width - 2 * wall - 2 * gap) - 2 * lip_t)) * lip_h + 4 * (pi * lid_hole * lid_t - 2 * pi / 4 * lid_hole^2))"},
+    {"measure": "centroid", "value": ["length / 2", "width / 2", "((length * width * height^2 / 2 - (length - 2 * wall) * (width - 2 * wall) * (height - wall) * (height + wall) / 2 + 4 * (pi / 4 * boss_d^2 * (height - wall)) * (height + wall) / 2 - 4 * (pi / 4 * boss_hole^2 * boss_depth) * (height - boss_depth / 2)) + ((length * width * lid_t - 4 * (pi / 4 * lid_hole^2 * lid_t)) * (height + lid_t / 2) + ((length - 2 * wall - 2 * gap) * (width - 2 * wall - 2 * gap) - ((length - 2 * wall - 2 * gap) - 2 * lip_t) * ((width - 2 * wall - 2 * gap) - 2 * lip_t)) * lip_h * (height - lip_h / 2))) / ((length * width * height - (length - 2 * wall) * (width - 2 * wall) * (height - wall) + 4 * (pi / 4 * boss_d^2 * (height - wall)) - 4 * (pi / 4 * boss_hole^2 * boss_depth)) + (length * width * lid_t + ((length - 2 * wall - 2 * gap) * (width - 2 * wall - 2 * gap) - ((length - 2 * wall - 2 * gap) - 2 * lip_t) * ((width - 2 * wall - 2 * gap) - 2 * lip_t)) * lip_h - 4 * (pi / 4 * lid_hole^2 * lid_t)))"]},
+    {"measure": "bbox", "min": [0, 0, 0], "max": ["length", "width", "height + lid_t"]},
+    {"measure": "bodies", "value": 2},
+    {"measure": "shells", "value": 2}
+  ],
+  "derivation": [
+    "Box: the block less the hollow (L - 2w)(W - 2w)(H - w), plus four bosses pi/4 bd^2 (H - w) standing on the floor, less four pilot holes pi/4 bh^2 depth.",
+    "Lid: the plate L W tl, the lip ring (Lo Wo - Ln Wn) hl with Lo = L - 2w - 2g and Ln = Lo - 2 lt, less four holes pi/4 dl^2 tl. Box 28946.0 mm^3, lid 10689.5 mm^3, together 39635.4 mm^3.",
+    "Area of the box: the outside without the top opening, the hollow's floor and four walls; each boss adds its wall pi bd (H - w) (its top replaces the floor it stands on) and its pilot hole adds its wall pi bh depth (its bottom replaces the top it takes). Lid: the plate, the lip's four walls outside and inside (its underside replaces the plate's underside it covers), and each hole swaps two discs for its wall.",
+    "Centroid Z from the moments: the hollow's centre at (H + w)/2, the bosses' at (H + w)/2, the pilots' at H - depth/2, the plate's at H + tl/2, the lip's at H - hl/2. X and Y by symmetry.",
+    "Two bodies, each one shell: the lid is a separate body that touches the box's rim, not fused to it."
+  ],
+  "variants": [
+    {"set": {"height": "40 mm", "length": "100 mm"}}
+  ],
+  "solution": [
+    ["variable.set", {"name": "length", "expr": "80 mm"}],
+    ["variable.set", {"name": "width", "expr": "60 mm"}],
+    ["variable.set", {"name": "height", "expr": "30 mm"}],
+    ["variable.set", {"name": "wall", "expr": "2 mm"}],
+    ["variable.set", {"name": "boss_d", "expr": "7 mm"}],
+    ["variable.set", {"name": "boss_hole", "expr": "2.5 mm"}],
+    ["variable.set", {"name": "boss_depth", "expr": "10 mm"}],
+    ["variable.set", {"name": "inset", "expr": "9 mm"}],
+    ["variable.set", {"name": "lid_t", "expr": "2 mm"}],
+    ["variable.set", {"name": "lip_h", "expr": "3 mm"}],
+    ["variable.set", {"name": "lip_t", "expr": "1.5 mm"}],
+    ["variable.set", {"name": "gap", "expr": "0.2 mm"}],
+    ["variable.set", {"name": "lid_hole", "expr": "3.2 mm"}],
+    ["feature.block", {"size": ["length", "width", "height"], "name": "Box"}],
+    ["feature.shell", {"source": "Box", "thickness": "wall", "open": ["F1:face(1)"], "name": "Shell"}],
+    ["feature.cylinder", {"radius": "boss_d / 2", "height": "height - wall", "position": ["inset", "inset", "wall"], "name": "Boss"}],
+    ["feature.pattern", {"source": "Boss", "count": 2, "step": ["length - 2 * inset", 0, 0], "name": "BossRow"}],
+    ["feature.pattern", {"source": "BossRow", "count": 2, "step": [0, "width - 2 * inset", 0], "name": "Bosses"}],
+    ["feature.boolean", {"op": "union", "target": "Shell", "tool": "Bosses", "name": "WithBosses"}],
+    ["feature.cylinder", {"radius": "boss_hole / 2", "height": "boss_depth", "position": ["inset", "inset", "height - boss_depth"], "name": "PilotHole"}],
+    ["feature.pattern", {"source": "PilotHole", "count": 2, "step": ["length - 2 * inset", 0, 0], "name": "PilotRow"}],
+    ["feature.pattern", {"source": "PilotRow", "count": 2, "step": [0, "width - 2 * inset", 0], "name": "PilotHoles"}],
+    ["feature.boolean", {"op": "subtract", "target": "WithBosses", "tool": "PilotHoles", "name": "Base"}],
+    ["feature.block", {"size": ["length", "width", "lid_t"], "position": [0, 0, "height"], "name": "LidPlate"}],
+    ["feature.block", {"size": ["length - 2 * wall - 2 * gap", "width - 2 * wall - 2 * gap", "lip_h"], "position": ["wall + gap", "wall + gap", "height - lip_h"], "name": "LipOuter"}],
+    ["feature.block", {"size": ["length - 2 * wall - 2 * gap - 2 * lip_t", "width - 2 * wall - 2 * gap - 2 * lip_t", "lip_h"], "position": ["wall + gap + lip_t", "wall + gap + lip_t", "height - lip_h"], "name": "LipInner"}],
+    ["feature.boolean", {"op": "subtract", "target": "LipOuter", "tool": "LipInner", "name": "Lip"}],
+    ["feature.boolean", {"op": "union", "target": "LidPlate", "tool": "Lip", "name": "LidBody"}],
+    ["feature.cylinder", {"radius": "lid_hole / 2", "height": "lid_t", "position": ["inset", "inset", "height"], "name": "ScrewHole"}],
+    ["feature.pattern", {"source": "ScrewHole", "count": 2, "step": ["length - 2 * inset", 0, 0], "name": "ScrewRow"}],
+    ["feature.pattern", {"source": "ScrewRow", "count": 2, "step": [0, "width - 2 * inset", 0], "name": "ScrewHoles"}],
+    ["feature.boolean", {"op": "subtract", "target": "LidBody", "tool": "ScrewHoles", "name": "Lid"}]
+  ]
+}
