@@ -785,13 +785,34 @@ impl<'a> Context<'a> {
                     }
                 }
             } else {
+                let mut walked = true;
                 for &n in &link.sources {
                     if fits(at, n) {
                         return true;
                     }
                     match self.source_of(at, n) {
                         Some(next) => at = next,
-                        None => break,
+                        None => {
+                            walked = false;
+                            break;
+                        }
+                    }
+                }
+                // A run of instance 0 after the listed instances is left
+                // out of the name down to the feature of the name after
+                // `/` (`PersistentName::canonical`): walk it as instance 0.
+                if walked {
+                    for _ in 0..=self.doc.features.len() {
+                        if Some(at) == stop {
+                            break;
+                        }
+                        if fits(at, 0) {
+                            return true;
+                        }
+                        match self.source_of(at, 0) {
+                            Some(next) if next != at => at = next,
+                            _ => break,
+                        }
                     }
                 }
             }
