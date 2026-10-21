@@ -202,6 +202,10 @@ impl Parsed {
         // The items each node lists, and a context with units per node.
         let mut listed: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         let mut context_of: BTreeMap<u64, u64> = BTreeMap::new();
+        // The context of the representation that lists each item: a frame
+        // is read in its own representation's units, which may differ
+        // from another representation's in the same place.
+        let mut context_of_item: BTreeMap<u64, u64> = BTreeMap::new();
         for (&rep, (items, context)) in &reps {
             let node = groups.find(rep);
             listed
@@ -214,6 +218,9 @@ impl Parsed {
                     .is_ok_and(|i| i.entity.is("GLOBAL_UNIT_ASSIGNED_CONTEXT"))
             {
                 context_of.entry(node).or_insert(context);
+                for &item in items {
+                    context_of_item.entry(item).or_insert(context);
+                }
             }
         }
         // Product definitions and their nodes; occurrences by relationship.
@@ -256,7 +263,10 @@ impl Parsed {
         }
         let frame_ref = |id: u64, node: u64| FrameRef {
             id,
-            context: context_of.get(&node).copied(),
+            context: context_of_item
+                .get(&id)
+                .or_else(|| context_of.get(&node))
+                .copied(),
         };
         let lists = |node: u64, item: u64| listed.get(&node).is_some_and(|s| s.contains(&item));
         let mut edges: Vec<Edge> = Vec::new();
@@ -498,7 +508,7 @@ impl Parsed {
     fn placement_frame(
         &self,
         frame: &FrameRef,
-        metres_per_unit: f64,
+        metres_per_unit: Option<f64>,
     ) -> Result<Frame, ImportError> {
         let context = match frame.context {
             Some(context) => context,
@@ -510,7 +520,8 @@ impl Parsed {
             })?,
         };
         let units = crate::units::read(self, context)?;
-        let scale = units.metres_per_length / metres_per_unit;
+        // None: in the file's own units.
+        let scale = metres_per_unit.map_or(1.0, |m| units.metres_per_length / m);
         if !(scale.is_finite() && scale > 0.0) {
             return err(format!(
                 "{}: its unit cannot be converted to the document's",
@@ -576,6 +587,28 @@ impl Parsed {
         ))
     }
 
+    /// Whether every step of the placement puts the child's frame onto a
+    /// frame that is the same within 1e-12 in the file's own units (the
+    /// test slice 1 accepted a placement by): such a placement leaves the
+    /// body as read, bit for bit.
+    pub(crate) fn placement_is_identity(&self, placed: &Placed) -> Result<bool, ImportError> {
+        let same = |p: Vec3, q: Vec3| (p - q).length() <= 1e-12;
+        for step in &placed.steps {
+            let parent = self.placement_frame(&step.parent, None)?;
+            let child = match &step.child {
+                Some(frame) => self.placement_frame(frame, None)?,
+                None => Frame::WORLD,
+            };
+            if !(same(parent.origin(), child.origin())
+                && same(parent.x(), child.x())
+                && same(parent.z(), child.z()))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// The transformation of a placed solid, in the caller's unit: the
     /// steps composed from the solid up.
     ///
@@ -591,10 +624,10 @@ impl Parsed {
         let mut total = Transform::IDENTITY;
         for step in &placed.steps {
             let parent =
-                Transform::from_frame(&self.placement_frame(&step.parent, metres_per_unit)?);
+                Transform::from_frame(&self.placement_frame(&step.parent, Some(metres_per_unit))?);
             let child = match &step.child {
                 Some(frame) => {
-                    Transform::from_frame(&self.placement_frame(frame, metres_per_unit)?)
+                    Transform::from_frame(&self.placement_frame(frame, Some(metres_per_unit))?)
                 }
                 None => Transform::IDENTITY,
             };

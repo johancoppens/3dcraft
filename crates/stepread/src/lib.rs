@@ -91,7 +91,7 @@ mod units;
 pub use assembly::{MAX_DEPTH, MAX_PLACEMENTS, Placed};
 pub use budget::MAX_CONTROL_POINT_USES;
 
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::Tolerance;
 use craft3d_step::{Entity, Instance, Param, ReadLimits, Record, StepFile};
 use craft3d_topo::Body;
 use std::collections::BTreeMap;
@@ -504,16 +504,12 @@ impl Parsed {
         read.color = style::color_of(self, item.id, &read.face_ids);
         if !placed.steps.is_empty() {
             let transform = self.placement_transform(placed, options)?;
-            // A placement where the solid already is (within 1e-12, as
-            // slice 1 accepted it) leaves the body as read, bit for bit:
-            // a document saved before assemblies were read regenerates
-            // the same bodies.
-            let unit = |v: Vec3, w: Vec3| (v - w).length() <= 1e-12;
-            let identity = transform.point(Vec3::ZERO).length() <= 1e-12
-                && unit(transform.vector(Vec3::X), Vec3::X)
-                && unit(transform.vector(Vec3::Y), Vec3::Y)
-                && unit(transform.vector(Vec3::Z), Vec3::Z);
-            if !identity {
+            // A placement where the solid already is (each step's frames
+            // the same within 1e-12 in the file's units, as slice 1
+            // accepted it) leaves the body as read, bit for bit: a
+            // document saved before assemblies were read regenerates the
+            // same bodies.
+            if !self.placement_is_identity(placed)? {
                 read.body = read.body.transformed(&transform).map_err(|e| {
                     ImportError(format!("`{}` placed at {}: {e}", read.name, placed.path))
                 })?;

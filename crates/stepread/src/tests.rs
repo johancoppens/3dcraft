@@ -251,6 +251,23 @@ fn swept_and_offset_surfaces_that_are_not_read_are_named() {
     assert!(reader.surface(47).is_ok());
     let e = reader.surface(49).unwrap_err().to_string();
     assert!(e.contains("centre"), "{e}");
+    // A cone that opens towards -z (a negative semi-angle): offset
+    // outward, its radius grows (the side is taken on its own nappe).
+    let text = file(
+        "#30=CIRCLE('',#21,1.);\n#50=CONICAL_SURFACE('',#21,2.,-0.5);\n#51=OFFSET_SURFACE('',#50,0.5,.F.);\n",
+        true,
+    );
+    let parsed = parse(text.as_bytes()).unwrap();
+    let reader = geometry::Reader::new(&parsed, 1.0, 1.0);
+    match reader.surface(51).unwrap() {
+        geometry::Read::Done(craft3d_geom::Surface::Cone(c), false) => {
+            assert!(
+                (c.radius() - (2.0 + 0.5 / 0.5f64.cos())).abs() < 1e-12,
+                "{c:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -282,4 +299,30 @@ fn the_shared_parse_is_reused_by_key() {
     assert!(Arc::ptr_eq(&a, &b));
     assert!(parse_shared(b"not even step", "k2").is_err());
     forget_shared();
+}
+
+/// Review of 2026-10-21: one style assignment of n entries shared by n
+/// styled items was followed n² times inside every parse (6 s at n =
+/// 8000; a 128 MiB file of that shape for days). Each style entity is
+/// now read once: n = 40 000 parses within seconds, the body read.
+#[test]
+fn a_style_shared_by_many_styled_items_is_read_once() {
+    let n = 40_000;
+    let mut extra = String::from("#30=CIRCLE('',#21,1.);\n");
+    let entries = vec!["#10"; n].join(",");
+    extra.push_str(&format!(
+        "#60=PRESENTATION_STYLE_ASSIGNMENT(({entries}));\n"
+    ));
+    for k in 0..n {
+        extra.push_str(&format!("#{}=STYLED_ITEM('',(#60),#10);\n", 100 + k));
+    }
+    let text = file(&extra, true);
+    let started = std::time::Instant::now();
+    let parsed = parse(text.as_bytes()).unwrap();
+    assert!(
+        started.elapsed().as_secs_f64() < 5.0,
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(parsed.colors.is_empty());
 }

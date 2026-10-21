@@ -973,9 +973,11 @@ impl<'a> Reader<'a> {
                 Surface::Torus(Torus::new(*t.frame(), major, minor).map_err(geom)?)
             }
             Surface::Cone(c) => {
-                // A point away from the apex, its normal's part away from
-                // the axis: the radius at v = 0 grows by d / cos α.
-                let v = c.apex_v() + 1.0;
+                // A point of the cone's own nappe (where its radius is
+                // positive: past the apex in the direction it opens), its
+                // normal's part away from the axis: the radius at v = 0
+                // grows by d / cos α.
+                let v = c.apex_v() + c.half_angle().tan().signum();
                 let p = surface.eval(0.0, v);
                 let o = c.frame().origin();
                 let radial = p - o - c.frame().z() * (p - o).dot(c.frame().z());

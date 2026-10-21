@@ -107,6 +107,7 @@ pub(crate) fn import_bytes(
     let mut reports = Vec::with_capacity(placed.len());
     let mut colors = Vec::with_capacity(placed.len());
     let mut step_names: Vec<String> = Vec::with_capacity(placed.len());
+    let mut leaves: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for (index, at) in placed.iter().enumerate() {
         let Some(item) = items.get(at.item) else {
             return fail(format!(
@@ -125,15 +126,7 @@ pub(crate) fn import_bytes(
             ))
         })?;
         colors.push(read.color);
-        // A placed solid is named after its place in the assembly (the
-        // last step of its path), else after the solid.
-        step_names.push(
-            at.path
-                .rsplit('/')
-                .next()
-                .filter(|leaf| !leaf.is_empty())
-                .map_or_else(|| item.name.clone(), str::to_string),
-        );
+        step_names.push(placement_name(&mut leaves, &at.path, &item.name));
         let r = &read.report;
         reports.push(json!({
             "solid": index,
@@ -219,4 +212,54 @@ pub(crate) fn import_bytes(
         "sha256": blob.sha256(),
         "bodies": bodies,
     }))
+}
+
+/// The name of a placed solid: the last step of its path in the assembly,
+/// else the solid's own name; the same leaf met again (`bolt#1` in each of
+/// two sub-assemblies) numbered on in file order, `bolt#1-2`, so every
+/// placement keeps a name of its own. `leaves` counts what was met.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn placement_name(
+    leaves: &mut std::collections::BTreeMap<String, usize>,
+    path: &str,
+    solid: &str,
+) -> String {
+    let leaf = path
+        .rsplit('/')
+        .next()
+        .filter(|leaf| !leaf.is_empty())
+        .unwrap_or(solid)
+        .to_string();
+    let seen = leaves.entry(leaf.clone()).or_insert(0);
+    *seen += 1;
+    if *seen == 1 || leaf.is_empty() {
+        leaf
+    } else {
+        format!("{leaf}-{seen}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_leaf_met_twice_is_numbered_on() {
+        let mut leaves = std::collections::BTreeMap::new();
+        let names: Vec<String> = [
+            ("robot/arm#left/bolt#1", "b"),
+            ("robot/arm#right/bolt#1", "b"),
+            ("robot/arm#right/bolt#2", "b"),
+            ("", "plate"),
+            ("", "plate"),
+            ("robot/arm#up/bolt#1", "b"),
+        ]
+        .iter()
+        .map(|(path, solid)| super::placement_name(&mut leaves, path, solid))
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "bolt#1", "bolt#1-2", "bolt#2", "plate", "plate-2", "bolt#1-3"
+            ]
+        );
+    }
 }

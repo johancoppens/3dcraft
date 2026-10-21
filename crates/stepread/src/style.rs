@@ -59,82 +59,147 @@ fn refs(param: Option<&Param>) -> impl Iterator<Item = u64> + '_ {
         .filter_map(Param::as_ref)
 }
 
-/// The colour of a surface side style: its fill area's, else its
-/// rendering's.
-fn side_colour(parsed: &Parsed, side: u64) -> Option<[u8; 3]> {
-    let record = parsed.record(side, "SURFACE_SIDE_STYLE").ok()?;
-    let mut rendered = None;
-    for element in refs(record.params.get(1)) {
-        let Ok(instance) = parsed.instance(element) else {
-            continue;
-        };
-        let entity = &instance.entity;
-        if let Some(fill) = entity.record("SURFACE_STYLE_FILL_AREA") {
-            let Some(area) = fill.params.first().and_then(Param::as_ref) else {
-                continue;
-            };
-            let Ok(area) = parsed.record(area, "FILL_AREA_STYLE") else {
-                continue;
-            };
-            for style in refs(area.params.get(1)) {
-                if let Ok(fill_colour) = parsed.record(style, "FILL_AREA_STYLE_COLOUR")
-                    && let Some(c) = fill_colour
+/// Most references the colours of a file may follow in all: past this
+/// the file's remaining colours are left out (the bodies still read).
+/// With every style, side and fill area read once (memoised), a file of
+/// 128 MiB holds fewer references than this; it is a bound for the
+/// unforeseen, not a limit a file meets.
+pub(crate) const MAX_STYLE_STEPS: usize = 1 << 26;
+
+/// Reads colours, each style entity once: a style assignment, a side
+/// style or a fill area shared by many styled items (or listed many times
+/// in one) is followed once and its colour remembered, so the work is the
+/// size of the file, not the product of its lists (review of
+/// 2026-10-21: one assignment of n entries shared by n styled items took
+/// n² steps inside every parse).
+struct Styler<'a> {
+    parsed: &'a Parsed,
+    assignments: BTreeMap<u64, Option<[u8; 3]>>,
+    sides: BTreeMap<u64, Option<[u8; 3]>>,
+    areas: BTreeMap<u64, Option<[u8; 3]>>,
+    steps: usize,
+}
+
+impl Styler<'_> {
+    /// Counts one step; false once the budget is spent.
+    fn step(&mut self) -> bool {
+        self.steps = self.steps.saturating_add(1);
+        self.steps <= MAX_STYLE_STEPS
+    }
+
+    /// The colour of a fill area style: its first `FILL_AREA_STYLE_COLOUR`.
+    fn area(&mut self, area: u64) -> Option<[u8; 3]> {
+        if let Some(&known) = self.areas.get(&area) {
+            return known;
+        }
+        let parsed = self.parsed;
+        let mut found = None;
+        if let Ok(record) = parsed.record(area, "FILL_AREA_STYLE") {
+            for style in refs(record.params.get(1)) {
+                if !self.step() {
+                    break;
+                }
+                if let Ok(fill) = parsed.record(style, "FILL_AREA_STYLE_COLOUR")
+                    && let Some(c) = fill
                         .params
                         .get(1)
                         .and_then(Param::as_ref)
                         .and_then(|c| colour(parsed, c))
                 {
-                    return Some(c);
+                    found = Some(c);
+                    break;
                 }
             }
-        } else if let Some(rendering) = entity
-            .record("SURFACE_STYLE_RENDERING")
-            .or_else(|| entity.record("SURFACE_STYLE_RENDERING_WITH_PROPERTIES"))
-        {
-            rendered = rendered.or_else(|| {
-                rendering
-                    .params
-                    .get(1)
-                    .and_then(Param::as_ref)
-                    .and_then(|c| colour(parsed, c))
-            });
         }
+        self.areas.insert(area, found);
+        found
     }
-    rendered
-}
 
-/// The surface colour of a list of presentation style assignments.
-fn styles_colour(parsed: &Parsed, styles: Option<&Param>) -> Option<[u8; 3]> {
-    for assignment in refs(styles) {
-        let Ok(instance) = parsed.instance(assignment) else {
-            continue;
-        };
-        let Some(record) = instance
-            .entity
-            .record("PRESENTATION_STYLE_ASSIGNMENT")
-            .or_else(|| instance.entity.record("PRESENTATION_STYLE_BY_CONTEXT"))
-        else {
-            continue;
-        };
-        for usage in refs(record.params.first()) {
-            if let Ok(usage) = parsed.record(usage, "SURFACE_STYLE_USAGE")
-                && let Some(c) = usage
-                    .params
-                    .get(1)
-                    .and_then(Param::as_ref)
-                    .and_then(|side| side_colour(parsed, side))
-            {
-                return Some(c);
+    /// The colour of a surface side style: its fill area's, else its
+    /// rendering's.
+    fn side(&mut self, side: u64) -> Option<[u8; 3]> {
+        if let Some(&known) = self.sides.get(&side) {
+            return known;
+        }
+        let parsed = self.parsed;
+        let mut filled = None;
+        let mut rendered = None;
+        if let Ok(record) = parsed.record(side, "SURFACE_SIDE_STYLE") {
+            for element in refs(record.params.get(1)) {
+                if !self.step() {
+                    break;
+                }
+                let Ok(instance) = parsed.instance(element) else {
+                    continue;
+                };
+                let entity = &instance.entity;
+                if let Some(fill) = entity.record("SURFACE_STYLE_FILL_AREA") {
+                    if let Some(area) = fill.params.first().and_then(Param::as_ref)
+                        && let Some(c) = self.area(area)
+                    {
+                        filled = Some(c);
+                        break;
+                    }
+                } else if rendered.is_none()
+                    && let Some(rendering) = entity
+                        .record("SURFACE_STYLE_RENDERING")
+                        .or_else(|| entity.record("SURFACE_STYLE_RENDERING_WITH_PROPERTIES"))
+                {
+                    rendered = rendering
+                        .params
+                        .get(1)
+                        .and_then(Param::as_ref)
+                        .and_then(|c| colour(parsed, c));
+                }
             }
         }
+        let found = filled.or(rendered);
+        self.sides.insert(side, found);
+        found
     }
-    None
+
+    /// The surface colour of one presentation style assignment.
+    fn assignment(&mut self, assignment: u64) -> Option<[u8; 3]> {
+        if let Some(&known) = self.assignments.get(&assignment) {
+            return known;
+        }
+        let parsed = self.parsed;
+        let mut found = None;
+        if let Ok(instance) = parsed.instance(assignment)
+            && let Some(record) = instance
+                .entity
+                .record("PRESENTATION_STYLE_ASSIGNMENT")
+                .or_else(|| instance.entity.record("PRESENTATION_STYLE_BY_CONTEXT"))
+        {
+            for usage in refs(record.params.first()) {
+                if !self.step() {
+                    break;
+                }
+                if let Ok(usage) = parsed.record(usage, "SURFACE_STYLE_USAGE")
+                    && let Some(side) = usage.params.get(1).and_then(Param::as_ref)
+                    && let Some(c) = self.side(side)
+                {
+                    found = Some(c);
+                    break;
+                }
+            }
+        }
+        self.assignments.insert(assignment, found);
+        found
+    }
 }
 
 /// The colour of every styled item of the file, by the instance id of the
 /// item: the first plain `STYLED_ITEM` of an item, overridden by an
-/// `OVER_RIDING_STYLED_ITEM` of it.
+/// `OVER_RIDING_STYLED_ITEM` of it. Bounded by [`MAX_STYLE_STEPS`].
 pub(crate) fn colors(parsed: &Parsed) -> BTreeMap<u64, [u8; 3]> {
+    let mut styler = Styler {
+        parsed,
+        assignments: BTreeMap::new(),
+        sides: BTreeMap::new(),
+        areas: BTreeMap::new(),
+        steps: 0,
+    };
     let mut out = BTreeMap::new();
     for instance in &parsed.file.data {
         let entity = &instance.entity;
@@ -150,13 +215,21 @@ pub(crate) fn colors(parsed: &Parsed) -> BTreeMap<u64, [u8; 3]> {
         let Some(item) = record.params.get(2).and_then(Param::as_ref) else {
             continue;
         };
-        let Some(c) = styles_colour(parsed, record.params.get(1)) else {
+        if !overriding && out.contains_key(&item) {
             continue;
-        };
-        if overriding {
+        }
+        let mut found = None;
+        for assignment in refs(record.params.get(1)) {
+            if !styler.step() {
+                return out;
+            }
+            if let Some(c) = styler.assignment(assignment) {
+                found = Some(c);
+                break;
+            }
+        }
+        if let Some(c) = found {
             out.insert(item, c);
-        } else {
-            out.entry(item).or_insert(c);
         }
     }
     out
@@ -185,20 +258,16 @@ pub(crate) fn color_of(parsed: &Parsed, item: u64, faces: &[u64]) -> Option<[u8;
             return found;
         }
     }
-    let mut counts: Vec<([u8; 3], usize)> = Vec::new();
-    for face in faces {
+    // The colour most faces have; of equals, the one met first.
+    let mut counts: BTreeMap<[u8; 3], (usize, usize)> = BTreeMap::new();
+    for (at, face) in faces.iter().enumerate() {
         if let Some(&c) = colors.get(face) {
-            match counts.iter_mut().find(|(seen, _)| *seen == c) {
-                Some((_, n)) => *n += 1,
-                None => counts.push((c, 1)),
-            }
+            let entry = counts.entry(c).or_insert((0, at));
+            entry.0 += 1;
         }
     }
-    let mut best: Option<([u8; 3], usize)> = None;
-    for (c, n) in counts {
-        if best.is_none_or(|(_, m)| n > m) {
-            best = Some((c, n));
-        }
-    }
-    best.map(|(c, _)| c)
+    counts
+        .into_iter()
+        .max_by(|(_, (n, first)), (_, (m, second))| n.cmp(m).then(second.cmp(first)))
+        .map(|(c, _)| c)
 }
