@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-21: No T-splines in the kernel; organic forms later as subdivision surfaces turned into B-splines (decided by the developer)
+
+T-splines (Sederberg et al., 2003; T-Splines Inc. bought by Autodesk in 2011, the "Form" workspace of Fusion 360) are not added as a surface kind. Their core patent (US 7,274,364) expired in 2024, but related Autodesk patents, such as converting T-spline models to trim-free models (US 9,269,189), are listed as active, and that conversion is exactly what export needs, since STEP has no T-spline entity. A new surface kind also reaches every part of the kernel (booleans, tessellator, measure, intersections, self-check) while the B-spline paths are still being completed. Organic, sculpted forms (the reason to want T-splines) are planned instead as a feature that shapes a control cage as a Catmull-Clark subdivision surface (unencumbered for decades) and turns it into ordinary B-spline faces, so the kernel needs no new kind; it comes after the M9 work on lofts with guide curves and sweeps along 3D paths, and together they are the path to car-body-like shapes. Implemented clean-room from the published papers only.
+
 ### 2026-10-18: A wall that thins to a point, and blend::join (decided by the developer)
 
 - **A wall that thins to a point** follows the same rule as one that thins along a line (2026-10-18): where the faces meet in one shared vertex the body is valid and accepted; where two vertices of the body lie in one place (the shell meets itself there) parts touch and it is refused as zero thickness. The boolean and regeneration apply the same rule (consolidation round, one method for contacts).

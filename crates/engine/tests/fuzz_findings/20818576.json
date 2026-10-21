@@ -1,0 +1,9 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-09}},
+  {"command":"feature.cone","params":{"angle":"0 deg","axis":[0.01,0.0,0.0],"height":0.005,"name":"N0","position":[0.0,0.0,0.0],"radius":0.005}},
+  {"command":"feature.edit","params":{"feature":"N0","height":0.02}},
+  {"command":"feature.mirror","params":{"keep":true,"name":"N2","normal":[0.0,0.01,0.0],"point":[0.01,0.0025,-0.005],"source":"N0"}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N3","op":"subtract","target":"N2","tool":"N0"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":0.000625,"edges":[["F3:copy(0)/F1:face(0)","F3:copy(1)/F1:face(0)"]],"name":"N6"}},
+  {"command":"feature.shell","params":{"name":"N7","open":["F4:chamfer(0)"],"source":"N6","thickness":0.0003125}}
+]

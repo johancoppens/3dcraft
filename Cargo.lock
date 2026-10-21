@@ -416,6 +416,7 @@ name = "craft3d-doc"
 version = "0.0.1"
 dependencies = [
  "craft3d-expr",
+ "craft3d-math",
  "serde",
  "serde_json",
 ]

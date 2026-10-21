@@ -1,0 +1,13 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-09}},
+  {"command":"sketch.create","params":{"name":"S0","offset":-0.005,"plane":"zx"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[0.0025,0.005],[0.0125,0.0],[0.0125,0.01],[0.01,0.01]],"sketch":"S0"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","name":"N0","sketch":"S0"}},
+  {"command":"feature.pattern","params":{"angle":"45 deg","axis":[0.0,0.0,-1.0],"count":5,"name":"N1","point":[0.005,-0.004999999999999999,1.8338742601622243e-05],"source":"N0"}},
+  {"command":"feature.mirror","params":{"keep":true,"name":"N2","normal":[1.0,0.0,0.0],"point":[0.005,0.005,-0.0025],"source":"N1"}},
+  {"command":"feature.boolean","params":{"keepTool":true,"name":"N3","op":"intersect","target":"N1","tool":"N2"}},
+  {"command":"feature.transform","params":{"angle":"45 deg","axis":[0.0,0.0,1.0],"keep":false,"name":"N4","pivot":[-0.005,-0.005,0.0075],"source":"N2","translate":[0.0,0.0,-0.0125]}},
+  {"command":"sketch.create","params":{"face":"F5:copy(0)/F3:copy(1)/F2:side(e7)","name":"S5"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[-0.0025,-0.01],[0.01,-0.01],[0.01,-0.005],[-0.0025,-0.005]],"sketch":"S5"}},
+  {"command":"feature.extrude","params":{"distance":0.0025,"name":"N5","sketch":"S5"}}
+]

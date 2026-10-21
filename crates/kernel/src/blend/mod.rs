@@ -1204,6 +1204,7 @@ fn trim(
         trust_operands: true,
         // A tool, not a result: what it touches is the next step's.
         refuse_zero_thickness: false,
+        loosest: None,
     };
     let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
     let mut slope = None;
@@ -1498,6 +1499,7 @@ fn combine(
         // A step of the blend: regeneration checks the blended body for
         // parts that touch (and names the user's features).
         refuse_zero_thickness: false,
+        loosest: None,
     };
     let result =
         boolean_with(&state.body, tool, op, tolerance, &options).map_err(|error| match error {

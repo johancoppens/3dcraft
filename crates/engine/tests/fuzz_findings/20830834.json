@@ -1,0 +1,9 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-06}},
+  {"command":"feature.cylinder","params":{"angle":"0 deg","axis":[0.0,0.0,10.0],"height":20.0,"name":"N0","position":[-5.0,0.0,-6.25],"radius":10.0}},
+  {"command":"feature.shell","params":{"name":"N1","open":["F1:face(2)"],"source":"N0","thickness":0.3125}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 5","axis":[0.0,-1.0,0.0],"count":5,"name":"N2","point":[-3.724346616959476,0.0,2.5],"source":"N1"}},
+  {"command":"feature.block","params":{"angle":"30 deg","axis":[-1.0,0.0,0.0],"name":"N5","position":[0.0,7.5,12.5],"size":[17.5,2.5,12.5]}},
+  {"command":"feature.boolean","params":{"keepTool":true,"name":"N8","op":"subtract","target":"N5","tool":"N2"}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N10","op":"subtract","target":"N8","tool":"N2"}}
+]

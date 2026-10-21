@@ -54,6 +54,7 @@ mod cut;
 mod facetree;
 mod freeform;
 mod hits;
+mod loose;
 mod merge;
 mod outline;
 mod regions;
@@ -141,7 +142,7 @@ pub enum VertexSource {
 
 /// The result of a boolean and where each of its entities came from:
 /// `faces[i]` belongs to `FaceId(i)` of `body`, and so on.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct BooleanResult {
     pub body: Body,
     pub faces: Vec<FaceSource>,
@@ -152,10 +153,73 @@ pub struct BooleanResult {
     pub merged: Vec<Vec<FaceSource>>,
     pub edges: Vec<EdgeSource>,
     pub vertices: Vec<VertexSource>,
+    /// Every tolerance the boolean gave an entity of the result that the
+    /// entity did not have in its operand (operands with loose entities
+    /// only; empty for two exact operands): what it measured where the
+    /// boolean, working at the operands' largest tolerance, left an entity
+    /// off the document's.
+    pub raised: Vec<Raised>,
+}
+
+/// As derived, but `raised` only when it holds something: the result of
+/// two exact operands prints as it did before tolerant entities existed
+/// (the boolean corpus's digest is of this text).
+impl std::fmt::Debug for BooleanResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let BooleanResult {
+            body,
+            faces,
+            merged,
+            edges,
+            vertices,
+            raised,
+        } = self;
+        let mut out = f.debug_struct("BooleanResult");
+        out.field("body", body)
+            .field("faces", faces)
+            .field("merged", merged)
+            .field("edges", edges)
+            .field("vertices", vertices);
+        if !raised.is_empty() {
+            out.field("raised", raised);
+        }
+        out.finish()
+    }
+}
+
+/// An entity of a boolean's result given a tolerance it did not have
+/// ([`BooleanResult::raised`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Raised {
+    pub entity: RaisedEntity,
+    /// Its tolerance in the result.
+    pub tolerance: f64,
+    /// Where it came from: one the boolean made, or one kept from an
+    /// operand (loose there, or exact there and next to what the boolean
+    /// changed).
+    pub origin: Origin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaisedEntity {
+    Vertex(VertexId),
+    Edge(EdgeId),
+}
+
+/// Where an entity of a boolean's result came from, as tolerant modelling
+/// tells it apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Made by the boolean (an intersection edge, a new vertex).
+    New,
+    /// Kept from an operand in which it had a tolerance of its own.
+    Loose,
+    /// Kept from an operand in which it was exact.
+    Exact,
 }
 
 /// How a boolean is carried out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BooleanOptions {
     /// Merge the faces, edges and vertices that the operation split
     /// needlessly (see [`boolean`]). Without it every imprint stays; the
@@ -173,6 +237,12 @@ pub struct BooleanOptions {
     /// goes on with such a body as a step of its own, not as its result,
     /// leaves this out.
     pub refuse_zero_thickness: bool,
+    /// The cap on any entity's own tolerance (the document's,
+    /// `doc::Tolerance::loosest`); `None` for
+    /// `craft3d_topo::DEFAULT_LOOSEST` times the linear tolerance. A
+    /// boolean on operands with loose entities works at their largest
+    /// tolerance, and refuses above this.
+    pub loosest: Option<f64>,
 }
 
 impl Default for BooleanOptions {
@@ -181,6 +251,7 @@ impl Default for BooleanOptions {
             merge: true,
             trust_operands: false,
             refuse_zero_thickness: true,
+            loosest: None,
         }
     }
 }
@@ -219,7 +290,7 @@ pub(crate) const NOT_SOLID: Reason =
 const TWO_SHEETS: Reason =
     "a boolean of two sheets: a sheet is trimmed by a solid or cuts one, not another sheet (yet)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
-const LOST: Reason = "the boolean lost track of an entity; this is a bug";
+pub(crate) const LOST: Reason = "the boolean lost track of an entity; this is a bug";
 /// Two faces pass through each other along a curve, and the curve does not
 /// divide one of them: a piece of it is missing (a place where an edge
 /// meets a surface was not found, or a curve was cut short).
@@ -744,7 +815,7 @@ fn run(
                 .iter()
                 .map(|s| s.curve.eval(0.5 * (s.range.0 + s.range.1))),
         );
-        zero_thickness(&result, tolerance, &meetings)?;
+        zero_thickness(&result, tolerance, &distinct(meetings))?;
         // A sheet that comes back to itself in a point is refused; a
         // solid's shell that does so is left to the rules above and to
         // regeneration (a wall that thins to nothing: accepted, decided
@@ -754,6 +825,20 @@ fn run(
         }
     }
     Ok(result)
+}
+
+/// The places in their first order, each once: a place found by several
+/// of the ways [`zero_thickness`] is given its places (a vertex of the
+/// section that is also where an operand touches itself, the same touch
+/// from both operands) gets the same answer each time, so it is looked at
+/// once. A union of many shelled balls had 39 671 places, 2282 of them
+/// distinct (fuzz seed 20757788, 2026-10-21).
+fn distinct(places: Vec<Vec3>) -> Vec<Vec3> {
+    let mut seen = std::collections::BTreeSet::new();
+    places
+        .into_iter()
+        .filter(|p| seen.insert([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]))
+        .collect()
 }
 
 /// Refuses a result whose parts (shells) touch each other, which is
@@ -799,32 +884,57 @@ fn zero_thickness(
             }
         }
     }
-    // The faces' boxes, grown by the distance, in a grid of cells about
-    // as wide as a typical face, so that a place finds the faces near it
-    // without looking at all of them.
+    // The faces' boxes, grown by the distance (their size sets how far
+    // `within_a_shell` looks about a place).
+    let grown = |b: craft3d_math::Bbox3| {
+        b.corners().map(|(lo, hi)| {
+            let grow = Vec3::new(near, near, near);
+            (lo - grow, hi + grow)
+        })
+    };
     let boxes: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
+        .map(|f| body.face_bbox(face_id(f)).ok().and_then(grown))
+        .collect();
+    // Which faces may be at a place: those whose box holds it and the box
+    // of what they hold too (a piece of a ball near where it is, not the
+    // whole ball: `Body::held_face_bbox`), grown by the distance and the
+    // tolerance (a foot on a face's boundary may lie that far outside
+    // it), in a grid of cells about as wide as a typical face, so that a
+    // place finds the faces near it without looking at all of them. A
+    // union of many balls cut into pieces had every one of its 1100 faces'
+    // boxes hold every place (fuzz seed 20757788, 2026-10-21).
+    let reach = near + tol;
+    let held: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
         .map(|f| {
-            body.face_bbox(face_id(f))
+            let whole = boxes.get(f).copied().flatten()?;
+            let Some((lo, hi)) = body
+                .held_face_bbox(face_id(f))
                 .ok()
                 .and_then(|b| b.corners())
-                .map(|(lo, hi)| {
-                    let grow = Vec3::new(near, near, near);
-                    (lo - grow, hi + grow)
-                })
+            else {
+                return Some(whole);
+            };
+            let grow = Vec3::new(reach, reach, reach);
+            let (lo, hi) = ((lo - grow).max(whole.0), (hi + grow).min(whole.1));
+            (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then_some((lo, hi))
         })
         .collect();
-    let grid = FaceGrid::new(&boxes);
+    let grid = FaceGrid::new(&held);
     let mut outlines: BTreeMap<usize, Option<outline::Outline>> = BTreeMap::new();
-    for &p in meetings {
+    // Per place, the faces at it with their nearest points, as the first
+    // half found them, for the second half to start from.
+    let mut at_places: Vec<Option<Vec<(usize, Vec3)>>> = vec![None; meetings.len()];
+    for (index, &p) in meetings.iter().enumerate() {
         if !p.is_finite() || body.shells.len() < 2 {
             continue;
         }
+        let mut at = Vec::new();
         // Per shell, the faces the place is on and the nearest point of
         // each.
         let mut on: BTreeMap<usize, Vec<(usize, Vec3)>> = BTreeMap::new();
         for f in grid.near(p) {
             let shell = face_shell.get(f).copied().unwrap_or(usize::MAX);
-            let inside = boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+            let inside = held.get(f).copied().flatten().is_some_and(|(lo, hi)| {
                 lo.x <= p.x
                     && p.x <= hi.x
                     && lo.y <= p.y
@@ -852,7 +962,11 @@ fn zero_thickness(
                 )
             {
                 on.entry(shell).or_default().push((f, foot));
+                at.push((f, foot));
             }
+        }
+        if let Some(slot) = at_places.get_mut(index) {
+            *slot = Some(at);
         }
         if on.len() < 2 {
             continue;
@@ -895,15 +1009,25 @@ fn zero_thickness(
             }
         }
     }
-    within_a_shell(
-        result,
-        tol,
-        meetings,
-        &boxes,
-        &grid,
-        &face_shell,
-        &mut outlines,
-    )
+    let faces = Faces {
+        boxes: &boxes,
+        held: &held,
+        grid: &grid,
+        shell: &face_shell,
+    };
+    within_a_shell(result, tol, meetings, &faces, &mut outlines, &at_places)
+}
+
+/// What [`zero_thickness`] knows of the result's faces, for
+/// [`within_a_shell`]: per face its box and the box of what it holds
+/// (grown by the distance looked within), the grid of the latter, and the
+/// shell it is in.
+#[derive(Clone, Copy)]
+struct Faces<'a> {
+    boxes: &'a [Option<(Vec3, Vec3)>],
+    held: &'a [Option<(Vec3, Vec3)>],
+    grid: &'a FaceGrid,
+    shell: &'a [usize],
 }
 
 /// Refuses a result one of whose shells touches itself at a vertex: a
@@ -1039,11 +1163,16 @@ fn within_a_shell(
     result: &BooleanResult,
     tol: f64,
     meetings: &[Vec3],
-    boxes: &[Option<(Vec3, Vec3)>],
-    grid: &FaceGrid,
-    face_shell: &[usize],
+    faces: &Faces<'_>,
     outlines: &mut BTreeMap<usize, Option<outline::Outline>>,
+    at_places: &[Option<Vec<(usize, Vec3)>>],
 ) -> Result<(), Stop> {
+    let Faces {
+        boxes,
+        held,
+        grid,
+        shell: face_shell,
+    } = *faces;
     let body = &result.body;
     let near = 2.0 * tol;
     let reach = 2.0 * near;
@@ -1165,7 +1294,7 @@ fn within_a_shell(
         })
     };
 
-    for &p in meetings {
+    for (index, &p) in meetings.iter().enumerate() {
         if !p.is_finite() {
             continue;
         }
@@ -1174,7 +1303,7 @@ fn within_a_shell(
             .into_iter()
             .filter(|&f| {
                 face_shell.get(f).is_some_and(|&s| s != usize::MAX)
-                    && boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+                    && held.get(f).copied().flatten().is_some_and(|(lo, hi)| {
                         lo.x <= p.x
                             && p.x <= hi.x
                             && lo.y <= p.y
@@ -1191,8 +1320,28 @@ fn within_a_shell(
             parts.entry(f).or_insert_with(|| parts_of(f));
         }
         // The nearest point of each candidate when the place is on it,
-        // made when a pair needs it.
+        // made when a pair needs it, or found by the first half for every
+        // candidate (the same test on the same faces). A pair one of whose
+        // faces is not at the place goes on to the next whatever else is
+        // true of it, so then only the faces at the place are paired: the
+        // same pairs in the same order, without the square of every face
+        // whose box holds the place (a union of many balls, each face's
+        // box its whole sphere: 1100 candidates a place).
         let mut feet: BTreeMap<usize, Option<Vec3>> = BTreeMap::new();
+        let paired: Vec<usize> = match at_places.get(index).and_then(Option::as_ref) {
+            Some(at) => {
+                for &f in &candidates {
+                    let found = at.iter().find(|(g, _)| *g == f).map(|&(_, foot)| foot);
+                    feet.insert(f, found);
+                }
+                candidates
+                    .iter()
+                    .copied()
+                    .filter(|f| feet.get(f).copied().flatten().is_some())
+                    .collect()
+            }
+            None => candidates.clone(),
+        };
         let mut foot =
             |f: usize, outlines: &mut BTreeMap<usize, Option<outline::Outline>>| -> Option<Vec3> {
                 *feet.entry(f).or_insert_with(|| {
@@ -1210,8 +1359,8 @@ fn within_a_shell(
                     .then_some(foot)
                 })
             };
-        for (i, &f) in candidates.iter().enumerate() {
-            for &g in candidates.iter().skip(i + 1) {
+        for (i, &f) in paired.iter().enumerate() {
+            for &g in paired.iter().skip(i + 1) {
                 if face_shell.get(f) != face_shell.get(g) {
                     // Between shells: the first half's.
                     continue;
@@ -1711,6 +1860,40 @@ pub fn boolean_with(
     options: &BooleanOptions,
 ) -> Result<BooleanResult, KernelError> {
     crate::work::boolean();
+    if a.is_tolerant() || b.is_tolerant() {
+        // Loose entities: at the operands' largest tolerance, the result's
+        // entities carrying what they were built at (`loose`).
+        let cap = loose::cap(tolerance, options);
+        let working = loose::working_tolerance(a, b, tolerance.linear, cap)?;
+        // Each operand held to the document's tolerance and its own
+        // table first: a gap no entity records is a defect, not something
+        // the working tolerance may hide.
+        if !options.trust_operands {
+            loose::operands_valid(a, b, tolerance, cap)?;
+        }
+        let at = Tolerance {
+            linear: working,
+            ..*tolerance
+        };
+        let inner = BooleanOptions {
+            trust_operands: true,
+            ..*options
+        };
+        let mut result = exact(a, b, op, &at, &inner)?;
+        loose::carry(&mut result, a, b, tolerance, cap, working)?;
+        return Ok(result);
+    }
+    exact(a, b, op, tolerance, options)
+}
+
+/// [`boolean_with`] of bodies held to one tolerance.
+fn exact(
+    a: &Body,
+    b: &Body,
+    op: BooleanOp,
+    tolerance: &Tolerance,
+    options: &BooleanOptions,
+) -> Result<BooleanResult, KernelError> {
     run(a, b, op, tolerance, options).map_err(|stop| match stop {
         Stop::Error(error) => error,
         Stop::Unsupported { reason, mut faces } => {

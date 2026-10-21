@@ -42,7 +42,11 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         bodies,
     } = document;
     let doc::Units { length, angle } = units;
-    let doc::Tolerance { linear, angular } = tolerance;
+    let doc::Tolerance {
+        linear,
+        angular,
+        loosest,
+    } = tolerance;
     manifest::Document {
         units: manifest::Units {
             length: match length {
@@ -61,6 +65,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         tolerance: manifest::Tolerance {
             linear: *linear,
             angular: *angular,
+            loosest: *loosest,
         },
         variables: variables
             .iter()
@@ -1278,7 +1283,12 @@ fn orientation_to_doc(orientation: manifest::Orientation) -> doc::Orientation {
 pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Document {
     let manifest::Document {
         units: manifest::Units { length, angle },
-        tolerance: manifest::Tolerance { linear, angular },
+        tolerance:
+            manifest::Tolerance {
+                linear,
+                angular,
+                loosest,
+            },
         variables,
         features,
         rollback,
@@ -1302,7 +1312,11 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         },
         // As written; one outside the range is brought into it, and said
         // so, by `from_manifest_json_noted`.
-        tolerance: doc::Tolerance { linear, angular },
+        tolerance: doc::Tolerance {
+            linear,
+            angular,
+            loosest,
+        },
         variables: variables
             .into_iter()
             .map(|variable| {

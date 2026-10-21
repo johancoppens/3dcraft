@@ -29,7 +29,9 @@ Options:
   --no-identities    skip the volume identities of the booleans
   --no-determinism   skip save, open and compare at the end
   --scratch DIR      where the determinism check saves (default the system's
-                     temporary directory)";
+                     temporary directory)
+
+With CRAFT3D_FUZZ_TRACE set, how long each command took goes to stderr.";
 
 struct Args {
     mode: String,

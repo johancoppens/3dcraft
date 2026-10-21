@@ -86,6 +86,7 @@ impl Bits for Body {
             loops,
             faces,
             shells,
+            tolerances,
         } = self;
         kind.push_bits(out);
         vertices.push_bits(out);
@@ -93,6 +94,7 @@ impl Bits for Body {
         loops.push_bits(out);
         faces.push_bits(out);
         shells.push_bits(out);
+        tolerances.push_bits(out);
     }
 }
 

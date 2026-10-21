@@ -14,7 +14,7 @@ mod transform;
 pub use bits::{Bits, bits_of};
 pub use frame::Frame;
 pub use threads::available_threads;
-pub use tolerance::Tolerance;
+pub use tolerance::{DEFAULT_LOOSEST, Tolerance};
 pub use transform::Transform;
 
 use std::ops::{Add, AddAssign, Mul, Neg, Sub};

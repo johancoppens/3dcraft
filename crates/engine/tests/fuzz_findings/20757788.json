@@ -1,0 +1,7 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-06}},
+  {"command":"feature.sphere","params":{"name":"N0","position":[-5.0,-10.0,0.0],"radius":10.0}},
+  {"command":"feature.shell","params":{"name":"N1","open":[],"source":"N0","thickness":1.25}},
+  {"command":"feature.pattern","params":{"angle":"45 deg","axis":[10.0,0.0,10.0],"count":5.0,"name":"N2","point":[-10.0,-2.5,7.5],"source":"N1"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 6","axis":[0.0,0.0,1.0],"count":6,"name":"N5","point":[-7.6225593299961085,-7.5,7.530658831863253],"source":"N2"}}
+]

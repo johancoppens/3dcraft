@@ -353,13 +353,20 @@ pub(crate) fn copied_aliases(
 /// Every instance is the first one moved by a multiple of one step, so
 /// two instances are near exactly when the first is near some other one:
 /// it is enough to look at the first against each of the others.
+///
+/// The boxes are of what each face holds (`Body::held_bbox`): a fillet
+/// along an arc is a piece of a torus, and the box of the whole torus
+/// (`Body::bbox`) made the 48 instances of a filleted grouser, apart by
+/// half their width, all seem to meet, joined by 47 booleans that
+/// found nothing to join (1.85 s against none for the grouser without
+/// its fillet, Perseverance, 2026-10-21).
 fn instances_meet(doc: &Document, placed: &[Body]) -> Result<bool, String> {
     let Some((first, others)) = placed.split_first() else {
         return Ok(false);
     };
     let slack = doc.tolerance.linear;
     let corners = |body: &Body| {
-        body.bbox()
+        body.held_bbox()
             .map_err(|e| e.to_string())
             .map(|bbox| bbox.corners())
     };
@@ -734,6 +741,31 @@ mod tests {
     /// as many faces, edges and vertices, the same volume and area, and
     /// every face with the same sources, the one it is named after first
     /// (three bars end to end: one top, named after the first bar).
+    /// Instances whose faces lie on balls (or tori) are looked at by what
+    /// the faces hold, not by the whole ball: caps of a ball of radius 10,
+    /// 2 high and 12 across, set 13 apart, do not meet, though the balls
+    /// they are cut from do (a filleted grouser patterned 48 times was
+    /// joined by 47 booleans that found nothing, 2026-10-21); set 11
+    /// apart they do.
+    #[test]
+    fn caps_of_balls_set_apart_do_not_meet_though_their_balls_do() {
+        let doc = Document::new(Units::default());
+        let tolerance =
+            craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular).unwrap();
+        let ball = craft3d_kernel::primitives::sphere(&Frame::WORLD, 10.0).unwrap();
+        let corner = Frame::WORLD
+            .at(craft3d_math::Vec3::new(-20.0, -20.0, 8.0))
+            .unwrap();
+        let slab = craft3d_kernel::primitives::block(&corner, 40.0, 40.0, 10.0).unwrap();
+        let cap = boolean(&ball, &slab, BooleanOp::Intersect, &tolerance)
+            .unwrap()
+            .body;
+        let (lo, hi) = cap.bbox().unwrap().corners().unwrap();
+        assert!(hi.x - lo.x > 19.0, "the box of the whole ball");
+        assert!(!instances_meet(&doc, &placed(&cap, 48, [13.0, 0.0, 0.0])).unwrap());
+        assert!(instances_meet(&doc, &placed(&cap, 48, [11.0, 0.0, 0.0])).unwrap());
+    }
+
     #[test]
     fn pairs_join_to_the_body_one_after_another_does() {
         let doc = Document::new(Units::default());
