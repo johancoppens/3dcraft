@@ -1219,6 +1219,85 @@ fn a_sheet_partly_on_a_face_of_the_solid_divides_it_where_its_rim_crosses() {
     }
 }
 
+/// A rim that runs beside an edge of the face it lies on, near it but
+/// beyond the tolerance, is told apart from it at once, not piece by
+/// piece along its length: rectangles whose far rim is 0.1 inside the
+/// long edge of a block 4000 long, 0.01 inside that of a block 400 long
+/// and 300 tolerances inside that of the block 4 × 3; and spline arches
+/// whose top comes within 10 and 20 tolerances of the far edge, or rises
+/// as far beyond it (crossing it twice at a shallow angle). Trimmed to
+/// closed forms, and cut: all of the block behind the sheet. (On 587caab
+/// the rectangles and the arches beyond the edge were refused as edges
+/// too near each other to tell apart.)
+#[test]
+fn a_rim_beside_an_edge_of_the_face_is_told_apart_from_it() {
+    // The quadratic Bézier from (1, −1) over (2, h) to (3, −1): its top
+    // is (h − 1)/2, and above y = 0 it holds 4Pa − (8/3)(1 + h)a³ with
+    // P its top and a = √(P / (2 (1 + h))) (as `arch_above_zero`).
+    let arch_area = |h: f64| {
+        let top = 0.5 * (h - 1.0);
+        let a = (top / (2.0 * (1.0 + h))).sqrt();
+        4.0 * top * a - 8.0 / 3.0 * (1.0 + h) * a * a * a
+    };
+    for k in SCALES {
+        let tol = tolerance(k);
+        let up = level(1.0, k);
+        let mut cases: Vec<(Body, Body, f64, String)> = Vec::new();
+        for (long, inside) in [(4000.0, 0.1), (400.0, 0.01), (4.0, 300e-6)] {
+            let block = boxed(k, [0.0, 0.0, 0.0], [long, 3.0, 1.0]);
+            let sheet = rectangle([-1.0, -1.0], [long + 1.0, 3.0 - inside], &up, k);
+            cases.push((
+                sheet,
+                block,
+                long * (3.0 - inside),
+                format!("rim {inside} inside the edge of a block {long} long, at {k}"),
+            ));
+        }
+        for near in [1e-5_f64, 2e-5, -1e-5, -2e-5] {
+            // The top at 3 − near: h = 7 − 2 near. Beyond the edge (near
+            // < 0) the sliver above y = 3 is left out: 2 (2 |near| b −
+            // (4/3)(1 + h) b³) with b = √(|near| / (2 (1 + h))).
+            let h = 7.0 - 2.0 * near;
+            let beyond = if near < 0.0 {
+                let b = (-near / (2.0 * (1.0 + h))).sqrt();
+                2.0 * (-2.0 * near * b - 4.0 / 3.0 * (1.0 + h) * b * b * b)
+            } else {
+                0.0
+            };
+            let sheet = filled(
+                &[
+                    SketchCurve {
+                        id: 1,
+                        curve: Curve2::Spline(Spline2 {
+                            degree: 2,
+                            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                            control: vec![[1.0, -1.0], [2.0, h], [3.0, -1.0]],
+                        }),
+                    },
+                    line(2, [3.0, -1.0], [1.0, -1.0]),
+                ],
+                &up,
+                k,
+            );
+            let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+            cases.push((
+                sheet,
+                block,
+                arch_area(h) - beyond,
+                format!("arch {near} below the edge, at {k}"),
+            ));
+        }
+        for (sheet, block, inside, what) in &cases {
+            trimmed(sheet, block, k, *inside, what);
+            let whole = mass(block).volume;
+            assert_empty(block, sheet, BooleanOp::Subtract, k);
+            let behind = solve(block, sheet, BooleanOp::Intersect, k);
+            assert_eq!(check(&behind.body, &tol), [], "{what}");
+            assert_close(mass(&behind.body).volume, whole, what);
+        }
+    }
+}
+
 fn refused(result: Result<BooleanResult, KernelError>, wanted: &str, what: &str) {
     match result {
         Err(KernelError::Unsupported { reason, .. }) => {

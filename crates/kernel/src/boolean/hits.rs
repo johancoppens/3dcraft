@@ -120,7 +120,7 @@ fn bend_bound(curve: &Curve3, surface: &Surface) -> Option<(f64, f64)> {
 
 /// How much the curve bends, at most: its second derivative per unit of
 /// parameter squared. `None` where no finite bound comes out.
-fn turn_bound(curve: &Curve3) -> Option<f64> {
+pub(super) fn turn_bound(curve: &Curve3) -> Option<f64> {
     match curve {
         Curve3::Line(_) => Some(0.0),
         Curve3::Circle(c) => Some(c.radius()),

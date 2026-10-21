@@ -1264,7 +1264,7 @@ fn boundary_edges(body: &Body) -> BTreeSet<EdgeId> {
 
 /// The most pieces [`edge_crossings`] halves an edge into, per edge of
 /// the other face.
-const CROSSING_PIECES: usize = 1 << 14;
+const CROSSING_PIECES: usize = 1 << 16;
 /// How long, in tolerances, a piece of an edge must be (its chord) to be
 /// taken to lie along another edge when it is within the tolerance of it
 /// at nine places ([`edge_crossings`]): two curves that cross at an angle
@@ -1274,7 +1274,42 @@ const CROSSING_PIECES: usize = 1 << 14;
 const ALONG: f64 = 64.0;
 /// Where an edge crosses another on one surface, when the pieces it takes
 /// to tell are more than [`CROSSING_PIECES`].
-const CROSSING_UNRESOLVED: Reason = "an edge of one body runs within the tolerance of an edge of the other, on a surface both lie on, in more places than can be told apart";
+const CROSSING_UNRESOLVED: Reason = "where an edge of one body crosses an edge of the other, on a surface both lie on, could not be told within the work allowed (the edges run close to each other, or bend more than can be bounded, over a long stretch)";
+
+/// The distance between the segments from `a.0` to `a.1` and from `b.0`
+/// to `b.1` (either may be a point): the closest points by the clamped
+/// solution of the two lines' normal equations, each clamp tried from
+/// both segments' side, and the least of that and the four end-to-segment
+/// distances (which covers parallel and degenerate segments). NaN in, NaN
+/// out.
+fn segments_apart(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> f64 {
+    let to_segment = |p: Vec3, (s0, s1): (Vec3, Vec3)| {
+        let d = s1 - s0;
+        let len2 = d.dot(d);
+        let t = if len2 > 0.0 {
+            ((p - s0).dot(d) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance(s0 + d * t)
+    };
+    let mut best = to_segment(a.0, b)
+        .min(to_segment(a.1, b))
+        .min(to_segment(b.0, a))
+        .min(to_segment(b.1, a));
+    let (u, v, w) = (a.1 - a.0, b.1 - b.0, a.0 - b.0);
+    let (uu, uv, vv, uw, vw) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let det = uu * vv - uv * uv;
+    if det > 0.0 {
+        let s = ((uv * vw - vv * uw) / det).clamp(0.0, 1.0);
+        let t = ((uu * vw - uv * uw) / det).clamp(0.0, 1.0);
+        best = best.min((a.0 + u * s).distance(b.0 + v * t));
+    }
+    if [a.0, a.1, b.0, b.1].iter().any(|p| !p.is_finite()) {
+        return f64::NAN;
+    }
+    best
+}
 
 /// Adds to `cuts` where edge `id` of `own`, which lies on the surface of
 /// face `face` of `other`, crosses an edge of that face: where it enters
@@ -1282,14 +1317,24 @@ const CROSSING_UNRESOLVED: Reason = "an edge of one body runs within the toleran
 /// the other's surface there and [`edge_cuts`] cannot see the place; it
 /// is found between the two curves, for curves and surfaces of any kind.
 ///
-/// Branch and bound on the distance from a point of the edge to the
-/// other edge (`nearest`: to the piece of that curve within its range),
-/// which changes along the edge by no more than the edge's speed bound
-/// times the change of parameter: a piece of the edge whose middle is
-/// further from the other edge than the tolerance plus that bound times
-/// its half width holds no point within the tolerance of it and is
-/// dropped; the others are halved down to pieces a quarter of the
-/// tolerance long. A piece within the tolerance of the other edge at nine
+/// Branch and bound over pairs of a piece of the edge and a piece of the
+/// other edge, with two lower bounds on how near they come. The chords:
+/// each piece lies within `turn · h² / 2` of its chord (`turn` bounds the
+/// curve's second derivative, `hits::turn_bound`; h is half the piece's
+/// parameter range), so the distance between the two chords less both
+/// strays bounds the distance between the pieces from below, and pieces
+/// side by side at any distance beyond the tolerance are dropped as soon
+/// as their chords hug them (at once for two lines). And the middle:
+/// the distance from the middle of the edge's piece to the other piece
+/// (`nearest`) changes along the piece by no more than the edge's speed
+/// bound times the change of parameter, so a middle further than the
+/// tolerance plus that bound times the half width drops the pair. The
+/// longer piece of a pair is halved, down to pieces of the edge a
+/// quarter of the tolerance long. (For lines, circles and ellipses the
+/// bounds are proofs; for a rational spline the speed and bend bounds
+/// come from its Bézier nets and are estimates, so a crossing of a
+/// heavily weighted spline edge could in principle be missed.) A piece
+/// within the tolerance of the other edge at nine
 /// places along it lies along that edge (the checker's measure of an edge
 /// lying on something, sampled): the two share a stretch there, which
 /// their vertices bound, and it is no crossing. Pieces left that follow
@@ -1328,25 +1373,52 @@ fn edge_crossings(
                 .map(|(_, d)| d)
                 .ok_or(Stop::of(LOST).at(named))
         };
-        // Depth first, the lower half first: the pieces kept come in
-        // order along the edge.
-        let mut open: Vec<(f64, f64)> = vec![(t0, t1)];
+        // How far a piece of either curve strays from its chord: the
+        // point at a parameter is within turn · h² / 2 of the point the
+        // same share of the way along the chord (h the half width of the
+        // piece's parameter range). `None` without a bound: then only
+        // the edge is halved, and its pieces are told by the distance
+        // from their middle alone.
+        let bends = super::hits::turn_bound(&edge.curve)
+            .zip(super::hits::turn_bound(&piece.curve))
+            .filter(|(a, b)| a.is_finite() && b.is_finite());
+        let other_speed = super::hits::speed_bound(&piece.curve);
+        let (e0, e1) = piece.range;
+        // Pairs of a piece of the edge and a piece of the other edge.
+        let mut open: Vec<(f64, f64, f64, f64)> = vec![(t0, t1, e0, e1)];
         let mut kept: Vec<(f64, f64, f64, f64)> = Vec::new();
         let mut pieces = 0_usize;
-        while let Some((lo, hi)) = open.pop() {
+        while let Some((lo, hi, elo, ehi)) = open.pop() {
             pieces += 1;
             if pieces > CROSSING_PIECES {
                 return Err(Stop::of(CROSSING_UNRESOLVED).at(named));
             }
             let (middle, half) = (0.5 * (lo + hi), 0.5 * (hi - lo));
+            let (other_middle, other_half) = (0.5 * (elo + ehi), 0.5 * (ehi - elo));
             let reach = speed * half;
-            let d = distance(middle)?;
+            // Apart by more than the tolerance where the chords of the
+            // two pieces, less how far each piece strays from its chord,
+            // are: two pieces running side by side at any distance
+            // beyond the tolerance are told apart at once.
+            if let Some((bend, other_bend)) = bends {
+                let stray = 0.5 * (bend * half * half + other_bend * other_half * other_half);
+                let gap = segments_apart(
+                    (edge.curve.eval(lo), edge.curve.eval(hi)),
+                    (piece.curve.eval(elo), piece.curve.eval(ehi)),
+                );
+                if gap - stray > tol {
+                    continue;
+                }
+            }
+            let d = nearest(&piece.curve, (elo, ehi), edge.curve.eval(middle))
+                .map(|(_, d)| d)
+                .ok_or(Stop::of(LOST).at(named))?;
             // (A NaN is dropped too.)
             if d.is_nan() || d > tol + reach {
                 continue;
             }
             if reach <= 0.25 * tol || !(hi > middle && middle > lo) {
-                kept.push((lo, hi, middle, d));
+                kept.push((lo, hi, middle, distance(middle)?));
                 continue;
             }
             // (Only a piece much longer than the band in which a crossing
@@ -1366,9 +1438,27 @@ fn edge_crossings(
             if along {
                 continue;
             }
-            open.push((middle, hi));
-            open.push((lo, middle));
+            // The longer piece is halved (the other edge's only where
+            // both bend by a known amount); depth first, the lower half
+            // first.
+            if bends.is_some()
+                && other_speed * other_half > reach
+                && ehi > other_middle
+                && other_middle > elo
+            {
+                open.push((lo, hi, other_middle, ehi));
+                open.push((lo, hi, elo, other_middle));
+            } else {
+                open.push((middle, hi, elo, ehi));
+                open.push((lo, middle, elo, ehi));
+            }
         }
+        // A piece of the edge may be kept with more than one piece of the
+        // other edge: once, in order along the edge (the pieces are
+        // halves of halves of the edge's range, so the same piece has the
+        // same ends).
+        kept.sort_by(|p, q| p.0.total_cmp(&q.0));
+        kept.dedup_by(|p, q| p.0 == q.0);
         // Runs of pieces that follow one another, each one place: the
         // range of the run, and the parameter and distance of its point
         // nearest the other edge.
