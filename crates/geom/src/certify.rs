@@ -86,6 +86,9 @@ const FOLLOW: usize = 8;
 /// width (a path along an iso-line) is widened to this, which only makes
 /// the bound hold over more of the patch.
 const NARROWEST: f64 = 1e-9;
+/// Where `|∂u × ∂v|²` is below this share of `(|∂u|² + |∂v|²)²` the
+/// parametrisation is singular for a foot's steps.
+const SINGULAR: f64 = 1e-18;
 
 fn get(jet: &Jet, k: usize) -> f64 {
     jet.get(k).copied().unwrap_or(0.0)
@@ -789,7 +792,16 @@ impl<'a> SurfaceBound<'a> {
         for _ in 0..FOOT_STEPS {
             let (s, su, sv) = self.surface.derivatives(u, v);
             let r = p - s;
-            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let (mut a, b, mut c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            // At a singular point of the parametrisation (a pole, an
+            // apex) the steps have no direction along the singular
+            // border and would fly off along it: damped there
+            // (Levenberg-Marquardt), so the step goes where the surface
+            // moves and the parameter along the border stays.
+            if a * c - b * b <= SINGULAR * (a + c) * (a + c) {
+                let damping = SINGULAR.sqrt() * (a + c);
+                (a, c) = (a + damping, c + damping);
+            }
             let det = a * c - b * b;
             if !(det > 0.0) || !det.is_finite() {
                 break;
@@ -809,7 +821,98 @@ impl<'a> SurfaceBound<'a> {
                 break;
             }
         }
-        best.1
+        // The same point, named by the parameters nearest the start round
+        // a periodic direction: the path between two feet must not go
+        // round the surface (or round a pole) to get from one to the
+        // other.
+        let (mut u, mut v) = best.1;
+        let near = |x: f64, from: f64, period: Option<f64>| match period {
+            Some(p) if p > 0.0 && p.is_finite() && (x - from).abs() > 0.5 * p => {
+                let turns = ((from - x) / p).round();
+                let moved = x + turns * p;
+                if moved.is_finite() { moved } else { x }
+            }
+            _ => x,
+        };
+        u = near(u, start.0, self.surface.period_u());
+        v = near(v, start.1, self.surface.period_v());
+        (u, v)
+    }
+
+    /// Whether `(u, v)` lies on a border of a spline's parameter range
+    /// (within a billionth of its width).
+    fn on_border(&self, (u, v): (f64, f64)) -> bool {
+        let Form::Patches { us, vs, .. } = &self.form else {
+            return false;
+        };
+        let near = |x: f64, ranges: &[(f64, f64)]| match (ranges.first(), ranges.last()) {
+            (Some(&(lo, _)), Some(&(_, hi))) => {
+                let width = (hi - lo).abs();
+                (x - lo).abs() <= 1e-9 * width || (x - hi).abs() <= 1e-9 * width
+            }
+            _ => false,
+        };
+        near(u, us) || near(v, vs)
+    }
+
+    /// Whether the parametrisation is singular at `(u, v)`: `∂u × ∂v` has
+    /// no length there (a sphere's pole, a cone's apex, a spline's border
+    /// that is one point), so a foot there has no direction to step in
+    /// and any `u` (or `v`) along the singular border is as good as any
+    /// other.
+    fn singular(&self, (u, v): (f64, f64)) -> bool {
+        let (_, su, sv) = self.surface.derivatives(u, v);
+        let scale = su.length() + sv.length();
+        let cross = su.cross(sv).length();
+        !(cross > 1e-9 * scale * scale) || !cross.is_finite()
+    }
+
+    /// The parameters to follow the feet from when the curve starts at a
+    /// singular point of the surface: there the foot has no longitude,
+    /// and feet followed from an arbitrary one stay stuck in it (the
+    /// steps have no direction to go), so every bound would carry the
+    /// whole jump in `u`. The foot of a point a little along the curve,
+    /// where the parametrisation is regular, is taken instead and the
+    /// start's foot found from it: at the singular point that changes
+    /// only which of the equal parameters names it, and keeps the path
+    /// continuous. `start` when the curve starts at a regular point, or
+    /// no regular foot is found near the start.
+    ///
+    /// With `borders`, a start on a border of a spline's parameter range
+    /// is taken the same way: a spline surface closed round (a revolved
+    /// curve, an extruded circle) has its seam at both ends of the range,
+    /// and the projection of a point on the seam may name the end the
+    /// curve does not go on from; past it the surface goes on as the
+    /// polynomial of its last piece, away from the curve.
+    fn off_singular(
+        &self,
+        curve: &CurveBound<'_>,
+        (lo, hi): (f64, f64),
+        start: (f64, f64),
+        borders: bool,
+    ) -> (f64, f64) {
+        let settled = |f: (f64, f64)| !self.singular(f) && !(borders && self.on_border(f));
+        if settled(start) {
+            return start;
+        }
+        for share in [1e-6, 1e-4, 1e-2, 0.125] {
+            let t = lo + (hi - lo) * share;
+            let Ok(near) = self.surface.project(curve.eval(t)) else {
+                continue;
+            };
+            if !settled(near) {
+                continue;
+            }
+            // Back to the start through points in between, so the foot
+            // stays on the branch of the regular one.
+            let mut hint = near;
+            for k in (0..FOLLOW).rev() {
+                let between = lo + (t - lo) * k as f64 / FOLLOW as f64;
+                hint = self.foot(curve.eval(between), hint);
+            }
+            return hint;
+        }
+        start
     }
 
     /// Bounds on the derivatives in `τ` (orders 0 to 4; order 0 about
@@ -922,7 +1025,10 @@ impl<'a> SurfaceBound<'a> {
             let det = p * r - q * q;
             let (x, y) = (su.dot(d), sv.dot(d));
             let t = ((r * x - q * y) / det, (p * y - q * x) / det);
-            if det > 0.0 && t.0.is_finite() && t.1.is_finite() {
+            // At a singular point (a pole) the tangent plane's
+            // parameters are not unique and the solution is all rounding:
+            // the path goes straight from that end.
+            if det > SINGULAR * (p + r) * (p + r) && t.0.is_finite() && t.1.is_finite() {
                 t
             } else {
                 straight
@@ -988,7 +1094,7 @@ impl<'a> SurfaceBound<'a> {
         // between (a foot found from far away may be another one: on a
         // torus, the inside of the tube).
         let mut feet = Vec::with_capacity(points.len());
-        let mut hint = start;
+        let mut hint = self.off_singular(curve, range, start, false);
         let mut last = lo;
         for t in &points {
             for k in 1..FOLLOW {
@@ -1075,7 +1181,12 @@ pub fn curve_on_surface(
     let bound = SurfaceBound::new(surface).ok_or(middle)?;
     let start = match start {
         Some(start) => start,
-        None => surface.project(curve.eval(range.0)).map_err(|_| middle)?,
+        // A projection alone may name either end of a closed spline's
+        // range at its seam: the one the curve goes on from.
+        None => {
+            let projected = surface.project(curve.eval(range.0)).map_err(|_| middle)?;
+            bound.off_singular(curve, range, projected, true)
+        }
     };
     bound.curve_within(curve, range, start, breaks, within.target, within.most)
 }
@@ -1835,5 +1946,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Curves that start, end or pass at a singular point of the
+    /// parametrisation (a sphere's pole, a cone's apex, a revolved
+    /// spline's pole) are proven like any other: the feet keep one
+    /// longitude through the point (2026-10-21: a meridian starting at a
+    /// pole was not proven at all, its feet stuck at the pole).
+    #[test]
+    fn curves_through_poles_and_apexes_are_proven() {
+        let h = std::f64::consts::FRAC_PI_2;
+        let at = Vec3::new(1.0, 2.0, 3.0);
+        let frame = Frame::new(at, Vec3::Z, Vec3::X).unwrap();
+        let tilted = Frame::new(at, Vec3::new(0.3, 1.0, 0.0), Vec3::new(1.0, -0.3, 0.0)).unwrap();
+        let sphere = Surface::Sphere(Sphere::new(frame, 10.0).unwrap());
+        let meridian = Curve3::Circle(crate::Circle::new(tilted, 10.0).unwrap());
+        let cone = Surface::Cone(Cone::new(frame, 0.0, 0.5).unwrap());
+        let up = Vec3::new(0.5f64.tan() * 0.6, 0.5f64.tan() * 0.8, 1.0);
+        let ruling = Curve3::Line(crate::Line::new(at, up).unwrap());
+        // Running down to the apex on the same nappe.
+        let falling = Curve3::Line(crate::Line::new(at, -up).unwrap());
+        // A dome: a quarter circle from the axis turned about it, as a
+        // rational spline whose first row of control points is one point.
+        let dome = {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            let ring = [
+                (1.0, 0.0, 1.0),
+                (1.0, 1.0, s),
+                (0.0, 1.0, 1.0),
+                (-1.0, 1.0, s),
+                (-1.0, 0.0, 1.0),
+                (-1.0, -1.0, s),
+                (0.0, -1.0, 1.0),
+                (1.0, -1.0, s),
+                (1.0, 0.0, 1.0),
+            ];
+            let arc = [(0.0, 10.0, 1.0), (10.0, 10.0, s), (10.0, 0.0, 1.0)];
+            let mut points = Vec::new();
+            let mut weights = Vec::new();
+            for (x, y, w) in ring {
+                for (rho, z, own) in arc {
+                    points.push(at + Vec3::new(rho * x, rho * y, z));
+                    weights.push(w * own);
+                }
+            }
+            Surface::Nurbs(
+                NurbsSurface::new(
+                    2,
+                    2,
+                    vec![
+                        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+                    ],
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    9,
+                    3,
+                    points,
+                    weights,
+                )
+                .unwrap(),
+            )
+        };
+        let upright = Frame::new(at, Vec3::new(0.6, -0.8, 0.0), Vec3::new(0.8, 0.6, 0.0)).unwrap();
+        let over_the_top = Curve3::Circle(crate::Circle::new(upright, 10.0).unwrap());
+        let cases: Vec<(&str, &Surface, &Curve3, (f64, f64))> = vec![
+            ("meridian from the pole", &sphere, &meridian, (h, 3.0)),
+            ("meridian to the pole", &sphere, &meridian, (0.0, h)),
+            ("meridian over the pole", &sphere, &meridian, (0.2, 2.5)),
+            ("ruling from the apex", &cone, &ruling, (0.0, 5.0)),
+            ("ruling to the apex", &cone, &falling, (-3.0, 0.0)),
+            ("arc over a dome's pole", &dome, &over_the_top, (0.3, 2.8)),
+            ("arc from a dome's pole", &dome, &over_the_top, (h, 2.8)),
+        ];
+        for (name, surface, curve, range) in cases {
+            let proven = curve_on_surface(
+                &CurveBound::new(curve),
+                range,
+                surface,
+                None,
+                &[],
+                Within {
+                    target: 1e-6,
+                    most: 1 << 10,
+                },
+            );
+            assert!(proven.is_ok_and(|p| p.bound <= 1e-6), "{name}: {proven:?}");
+        }
+        // Off the surface by more than the target near the pole: never
+        // proven within it.
+        let off = Curve3::Circle(crate::Circle::new(tilted, 10.01).unwrap());
+        let proven = curve_on_surface(
+            &CurveBound::new(&off),
+            (h, 3.0),
+            &sphere,
+            None,
+            &[],
+            Within {
+                target: 1e-3,
+                most: 1 << 10,
+            },
+        );
+        assert!(proven.is_err(), "{proven:?}");
     }
 }

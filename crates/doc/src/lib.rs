@@ -596,8 +596,11 @@ pub struct Split {
 #[serde(rename_all = "camelCase")]
 pub struct Import {
     pub file_name: String,
-    /// The solid's position among the file's solids and sheets, in the
-    /// order of their instances in the file (`craft3d-stepread`).
+    /// The solid's position among the file's placed solids and sheets
+    /// (`craft3d-stepread`'s `Parsed::placed`): the solids and sheets in
+    /// the order of their instances in the file, each where an assembly
+    /// first places it, then their further placements. For a file without
+    /// assemblies that is the order of the instances, as in format 25.
     pub solid: u32,
     pub data: Blob,
 }

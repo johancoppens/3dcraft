@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.import", "Import", r#"{"path": string, "names": [string] = automatic}"#,
-        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, in file order, as one undo step. The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational too), swept surfaces that are one of those, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, assemblies placed by transformations, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's tolerance (until tolerances per edge exist). The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
+        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances. The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,18 +75,19 @@ pub(crate) fn import_bytes(
     let parsed = craft3d_stepread::parse_shared(blob.bytes(), &blob.sha256())
         .map_err(|e| CommandError::new(format!("{id}: `{file_name}`: {e}")))?;
     let items = parsed.items();
-    if items.is_empty() {
+    let placed = parsed.placed();
+    if items.is_empty() || placed.is_empty() {
         return fail(format!(
             "{id}: `{file_name}` has no solids or sheets (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, SHELL_BASED_SURFACE_MODEL)"
         ));
     }
     if let Some(names) = &given
-        && names.len() != items.len()
+        && names.len() != placed.len()
     {
         return fail(format!(
-            "{id}: `names` has {} names for the {} solids and sheets of `{file_name}`",
+            "{id}: `names` has {} names for the {} placed solids and sheets of `{file_name}`",
             names.len(),
-            items.len()
+            placed.len()
         ));
     }
     let options = {
@@ -103,19 +104,36 @@ pub(crate) fn import_bytes(
             loosest: doc.tolerance.loosest_linear(),
         }
     };
-    let mut reports = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
+    let mut reports = Vec::with_capacity(placed.len());
+    let mut colors = Vec::with_capacity(placed.len());
+    let mut step_names: Vec<String> = Vec::with_capacity(placed.len());
+    let mut leaves: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (index, at) in placed.iter().enumerate() {
+        let Some(item) = items.get(at.item) else {
+            return fail(format!(
+                "{id}: `{file_name}`: placed solid {index} has no solid"
+            ));
+        };
         let read = parsed.build(index, &options).map_err(|e| {
             CommandError::new(format!(
-                "{id}: `{file_name}`, solid {index} (#{}): {e}",
-                item.id
+                "{id}: `{file_name}`, solid {index} (#{}{}): {e}",
+                item.id,
+                if at.path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" at {}", at.path)
+                }
             ))
         })?;
+        colors.push(read.color);
+        step_names.push(placement_name(&mut leaves, &at.path, &item.name));
         let r = &read.report;
         reports.push(json!({
             "solid": index,
             "step": format!("#{}", item.id),
             "stepName": item.name,
+            "instance": at.path,
+            "color": read.color.map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
             "kind": match item.kind {
                 craft3d_stepread::ItemKind::Solid => "solid",
                 craft3d_stepread::ItemKind::Sheet => "sheet",
@@ -134,7 +152,7 @@ pub(crate) fn import_bytes(
             "largestTolerance": r.largest_tolerance,
         }));
     }
-    let count = items.len();
+    let count = placed.len();
     // The document must still save to a file that opens again.
     {
         let doc = session.document()?.history.current();
@@ -147,7 +165,6 @@ pub(crate) fn import_bytes(
             ));
         }
     }
-    let step_names: Vec<String> = items.iter().map(|item| item.name.clone()).collect();
     let label = format!("Import {file_name}");
     let ids = edit(session, id, &label, |doc| {
         let mut ids = Vec::with_capacity(count);
@@ -172,6 +189,11 @@ pub(crate) fn import_bytes(
                     None => insert_feature(doc, None, kind)?,
                 },
             };
+            // The file's colour of the solid, as the body's appearance
+            // (in the same undo step).
+            if let Some(Some(color)) = colors.get(index) {
+                doc.set_appearance(added, Some(craft3d_doc::Appearance::color(*color)))?;
+            }
             ids.push(added);
         }
         Ok(ids)
@@ -190,4 +212,54 @@ pub(crate) fn import_bytes(
         "sha256": blob.sha256(),
         "bodies": bodies,
     }))
+}
+
+/// The name of a placed solid: the last step of its path in the assembly,
+/// else the solid's own name; the same leaf met again (`bolt#1` in each of
+/// two sub-assemblies) numbered on in file order, `bolt#1-2`, so every
+/// placement keeps a name of its own. `leaves` counts what was met.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn placement_name(
+    leaves: &mut std::collections::BTreeMap<String, usize>,
+    path: &str,
+    solid: &str,
+) -> String {
+    let leaf = path
+        .rsplit('/')
+        .next()
+        .filter(|leaf| !leaf.is_empty())
+        .unwrap_or(solid)
+        .to_string();
+    let seen = leaves.entry(leaf.clone()).or_insert(0);
+    *seen += 1;
+    if *seen == 1 || leaf.is_empty() {
+        leaf
+    } else {
+        format!("{leaf}-{seen}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_leaf_met_twice_is_numbered_on() {
+        let mut leaves = std::collections::BTreeMap::new();
+        let names: Vec<String> = [
+            ("robot/arm#left/bolt#1", "b"),
+            ("robot/arm#right/bolt#1", "b"),
+            ("robot/arm#right/bolt#2", "b"),
+            ("", "plate"),
+            ("", "plate"),
+            ("robot/arm#up/bolt#1", "b"),
+        ]
+        .iter()
+        .map(|(path, solid)| super::placement_name(&mut leaves, path, solid))
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "bolt#1", "bolt#1-2", "bolt#2", "plate", "plate-2", "bolt#1-3"
+            ]
+        );
+    }
 }

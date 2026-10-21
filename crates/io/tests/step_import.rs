@@ -164,6 +164,14 @@ fn round_trip(name: &str, body: &Body, scale: f64, unit: Unit, problems: &mut Ve
                 assert_eq!(done.face_ids.len(), done.body.faces.len());
                 assert_eq!(done.edge_ids.len(), done.body.edges.len());
                 assert_eq!(done.vertex_ids.len(), done.body.vertices.len());
+                // Every edge proven, none accepted on samples alone
+                // (slice 2: seams from poles, closed spline seams).
+                if done.report.unproven_edges > 0 {
+                    problems.push(format!(
+                        "{name} @ {scale} {unit:?}: item {index}: {} edges not proven",
+                        done.report.unproven_edges
+                    ));
+                }
                 imported.push(done);
             }
             Err(e) => {
@@ -1069,6 +1077,421 @@ fn swept_surfaces_read_as_the_elementary_surfaces_they_are() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
+// ------------------------------------------- swept splines, as splines
+
+impl Adder {
+    /// A rational B-spline curve, as the complex instance other writers
+    /// use (`B_SPLINE_CURVE_WITH_KNOTS` with `RATIONAL_B_SPLINE_CURVE`).
+    fn rational(&mut self, curve: &craft3d_geom::NurbsCurve) -> u64 {
+        let points: Vec<u64> = curve
+            .control_points()
+            .iter()
+            .map(|&p| self.point(p))
+            .collect();
+        let mut distinct: Vec<f64> = Vec::new();
+        let mut multiplicities: Vec<Param> = Vec::new();
+        for &k in curve.knots() {
+            if distinct.last() == Some(&k) {
+                if let Some(Param::Integer(m)) = multiplicities.last_mut() {
+                    *m += 1;
+                }
+            } else {
+                distinct.push(k);
+                multiplicities.push(Param::Integer(1));
+            }
+        }
+        let id = self.next;
+        self.next += 1;
+        let records = vec![
+            Record::new("BOUNDED_CURVE", vec![]),
+            Record::new(
+                "B_SPLINE_CURVE",
+                vec![
+                    Param::Integer(curve.degree() as i64),
+                    Param::refs(points),
+                    Param::enumeration("UNSPECIFIED"),
+                    Param::boolean(false),
+                    Param::boolean(false),
+                ],
+            ),
+            Record::new(
+                "B_SPLINE_CURVE_WITH_KNOTS",
+                vec![
+                    Param::List(multiplicities),
+                    Param::reals(distinct),
+                    Param::enumeration("UNSPECIFIED"),
+                ],
+            ),
+            Record::new("CURVE", vec![]),
+            Record::new("GEOMETRIC_REPRESENTATION_ITEM", vec![]),
+            Record::new(
+                "RATIONAL_B_SPLINE_CURVE",
+                vec![Param::reals(curve.weights().iter().copied())],
+            ),
+            Record::new("REPRESENTATION_ITEM", vec![Param::string("")]),
+        ];
+        self.file.data.push(Instance {
+            id,
+            entity: Entity::Complex(records),
+        });
+        id
+    }
+
+    /// The segment from `a` to `b` as a `QUASI_UNIFORM_CURVE` of degree
+    /// one (its knots implied: 0, 0, 1, 1).
+    fn quasi_uniform_segment(&mut self, a: Vec3, b: Vec3) -> u64 {
+        let (a, b) = (self.point(a), self.point(b));
+        self.add(
+            "QUASI_UNIFORM_CURVE",
+            vec![
+                Param::string(""),
+                Param::Integer(1),
+                Param::refs([a, b]),
+                Param::enumeration("POLYLINE_FORM"),
+                Param::boolean(false),
+                Param::boolean(false),
+            ],
+        )
+    }
+}
+
+/// Every cylinder, sphere, torus and cone of the file written as a swept
+/// surface of a curve that is a spline in the file (no elementary kind):
+/// a cylinder as its circle, a rational B-spline, extruded along the axis
+/// (`turn`: backwards); a sphere or torus as its meridian circle, a
+/// rational B-spline, turned about the axis (`turn`: run the other way);
+/// a cone as a quasi-uniform segment of its generator turned about the
+/// axis. These read as exact B-spline surfaces, not as the elementary
+/// kinds.
+fn as_swept_splines(file: &StepFile, turn: bool) -> (StepFile, usize) {
+    let mut adder = Adder {
+        next: next_id(file),
+        file: file.clone(),
+    };
+    let sign = if turn { -1.0 } else { 1.0 };
+    let mut replaced = 0;
+    let mut swept = Vec::new();
+    let originals: Vec<Instance> = file.data.clone();
+    for instance in &originals {
+        let Entity::Simple(record) = &instance.entity else {
+            continue;
+        };
+        let p = &record.params;
+        let real = |k: usize| p[k].as_real().unwrap();
+        let entity = match record.keyword.as_str() {
+            "CYLINDRICAL_SURFACE" => {
+                let f = frame_of(file, p[1].as_ref().unwrap());
+                let circle = craft3d_geom::NurbsCurve::circle(&f, real(2)).unwrap();
+                let curve = adder.rational(&circle);
+                let vector = adder.vector(f.z() * sign);
+                Record::new(
+                    "SURFACE_OF_LINEAR_EXTRUSION",
+                    vec![Param::string(""), Param::Ref(curve), Param::Ref(vector)],
+                )
+            }
+            "SPHERICAL_SURFACE" | "TOROIDAL_SURFACE" => {
+                let f = frame_of(file, p[1].as_ref().unwrap());
+                let (centre, radius) = if record.keyword == "SPHERICAL_SURFACE" {
+                    (f.origin(), real(2))
+                } else {
+                    (f.point(real(2), 0.0, 0.0), real(3))
+                };
+                let plane = Frame::new(centre, f.y() * -sign, f.x()).unwrap();
+                let circle = if record.keyword == "SPHERICAL_SURFACE" {
+                    // A sphere is a half circle turned: from pole to pole
+                    // through the x axis, as two rational quarters (or
+                    // back, turned).
+                    let s = std::f64::consts::FRAC_1_SQRT_2;
+                    let (top, bottom) = (radius * sign, -radius * sign);
+                    let points = [
+                        (0.0, bottom),
+                        (radius, bottom),
+                        (radius, 0.0),
+                        (radius, top),
+                        (0.0, top),
+                    ]
+                    .map(|(x, z)| centre + f.x() * x + f.z() * z)
+                    .to_vec();
+                    craft3d_geom::NurbsCurve::new(
+                        2,
+                        vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+                        points,
+                        vec![1.0, s, 1.0, s, 1.0],
+                    )
+                    .unwrap()
+                } else {
+                    craft3d_geom::NurbsCurve::circle(&plane, radius).unwrap()
+                };
+                let curve = adder.rational(&circle);
+                let axis = adder.axis1(f.origin(), f.z());
+                Record::new(
+                    "SURFACE_OF_REVOLUTION",
+                    vec![Param::string(""), Param::Ref(curve), Param::Ref(axis)],
+                )
+            }
+            "CONICAL_SURFACE" => {
+                let f = frame_of(file, p[1].as_ref().unwrap());
+                let (r, a) = (real(2), real(3));
+                let up = f.vector(a.sin(), 0.0, a.cos());
+                // Long enough to hold every face on the cone: from the
+                // axis (the apex) to well past the base, or back.
+                let base = f.point(r, 0.0, 0.0);
+                let reach = 20.0 * (r + 1.0);
+                let apex = base - up * (r / a.sin());
+                let (from, to) = if turn {
+                    (base + up * reach, apex)
+                } else {
+                    (apex, base + up * reach)
+                };
+                let curve = adder.quasi_uniform_segment(from, to);
+                let axis = adder.axis1(f.origin(), f.z());
+                Record::new(
+                    "SURFACE_OF_REVOLUTION",
+                    vec![Param::string(""), Param::Ref(curve), Param::Ref(axis)],
+                )
+            }
+            _ => continue,
+        };
+        replaced += 1;
+        let at = adder
+            .file
+            .data
+            .iter()
+            .position(|i| i.id == instance.id)
+            .unwrap();
+        adder.file.data[at].entity = Entity::Simple(entity);
+        swept.push(instance.id);
+    }
+    if turn {
+        for instance in &mut adder.file.data {
+            if let Some(record) = simple_mut(instance, "ADVANCED_FACE")
+                && swept.contains(&record.params[2].as_ref().unwrap())
+            {
+                let same = record.params[3] == Param::boolean(true);
+                record.params[3] = Param::boolean(!same);
+            }
+        }
+    }
+    (adder.file, replaced)
+}
+
+/// Swept surfaces of curves that are no elementary kind (2026-10-21,
+/// slice 2): the one FreeCAD file refused in slice 1 was a revolved
+/// B-spline. Read as exact rational B-spline surfaces, every edge proven
+/// on them, the same volume and area as the elementary surfaces they
+/// are the same point sets as.
+#[test]
+fn swept_splines_read_as_exact_spline_surfaces() {
+    let frame = tilted(1.0);
+    let mut cases: Vec<(String, Body)> = vec![
+        (
+            "cylinder".to_string(),
+            craft3d_kernel::primitives::cylinder(&frame, 1.0, 2.0).unwrap(),
+        ),
+        (
+            "cone".to_string(),
+            craft3d_kernel::primitives::cone(&frame, 1.0, 2.0).unwrap(),
+        ),
+    ];
+    // Whole spheres and tori are faces without loops, which a spline
+    // surface (with no period) does not take: with their seams.
+    cases.extend(
+        seamed(&frame, 1.0)
+            .into_iter()
+            .map(|(name, body, _)| (name, body)),
+    );
+    let mut problems = Vec::new();
+    for (name, body) in cases {
+        for turn in [false, true] {
+            let (file, replaced) = as_swept_splines(&file_of(&name, &body), turn);
+            assert!(replaced > 0, "{name}");
+            match read_all(&file) {
+                Ok(imported) => {
+                    let splines = imported
+                        .iter()
+                        .flat_map(|i| &i.body.faces)
+                        .filter(|f| matches!(f.surface, craft3d_geom::Surface::Nurbs(_)))
+                        .count();
+                    if splines == 0 {
+                        problems.push(format!("{name}, turned {turn}: no spline surface"));
+                    }
+                    for i in &imported {
+                        let r = &i.report;
+                        if r.unproven_edges + r.loose_edges + r.loose_vertices > 0 {
+                            problems.push(format!("{name}, turned {turn}: {r:?}"));
+                        }
+                    }
+                    if let Err(e) = same_as(&name, &body, &imported) {
+                        problems.push(format!("turned {turn}: {e}"));
+                    }
+                }
+                Err(e) => problems.push(format!("{name}, turned {turn}: {e}")),
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+// ------------------------------------------------------ offset surfaces
+
+/// Every elementary surface of the file written as an `OFFSET_SURFACE`
+/// of the surface of its kind `d` nearer (`outward`: the basis inside
+/// and the offset positive; else the basis outside and the offset
+/// negative): a plane moved back along its normal, a radius made smaller
+/// or larger (a cone's by `d / cos α`, so that its offset is it again).
+fn as_offsets(file: &StepFile, d: f64, outward: bool) -> (StepFile, usize) {
+    let mut adder = Adder {
+        next: next_id(file),
+        file: file.clone(),
+    };
+    let sign = if outward { 1.0 } else { -1.0 };
+    let mut replaced = 0;
+    let originals: Vec<Instance> = file.data.clone();
+    for instance in &originals {
+        let Entity::Simple(record) = &instance.entity else {
+            continue;
+        };
+        let p = record.params.clone();
+        let real = |k: usize| p[k].as_real().unwrap();
+        let basis = match record.keyword.as_str() {
+            "PLANE" => {
+                let f = frame_of(file, p[1].as_ref().unwrap());
+                let moved = f.at(f.origin() - f.z() * (d * sign)).unwrap();
+                let placement = adder.placement(&moved);
+                adder.add("PLANE", vec![Param::string(""), Param::Ref(placement)])
+            }
+            "CYLINDRICAL_SURFACE" | "SPHERICAL_SURFACE" => adder.add(
+                &record.keyword,
+                vec![
+                    Param::string(""),
+                    p[1].clone(),
+                    Param::Real(real(2) - d * sign),
+                ],
+            ),
+            "TOROIDAL_SURFACE" => adder.add(
+                "TOROIDAL_SURFACE",
+                vec![
+                    Param::string(""),
+                    p[1].clone(),
+                    p[2].clone(),
+                    Param::Real(real(3) - d * sign),
+                ],
+            ),
+            "CONICAL_SURFACE" => adder.add(
+                "CONICAL_SURFACE",
+                vec![
+                    Param::string(""),
+                    p[1].clone(),
+                    Param::Real(real(2) - d * sign / real(3).cos()),
+                    p[3].clone(),
+                ],
+            ),
+            _ => continue,
+        };
+        replaced += 1;
+        let at = adder
+            .file
+            .data
+            .iter()
+            .position(|i| i.id == instance.id)
+            .unwrap();
+        adder.file.data[at].entity = Entity::Simple(Record::new(
+            "OFFSET_SURFACE",
+            vec![
+                Param::string(""),
+                Param::Ref(basis),
+                Param::Real(d * sign),
+                Param::boolean(false),
+            ],
+        ));
+    }
+    (adder.file, replaced)
+}
+
+/// Offsets of the elementary surfaces read as the surfaces they are
+/// (slice 2), either way round; an offset of a spline surface is refused
+/// naming it.
+#[test]
+fn offset_surfaces_read_as_the_surfaces_they_are() {
+    let frame = tilted(1.0);
+    let cases: Vec<(String, Body)> = vec![
+        (
+            "cylinder".to_string(),
+            craft3d_kernel::primitives::cylinder(&frame, 1.0, 2.0).unwrap(),
+        ),
+        (
+            "cone".to_string(),
+            craft3d_kernel::primitives::cone(&frame, 1.0, 2.0).unwrap(),
+        ),
+        (
+            "sphere".to_string(),
+            craft3d_kernel::primitives::sphere(&frame, 1.5).unwrap(),
+        ),
+        (
+            "torus".to_string(),
+            craft3d_kernel::primitives::torus(&frame, 3.0, 1.0).unwrap(),
+        ),
+        (
+            "block".to_string(),
+            craft3d_kernel::primitives::block(&frame, 1.0, 2.0, 3.0).unwrap(),
+        ),
+    ];
+    let mut problems = Vec::new();
+    for (name, body) in cases {
+        for outward in [true, false] {
+            let (file, replaced) = as_offsets(&file_of(&name, &body), 0.125, outward);
+            assert!(replaced > 0, "{name}");
+            match read_all(&file) {
+                Ok(imported) => {
+                    if let Err(e) = same_as(&name, &body, &imported) {
+                        problems.push(format!("outward {outward}: {e}"));
+                    }
+                }
+                Err(e) => problems.push(format!("{name}, outward {outward}: {e}")),
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    // An offset of a B-spline surface: refused, named.
+    let (_, can) = test_bodies(1.0)
+        .into_iter()
+        .find(|(name, _)| name == "nurbs can")
+        .unwrap();
+    let mut file = file_of("can", &can);
+    let mut adder = Adder {
+        next: next_id(&file),
+        file: file.clone(),
+    };
+    let spline = file
+        .data
+        .iter()
+        .find(|i| i.entity.is("B_SPLINE_SURFACE_WITH_KNOTS"))
+        .unwrap()
+        .id;
+    let offset = adder.add(
+        "OFFSET_SURFACE",
+        vec![
+            Param::string(""),
+            Param::Ref(spline),
+            Param::Real(0.1),
+            Param::boolean(false),
+        ],
+    );
+    file = adder.file;
+    for instance in &mut file.data {
+        if let Some(record) = simple_mut(instance, "ADVANCED_FACE")
+            && record.params[2] == Param::Ref(spline)
+        {
+            record.params[2] = Param::Ref(offset);
+        }
+    }
+    let e = read_all(&file).unwrap_err();
+    assert!(
+        e.contains("OFFSET_SURFACE") && e.contains("B-spline"),
+        "{e}"
+    );
+}
+
 // ------------------------------------------------ seams, as others write
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, Surface};
@@ -1169,6 +1592,34 @@ fn seamed(frame: &Frame, k: f64) -> Vec<(String, Body, f64)> {
     ]);
     body.faces[0].loops = vec![loop_];
     out.push(("seamed torus".to_string(), body, torus.volume));
+
+    // A sphere bounded by one meridian from pole to pole, used both ways:
+    // its seam starts and ends at the poles, where the prover's feet
+    // have no longitude.
+    let radius = 1.5 * k;
+    let mut body = Body::new(BodyKind::Solid);
+    let south = body.add_vertex(frame.point(0.0, 0.0, -radius));
+    let north = body.add_vertex(frame.point(0.0, 0.0, radius));
+    let meridian = Frame::new(frame.origin(), -frame.y(), frame.x()).unwrap();
+    let half = std::f64::consts::FRAC_PI_2;
+    let seam = body.add_edge(
+        Curve3::Circle(Circle::new(meridian, radius).unwrap()),
+        (-half, half),
+        south,
+        north,
+    );
+    let loop_ = body.add_loop(vec![forward(seam), backward(seam)]);
+    let face = body.add_face(
+        Surface::Sphere(craft3d_geom::Sphere::new(*frame, radius).unwrap()),
+        false,
+        vec![loop_],
+    );
+    body.add_shell(vec![face]);
+    out.push((
+        "seamed sphere".to_string(),
+        body,
+        4.0 / 3.0 * std::f64::consts::PI * radius.powi(3),
+    ));
     out
 }
 

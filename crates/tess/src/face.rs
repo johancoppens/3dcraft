@@ -45,6 +45,7 @@
 
 use crate::cdt::{Cdt, CdtError, FIRST_VERTEX, Interior, P2, orient};
 use crate::edge::arc_segments;
+use crate::edge::{ACROSS_MARGIN, Across};
 use crate::{TessError, TessParams};
 use craft3d_geom::closure::clamped;
 use craft3d_geom::{Curve3, GeomError, Surface};
@@ -1507,8 +1508,8 @@ fn band_region(
             }
         }
     }
-    if lower.is_none() && upper.is_none() && period_b.is_some() {
-        return torus_region(param, period, period_b.unwrap_or(period));
+    if let (None, None, Some(period_b)) = (lower, upper, period_b) {
+        return torus_region(param, period, period_b, &holes, face);
     }
 
     // The seam: from a vertex of one winding loop to the vertex of the
@@ -2364,8 +2365,34 @@ impl Routes<'_> {
 
 /// A whole torus: a rectangle of one period by one period, cut along both
 /// seams. All four corners are one point.
-fn torus_region(param: &Param, period_a: f64, period_b: f64) -> Result<Region, TessError> {
-    let [(a, _), (b, _)] = param.domain();
+fn torus_region(
+    param: &Param,
+    period_a: f64,
+    period_b: f64,
+    holes: &[(usize, &Ring)],
+    face: usize,
+) -> Result<Region, TessError> {
+    let periods = [Some(period_a), Some(period_b)];
+    let [(low_a, _), (low_b, _)] = param.domain();
+    // The seams: the surface's own, or, with holes, a circle of each
+    // parameter that no hole reaches (`clear_of`).
+    let (a, b) = if holes.is_empty() {
+        (low_a, low_b)
+    } else {
+        match (
+            clear_of(holes, 0, low_a, period_a),
+            clear_of(holes, 1, low_b, period_b),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                return unsupported(
+                    face,
+                    "a whole torus but for holes that leave no circle around its axis or \
+                     around its tube clear of them for a seam",
+                );
+            }
+        }
+    };
     let corner = |uv: Uv| Bv {
         uv,
         pos: param.eval([a, b]),
@@ -2391,7 +2418,72 @@ fn torus_region(param: &Param, period_a: f64, period_b: f64) -> Result<Region, T
         twin_to: c11,
         shift: [0.0, period_b],
     });
+    // Each hole inside the square the seams bound, moved there by whole
+    // periods.
+    let mut outline = Region::default();
+    outline.verts.clone_from(&region.verts);
+    outline.seams.clone_from(&region.seams);
+    for &(i, ring) in holes {
+        let turns = place(ring, periods, |p| outline.encloses(p)).unwrap_or_else(|| {
+            region.doubt.get_or_insert(TessError::Face {
+                face,
+                reason: format!(
+                    "its loops do not bound a region: loop {i} lies outside the torus its \
+                     seams open up"
+                ),
+            });
+            place_in_doubt(ring, periods, |p| outline.encloses(p))
+        });
+        region.add_ring(ring, turns, periods);
+    }
     Ok(region)
+}
+
+/// A value of parameter `k` (of period `period`, counted from `low`)
+/// whose circle on the surface no loop of `holes` reaches: the middle of
+/// the widest gap between the stretches of that parameter the loops
+/// span, when there is one. A loop that does not wind lies within the
+/// stretch between its least and its greatest value of the parameter, and
+/// so does every segment between its points.
+fn clear_of(holes: &[(usize, &Ring)], k: usize, low: f64, period: f64) -> Option<f64> {
+    if !(period.is_finite() && period > 0.0) {
+        return None;
+    }
+    // Each loop's stretch, its start brought into [0, period).
+    let mut spans: Vec<(f64, f64)> = Vec::with_capacity(holes.len());
+    for (_, ring) in holes {
+        let values = ring.verts.iter().map(|v| get2(v.uv, k));
+        let (least, most) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, m), x| {
+            (l.min(x), m.max(x))
+        });
+        let length = most - least;
+        if !(length.is_finite() && length < period) {
+            return None;
+        }
+        let start = (least - low).rem_euclid(period);
+        spans.push((start, start + length));
+    }
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    // Merged into runs, round the circle: the gap after each run up to
+    // the next one's start (the last one's up to the first's, a period
+    // on).
+    let mut runs: Vec<(f64, f64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match runs.last_mut() {
+            Some(run) if start <= run.1 => run.1 = run.1.max(end),
+            _ => runs.push((start, end)),
+        }
+    }
+    let first = runs.first().copied()?;
+    let mut best: Option<(f64, f64)> = None;
+    for (n, run) in runs.iter().enumerate() {
+        let next = runs.get(n + 1).map_or(first.0 + period, |next| next.0);
+        let gap = next - run.1;
+        if positive(gap) && best.is_none_or(|(g, _)| gap > g) {
+            best = Some((gap, run.1 + 0.5 * gap));
+        }
+    }
+    best.map(|(_, middle)| low + middle.rem_euclid(period))
 }
 
 /// Grid cells for a turn of `sweep` radians at `radius`, as for an arc
@@ -2924,6 +3016,11 @@ fn distance_to_surface(param: &Param, uv: Uv, target: Vec3) -> f64 {
 /// unit in the last place of the products it is the difference of.
 const ROUNDED_AWAY: f64 = 1e-12;
 
+/// How many third corners, each half as far from the chord as the one
+/// before, [`Work::carries`] tries on either side of a chord: from its
+/// length down to a few billionths of it.
+const CARRY_PROBES: usize = 30;
+
 /// What to do with a triangle that is not good enough.
 enum Action {
     Keep,
@@ -3187,6 +3284,88 @@ impl Work<'_> {
             }
         }
         Action::Keep
+    }
+
+    /// Whether the triangle on `corners` (given in any order) faces the
+    /// way the surface does, as [`Work::assess`] measures it: clearly at
+    /// the surface's normal over its mean parameters, or else at the
+    /// nearest point of the surface to its centroid.
+    fn faces_the_surface(&self, corners: [(Uv, Vec3); 3]) -> bool {
+        let [mut a, mut b, c] = corners;
+        // The triangulation's triangles run counter-clockwise in its plane.
+        if orient(self.plane(a.0), self.plane(b.0), self.plane(c.0)) < 0.0 {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let facing = (b.1 - a.1).cross(c.1 - a.1);
+        if !positive(facing.length_squared()) {
+            return false;
+        }
+        let middle = Self::mean(&[a, b, c].map(|(uv, pos)| (uv, pos, None)));
+        let (_, [da, db]) = self.param.derivatives(middle);
+        let reference = da.cross(db);
+        let agreement = facing.dot(reference);
+        if agreement > 0.5 * facing.length() * reference.length() {
+            return true;
+        }
+        let exact = if self.param.is_freeform() {
+            (reference.length() > 0.0).then_some(agreement)
+        } else {
+            let centroid = (a.1 + b.1 + c.1) * (1.0 / 3.0);
+            self.param
+                .surface
+                .project(centroid)
+                .ok()
+                .and_then(|(u, v)| self.param.surface.normal(u, v))
+                .map(|n| facing.dot(n) * self.param.handedness())
+        };
+        exact.is_some_and(positive)
+    }
+
+    /// Whether a triangle of the face can stand on the chord from `p` to
+    /// `q` and face the way the surface does. A chord within the tolerance
+    /// of its curve can lie so far inside a surface that curves tightly
+    /// across the edge (a chord of a rim of a fillet thinner than the
+    /// chord's sag passes the far side of the fillet's axis) that every
+    /// triangle on it faces sideways or backwards, whatever its third
+    /// corner: the refinement then moves that corner towards the chord
+    /// until there is no room left. Tried with a third corner straight
+    /// across from the chord's middle, square to it on the surface, at
+    /// distances from the chord's length down by halves, on either side,
+    /// within the face's box in parameter space (`low`, `high`): a chord
+    /// none of these triangles stands on cannot carry one. A chord on
+    /// which nothing can be tried is not blamed.
+    fn carries(&self, p: &Bv, q: &Bv, low: Uv, high: Uv) -> bool {
+        let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
+        let middle = [0.5 * (pa + qa), 0.5 * (pb + qb)];
+        let (_, [da, db]) = self.param.derivatives(middle);
+        let along = q.pos - p.pos;
+        let length = along.length();
+        // Square to the chord on the surface: (da u + db v) · along = 0.
+        let across = [db.dot(along), -da.dot(along)];
+        let unit = (da * across[0] + db * across[1]).length();
+        if !(positive(length) && positive(unit) && length.is_finite() && unit.is_finite()) {
+            return true;
+        }
+        let inside =
+            |uv: Uv| (0..2).all(|k| get2(uv, k) >= get2(low, k) && get2(uv, k) <= get2(high, k));
+        let mut tried = false;
+        for side in [1.0, -1.0] {
+            let mut reach = length;
+            for _ in 0..CARRY_PROBES {
+                let k = side * reach / unit;
+                let uv = [middle[0] + k * across[0], middle[1] + k * across[1]];
+                reach *= 0.5;
+                if !inside(uv) {
+                    continue;
+                }
+                tried = true;
+                let corners = [(p.uv, p.pos), (q.uv, q.pos), (uv, self.param.eval(uv))];
+                if self.faces_the_surface(corners) {
+                    return true;
+                }
+            }
+        }
+        !tried
     }
 
     /// Adds a point in the middle of edge `i` of triangle `t`.
@@ -3781,6 +3960,18 @@ fn chord_bulge(param: &Param, p: &Bv, q: &Bv) -> Option<f64> {
     (aside.is_finite() && aside > SIDE_NOISE * p.pos.distance(q.pos)).then_some(aside)
 }
 
+/// What a face asks of the points of its edges ([`Boundary::chords_to_refine`]).
+pub(crate) struct Refine {
+    /// Chords to cut in two.
+    pub(crate) halve: Vec<Chord>,
+    /// Chords to cut across from a point of another segment (when
+    /// aligning).
+    pub(crate) across: Vec<Across>,
+    /// Whether two segments of the boundary cross in parameter space,
+    /// which no triangulation of the face survives.
+    pub(crate) crossed: bool,
+}
+
 /// How many times its own bulge (how far the surface over the middle of a
 /// chord lies beside the chord, along the surface) another part of the
 /// boundary must keep away from the chord, along the surface, for the
@@ -3815,7 +4006,14 @@ impl Boundary<'_> {
     /// Empty for a boundary that is fine, and for what finer chords cannot
     /// cure: straight edges on a surface whose straight lines are
     /// straight in its parameters, seams, poles.
-    pub(crate) fn chords_to_refine(&self, body: &Body, params: &TessParams) -> Vec<Chord> {
+    pub(crate) fn chords_to_refine(
+        &self,
+        body: &Body,
+        params: &TessParams,
+        aligning: bool,
+    ) -> Refine {
+        let mut across: Vec<Across> = Vec::new();
+        let mut crossed = false;
         let tolerance = params.chordal_tolerance;
         let region = &self.region;
         let analytic = !self.param.is_freeform();
@@ -3844,6 +4042,34 @@ impl Boundary<'_> {
             image: Vec3,
             normal: Vec3,
             aside: f64,
+        }
+        /// When aligning: `one`'s chord cut across from each end of
+        /// `other` whose foot lies inside it, or else in two.
+        fn cut_across(
+            one: &Segment,
+            other: &Segment,
+            across: &mut Vec<Across>,
+            wanted: &mut Vec<Chord>,
+        ) {
+            let Some(chord) = one.chord else {
+                return;
+            };
+            let before = across.len();
+            let [from, to] = one.pos;
+            let along = to - from;
+            let whole = along.length_squared();
+            for end in other.pos {
+                if end == from || end == to {
+                    continue;
+                }
+                let s = (end - from).dot(along) / whole;
+                if s > ACROSS_MARGIN && s < 1.0 - ACROSS_MARGIN {
+                    across.push((chord, end, other.chord.map(|(edge, _)| edge)));
+                }
+            }
+            if across.len() == before {
+                wanted.push(chord);
+            }
         }
         let mut segments: Vec<Segment> = Vec::with_capacity(region.segs.len());
         let mut wanted: Vec<Chord> = Vec::new();
@@ -3961,8 +4187,17 @@ impl Boundary<'_> {
                     // vertex, meet end to end: that is no crossing.)
                     let ([a, b], [c, d]) = (first.ends, second.ends);
                     if seam_blocked([a.0, a.1], [b.0, b.1], [c.0, c.1], [d.0, d.1]) {
-                        wanted.extend(first.chord);
-                        wanted.extend(second.chord);
+                        crossed = true;
+                        match aligning {
+                            false => {
+                                wanted.extend(first.chord);
+                                wanted.extend(second.chord);
+                            }
+                            true => {
+                                cut_across(first, second, &mut across, &mut wanted);
+                                cut_across(second, first, &mut across, &mut wanted);
+                            }
+                        }
                     }
                     // The same in space. A chord that cuts across a strip
                     // narrower than its own bulge passes the other side
@@ -3977,18 +4212,28 @@ impl Boundary<'_> {
                             let (Some(bulge), [from, to]) = (one.bulge, other.pos) else {
                                 continue;
                             };
-                            let across = nearest_on_chord(bulge.image, from, to) - bulge.image;
-                            let beside =
-                                (across - bulge.normal * across.dot(bulge.normal)).length();
+                            let gap = nearest_on_chord(bulge.image, from, to) - bulge.image;
+                            let beside = (gap - bulge.normal * gap.dot(bulge.normal)).length();
                             if beside < NEAR_BULGE * bulge.aside {
-                                wanted.extend(one.chord);
+                                if aligning {
+                                    // Halved, as in the rounds before, and
+                                    // cut across from the other's ends.
+                                    wanted.extend(one.chord);
+                                    cut_across(one, other, &mut across, &mut wanted);
+                                } else {
+                                    wanted.extend(one.chord);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        wanted
+        Refine {
+            halve: wanted,
+            across,
+            crossed,
+        }
     }
 }
 
@@ -4091,7 +4336,7 @@ pub(crate) fn face_boundary<'a>(
         && rings
             .iter()
             .all(|r| positive(-r.twice_area(periods) * sense))
-        && closes_to_points(&param);
+        && (closes_to_points(&param) || periods.iter().all(Option::is_some));
     let mut region = if rings.is_empty() || winding > 0 || around_holes {
         if winding > 2 {
             return fail(
@@ -4561,6 +4806,22 @@ fn mesh_face_in(
                 ask.push(chord);
             }
         }
+        if ask.len() == before {
+            // Failing those, every chord of the face that no triangle can
+            // stand on facing the way the surface does (`Work::carries`):
+            // where the refinement got stuck does not matter then, the
+            // face cannot be meshed on that chord.
+            for (&(i, j), chord) in region.segs.iter().zip(&region.chords) {
+                let (Some(chord), Some(p), Some(q)) =
+                    (chord, region.verts.get(i), region.verts.get(j))
+                else {
+                    continue;
+                };
+                if !work.carries(p, q, low, high) {
+                    ask.push(*chord);
+                }
+            }
+        }
         let (edge, _) = *ask.get(before)?;
         Some(TessError::Face {
             face: index,
@@ -4872,6 +5133,53 @@ mod tests {
     use super::*;
     use craft3d_geom::NurbsSurface;
     use std::f64::consts::FRAC_PI_4;
+
+    /// A loop of four points spanning `a` and `b` (no position needed).
+    fn square(a: (f64, f64), b: (f64, f64)) -> Ring {
+        let corner = |uv: Uv| Bv {
+            uv,
+            pos: Vec3::ZERO,
+            free: None,
+            chord: None,
+        };
+        Ring {
+            verts: vec![
+                corner([a.0, b.0]),
+                corner([a.0, b.1]),
+                corner([a.1, b.1]),
+                corner([a.1, b.0]),
+            ],
+            winding: [0, 0],
+        }
+    }
+
+    #[test]
+    fn a_circle_clear_of_the_holes_is_the_middle_of_the_widest_gap() {
+        let period = 8.0;
+        let (one, two) = (
+            square((1.0, 2.0), (0.0, 1.0)),
+            square((5.0, 7.0), (2.0, 3.0)),
+        );
+        let holes = [(0, &one), (1, &two)];
+        // Gaps (2, 5) and (7, 9): the first is wider.
+        assert_eq!(clear_of(&holes, 0, 0.0, period), Some(3.5));
+        assert_eq!(clear_of(&holes, 1, 0.0, period), Some(5.5));
+        // Counted from another start, and a hole across the period's end.
+        let across = square((7.5, 8.5), (0.0, 1.0));
+        let holes = [(0, &one), (1, &across)];
+        let clear = clear_of(&holes, 0, -4.0, period).unwrap();
+        assert!((-4.0..4.0).contains(&clear), "{clear}");
+        assert_eq!((clear - 4.75_f64).rem_euclid(period), 0.0);
+        // Holes that cover the whole period leave nothing, nor does a
+        // hole as wide as the period.
+        let rest = square((1.5, 9.1), (0.0, 1.0));
+        assert_eq!(clear_of(&[(0, &one), (1, &rest)], 0, 0.0, period), None);
+        assert_eq!(
+            clear_of(&[(0, &square((0.0, 8.0), (0.0, 1.0)))], 0, 0.0, period),
+            None
+        );
+        assert_eq!(clear_of(&[(0, &one)], 0, 0.0, f64::NAN), None);
+    }
 
     /// Nine rational quadratic control points `(x, y, w)` of the unit
     /// circle, and their knots.
