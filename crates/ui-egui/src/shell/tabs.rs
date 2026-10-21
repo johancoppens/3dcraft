@@ -249,6 +249,22 @@ impl Shell {
         false
     }
 
+    /// The window was asked to close while a command runs: its tabs are
+    /// as they were before the command, which may yet leave a document
+    /// with unsaved changes. Nothing is decided now; once the session is
+    /// back, [`Self::advance_quit`] asks about what is unsaved then, or
+    /// stops the application when nothing is. Always false (the window
+    /// stays for now), unless it is stopping already.
+    pub fn request_window_close_when_idle(&mut self) -> bool {
+        if self.quit {
+            return true;
+        }
+        if self.quitting.is_none() {
+            self.quitting = Some(Quitting::default());
+        }
+        false
+    }
+
     /// True while the window is closing and asks about the documents with
     /// unsaved changes, one at a time.
     pub fn quitting(&self) -> bool {

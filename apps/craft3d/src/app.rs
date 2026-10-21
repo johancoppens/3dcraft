@@ -676,6 +676,11 @@ impl Desk {
     /// otherwise it stays and asks about the documents with unsaved
     /// changes first ([`Shell::request_window_close`]).
     pub fn window_close(&mut self) -> bool {
+        // While a command runs the tabs may not show what it leaves
+        // unsaved: decided once it is done.
+        if self.away() {
+            return self.host.shell.request_window_close_when_idle();
+        }
         self.host.shell.request_window_close()
     }
 

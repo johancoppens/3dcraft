@@ -24,8 +24,16 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 /// forgotten, and then the oldest. Before 2026-10-21 it was 256, and a
 /// document of more bodies than that (the Garabit pier has 307) measured
 /// every body again for each `document.inspect`: the store forgot the
-/// first bodies while it measured the last ones.
+/// first bodies while it measured the last ones. Fewer in a browser.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_REMEMBERED: usize = 1 << 14;
+#[cfg(target_arch = "wasm32")]
+const MAX_REMEMBERED: usize = 1 << 10;
+
+/// Every this many bodies remembered, the bodies that are gone are
+/// forgotten: their entries (and the `Arc` headers their `Weak`s keep)
+/// do not wait for the store to be full.
+const SWEEP_EVERY: u64 = 64;
 
 type Measured = Result<MassProperties, MassError>;
 type Turned = Result<Inertia, MassError>;
@@ -100,22 +108,23 @@ fn remember<T>(store: &Mutex<Store<T>>, body: &Arc<Body>, value: T) {
     {
         return;
     }
-    if remembered.by_body.len() >= MAX_REMEMBERED {
-        // Bodies that are gone are forgotten, then the oldest.
+    if remembered.next.is_multiple_of(SWEEP_EVERY) || remembered.by_body.len() >= MAX_REMEMBERED {
+        // Bodies that are gone are forgotten.
         remembered
             .by_body
             .retain(|_, (seen, _, _)| seen.strong_count() > 0);
-        while remembered.by_body.len() >= MAX_REMEMBERED {
-            let oldest = remembered
-                .by_body
-                .iter()
-                .min_by_key(|(_, (_, when, _))| *when)
-                .map(|(at, _)| *at);
-            let Some(oldest) = oldest else {
-                break;
-            };
-            drop(remembered.by_body.remove(&oldest));
-        }
+    }
+    if remembered.by_body.len() >= MAX_REMEMBERED {
+        // Then the oldest quarter at once, so a full store is not scanned
+        // for every body it takes.
+        let mut whens: Vec<u64> = remembered
+            .by_body
+            .values()
+            .map(|(_, when, _)| *when)
+            .collect();
+        whens.sort_unstable();
+        let cut = whens.get(MAX_REMEMBERED / 4).copied().unwrap_or(u64::MAX);
+        remembered.by_body.retain(|_, (_, when, _)| *when >= cut);
     }
     let when = remembered.next;
     remembered.next = when.saturating_add(1);

@@ -85,11 +85,15 @@ fn save_active(session: &mut Session) -> Result<Value, String> {
 }
 
 /// Saves every document with unsaved changes worth keeping (those
-/// `file.close` refuses without `discard`) to its own file, as Save in
-/// the File menu does, for `ui.quit {save: "save"}`; the document that
-/// was shown is shown again. Refused, with nothing saved, when one of
-/// them was never saved: there is nobody to name its file. A save that
-/// fails stops there, with the documents before it saved.
+/// `file.close` refuses without `discard`) to its own file, for
+/// `ui.quit {save: "save"}` from the control channel: through the
+/// automation write root, as `file.save` does for a request, never with
+/// the person's own access (a document the person opened from outside the
+/// roots is not the channel's to overwrite). The document that was shown
+/// is shown again. Refused, with nothing saved, when one of them was
+/// never saved (there is nobody to name its file) or its file lies
+/// outside the write root. A save that fails stops there, with the
+/// documents before it saved.
 pub fn save_all(session: &mut Session) -> Result<Value, String> {
     let statuses = session.document_statuses();
     let unnamed: Vec<String> = craft3d_ui_egui::doc_tabs(&statuses, None)
@@ -103,11 +107,26 @@ pub fn save_all(session: &mut Session) -> Result<Value, String> {
             unnamed.join(", ")
         ));
     }
+    let outside: Vec<String> = statuses
+        .iter()
+        .filter(|status| status.close_asks)
+        .filter_map(|status| status.path.as_deref())
+        .filter(|path| session.workspace().resolve_write(path).is_err())
+        .map(|path| format!("`{path}`"))
+        .collect();
+    if !outside.is_empty() {
+        return Err(format!(
+            "ui.quit: {} lies outside the automation write root, so the control channel may not save it; save it at the window, or quit with save: \"discard\" or \"ask\"; nothing was saved",
+            outside.join(", ")
+        ));
+    }
     let before = session.document_status().map(|status| status.index);
     let mut saved = Vec::new();
     let mut outcome = Ok(());
     for status in statuses.iter().filter(|status| status.close_asks) {
-        let done = activate(session, status.index).and_then(|_| save_active(session));
+        // Through the roots, as a request's `file.save`.
+        let done =
+            activate(session, status.index).and_then(|_| execute(session, "file.save", &json!({})));
         match done {
             Ok(_) => saved.push(status.path.clone().unwrap_or_default()),
             Err(error) => {
@@ -665,6 +684,37 @@ mod tests {
         assert!(!desk.may_end_recovery());
     }
 
+    /// The close button while a command runs that leaves a document with
+    /// unsaved changes: nothing is decided on the tabs from before the
+    /// command; once it is done the window asks about that document.
+    #[test]
+    fn a_close_while_a_command_runs_is_decided_when_it_is_done() {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(Answers(Mutex::new(Vec::new()))), Arc::new(|| {}));
+        let mut host = Host::new(s);
+        host.shell.sync(&mut host.session);
+        let mut desk = Desk::new(host, incoming, picker)
+            .with_engine_thread(Arc::new(|| {}))
+            .with_patience(Duration::ZERO);
+        settle(&mut desk);
+        assert!(!desk.host.shell.tabs()[0].asks_to_close);
+        let (reply, _answer) = mpsc::channel();
+        requests
+            .send(crate::host::Request {
+                line: r#"{"id":1,"method":"engine.execute","params":{"command":"feature.sphere","params":{"radius":2}}}"#.to_string(),
+                reply,
+            })
+            .unwrap();
+        let _ = desk.turn();
+        assert!(desk.away(), "the command runs on the engine thread");
+        assert!(!desk.window_close(), "not decided while it runs");
+        until_asked(&mut desk);
+        assert!(!desk.host.shell.quit_requested());
+        assert_eq!(desk.host.shell.closing().unwrap().name, "Untitled 1");
+    }
+
     /// One request over the control channel, answered by the desk.
     fn ask(desk: &mut Desk, requests: &mpsc::Sender<crate::host::Request>, line: &str) -> Value {
         let (reply, answer) = mpsc::channel();
@@ -763,11 +813,27 @@ mod tests {
             "feature.sphere",
             json!({"radius": 1}),
         );
-        let reply = ask(
-            &mut desk,
-            &requests,
-            r#"{"id":5,"method":"ui.quit","params":{"save":"save"}}"#,
+        // Both files were chosen by the person, and the channel has no
+        // write root: the channel may not overwrite them. Refused,
+        // nothing saved, the window stays.
+        let quit_save = r#"{"id":5,"method":"ui.quit","params":{"save":"save"}}"#;
+        let reply = ask(&mut desk, &requests, quit_save);
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(
+            error.contains("outside the automation write root"),
+            "{error}"
         );
+        assert!(!desk.host.shell.quit_requested());
+        assert_eq!(features_in(&own), 1);
+        assert_eq!(features_in(&block), 1);
+        // A write root the files lie beneath: saved through it, and the
+        // application stops.
+        desk.host.session.set_workspace(Workspace {
+            read: craft3d_engine::Access::None,
+            write: craft3d_engine::Access::Root(dir.clone()),
+        });
+        let reply = ask(&mut desk, &requests, quit_save);
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(
             reply["result"]["saved"].as_array().unwrap().len(),
