@@ -8,7 +8,7 @@
 
 use craft3d_automation::rpc::{self, Extension, Method};
 use craft3d_engine::Session;
-use craft3d_ui_egui::{CommandReport, Shell, UI_METHODS};
+use craft3d_ui_egui::{CommandReport, QuitMode, Shell, UI_METHODS, quit_mode};
 use serde_json::Value;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
@@ -223,8 +223,27 @@ pub enum Route {
     /// (`engine.execute`, `batch`, MCP tool calls but `control_call`).
     Engine,
     /// At once even while the engine thread works, from what the window
-    /// shows: `ui.get` and `ui.quit`.
+    /// shows: `ui.get` and `ui.quit` (but `ui.quit {save: "ask"}`, which
+    /// waits its turn on the window, and `{save: "save"}`, which saves on
+    /// the engine thread).
     Anytime,
+}
+
+/// True when `reply` answers `ui.quit {save: "save"}` in `line` with
+/// everything saved: the application stops then.
+pub fn quits(line: &str, reply: &str) -> bool {
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    if request.get("method").and_then(Value::as_str) != Some("ui.quit")
+        || quit_mode(request.get("params")) != Ok(QuitMode::Save)
+    {
+        return false;
+    }
+    serde_json::from_str::<Value>(reply)
+        .ok()
+        .and_then(|reply| reply.get("ok").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// Where `line` is answered ([`Route`]).
@@ -236,7 +255,12 @@ pub fn route(line: &str) -> Route {
         Some("engine.execute" | "batch") => Route::Engine,
         #[cfg(test)]
         Some("debug.slow") => Route::Engine,
-        Some("ui.get" | "ui.quit") => Route::Anytime,
+        Some("ui.get") => Route::Anytime,
+        Some("ui.quit") => match quit_mode(request.get("params")) {
+            Ok(QuitMode::Discard) => Route::Anytime,
+            Ok(QuitMode::Save) => Route::Engine,
+            Ok(QuitMode::Ask) | Err(_) => Route::Window,
+        },
         Some("mcp.message") => {
             let message = request
                 .get("params")
@@ -274,6 +298,11 @@ pub fn answer_on_engine(session: &mut Session, line: &str) -> Option<String> {
         // does: for the tests of a window that keeps drawing meanwhile.
         #[cfg(test)]
         "debug.slow" => Some(Ok(crate::tests::slow(params))),
+        // Saving every document before quitting, on the engine thread;
+        // the window stops once the reply says so ([`quits`]).
+        "ui.quit" if quit_mode(params) == Ok(QuitMode::Save) => {
+            Some(crate::tabs::save_all(session))
+        }
         "mcp.message" => {
             let line = match params {
                 Some(Value::Object(map)) if map.len() == 1 => {
@@ -353,6 +382,9 @@ impl Host {
                 #[cfg(test)]
                 "debug.panic" => crate::tests::fall_over(),
                 "mcp.message" => Some(mcp_message(session, shell, params)),
+                "ui.quit" if quit_mode(params) == Ok(QuitMode::Save) => {
+                    Some(crate::tabs::save_all(session))
+                }
                 _ => shell.handle_method(session, method, params),
             }
         };
@@ -365,6 +397,11 @@ impl Host {
             && let Some(report) = report(line, reply)
         {
             self.shell.last_command = Some(report);
+        }
+        if let Some(reply) = &reply
+            && quits(line, reply)
+        {
+            self.shell.request_quit_saved();
         }
         // The camera follows the model whether or not a frame is drawn
         // before the next request (a screenshot right after an edit).

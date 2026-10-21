@@ -26,6 +26,17 @@ pub enum DocAction {
     SaveAndClose(usize),
 }
 
+/// Where closing the window is ([`Shell::advance_quit`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Quitting {
+    /// The number of open documents, and of those with unsaved changes,
+    /// when the last question was asked; `None` before the first.
+    asked_with: Option<(usize, usize)>,
+    /// The document made the active one to be asked about next, so the
+    /// person sees what the question is about.
+    shown: Option<usize>,
+}
+
 /// The answers to the question before closing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseAnswer {
@@ -183,6 +194,7 @@ impl Shell {
                 document,
                 name: tab.name.clone(),
                 path: tab.path.clone(),
+                quitting: self.quitting.is_some(),
             });
         } else {
             self.doc_action = Some(DocAction::Close {
@@ -192,11 +204,16 @@ impl Shell {
         }
     }
 
-    /// The person's answer to the question before closing.
+    /// The person's answer to the question before closing. Cancel while
+    /// the window closes keeps the window, with every document that is
+    /// still open.
     pub fn answer_closing(&mut self, answer: CloseAnswer) {
         let Some(closing) = self.closing.take() else {
             return;
         };
+        if answer == CloseAnswer::Cancel {
+            self.quitting = None;
+        }
         let document = closing.document;
         self.doc_action = match answer {
             CloseAnswer::Save => Some(DocAction::SaveAndClose(document)),
@@ -206,6 +223,85 @@ impl Shell {
             }),
             CloseAnswer::Cancel => None,
         };
+    }
+
+    /// The window was asked to close (its close button, or
+    /// `ui.quit {save: "ask"}`). True when it may close now: no document
+    /// has unsaved changes worth asking about (then the application is
+    /// asked to stop, [`Self::quit_requested`]). Otherwise the window
+    /// stays and asks, one document at a time, Save, Don't Save or Cancel
+    /// ([`Self::advance_quit`]); once each was saved or dropped the
+    /// application stops, and Cancel keeps it. Asked again while it asks,
+    /// nothing changes. As of the last sync: while a command runs the
+    /// tabs are as they were before it.
+    pub fn request_window_close(&mut self) -> bool {
+        if self.quit {
+            return true;
+        }
+        if self.quitting.is_some() {
+            return false;
+        }
+        if !self.tabs.iter().any(|tab| tab.asks_to_close) {
+            self.quit = true;
+            return true;
+        }
+        self.quitting = Some(Quitting::default());
+        false
+    }
+
+    /// True while the window is closing and asks about the documents with
+    /// unsaved changes, one at a time.
+    pub fn quitting(&self) -> bool {
+        self.quitting.is_some()
+    }
+
+    /// The next step of closing the window, when the host has the session
+    /// back and nothing it asked for is pending (no question, no document
+    /// action, no save dialog): asks about the next document with unsaved
+    /// changes, or, when there is none left, asks the application to
+    /// stop. When the last answer closed nothing (its save failed, or the
+    /// save dialog was cancelled), the window stays: what went wrong is in
+    /// the status bar. True when something changed.
+    pub fn advance_quit(&mut self) -> bool {
+        let Some(Quitting { asked_with, shown }) = self.quitting else {
+            return false;
+        };
+        if self.closing.is_some() || self.doc_action.is_some() {
+            return false;
+        }
+        let asking = self.tabs.iter().filter(|tab| tab.asks_to_close).count();
+        // Neither a document fewer, nor one fewer with unsaved changes:
+        // the last answer did nothing.
+        if asked_with.is_some_and(|(open, unsaved)| self.tabs.len() >= open && asking >= unsaved) {
+            self.quitting = None;
+            return true;
+        }
+        match self.tabs.iter().find(|tab| tab.asks_to_close) {
+            None => {
+                self.quitting = None;
+                self.quit = true;
+            }
+            // Shown first, so the person sees what the question is about
+            // (once: a document that cannot be shown is asked about all
+            // the same).
+            Some(tab) if !tab.active && shown != Some(tab.document) => {
+                let document = tab.document;
+                self.quitting = Some(Quitting {
+                    asked_with,
+                    shown: Some(document),
+                });
+                self.doc_action = Some(DocAction::Activate(document));
+            }
+            Some(tab) => {
+                let document = tab.document;
+                self.quitting = Some(Quitting {
+                    asked_with: Some((self.tabs.len(), asking)),
+                    shown: None,
+                });
+                self.request_close(document);
+            }
+        }
+        true
     }
 
     /// The tabs follow the session; a question about a document that is
@@ -471,13 +567,23 @@ impl Shell {
             return;
         };
         let tokens = self.tokens;
+        let more = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.asks_to_close && tab.document != closing.document)
+            .count();
         let mut hits = Vec::new();
         let mut answer = None;
         let modal = egui::Modal::new(egui::Id::new("craft3d-closing")).show(ui.ctx(), |ui| {
             ui.set_max_width(380.0);
+            let (doing, done) = if closing.quitting {
+                ("quitting", "quit")
+            } else {
+                ("closing", "close")
+            };
             ui.label(
                 egui::RichText::new(format!(
-                    "Save the changes to \"{}\" before closing?",
+                    "Save the changes to \"{}\" before {doing}?",
                     closing.name
                 ))
                 .strong(),
@@ -485,8 +591,18 @@ impl Shell {
             ui.add_space(tokens.inset * 0.4);
             ui.colored_label(
                 color(tokens.text_dim),
-                "The changes are lost if you close without saving.",
+                format!("The changes are lost if you {done} without saving."),
             );
+            if closing.quitting && more > 0 {
+                ui.colored_label(
+                    color(tokens.text_dim),
+                    if more == 1 {
+                        "1 more document has unsaved changes.".to_string()
+                    } else {
+                        format!("{more} more documents have unsaved changes.")
+                    },
+                );
+            }
             ui.add_space(tokens.inset);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: Cancel at the right edge.

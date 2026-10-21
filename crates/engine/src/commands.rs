@@ -89,8 +89,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Deletes a feature.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
-    spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
+    spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
@@ -1818,7 +1818,8 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
 // --------------------------------------------------------------- document
 
 fn document_inspect(session: &mut Session, params: &Value) -> Run {
-    Params::new("document.inspect", params, &[])?;
+    let p = Params::new("document.inspect", params, &["measures"])?;
+    let measures = p.bool("measures")?.unwrap_or(true);
     let index = session.active;
     let open = session.document_mut()?;
     let regen = open.regen();
@@ -1830,20 +1831,25 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         .iter()
         .map(|v| variable_json(&regen, &v.name, unit))
         .collect();
-    let bbox_tess = TessParams {
-        chordal_tolerance: automatic_tolerance(&regen),
-        ..TessParams::default()
-    };
     let mut features = Vec::new();
     let mut bodies = Vec::new();
-    crate::appearance_cmds::measure_all_ahead(
-        doc,
-        &regen,
-        doc.features.iter().filter_map(|feature| {
-            let body = regen.feature(feature.id).and_then(|o| o.own_body())?;
-            Some((feature.id, body))
-        }),
-    );
+    // Measured only when the measures are asked for: first those with a
+    // material together with their inertia (each body's faces integrated
+    // once), then the box's tolerance, from the area of every body.
+    if measures {
+        crate::appearance_cmds::measure_all_ahead(
+            doc,
+            &regen,
+            doc.features.iter().filter_map(|feature| {
+                let body = regen.feature(feature.id).and_then(|o| o.own_body())?;
+                Some((feature.id, body))
+            }),
+        );
+    }
+    let bbox_tess = measures.then(|| TessParams {
+        chordal_tolerance: automatic_tolerance(&regen),
+        ..TessParams::default()
+    });
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -1939,14 +1945,23 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 "vertices": body.vertices.len(),
                 "shells": body.shells.len(),
             });
-            crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body);
-            if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
-                map.insert("volume".into(), mass.volume.into());
-                map.insert("area".into(), mass.area.into());
-                map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
+            if measures {
+                crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body);
+                if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
+                    map.insert("volume".into(), mass.volume.into());
+                    map.insert("area".into(), mass.area.into());
+                    map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
+                }
             }
             if let Some(map) = entry.as_object_mut() {
-                crate::appearance_cmds::physical_fields(map, doc, &regen, feature.id, body, unit);
+                crate::appearance_cmds::physical_fields(
+                    map,
+                    doc,
+                    &regen,
+                    (feature.id, body),
+                    unit,
+                    measures,
+                );
             }
             // What each face is called by the features that come after:
             // a name made of where the face came from, not of its index.
@@ -1974,9 +1989,8 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             }
             // From a tessellation: exact for flat-faced bodies, inside the
             // true box by at most the tolerance for curved ones.
-            if let (Some(map), Ok(mesh)) =
-                (entry.as_object_mut(), tessellate_body(body, &bbox_tess))
-                && let Some((lo, hi)) = mesh.bbox().corners()
+            if let (Some(map), Some(bbox_tess)) = (entry.as_object_mut(), &bbox_tess)
+                && let Some((lo, hi)) = crate::mass::mesh_box_of(body, bbox_tess)
             {
                 map.insert("bbox".into(), json!([vec3(lo), vec3(hi)]));
                 map.insert("bboxTolerance".into(), bbox_tess.chordal_tolerance.into());
@@ -2075,7 +2089,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
                 map.insert("volumeBound".into(), bound.volume.into());
                 map.insert("areaBound".into(), bound.area.into());
             }
-            crate::appearance_cmds::physical_fields(map, doc, &regen, id, body, unit);
+            crate::appearance_cmds::physical_fields(map, doc, &regen, (id, body), unit, true);
             total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
                 (Some(sum), Some(m)) => Some(sum + m),
                 _ => None,

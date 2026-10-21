@@ -23,7 +23,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), autosave and recovery as recovery.list gives them but without looking at the disk again (recovery: the documents a crashed 3DCraft left behind, when a document was last autosaved, the autosave problem if there is one), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with, the angle criterion in degrees (null for none), whether the display quality was coarsened to fit its triangle budget, and refining: true while the viewport shows the quick first picture and the display-quality mesh is still being built), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back), how the viewport was last rendered, and section: where the section plane of state.section lies while it is on (point, normal, into the half that is cut away, and range, the offsets between which the plane passes through the bodies), or lost, why the section was switched off when its plane no longer exists (a face or a datum plane that is gone); null when it is off. tabs: the open documents as the row of tabs above the viewport shows them, in the order of file.list (document: the number file.activate takes, name: the file's name without its extension or Untitled n, path, dirty: unsaved changes, marked on the tab, active, asksToClose: closing it from its tab asks Save, Don't Save or Cancel first, as file.close refuses it without discard); closing: that question while the window asks it ({document, name, path}), else null. A click on a tab runs file.activate, its close button file.close.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), autosave and recovery as recovery.list gives them but without looking at the disk again (recovery: the documents a crashed 3DCraft left behind, when a document was last autosaved, the autosave problem if there is one), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with, the angle criterion in degrees (null for none), whether the display quality was coarsened to fit its triangle budget, and refining: true while the viewport shows the quick first picture and the display-quality mesh is still being built), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back), how the viewport was last rendered, and section: where the section plane of state.section lies while it is on (point, normal, into the half that is cut away, and range, the offsets between which the plane passes through the bodies), or lost, why the section was switched off when its plane no longer exists (a face or a datum plane that is gone); null when it is off. tabs: the open documents as the row of tabs above the viewport shows them, in the order of file.list (document: the number file.activate takes, name: the file's name without its extension or Untitled n, path, dirty: unsaved changes, marked on the tab, active, asksToClose: closing it from its tab asks Save, Don't Save or Cancel first, as file.close refuses it without discard); closing: that question while the window asks it ({document, name, path, quitting: true when the window is closing, see ui.quit}), else null; quitting: true while the window is closing and asks about the documents with unsaved changes one after the other. A click on a tab runs file.activate, its close button file.close.",
     },
     UiMethod {
         name: "ui.set",
@@ -57,8 +57,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.quit",
-        params: "{}",
-        summary: "Closes the application.",
+        params: r#"{"save": "discard|ask|save" = "discard"}"#,
+        summary: "Closes the application. discard (the default): at once, dropping the unsaved changes and their autosaves. ask: as the window's close button does: at once when no document has unsaved changes, otherwise the window asks the person, one document at a time, Save, Don't Save or Cancel (ui.get: closing, with quitting: true, while it asks), and closes once each was saved or dropped; Cancel keeps it. The reply says quitting (closing now) and, while it asks, asking: the document it asks about (null while it first makes that document the active one, so the person sees it; ui.get's closing has it then). save: saves every document with unsaved changes to its own file, then closes; refused, with nothing saved, when one was never saved (save it with file.save and a path first) or a save fails. Not through control_call.",
     },
 ];
 
@@ -69,6 +69,37 @@ struct Fields<'a>(Option<&'a Map<String, Value>>);
 impl<'a> Fields<'a> {
     fn get(&self, key: &str) -> Option<&'a Value> {
         self.0?.get(key)
+    }
+}
+
+/// How `ui.quit` closes the application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuitMode {
+    /// At once, unsaved changes and their autosaves dropped (the default).
+    Discard,
+    /// As the window's close button: the person is asked.
+    Ask,
+    /// Every document with unsaved changes saved to its file first.
+    Save,
+}
+
+/// The `save` of `ui.quit`'s params. Never panics.
+pub fn quit_mode(params: Option<&Value>) -> Result<QuitMode, String> {
+    let fields = fields("ui.quit", params, &["save"])?;
+    match fields.get("save") {
+        None | Some(Value::Null) => Ok(QuitMode::Discard),
+        Some(Value::String(mode)) => match mode.as_str() {
+            "discard" => Ok(QuitMode::Discard),
+            "ask" => Ok(QuitMode::Ask),
+            "save" => Ok(QuitMode::Save),
+            other => {
+                let other: String = other.chars().take(40).collect();
+                Err(format!(
+                    "ui.quit: save is \"discard\", \"ask\" or \"save\", not \"{other}\""
+                ))
+            }
+        },
+        Some(_) => Err("ui.quit: save is \"discard\", \"ask\" or \"save\"".to_string()),
     }
 }
 
@@ -133,13 +164,35 @@ impl Shell {
             "ui.pick" => self.ui_pick(session, params),
             "ui.highlight" => self.ui_highlight(session, params),
             "ui.notice" => self.ui_notice(params),
-            "ui.quit" => fields(method, params, &[]).map(|_| {
-                self.request_quit();
-                json!({ "quitting": true })
-            }),
+            "ui.quit" => self.ui_quit(params),
             _ => return None,
         };
         Some(result)
+    }
+
+    /// `ui.quit` as the shell answers it: `discard` and `ask`. `save`
+    /// needs the files of the documents, which only the desktop
+    /// application writes ([`quit_mode`]).
+    fn ui_quit(&mut self, params: Option<&Value>) -> Result<Value, String> {
+        match quit_mode(params)? {
+            QuitMode::Discard => {
+                self.request_quit();
+                Ok(json!({ "quitting": true }))
+            }
+            QuitMode::Ask => {
+                if self.request_window_close() {
+                    return Ok(json!({ "quitting": true }));
+                }
+                self.advance_quit();
+                Ok(json!({
+                    "quitting": self.quit_requested(),
+                    "asking": self.closing(),
+                }))
+            }
+            QuitMode::Save => {
+                Err("ui.quit: save: \"save\" is done by the desktop window".to_string())
+            }
+        }
     }
 
     fn state_json(&self) -> Result<Value, String> {
@@ -250,6 +303,7 @@ impl Shell {
             "work": self.work(),
             "tabs": self.tabs(),
             "closing": self.closing(),
+            "quitting": self.quitting(),
         }))
     }
 

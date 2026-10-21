@@ -297,8 +297,9 @@ impl Desk {
                 }
             }
             let filed = self.host.pump_files(&mut self.picker);
+            let closing = self.capture.is_none() && self.advance_quit();
             return Turn {
-                changed: answered || filed,
+                changed: answered || filed || closing,
                 quit: self.host.shell.quit_requested(),
             };
         }
@@ -380,6 +381,11 @@ impl Desk {
                 continue;
             }
             if self.pump_files() {
+                changed = true;
+                continue;
+            }
+            // Nothing else to do: the next step of closing the window.
+            if self.capture.is_none() && self.advance_quit() {
                 changed = true;
                 continue;
             }
@@ -542,6 +548,10 @@ impl Desk {
                     if let Ok(Some(report)) = std::panic::catch_unwind(|| report(line, reply)) {
                         host.shell.last_command = Some(report);
                     }
+                    // `ui.quit {save: "save"}` saved everything.
+                    if crate::host::quits(line, reply) {
+                        host.shell.request_quit_saved();
+                    }
                 }
                 (Some(request.reply), reply)
             }
@@ -649,6 +659,39 @@ impl Desk {
             None
         };
         self.host.shell.set_work(work);
+    }
+
+    /// The next step of closing the window ([`Shell::advance_quit`]),
+    /// once the session is here and nothing the last step asked for is
+    /// pending: a document action, the save dialog of Save for a
+    /// document without a file, or the save of the file chosen there.
+    fn advance_quit(&mut self) -> bool {
+        if self.away() || self.host.close_after_save || !self.host.shell.quitting() {
+            return false;
+        }
+        self.host.shell.advance_quit()
+    }
+
+    /// The window's close button: true when the window may close now;
+    /// otherwise it stays and asks about the documents with unsaved
+    /// changes first ([`Shell::request_window_close`]).
+    pub fn window_close(&mut self) -> bool {
+        self.host.shell.request_window_close()
+    }
+
+    /// Whether the autosaves of the documents may go as the application
+    /// ends on purpose: nothing unsaved is left that was not dropped on
+    /// purpose. A document that was changed while the window closed (by
+    /// work that finished after the questions) keeps its autosave, as
+    /// after a crash.
+    pub fn may_end_recovery(&self) -> bool {
+        self.host.shell.quit_discards()
+            || !self
+                .host
+                .session
+                .document_statuses()
+                .iter()
+                .any(|status| status.close_asks)
     }
 
     /// Waits at most `timeout` for the work in progress, so the session is
@@ -838,6 +881,12 @@ impl eframe::App for Viewer {
         };
         if desk.turn().changed {
             // Show what changed, and look for more.
+            ctx.request_repaint();
+        }
+        // The window's close button (or the window manager): the window
+        // stays and asks first when a document has unsaved changes.
+        if ctx.input(|i| i.viewport().close_requested()) && !desk.window_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.request_repaint();
         }
         desk.ask_capture(ctx);
@@ -1090,7 +1139,13 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     if let Ok(mut desk) = desk.try_borrow_mut()
         && desk.settle(SETTLE)
     {
-        desk.host.session.end_recovery();
+        if desk.may_end_recovery() {
+            desk.host.session.end_recovery();
+        } else {
+            // Kept for the next start, written now rather than after the
+            // interval.
+            desk.host.session.autosave_now();
+        }
     }
     ran.map_err(|e| window_error(&eframe::Error::WinitEventLoop(e)))?;
     // eframe ends the loop when the window cannot be made, and keeps the
