@@ -413,8 +413,11 @@ add("cone_apex", lambda: Part.makeCone(10, 0, 15))
 add("box_minus_pin", lambda: box().cut(pin()))
 add("box_plus_ball", lambda: box().fuse(Part.makeSphere(12, V(40, 30, 20))))
 add("box_common_ball", lambda: box().common(Part.makeSphere(25, V(20, 15, 10))))
-add("box_filleted", lambda: box().makeFillet(3, box().Edges))
-add("box_chamfered", lambda: box().makeChamfer(2, box().Edges))
+def blended(how, size):
+    b = box()
+    return getattr(b, how)(size, b.Edges)
+add("box_filleted", lambda: blended("makeFillet", 3))
+add("box_chamfered", lambda: blended("makeChamfer", 2))
 def cut_filleted():
     s = box().cut(pin())
     edges = [e for e in s.Edges if abs(e.BoundBox.ZMax - 20) < 1e-6 and abs(e.BoundBox.ZMin - 20) < 1e-6]
