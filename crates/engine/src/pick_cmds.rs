@@ -46,8 +46,8 @@ use craft3d_render::{Camera, Neighbourhood, Projection, SECTION_FACE, Section, V
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, as view.render}"#,
-        "Says what is at a position of a picture. kind says what the position points at: a vertex when one is near, otherwise an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). A vertex is near when it is within radius pixels and not behind a face; it wins over an edge and is given as vertex, with the same fields: name is its own persistent name or null, faces the names of the faces that meet in it, index its index under vertices of document.edges. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back, and gives the chordal tolerance of the mesh it looked at (tolerance). section cuts the picture open as in view.render (the same object); the answer is then of what that picture shows: never a face that is cut away, and where the cap of the section is in front, kind is section, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane.", doc: true, view_pick),
+    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, as view.render, "all": boolean = false}"#,
+        "Says what is at a position of a picture. kind says what the position points at: a vertex when one is near, otherwise an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). A vertex is near when it is within radius pixels and not behind a face; it wins over an edge and is given as vertex, with the same fields: name is its own persistent name or null, faces the names of the faces that meet in it, index its index under vertices of document.edges. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back, and gives the chordal tolerance of the mesh it looked at (tolerance). section cuts the picture open as in view.render (the same object); the answer is then of what that picture shows: never a face that is cut away, and where the cap of the section is in front, kind is section, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane. With all: true, hits lists every face along the ray through the position, front to back, one entry per face ({feature, name, face, faceIndex, point, depth}: the body, the face's persistent name, the nearest point of the face on the ray and its depth): what a click goes through, the first being the face the pick gives; faces a section cuts away are left out.", doc: true, view_pick),
 ];
 
 /// Most face names a vertex is referred to by.
@@ -248,6 +248,20 @@ impl ScenePointed {
     }
 }
 
+impl ScenePick {
+    /// As `view.pick` and `ui.pick` list it under `hits`.
+    pub fn json(&self) -> Value {
+        json!({
+            "feature": self.feature,
+            "name": self.body,
+            "face": self.face,
+            "faceIndex": self.face_index,
+            "point": vec3(self.point),
+            "depth": self.depth,
+        })
+    }
+}
+
 /// The edges of a scene a name, or the faces they lie between, mean.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SceneEdges {
@@ -401,6 +415,105 @@ impl Scene {
         Ok((Some(pick), None))
     }
 
+    /// Every face [`Self::pick_cut`] finds under the position when the
+    /// faces in front of it are taken away, front to back, one per face
+    /// (`craft3d_render::pick_all`): what a click goes through. Faces a
+    /// section cuts away are left out; the section's cap is not listed.
+    pub fn pick_all_cut(
+        &self,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        section: Option<&Section>,
+    ) -> Result<Vec<ScenePick>, String> {
+        let hits = craft3d_render::pick_all(&self.mesh, camera, width, height, x, y, section)
+            .map_err(|e| e.to_string())?;
+        let axes = camera.axes().ok();
+        Ok(hits
+            .into_iter()
+            .filter_map(|hit| {
+                let (body, index) = self.face_of(hit.face)?;
+                let depth = axes
+                    .as_ref()
+                    .map_or(hit.depth, |axes| (hit.point - axes.eye).dot(axes.forward));
+                Some(ScenePick {
+                    feature: body.feature.clone(),
+                    body: body.name.clone(),
+                    face: body.face_names.get(index).cloned(),
+                    aliases: body.face_aliases.get(index).cloned().unwrap_or_default(),
+                    face_index: index,
+                    face_id: hit.face,
+                    point: hit.point,
+                    depth,
+                })
+            })
+            .collect())
+    }
+
+    /// What lies wholly inside the rectangle `rect` (least x, least y,
+    /// greatest x, greatest y, in pixels of a picture of `width` ×
+    /// `height` seen from `camera`): every point of the mesh within it,
+    /// seen or hidden. Bodies wholly inside come as (their place in
+    /// [`Scene::bodies`], `None`); of the other bodies, the faces wholly
+    /// inside come as (body, `Some`(the face's place among its faces)).
+    /// In the scene's order. A point behind the eye is never inside.
+    pub fn inside_rect(
+        &self,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        rect: [f64; 4],
+    ) -> Result<Vec<(usize, Option<usize>)>, String> {
+        let viewpoint = Viewpoint::new(camera, width, height).map_err(|e| e.to_string())?;
+        let [x0, y0, x1, y1] = rect;
+        let within = |p: Vec3| {
+            viewpoint
+                .project(p)
+                .is_some_and(|[x, y, _]| x >= x0 && x <= x1 && y >= y0 && y <= y1)
+        };
+        // Per face id: whether every corner of its triangles is inside.
+        let mut inside: std::collections::BTreeMap<u32, bool> = std::collections::BTreeMap::new();
+        for (tri, &face) in self.mesh.triangles.iter().zip(&self.mesh.face_ids) {
+            let all = tri.iter().all(|&k| {
+                self.mesh
+                    .positions
+                    .get(k as usize)
+                    .is_some_and(|&p| within(p))
+            });
+            let entry = inside.entry(face).or_insert(true);
+            *entry = *entry && all;
+        }
+        let mut out = Vec::new();
+        for (index, body) in self.bodies.iter().enumerate() {
+            let faces: Vec<(u32, bool)> = inside
+                .range(body.first_face_id..)
+                .take_while(|(id, _)| {
+                    self.face_of(**id)
+                        .is_some_and(|(b, _)| std::ptr::eq(b, body))
+                })
+                .map(|(id, all)| (*id, *all))
+                .collect();
+            if faces.is_empty() {
+                continue;
+            }
+            if faces.iter().all(|(_, all)| *all) {
+                out.push((index, None));
+                continue;
+            }
+            for (id, all) in faces {
+                if all
+                    && !body.face_names.is_empty()
+                    && let Some(face) = id.checked_sub(body.first_face_id)
+                {
+                    out.push((index, usize::try_from(face).ok()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The faces `face` names: a persistent name from `document.inspect`
     /// (`faceNames`, or an alias from `faceAliases`). `feature` says which
     /// body, by the id of its feature (`F3` or `3`) or by its name; it is
@@ -433,24 +546,27 @@ impl Scene {
         if let Some(feature) = feature {
             let shown: String = feature.chars().take(60).collect();
             // A name first, as the commands do, then an id with or
-            // without its F.
-            let body = self
-                .bodies
-                .iter()
-                .find(|body| body.name == feature)
-                .or_else(|| {
-                    let digits = feature.strip_prefix('F').unwrap_or(feature);
-                    let id = digits.parse::<u64>().ok()?;
-                    self.bodies
-                        .iter()
-                        .find(|body| body.feature == format!("F{id}"))
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "there is no body of a feature `{shown}`; the bodies: {}",
-                        self.body_list()
-                    )
-                })?;
+            // without its F; but text written as an id (`F3`) is that id,
+            // never a body an older file named so (rule 4).
+            let by_id = || {
+                let digits = feature.strip_prefix('F').unwrap_or(feature);
+                let id = digits.parse::<u64>().ok()?;
+                self.bodies
+                    .iter()
+                    .find(|body| body.feature == format!("F{id}"))
+            };
+            let by_name = || self.bodies.iter().find(|body| body.name == feature);
+            let body = if craft3d_doc::looks_like_id(feature) {
+                by_id()
+            } else {
+                by_name().or_else(by_id)
+            }
+            .ok_or_else(|| {
+                format!(
+                    "there is no body of a feature `{shown}`; the bodies: {}",
+                    self.body_list()
+                )
+            })?;
             let ids = ids_in(body);
             if ids.is_empty() {
                 return Err(format!(
@@ -701,17 +817,20 @@ impl Scene {
                     .iter()
                     .position(|body| body.feature == format!("F{id}"))
             };
-            let index = self
-                .bodies
-                .iter()
-                .position(|body| body.name == feature)
-                .or_else(by_id)
-                .ok_or_else(|| {
-                    format!(
-                        "there is no body of a feature `{shown}`; the bodies: {}",
-                        self.body_list()
-                    )
-                })?;
+            // Written as an id (`F3`), it is that id: never a body that
+            // an older file named `F3` (rule 4).
+            let by_name = || self.bodies.iter().position(|body| body.name == feature);
+            let index = if craft3d_doc::looks_like_id(feature) {
+                by_id()
+            } else {
+                by_name().or_else(by_id)
+            }
+            .ok_or_else(|| {
+                format!(
+                    "there is no body of a feature `{shown}`; the bodies: {}",
+                    self.body_list()
+                )
+            })?;
             let (found, name) = self
                 .bodies
                 .get(index)
@@ -1186,8 +1305,10 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
             "camera",
             "section",
             "tolerance",
+            "all",
         ],
     )?;
+    let all = p.bool("all")?.unwrap_or(false);
     let x = p.number("x")?.ok_or_else(|| p.missing("x"))?;
     let y = p.number("y")?.ok_or_else(|| p.missing("y"))?;
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
@@ -1258,6 +1379,15 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
     pointed.describe(map);
     if pointed.kind().is_none() {
         map.insert("outside".into(), outside.into());
+    }
+    if all {
+        let hits = scene
+            .pick_all_cut(&camera, w, h, x, y, section.as_ref())
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+        map.insert(
+            "hits".into(),
+            hits.iter().map(ScenePick::json).collect::<Vec<_>>().into(),
+        );
     }
     Ok(result)
 }

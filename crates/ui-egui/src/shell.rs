@@ -26,6 +26,7 @@ mod controls;
 mod icons;
 mod layout;
 pub mod number_field;
+mod selection;
 mod tabs;
 pub use controls::ControlsLayout;
 pub use layout::{ControlWidths, controls_layout, triad_side};
@@ -253,6 +254,8 @@ struct FrameKey {
     highlight_edge: Option<EdgeRef>,
     /// The vertex shown highlighted.
     highlight_vertex: Option<VertexRef>,
+    /// What is drawn for the selection ([`Shell::selection_drawn`]).
+    selection: u64,
     /// How opaque the bodies are.
     opacity: f64,
     /// The plane the picture is cut open with.
@@ -478,6 +481,8 @@ pub struct Shell {
     controls_layout: Option<ControlsLayout>,
     /// Where the items of the status bar were drawn.
     status_hits: Vec<(StatusSlot, egui::Rect)>,
+    /// The selection as the window draws and changes it.
+    select: selection::Selecting,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -543,6 +548,8 @@ pub enum StatusSlot {
     Path,
     /// When it was autosaved, or why not.
     Autosave,
+    /// What is selected: "3 bodies, 2 faces selected".
+    Selection,
     /// The last command's name, and what it answered.
     Command,
     Answer,
@@ -553,10 +560,11 @@ pub enum StatusSlot {
 /// The order in which the items give way: each is first elided to its
 /// least width in this order, then left out in this order. The units go
 /// last, the answer to the last command first.
-pub const STATUS_YIELD: [StatusSlot; 6] = [
+pub const STATUS_YIELD: [StatusSlot; 7] = [
     StatusSlot::Answer,
     StatusSlot::Command,
     StatusSlot::Autosave,
+    StatusSlot::Selection,
     StatusSlot::Path,
     StatusSlot::Render,
     StatusSlot::Units,
@@ -728,6 +736,7 @@ impl Shell {
             controls_layout: None,
             status_hits: Vec::new(),
             zoom_anchor: None,
+            select: selection::Selecting::default(),
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -1083,12 +1092,16 @@ impl Shell {
     /// The faces the viewport shows highlighted, as the renderers take
     /// them.
     pub fn face_highlight(&self, scene: Option<&Scene>) -> Highlight {
-        self.state
-            .highlight
-            .as_ref()
-            .map_or(Highlight::NONE, |face| {
-                viewport::face_highlight(scene, face.feature.as_deref(), &face.face, &self.tokens)
-            })
+        let mut ids: Vec<u32> = self.selection_faces().collect();
+        if let (Some(face), Some(scene)) = (&self.state.highlight, scene)
+            && let Ok(found) = scene.faces_named(face.feature.as_deref(), &face.face)
+        {
+            ids.extend(found.ids);
+        }
+        if ids.is_empty() {
+            return Highlight::NONE;
+        }
+        Highlight::new(self.tokens.face_highlight, ids).0
     }
 
     /// What the viewport draws over the picture to point at something
@@ -1103,6 +1116,7 @@ impl Shell {
             self.state.show.datums,
             self.state.show.sketches,
         )
+        .with_selection(self.selection_marks())
     }
 
     /// The plane the viewport's picture is cut open with, as the
@@ -1377,6 +1391,7 @@ impl Shell {
             self.state.highlight_edge = None;
             self.state.highlight_vertex = None;
             self.state.picked = None;
+            self.forget_selection();
             self.framed = Bbox3::EMPTY;
             // The section stays as it is set: it is resolved again when
             // there is a document to cut.
@@ -1384,6 +1399,7 @@ impl Shell {
             return None;
         };
         self.resolve_section(session, &scene);
+        self.sync_selection(session, &scene);
         if let Some(first) = scene.problems.first() {
             self.problem = Some(first.clone());
         }
@@ -1590,6 +1606,13 @@ impl Shell {
                 ui.ctx().request_repaint();
             }
         }
+        // What the mouse selected, now that the session is here.
+        if let Some(session) = session
+            && self.apply_selection_requests(session)
+        {
+            self.sync(session);
+            ui.ctx().request_repaint();
+        }
         self.closing_dialog(ui);
     }
 
@@ -1785,6 +1808,14 @@ impl Shell {
                 "no document".to_string(),
                 dim,
             )),
+        }
+        if let Some((text, gone)) = self.selection_status() {
+            let tint = if gone {
+                color(tokens.chrome_failed)
+            } else {
+                color(tokens.chrome_text)
+            };
+            items.push(StatusItem::elided(StatusSlot::Selection, text, tint));
         }
         if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
             let tint = if problem {
@@ -2013,17 +2044,27 @@ impl Shell {
         // A click on a cause selects that feature (it does not toggle: the
         // point is to get there).
         if let Some(id) = followed {
-            self.state.selected_feature = Some(id);
+            self.state.selected_feature = Some(id.clone());
+            self.queue_select(serde_json::json!({"items": [{"kind": "feature", "feature": id}]}));
             return;
         }
-        // Clicking the selected row again clears the selection. Which row
-        // is highlighted is view state: nothing in the document changes.
+        // A click on a row selects that feature; Shift+click adds it or
+        // takes it out; clicking the selected row again clears the
+        // selection. What is selected is view state: nothing in the
+        // document changes.
         if let Some(id) = clicked {
-            self.state.selected_feature = if self.state.selected_feature.as_ref() == Some(&id) {
-                None
+            let shift = ui.input(|i| i.modifiers.shift);
+            let only = self.state.selected_feature.as_ref() == Some(&id)
+                && self.selection().items.len() <= 1;
+            let request = if shift {
+                serde_json::json!({"items": [{"kind": "feature", "feature": id}], "mode": "toggle"})
+            } else if only {
+                serde_json::json!({"mode": "clear"})
             } else {
-                Some(id)
+                serde_json::json!({"items": [{"kind": "feature", "feature": id}]})
             };
+            self.state.selected_feature = if only && !shift { None } else { Some(id) };
+            self.queue_select(request);
         }
     }
 
@@ -2125,20 +2166,46 @@ impl Shell {
 
         let turning = self.advance_turn(ui, scene);
         let moving = self.pointer(ui, &response, rect, scene) || resized || turning;
-        // A click that was not a drag points at what is under it.
-        if response.clicked()
-            && let Some(at) = response.interact_pointer_pos()
-        {
-            let [width, height] = self.size;
+        let [width, height] = self.size;
+        let pixel = |at: egui::Pos2| {
             let across = |from: f32, to: f32, at: f32, pixels: u32| {
                 f64::from(at - from) / f64::from((to - from).max(f32::MIN_POSITIVE))
                     * f64::from(pixels)
             };
-            let x = across(rect.left(), rect.right(), at.x, width);
-            let y = across(rect.top(), rect.bottom(), at.y, height);
+            (
+                across(rect.left(), rect.right(), at.x, width),
+                across(rect.top(), rect.bottom(), at.y, height),
+            )
+        };
+        // A click that was not a drag points at what is under it, and
+        // selects it (`selection.rs`).
+        if response.clicked()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let (x, y) = pixel(at);
+            let keys = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+            let double = response.double_clicked();
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
-            let _ = self.pick(scene, x, y, None, None, true);
+            if let Ok(found) = self.pick(scene, x, y, None, None, true) {
+                self.click_select(scene, x, y, &found, (keys.0, keys.1, double));
+            }
+            ui.ctx().request_repaint();
+        }
+        // A right click lists every face under it.
+        if response.secondary_clicked()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let (x, y) = pixel(at);
+            let shift = ui.input(|i| i.modifiers.shift);
+            self.open_other_menu(scene, x, y, at, shift);
+            ui.ctx().request_repaint();
+        }
+        if response.contains_pointer()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.escape_selection();
             ui.ctx().request_repaint();
         }
 
@@ -2155,6 +2222,7 @@ impl Shell {
             highlight: self.face_highlight(scene),
             highlight_edge: self.state.highlight_edge.clone(),
             highlight_vertex: self.state.highlight_vertex.clone(),
+            selection: self.selection_drawn(),
             opacity: self.opacity(),
             section: self.section(),
             datums: self.state.show.datums,
@@ -2267,6 +2335,8 @@ impl Shell {
             self.work_plate(ui, &painter, inner, work);
         }
 
+        // The box being dragged, and the "select other" list.
+        self.paint_selecting(ui);
         // The view cube, the triad and the controls over the viewport.
         self.viewport_controls(ui, rect, scene);
         if let Some(problem) = self.problem().map(str::to_string) {
@@ -2351,6 +2421,11 @@ impl Shell {
         scene: Option<&Scene>,
     ) -> bool {
         let mut moving = false;
+        // Ctrl and a drag draw a box to select with, not a turn.
+        if self.box_drag(ui, response) {
+            ui.ctx().request_repaint();
+            return false;
+        }
         if response.drag_started() {
             self.drag_from = Some(self.state.camera);
         }
@@ -2497,19 +2572,23 @@ impl Shell {
     #[cfg(not(target_arch = "wasm32"))]
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
         let cut = self.section_cut().filter(|_| key.section.is_some());
+        let chosen = self.selection_marks().clone();
         let Some(direct) = &mut self.direct else {
             return false;
         };
         direct.set_highlight(key.highlight);
         direct.set_opacity(key.opacity);
-        direct.set_marks(marks_of(
-            scene,
-            key.highlight_edge.as_ref(),
-            key.highlight_vertex.as_ref(),
-            cut,
-            key.datums,
-            key.sketches,
-        ));
+        direct.set_marks(
+            marks_of(
+                scene,
+                key.highlight_edge.as_ref(),
+                key.highlight_vertex.as_ref(),
+                cut,
+                key.datums,
+                key.sketches,
+            )
+            .with_selection(&chosen),
+        );
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -2580,6 +2659,7 @@ impl Shell {
             self.scheduler.forget();
         }
         let cut = self.section_cut().filter(|_| key.section.is_some());
+        let chosen = self.selection_marks().clone();
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
             camera: key.camera,
@@ -2594,7 +2674,8 @@ impl Shell {
                 cut.clone(),
                 key.datums,
                 key.sketches,
-            ),
+            )
+            .with_selection(&chosen),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),

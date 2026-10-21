@@ -2111,12 +2111,19 @@ fn a_click_in_the_direct_viewport_picks_and_highlights_what_the_oracle_shows() {
             }
         }
     }
-    // ui.highlight with null clears it on the device too.
+    // ui.highlight with null clears it on the device too. A click selects
+    // what it points at too (2026-10-21): the selection is cleared as well.
     call(
         &mut shell,
         &mut session,
         "ui.highlight",
         json!({"face": null}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"mode": "clear"}),
     );
     window.frame(&mut shell, &mut session, Vec::new());
     let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();

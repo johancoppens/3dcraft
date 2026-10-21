@@ -1472,6 +1472,27 @@ fn check_feature_name(name: &str) -> Result<(), DocError> {
     Ok(())
 }
 
+/// [`check_feature_name`] for a name being given now (a feature added or
+/// renamed): also not `F` followed by digits, the form of a feature's id,
+/// so that `F3` always means the feature with id 3 and a reference by id
+/// can never be taken for another feature by its name (2026-10-21). A
+/// file that already has such a name still opens.
+fn check_new_feature_name(name: &str) -> Result<(), DocError> {
+    check_feature_name(name)?;
+    if looks_like_id(name) {
+        return Err(DocError::InvalidFeatureName(
+            "it must not be F followed by digits, which is how a feature's id is written",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `text` is written as a feature id: `F` and one or more digits.
+pub fn looks_like_id(text: &str) -> bool {
+    text.strip_prefix('F')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
 impl Document {
     pub fn new(units: Units) -> Self {
         Self {
@@ -1843,7 +1864,7 @@ impl Document {
         }
         let name = match name {
             Some(name) => {
-                check_feature_name(name)?;
+                check_new_feature_name(name)?;
                 if self.feature_by_name(name).is_some() {
                     return Err(DocError::DuplicateFeatureName(name.to_string()));
                 }
@@ -1873,7 +1894,7 @@ impl Document {
     }
 
     pub fn rename_feature(&mut self, id: FeatureId, name: &str) -> Result<(), DocError> {
-        check_feature_name(name)?;
+        check_new_feature_name(name)?;
         if self.features.iter().any(|f| f.name == name && f.id != id) {
             return Err(DocError::DuplicateFeatureName(name.to_string()));
         }

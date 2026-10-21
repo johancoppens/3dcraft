@@ -40,6 +40,8 @@ mod recovery_store;
 mod replay_cmds;
 mod scene;
 mod section;
+mod select_cmds;
+mod selection;
 mod sheet_cmds;
 mod sketch_cmds;
 mod sketch_path_cmds;
@@ -75,6 +77,10 @@ pub use scene::{
     SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
+pub use selection::{
+    MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
+    summary as selection_summary,
+};
 pub use typed::TypedKind;
 pub use workspace::{Access, Workspace};
 
@@ -147,6 +153,9 @@ pub(crate) struct OpenDocument {
     /// What the last regeneration found per feature, so the next one
     /// rebuilds only what changed.
     pub(crate) cache: craft3d_regen::RegenCache,
+    /// What is selected in it: window state, not saved and not undone
+    /// (`selection.rs`).
+    pub(crate) selection: selection::Selection,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -185,6 +194,7 @@ impl OpenDocument {
             recovered: None,
             regen: None,
             cache: new_cache(),
+            selection: selection::Selection::default(),
         }
     }
 
@@ -338,6 +348,7 @@ impl Session {
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
                 pick_cmds::SPECS,
+                select_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
             ]

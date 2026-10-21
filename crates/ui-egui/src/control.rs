@@ -23,22 +23,27 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), autosave and recovery as recovery.list gives them but without looking at the disk again (recovery: the documents a crashed 3DCraft left behind, when a document was last autosaved, the autosave problem if there is one), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with, the angle criterion in degrees (null for none), whether the display quality was coarsened to fit its triangle budget, and refining: true while the viewport shows the quick first picture and the display-quality mesh is still being built), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back), how the viewport was last rendered, and section: where the section plane of state.section lies while it is on (point, normal, into the half that is cut away, and range, the offsets between which the plane passes through the bodies), or lost, why the section was switched off when its plane no longer exists (a face or a datum plane that is gone); null when it is off. tabs: the open documents as the row of tabs above the viewport shows them, in the order of file.list (document: the number file.activate takes, name: the file's name without its extension or Untitled n, path, dirty: unsaved changes, marked on the tab, active, asksToClose: closing it from its tab asks Save, Don't Save or Cancel first, as file.close refuses it without discard); closing: that question while the window asks it ({document, name, path, quitting: true when the window is closing}), else null; quitting: true while the window is closing and asks about the documents with unsaved changes one after the other. A click on a tab runs file.activate, its close button file.close.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), autosave and recovery as recovery.list gives them but without looking at the disk again (recovery: the documents a crashed 3DCraft left behind, when a document was last autosaved, the autosave problem if there is one), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with, the angle criterion in degrees (null for none), whether the display quality was coarsened to fit its triangle budget, and refining: true while the viewport shows the quick first picture and the display-quality mesh is still being built), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back), how the viewport was last rendered, and section: where the section plane of state.section lies while it is on (point, normal, into the half that is cut away, and range, the offsets between which the plane passes through the bodies), or lost, why the section was switched off when its plane no longer exists (a face or a datum plane that is gone); null when it is off. selection: what is selected, as select.get gives it (items, count, summary, dropped). tabs: the open documents as the row of tabs above the viewport shows them, in the order of file.list (document: the number file.activate takes, name: the file's name without its extension or Untitled n, path, dirty: unsaved changes, marked on the tab, active, asksToClose: closing it from its tab asks Save, Don't Save or Cancel first, as file.close refuses it without discard); closing: that question while the window asks it ({document, name, path, quitting: true when the window is closing}), else null; quitting: true while the window is closing and asks about the documents with unsaved changes one after the other. A click on a tab runs file.activate, its close button file.close.",
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 2e-4, "maxTriangles": integer = 1000000, "angle": degrees = 12}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null, "transparency": number from 0 to 0.9 = 0, "section": {"on": boolean, "plane": "xy|yz|zx" or a datum plane or a face name, "feature": id or name, "point": [x, y, z], "normal": [x, y, z], "offset": number, "flip": boolean}, "show": {"datums": boolean = true, "sketches": boolean = true}}"#,
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null (selects that feature, as ui.select does; null takes the features out of the selection), "notice": string, "quality": {"chordal": fraction of the model's size = 2e-4, "maxTriangles": integer = 1000000, "angle": degrees = 12}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null, "transparency": number from 0 to 0.9 = 0, "section": {"on": boolean, "plane": "xy|yz|zx" or a datum plane or a face name, "feature": id or name, "point": [x, y, z], "normal": [x, y, z], "offset": number, "flip": boolean}, "show": {"datums": boolean = true, "sketches": boolean = true}}"#,
         summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size and an angle criterion of angle degrees (no chord of an edge turns its tangent, no side of a triangle the surface's normal, by more than that unless it is shorter than the tolerance, so small holes stay round; 0 for none), coarsened until the scene has at most maxTriangles triangles but never beyond the quick first picture's tolerance (1e-3 of the diagonal of the model's box), which the window shows while the mesh is refined. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); transparency is how see-through the bodies are drawn (0: opaque; up to 0.9): the front surface is blended over the one behind it, so that inner faces, holes and cavities show, and the hidden parts of edges are drawn dimmed; ui.screenshot shows it too, and a pick still gives the front-most face. section cuts the viewport's picture open with a plane, to look inside a shell, a pocket or a cavity; it is a view, the document does not change. The plane is plane (xy, yz or zx, a datum plane by its feature's id or name, or a flat face by its persistent name, with feature to say which body) or point and normal, moved by offset along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body, so a negative offset cuts into it) and flip keeps the other half. Where the plane passes through a body the cut is closed with a flat cap in a colour of its own, edges end at the plane and the outline of the cut is drawn as edges. Setting plane replaces point and normal and the other way round; on with no plane at all is xy. A plane that means nothing (an unknown name, a face that is not flat, a normal without direction) is an error and changes nothing; ui.get says under section where the plane lies and between which offsets it passes through the model. ui.screenshot and ui.pick follow the section: a pick gives what is seen, never a face that is cut away, and on the cap kind is section. show says what the viewport draws besides the bodies and their edges: datums false hides the datum planes, axes and points, sketches false the sketches (their lines and points); the toggles over the viewport set the same fields, and ui.screenshot follows them. picked, the last click, cannot be set.",
     },
     UiMethod {
         name: "ui.pick",
-        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false}"#,
-        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera and cut open by the viewport's section when that is on (then kind is section where the cap of the section is in front, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane): kind (vertex when a vertex is near, otherwise edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between), or vertex, with the same fields, when a vertex in sight is within radius pixels (faces: the faces that meet in it; index: its index under vertices of document.edges). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the vertex (state.highlightVertex), or else the edge (state.highlightEdge), or else the face (state.highlight); a pick on nothing clears them. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
+        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false, "all": boolean = false, "shift": boolean = false, "alt": boolean = false}"#,
+        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera and cut open by the viewport's section when that is on (then kind is section where the cap of the section is in front, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane): kind (vertex when a vertex is near, otherwise edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between), or vertex, with the same fields, when a vertex in sight is within radius pixels (faces: the faces that meet in it; index: its index under vertices of document.edges). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the vertex (state.highlightVertex), or else the edge (state.highlightEdge), or else the face (state.highlight); a pick on nothing clears them. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last. A click also selects (ui.select, select.get): what it points at (the vertex, else the edge, else the face) replaces the selection, nothing clears it; with shift (Shift held) it is toggled instead; a click again on the same spot (within 3 pixels, the camera and the model unchanged), or with alt (Alt held), selects the next face behind the last one along the ray, going round to the front after the last, and highlights it; the result then has selection, as select.get gives it. With all, hits lists every face along the ray front to back, as view.pick gives it (the faces a right click in the viewport lists to choose from).",
     },
     UiMethod {
         name: "ui.highlight",
         params: r#"{"face": face name or null, "edge": edge name, "between": [face name, face name], "vertex": vertex name, "corner": [face name, ...], "feature": id or name = the body that has it}"#,
         summary: "Shows a face, an edge or a vertex highlighted in the viewport; one of face, edge, between, vertex and corner. face is a face's persistent name from document.inspect (faceNames, or an alias). edge is an edge's own persistent name (name in document.edges); between names an edge by the two faces it lies between, as document.edges takes it (the same name twice for a seam), and means every edge between them. vertex is a vertex's own persistent name (name under vertices in document.edges); corner names a vertex by faces that meet in it (one to 16 names) and means every vertex in which all of them meet. feature says which body when several have one of that name. face: null removes every highlight. Returns the highlight as it was set (highlight: {feature, face} for a face, highlightEdge: {feature, edge, between} for an edge, highlightVertex: {feature, vertex, corner} for a vertex; the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name) or how many edges or vertices are meant (edges, vertices). A name no body has is an error and changes nothing.",
+    },
+    UiMethod {
+        name: "ui.select",
+        params: r#"{"items": [{"kind": "body|face|edge|vertex|feature|sketch|datum", "name": string, "feature": id or name}], "names": [string], "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
+        summary: "Sets the selection the window shows, as the command select.set does (the same selection: the window's clicks change it too), and returns it as select.get does. Selected bodies and faces light up in the selection colour, their outlines and selected edges and vertices are drawn over the picture (dimmed where something is in front), the status bar counts them (\"3 bodies, 2 faces selected\") and the feature list marks the first selected feature. ui.get gives it under selection. select.query with then selects by description.",
     },
     UiMethod {
         name: "ui.fit",
@@ -163,6 +168,7 @@ impl Shell {
             "ui.screenshot" => self.ui_screenshot(session, params),
             "ui.pick" => self.ui_pick(session, params),
             "ui.highlight" => self.ui_highlight(session, params),
+            "ui.select" => self.ui_select(session, params),
             "ui.notice" => self.ui_notice(params),
             "ui.quit" => self.ui_quit(params),
             _ => return None,
@@ -304,6 +310,7 @@ impl Shell {
             "tabs": self.tabs(),
             "closing": self.closing(),
             "quitting": self.quitting(),
+            "selection": self.selection().json(),
         }))
     }
 
@@ -320,6 +327,27 @@ impl Shell {
         let sets_section = patch.get("section").is_some();
         if sets_section {
             self.clear_section_lost();
+        }
+        // The selected feature is the selection's first feature: setting
+        // it selects that feature, null takes the features out.
+        if let Some(chosen) = patch.get("selectedFeature") {
+            let request = match chosen {
+                Value::String(id) => json!({"items": [{"kind": "feature", "feature": id}]}),
+                _ => {
+                    let features: Vec<Value> = self
+                        .selection()
+                        .items
+                        .iter()
+                        .filter(|item| !item.kind.is_entity())
+                        .map(craft3d_engine::SelectionItem::json)
+                        .collect();
+                    json!({"items": features, "mode": "remove"})
+                }
+            };
+            // A feature that does not exist is dropped below, as before.
+            if session.execute("select.set", &request).is_err() {
+                self.state.selected_feature = None;
+            }
         }
         // A selection that names no feature is dropped here, not later.
         let scene = self.sync(session);
@@ -361,6 +389,24 @@ impl Shell {
         Ok(json!({ "camera": self.state_json()?.get("camera") }))
     }
 
+    fn ui_select(
+        &mut self,
+        session: &mut Session,
+        params: Option<&Value>,
+    ) -> Result<Value, String> {
+        let method = "ui.select";
+        fields(method, params, &["items", "names", "mode"])?;
+        let params = params.cloned().unwrap_or(Value::Null);
+        let result = session.execute("select.set", &params).map_err(|e| {
+            format!(
+                "{method}: {}",
+                e.message().trim_start_matches("select.set: ")
+            )
+        })?;
+        self.sync(session);
+        Ok(result)
+    }
+
     fn ui_notice(&mut self, params: Option<&Value>) -> Result<Value, String> {
         let map = fields("ui.notice", params, &["text"])?;
         let Some(Value::String(text)) = map.get("text") else {
@@ -377,7 +423,9 @@ impl Shell {
         let map = fields(
             method,
             params,
-            &["x", "y", "width", "height", "radius", "select"],
+            &[
+                "x", "y", "width", "height", "radius", "select", "all", "shift", "alt",
+            ],
         )?;
         let number = |key: &str| match map.get(key) {
             None | Some(Value::Null) => Err(format!("{method}: missing parameter `{key}`")),
@@ -404,11 +452,19 @@ impl Shell {
                     })?,
             ),
         };
-        let select = match map.get("select") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(select)) => *select,
-            Some(_) => return Err(format!("{method}: `select` must be true or false")),
+        let flag = |key: &str| match map.get(key) {
+            None | Some(Value::Null) => Ok(false),
+            Some(Value::Bool(on)) => Ok(*on),
+            Some(_) => Err(format!("{method}: `{key}` must be true or false")),
         };
+        let select = flag("select")?;
+        let all = flag("all")?;
+        let (shift, alt) = (flag("shift")?, flag("alt")?);
+        if (shift || alt) && !select {
+            return Err(format!(
+                "{method}: `shift` and `alt` are keys held with a click; give `select`: true too"
+            ));
+        }
         let scene = self.sync(session);
         let Some(scene) = scene else {
             return Err(match self.problem() {
@@ -439,6 +495,29 @@ impl Shell {
         let pointed = self
             .pick(Some(&scene), px, py, Some(size), pick_radius, select)
             .map_err(|e| format!("{method}: {e}"))?;
+        let hits = if all {
+            let [w, h] = size;
+            let hits = scene
+                .pick_all_cut(
+                    &self.state.camera.to_render(),
+                    w,
+                    h,
+                    px,
+                    py,
+                    self.section().as_ref(),
+                )
+                .map_err(|e| format!("{method}: {e}"))?;
+            Some(hits)
+        } else {
+            None
+        };
+        if select {
+            // A click selects too (Shift: toggles; Alt or the same spot
+            // again: the next face behind).
+            self.click_select(Some(&scene), px, py, &pointed, (shift, alt, false));
+            self.apply_selection_requests(session);
+            self.sync(session);
+        }
         let outside = !(x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height));
         let mut result = json!({
             "x": x,
@@ -451,11 +530,21 @@ impl Shell {
             if pointed.kind().is_none() {
                 map.insert("outside".into(), outside.into());
             }
+            if let Some(hits) = &hits {
+                map.insert(
+                    "hits".into(),
+                    hits.iter()
+                        .map(craft3d_engine::ScenePick::json)
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+            }
             if select {
                 let state = self.state_json()?;
                 for key in ["picked", "highlight", "highlightEdge", "highlightVertex"] {
                     map.insert(key.into(), state.get(key).cloned().unwrap_or(Value::Null));
                 }
+                map.insert("selection".into(), self.selection().json());
             }
         }
         Ok(result)

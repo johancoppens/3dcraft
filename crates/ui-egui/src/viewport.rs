@@ -246,6 +246,34 @@ impl Marks {
         self.lines.is_empty() && self.points.is_empty()
     }
 
+    /// These with the selection's marks `chosen` added, leaving out the
+    /// lines and points these have already: what was clicked last is
+    /// both pointed at and selected, and is drawn once.
+    pub fn with_selection(mut self, chosen: &Marks) -> Marks {
+        if chosen.lines.is_empty() && chosen.points.is_empty() {
+            return self;
+        }
+        let key = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        let lines: std::collections::BTreeSet<_> =
+            self.lines.iter().map(|&[a, b]| (key(a), key(b))).collect();
+        let points: std::collections::BTreeSet<_> = self.points.iter().map(|&p| key(p)).collect();
+        self.lines.extend(
+            chosen
+                .lines
+                .iter()
+                .filter(|&&[a, b]| !lines.contains(&(key(a), key(b))))
+                .copied(),
+        );
+        self.points.extend(
+            chosen
+                .points
+                .iter()
+                .filter(|&&p| !points.contains(&key(p)))
+                .copied(),
+        );
+        self
+    }
+
     /// Both together.
     pub fn with(mut self, other: Marks) -> Marks {
         self.lines.extend(other.lines);

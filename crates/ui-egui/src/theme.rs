@@ -123,6 +123,11 @@ pub struct Tokens {
     pub highlight_width: f32,
     /// Radius of a highlighted vertex's dot, in points.
     pub highlight_radius: f32,
+    /// The box dragged to select (Ctrl and a drag): its fill, the
+    /// selection's colour (`face_highlight`) at this opacity (0 to 255),
+    /// and its outline's width in points.
+    pub select_box_opacity: u8,
+    pub select_box_width: f32,
     /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
@@ -367,6 +372,8 @@ impl Tokens {
             point_radius: 2.25,
             highlight_width: 3.0,
             highlight_radius: 4.0,
+            select_box_opacity: 31,
+            select_box_width: 1.5,
             pick_radius: 4.0,
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,

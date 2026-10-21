@@ -1081,7 +1081,7 @@ fn mcp_answers_json_rpc_on_stdin() {
         json!({"name": "craft3d", "version": env!("CARGO_PKG_VERSION")})
     );
     assert_eq!(replies[1]["id"], 2);
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);
     assert_eq!(replies[2]["id"], Value::Null);
     assert_eq!(replies[2]["error"]["code"], -32700);
     assert_eq!(replies[3]["result"]["isError"], false);
