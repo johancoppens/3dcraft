@@ -1316,6 +1316,61 @@ fn base_faces(prefixes: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Every round and every ball of a block rounded all round, deleted
+/// together (2026-10-21), give the block back; a ball alone is refused
+/// by its name; at three scales.
+#[test]
+fn the_rounds_and_balls_of_a_block_deleted_together_give_the_block_back() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "Base", "size": [10.0 * k, 8.0 * k, 6.0 * k]}),
+        );
+        let mut edges = Vec::new();
+        for (a, b) in [(2, 4), (2, 5), (3, 4), (3, 5)] {
+            edges.push(json!([format!("F1:face({a})"), format!("F1:face({b})")]));
+        }
+        for a in [0, 1] {
+            for b in 2..6 {
+                edges.push(json!([format!("F1:face({a})"), format!("F1:face({b})")]));
+            }
+        }
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": edges, "radius": 2.0 * k, "name": "Round"}),
+        );
+        let blends: Vec<String> = names_of(&body(&mut s, "Round"))
+            .into_iter()
+            .filter(|n| n.starts_with("F2:fillet"))
+            .collect();
+        assert_eq!(blends.len(), 20, "{blends:?}");
+        let corner = blends
+            .iter()
+            .find(|n| n.starts_with("F2:filletCorner"))
+            .unwrap()
+            .clone();
+        let reason = failed(
+            &mut s,
+            "feature.deleteFace",
+            json!({"faces": [corner], "name": "Ball"}),
+        );
+        assert!(reason.contains("goes only together"), "{reason}");
+        run(&mut s, "edit.undo", json!({}));
+        built(
+            &mut s,
+            "feature.deleteFace",
+            json!({"faces": blends, "name": "Sharp"}),
+        );
+        assert_solid(&mut s, "Sharp", 480.0, Some(block_area(10.0, 8.0, 6.0)), k);
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "at scale {k}: {check}");
+    }
+}
+
 #[test]
 fn a_fillet_or_a_chamfer_deleted_gives_the_block_back() {
     for k in SCALES {
