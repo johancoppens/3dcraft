@@ -54,6 +54,7 @@ mod cut;
 mod facetree;
 mod freeform;
 mod hits;
+mod loose;
 mod merge;
 mod outline;
 mod regions;
@@ -155,7 +156,7 @@ pub struct BooleanResult {
 }
 
 /// How a boolean is carried out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BooleanOptions {
     /// Merge the faces, edges and vertices that the operation split
     /// needlessly (see [`boolean`]). Without it every imprint stays; the
@@ -173,6 +174,12 @@ pub struct BooleanOptions {
     /// goes on with such a body as a step of its own, not as its result,
     /// leaves this out.
     pub refuse_zero_thickness: bool,
+    /// The cap on any entity's own tolerance (the document's,
+    /// `doc::Tolerance::loosest`); `None` for
+    /// `craft3d_topo::DEFAULT_LOOSEST` times the linear tolerance. A
+    /// boolean on operands with loose entities works at their largest
+    /// tolerance, and refuses above this.
+    pub loosest: Option<f64>,
 }
 
 impl Default for BooleanOptions {
@@ -181,6 +188,7 @@ impl Default for BooleanOptions {
             merge: true,
             trust_operands: false,
             refuse_zero_thickness: true,
+            loosest: None,
         }
     }
 }
@@ -219,7 +227,7 @@ pub(crate) const NOT_SOLID: Reason =
 const TWO_SHEETS: Reason =
     "a boolean of two sheets: a sheet is trimmed by a solid or cuts one, not another sheet (yet)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
-const LOST: Reason = "the boolean lost track of an entity; this is a bug";
+pub(crate) const LOST: Reason = "the boolean lost track of an entity; this is a bug";
 /// Two faces pass through each other along a curve, and the curve does not
 /// divide one of them: a piece of it is missing (a place where an edge
 /// meets a surface was not found, or a curve was cut short).
@@ -1711,6 +1719,30 @@ pub fn boolean_with(
     options: &BooleanOptions,
 ) -> Result<BooleanResult, KernelError> {
     crate::work::boolean();
+    if a.is_tolerant() || b.is_tolerant() {
+        // Loose entities: at the operands' largest tolerance, the result's
+        // entities carrying what they were built at (`loose`).
+        let cap = loose::cap(tolerance, options);
+        let working = loose::working_tolerance(a, b, tolerance.linear, cap)?;
+        let at = Tolerance {
+            linear: working,
+            ..*tolerance
+        };
+        let mut result = exact(a, b, op, &at, options)?;
+        loose::carry(&mut result, a, b, tolerance, cap, working)?;
+        return Ok(result);
+    }
+    exact(a, b, op, tolerance, options)
+}
+
+/// [`boolean_with`] of bodies held to one tolerance.
+fn exact(
+    a: &Body,
+    b: &Body,
+    op: BooleanOp,
+    tolerance: &Tolerance,
+    options: &BooleanOptions,
+) -> Result<BooleanResult, KernelError> {
     run(a, b, op, tolerance, options).map_err(|stop| match stop {
         Stop::Error(error) => error,
         Stop::Unsupported { reason, mut faces } => {

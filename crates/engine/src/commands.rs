@@ -47,8 +47,8 @@ macro_rules! spec {
 pub(crate) use spec;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6}"#,
-        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3.", doc: false, file_new),
+    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6, "loosest": number = 1000 × tolerance}"#,
+        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3. loosest is the cap on the tolerance any vertex or edge may have of its own (geometry that is not exact to the document's tolerance, as imported files bring it), at least the tolerance: an operation on a body with an entity looser than it refuses.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
@@ -381,7 +381,7 @@ pub(crate) fn length_unit(doc: &Document) -> &'static str {
 // ------------------------------------------------------------------- file
 
 fn file_new(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.new", params, &["units", "tolerance"])?;
+    let p = Params::new("file.new", params, &["units", "tolerance", "loosest"])?;
     let length = match p.str("units")? {
         None => LengthUnit::default(),
         Some(symbol) => LengthUnit::from_symbol(symbol).ok_or_else(|| {
@@ -407,6 +407,16 @@ fn file_new(session: &mut Session, params: &Value) -> Run {
             linear,
             ..Tolerance::default()
         };
+    }
+    if let Some(loosest) = p.number("loosest")? {
+        if !(loosest.is_finite() && loosest >= document.tolerance.linear) {
+            return fail(format!(
+                "file.new: `loosest` must be a finite length at least the tolerance {:e} {}; got {loosest:e}",
+                document.tolerance.linear,
+                length.symbol()
+            ));
+        }
+        document.tolerance.loosest = Some(loosest);
     }
     let index = session.add_document(OpenDocument::new(document, None))?;
     Ok(json!({ "document": index, "units": length.symbol() }))
@@ -1982,7 +1992,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             craft3d_doc::AngleUnit::Degree => "deg",
             craft3d_doc::AngleUnit::Radian => "rad",
         }},
-        "tolerance": { "linear": doc.tolerance.linear, "angular": doc.tolerance.angular },
+        "tolerance": { "linear": doc.tolerance.linear, "angular": doc.tolerance.angular, "loosest": doc.tolerance.loosest_linear() },
         "variables": variables,
         "features": features,
         "rollback": doc.rollback.map(|id| id.to_string()),

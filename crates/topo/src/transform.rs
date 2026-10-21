@@ -1178,9 +1178,11 @@ pub fn merge(bodies: &[&Body]) -> Result<(Body, Vec<Offsets>), TransformError> {
             }
             merged.shells.push(Shell { faces });
         }
-        merged.tolerances.extend_shifted(&body.tolerances, |v| vertex(v), |e| {
-            shift(e.0, body.edges.len(), offset.edges).map(EdgeId)
-        })?;
+        merged
+            .tolerances
+            .extend_shifted(&body.tolerances, vertex, |e| {
+                shift(e.0, body.edges.len(), offset.edges).map(EdgeId)
+            })?;
     }
     Ok((merged, offsets))
 }

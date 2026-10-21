@@ -129,6 +129,13 @@ pub struct Tolerance {
     pub linear: f64,
     /// In radians.
     pub angular: f64,
+    /// The cap on any vertex's or edge's own tolerance (tolerant entities,
+    /// `craft3d_topo::Tolerances`), in the document's length unit; `None`
+    /// for [`Tolerance::DEFAULT_LOOSEST`] times `linear`. Above it an
+    /// operation refuses rather than let a tolerance grow unseen (the
+    /// decision of 2026-10-18).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loosest: Option<f64>,
 }
 
 impl Default for Tolerance {
@@ -136,11 +143,22 @@ impl Default for Tolerance {
         Self {
             linear: 1e-6,
             angular: 1e-9,
+            loosest: None,
         }
     }
 }
 
 impl Tolerance {
+    /// The cap on an entity's tolerance when the document sets none, as a
+    /// multiple of the linear tolerance (`craft3d_topo::DEFAULT_LOOSEST`).
+    pub const DEFAULT_LOOSEST: f64 = 1000.0;
+
+    /// The cap on any entity's own tolerance: the document's, or
+    /// [`Self::DEFAULT_LOOSEST`] times the linear tolerance.
+    pub fn loosest_linear(&self) -> f64 {
+        self.loosest.unwrap_or(Self::DEFAULT_LOOSEST * self.linear)
+    }
+
     /// The least linear tolerance, in the document's length unit: 1e-9 of
     /// the smallest size the kernel is built and tested for (1e-3 units;
     /// AGENTS.md rule 3). Below it a tolerance is no longer about the
@@ -1461,6 +1479,14 @@ impl Document {
                 Tolerance::GREATEST_LINEAR
             )));
         }
+        if let Some(loosest) = self.tolerance.loosest
+            && !(loosest.is_finite() && loosest >= self.tolerance.linear)
+        {
+            return Err(DocError::Invalid(format!(
+                "the cap on an entity's tolerance {loosest:e} is not a finite length at least the linear tolerance {:e}",
+                self.tolerance.linear
+            )));
+        }
         self.variable_table()?;
         let mut names = std::collections::BTreeSet::new();
         if !self.variables.iter().all(|v| names.insert(v.name.as_str())) {
@@ -2492,10 +2518,14 @@ mod tests {
         assert_eq!(doc.validate(), Ok(()));
         assert_eq!(Document::new(Units::default()).validate(), Ok(()));
         type Damage = fn(&mut Document);
-        let broken: [(&str, Damage); 11] = [
+        let broken: [(&str, Damage); 13] = [
             ("zero tolerance", |d| d.tolerance.linear = 0.0),
             ("vanishing tolerance", |d| d.tolerance.linear = 1e-300),
             ("tolerance above the range", |d| d.tolerance.linear = 2e3),
+            ("cap below the tolerance", |d| {
+                d.tolerance.loosest = Some(1e-9)
+            }),
+            ("cap not finite", |d| d.tolerance.loosest = Some(f64::NAN)),
             ("NaN tolerance", |d| d.tolerance.angular = f64::NAN),
             ("reserved variable name", |d| {
                 d.variables[0].name = "mm".into()

@@ -902,3 +902,29 @@ fn measure_gives_its_bound_when_asked() {
         }
     }
 }
+
+#[test]
+fn file_new_takes_the_cap_on_entity_tolerances() {
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::None,
+        write: craft3d_engine::Access::None,
+    });
+    run(&mut s, "file.new", json!({"tolerance": 1e-5}));
+    let inspected = run(&mut s, "document.inspect", json!({}));
+    assert_eq!(inspected["tolerance"]["loosest"].as_f64(), Some(1e-2));
+    run(
+        &mut s,
+        "file.new",
+        json!({"tolerance": 1e-5, "loosest": 3e-4}),
+    );
+    let inspected = run(&mut s, "document.inspect", json!({}));
+    assert_eq!(inspected["tolerance"]["loosest"].as_f64(), Some(3e-4));
+    for bad in [json!(1e-6), json!(-1.0), json!("wide")] {
+        let message = error(
+            &mut s,
+            "file.new",
+            json!({"tolerance": 1e-5, "loosest": bad}),
+        );
+        assert!(message.contains("loosest"), "{bad}: {message}");
+    }
+}

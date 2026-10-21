@@ -165,6 +165,15 @@ pub enum KernelError {
         operation: &'static str,
         defects: Vec<Defect>,
     },
+    /// An entity of an operand has a tolerance of its own above the cap
+    /// the document allows any entity (`doc::Tolerance::loosest`): the
+    /// operation would work at `tolerance` and refuses, rather than let
+    /// tolerances grow unseen.
+    ToleranceAboveCap {
+        operation: &'static str,
+        tolerance: f64,
+        cap: f64,
+    },
     /// The operation does not handle this geometry or this kind of contact
     /// (yet). `reason` is a fixed text per cause; `faces` are the faces
     /// involved (at most [`MAX_REPORTED`]), each with the operand it is a
@@ -450,6 +459,14 @@ impl fmt::Display for KernelError {
             KernelError::UnsupportedCurve { id, reason } => {
                 write!(f, "curve {id} cannot be revolved yet: {reason}")
             }
+            KernelError::ToleranceAboveCap {
+                operation,
+                tolerance,
+                cap,
+            } => write!(
+                f,
+                "{operation} refused: an entity of an operand has a tolerance of {tolerance:e}, above the cap of {cap:e} the document allows any entity; tighten the geometry or raise the cap"
+            ),
             KernelError::InvalidBody { operation, defects } => {
                 write!(f, "{operation} produced an invalid body:")?;
                 for defect in defects {

@@ -121,6 +121,11 @@ pub struct Tolerance {
     pub linear: f64,
     /// In radians.
     pub angular: f64,
+    /// The cap on any entity's own tolerance, in the document's length
+    /// unit; absent for the default (1000 times `linear`). Absent in files
+    /// written before it existed, which then mean the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loosest: Option<f64>,
 }
 
 /// `expr` is the source text the user wrote, never an evaluated number.

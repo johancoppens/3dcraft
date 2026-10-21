@@ -133,15 +133,28 @@ impl Bits for Tolerances {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToleranceError {
     /// Not positive and finite.
-    NotPositive { value: f64 },
-    NoVertex { vertex: VertexId },
-    NoEdge { edge: EdgeId },
+    NotPositive {
+        value: f64,
+    },
+    NoVertex {
+        vertex: VertexId,
+    },
+    NoEdge {
+        edge: EdgeId,
+    },
     /// The edge could not be proven within any tolerance up to `cap` of
     /// the surface of one of its faces: `at` is the curve's parameter
     /// where the proof stopped.
-    EdgeNotMeasured { edge: EdgeId, at: f64, cap: f64 },
+    EdgeNotMeasured {
+        edge: EdgeId,
+        at: f64,
+        cap: f64,
+    },
     /// What was measured is above the cap.
-    AboveCap { measured: f64, cap: f64 },
+    AboveCap {
+        measured: f64,
+        cap: f64,
+    },
 }
 
 impl fmt::Display for ToleranceError {
@@ -191,7 +204,8 @@ impl Body {
     /// The tolerance that holds for the vertex in a document whose linear
     /// tolerance is `linear`: its own or the document's, the larger.
     pub fn vertex_tolerance_at(&self, vertex: VertexId, linear: f64) -> f64 {
-        self.vertex_tolerance(vertex).map_or(linear, |t| t.max(linear))
+        self.vertex_tolerance(vertex)
+            .map_or(linear, |t| t.max(linear))
     }
 
     /// The tolerance that holds for the edge in a document whose linear
@@ -218,7 +232,11 @@ impl Body {
 
     /// Gives the edge a tolerance of its own (replacing any it had), and
     /// raises its vertices to at least it, which keeps the invariant.
-    pub fn set_edge_tolerance(&mut self, edge: EdgeId, tolerance: f64) -> Result<(), ToleranceError> {
+    pub fn set_edge_tolerance(
+        &mut self,
+        edge: EdgeId,
+        tolerance: f64,
+    ) -> Result<(), ToleranceError> {
         let tolerance = positive(tolerance)?;
         let Some(e) = self.edge(edge) else {
             return Err(ToleranceError::NoEdge { edge });
@@ -226,8 +244,7 @@ impl Body {
         let ends = [e.start, e.end];
         self.tolerances.edges.insert(edge, tolerance);
         for v in ends {
-            if self.vertex(v).is_some() && self.vertex_tolerance(v).is_none_or(|t| t < tolerance)
-            {
+            if self.vertex(v).is_some() && self.vertex_tolerance(v).is_none_or(|t| t < tolerance) {
                 self.tolerances.vertices.insert(v, tolerance);
             }
         }
@@ -355,7 +372,9 @@ pub fn record_edge(
     let Some(measured) = measure_edge(body, edge, tolerance, cap)? else {
         return Ok(None);
     };
-    record(measured, tolerance, cap, |t| body.set_edge_tolerance(edge, t))
+    record(measured, tolerance, cap, |t| {
+        body.set_edge_tolerance(edge, t)
+    })
 }
 
 /// Measures the vertex ([`measure_vertex`]) and records it as
@@ -384,7 +403,7 @@ fn record(
         return Ok(None);
     }
     let recorded = (measured * RECORD_MARGIN).max(tolerance.linear);
-    if !(recorded <= cap) {
+    if recorded.is_nan() || recorded > cap {
         return Err(ToleranceError::AboveCap {
             measured: recorded,
             cap,
