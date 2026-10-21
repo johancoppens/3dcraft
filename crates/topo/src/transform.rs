@@ -376,6 +376,19 @@ impl Body {
     /// face that does not exist or refers to an edge that does not, and as
     /// [`Body::bbox`].
     pub fn face_bbox(&self, face: FaceId) -> Result<Bbox3, TransformError> {
+        self.face_boxed(face, Round::Whole)
+    }
+
+    /// A box that certainly contains the face `face`, as
+    /// [`Body::face_bbox`] but with a face on a sphere or a torus boxed by
+    /// what it holds, by the rules of [`Body::held_bbox`]: a piece of a
+    /// ball is boxed near where it is, not by the whole ball. Errors as
+    /// [`Body::face_bbox`].
+    pub fn held_face_bbox(&self, face: FaceId) -> Result<Bbox3, TransformError> {
+        self.face_boxed(face, Round::Held)
+    }
+
+    fn face_boxed(&self, face: FaceId, round: Round) -> Result<Bbox3, TransformError> {
         let missing = TransformError::Face {
             face,
             error: GeomError::InvalidParameter("the face does not exist"),
@@ -405,7 +418,7 @@ impl Body {
                 edge_extent(&edge.curve, edge.range, coedge.edge, &mut extent)?;
             }
         }
-        face_extent(self, shape, face, Round::Whole, &mut extent)?;
+        face_extent(self, shape, face, round, &mut extent)?;
         if !extent.finite {
             return Err(TransformError::Face {
                 face,

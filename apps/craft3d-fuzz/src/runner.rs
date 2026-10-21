@@ -177,6 +177,14 @@ enum Stop {
     Crashed(String, String),
 }
 
+/// With `CRAFT3D_FUZZ_TRACE` set, how long a command took, on stderr
+/// (for finding which command of a design is slow).
+fn trace(command: &str, started: std::time::Instant) {
+    if std::env::var_os("CRAFT3D_FUZZ_TRACE").is_some() {
+        eprintln!("{command}: {:.3} s", started.elapsed().as_secs_f64());
+    }
+}
+
 /// Runs `cmds` in order; the results, or why it stopped.
 fn run_commands(
     session: &mut Session,
@@ -186,7 +194,10 @@ fn run_commands(
     let mut done = Vec::with_capacity(cmds.len());
     for cmd in cmds {
         let params = map_strings(&cmd.params, &|s| resolved_text(s, ids), 0);
-        match session.execute(&cmd.command, &params) {
+        let started = std::time::Instant::now();
+        let outcome = session.execute(&cmd.command, &params);
+        trace(&cmd.command, started);
+        match outcome {
             Ok(result) => {
                 if result.get("status").and_then(Value::as_str) == Some("failed") {
                     let reason = result
@@ -402,9 +413,11 @@ impl Runner {
 
     /// `document.check`; a finding for its first problem.
     fn check(&mut self, deep: bool, command: &str) -> Applied {
+        let started = std::time::Instant::now();
         let result = self
             .session
             .execute("document.check", &json!({ "deep": deep }));
+        trace("document.check", started);
         let result = match result {
             Ok(r) => r,
             Err(e) => {
