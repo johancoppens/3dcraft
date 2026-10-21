@@ -62,7 +62,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
-- [x] Tangent contact of higher order at a face's boundary (a cone's base circle 3.9e-4 mm off a tilted drill's wall, the pier's tread touching its stringer): an imprinted curve that leaves along the boundary is put on the face's side by topology; two imprinted curves that stay together beyond the shortest piece are still refused ([`design/booleans.md`](design/booleans.md) › *Tangent contact of higher order at the boundary*, 2026-10-21).
+- [x] Tangent contact of higher order at a face's boundary (a cone's base circle 3.9e-4 mm off a tilted drill's wall, the pier's tread touching its stringer): an imprinted curve that leaves along the boundary is put on the face's side by topology; two imprinted curves that stay together beyond the shortest piece are still refused; the Garabit pier now unites all 307 bodies (Heavy `pier`, 26 min) ([`design/booleans.md`](design/booleans.md) › *Tangent contact of higher order at the boundary*, 2026-10-21).
 - [ ] Faces the tessellator cannot mesh: a fillet face on a body turned 7.5° or 30° at a chord of 4 to 6 (the Perseverance's STL/3MF export fails at the default tolerance), a torus less a cylinder through its middle in the self-check; the Perseverance's drill tip, whose union is right since 2026-10-21, in the self-check: crescents 3.9e-4 mm across with tips at 2.6e-5 rad need more rounds of finer chords (2026-10-21).
 - [ ] The fuzz run of 2026-10-20 (94,697 seeds on the Strix): its 11 timeouts; and a pattern of a filleted seed 48 times takes 1.85 s against 0 for the plain one.
 - [x] A cusp against a face that holds its axis through the point: built and meshed (2026-10-17).
