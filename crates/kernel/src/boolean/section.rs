@@ -17,7 +17,7 @@ use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1105,8 +1105,30 @@ pub(super) fn section(
             }
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
-            let met = meet_surfaces(&oa.surface, &ob.surface, &within, tolerance)
-                .map_err(|e| geometry(e, &named))?;
+            let met = match meet_surfaces(&oa.surface, &ob.surface, &within, tolerance) {
+                Ok(met) => met,
+                // The room is taken from the larger face, so next to a
+                // large face (a terrain) the box reaches far beyond the
+                // smaller one, where the surfaces may meet in curves that
+                // cannot be traced (a plane at the height of a lake the
+                // fitted surface ripples about, 20 m from the face) and
+                // that no face holds. The meeting is then asked again in
+                // the box with the smaller face's room, which still holds
+                // everything of both faces; what that cannot trace either
+                // is refused as before (*A plane beside a rippled
+                // surface*, docs/design/booleans.md).
+                Err(first @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+                    let near = 16.0 * tol + 0.013 * box_a.diagonal().min(box_b.diagonal());
+                    match overlap(box_a, box_b, near) {
+                        Some(closer) if near < room => {
+                            meet_surfaces(&oa.surface, &ob.surface, &closer, tolerance)
+                                .map_err(|_| geometry(first, &named))?
+                        }
+                        _ => return Err(geometry(first, &named)),
+                    }
+                }
+                Err(other) => return Err(geometry(other, &named)),
+            };
             // Faces on one surface, or on two that never cross: the same
             // surface when they are within half the tolerance of each
             // other where one is over the other, apart when twice the

@@ -86,6 +86,44 @@ pub(crate) fn combine(
                 )
             }
         }
+        // Faces or points between half and twice the tolerance apart (the
+        // Garabit valley's finding 3, 2026-10-21: bars placed by
+        // translations rounded to 0.1 mm, whose side faces end up 0.76
+        // tolerances apart): what is refused, by the faces' names, and
+        // what to do about it.
+        KernelError::Unsupported {
+            operation,
+            reason,
+            faces,
+        } if reason.ends_with("(at the edge of tolerance)") => {
+            let named: Vec<String> = faces
+                .iter()
+                .map(|&(operand, face)| {
+                    let [first, second] = names;
+                    let names = if number(operand) == 0 { first } else { second };
+                    names
+                        .and_then(|names| names.faces.get(face.0 as usize))
+                        .map_or_else(
+                            || {
+                                let body = if number(operand) == 0 { "target" } else { "tool" };
+                                format!("face {} of the {body}", face.0)
+                            },
+                            ToString::to_string,
+                        )
+                })
+                .collect();
+            let at = if named.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", named.join(", "))
+            };
+            let tol = tolerance.linear;
+            format!(
+                "{operation} does not support this: {reason}{at}. At the document's tolerance of {tol:e}, faces or points between half of it ({:e}) and twice it ({:e}) apart are neither one place nor two; put them onto each other within half the tolerance (positions with more digits, or placed from the same numbers) or at least twice the tolerance apart",
+                0.5 * tol,
+                2.0 * tol
+            )
+        }
         other => other.to_string(),
     })?;
     let pair = |source: &FaceSource| (number(source.operand), source.face.0 as usize);

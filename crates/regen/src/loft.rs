@@ -1,14 +1,16 @@
 //! Lofts in regeneration: the one closed profile of each section's solved
-//! sketch, in the order of the feature, goes to the kernel; the body it
-//! makes is searched for places where it passes through itself before it
-//! is handed on.
+//! sketch, in the order of the feature, goes to the kernel (or, where a
+//! sketch's curves make one open chain instead, that chain: a loft of open
+//! sections is a sheet); the body it makes is searched for places where it
+//! passes through itself before it is handed on.
 
-use crate::extrude::swept;
+use crate::extrude::{drawn, swept};
 use crate::selfcheck::{Crossing, crossing};
 use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, FeatureId, Loft, MAX_LOFT_SECTIONS, NameRole, PersistentName};
 use craft3d_kernel::extrude::{Origin, Role};
 use craft3d_kernel::loft::{Options, Section, loft};
+use craft3d_kernel::profile::open_chain;
 use craft3d_topo::Body;
 
 /// The persistent name of a face a loft made: `F9:side(e3,e7)` after the
@@ -64,11 +66,40 @@ pub(crate) fn build(
                 "sections: section {number}: an offset as a section of a loft is not supported yet; loft the sketch"
             ));
         }
-        // What `swept` says of a sketch, as what it says of this section.
-        let made = swept(doc, earlier, section.sketch, "loft").map_err(|reason| {
-            let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
-            format!("sections: section {number}: {reason}")
-        })?;
+        // What `swept` says of a sketch, as what it says of this section;
+        // a sketch whose curves make one open chain instead is an open
+        // section (a loft of open sections is a sheet).
+        let made = match swept(doc, earlier, section.sketch, "loft") {
+            Ok(made) => made,
+            Err(reason) => {
+                let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
+                let chain = drawn(doc, earlier, section.sketch)
+                    .map(|drawn| (open_chain(&drawn.curves, &drawn.tolerance), drawn));
+                let Ok((Ok(outline), drawn)) = chain else {
+                    return Err(format!("sections: section {number}: {reason}"));
+                };
+                let name = drawn.name;
+                if !drawn.solved.curve_ids.is_empty() {
+                    return Err(format!(
+                        "sections: section {number}: sketch `{name}` has nested patterns; a section of a loft made by a pattern of a pattern is not supported yet"
+                    ));
+                }
+                if let Some(start) = section.start
+                    && !outline.segments.iter().any(|s| s.source == start.0)
+                {
+                    return Err(format!(
+                        "sections: section {number}: {start} is not a curve of the open chain of sketch `{name}`; `start` names the curve at the end the chain starts from"
+                    ));
+                }
+                tolerance = Some(drawn.tolerance);
+                sections.push(Section {
+                    plane: drawn.plane,
+                    outline,
+                    start: section.start.map(|e| e.0),
+                });
+                continue;
+            }
+        };
         let name = made.name;
         if !made.solved.curve_ids.is_empty() {
             return Err(format!(
