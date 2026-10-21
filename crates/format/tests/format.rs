@@ -764,7 +764,7 @@ fn a_step_or_stl_file_opened_as_a_document_says_what_it_is() {
         let error = from_bytes(bytes).unwrap_err();
         assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
         assert!(error.to_string().contains("STEP"), "{error}");
-        assert!(error.to_string().contains("not built yet"), "{error}");
+        assert!(error.to_string().contains("file.import"), "{error}");
     }
     let stl = b"solid part\n  facet normal 0 0 1\n    outer loop\n";
     let error = from_bytes(stl).unwrap_err();

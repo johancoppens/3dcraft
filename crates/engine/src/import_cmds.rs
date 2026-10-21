@@ -9,7 +9,6 @@
 //! that would need a tolerance per edge, changes nothing and says why.
 
 use crate::commands::{Run, edit, fail, feature_result, insert_feature, spec};
-use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Blob, DocError, FeatureKind, Import};
 use serde_json::{Value, json};
@@ -22,7 +21,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 #[cfg(not(target_arch = "wasm32"))]
 fn file_import(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "file.import";
-    let p = Params::new(ID, params, &["path", "names"])?;
+    let p = crate::params::Params::new(ID, params, &["path", "names"])?;
     let path = p.required_str("path")?;
     let given: Option<Vec<String>> = match p.get("names") {
         None => None,
@@ -62,7 +61,9 @@ fn file_import(_: &mut Session, _: &Value) -> Run {
 }
 
 /// Adds the import features of a file's bytes, after reading every solid
-/// of it with the document's units and tolerance.
+/// of it with the document's units and tolerance. (In the browser build
+/// there are no files to read yet.)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn import_bytes(
     session: &mut Session,
     id: &'static str,

@@ -1,0 +1,81 @@
+{
+  "format_version": 25,
+  "written_by": "c6fb11d0a051ad2fbf9b422bb9964e8bbdacce88",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v25.steps.json --out v25.3dcraft, then info v25.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Pin",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Holed",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Ball",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "HoledCopy",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "BallCopy",
+      "status": "ok"
+    },
+    {
+      "id": "F7",
+      "name": "Moved",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 5497.345175425637,
+      "area": 2350.7964473723123
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 1,
+      "edges": 0,
+      "vertices": 0,
+      "volume": 523.5987755982993,
+      "area": 314.1592653589797
+    },
+    {
+      "feature": "F5",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 5497.345175425637,
+      "area": 2350.7964473723123
+    },
+    {
+      "feature": "F7",
+      "kind": "solid",
+      "faces": 1,
+      "edges": 0,
+      "vertices": 0,
+      "volume": 523.5987755982993,
+      "area": 314.1592653589797
+    }
+  ]
+}

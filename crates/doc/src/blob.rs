@@ -129,18 +129,19 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     // The message, a one bit, zeros to 56 mod 64 bytes, and its length in
     // bits as a big-endian 64-bit number.
     let bits = (data.len() as u64).wrapping_mul(8);
-    let mut tail: Vec<u8> = data.chunks_exact(64).remainder().to_vec();
+    let (blocks, rest) = data.as_chunks::<64>();
+    let mut tail: Vec<u8> = rest.to_vec();
     tail.push(0x80);
     while tail.len() % 64 != 56 {
         tail.push(0);
     }
     tail.extend_from_slice(&bits.to_be_bytes());
-    for block in data.chunks_exact(64).chain(tail.chunks_exact(64)) {
+    let (tail_blocks, _) = tail.as_chunks::<64>();
+    for block in blocks.iter().chain(tail_blocks) {
         let mut w = [0u32; 64];
-        for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
-            let mut four = [0u8; 4];
-            four.copy_from_slice(bytes);
-            *word = u32::from_be_bytes(four);
+        let (words, _) = block.as_chunks::<4>();
+        for (word, bytes) in w.iter_mut().zip(words) {
+            *word = u32::from_be_bytes(*bytes);
         }
         for t in 16..64 {
             let at = |i: usize| w.get(i).copied().unwrap_or(0);
@@ -181,8 +182,8 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         }
     }
     let mut out = [0u8; 32];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(h) {
-        chunk.copy_from_slice(&word.to_be_bytes());
+    for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(h) {
+        *chunk = word.to_be_bytes();
     }
     out
 }

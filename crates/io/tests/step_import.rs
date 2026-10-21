@@ -413,9 +413,8 @@ fn faces_written_turned_over_inside_oriented_faces_read_as_the_same_body() {
                 record.params[2] = Param::boolean(!along);
             }
         }
-        let mut id = next_id(&file);
         let mut replaced = std::collections::BTreeMap::new();
-        for &face in &wrap {
+        for (id, &face) in (next_id(&file)..).zip(&wrap) {
             file.data.push(Instance {
                 id,
                 entity: Entity::Simple(Record::new(
@@ -429,7 +428,6 @@ fn faces_written_turned_over_inside_oriented_faces_read_as_the_same_body() {
                 )),
             });
             replaced.insert(face, id);
-            id += 1;
         }
         for instance in &mut file.data {
             for keyword in ["CLOSED_SHELL", "OPEN_SHELL"] {
@@ -661,7 +659,7 @@ fn damaged_files_are_errors_never_panics() {
                         Param::Enum(e) if e == "T" || e == "F" => {
                             *e = if e == "T" { "F" } else { "U" }.to_string();
                         }
-                        Param::List(items) if rng.next() % 3 == 0 => items.clear(),
+                        Param::List(items) if rng.next().is_multiple_of(3) => items.clear(),
                         _ => {}
                     }
                 }

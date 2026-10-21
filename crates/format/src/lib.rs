@@ -364,8 +364,8 @@ fn foreign(bytes: &[u8]) -> Option<FormatError> {
     if text.starts_with("ISO-10303-21") {
         return Some(FormatError::Foreign {
             kind: "a STEP file (ISO 10303-21)",
-            hint: "reading STEP into a document is not built yet (milestone M10); \
-                   3DCraft writes STEP with `file.export`",
+            hint: "import it into a document with `file.import`, which reads its solids \
+                   as bodies; 3DCraft writes STEP with `file.export`",
         });
     }
     if text.starts_with("solid") && text.contains("facet") {
