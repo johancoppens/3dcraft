@@ -13,9 +13,13 @@
 //!   counter-clockwise, holes clockwise.
 //! - A face without loops is a whole closed surface (a sphere, a torus).
 //!
+//! A vertex or an edge may have a tolerance of its own, looser than the
+//! document's ([`Tolerances`], module `tolerant`); every body the kernel
+//! builds itself has none.
+//!
 //! Not here yet: parameter-space curves on faces (they are recovered by
-//! projection where needed), per-entity tolerances, persistent names
-//! (docs/design/names.md, milestone M6).
+//! projection where needed), persistent names (docs/design/names.md,
+//! milestone M6).
 
 mod bits;
 mod check;
@@ -23,10 +27,11 @@ mod inside;
 mod mass;
 mod query;
 mod shells;
+mod tolerant;
 mod touch;
 mod transform;
 
-pub use check::{Defect, check, check_remembered, genus};
+pub use check::{Defect, check, check_capped, check_remembered, genus};
 pub use inside::{stranded, stranded_loops};
 pub use mass::{
     Inertia, MassBound, MassError, MassProperties, ShellVolume, inertia, mass_and_inertia,
@@ -35,6 +40,10 @@ pub use mass::{
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
+pub use tolerant::{
+    DEFAULT_LOOSEST, PROOF_PIECES, RECORD_MARGIN, ToleranceError, Tolerances, default_loosest,
+    measure_edge, measure_vertex, record_edge, record_vertex,
+};
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};
 
@@ -114,6 +123,9 @@ pub struct Body {
     pub loops: Vec<Loop>,
     pub faces: Vec<Face>,
     pub shells: Vec<Shell>,
+    /// The vertices and edges looser than the document's tolerance, with
+    /// their own; empty for every body the kernel builds itself.
+    pub tolerances: Tolerances,
 }
 
 fn next_id(len: usize) -> u32 {
@@ -131,6 +143,7 @@ impl Body {
             loops: Vec::new(),
             faces: Vec::new(),
             shells: Vec::new(),
+            tolerances: Tolerances::default(),
         }
     }
 
