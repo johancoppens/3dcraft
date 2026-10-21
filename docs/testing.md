@@ -343,7 +343,7 @@ The measure of R1: ordinary parts a first user makes, each with a description an
 | `pipe-tee` | 3 | equal pipe tee (two equal cylinders: Steinmetz curves) |
 | `phone-stand` | 3 | phone stand, profile dimensioned with trigonometry |
 | `bent-bracket` | 3 | Z-bracket as if bent from sheet (lines and arcs in one path) |
-| `shelled-case` | 3 | case shelled to its fillet radius: **refused today** |
+| `shelled-case` | 3 | case shelled to its fillet radius (builds since 2026-10-22) |
 | `enclosure` | 4 | box with screw bosses and a separate lid with a lip: two bodies |
 | `hinge-leaf` | 4 | hinge leaf: knuckles tangent to the plate, cut-back, pin hole |
 

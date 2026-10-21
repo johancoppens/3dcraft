@@ -62,6 +62,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
+- [ ] Follow-ups of the m9-r1 review (2026-10-22): a fillet along a round within a tolerance above its radius (ρ = R + 1e-12 … R + 0.5e-6) is refused "too large" with a false largest (0.9977 where R builds); open-loft sections whose frames turn 90° or more are refused as disagreeing; the GPU parity test `the_same_input_gives_the_same_frame` failed once on the Radeon (nondeterminism to find).
 - [ ] Follow-ups of the review of 2026-10-21 (garabit-findings): the re-ask with the smaller face's room (section.rs) is pinned only by a showcase reproducer (add a synthetic test). Done 2026-10-21: an open-section loft sheet faces down in its sections' sketches, whatever the curve ids, the drawing direction or the order of the sections ([`design/sweeps.md`](design/sweeps.md) › *Open sections*).
 - [x] Tangent contact of higher order at a face's boundary (a cone's base circle 3.9e-4 mm off a tilted drill's wall, the pier's tread touching its stringer): an imprinted curve that leaves along the boundary is put on the face's side by topology; two imprinted curves that stay together beyond the shortest piece are still refused; the Garabit pier now unites all 307 bodies (Heavy `pier`, 26 min) ([`design/booleans.md`](design/booleans.md) › *Tangent contact of higher order at the boundary*, 2026-10-21).
 - [x] Faces the tessellator cannot mesh: a chord no triangle can stand on is cut (the Perseverance's turned fillet; the rover exports at its default tolerance), crossing chords are cut across from each other's points once halving ends (the drill tip's crescents are meshed; its feature is now refused by the self-check as touching itself at a crescent's tip, owed to the boolean), a whole torus but for holes is opened along circles clear of them (2026-10-21, [`design/tessellator.md`](design/tessellator.md) › *Three faces the tessellator could not mesh*).
@@ -456,7 +457,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - The task set: 22 ordinary parts (levels 1 to 4) with descriptions in English and Dutch, closed-form expectations derived by hand, reference solutions driven by variables and a variant each, scored headless by `craft3d-cli score` ([`docs/tasks/`](tasks/), [`testing.md`](testing.md) › *The task set*) (2026-10-21)
 
 #### Open
-- [ ] Every task of the set built by an agent over MCP from its description alone, scored by `craft3d-cli score` (the acceptance); `shelled-case` is refused until the shell builds a wall as thick as a fillet's radius
+- [ ] Every task of the set built by an agent over MCP from its description alone, scored by `craft3d-cli score` (the acceptance); every task of the set builds since 2026-10-22
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models

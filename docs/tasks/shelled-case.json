@@ -25,16 +25,11 @@
   ],
   "derivation": [
     "The same closed form as rounded-cover: the hollow is the outside offset inward by the wall, with radius r - t, here 0: a plain box (L - 2t) x (W - 2t) x (H - t) open at the bottom, whose formulas are the rounded ones with r = 0.",
-    "This is the classic enclosure (round the edges, then a wall as thick as the radius), and the shell refuses it today: at the radius of a rounded edge the hollow needs a sharp edge, which is not built (feature.shell; roadmap M9, shell with a wall at or above the fillet radius). Making the wall thinner changes the design, so there is no workaround a user would choose: the task is marked refused, and its test turns red when the shell learns it."
+    "This is the classic enclosure (round the edges, then a wall as thick as the radius). The shell builds it since 2026-10-22: rounds whose radius the wall reaches are collapsed first and the sharp body is hollowed (roadmap M9). The closed form holds for any wall t >= r, since (r - t) appears unclamped."
   ],
   "variants": [
     {"set": {"length": "90 mm"}}
   ],
-  "refused": {
-    "feature": "Case",
-    "error": "the face would vanish",
-    "reason": "feature.shell with a wall equal to the radius of a rounded edge (roadmap M9)"
-  },
   "solution": [
     ["variable.set", {"name": "length", "expr": "70 mm"}],
     ["variable.set", {"name": "width", "expr": "50 mm"}],
