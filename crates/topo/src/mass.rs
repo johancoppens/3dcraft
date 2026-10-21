@@ -1392,7 +1392,7 @@ fn seams_only(body: &Body, face: &Face) -> bool {
 /// that it bounds a region of space on its own: a sphere and a torus do; a
 /// Bézier or NURBS surface when each of its directions closes
 /// ([`spline_closure`]) or ends in a pole at both of its borders.
-fn closed_all_around(surface: &Surface) -> bool {
+pub(crate) fn closed_all_around(surface: &Surface) -> bool {
     match surface {
         Surface::Sphere(_) | Surface::Torus(_) => true,
         Surface::Bezier(_) | Surface::Nurbs(_) => {

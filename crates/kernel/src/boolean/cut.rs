@@ -58,12 +58,12 @@ pub(super) const TANGENT_CUT: Reason = "the sheet meets a face of the solid tang
 const SQUARE: f64 = 1e-6;
 
 /// A region of a face of the solid: the face, its loops of arcs, and its
-/// class when it lies on the sheet (`None` beside the sheet, where its
-/// arcs tell its side).
+/// class and the face of the sheet it lies on when it lies on the sheet
+/// (`None` beside the sheet, where its arcs tell its side).
 struct Region {
     face: usize,
     loops: Vec<Vec<Half>>,
-    on_sheet: Option<Class>,
+    on_sheet: Option<(Class, usize)>,
 }
 
 /// The regions of `solid` (operand A) on the side of the sheet that `op`
@@ -161,13 +161,12 @@ pub(super) fn select(
                 .insert(piece.source.face.0 as usize);
         }
     }
-    for region in regions.iter().filter(|r| r.on_sheet.is_some()) {
-        let faces = coincident.get(&region.face).map_or(&[][..], Vec::as_slice);
+    for region in &regions {
+        let Some((_, sheet_face)) = region.on_sheet else {
+            continue;
+        };
         for &(arc, _) in region.loops.iter().flatten() {
-            meetings
-                .entry(arc)
-                .or_default()
-                .extend(faces.iter().map(|&(f, _)| f));
+            meetings.entry(arc).or_default().insert(sheet_face);
         }
     }
     // Per arc, its uses by the regions of the solid beside the sheet.
@@ -223,7 +222,7 @@ pub(super) fn select(
             let outline = sheet.outline(face)?;
             let normal = outward_normal(outline.sheet(), outline.reversed, point)
                 .ok_or(Stop::of(LOST).at(&[sheet.name(face)]))?;
-            normals.push((normal, sheet.name(face)));
+            normals.push((normal, face));
         }
         let through = by_cap.contains_key(arc_index);
         for &(r, reversed) in uses {
@@ -237,17 +236,25 @@ pub(super) fn select(
             let Some(into) = outward.cross(travel).normalized() else {
                 return Err(Stop::of(LOST).at(&named));
             };
-            for &(normal, sheet_face) in &normals {
+            // The faces of the sheet whose surface this region's face
+            // lies on.
+            let level = coincident.get(&region.face).map_or(&[][..], Vec::as_slice);
+            for &(normal, face) in &normals {
+                let sheet_face = sheet.name(face);
                 let along = into.dot(normal);
                 if along.is_nan() {
                     return Err(Stop::of(LOST).at(&[named[0], sheet_face]));
                 }
                 if along.abs() <= SQUARE {
-                    // Where the sheet passes through the boundary it must
-                    // cross the face; where its contact with a face ends,
-                    // a face that continues the sheet's surface is told
-                    // nothing here.
-                    if through {
+                    // A region on the surface of this face of the sheet
+                    // (beside the piece of the sheet on it: where the
+                    // contact ends, or a sheet that folds there) continues
+                    // the sheet's surface and is told nothing here: it is
+                    // reached from another meeting, or not at all. Any
+                    // other region square to the sheet where the sheet
+                    // passes through the boundary is a cut tangent to a
+                    // face.
+                    if through && !level.iter().any(|&(f, _)| f == face) {
                         return Err(Stop::of(TANGENT_CUT).at(&[named[0], sheet_face]));
                     }
                     continue;
@@ -277,7 +284,7 @@ pub(super) fn select(
         } = region;
         let flip = match on_sheet {
             // On the sheet: as a face of A coincident with a face of B.
-            Some(class) => match solids(op, solid.operand, class)
+            Some((class, _)) => match solids(op, solid.operand, class)
                 .map_err(|reason| Stop::of(reason).at(&[solid.name(face)]))?
             {
                 Some(flip) => flip,

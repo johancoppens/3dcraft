@@ -365,6 +365,67 @@ fn a_spline_sphere_and_a_spline_torus_match_their_closed_forms() {
     }
 }
 
+/// A whole closed surface (one face without loops: a sphere, a torus, a
+/// spline sphere or torus) is a closed shell, which a sheet cannot be:
+/// marked as a sheet it is `SheetClosed`, though it has no edge to tell
+/// it by. A face without loops on a surface without an end (a plane, a
+/// cylinder) is unbounded, not closed: no `SheetClosed` (the exporters
+/// and the measure refuse it).
+#[test]
+fn a_whole_closed_surface_marked_as_a_sheet_is_closed() {
+    use craft3d_geom::{Sphere, Torus};
+    use craft3d_topo::{Defect, ShellId};
+    let as_sheet = |surface: Surface| {
+        let mut body = Body::new(BodyKind::Sheet);
+        let face = body.add_face(surface, false, Vec::new());
+        body.add_shell(vec![face]);
+        body
+    };
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            for (name, surface) in [
+                (
+                    "sphere",
+                    Surface::Sphere(Sphere::new(frame, 1.7 * k).unwrap()),
+                ),
+                (
+                    "torus",
+                    Surface::Torus(Torus::new(frame, 3.0 * k, 0.8 * k).unwrap()),
+                ),
+                (
+                    "spline sphere",
+                    Surface::Nurbs(revolved(&frame, &meridian(1.7 * k))),
+                ),
+                (
+                    "spline torus",
+                    Surface::Nurbs(revolved(&frame, &tube(3.0 * k, 0.8 * k))),
+                ),
+            ] {
+                assert_eq!(
+                    check(&as_sheet(surface), &tol),
+                    [Defect::SheetClosed { shell: ShellId(0) }],
+                    "{name} at {k}"
+                );
+            }
+            for (name, surface) in [
+                ("plane", Surface::Plane(Plane::new(frame))),
+                (
+                    "cylinder",
+                    Surface::Cylinder(Cylinder::new(frame, 1.7 * k).unwrap()),
+                ),
+            ] {
+                assert!(
+                    !check(&as_sheet(surface), &tol)
+                        .iter()
+                        .any(|d| matches!(d, Defect::SheetClosed { .. })),
+                    "{name} at {k}"
+                );
+            }
+        }
+    }
+}
+
 /// The slice of a spline ball between the planes z = `low` and `high`,
 /// or, where one of them is `None`, everything below or above the other:
 /// a cap, whose face holds a pole of the surface and has one rim, which

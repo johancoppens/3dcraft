@@ -119,11 +119,12 @@ pub enum Defect {
         vertex: VertexId,
         ends: usize,
     },
-    /// A shell of a sheet with edges but no boundary edge: a closed shell
-    /// bounds a solid (it has an inside), and a sheet is an open shell.
-    /// (A shell of faces without loops has no edge to tell by: a face on
-    /// a surface without an end is unbounded, which the exporters and the
-    /// measure refuse.)
+    /// A shell of a sheet with no boundary: edges but no boundary edge, or
+    /// a face without loops on a surface that closes all around (a whole
+    /// sphere, torus, or freeform surface closed both ways). A closed
+    /// shell bounds a solid (it has an inside), and a sheet is an open
+    /// shell. (A face without loops on a surface without an end is
+    /// unbounded, not closed: the exporters and the measure refuse it.)
     SheetClosed {
         shell: ShellId,
     },
@@ -252,7 +253,7 @@ impl fmt::Display for Defect {
             ),
             Defect::SheetClosed { shell } => write!(
                 f,
-                "shell {} of the sheet is closed (no edge of it is a boundary edge): a closed shell bounds a solid, and a sheet is an open shell",
+                "shell {} of the sheet is closed (it has no boundary): a closed shell bounds a solid, and a sheet is an open shell",
                 shell.0
             ),
             Defect::ShellNesting { shell, reason } => {
@@ -795,8 +796,21 @@ fn shell_defects(body: &Body, defects: &mut Vec<Defect>) {
                 match crate::shells::boundary_loops(body, shell) {
                     // A sheet's shell has a boundary: one with edges and
                     // none on the boundary is a solid's shell (it has an
-                    // inside).
-                    Some(0) if edges > 0 => {
+                    // inside), and so is one without edges whose faces
+                    // are whole surfaces that close all around (a sphere,
+                    // a torus, a freeform surface closed both ways). A
+                    // face without loops on a surface without an end is
+                    // unbounded, not closed: the exporters and the
+                    // measure refuse it.
+                    Some(0)
+                        if edges > 0
+                            || body.shells.get(s).is_some_and(|sh| {
+                                sh.faces.iter().filter_map(|&f| body.face(f)).any(|face| {
+                                    face.loops.is_empty()
+                                        && crate::mass::closed_all_around(&face.surface)
+                                })
+                            }) =>
+                    {
                         defects.push(Defect::SheetClosed { shell });
                         continue;
                     }

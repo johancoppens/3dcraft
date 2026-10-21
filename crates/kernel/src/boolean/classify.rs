@@ -181,7 +181,7 @@ fn classify(
         let fresh: Vec<Vec3> = candidates.into_iter().skip(tried).collect();
         tried += fresh.len();
         for p in fresh {
-            if let Some(class) = on_coincident_at(region, p, other, coincident, tol)? {
+            if let Some((class, _)) = on_coincident_at(region, p, other, coincident, tol)? {
                 return Ok(class);
             }
             // A point may by chance be where the bodies touch without
@@ -204,15 +204,15 @@ fn classify(
 }
 
 /// Whether the point `p` of a region of a face lies on a face of `other`
-/// on the same surface (`coincident`): `Some(OnSame | OnOpposite)` when
-/// it is inside one of them, `None` when it is on none.
+/// on the same surface (`coincident`): `Some(OnSame | OnOpposite)` and
+/// that face when it is inside one of them, `None` when it is on none.
 fn on_coincident_at(
     region: &Outline,
     p: Vec3,
     other: &Solid,
     coincident: &[(usize, bool)],
     tol: f64,
-) -> Result<Option<Class>, Stop> {
+) -> Result<Option<(Class, usize)>, Stop> {
     for &(face, same_normal) in coincident {
         let outline = other.outline(face)?;
         // Coincident surfaces may overlap only in part: a point of
@@ -233,11 +233,12 @@ fn on_coincident_at(
             Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
             Side::In => {
                 let same = same_normal == (region.reversed == outline.reversed);
-                return Ok(Some(if same {
+                let class = if same {
                     Class::OnSame
                 } else {
                     Class::OnOpposite
-                }));
+                };
+                return Ok(Some((class, face)));
             }
         }
     }
@@ -246,7 +247,7 @@ fn on_coincident_at(
 
 /// Whether a region of a face of `own` lies on a face of `other` on the
 /// same surface, told by a point well inside the region: `Some` with its
-/// class when it does, `None` when it does not, or when the region holds
+/// class and that face of `other` when it does, `None` when it does not, or when the region holds
 /// no such point (a sliver, whose side the caller tells another way).
 /// Where a face of `other` passes through the region, the imprint divides
 /// it, so one point speaks for the whole region.
@@ -255,7 +256,7 @@ pub(super) fn on_coincident(
     other: &Solid,
     coincident: &[(usize, bool)],
     tolerance: &Tolerance,
-) -> Result<Option<Class>, Stop> {
+) -> Result<Option<(Class, usize)>, Stop> {
     if coincident.is_empty() {
         return Ok(None);
     }
@@ -266,8 +267,8 @@ pub(super) fn on_coincident(
         Err(reason) => return Err(Stop::of(reason)),
     };
     for p in candidates {
-        if let Some(class) = on_coincident_at(region, p, other, coincident, tol)? {
-            return Ok(Some(class));
+        if let Some(found) = on_coincident_at(region, p, other, coincident, tol)? {
+            return Ok(Some(found));
         }
     }
     Ok(None)
