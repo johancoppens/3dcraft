@@ -88,6 +88,13 @@ fn a_skin_of_a_cylinder_meshed_flat_is_no_overlap() {
 /// not be meshed: "a triangle 3.6e-11 across is still off the surface or
 /// faces against it", at every mirror plane tried. The body before the
 /// mirror meshes fine, and so does the mirror image of the tori alone.
+/// The face's seam leaves the bite's end vertex 0.04° from the bite's
+/// last chord in the parameter plane, and in space the chord's far vertex
+/// lay on the other side of the seam's first piece: every triangle
+/// between them faced against the surface, and no point inside mends
+/// that. The seam's pieces are now halved until no vertex beside one
+/// lies on its other side in space (`face.rs`, `passed_on_the_wrong_side`);
+/// every triangle faces the way the surface does, at every chord tried.
 #[test]
 fn a_mirrored_torus_with_a_bite_is_meshed() {
     for k in SCALES {
@@ -110,17 +117,40 @@ fn a_mirrored_torus_with_a_bite_is_meshed() {
             .unwrap()
             .body;
         assert_eq!(check(&bitten, &tol), [], "scale {k}");
-        let params = TessParams {
-            chordal_tolerance: 2.5e-3 * k,
-            ..TessParams::default()
-        };
-        tessellate_body(&bitten, &params).unwrap();
+        let mut bodies = vec![("before the mirror".to_string(), bitten.clone())];
         for normal in [v(1.0, 1.0, 0.0), Vec3::X, Vec3::Y, Vec3::Z] {
             let mirror = Transform::mirror(v(0.0, -5.0 * k, 15.0 * k), normal).unwrap();
             let image = bitten.transformed(&mirror).unwrap();
             assert_eq!(check(&image, &tol), [], "scale {k}, normal {normal:?}");
-            if let Err(e) = tessellate_body(&image, &params) {
-                panic!("scale {k}, normal {normal:?}: {e}");
+            bodies.push((format!("mirrored along {normal:?}"), image));
+        }
+        // The self-check's chord (2.5e-3), the export's automatic one
+        // (5e-2) and those between, each mesh closed and every triangle
+        // facing the way its surface does at the foot of its centroid.
+        for chord in [5e-2, 2e-2, 1e-2, 5e-3, 2.5e-3] {
+            let params = TessParams {
+                chordal_tolerance: chord * k,
+                ..TessParams::default()
+            };
+            for (what, body) in &bodies {
+                let what = format!("scale {k}, chord {chord}, {what}");
+                let mesh = match tessellate_body(body, &params) {
+                    Ok(mesh) => mesh,
+                    Err(e) => panic!("{what}: {e}"),
+                };
+                assert!(mesh.weld().unwrap().is_closed(), "{what}: not closed");
+                for (t, &face) in mesh.face_ids.iter().enumerate() {
+                    let [a, b, c] = mesh.corners(t).unwrap();
+                    let face = &body.faces[face as usize];
+                    let (u, w) = face.surface.project((a + b + c) * (1.0 / 3.0)).unwrap();
+                    let outward = if face.reversed { -1.0 } else { 1.0 };
+                    if let Some(normal) = face.surface.normal(u, w) {
+                        assert!(
+                            (b - a).cross(c - a).dot(normal) * outward > 0.0,
+                            "{what}: triangle {t} faces against its surface"
+                        );
+                    }
+                }
             }
         }
     }

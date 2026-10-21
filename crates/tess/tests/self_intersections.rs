@@ -800,11 +800,16 @@ fn a_touch_is_not_a_crossing_by_what_lies_beyond_the_face_itself() {
         // to the plate at `top` (inside the first triangle, at the
         // sheet's own corner), down to q and r, and on from there to the
         // plate's edge m-c.
-        let build = |top: Vec3| {
+        // `far` is the face of the plate's triangles on the far side: the
+        // plate's own (0), or another face in its plane (3), as a flat
+        // face cut in two by an edge is; `lift` raises the plate's far
+        // corner c out of its plane, as in the mesh of a curved face.
+        let build_with = |top: Vec3, far: u32, lift: f64| {
+            let c = c + v(0.0, 0.0, lift);
             let mut soup = Soup::default();
             soup.triangle(a, b, m, 0);
-            soup.triangle(b, c, m, 0);
-            soup.triangle(c, d, m, 0);
+            soup.triangle(b, c, m, far);
+            soup.triangle(c, d, m, far);
             soup.triangle(d, a, m, 0);
             soup.quad(b, m, m + v(0.0, 0.0, 5.0), b + v(0.0, 0.0, 5.0), 2);
             soup.triangle(top, q, r, 1);
@@ -812,18 +817,21 @@ fn a_touch_is_not_a_crossing_by_what_lies_beyond_the_face_itself() {
             soup.triangle(r, m, c, 1);
             soup.scaled(scale)
         };
-        let found = all_crossings(&build(p));
-        assert!(
-            found.iter().all(|c| c.depth <= 1e-9 * scale),
-            "scale {scale}: {found:?}"
-        );
-        // Sunk into the plate by a tenth, the sheet does cross it.
-        let found = all_crossings(&build(p + v(0.0, 0.0, 0.1)));
-        let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
-        assert!(
-            (deepest - 0.1 * scale).abs() < 1e-6 * scale,
-            "scale {scale}: {found:?}"
-        );
+        for (far, lift) in [(0, 0.0), (3, 0.0), (0, 0.5)] {
+            let build = |top: Vec3| build_with(top, far, lift);
+            let found = all_crossings(&build(p));
+            assert!(
+                found.iter().all(|c| c.depth <= 1e-9 * scale),
+                "scale {scale}, far face {far}, lifted {lift}: {found:?}"
+            );
+            // Sunk into the plate by a tenth, the sheet does cross it.
+            let found = all_crossings(&build(p + v(0.0, 0.0, 0.1)));
+            let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
+            assert!(
+                (deepest - 0.1 * scale).abs() < 1e-6 * scale,
+                "scale {scale}, far face {far}, lifted {lift}: {found:?}"
+            );
+        }
     }
 }
 

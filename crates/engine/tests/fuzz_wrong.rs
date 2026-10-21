@@ -40,8 +40,9 @@
 //!   tangent to the top face along a line, where a touch was measured
 //!   as a crossing as deep as the body by a walk over the top face's own
 //!   triangles; and a mirror of united tori with a bite whose face could
-//!   not be meshed, the refinement having run into a needle between a
-//!   seam and a chord. All three accepted and valid.
+//!   not be meshed, its seam running past a vertex of the loop on the
+//!   other side in space than in the parameter plane. All three accepted
+//!   and valid.
 
 #![allow(
     clippy::unwrap_used,
