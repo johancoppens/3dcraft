@@ -62,6 +62,9 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
+- [ ] Tangent contact of higher order where a circle of one face lies on another face (a cone's base circle on a tilted cylinder): refused "two curves leave a point in the same direction and stay together"; the Garabit pier stops on it at union 127 of 307 (Heavy `pier` task) and the Perseverance hit it independently (2026-10-21).
+- [ ] Faces the tessellator cannot mesh: a fillet face on a body turned 7.5° or 30° at a chord of 4 to 6 (the Perseverance's STL/3MF export fails at the default tolerance), a torus less a cylinder through its middle in the self-check (2026-10-21).
+- [ ] The fuzz run of 2026-10-20 (94,697 seeds on the Strix): its 11 timeouts; and a pattern of a filleted seed 48 times takes 1.85 s against 0 for the plain one.
 - [x] A cusp against a face that holds its axis through the point: built and meshed (2026-10-17).
 - [ ] A cusp's axis on a block edge takes 21 to 46 s for its first boolean (47 to 86 s before 2026-10-17), in lower bounds that split the ring around the axis, and a tolerance ten times tighter for the size refuses the half ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*, *Speed of freeform booleans and of their measures*).
 - [x] Rational weights far apart measured: `topo::mass_properties` settles on weights ten thousand apart a reparametrisation evens out, and a thousand apart one cannot (2026-10-17).
@@ -206,6 +209,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open
+- [ ] `ui.screenshot {"window": true}` once gave no answer for over 120 s (the protocol promises an error after 8 s), and `ui.set {"camera": {"autoFit": true}}` does not refit where `ui.fit` does (Perseverance, 2026-10-21).
 - [ ] A presentation path when no GPU adapter is found (eframe still needs one for the window)
 - [ ] Golden images blessed by the developer
 - [ ] An automated test with a real MCP client
@@ -401,6 +405,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - The offset of a fillet face is the fillet rebuilt between the offset faces it rolls along, radius r ± d: the bike's saddle shells with its fillets ([`design/face-operations.md`](design/face-operations.md) › *Offset of a fillet: rebuilt*) (2026-10-18)
 
 #### Open
+- [ ] Found by the Perseverance showcase (2026-10-21, reproducers kept locally): a sweep whose profile plane comes from points rounded to 1e-3 mm is refused by a snap far stricter than the model's tolerance; a sweep cut along a helix whose radius equals the rod's is refused (and a successful one takes 3 s); a fillet along a fin root that ends on the rim's fillet is refused; after a pattern of a chamfered seed, instance 0 and the others are named differently.
 - [ ] Replace face
 - [ ] Draft: cones, spheres and freeform faces, faces not along the pull direction, a parting line instead of a neutral plane, a face whose neighbour is tangent to it and not drafted
 - [ ] Thicken: a sheet body (`feature.fill` makes one since 2026-10-18), walls along the faces' normals at a rim that is not square to its neighbours
