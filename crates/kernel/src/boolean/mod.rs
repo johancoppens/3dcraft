@@ -63,6 +63,7 @@ mod verify;
 
 pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, interference};
 pub use freeform::{release_unused, shelf_size};
+pub(crate) use hits::speed_bound;
 pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, verify};
 
 use crate::{KernelError, MAX_REPORTED};

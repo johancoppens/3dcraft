@@ -1,0 +1,100 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.torus",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              1.0,
+              0.01
+            ],
+            "major": 0.0125,
+            "minor": 0.01,
+            "name": "N0",
+            "position": [
+              0.0025,
+              -0.0025,
+              0.005
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.cylinder",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              0.0,
+              1.0
+            ],
+            "height": 0.02,
+            "name": "N2",
+            "position": [
+              0.01,
+              0.0,
+              -0.005
+            ],
+            "radius": 0.01
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.fillet",
+          "params": {
+            "chain": false,
+            "edges": [
+              [
+                "{N2}:face(0)",
+                "{N2}:face(1)"
+              ]
+            ],
+            "name": "N3",
+            "radius": 0.0025
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N6",
+            "op": "intersect",
+            "target": "N0",
+            "tool": "N3"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.edit",
+          "params": {
+            "feature": "N3",
+            "radius": 0.000625
+          }
+        }
+      ],
+      "step": "edit"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 20815546
+}

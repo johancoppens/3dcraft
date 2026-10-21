@@ -543,8 +543,10 @@ fn bounds(
 
 /// The shells of a solid body sorted into lumps: `(outer, cavities)`, by
 /// shell index, in the order of the outer shells (`craft3d_kernel::lumps`:
-/// the sign of the volume each shell encloses and which shells lie inside
-/// which).
+/// which shells lie inside which decides; the sign of the volume each
+/// shell encloses, where it can be told from zero, must agree, and when
+/// every sign can be read and one shell faces out it is the one part
+/// without a ray).
 fn lumps(
     body: &Body,
     tolerance: &Tolerance,
@@ -563,14 +565,16 @@ fn lumps(
     };
     // The faces measured once, summed per shell.
     let volumes = craft3d_topo::shell_volumes(body);
-    let outer = craft3d_kernel::lumps::outer_shells(body, &volumes).map_err(failed)?;
-    if let [only] = outer
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| **o)
-        .map(|(s, _)| s)
-        .collect::<Vec<_>>()
-        .as_slice()
+    let outer = craft3d_kernel::lumps::outer_shells(body, &volumes, tolerance).map_err(failed)?;
+    // Every shell's volume has a sign to read, and one faces outward.
+    if outer.iter().all(Option::is_some)
+        && let [only] = outer
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| **o == Some(true))
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>()
+            .as_slice()
     {
         // One part: every other shell is one of its cavities, without a
         // ray (what lies where is `document.check`'s to judge).

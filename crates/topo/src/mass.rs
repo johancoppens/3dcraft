@@ -4080,12 +4080,15 @@ fn measure_run(bodies: &[&Body], rule: &Rule) -> Vec<Measured> {
 }
 
 /// The volume one shell of a body encloses, taken alone (negative for a
-/// cavity, whose faces point into what it encloses), and how far it can
-/// be off by the integrator's own account (as [`MassBound::volume`]).
+/// cavity, whose faces point into what it encloses), how far it can be
+/// off by the integrator's own account (as [`MassBound::volume`]), and
+/// the shell's area (what the tolerance of the model allows the volume
+/// to be off by is the consumer's to add: `craft3d_kernel::lumps`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShellVolume {
     pub volume: f64,
     pub bound: f64,
+    pub area: f64,
 }
 
 /// What each shell of a body encloses, from its faces' integrals summed in
@@ -4097,6 +4100,7 @@ fn shell_sums(body: &Body, faces: &[FaceSums]) -> Vec<Result<ShellVolume, MassEr
         .iter()
         .map(|shell| {
             let mut volume = 0.0_f64;
+            let mut area = 0.0_f64;
             let mut held = 0.0_f64;
             let mut largest = 0.0_f64;
             for id in &shell.faces {
@@ -4107,10 +4111,11 @@ fn shell_sums(body: &Body, faces: &[FaceSums]) -> Vec<Result<ShellVolume, MassEr
                 let all = sums.all.clone()?;
                 let outward = if face.reversed { -1.0 } else { 1.0 };
                 volume += all.volume * outward;
+                area += all.area;
                 held += sums.held[1];
                 largest += all.volume.abs();
             }
-            if !(volume.is_finite() && held.is_finite()) {
+            if !(volume.is_finite() && area.is_finite() && held.is_finite()) {
                 return Err(MassError::Unsupported {
                     face: shell.faces.first().map_or(0, |f| f.0 as usize),
                     what: "geometry whose integrals are not finite",
@@ -4120,6 +4125,7 @@ fn shell_sums(body: &Body, faces: &[FaceSums]) -> Vec<Result<ShellVolume, MassEr
             Ok(ShellVolume {
                 volume,
                 bound: held + count * f64::EPSILON * largest,
+                area,
             })
         })
         .collect()

@@ -1,0 +1,111 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N1",
+            "position": [
+              -2.5,
+              5.0,
+              0.0
+            ],
+            "radius": 10.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "angle": "360 deg / 6",
+            "axis": [
+              0.0,
+              0.0,
+              10.0
+            ],
+            "count": 6,
+            "name": "N2",
+            "point": [
+              7.483081582712682,
+              15.0,
+              0.0
+            ],
+            "source": "N1"
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S5",
+            "offset": 5.0,
+            "plane": "yz"
+          }
+        },
+        {
+          "command": "sketch.circle",
+          "params": {
+            "center": [
+              12.5,
+              -5.0
+            ],
+            "radius": 7.5,
+            "sketch": "S5"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "360 deg",
+            "axis": "y",
+            "name": "N5",
+            "sketch": "S5"
+          }
+        }
+      ],
+      "step": "revolve"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N6",
+            "open": [
+              "{N2}:copy(4)/{N1}:face(0)"
+            ],
+            "source": "N2",
+            "thickness": 1.25
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N7",
+            "op": "subtract",
+            "target": "N6",
+            "tool": "N5"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 20820477
+}

@@ -1,0 +1,69 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.cylinder",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              0.0,
+              0.0
+            ],
+            "height": 0.015,
+            "name": "N0",
+            "position": [
+              -0.01,
+              -0.0025,
+              0.0075
+            ],
+            "radius": 0.0025
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.cone",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              1.0,
+              0.0
+            ],
+            "height": 0.015,
+            "name": "N2",
+            "position": [
+              -0.005,
+              -0.00249267244644295,
+              0.0075
+            ],
+            "radius": 0.0025
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N4",
+            "op": "subtract",
+            "target": "N2",
+            "tool": "N0"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 20756595
+}

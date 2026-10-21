@@ -1,0 +1,117 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S0",
+            "offset": -10000.0,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.circle",
+          "params": {
+            "center": [
+              7500.0,
+              0.0
+            ],
+            "radius": 5000.0,
+            "sketch": "S0"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "360 deg",
+            "axis": "y",
+            "name": "N0",
+            "sketch": "S0"
+          }
+        }
+      ],
+      "step": "revolve"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N1",
+            "position": [
+              10000.0,
+              -10000.0,
+              -10000.0
+            ],
+            "radius": 10000.0
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N2",
+            "open": [],
+            "source": "N0",
+            "thickness": 625.0
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N3",
+            "position": [
+              2499.9999999999995,
+              -7500.0,
+              0.0
+            ],
+            "radius": 10000.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N4",
+            "op": "subtract",
+            "target": "N2",
+            "tool": "N3"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N5",
+            "op": "union",
+            "target": "N1",
+            "tool": "N4"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 1000.0,
+  "seed": 20796666
+}

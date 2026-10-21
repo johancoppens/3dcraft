@@ -47,6 +47,18 @@ pub(super) const TOO_CLOSE: Reason =
 const NO_POLE: Reason =
     "a face on a sphere whose boundary comes close to every point tried as a centre of projection";
 const NO_CUT: Reason = "a face on a torus whose boundary crosses every circle around its axis and every circle around its tube";
+const CUT_CROSSED: Reason = "a face on a torus whose boundary runs through the cut its chart was opened along; this is a bug";
+/// How much further than the chart's own bound a stretch's image may move
+/// before it is read as a jump across the cut: the bound is exact on the
+/// torus, and a boundary curve fitted within the tolerance of it moves
+/// faster by at most the tolerance over the radius the chart's angle is
+/// taken at: the least distance from the axis (major − minor) for a
+/// `Tube` chart, the tube's radius for a `Ring` chart. Below a hundredth
+/// where that radius is over a hundred tolerances; a fat torus whose
+/// major − minor is less can be refused with `CUT_CROSSED` where its
+/// boundary does not cross the cut (a false refusal, never a wrong
+/// result: the chart's bound itself is exact).
+const CUT_SLACK: f64 = 1e-2;
 
 /// The most evaluations the winding sum spends on one curve piece.
 const MAX_TURN_STEPS: usize = 1 << 16;
@@ -211,16 +223,36 @@ fn torus_angles(frame: &Frame, major: f64, p: Vec3) -> (f64, f64) {
 
 /// The middle of the widest stretch of the circle that none of the
 /// stretches `(start, length)` covers, and its width.
-fn widest_gap(mut covered: Vec<(f64, f64)>) -> Option<(f64, f64)> {
-    if covered.iter().any(|&(_, length)| length >= TAU) {
+fn widest_gap(covered: Vec<(f64, f64)>) -> Option<(f64, f64)> {
+    if covered
+        .iter()
+        .any(|&(_, length)| length.is_nan() || length >= TAU)
+    {
         return None;
     }
     if covered.is_empty() {
         return Some((PI, TAU));
     }
-    covered.sort_by(|a, b| a.0.total_cmp(&b.0));
-    // Walk once around, starting where the first stretch starts.
-    let first = covered.first().map_or(0.0, |c| c.0);
+    // Every stretch as pieces of the circle's one turn `[0, 2π)`: a
+    // stretch that passes `2π` goes on from `0`, and covers the start of
+    // the walk below as much as its end (a stretch that started past the
+    // first one and ran on past `2π` was not counted at the start, and
+    // the cut was put where it ran: the fuzzer's finding of 2026-10-20).
+    let mut pieces = Vec::with_capacity(covered.len() + 1);
+    for (start, length) in covered {
+        let start = wrap(start);
+        if start + length > TAU {
+            pieces.push((start, TAU - start));
+            pieces.push((0.0, start + length - TAU));
+        } else {
+            pieces.push((start, length));
+        }
+    }
+    pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Walk once around, starting where the first piece starts; the gap
+    // from where the last piece ends to the first one again is the one
+    // over `2π`.
+    let first = pieces.first().map_or(0.0, |c| c.0);
     let mut reach = first;
     let mut best: Option<(f64, f64)> = None;
     let mut consider = |from: f64, to: f64| {
@@ -229,7 +261,7 @@ fn widest_gap(mut covered: Vec<(f64, f64)>) -> Option<(f64, f64)> {
             best = Some((wrap(from + 0.5 * width), width));
         }
     };
-    for &(start, length) in &covered {
+    for &(start, length) in &pieces {
         consider(reach, start);
         reach = reach.max(start + length);
     }
@@ -544,6 +576,22 @@ impl Chart {
         )
     }
 
+    /// For the charts of a torus cut open along a circle of it in closed
+    /// form, whose image jumps between the annulus's two ends at the cut:
+    /// how fast a curve of speed `speed` can move the image's distance
+    /// from the origin, `1 + (angle from the cut) / 2π`, where the chart
+    /// is continuous. The angle about the axis moves at most `speed` over
+    /// the least distance from the axis, the angle around the tube at
+    /// most `speed` over the tube's radius; the winding sum holds every
+    /// stretch to it (`CUT_SLACK`).
+    fn radial_pace(&self, speed: f64) -> Option<f64> {
+        match self {
+            Chart::Tube { major, minor, .. } => Some(speed / (TAU * (major - minor))),
+            Chart::Ring { minor, .. } => Some(speed / (TAU * minor)),
+            _ => None,
+        }
+    }
+
     /// True for the charts whose origin is not a point of the surface but
     /// one end of a cut torus.
     pub(super) fn has_inner_end(&self) -> bool {
@@ -849,6 +897,18 @@ impl Chart {
             }
             let far = p0.0.hypot(p0.1);
             if far > pace * (t1 - t0) || (local.is_some() && far > pace_over(t0, t1)) {
+                // On a torus cut open the chart is continuous only off the
+                // cut, and the sum assumes it: a stretch whose image moves
+                // further from the chart's origin than the chart can carry
+                // it (a jump between the inner and the outer end of the
+                // annulus) runs through the cut.
+                if let Some(radial) = self.radial_pace(curve_speed) {
+                    let reach = |p: (f64, f64)| (p.0 + target.at.0).hypot(p.1 + target.at.1);
+                    let moved = (reach(p1) - reach(p0)).abs();
+                    if moved.is_nan() || moved > radial * (t1 - t0) * (1.0 + CUT_SLACK) + 1e-12 {
+                        return Err(CUT_CROSSED);
+                    }
+                }
                 total += angle(p0, p1);
             } else {
                 let mid = 0.5 * (t0 + t1);
@@ -1218,5 +1278,77 @@ mod tests {
         assert!((middle - 4.5).abs() < 1e-12, "{middle}");
         // Covered between them.
         assert_eq!(widest_gap(vec![(0.0, 4.0), (3.0, 4.0)]), None);
+        // A stretch that starts past the first one and runs on past 2π
+        // covers the start of the walk as much as its end (the fuzzer's
+        // finding of 2026-10-20: the gap was put at 4.31, inside the
+        // stretch 4.81 → 10.89 = 4.61, which a loop of the face ran
+        // through). The one gap is between 4.61 and 4.81.
+        let (middle, width) =
+            widest_gap(vec![(6.228, 2.3125), (2.148, 1.652), (4.8138, 6.0788)]).unwrap();
+        assert!(
+            (width - (4.8138 - (4.8138 + 6.0788 - TAU))).abs() < 1e-12,
+            "{width}"
+        );
+        assert!((middle - (4.8138 - 0.5 * width)).abs() < 1e-12, "{middle}");
+        // The same stretch alone, and with a piece at the start: the gap
+        // is its own end to its start.
+        let (middle, width) = widest_gap(vec![(4.8138, 6.0788)]).unwrap();
+        assert!((width - (TAU - 6.0788)).abs() < 1e-12, "{width}");
+        assert!((middle - (4.8138 - 0.5 * width)).abs() < 1e-12, "{middle}");
+        assert_eq!(widest_gap(vec![(4.0, 2.0), (6.0, 4.5)]), None);
+        assert_eq!(widest_gap(vec![(1.0, f64::NAN)]), None);
+    }
+
+    /// A loop that runs through the cut its chart was opened along is
+    /// refused by the winding sum, not summed across the jump.
+    #[test]
+    fn a_loop_through_the_cut_of_a_torus_chart_is_refused() {
+        use craft3d_geom::{Circle, Torus};
+        let torus = Torus::new(Frame::WORLD, 10.0, 3.0).unwrap();
+        let torus_frame = *torus.frame();
+        // A circle around the axis at angle 0.5 around the tube (radius
+        // 10 + 3 cos 0.5, height 3 sin 0.5), as one piece: it crosses
+        // every circle around the tube, so a chart cut along one of
+        // them (as if the coverage had missed it) is no chart of it.
+        let (sin, cos) = 0.5_f64.sin_cos();
+        let frame = Frame::WORLD.at(Vec3::new(0.0, 0.0, 3.0 * sin)).unwrap();
+        let circle = Curve3::Circle(Circle::new(frame, 10.0 + 3.0 * cos).unwrap());
+        let seg = Seg {
+            a: circle.eval(0.0),
+            b: circle.eval(0.0),
+            curve: circle,
+            range: (0.0, TAU),
+            reversed: false,
+        };
+        let chart = Chart::Tube {
+            frame: torus_frame,
+            major: 10.0,
+            minor: 3.0,
+            cut: 1.0,
+        };
+        // A point of the torus at angle 2 about the axis and 2.5 around
+        // the tube. Cut along a circle around the axis instead (angle 4
+        // around the tube, which the loop does not cross) the loop winds
+        // once about the inner end and not about that point, which lies
+        // between the loop and the cut.
+        let about = About::Point(Surface::Torus(torus).eval(2.0, 2.5));
+        assert_eq!(
+            chart.winding([&[seg.clone()][..]], about),
+            Err(CUT_CROSSED),
+            "the loop runs through the cut"
+        );
+        let chart = Chart::Ring {
+            frame: torus_frame,
+            major: 10.0,
+            minor: 3.0,
+            cut: 4.0,
+        };
+        assert_eq!(
+            chart
+                .winding([&[seg.clone()][..]], About::InnerEnd)
+                .map(i32::abs),
+            Ok(1)
+        );
+        assert_eq!(chart.winding([&[seg][..]], about), Ok(0));
     }
 }
