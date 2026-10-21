@@ -184,6 +184,72 @@ fn untie(
     Err(TANGENT)
 }
 
+/// Which arcs of a face's map are imprinted inside it, and which the
+/// boundary uses exactly once.
+struct Sides<'a> {
+    interior: &'a BTreeSet<usize>,
+    once: BTreeSet<usize>,
+}
+
+/// Puts a run of rays that leave a vertex in the same direction in order.
+///
+/// Where the run holds one piece of the face's boundary and pieces
+/// imprinted on the face, the order between the boundary and the rest is
+/// known without measuring: an imprinted piece lies in the face (it was
+/// clipped to it, and arcs do not cross between vertices), and the face
+/// lies to the left of its boundary, counter-clockwise from the use that
+/// leaves the vertex and clockwise from the one that arrives. So the
+/// imprinted pieces follow the boundary piece that leaves and precede the
+/// one that arrives, whatever the surfaces and however shallow the angle
+/// at which they meet; only their order among themselves is measured
+/// ([`untie`]). (A curve that crosses the boundary at a millionth of a
+/// radian near another vertex of it, as where a cone's base circle lies a
+/// few hundred tolerances off a cylinder's wall, is within the tolerance
+/// of the boundary further than that vertex: no distance along tells them
+/// apart.) A boundary piece the boundary uses twice (a seam, with the face
+/// on both sides of it) says nothing of the side, nor do two boundary
+/// pieces in one run (a corner of no angle); any such run is measured as
+/// a whole.
+fn order_run(
+    run: &mut [usize],
+    rays: &[Ray],
+    arcs: &[Arc],
+    sides: &Sides,
+    origin: Vec3,
+    frame: &Frame,
+    tol: f64,
+) -> Result<(), Reason> {
+    let mut edge = Vec::with_capacity(1);
+    let mut inner = Vec::with_capacity(run.len());
+    for &index in run.iter() {
+        let ray = rays.get(index).ok_or(LOST)?;
+        if sides.interior.contains(&ray.arc) {
+            inner.push(index);
+        } else {
+            edge.push(index);
+        }
+    }
+    let [edge] = edge.as_slice() else {
+        return untie(run, rays, arcs, origin, frame, tol);
+    };
+    if !sides.once.contains(&rays.get(*edge).ok_or(LOST)?.arc) {
+        return untie(run, rays, arcs, origin, frame, tol);
+    }
+    if inner.len() > 1 {
+        untie(&mut inner, rays, arcs, origin, frame, tol)?;
+    }
+    let leaves = rays.get(*edge).ok_or(LOST)?.out.is_some();
+    let ordered: Vec<usize> = if leaves {
+        std::iter::once(*edge).chain(inner).collect()
+    } else {
+        inner.into_iter().chain(std::iter::once(*edge)).collect()
+    };
+    for (slot, index) in run.iter_mut().zip(ordered) {
+        *slot = index;
+    }
+    Ok(())
+}
+
 /// The loops of the map: every use of an arc in exactly one.
 fn trace(
     surface: Sheet,
@@ -199,6 +265,17 @@ fn trace(
         halves.push((arc, false));
         halves.push((arc, true));
     }
+    let mut uses: BTreeMap<usize, usize> = BTreeMap::new();
+    for &(arc, _) in boundary.iter().flatten() {
+        *uses.entry(arc).or_default() += 1;
+    }
+    let sides = Sides {
+        interior,
+        once: uses
+            .into_iter()
+            .filter_map(|(arc, count)| (count == 1).then_some(arc))
+            .collect(),
+    };
 
     // The ends of the arcs: a use leaves from one and arrives at the other.
     let mut rays: Vec<Ray> = Vec::new();
@@ -296,7 +373,7 @@ fn trace(
                     }
                     if to > from {
                         let run = fan.get_mut(from..=to).ok_or(LOST)?;
-                        untie(run, &rays, arcs, point, &frame, tol)?;
+                        order_run(run, &rays, arcs, &sides, point, &frame, tol)?;
                     }
                     from = to + 1;
                 }

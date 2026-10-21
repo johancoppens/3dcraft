@@ -416,3 +416,84 @@ fn a_row_of_blades_with_rounds_of_a_tenth_on_its_disc() {
         "{vu} + {common} != {vd} + {vr}"
     );
 }
+
+/// The union of `a` and `b` as a feature, which must build and pass the
+/// deep check, or (`unmeshed`) may instead be refused by the check that
+/// meshes the result to see whether it passes through itself; then the
+/// identities of the three booleans of their bodies, in place and
+/// turned, to the tolerance over the area (the difference made without
+/// the refusal of zero thickness: the parts it leaves may touch).
+fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
+    use craft3d_kernel::boolean::{BooleanOptions, boolean_with};
+    let mut s = steps(file);
+    let united = run(
+        &mut s,
+        "feature.boolean",
+        &json!({"op": "union", "target": a, "tool": b, "keepTool": true, "name": "U"}),
+    );
+    let refused_unmeshed = united["status"] == "failed"
+        && united["error"].as_str().is_some_and(|e| {
+            e.contains("cannot be meshed to see whether it passes through itself")
+        });
+    if !(unmeshed && refused_unmeshed) {
+        assert_ne!(united["status"], "failed", "{united}");
+        assert_ok(&mut s, "U");
+    }
+    let (bodies, tol) = bodies(&mut s, file);
+    let (first, second) = (body(&bodies, a), body(&bodies, b));
+    let slack = slack(&tol, &[first, second]);
+    let turn =
+        Transform::rotation_about(Vec3::new(3.0, -7.0, 11.0), Vec3::new(0.3, -0.5, 0.8), 0.7)
+            .unwrap();
+    let unrefused = BooleanOptions {
+        refuse_zero_thickness: false,
+        ..BooleanOptions::default()
+    };
+    for t in [None, Some(turn)] {
+        let place = |b: &Body| t.map_or_else(|| b.clone(), |t| b.transformed(&t).unwrap());
+        let (x, y) = (place(first), place(second));
+        let (vx, vy) = (volume(&x), volume(&y));
+        let of = |op| volume(&boolean_with(&x, &y, op, &tol, &unrefused).unwrap().body);
+        let (all, common, rest) = (
+            of(BooleanOp::Union),
+            of(BooleanOp::Intersect),
+            of(BooleanOp::Subtract),
+        );
+        assert!(common > 0.0, "{file}: the bodies overlap");
+        assert!(
+            (all + common - vx - vy).abs() <= slack,
+            "{file}: {all} + {common} != {vx} + {vy}"
+        );
+        assert!(
+            (rest + common - vx).abs() <= slack,
+            "{file}: {rest} + {common} != {vx}"
+        );
+    }
+}
+
+/// The Perseverance's drill tip (2026-10-21): a cone whose base circle
+/// lies 3.9e-4 mm off the wall of a drill along a tilted axis (the
+/// positions given to a thousandth), refused "two curves leave a point
+/// in the same direction and stay together": the curve of cone and wall
+/// crosses the base circle at 2.6e-5 rad, 1.9e-4 mm from the cone's seam.
+/// An imprinted curve lies in the face, so it leaves a vertex of the
+/// boundary on the face's side of it however shallow the angle
+/// (`regions::order_run`). The union is right; the feature is refused
+/// next by the self-check's mesh: the crescents between the base circle
+/// and the curves (3.9e-4 and 7.8e-4 mm across, their tips at 2.6e-5
+/// rad) need more rounds of finer chords than the tessellator gives
+/// (owed, docs/roadmap.md: faces the tessellator cannot mesh).
+#[test]
+fn the_rover_drill_tip_on_a_tilted_drill() {
+    united_and_identities("rover_drill_tip.steps.json", "Drill", "Tip", true);
+}
+
+/// The Garabit pier's stair (2026-10-21, union 127 of 307): a tread
+/// whose end touches the inside of the helical stringer (a sweep along a
+/// helix) and whose corners go into it, refused "two curves leave a point
+/// in the same direction and stay together" on the tread's top and
+/// bottom faces, where the stringer's curve leaves the end edge along it.
+#[test]
+fn the_pier_stair_tread_on_its_stringer() {
+    united_and_identities("pier_stair_tread.steps.json", "Stringer0", "Tr0_0", false);
+}
