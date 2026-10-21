@@ -612,3 +612,44 @@ fn time_of_lumps_on_a_plate_with_400_cavities() {
     println!("parts_touch in {:?}", start.elapsed());
     assert_eq!(touch, None);
 }
+
+/// A small shell in a large body keeps its sign check: what its volume
+/// can be off by scales with the shell, not with the body around it (the
+/// review of 2026-10-21 found a cube of 0.05 or 0.01 in a block of 1000,
+/// facing the wrong way, accepted once the sign was held to a bound that
+/// grew with the whole body's diagonal). In the middle of the block and
+/// near two of its corners (far from the block's middle), at three scales.
+#[test]
+fn a_small_shell_in_a_large_body_is_held_to_its_sign() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = cube(k, 0.0, 1000.0);
+        for side in [0.05, 0.01] {
+            for at in [500.0, 3.0, 996.0] {
+                let what = format!("a cube of {side} at {at} in a block of 1000 at scale {k}");
+                let small = cube(k, at, at + side);
+                // A cavity as it should be: one lump with one cavity.
+                let right = merge(&[&block, &turned_inside_out(&small, 0)]).unwrap().0;
+                assert_eq!(check(&right, &tol), [], "{what}");
+                assert_eq!(
+                    lumps(&right, &tol).unwrap(),
+                    vec![Lump {
+                        outer: ShellId(0),
+                        cavities: vec![ShellId(1)]
+                    }],
+                    "{what}"
+                );
+                // The cavity with its faces inside out, which is a small
+                // block facing out in the material of the large one: the
+                // checker passes it, its sign does not.
+                let wrong = merge(&[&block, &small]).unwrap().0;
+                assert_eq!(check(&wrong, &tol), [], "{what}");
+                assert_eq!(nesting_shell(lumps(&wrong, &tol)), 1, "{what}");
+                // A small cavity outside every lump.
+                let far = cube(k, 1000.0 + at, 1000.0 + at + side);
+                let apart = merge(&[&block, &turned_inside_out(&far, 0)]).unwrap().0;
+                assert_eq!(nesting_shell(lumps(&apart, &tol)), 1, "{what}, apart");
+            }
+        }
+    }
+}

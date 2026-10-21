@@ -2184,8 +2184,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             // Several shells: the outsides of lumps and their cavities,
             // nested as they must be (craft3d_kernel::lumps).
             // A body that is not lumps and cavities is a problem; one whose
-            // shells cannot be sorted (a volume within its bound of zero, a
-            // point no ray can place) is a doubt, counted under marginal.
+            // shells cannot be sorted (a shell that cannot be measured,
+            // points of a shell that disagree or that no ray can place) is
+            // a doubt, counted under marginal. A volume that cannot be told
+            // from zero is no doubt: where the shell lies decides.
             if deep && body.kind == BodyKind::Solid && body.shells.len() > 1 {
                 let volumes = crate::mass::shells_of(body);
                 match craft3d_kernel::lumps::lumps_measured(body, &tolerance, &volumes) {

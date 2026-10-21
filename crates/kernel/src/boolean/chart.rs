@@ -51,7 +51,13 @@ const CUT_CROSSED: Reason = "a face on a torus whose boundary runs through the c
 /// How much further than the chart's own bound a stretch's image may move
 /// before it is read as a jump across the cut: the bound is exact on the
 /// torus, and a boundary curve fitted within the tolerance of it moves
-/// faster by at most the tolerance over the tube's radius.
+/// faster by at most the tolerance over the radius the chart's angle is
+/// taken at: the least distance from the axis (major − minor) for a
+/// `Tube` chart, the tube's radius for a `Ring` chart. Below a hundredth
+/// where that radius is over a hundred tolerances; a fat torus whose
+/// major − minor is less can be refused with `CUT_CROSSED` where its
+/// boundary does not cross the cut (a false refusal, never a wrong
+/// result: the chart's bound itself is exact).
 const CUT_SLACK: f64 = 1e-2;
 
 /// The most evaluations the winding sum spends on one curve piece.

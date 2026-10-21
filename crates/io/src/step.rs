@@ -543,8 +543,10 @@ fn bounds(
 
 /// The shells of a solid body sorted into lumps: `(outer, cavities)`, by
 /// shell index, in the order of the outer shells (`craft3d_kernel::lumps`:
-/// the sign of the volume each shell encloses and which shells lie inside
-/// which).
+/// which shells lie inside which decides; the sign of the volume each
+/// shell encloses, where it can be told from zero, must agree, and when
+/// every sign can be read and one shell faces out it is the one part
+/// without a ray).
 fn lumps(
     body: &Body,
     tolerance: &Tolerance,

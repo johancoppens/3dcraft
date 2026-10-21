@@ -35,7 +35,12 @@
 //! so where two meet along an edge within the tolerance there is a gap
 //! between them of up to twice it, whose flux is bounded by the gap's
 //! area times the reach of the point the integrals are about, over
-//! three). A sliver of a few tolerances' thickness that a boolean leaves
+//! three). That reach is bounded by the diagonal of a box holding the
+//! point and the shell: the whole body's, for the volumes of one
+//! integration of the body; where that leaves a sign unread, the shell
+//! is measured again alone, about a point in its own box, and held to its
+//! own diagonal, so a small shell in a large body keeps its sign check.
+//! A sliver of a few tolerances' thickness that a boolean leaves
 //! as a lump of its own (the fuzzer's finding of 2026-10-20: a cone less
 //! a cylinder whose rim is tangent to the cone's base circle, two
 //! slivers 10 to 66 tolerances thick) measures at the noise of those
@@ -95,9 +100,11 @@ fn unsupported(body: &Body, shell: usize, reason: &'static str) -> KernelError {
 /// What the volume of shell `s` of `body`, measured as `measured`, can be
 /// off by: the integrator's own bound, the band of the tolerance around
 /// the shell, and the flux through the gaps of up to twice the tolerance
-/// along its edges (the module documentation). The reach of the point the
-/// integrals are about is bounded by the body's diagonal, the length of
-/// an edge by its curve's speed over its range.
+/// along its edges (the module documentation). `reach` bounds the
+/// distance from the point the integrals are about to the shell (the
+/// diagonal of a box that holds both: `body`'s own, the volumes being of
+/// one integration of `body` about a point in its box), the length of an
+/// edge is bounded by its curve's speed over its range.
 fn uncertainty(
     body: &Body,
     s: usize,
@@ -170,10 +177,36 @@ pub fn outer_shells(
                     "the volume a shell encloses is not finite",
                 ));
             }
-            let sure = measured.volume.abs() > uncertainty(body, s, measured, tolerance, reach);
-            Ok(sure.then_some(measured.volume > 0.0))
+            if measured.volume.abs() > uncertainty(body, s, measured, tolerance, reach) {
+                return Ok(Some(measured.volume > 0.0));
+            }
+            // Measured about a point far from it (a small shell in a large
+            // body), a shell's volume can be off by far more than its own
+            // size allows: measured again alone, about a point in its own
+            // box, it is held to its own diagonal.
+            Ok(measured_alone(body, s, tolerance, reach))
         })
         .collect()
+}
+
+/// The sign of the volume shell `s` of `body` encloses, measured alone
+/// (about a point in its own box, [`craft3d_topo::shell_volumes`] of the
+/// shell as a body of its own), where that tells it and the body measured
+/// as a whole, whose diagonal is `reach`, did not: `None` for a shell
+/// whose own box is not smaller than that, that cannot be measured alone,
+/// or whose volume cannot be told from zero even so.
+fn measured_alone(body: &Body, s: usize, tolerance: &Tolerance, reach: f64) -> Option<bool> {
+    let alone = shell_alone(body, shell_id(s))?;
+    let own = alone.bbox().ok().map(|b| b.diagonal())?;
+    let smaller = own.is_finite() && own < reach;
+    if !smaller {
+        return None;
+    }
+    let volumes = shell_volumes(&alone);
+    let measured = volumes.first()?.as_ref().ok()?;
+    let sure = measured.volume.is_finite()
+        && measured.volume.abs() > uncertainty(&alone, 0, measured, tolerance, own);
+    sure.then_some(measured.volume > 0.0)
 }
 
 /// The lumps of the solid `body`, in the order of their outer shells.
