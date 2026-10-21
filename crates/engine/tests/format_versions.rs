@@ -45,6 +45,23 @@ fn close(actual: &Value, expected: &Value) -> bool {
 }
 
 /// Every way `inspect` differs from what the writing build reported.
+/// `entries` with each `face` written in the canonical form of its name.
+fn canonical_faces(entries: &Value) -> Value {
+    let mut entries = entries.clone();
+    if let Some(list) = entries.as_array_mut() {
+        for entry in list {
+            let canonical = entry["face"]
+                .as_str()
+                .and_then(|text| text.parse::<craft3d_doc::PersistentName>().ok())
+                .map(|name| name.to_string());
+            if let Some(text) = canonical {
+                entry["face"] = Value::String(text);
+            }
+        }
+    }
+    entries
+}
+
 fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
     let mut found = Vec::new();
     let tag = format!("v{version}");
@@ -81,7 +98,10 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
     }
     // The colours given to faces (format 26), as listed, none of them lost.
     if let Some(faces) = want.get("faceAppearances") {
-        if inspect.get("faceAppearances") != Some(faces) {
+        // A name read in the long form and the short one is the same name
+        // (`PersistentName` is canonical once read, 2026-10-22): compare
+        // the names as names, the face and its colour exactly as pinned.
+        if inspect.get("faceAppearances").map(canonical_faces) != Some(canonical_faces(faces)) {
             found.push(format!(
                 "{tag}: faceAppearances {} (were {faces})",
                 inspect["faceAppearances"]
