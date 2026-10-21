@@ -3114,9 +3114,35 @@ impl Work<'_> {
             return Action::Keep;
         }
         let (_, [da, db]) = self.param.derivatives(middle);
+        // Which way a triangle faces can be told only where it is wider
+        // than the tolerance. One thinner than that, in space and on the
+        // surface alike (its corners' parameters carried by the surface's
+        // derivatives at its middle into the tangent plane: a needle
+        // between a seam and a chord of the boundary that leave one
+        // vertex a fraction of a degree apart, or between two such
+        // chords), lies within the tolerance of its longest side, which
+        // the checks above found within the tolerance of the surface at
+        // its middle (a free side) or is a chord of an edge or a seam
+        // made within it; the surface bends across the needle's length by
+        // more than the needle is wide, so its normal points whichever
+        // way the rounding of that bend says, and cutting it only makes
+        // thinner ones at the same place (the refinement that could not
+        // go on, 2026-10-20). It is kept, as the triangle in space that
+        // it is. (Lengths in space on both counts, so a body and its
+        // tolerance scaled together give the same mesh.)
+        let thin = {
+            let [a_uv, b_uv, c_uv] = [a.0, b.0, c.0];
+            let tangent = |uv: Uv| da * (uv[0] - a_uv[0]) + db * (uv[1] - a_uv[1]);
+            let (q, r) = (tangent(b_uv), tangent(c_uv));
+            let longest_tangent = q.length().max(r.length()).max(q.distance(r));
+            positive(longest)
+                && positive(longest_tangent)
+                && facing.length() / longest <= self.tolerance
+                && q.cross(r).length() / longest_tangent <= self.tolerance
+        };
         let reference = da.cross(db);
         let agreement = facing.dot(reference);
-        let clear = !flat && agreement > 0.5 * facing.length() * reference.length();
+        let clear = !flat && (thin || agreement > 0.5 * facing.length() * reference.length());
         if !clear {
             let exact = if flat {
                 Some(0.0)

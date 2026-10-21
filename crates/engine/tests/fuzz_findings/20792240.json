@@ -1,0 +1,103 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.torus",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.0,
+              0.0,
+              0.01
+            ],
+            "major": 0.0075,
+            "minor": 0.005,
+            "name": "N0",
+            "position": [
+              0.0,
+              -0.0075,
+              0.0075
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "count": 3,
+            "name": "N1",
+            "source": "N0",
+            "step": [
+              0.0,
+              0.0,
+              0.005
+            ]
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N3",
+            "position": [
+              0.0022414386804201335,
+              -0.005258561319579866,
+              0.015
+            ],
+            "radius": 0.0025
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N4",
+            "op": "subtract",
+            "target": "N1",
+            "tool": "N3"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.mirror",
+          "params": {
+            "keep": false,
+            "name": "N5",
+            "normal": [
+              0.01,
+              0.01,
+              0.0
+            ],
+            "point": [
+              -0.0,
+              -0.005,
+              0.015
+            ],
+            "source": "N4"
+          }
+        }
+      ],
+      "step": "mirror"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 20792240
+}

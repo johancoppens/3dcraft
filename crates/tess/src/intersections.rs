@@ -918,6 +918,19 @@ impl EdgeMap {
     }
 }
 
+/// The common area of two triangles that lie in one plane, as a polygon
+/// (empty when they share none, or when `b` has no area).
+pub(crate) fn common_area(a: &[Vec3; 3], b: &[Vec3; 3]) -> Vec<Vec3> {
+    let Some(column) = Column::new(b, [0.0; 3]) else {
+        return Vec::new();
+    };
+    let common = column.clip(a);
+    if common.len() < 3 || !positive(double_area(&common)) {
+        return Vec::new();
+    }
+    common
+}
+
 /// The column over a triangle: the points whose foot on its plane is in
 /// it, narrowed by an offset per edge.
 struct Column {
@@ -1066,14 +1079,30 @@ impl Depths<'_, '_> {
     /// `y`: the smaller of how far it reaches on either side of the plane
     /// of `y`, inside the column over `y`. Followed until both sides are
     /// beyond `enough`.
+    ///
+    /// The surface around `x` is followed across the edges of its
+    /// triangles, but never through the face `y` is a triangle of (unless
+    /// it is `x`'s own face too), nor through a triangle that lies in the
+    /// plane of `y` to rounding: those are the surface at `y`'s plane,
+    /// and a side of it reached through them was reached through `y`'s
+    /// surface, not past it. (A flat face of a few large triangles: the
+    /// surface around a triangle that only touched one of them at a
+    /// corner was followed over the face's other triangles to a wall
+    /// standing on its far side, and called a crossing as deep as that
+    /// wall is high, 2026-10-20.)
     fn through(&self, x: u32, y: u32, enough: f64) -> f64 {
         let Some(column) = self.column(y) else {
             return 0.0;
         };
+        let (face_x, face_y) = (self.mesh.face(x), self.mesh.face(y));
+        let flat = 1024.0 * f64::EPSILON * self.mesh.largest;
         let (mut above, mut below) = (0.0_f64, 0.0_f64);
         let mut seen = BTreeSet::from([x]);
         let mut queue = std::collections::VecDeque::from([x]);
         while let Some(t) = queue.pop_front() {
+            if t != x && face_y != face_x && self.mesh.face(t) == face_y {
+                continue;
+            }
             let Some(corners) = self.mesh.points(t) else {
                 continue;
             };
@@ -1086,6 +1115,9 @@ impl Depths<'_, '_> {
                 let h = column.height(p);
                 low = low.min(h);
                 high = high.max(h);
+            }
+            if t != x && low >= -flat && high <= flat {
+                continue;
             }
             above = above.max(high);
             below = below.max(-low);

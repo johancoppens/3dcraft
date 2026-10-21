@@ -92,7 +92,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -2217,6 +2217,25 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                         "feature": outcome.id.to_string(), "name": name,
                         "problem": format!("cannot be searched for self-intersections: {error}"),
                     })),
+                }
+                // Two shells that touch, a vertex or the middle of an edge
+                // of one on a face of the other: zero thickness, the rule
+                // regeneration holds every body to
+                // (craft3d_kernel::boolean::parts_touch); the mesh above
+                // does not see it.
+                match craft3d_kernel::boolean::parts_touch(body, &tolerance) {
+                    Ok(Some(touch)) => {
+                        let [a, b] = touch.faces;
+                        problems.push(json!({
+                            "feature": outcome.id.to_string(), "name": name,
+                            "problem": format!(
+                                "the body has parts that touch at ({:e}, {:e}, {:e}): faces {} and {} (zero thickness)",
+                                touch.at.x, touch.at.y, touch.at.z, a.0, b.0
+                            ),
+                        }));
+                    }
+                    Ok(None) => {}
+                    Err(_) => marginal = marginal.saturating_add(1),
                 }
             }
         }

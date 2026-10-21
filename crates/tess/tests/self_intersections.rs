@@ -777,6 +777,56 @@ fn a_spike_is_found_when_it_is_deeper_than_the_tolerance() {
     }
 }
 
+/// (h) A sheet that only touches a flat face at a corner, inside one of
+/// the face's few large triangles, and hangs from an edge of the face's
+/// triangulation further on, where a wall stands up on the face. The
+/// surface around the touching triangle was followed across the face's
+/// own triangles to that wall, and the touch called a crossing as deep
+/// as the wall is high (fuzz seed 20811107, 2026-10-20): the far side of
+/// the face's plane is reached through the face's surface, not past it.
+#[test]
+fn a_touch_is_not_a_crossing_by_what_lies_beyond_the_face_itself() {
+    for scale in SCALES {
+        let (a, b, c, d, m) = (
+            v(-10.0, -10.0, 0.0),
+            v(10.0, -10.0, 0.0),
+            v(10.0, 10.0, 0.0),
+            v(-10.0, 10.0, 0.0),
+            v(0.0, 0.0, 0.0),
+        );
+        let (p, q, r) = (v(0.0, -2.0, 0.0), v(1.0, -2.0, -1.0), v(-1.0, -2.0, -1.0));
+        // The plate, face 0, in four triangles, the touched one first; a
+        // wall standing up on its edge b-m, face 2; the sheet, face 1: up
+        // to the plate at `top` (inside the first triangle, at the
+        // sheet's own corner), down to q and r, and on from there to the
+        // plate's edge m-c.
+        let build = |top: Vec3| {
+            let mut soup = Soup::default();
+            soup.triangle(a, b, m, 0);
+            soup.triangle(b, c, m, 0);
+            soup.triangle(c, d, m, 0);
+            soup.triangle(d, a, m, 0);
+            soup.quad(b, m, m + v(0.0, 0.0, 5.0), b + v(0.0, 0.0, 5.0), 2);
+            soup.triangle(top, q, r, 1);
+            soup.triangle(q, r, m, 1);
+            soup.triangle(r, m, c, 1);
+            soup.scaled(scale)
+        };
+        let found = all_crossings(&build(p));
+        assert!(
+            found.iter().all(|c| c.depth <= 1e-9 * scale),
+            "scale {scale}: {found:?}"
+        );
+        // Sunk into the plate by a tenth, the sheet does cross it.
+        let found = all_crossings(&build(p + v(0.0, 0.0, 0.1)));
+        let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
+        assert!(
+            (deepest - 0.1 * scale).abs() < 1e-6 * scale,
+            "scale {scale}: {found:?}"
+        );
+    }
+}
+
 /// The handle and the spout of the Utah teapot go into its body, which
 /// has no holes for them: a real mesh with real crossings.
 #[test]

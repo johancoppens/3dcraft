@@ -32,6 +32,16 @@
 //!   passes twice through one vertex, which could not be meshed for the
 //!   self-check (the seam to the pole started from the pass that does
 //!   not open towards it): accepted and valid.
+//! - `20754684.json`, `20811107.json` and `20792240.json`, the run of
+//!   2026-10-20, each a fault of the check and not of the kernel: a
+//!   pattern whose instance has a skin of a cylinder wall thinner than
+//!   the mesh's chord, meshed flat in the plane of the face beside it
+//!   and taken for an overlap of the two; a groove whose ceiling is
+//!   tangent to the top face along a line, where a touch was measured
+//!   as a crossing as deep as the body by a walk over the top face's own
+//!   triangles; and a mirror of united tori with a bite whose face could
+//!   not be meshed, the refinement having run into a needle between a
+//!   seam and a chord. All three accepted and valid.
 
 #![allow(
     clippy::unwrap_used,
@@ -156,6 +166,9 @@ fn the_fuzzers_findings_end_valid_or_refused_for_their_reason() {
         ("23080.json", &["zero thickness"][..]),
         ("25810.json", &["zero thickness"][..]),
         ("28426.json", &["zero thickness"][..]),
+        ("20754684.json", &[][..]),
+        ("20792240.json", &[][..]),
+        ("20811107.json", &[][..]),
     ] {
         let refused = replay(file);
         assert_eq!(refused.len(), reasons.len(), "{file}: {refused:?}");

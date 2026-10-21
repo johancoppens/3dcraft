@@ -1,6 +1,6 @@
 # Decisions
 
-> **Last updated:** 2026-10-18
+> **Last updated:** 2026-10-20
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
@@ -507,4 +507,5 @@ Made by the agent, overnight; the developer can overturn any of them.
 | D-open-9 | **Default units and tolerance** of a new document | mm / deg / 1e-6 mm; other | M2 | mm, degrees, 1e-6 mm linear, 1e-9 rad angular |
 | D-open-10 | **Compression crate for 3MF/`.3dcraft`** (DEFLATE, zstd) | Permissive pure-Rust crates; write our own | M2/M3 | Use permissive pure-Rust crates: not modelling code |
 | D-open-11 | **Coordinate convention** | Z up (CAD/3D-printing convention); Y up | M2 | Z up, right-handed |
+| D-open-15 | **A tangency line on which another wall ends** (2026-10-20, `booleans.md`): a groove whose ceiling is tangent to the top face along a line and whose start wall ends on that line, inside the top face, so that three sheets meet along it (the top face through, the ceiling and the wall ending); the same at a point in the pinned `cones_that_share_a_ruling` (the inner cone's base rim on the shared ruling). Accepted today by the letter of 2026-10-18 (a wall that thins to nothing). | Keep accepting (one shell, measurable, meshes closed); refuse as the shell meeting itself (a vertex or an edge of the shell strictly inside a face it is not part of, with two or more faces at it: the rule prototyped and not committed, which would also refuse the cones at their rim) | M7 | Keep accepting |
 
