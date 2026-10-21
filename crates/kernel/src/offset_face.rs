@@ -327,13 +327,15 @@ const HALVINGS: usize = 48;
 /// tolerance, twenty tries and more. Where each try is cheap (analytic
 /// faces count nothing) it goes on to the tolerance, as before. Where each
 /// is dear (a shell or an offset of chamfers and fillets of cones, balls
-/// and tori: 5 to 18 million units a try, and more time than that in the
+/// and tori: 5 to 50 million units a try, and more time than that in the
 /// classification of points against their faces), twenty tries ran past
 /// a minute in release (the fuzzer's seeds 20795706, 20814691, 20818576,
-/// 20832173 and 20833261, 2026-10-21): it stops when this much is spent,
-/// with the largest part found to fit so far (a part that does fit), or,
-/// when none was found yet, with the reason the whole distance does not.
-pub const HALVING_WORK: u64 = 32_000_000;
+/// 20832173 and 20833261, 2026-10-21). A try is made only while what the
+/// halving has spent and the dearest try so far (the whole one included)
+/// fit within this; otherwise it stops, with the largest part found to
+/// fit so far (a part that does fit), or, when none was found yet, with
+/// the reason the whole distance does not.
+pub const HALVING_WORK: u64 = 16_000_000;
 
 pub(crate) fn refuse(
     operation: &'static str,
@@ -900,7 +902,10 @@ fn bounded_fitting(
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
     let tol = tolerance.linear;
+    let before = craft3d_geom::allowance::spent();
     let first = attempt(1.0);
+    // The dearest try so far: what the next one is taken to cost.
+    let mut dearest = craft3d_geom::allowance::spent().saturating_sub(before);
     let spent = |faces: Vec<FaceId>, edge: Option<EdgeId>| refuse(operation, faces, edge, SPENT);
     if craft3d_geom::allowance::exhausted() {
         let faces = match &first {
@@ -935,17 +940,20 @@ fn bounded_fitting(
     let (mut fits, mut fails) = (0.0_f64, 1.0_f64);
     let halving_from = craft3d_geom::allowance::spent();
     for _ in 0..HALVINGS {
-        if craft3d_geom::allowance::spent().saturating_sub(halving_from) >= HALVING_WORK {
+        let spent_halving = craft3d_geom::allowance::spent().saturating_sub(halving_from);
+        if spent_halving.saturating_add(dearest) > HALVING_WORK {
             break;
         }
         let middle = 0.5 * (fits + fails);
         if middle * largest <= tol || (fails - fits) * largest <= tol {
             break;
         }
+        let before = craft3d_geom::allowance::spent();
         let holds = match folds {
             Some(proven) => proven(middle),
             None => attempt(middle).is_ok(),
         };
+        dearest = dearest.max(craft3d_geom::allowance::spent().saturating_sub(before));
         if craft3d_geom::allowance::exhausted() {
             return Err(spent(faces, edge));
         }
