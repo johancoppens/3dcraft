@@ -1321,6 +1321,8 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
         FeatureKind::Split(_) => ("split", vec![("source", Slot::Elsewhere)]),
+        // What an import is, is the file: import it again to change it.
+        FeatureKind::Import(_) => ("import", Vec::new()),
         FeatureKind::OffsetProfile(o) => (
             "offset profile",
             vec![

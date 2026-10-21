@@ -924,3 +924,126 @@ fn swept_surfaces_read_as_the_elementary_surfaces_they_are() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+// ------------------------------------------------ seams, as others write
+
+use craft3d_geom::{Circle, Curve3, Cylinder, Line, Surface};
+use craft3d_topo::{Coedge, EdgeId, VertexId};
+use std::f64::consts::TAU;
+
+fn forward(edge: EdgeId) -> Coedge {
+    Coedge {
+        edge,
+        reversed: false,
+    }
+}
+
+fn backward(edge: EdgeId) -> Coedge {
+    Coedge {
+        edge,
+        reversed: true,
+    }
+}
+
+fn line(body: &mut Body, from: VertexId, to: VertexId) -> EdgeId {
+    let (a, b) = (
+        body.vertices[from.0 as usize].point,
+        body.vertices[to.0 as usize].point,
+    );
+    let curve = Curve3::Line(Line::through(a, b).unwrap());
+    body.add_edge(curve, (0.0, a.distance(b)), from, to)
+}
+
+/// A cylinder, a cone and a torus whose closed faces have their seams as
+/// edges, as other modellers write them (`crates/tess/tests/periodic.rs`
+/// builds the same), with their closed-form volumes.
+fn seamed(frame: &Frame, k: f64) -> Vec<(String, Body, f64)> {
+    let mut out = Vec::new();
+    let (radius, height) = (1.5 * k, 2.0 * k);
+    let mut body = Body::new(BodyKind::Solid);
+    let above = frame.at(frame.point(0.0, 0.0, height)).unwrap();
+    let low = body.add_vertex(frame.point(radius, 0.0, 0.0));
+    let high = body.add_vertex(above.point(radius, 0.0, 0.0));
+    let circle = |frame: Frame| Curve3::Circle(Circle::new(frame, radius).unwrap());
+    let bottom = body.add_edge(circle(*frame), (0.0, TAU), low, low);
+    let top = body.add_edge(circle(above), (0.0, TAU), high, high);
+    let seam = line(&mut body, low, high);
+    let wall = body.add_loop(vec![
+        forward(bottom),
+        forward(seam),
+        backward(top),
+        backward(seam),
+    ]);
+    let wall = body.add_face(
+        Surface::Cylinder(Cylinder::new(*frame, radius).unwrap()),
+        false,
+        vec![wall],
+    );
+    let under = Frame::new(frame.origin(), -frame.z(), frame.x()).unwrap();
+    let floor = body.add_loop(vec![backward(bottom)]);
+    let floor = body.add_face(
+        Surface::Plane(craft3d_geom::Plane::new(under)),
+        false,
+        vec![floor],
+    );
+    let lid = body.add_loop(vec![forward(top)]);
+    let lid = body.add_face(
+        Surface::Plane(craft3d_geom::Plane::new(above)),
+        false,
+        vec![lid],
+    );
+    body.add_shell(vec![wall, floor, lid]);
+    out.push((
+        "seamed cylinder".to_string(),
+        body,
+        std::f64::consts::PI * radius * radius * height,
+    ));
+
+    let cone = solids::cone(frame, radius, height).unwrap();
+    let mut body = cone.body;
+    let apex = body.add_vertex(frame.point(0.0, 0.0, height));
+    let base = body.edges[0].start;
+    let seam = line(&mut body, base, apex);
+    let side = body.faces[0].loops[0];
+    body.loops[side.0 as usize].coedges = vec![forward(EdgeId(0)), forward(seam), backward(seam)];
+    out.push(("seamed cone".to_string(), body, cone.volume));
+
+    let (major, minor) = (3.0 * k, k);
+    let torus = solids::torus(frame, major, minor).unwrap();
+    let mut body = torus.body;
+    let vertex = body.add_vertex(frame.point(major + minor, 0.0, 0.0));
+    let around_axis = Curve3::Circle(Circle::new(*frame, major + minor).unwrap());
+    let tube = Frame::new(frame.point(major, 0.0, 0.0), -frame.y(), frame.x()).unwrap();
+    let around_tube = Curve3::Circle(Circle::new(tube, minor).unwrap());
+    let long = body.add_edge(around_axis, (0.0, TAU), vertex, vertex);
+    let short = body.add_edge(around_tube, (0.0, TAU), vertex, vertex);
+    let loop_ = body.add_loop(vec![
+        forward(long),
+        forward(short),
+        backward(long),
+        backward(short),
+    ]);
+    body.faces[0].loops = vec![loop_];
+    out.push(("seamed torus".to_string(), body, torus.volume));
+    out
+}
+
+#[test]
+fn faces_with_their_seams_as_edges_read_back_at_three_scales() {
+    let mut problems = Vec::new();
+    for k in [1e-3, 1.0, 1e6] {
+        for (name, body, volume) in seamed(&tilted(k), k) {
+            assert!(
+                craft3d_topo::check(&body, &tolerance(k)).is_empty(),
+                "{name}"
+            );
+            let ours = measure(&[&body]).volume;
+            assert!(
+                (ours - volume).abs() <= 1e-9 * volume,
+                "{name}: {ours} {volume}"
+            );
+            round_trip(&name, &body, k, Unit::Millimeter, &mut problems);
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

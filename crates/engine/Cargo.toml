@@ -22,6 +22,7 @@ craft3d-meshio.workspace = true
 craft3d-drawing.workspace = true
 craft3d-io.workspace = true
 craft3d-format.workspace = true
+craft3d-stepread.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

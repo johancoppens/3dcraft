@@ -441,6 +441,7 @@ dependencies = [
  "craft3d-regen",
  "craft3d-render",
  "craft3d-step",
+ "craft3d-stepread",
  "craft3d-tess",
  "craft3d-testkit",
  "craft3d-topo",
@@ -551,6 +552,7 @@ dependencies = [
  "craft3d-kernel",
  "craft3d-math",
  "craft3d-solve",
+ "craft3d-stepread",
  "craft3d-tess",
  "craft3d-topo",
 ]

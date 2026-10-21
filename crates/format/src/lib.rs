@@ -21,10 +21,15 @@
 //!   an error; a file of a newer format version is an error that says a
 //!   newer 3DCraft is needed; an older one is brought up to date by
 //!   [`migrate`].
+//! - **Imported files are stored beside the manifest** (format version
+//!   25): the bytes of each STEP file an `import` feature reads, once per
+//!   content, as the entry `blobs/<sha256>.step`, named by the SHA-256 of
+//!   its bytes, which the manifest's feature names. A blob the manifest
+//!   names must be there and hash to its name, or the file is refused; a
+//!   blob nobody names is not read.
 //! - **Other ZIP entries are ignored on load and not preserved on save.**
-//!   Later versions add `thumb.png` and `blobs/`, which are derived data.
-//!   Until then, re-saving a file that has extra entries writes a file
-//!   without them.
+//!   Later versions add `thumb.png`, which is derived data. Until then,
+//!   re-saving a file that has extra entries writes a file without them.
 //! - **A loaded document obeys the model's rules:** it has passed
 //!   `Document::validate`, so a file edited by hand cannot smuggle in
 //!   duplicate ids or a dangling rollback marker. Saving validates too, so
@@ -46,11 +51,12 @@ use craft3d_doc::{DocError, Document};
 use craft3d_zipstore::ZipError;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 24;
+pub const FORMAT_VERSION: u32 = 25;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -62,6 +68,10 @@ pub const EXTENSION: &str = "3dcraft";
 
 /// Name of the ZIP entry that holds the document.
 pub const MANIFEST_NAME: &str = "manifest.json";
+
+/// Where the bytes of imported files are: `blobs/<sha256>.step`.
+pub const BLOB_DIR: &str = "blobs/";
+const BLOB_EXTENSION: &str = ".step";
 
 /// Largest `.3dcraft` file that is read: 256 MiB. Checked before the file
 /// is read or parsed.
@@ -126,6 +136,10 @@ pub enum FormatError {
     /// The document to save breaks the model's rules; writing it would
     /// give a file that does not load.
     CannotSave(DocError),
+    /// The manifest names an imported file the archive does not hold.
+    MissingBlob { sha256: String },
+    /// An imported file's bytes do not hash to the name of their entry.
+    DamagedBlob { name: String },
 }
 
 impl fmt::Display for FormatError {
@@ -206,6 +220,16 @@ impl fmt::Display for FormatError {
                 "the document cannot be saved because it breaks the model's rules: {error}. The \
                  file on disk was not changed"
             ),
+            FormatError::MissingBlob { sha256 } => write!(
+                f,
+                "the file has an imported STEP file whose bytes are missing: there is no entry \
+                 `{BLOB_DIR}{sha256}{BLOB_EXTENSION}`; open an earlier copy of the file"
+            ),
+            FormatError::DamagedBlob { name } => write!(
+                f,
+                "the imported file `{name}` is damaged: its bytes do not match the SHA-256 it is \
+                 named by; open an earlier copy of the file"
+            ),
         }
     }
 }
@@ -225,7 +249,9 @@ impl std::error::Error for FormatError {
             | FormatError::BadVersion(_)
             | FormatError::NewerVersion { .. }
             | FormatError::Migration { .. }
-            | FormatError::Shape { .. } => None,
+            | FormatError::Shape { .. }
+            | FormatError::MissingBlob { .. }
+            | FormatError::DamagedBlob { .. } => None,
         }
     }
 }
@@ -271,7 +297,25 @@ pub fn to_manifest_json(document: &Document) -> Result<String, FormatError> {
 /// document gives the same bytes, on every platform.
 pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
     let json = to_manifest_json(document)?;
-    craft3d_zipstore::write_stored(&[(MANIFEST_NAME, json.as_bytes())]).map_err(FormatError::Zip)
+    // Each imported file once, in the order of its name.
+    let mut blobs: BTreeMap<String, &craft3d_doc::Blob> = BTreeMap::new();
+    for feature in &document.features {
+        if let craft3d_doc::FeatureKind::Import(import) = &feature.kind {
+            blobs
+                .entry(format!(
+                    "{BLOB_DIR}{}{BLOB_EXTENSION}",
+                    import.data.sha256()
+                ))
+                .or_insert(&import.data);
+        }
+    }
+    let mut entries: Vec<(&str, &[u8])> = vec![(MANIFEST_NAME, json.as_bytes())];
+    entries.extend(
+        blobs
+            .iter()
+            .map(|(name, blob)| (name.as_str(), blob.bytes())),
+    );
+    craft3d_zipstore::write_stored(&entries).map_err(FormatError::Zip)
 }
 
 /// Reads the bytes of a `.3dcraft` file. Entries other than
@@ -292,7 +336,24 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
         .iter()
         .find(|entry| entry.name == MANIFEST_NAME)
         .ok_or(FormatError::MissingManifest)?;
-    from_manifest_json_noted(manifest.data)
+    let mut blobs = convert::Blobs::new();
+    for entry in &entries {
+        let Some(hash) = entry
+            .name
+            .strip_prefix(BLOB_DIR)
+            .and_then(|rest| rest.strip_suffix(BLOB_EXTENSION))
+        else {
+            continue;
+        };
+        let blob = craft3d_doc::Blob::new(entry.data.to_vec());
+        if blob.sha256() != hash {
+            return Err(FormatError::DamagedBlob {
+                name: entry.name.to_string(),
+            });
+        }
+        blobs.insert(hash.to_string(), blob);
+    }
+    read_manifest(manifest.data, &blobs)
 }
 
 /// What a file that is not a ZIP archive is instead, by how it starts.
@@ -346,6 +407,14 @@ pub fn from_manifest_json(json: &[u8]) -> Result<Document, FormatError> {
 /// version 17 whose name is now a function (`floor`) is renamed with
 /// every reference to it (`migrate::v16_to_v17`).
 pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
+    read_manifest(json, &convert::Blobs::new())
+}
+
+/// [`from_manifest_json_noted`] with the imported files of the archive.
+fn read_manifest(
+    json: &[u8],
+    blobs: &convert::Blobs,
+) -> Result<(Document, Vec<String>), FormatError> {
     if json.len() > MAX_MANIFEST_BYTES {
         return Err(too_large(
             "`manifest.json`",
@@ -398,7 +467,16 @@ pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), 
         format_version: _,
         document,
     } = manifest;
-    let mut document = convert::to_doc(document);
+    for feature in &document.features {
+        if let manifest::FeatureKind::Import { sha256, .. } = &feature.kind
+            && !blobs.contains_key(sha256)
+        {
+            return Err(FormatError::MissingBlob {
+                sha256: sha256.clone(),
+            });
+        }
+    }
+    let mut document = convert::to_doc(document, blobs);
     let mut warnings = Vec::new();
     let read = document.tolerance.in_range();
     if read.linear != document.tolerance.linear {
