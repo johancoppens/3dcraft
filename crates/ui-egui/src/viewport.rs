@@ -16,7 +16,7 @@
 use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
 use crate::state::{CameraState, EdgeRef, VertexRef};
-use crate::theme::{Rgb, Tokens};
+use crate::theme::{EdgeColors, Rgb, Tokens};
 use craft3d_engine::{Scene, SceneDatum, SceneDatumShape, SceneSketch};
 use craft3d_math::Vec3;
 use craft3d_render::{Frame, Highlight, RenderParams, SUBPIXEL_GRAIN};
@@ -57,6 +57,74 @@ pub struct OverlayLine {
     pub kind: LineKind,
     /// Behind a body: drawn dimmed.
     pub hidden: bool,
+    /// For an edge of a body, how it is inked; `None` for every other
+    /// line, and for the outline of a section's cap.
+    pub edge: Option<EdgeInk>,
+}
+
+/// How an edge of a body is inked: in a shade of the body's own colour
+/// ([`Tokens::edge_colors`]), wider and darker where it is the body's
+/// outline against what lies behind it, and faded where it is short on
+/// screen or where edges crowd ([`edge_fade`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeInk {
+    /// The body's own colour (its appearance); `None` for the theme's.
+    pub body: Option<Rgb>,
+    /// The edge's extent on screen in pixels: the diagonal of its box in
+    /// space, projected. Infinite when a corner of the box is not in front
+    /// of the eye.
+    pub extent: f64,
+    /// This stretch of the edge is the body's outline: the surface on one
+    /// side of it steps back ([`surface_steps_back`]).
+    pub silhouette: bool,
+    /// This stretch goes on from the line before it, on the same segment
+    /// of the edge (it was cut there only because the outline starts or
+    /// stops): the density counts the two as one line, as the GPU does.
+    pub joined: bool,
+    /// The stretch starts, and ends, inside its segment of the edge (where
+    /// the edge goes behind a body, or the outline starts or stops)
+    /// rather than at a point of the edge: the edge is cut square there,
+    /// as the GPU cuts it where the point of the segment under a pixel is
+    /// hidden, not rounded.
+    pub cut: [bool; 2],
+}
+
+impl OverlayLine {
+    /// The colour the line is drawn in: an edge of a body in its body's
+    /// shade, every other line in its kind's.
+    pub fn color(&self, tokens: &Tokens) -> Rgb {
+        match self.edge {
+            Some(edge) => edge.colors(tokens).pick(edge.silhouette),
+            None => self.kind.color(tokens),
+        }
+    }
+
+    /// In points: an outline is drawn wider than an edge between faces.
+    pub fn width(&self, tokens: &Tokens) -> f32 {
+        match self.edge {
+            Some(EdgeInk {
+                silhouette: true, ..
+            }) => tokens.edge_silhouette_width,
+            _ => self.kind.width(tokens),
+        }
+    }
+}
+
+impl EdgeInk {
+    pub fn colors(&self, tokens: &Tokens) -> EdgeColors {
+        tokens.edge_colors(self.body.unwrap_or(tokens.body))
+    }
+}
+
+impl EdgeColors {
+    /// The outline's colour or the inner edges'.
+    pub fn pick(self, silhouette: bool) -> Rgb {
+        if silhouette {
+            self.silhouette
+        } else {
+            self.inner
+        }
+    }
 }
 
 /// A dot in image pixels.
@@ -502,6 +570,79 @@ pub fn depth_slack(backend: Backend, scene: Option<&Scene>, camera: &CameraState
     }
 }
 
+/// Where the surface beside an edge is looked at, in pixels across the
+/// line on either side: near it and twice as far. From these two the
+/// surface is carried on up to the edge ([`surface_steps_back`]). Both
+/// lie clear of the samples the edge itself passes between, so a surface
+/// that ends at the edge is never read on the wrong side.
+pub const OUTLINE_NEAR: f64 = 1.5;
+pub const OUTLINE_FAR: f64 = 3.0;
+
+/// How much of the surface's own change per pixel beside an edge is
+/// allowed besides the step: the place of the edge on the screen, and of
+/// a surface's border in the depth buffer, within half a pixel.
+pub const OUTLINE_SLOPE: f64 = 0.5;
+
+/// The step beside an edge that makes it an outline, in pixels' worth of
+/// the view at the edge's distance (the size one pixel shows there), on
+/// top of the surface's slope: two pixels, so a face that continues from
+/// the edge is never taken for a step by the rounding of the depth
+/// buffer, while a flange in front of its web, a bar in front of
+/// another, or the background is.
+pub const OUTLINE_STEP: f64 = 2.0;
+
+/// Whether the surface on one side of an edge steps back from it: the
+/// edge is then the outline of its body against what lies behind it,
+/// the background, another body, or a part of the same body further
+/// back. `depth` is the edge's view distance at the point, `near` and
+/// `far` the distances of the surface beside it at [`OUTLINE_NEAR`] and
+/// [`OUTLINE_FAR`] pixels across (`None` where nothing is drawn), and
+/// `allowance` the step that does not count yet, in model units
+/// ([`OUTLINE_STEP`] pixels' worth at the edge's depth, plus the slack of
+/// the depth test).
+///
+/// Nothing beside the edge is a step. Otherwise the surface is carried
+/// on to the edge along the straight line through the two (in the
+/// reciprocal of the distance in perspective, which is what changes
+/// evenly across the screen on a plane, so a plane beside the edge
+/// reaches it exactly); without a surface at `far` the one at `near`
+/// stands for it, its change counted as slope. The surface steps back
+/// where it reaches the edge further than the edge by more than the
+/// allowance and [`OUTLINE_SLOPE`] of its change per pixel. A face that
+/// continues from the edge, at any slope, does not; a surface in front
+/// of the edge does not either (the edge is then behind it).
+pub fn surface_steps_back(
+    depth: f64,
+    near: Option<f64>,
+    far: Option<f64>,
+    perspective: bool,
+    allowance: f64,
+) -> bool {
+    if !(depth.is_finite() && allowance.is_finite()) {
+        return false;
+    }
+    let Some(near) = near.filter(|z| z.is_finite()) else {
+        return true;
+    };
+    let (reached, slope) = match far.filter(|z| z.is_finite()) {
+        Some(far) => {
+            let reached = if perspective && near > 0.0 && far > 0.0 {
+                let inverse = 2.0 / near - 1.0 / far;
+                if inverse > 0.0 {
+                    1.0 / inverse
+                } else {
+                    f64::INFINITY
+                }
+            } else {
+                2.0 * near - far
+            };
+            (reached, (far - near).abs() / (OUTLINE_FAR - OUTLINE_NEAR))
+        }
+        None => (near, (near - depth).abs() / OUTLINE_NEAR),
+    };
+    reached - depth > allowance + slope * OUTLINE_SLOPE
+}
+
 /// The renderer's depth buffer, as the lines are tested against it.
 #[derive(Clone, Copy)]
 struct DepthMap<'a> {
@@ -645,6 +786,60 @@ impl<'a> DepthMap<'a> {
             })
     }
 
+    /// The distance of the surface at pixel position (`x`, `y`): the
+    /// bilinear interpolation of the four samples around it (clamped at
+    /// the border of the image), `None` where one of them shows nothing.
+    fn surface(&self, x: f64, y: f64) -> Option<f64> {
+        if !(x.is_finite() && y.is_finite()) || self.width == 0 || self.height == 0 {
+            return None;
+        }
+        let (u, v) = (x - self.sample, y - self.sample);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - i0, v - j0);
+        let (wi, hi) = (self.width as f64 - 1.0, self.height as f64 - 1.0);
+        let at = |i: f64, j: f64| {
+            // Clamped into the image, so the casts fit.
+            let (i, j) = (i.clamp(0.0, wi) as usize, j.clamp(0.0, hi) as usize);
+            self.depth
+                .get(j * self.width + i)
+                .copied()
+                .filter(|z| z.is_finite())
+        };
+        let a = at(i0, j0)?;
+        let b = at(i0 + 1.0, j0)?;
+        let c = at(i0, j0 + 1.0)?;
+        let d = at(i0 + 1.0, j0 + 1.0)?;
+        Some((a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv)
+    }
+
+    /// Whether the point at pixel position (`x`, `y`) and `depth` of a
+    /// line running along `direction` on the screen (a unit vector) is
+    /// an outline: the surface on either side of it steps back
+    /// ([`surface_steps_back`]), with `allowance` in model units.
+    fn outline_at(
+        &self,
+        x: f64,
+        y: f64,
+        depth: f64,
+        direction: [f64; 2],
+        allowance: f64,
+        perspective: bool,
+    ) -> bool {
+        let normal = [-direction[1], direction[0]];
+        [1.0, -1.0].into_iter().any(|side: f64| {
+            let beside = |reach: f64| {
+                self.surface(x + normal[0] * side * reach, y + normal[1] * side * reach)
+            };
+            surface_steps_back(
+                depth,
+                beside(OUTLINE_NEAR),
+                beside(OUTLINE_FAR),
+                perspective,
+                allowance,
+            )
+        })
+    }
+
     /// True when a body is in front of the point at pixel position (`x`,
     /// `y`) and `depth`, by the rule of [`surface_hides`] on the 4 × 4
     /// samples around the point (clamped at the border of the image).
@@ -675,16 +870,42 @@ impl<'a> DepthMap<'a> {
     }
 }
 
+/// A stretch of a segment over the picture: from and to as fractions of
+/// the segment, whether it is behind a body, and whether it is the
+/// outline of a body (only asked of the edges of bodies).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Stretch {
+    from: f64,
+    to: f64,
+    hidden: bool,
+    outline: bool,
+}
+
+/// How the outline of a body is told along an edge: the step that does
+/// not count yet, in pixels' worth of the view at the edge's depth.
+#[derive(Clone, Copy, Debug)]
+struct OutlineTest {
+    step: f64,
+}
+
 /// The stretches of the segment `a`-`b` that are in front of every body
-/// and behind one, as `(from, to, hidden)` with `from` and `to` fractions
-/// of the segment, in order and covering 0 to 1.
+/// and behind one, in order and covering 0 to 1; with `outline`, the
+/// stretches in front are told apart by whether they are an outline,
+/// tested at the middle of each piece like the depth.
 fn stretches(
     map: Option<&DepthMap<'_>>,
     projector: &Projector,
     a: &Projected,
     b: &Projected,
-) -> Vec<(f64, f64, bool)> {
-    let whole = vec![(0.0, 1.0, false)];
+    outline: Option<OutlineTest>,
+) -> Vec<Stretch> {
+    let piece = |from: f64, to: f64, hidden: bool| Stretch {
+        from,
+        to,
+        hidden,
+        outline: false,
+    };
+    let whole = vec![piece(0.0, 1.0, false)];
     let Some(map) = map else {
         return whole;
     };
@@ -701,34 +922,47 @@ fn stretches(
     if !(pixels.is_finite() && last > first) {
         // A dot: one test decides.
         let hidden = map.covers(a.x, a.y, a.depth);
-        return vec![(0.0, 1.0, hidden)];
+        return vec![piece(0.0, 1.0, hidden)];
     }
+    let length = (b.x - a.x).hypot(b.y - a.y);
+    let direction = [(b.x - a.x) / length, (b.y - a.y) / length];
+    let outline = outline.filter(|_| direction.iter().all(|c| c.is_finite()));
     // At least one, at most MAX_DEPTH_STEPS: fits an integer.
     let steps = pixels.clamp(1.0, MAX_DEPTH_STEPS) as usize;
-    let mut out: Vec<(f64, f64, bool)> = Vec::new();
-    let mut push = |from: f64, to: f64, hidden: bool| {
-        if to <= from {
+    let mut out: Vec<Stretch> = Vec::new();
+    let mut push = |next: Stretch| {
+        if next.to <= next.from {
             return;
         }
         match out.last_mut() {
-            Some(last) if last.2 == hidden => last.1 = to,
-            _ => out.push((from, to, hidden)),
+            Some(last) if last.hidden == next.hidden && last.outline == next.outline => {
+                last.to = next.to;
+            }
+            _ => out.push(next),
         }
     };
-    push(0.0, first, false);
+    push(piece(0.0, first, false));
     for step in 0..steps {
         let at = |k: usize| first + (last - first) * (k as f64 / steps as f64);
         let (from, to) = (at(step), at(step + 1));
         // Tested at the middle of the piece.
         let t = 0.5 * (from + to);
-        let hidden = map.covers(
-            a.x + (b.x - a.x) * t,
-            a.y + (b.y - a.y) * t,
-            projector.depth_between(a, b, t),
-        );
-        push(from, to, hidden);
+        let (x, y) = (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        let depth = projector.depth_between(a, b, t);
+        let hidden = map.covers(x, y, depth);
+        let outline = !hidden
+            && outline.is_some_and(|test| {
+                let allowance = test.step * projector.footprint(depth) + map.slack;
+                map.outline_at(x, y, depth, direction, allowance, projector.perspective())
+            });
+        push(Stretch {
+            from,
+            to,
+            hidden,
+            outline,
+        });
     }
-    push(last, 1.0, false);
+    push(piece(last, 1.0, false));
     if out.is_empty() { whole } else { out }
 }
 
@@ -852,29 +1086,45 @@ fn build_overlay(
         return out;
     };
     // `tested`: against the depth buffer; `dimmed`: what is hidden is
-    // kept and marked, not left out.
-    let mut line = |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool| {
-        let Some((from, to)) = projector.segment(a, b) else {
-            return;
-        };
-        let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
-        for (start, end, hidden) in stretches(map.filter(|_| tested), &projector, &from, &to) {
-            if hidden && !dimmed {
-                continue;
+    // kept and marked, not left out; `edge`: an edge of a body, whose
+    // stretches in sight are told apart by whether they are its outline.
+    let mut line_of =
+        |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, edge: Option<EdgeInk>| {
+            let Some((from, to)) = projector.segment(a, b) else {
+                return;
+            };
+            let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
+            let outline = edge.map(|_| OutlineTest { step: OUTLINE_STEP });
+            let mut joined = false;
+            for stretch in stretches(map.filter(|_| tested), &projector, &from, &to, outline) {
+                if stretch.hidden && !dimmed {
+                    joined = false;
+                    continue;
+                }
+                out.lines.push(OverlayLine {
+                    // The ends themselves, not the ends computed back.
+                    from: if stretch.from <= 0.0 {
+                        [from.x, from.y]
+                    } else {
+                        at(stretch.from)
+                    },
+                    to: if stretch.to >= 1.0 {
+                        [to.x, to.y]
+                    } else {
+                        at(stretch.to)
+                    },
+                    kind,
+                    hidden: stretch.hidden,
+                    edge: edge.map(|edge| EdgeInk {
+                        silhouette: stretch.outline,
+                        joined,
+                        cut: [stretch.from > 0.0, stretch.to < 1.0],
+                        ..edge
+                    }),
+                });
+                joined = true;
             }
-            out.lines.push(OverlayLine {
-                // The ends themselves, not the ends computed back.
-                from: if start <= 0.0 {
-                    [from.x, from.y]
-                } else {
-                    at(start)
-                },
-                to: if end >= 1.0 { [to.x, to.y] } else { at(end) },
-                kind,
-                hidden,
-            });
-        }
-    };
+        };
     // The edges of the bodies first, then the world axes over them (an
     // edge along an axis must not paint it out), then the sketches.
     // In a picture that is cut open an edge is drawn where it is kept, and
@@ -883,33 +1133,41 @@ fn build_overlay(
         Some(marks) => marks.kept(a, b),
         None => Some([a, b]),
     };
-    for body in scene.into_iter().flat_map(|scene| scene.bodies.iter()) {
+    for (body, color) in scene.into_iter().flat_map(body_colors) {
         for edge in body.edges.iter() {
+            let ink = EdgeInk {
+                body: color,
+                extent: extent_on_screen(&projector, edge),
+                silhouette: false,
+                joined: false,
+                cut: [false; 2],
+            };
             for pair in edge.windows(2) {
                 if let [a, b] = *pair
                     && let Some([a, b]) = kept(a, b)
                 {
-                    line(a, b, LineKind::Edge, true, see_through);
+                    line_of(a, b, LineKind::Edge, true, see_through, Some(ink));
                 }
             }
         }
     }
     for &[a, b] in marks.into_iter().flat_map(Marks::outline) {
-        line(a, b, LineKind::Edge, true, see_through);
+        line_of(a, b, LineKind::Edge, true, see_through, None);
     }
     let length = camera.distance * AXIS_LENGTH;
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
-        line(
+        line_of(
             Vec3::ZERO,
             direction * length,
             LineKind::Axis(axis),
             false,
             false,
+            None,
         );
     }
     // The datums, tested like a sketch, under the sketches.
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
-        line(a, b, LineKind::Datum, true, true);
+        line_of(a, b, LineKind::Datum, true, true, None);
     }
     for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());
@@ -921,7 +1179,7 @@ fn build_overlay(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, kind, true, true);
+                    line_of(a, b, kind, true, true, None);
                 }
             }
         }
@@ -929,7 +1187,7 @@ fn build_overlay(
     // What is pointed at, over everything else.
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
         if let Some([a, b]) = kept(a, b) {
-            line(a, b, LineKind::Highlight, true, true);
+            line_of(a, b, LineKind::Highlight, true, true, None);
         }
     }
     for sketch in shown_sketches(scene, marks) {
@@ -969,6 +1227,45 @@ fn build_overlay(
         }
     }
     out
+}
+
+/// The bodies of `scene` with their own colours (their appearance; `None`
+/// for the theme's), which their edges are drawn in a shade of: the
+/// colour of a body's first face, since an appearance is a body's.
+pub fn body_colors(
+    scene: &Scene,
+) -> impl Iterator<Item = (&craft3d_engine::SceneBody, Option<Rgb>)> {
+    scene
+        .bodies
+        .iter()
+        .map(|body| (body, scene.face_colors.get(body.first_face_id)))
+}
+
+/// The extent of an edge on screen, in pixels: the diagonal of the box
+/// around its points, projected. A straight edge's own length, a circle's
+/// diameter or more seen edge-on; infinite when a corner of the box is
+/// not in front of the eye (the edge is then not short on screen), zero
+/// for an edge of one point.
+pub fn extent_on_screen(projector: &Projector, points: &[Vec3]) -> f64 {
+    let Some((&first, rest)) = points.split_first() else {
+        return 0.0;
+    };
+    let (mut lo, mut hi) = (first, first);
+    for p in rest {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    match (projector.project(lo), projector.project(hi)) {
+        (Some(a), Some(b)) => {
+            let length = (b.x - a.x).hypot(b.y - a.y);
+            if length.is_finite() {
+                length
+            } else {
+                f64::INFINITY
+            }
+        }
+        _ => f64::INFINITY,
+    }
 }
 
 /// How an image is to be rendered.
@@ -1208,16 +1505,101 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
     } else {
         1.0
     };
-    for line in &overlay.lines {
-        draw_line(
-            &mut rgb,
+    let density = EdgeDensity::new(&overlay, width, height, tokens, scale);
+    let mut colors = EdgeColorCache::default();
+    let lines = &overlay.lines;
+    let mut k = 0;
+    while let Some(line) = lines.get(k) {
+        let Some(edge) = line.edge else {
+            draw_line(
+                &mut rgb,
+                width,
+                height,
+                line.from,
+                line.to,
+                f64::from(line.width(tokens)) * scale,
+                line.color(tokens),
+                opacity(line.hidden, tokens),
+            );
+            k += 1;
+            continue;
+        };
+        // The stretches of one segment of an edge, drawn as one line whose
+        // every pixel takes the look of the stretch at its foot on the
+        // line, as the GPU draws a segment: no stretch inks over the next.
+        let run_end = k
+            + 1
+            + lines
+                .get(k + 1..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|l| l.edge.is_some_and(|e| e.joined))
+                .count();
+        let run = lines.get(k..run_end).unwrap_or_default();
+        k = run_end.max(k + 1);
+        let (from, to) = (line.from, run.last().map_or(line.to, |l| l.to));
+        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+        let length2 = dx * dx + dy * dy;
+        // Where along the run each stretch ends, and how it is drawn.
+        let looks: Vec<(f64, f64, Rgb, f64)> = run
+            .iter()
+            .map(|l| {
+                let end = if length2 > 0.0 {
+                    ((l.to[0] - from[0]) * dx + (l.to[1] - from[1]) * dy) / length2
+                } else {
+                    1.0
+                };
+                let silhouette = l.edge.is_some_and(|e| e.silhouette);
+                let half = (f64::from(l.width(tokens)) * scale * 0.5).clamp(0.35, 64.0);
+                let color = colors.get(edge.body, tokens).pick(silhouette);
+                (
+                    end,
+                    half,
+                    color,
+                    f64::from(opacity(l.hidden, tokens)) / 255.0,
+                )
+            })
+            .collect();
+        let widest = looks.iter().map(|look| look.1).fold(0.35, f64::max);
+        let cut = [
+            edge.cut[0],
+            run.last()
+                .and_then(|l| l.edge)
+                .map_or(edge.cut[1], |e| e.cut[1]),
+        ];
+        let long = fade_short(edge.extent, tokens, scale);
+        let w = width as usize;
+        cover_line(
             width,
             height,
-            line.from,
-            line.to,
-            f64::from(line.kind.width(tokens)) * scale,
-            line.kind.color(tokens),
-            opacity(line.hidden, tokens),
+            from,
+            to,
+            widest * 2.0,
+            |index, _, distance, along| {
+                if (cut[0] && along < 0.0) || (cut[1] && along > 1.0) {
+                    return;
+                }
+                let Some(&(_, half, color, alpha)) =
+                    looks.iter().find(|look| along <= look.0).or(looks.last())
+                else {
+                    return;
+                };
+                let (px, py) = (index % w.max(1), index / w.max(1));
+                let alpha = (half + 0.5 - distance).clamp(0.0, 1.0)
+                    * alpha
+                    * edge_fade(long, density.at(px as f64 + 0.5, py as f64 + 0.5), tokens);
+                if alpha <= 0.0 {
+                    return;
+                }
+                let Some(pixel) = rgb.get_mut(index * 3..index * 3 + 3) else {
+                    return;
+                };
+                for (channel, &ink) in pixel.iter_mut().zip(&color) {
+                    let under = f64::from(*channel);
+                    let blended = under + (f64::from(ink) - under) * alpha;
+                    *channel = blended.round().clamp(0.0, 255.0) as u8;
+                }
+            },
         );
     }
     for point in &overlay.points {
@@ -1251,14 +1633,6 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
     }
 }
 
-/// The part of the segment inside the box `[lo, hi]` on both axes
-/// (Liang–Barsky), or `None` when it misses the box.
-fn clip(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
-    let (t0, t1) = clip_range(a, b, lo, hi)?;
-    let at = |t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    Some((at(t0), at(t1)))
-}
-
 /// The same as fractions of the segment: it is inside the box from the
 /// first to the second.
 fn clip_range(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<(f64, f64)> {
@@ -1284,6 +1658,261 @@ fn clip_range(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<(f
     (t0.is_finite() && t1.is_finite()).then_some((t0, t1))
 }
 
+/// The colours of the edges of each body colour met, worked out once
+/// (a few bodies' colours, many edges).
+#[derive(Default)]
+pub struct EdgeColorCache {
+    known: Vec<(Option<Rgb>, EdgeColors)>,
+}
+
+impl EdgeColorCache {
+    pub fn get(&mut self, body: Option<Rgb>, tokens: &Tokens) -> EdgeColors {
+        if let Some((_, colors)) = self.known.iter().find(|(b, _)| *b == body) {
+            return *colors;
+        }
+        let colors = tokens.edge_colors(body.unwrap_or(tokens.body));
+        self.known.push((body, colors));
+        colors
+    }
+}
+
+/// Hermite's smooth step from 0 at `from` to 1 at `to`: no jump when an
+/// edge crosses a threshold while the view zooms. A step at one point
+/// when the two are equal.
+pub fn smooth_step(from: f64, to: f64, x: f64) -> f64 {
+    if !x.is_finite() {
+        return if x > 0.0 { 1.0 } else { 0.0 };
+    }
+    if to.partial_cmp(&from) != Some(std::cmp::Ordering::Greater) {
+        return if x >= to { 1.0 } else { 0.0 };
+    }
+    let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How much an edge of `extent` pixels on screen keeps of its ink for
+/// being short: 0 at `edge_fade_short` points or less, 1 from
+/// `edge_fade_long` on (both times `scale` pixels per point).
+pub fn fade_short(extent: f64, tokens: &Tokens, scale: f64) -> f64 {
+    smooth_step(
+        f64::from(tokens.edge_fade_short) * scale,
+        f64::from(tokens.edge_fade_long) * scale,
+        extent,
+    )
+}
+
+/// The opacity an edge is drawn with, as a share of its own: `long` (what
+/// [`fade_short`] keeps) times what the `density` of the edges around
+/// leaves (all of it up to `edge_dense_cap`, beyond that the cap over the
+/// density: in a crowded place the edges together cover no more than
+/// the cap, however many they are), lifted so that nothing goes below
+/// `edge_fade_floor`.
+pub fn edge_fade(long: f64, density: f64, tokens: &Tokens) -> f64 {
+    let floor = f64::from(tokens.edge_fade_floor).clamp(0.0, 1.0);
+    let cap = f64::from(tokens.edge_dense_cap);
+    let sparse = if density > cap { cap / density } else { 1.0 };
+    let keep = (long * sparse).clamp(0.0, 1.0);
+    if keep.is_finite() {
+        floor + (1.0 - floor) * keep
+    } else {
+        1.0
+    }
+}
+
+/// The side of a tile of [`EdgeDensity`] in pixels: `edge_tile` points,
+/// whole pixels, 4 to 64.
+pub fn tile_pixels(tokens: &Tokens, scale: f64) -> u32 {
+    let side = (f64::from(tokens.edge_tile) * scale).round();
+    if side.is_finite() {
+        side.clamp(4.0, 64.0) as u32
+    } else {
+        16
+    }
+}
+
+/// How crowded with edges the picture is: per tile of [`tile_pixels`],
+/// the share of its pixels the edges of the bodies in sight cover (their
+/// ink at the width of an edge between faces, `edge_width`, summed where
+/// edges cross, as [`draw_line`] inks them: so a tile crossed by one edge
+/// of one pixel is 1/16 covered, by eight such edges a half), and between
+/// the tiles' centres blended bilinearly, so the measure changes smoothly
+/// as edges move across the screen. Measured in closed form, without
+/// drawing: the length of each line in each tile times the ink across a
+/// line, and the ink of its round ends in the tiles they lie in. The
+/// GPU's viewport measures the same per pixel, with an ink pass and a pass
+/// over the tiles (`craft3d_gpu::Onscreen`), within the tolerance of
+/// `tests/gpu_viewport.rs`.
+pub struct EdgeDensity {
+    tile: u32,
+    columns: usize,
+    rows: usize,
+    means: Vec<f64>,
+}
+
+impl EdgeDensity {
+    pub fn new(overlay: &Overlay, width: u32, height: u32, tokens: &Tokens, scale: f64) -> Self {
+        let tile = tile_pixels(tokens, scale);
+        let (w, h) = (width as usize, height as usize);
+        let columns = w.div_ceil(tile as usize);
+        let rows = h.div_ceil(tile as usize);
+        let mut sums = vec![0.0_f64; columns.saturating_mul(rows)];
+        // The ink of a line as `cover_line` inks it, per pixel of length
+        // across it, and at a round end beyond it (the profile
+        // `clamp(half + 0.5 - distance, 0, 1)` over a line and over half a
+        // disc).
+        let half = (f64::from(tokens.edge_width) * scale * 0.5).clamp(0.35, 64.0);
+        let across = if half >= 0.5 {
+            2.0 * half
+        } else {
+            (half + 0.5) * (half + 0.5)
+        };
+        let a = half - 0.5;
+        let end_ink = if a >= 0.0 {
+            std::f64::consts::PI * (a * a / 2.0 + a / 2.0 + 1.0 / 6.0)
+        } else {
+            std::f64::consts::PI * (half + 0.5).powi(3) / 6.0
+        };
+        let side = f64::from(tile);
+        let (wf, hf) = (width as f64, height as f64);
+        let mut add = |x: f64, y: f64, ink: f64| {
+            if !(x >= 0.0 && y >= 0.0 && x < wf && y < hf && ink.is_finite()) {
+                return;
+            }
+            // Within the image, so the casts fit.
+            let (i, j) = ((x / side) as usize, (y / side) as usize);
+            if let Some(sum) = sums.get_mut(j * columns + i) {
+                *sum += ink;
+            }
+        };
+        // The edges in sight, a segment of an edge as one line where the
+        // outline cut it into stretches; a round end where the segment
+        // ends, none where the edge goes behind a body.
+        let mut runs: Vec<([f64; 2], [f64; 2], [bool; 2])> = Vec::new();
+        let mut open = false;
+        for line in &overlay.lines {
+            let Some(edge) = line.edge.filter(|_| !line.hidden) else {
+                open = false;
+                continue;
+            };
+            match runs.last_mut() {
+                Some(run) if open && edge.joined => {
+                    run.1 = line.to;
+                    run.2[1] = edge.cut[1];
+                }
+                _ => runs.push((line.from, line.to, edge.cut)),
+            }
+            open = true;
+        }
+        for (from, to, cut) in runs {
+            let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+            let length = dx.hypot(dy);
+            if !length.is_finite() {
+                continue;
+            }
+            if length <= 0.0 {
+                // A dot: both half discs.
+                if !(cut[0] || cut[1]) {
+                    add(from[0], from[1], 2.0 * end_ink);
+                }
+                continue;
+            }
+            for (end, cut) in [(from, cut[0]), (to, cut[1])] {
+                if !cut {
+                    add(end[0], end[1], end_ink);
+                }
+            }
+            // The line's ink is spread across it: four strands, a quarter
+            // of it each, at a quarter and three quarters of its half width
+            // on either side, so that a line along a tile's border puts
+            // its ink on both sides as the pixels do. Along each strand,
+            // where it crosses the tiles' borders, in order: each piece
+            // between two crossings lies in one tile.
+            let normal = [-dy / length, dx / length];
+            for offset in [-0.75, -0.25, 0.25, 0.75] {
+                let shift = [normal[0] * offset * half, normal[1] * offset * half];
+                let start_at = [from[0] + shift[0], from[1] + shift[1]];
+                let mut cuts = vec![0.0, 1.0];
+                for (start, delta, limit) in [(start_at[0], dx, wf), (start_at[1], dy, hf)] {
+                    if delta == 0.0 {
+                        continue;
+                    }
+                    let (lo, hi) = (start.min(start + delta), start.max(start + delta));
+                    let first = (lo.max(0.0) / side).ceil();
+                    let last = (hi.min(limit) / side).floor();
+                    if !(first.is_finite() && last.is_finite()) || last - first > 4096.0 {
+                        continue;
+                    }
+                    let mut k = first;
+                    while k <= last {
+                        let t = (k * side - start) / delta;
+                        if t > 0.0 && t < 1.0 {
+                            cuts.push(t);
+                        }
+                        k += 1.0;
+                    }
+                }
+                cuts.sort_by(f64::total_cmp);
+                for pair in cuts.windows(2) {
+                    if let [t0, t1] = *pair
+                        && t1 > t0
+                    {
+                        let t = 0.5 * (t0 + t1);
+                        add(
+                            start_at[0] + dx * t,
+                            start_at[1] + dy * t,
+                            (t1 - t0) * length * across * 0.25,
+                        );
+                    }
+                }
+            }
+        }
+        let t = tile as usize;
+        let means = sums
+            .iter()
+            .enumerate()
+            .map(|(k, sum)| {
+                let (i, j) = (k % columns.max(1), k / columns.max(1));
+                let (x0, y0) = (i * t, j * t);
+                let (x1, y1) = ((x0 + t).min(w), (y0 + t).min(h));
+                let count = (x1.saturating_sub(x0) * y1.saturating_sub(y0)).max(1);
+                sum / count as f64
+            })
+            .collect();
+        Self {
+            tile,
+            columns,
+            rows,
+            means,
+        }
+    }
+
+    /// The number of tiles across and down, and their means, row-major.
+    pub fn tiles(&self) -> (usize, usize, &[f64]) {
+        (self.columns, self.rows, &self.means)
+    }
+
+    /// The density at pixel position (`x`, `y`): the tiles' means blended
+    /// bilinearly between their centres, clamped at the border.
+    pub fn at(&self, x: f64, y: f64) -> f64 {
+        if self.columns == 0 || self.rows == 0 || !(x.is_finite() && y.is_finite()) {
+            return 0.0;
+        }
+        let side = f64::from(self.tile);
+        let (u, v) = (x / side - 0.5, y / side - 0.5);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - i0, v - j0);
+        let (last_i, last_j) = ((self.columns - 1) as f64, (self.rows - 1) as f64);
+        let mean = |i: f64, j: f64| {
+            // Clamped into the grid, so the casts fit.
+            let (i, j) = (i.clamp(0.0, last_i) as usize, j.clamp(0.0, last_j) as usize);
+            self.means.get(j * self.columns + i).copied().unwrap_or(0.0)
+        };
+        let top = mean(i0, j0) * (1.0 - fu) + mean(i0 + 1.0, j0) * fu;
+        let bottom = mean(i0, j0 + 1.0) * (1.0 - fu) + mean(i0 + 1.0, j0 + 1.0) * fu;
+        top * (1.0 - fv) + bottom * fv
+    }
+}
+
 /// Draws an anti-aliased line of `width` pixels with round ends into an RGB
 /// image, `opacity` (0 to 255) opaque. Coordinates may be anything, the
 /// image is never indexed outside.
@@ -1298,6 +1927,66 @@ pub fn draw_line(
     color: Rgb,
     opacity: u8,
 ) {
+    draw_line_faded(
+        rgb,
+        width,
+        height,
+        from,
+        to,
+        line_width,
+        color,
+        opacity,
+        &|_, _| 1.0,
+    );
+}
+
+/// [`draw_line`] with the opacity at each pixel also scaled by `fade` of
+/// the pixel's centre (0 to 1).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_line_faded(
+    rgb: &mut [u8],
+    width: u32,
+    height: u32,
+    from: [f64; 2],
+    to: [f64; 2],
+    line_width: f64,
+    color: Rgb,
+    opacity: u8,
+    fade: &dyn Fn(f64, f64) -> f64,
+) {
+    let w = width as usize;
+    cover_line(width, height, from, to, line_width, |index, alpha, _, _| {
+        let (px, py) = (index % w.max(1), index / w.max(1));
+        let alpha = alpha * f64::from(opacity) / 255.0
+            * fade(px as f64 + 0.5, py as f64 + 0.5).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return;
+        }
+        let Some(pixel) = rgb.get_mut(index * 3..index * 3 + 3) else {
+            return;
+        };
+        for (channel, &ink) in pixel.iter_mut().zip(&color) {
+            let under = f64::from(*channel);
+            let blended = under + (f64::from(ink) - under) * alpha;
+            *channel = blended.round().clamp(0.0, 255.0) as u8;
+        }
+    });
+}
+
+/// Visits the pixels an anti-aliased line of `line_width` pixels with
+/// round ends covers in an image of `width` × `height`, with how much of
+/// each it covers (0 to 1, by the distance of the pixel's centre to the
+/// segment): `visit(index of the pixel, coverage, that distance, where
+/// along the segment the pixel's centre lies, below 0 or above 1 beside
+/// an end)`, every pixel once.
+fn cover_line(
+    width: u32,
+    height: u32,
+    from: [f64; 2],
+    to: [f64; 2],
+    line_width: f64,
+    mut visit: impl FnMut(usize, f64, f64, f64),
+) {
     let finite = from.iter().chain(&to).all(|c| c.is_finite());
     if !finite || !line_width.is_finite() || width == 0 || height == 0 {
         return;
@@ -1306,9 +1995,16 @@ pub fn draw_line(
     let (w, h) = (f64::from(width), f64::from(height));
     // Only what can touch the image.
     let pad = half + 1.0;
-    let Some((a, b)) = clip(from, to, [-pad, -pad], [w + pad, h + pad]) else {
+    let Some((t0, t1)) = clip_range(from, to, [-pad, -pad], [w + pad, h + pad]) else {
         return;
     };
+    let at = |t: f64| {
+        [
+            from[0] + (to[0] - from[0]) * t,
+            from[1] + (to[1] - from[1]) * t,
+        ]
+    };
+    let (a, b) = (at(t0), at(t1));
     // Walk the axis the line runs along most (`u`), one column of pixels at
     // a time, and shade the pixels of that column near the line (`v`) by
     // their distance to the segment. Every pixel is visited once.
@@ -1346,22 +2042,25 @@ pub fn draw_line(
             } else {
                 0.0
             };
+            let beyond = if length > 0.0 {
+                ((su - a[0]) * du + (sv - a[1]) * dv) / (length * length)
+            } else {
+                0.0
+            };
             let distance = (su - (a[0] + du * along)).hypot(sv - (a[1] + dv * along));
-            let alpha = (half + 0.5 - distance).clamp(0.0, 1.0) * f64::from(opacity) / 255.0;
+            let alpha = (half + 0.5 - distance).clamp(0.0, 1.0);
             if alpha <= 0.0 {
                 continue;
             }
             let (px, py) = if steep { (pv, pu) } else { (pu, pv) };
             // Both are within the image: non-negative and below its size.
-            let index = (py as usize * width as usize + px as usize) * 3;
-            let Some(pixel) = rgb.get_mut(index..index + 3) else {
-                continue;
-            };
-            for (channel, &ink) in pixel.iter_mut().zip(&color) {
-                let under = f64::from(*channel);
-                let blended = under + (f64::from(ink) - under) * alpha;
-                *channel = blended.round().clamp(0.0, 255.0) as u8;
-            }
+            visit(
+                py as usize * width as usize + px as usize,
+                alpha,
+                distance,
+                // Along the whole segment, not the part clipped above.
+                t0 + beyond * (t1 - t0),
+            );
         }
     }
 }
@@ -1526,6 +2225,155 @@ mod tests {
         let z = [[5.0; 4]; 4];
         assert!(!surface_hides(&z, 0.5, 0.5, f64::NAN, 0.0));
         assert!(!surface_hides(&z, f64::NAN, 0.5, 6.0, 0.0));
+    }
+
+    /// A face that goes on from an edge, at any slope and in either
+    /// projection, is no step; a surface behind the edge by more than the
+    /// allowance is, and so is nothing beside it; a surface in front is
+    /// not.
+    #[test]
+    fn a_face_that_goes_on_is_no_step_and_a_drop_is() {
+        let mut next = sequence(5);
+        for _ in 0..10_000 {
+            let depth = 1.0 + next() * 1e4;
+            let slope = (next() - 0.5) * depth;
+            let allowance = depth * 1e-6;
+            // Orthographic: the distance is affine across the screen.
+            let at = |x: f64| depth + slope * x;
+            assert!(!surface_steps_back(
+                depth,
+                Some(at(OUTLINE_NEAR)),
+                Some(at(OUTLINE_FAR)),
+                false,
+                allowance
+            ));
+            // Perspective: its reciprocal is.
+            let k = (next() - 0.5) / depth / 4.0;
+            let at = |x: f64| 1.0 / (1.0 / depth + k * x);
+            assert!(!surface_steps_back(
+                depth,
+                Some(at(OUTLINE_NEAR)),
+                Some(at(OUTLINE_FAR)),
+                true,
+                allowance
+            ));
+        }
+        assert!(surface_steps_back(100.0, None, None, true, 1.0));
+        assert!(surface_steps_back(
+            100.0,
+            Some(110.0),
+            Some(110.0),
+            true,
+            1.0
+        ));
+        assert!(!surface_steps_back(
+            100.0,
+            Some(100.5),
+            Some(100.5),
+            true,
+            1.0
+        ));
+        assert!(!surface_steps_back(
+            100.0,
+            Some(90.0),
+            Some(90.0),
+            false,
+            1.0
+        ));
+        // The near side only, sloping: its change is counted as slope.
+        assert!(!surface_steps_back(100.0, Some(101.0), None, false, 1.0));
+        assert!(surface_steps_back(100.0, Some(120.0), None, false, 1.0));
+        assert!(!surface_steps_back(f64::NAN, None, None, false, 1.0));
+        assert!(!surface_steps_back(100.0, None, None, false, f64::NAN));
+    }
+
+    /// An edge fades smoothly by its extent on screen, and in a crowded
+    /// tile by the cap over the density, never below the floor.
+    #[test]
+    fn edges_fade_smoothly_for_being_short_and_by_the_cap_where_they_crowd() {
+        let tokens = Tokens::default();
+        let (short, long) = (
+            f64::from(tokens.edge_fade_short),
+            f64::from(tokens.edge_fade_long),
+        );
+        assert_eq!(fade_short(short, &tokens, 1.0), 0.0);
+        assert_eq!(fade_short(long, &tokens, 1.0), 1.0);
+        assert_eq!(fade_short(f64::INFINITY, &tokens, 1.0), 1.0);
+        assert_eq!(fade_short(2.0 * long, &tokens, 2.0), 1.0);
+        let mut last = 0.0;
+        for k in 0..=100 {
+            let keep = fade_short(short + (long - short) * f64::from(k) / 100.0, &tokens, 1.0);
+            assert!(keep >= last && keep - last < 0.02, "a jump at {k}");
+            last = keep;
+        }
+        let floor = f64::from(tokens.edge_fade_floor);
+        let cap = f64::from(tokens.edge_dense_cap);
+        assert_eq!(edge_fade(1.0, 0.0, &tokens), 1.0);
+        assert_eq!(edge_fade(1.0, cap, &tokens), 1.0);
+        let half = edge_fade(1.0, 2.0 * cap, &tokens);
+        assert!((half - (floor + (1.0 - floor) * 0.5)).abs() < 1e-12);
+        assert_eq!(edge_fade(0.0, 0.0, &tokens), floor);
+        assert_eq!(edge_fade(1.0, f64::INFINITY, &tokens), floor);
+        assert_eq!(edge_fade(f64::NAN, 0.0, &tokens), 1.0);
+        assert_eq!(smooth_step(1.0, 1.0, 1.0), 1.0);
+        assert_eq!(smooth_step(1.0, 1.0, 0.5), 0.0);
+        assert_eq!(smooth_step(0.0, 2.0, f64::NAN), 0.0);
+    }
+
+    /// One edge of one pixel across a tile covers a tile's side over its
+    /// area of it; the density between tiles is blended, so it changes
+    /// smoothly as the edge moves; hidden edges and other lines count for
+    /// nothing.
+    #[test]
+    fn the_density_counts_the_ink_of_the_edges_in_sight_per_tile() {
+        let tokens = Tokens::default();
+        let edge = |y: f64, hidden: bool| OverlayLine {
+            from: [-10.0, y],
+            to: [80.0, y],
+            kind: LineKind::Edge,
+            hidden,
+            edge: Some(EdgeInk {
+                body: None,
+                extent: f64::INFINITY,
+                silhouette: false,
+                joined: false,
+                cut: [false; 2],
+            }),
+        };
+        let mut overlay = Overlay::default();
+        overlay.lines.push(edge(8.0, false));
+        overlay.lines.push(edge(40.0, true));
+        overlay.lines.push(OverlayLine {
+            edge: None,
+            kind: LineKind::Sketch,
+            ..edge(56.0, false)
+        });
+        let density = EdgeDensity::new(&overlay, 64, 64, &tokens, 1.0);
+        let one = f64::from(tokens.edge_width) / 16.0;
+        // At a tile's centre the tile's own mean.
+        assert!((density.at(8.0, 8.0) - one).abs() < 1e-9);
+        assert!((density.at(40.0, 8.0) - one).abs() < 1e-9);
+        assert_eq!(density.at(8.0, 40.0), 0.0);
+        assert_eq!(density.at(8.0, 56.0), 0.0);
+        // Half-way between the first and the second row of tiles.
+        assert!((density.at(8.0, 16.0) - one / 2.0).abs() < 1e-9);
+        // Blended between the tiles' centres: no step where the point
+        // crosses from one tile into the next, at most the slope of the
+        // blend (a tile's mean over its side, per pixel).
+        let mut last = density.at(8.0, 0.0);
+        for k in 1..=160 {
+            let at = density.at(8.0, f64::from(k) * 0.25);
+            assert!(
+                (at - last).abs() <= one / 16.0 * 0.25 * 1.000_001,
+                "a jump at {k}: {last} -> {at}"
+            );
+            last = at;
+        }
+        // Nothing to measure, and hostile positions: no density.
+        let empty = EdgeDensity::new(&Overlay::default(), 0, 0, &tokens, 1.0);
+        assert_eq!(empty.at(1.0, 1.0), 0.0);
+        assert_eq!(density.at(f64::NAN, 1.0), 0.0);
+        assert!(density.at(-1e300, 1e300).is_finite());
     }
 
     const BLACK: Rgb = [0, 0, 0];

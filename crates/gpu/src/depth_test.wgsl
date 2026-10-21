@@ -2,9 +2,10 @@
 // rule of `craft3d_ui_egui::viewport::surface_hides`, which the CPU
 // viewport applies to its frame, on the scene pass's depth buffer. It is
 // pasted into lines.wgsl and fills.wgsl at their marker and uses their
-// `scene` and `lines` uniforms and `depth_texture`.
+// `scene` and `lines` uniforms and `distance_texture`.
 
-// The view distance of the surface under pixel `p`: the mean of its
+// The view distance of the surface under pixel `p`, as distance.wgsl made
+// it once per frame from the depth buffer: the mean of its
 // samples' depths, turned back into a distance. The depth is affine across
 // a triangle on the screen (near / dist in perspective, far - dist scaled
 // in orthographic) and the standard sample positions lie symmetric about
@@ -20,23 +21,12 @@ struct Surface {
 }
 
 fn surface_at(p: vec2<i32>) -> Surface {
-    let samples = i32(lines.size.w);
-    var sum = 0.0;
-    for (var s = 0; s < samples; s = s + 1) {
-        let z = {{LOAD}};
-        // Negated, so that a depth that is not a number counts as nothing.
-        if !(z > 0.0) {
-            return Surface(0.0, false);
-        }
-        sum = sum + z;
+    let distance = bitcast<f32>(textureLoad(distance_texture, p, 0).r);
+    // Infinity (or anything that is not a finite number): nothing drawn.
+    if !(abs(distance) < 3.0e38) {
+        return Surface(0.0, false);
     }
-    let z = sum / f32(samples);
-    if scene.forward.w > 0.5 {
-        // z = near / dist, as the scene pass writes it.
-        return Surface(scene.depth.x / z, true);
-    }
-    // z = (far - dist) * scale.
-    return Surface(scene.depth.x - z / scene.depth.y, true);
+    return Surface(distance, true);
 }
 
 // How far the middle sample lies beyond the chord of its neighbours;

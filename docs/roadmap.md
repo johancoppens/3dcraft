@@ -212,6 +212,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 
 #### Open
 - [ ] `ui.screenshot {"window": true}` once gave no answer for over 120 s (the protocol promises an error after 8 s), and `ui.set {"camera": {"autoFit": true}}` does not refit where `ui.fit` does (Perseverance, 2026-10-21).
+- [ ] The CPU viewport's quick preview while orbiting is slower since edges tell their outline (the pier ~95-138 → 152-222 ms on a loaded machine; also the future browser build): one outline test per pixel reusing the depth test's reads ([`design/rendering.md`](design/rendering.md), 2026-10-21)
 - [ ] A presentation path when no GPU adapter is found (eframe still needs one for the window)
 - [ ] Golden images blessed by the developer
 - [ ] An automated test with a real MCP client

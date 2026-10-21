@@ -141,6 +141,7 @@ fn overlay(mesh: &Mesh, camera: &Camera) -> OverlayParams {
         slack,
         hidden_opacity: 0,
         axis_length: 1.0,
+        edges: craft3d_gpu::EdgeLook::default(),
     }
 }
 
@@ -193,6 +194,7 @@ fn inside_a_building_lines_on_the_faces_stay_whole() {
                 tested,
                 dimmed: false,
                 axis: false,
+                edge: None,
             })
             .collect()
     };

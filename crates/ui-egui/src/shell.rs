@@ -424,6 +424,9 @@ pub struct Shell {
     overlay: Overlay,
     /// The size of that image.
     overlay_size: [u32; 2],
+    /// How crowded its edges are, for the pixels per point and the theme
+    /// it was measured with: measured once per overlay, not per frame.
+    overlay_density: Option<((u64, Tokens), viewport::EdgeDensity)>,
     /// Which image is on screen and which is being made.
     scheduler: Scheduler<FrameKey>,
     /// The thread sharp images are made on; `None` makes them here.
@@ -692,6 +695,7 @@ impl Shell {
             texture: None,
             overlay: Overlay::default(),
             overlay_size: DEFAULT_VIEWPORT,
+            overlay_density: None,
             scheduler: Scheduler::new(Mode::Inline),
             #[cfg(not(target_arch = "wasm32"))]
             worker: None,
@@ -885,6 +889,17 @@ impl Shell {
             .as_ref()
             .filter(|_| self.direct_shown)
             .map(Direct::read_rgb)
+    }
+
+    /// The density of the edges per tile the direct path measured for the
+    /// picture it shows (columns, rows, means): for tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn direct_edge_density(&mut self) -> Option<Result<crate::direct::EdgeTiles, String>> {
+        let shown = self.direct_shown;
+        self.direct
+            .as_mut()
+            .filter(|_| shown)
+            .map(Direct::read_edge_density)
     }
 
     /// True when the viewport is drawn directly on the window's device.
@@ -2142,7 +2157,28 @@ impl Shell {
             if let Some(texture) = &self.texture {
                 painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
             }
-            paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
+            let [w, h] = self.overlay_size;
+            let pixels_per_point = if rect.width() > 0.0 {
+                f64::from(w) / f64::from(rect.width())
+            } else {
+                1.0
+            };
+            let key = (pixels_per_point.to_bits(), tokens);
+            if self.overlay_density.as_ref().is_none_or(|(k, _)| *k != key) {
+                let density =
+                    viewport::EdgeDensity::new(&self.overlay, w, h, &tokens, pixels_per_point);
+                self.overlay_density = Some((key, density));
+            }
+            if let Some((_, density)) = &self.overlay_density {
+                paint_overlay(
+                    &painter,
+                    rect,
+                    self.overlay_size,
+                    &self.overlay,
+                    &tokens,
+                    density,
+                );
+            }
         }
         // The names of the datums, on either path: text is egui's.
         if self.state.show.datums {
@@ -2632,6 +2668,7 @@ impl Shell {
         }
         self.overlay = composed.overlay;
         self.overlay_size = [composed.width, composed.height];
+        self.overlay_density = None;
         self.render_problem = None;
     }
 }
@@ -2793,6 +2830,7 @@ fn paint_overlay(
     size: [u32; 2],
     overlay: &Overlay,
     tokens: &Tokens,
+    density: &viewport::EdgeDensity,
 ) {
     let [w, h] = size;
     let (sx, sy) = (
@@ -2805,15 +2843,51 @@ fn paint_overlay(
             rect.top() + (p[1] * sy) as f32,
         )
     };
+    // The edges fade where they crowd (`viewport::EdgeDensity`, measured
+    // in the image's pixels at its pixels per point); the painter draws a
+    // line in one colour, so an edge is drawn in pieces of at most half a
+    // tile, each faded as at its middle.
+    let pixels_per_point = if rect.width() > 0.0 {
+        f64::from(w) / f64::from(rect.width())
+    } else {
+        1.0
+    };
+    let piece = f64::from(viewport::tile_pixels(tokens, pixels_per_point)) * 0.5;
+    let mut colors = viewport::EdgeColorCache::default();
     for line in &overlay.lines {
-        let tint = color_alpha(
-            line.kind.color(tokens),
-            viewport::opacity(line.hidden, tokens),
-        );
-        painter.line_segment(
-            [place(line.from), place(line.to)],
-            egui::Stroke::new(line.kind.width(tokens), tint),
-        );
+        let alpha = f64::from(viewport::opacity(line.hidden, tokens));
+        let ink = match line.edge {
+            Some(edge) => colors.get(edge.body, tokens).pick(edge.silhouette),
+            None => line.color(tokens),
+        };
+        let stroke = |fade: f64| {
+            let opacity = (alpha * fade).round().clamp(0.0, 255.0) as u8;
+            egui::Stroke::new(line.width(tokens), color_alpha(ink, opacity))
+        };
+        let Some(edge) = line.edge else {
+            painter.line_segment([place(line.from), place(line.to)], stroke(1.0));
+            continue;
+        };
+        let long = viewport::fade_short(edge.extent, tokens, pixels_per_point);
+        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let pieces = (length / piece).ceil();
+        let pieces = if pieces.is_finite() {
+            pieces.clamp(1.0, 4096.0) as usize
+        } else {
+            1
+        };
+        let at = |t: f64| {
+            [
+                line.from[0] + (line.to[0] - line.from[0]) * t,
+                line.from[1] + (line.to[1] - line.from[1]) * t,
+            ]
+        };
+        for k in 0..pieces {
+            let (t0, t1) = (k as f64 / pieces as f64, (k + 1) as f64 / pieces as f64);
+            let middle = at(0.5 * (t0 + t1));
+            let fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
+            painter.line_segment([place(at(t0)), place(at(t1))], stroke(fade));
+        }
     }
     for point in &overlay.points {
         let tint = color_alpha(

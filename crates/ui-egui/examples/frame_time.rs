@@ -24,8 +24,10 @@
 //! tolerance as a fraction of the model's size (the shell's default
 //! without it; `1e-3` is the automatic tolerance the viewport showed
 //! before 2026-10-13), so the cost of the finer mesh can be compared.
+//! `--open FILE` times that document instead of the two built ones (one
+//! window size, no edit).
 
-use craft3d_engine::{Session, Workspace};
+use craft3d_engine::{Access, Session, Workspace};
 use craft3d_ui_egui::direct::headless_render_state;
 use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, PointerButton, Pos2, pos2, vec2};
@@ -129,14 +131,30 @@ enum Path {
 }
 
 fn measure(
+    open: Option<&str>,
     large: bool,
     size: [f32; 2],
     inline: bool,
     path: Path,
     chordal: Option<f64>,
 ) -> Result<(), String> {
-    let mut session = Session::new(Workspace::none());
-    build(&mut session, large)?;
+    // A file named on the command line is read with the user's
+    // authority, like one picked in the window's dialog.
+    let mut session = Session::new(Workspace {
+        read: if open.is_some() {
+            Access::Unrestricted
+        } else {
+            Access::None
+        },
+        write: Access::None,
+    });
+    match open {
+        Some(path) => session
+            .execute("file.open", &json!({"path": path}))
+            .map(|_| ())
+            .map_err(|e| e.message().to_string())?,
+        None => build(&mut session, large)?,
+    }
     let choice = match path {
         Path::Direct | Path::Readback => RendererChoice::Auto,
         Path::Cpu => RendererChoice::Cpu,
@@ -247,6 +265,10 @@ fn measure(
         );
     }
 
+    if open.is_some() {
+        print_sharp(&shell);
+        return Ok(());
+    }
     session
         .execute("feature.edit", &json!({"feature": "Post", "height": 20}))
         .map_err(|e| e.message().to_string())?;
@@ -258,6 +280,11 @@ fn measure(
             &window.last_waited(edit.len()),
         );
     }
+    print_sharp(&shell);
+    Ok(())
+}
+
+fn print_sharp(shell: &Shell) {
     if let Some(stats) = shell.render_stats() {
         println!(
             "  sharp image: {} x {} ssaa {} msaa {} on the {}, rendered in {:.1} ms",
@@ -269,7 +296,6 @@ fn measure(
             stats.milliseconds.unwrap_or(f64::NAN)
         );
     }
-    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -286,7 +312,11 @@ fn main() -> ExitCode {
     // viewport showed before 2026-10-13); the default is the shell's.
     let mut args = std::env::args().skip(1);
     let mut chordal = None;
+    let mut open = None;
     while let Some(arg) = args.next() {
+        if arg == "--open" {
+            open = args.next();
+        }
         if arg == "--chordal" {
             let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) else {
                 eprintln!("frame_time: --chordal takes a number");
@@ -295,9 +325,13 @@ fn main() -> ExitCode {
             chordal = Some(value);
         }
     }
-    let outcome = measure(false, [1280.0, 800.0], inline, path, chordal)
-        .and_then(|()| measure(true, [1280.0, 800.0], inline, path, chordal))
-        .and_then(|()| measure(true, [2560.0, 1400.0], inline, path, chordal));
+    let outcome = if let Some(file) = open.as_deref() {
+        measure(Some(file), false, [1280.0, 800.0], inline, path, chordal)
+    } else {
+        measure(None, false, [1280.0, 800.0], inline, path, chordal)
+            .and_then(|()| measure(None, true, [1280.0, 800.0], inline, path, chordal))
+            .and_then(|()| measure(None, true, [2560.0, 1400.0], inline, path, chordal))
+    };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

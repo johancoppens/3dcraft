@@ -11,7 +11,12 @@
 //!    adapter has no multisampling for the formats). The shading is the
 //!    one of the readback renderer, once per pixel at its centre; the
 //!    samples only decide coverage.
-//! 2. **Lines.** The segments of a [`GpuLines`], with `lines.wgsl`, into
+//! 2. **Edge density** (only when the lines hold edges of bodies): the
+//!    edges in sight inked at their own width into a texture of one
+//!    channel and summed per pixel (`lines.wgsl`, `fs_ink`), then averaged
+//!    per tile (`edge_tiles.wgsl`): how crowded with edges each part of
+//!    the picture is, which fades the edges there in pass 3.
+//! 3. **Lines.** The segments of a [`GpuLines`], with `lines.wgsl`, into
 //!    the same colour target, each as a quad in screen space inked by the
 //!    distance of a pixel's centre to the segment (the CPU's `draw_line`)
 //!    and, when `tested`, hidden where the surface reconstructed from the
@@ -20,7 +25,7 @@
 //!    depth buffer of pass 1: a hidden edge is left out, a hidden
 //!    sketch is drawn with the hidden opacity. The pass resolves the
 //!    samples into the shown texture.
-//! 3. **Capture** (only when asked): face ids and distances at one sample
+//! 4. **Capture** (only when asked): face ids and distances at one sample
 //!    per pixel, for picking and for the tests that compare the picture
 //!    with the CPU renderer's.
 //!
@@ -83,6 +88,76 @@ pub struct Segment {
     /// the frame ([`OverlayParams::axis_length`]) when it is drawn, so the
     /// axes keep their size on screen without being uploaded again.
     pub axis: bool,
+    /// For an edge of a body: drawn as its outline where the surface on
+    /// one side steps back, faded where it is short on screen or where
+    /// edges crowd ([`EdgeLook`]), and counted in how crowded they are.
+    pub edge: Option<EdgeSegment>,
+}
+
+/// What a segment of an edge of a body has besides ([`Segment::edge`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeSegment {
+    /// The outline's colour, sRGB bytes.
+    pub outline_color: [u8; 3],
+    /// The outline's width, in pixels.
+    pub outline_width: f32,
+    /// Two opposite corners of the box around the whole edge the segment
+    /// is part of: the diagonal between them, projected, is the edge's
+    /// extent on screen. `None`: the edge is never short.
+    pub extent: Option<[Vec3; 2]>,
+}
+
+/// How the edges of bodies are drawn in a frame: the rules of
+/// `craft3d_ui_egui::viewport` (`surface_steps_back`, `fade_short`,
+/// `edge_fade`, `EdgeDensity`), with their numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeLook {
+    /// Where the surface beside an edge is read, in pixels across it:
+    /// near and far (`OUTLINE_NEAR`, `OUTLINE_FAR`).
+    pub outline_near: f64,
+    pub outline_far: f64,
+    /// The step that makes an outline, in pixels' worth of the view at
+    /// the edge's distance (`OUTLINE_STEP`), and the share of the
+    /// surface's change per pixel allowed besides (`OUTLINE_SLOPE`).
+    pub outline_step: f64,
+    pub outline_slope: f64,
+    /// An edge shorter on screen than `long` pixels fades, fully at
+    /// `short`.
+    pub fade_short: f64,
+    pub fade_long: f64,
+    /// Where the edges' ink covers more than `dense_cap` of a tile, each
+    /// edge there keeps `dense_cap` over that share of its opacity.
+    pub dense_cap: f64,
+    /// The opacity a fully faded edge keeps, 0 to 1.
+    pub fade_floor: f64,
+    /// The side of a tile of the density, in pixels (4 to 64).
+    pub tile: u32,
+}
+
+impl EdgeLook {
+    /// Nothing faded, no step an outline.
+    pub const PLAIN: EdgeLook = EdgeLook {
+        outline_near: 1.5,
+        outline_far: 3.0,
+        outline_step: 1.0e30,
+        outline_slope: 0.0,
+        fade_short: 0.0,
+        fade_long: 0.0,
+        dense_cap: 1.0e30,
+        fade_floor: 1.0,
+        tile: 16,
+    };
+
+    /// The side of a tile, within what the passes take.
+    fn tile(&self) -> u32 {
+        self.tile.clamp(4, 64)
+    }
+}
+
+impl Default for EdgeLook {
+    fn default() -> Self {
+        Self::PLAIN
+    }
 }
 
 /// A translucent square over the picture and under the lines: the
@@ -118,6 +193,8 @@ pub struct OverlayParams {
     pub hidden_opacity: u8,
     /// The length of a world axis, in model units.
     pub axis_length: f64,
+    /// How the edges of bodies are drawn.
+    pub edges: EdgeLook,
 }
 
 /// What a frame holds.
@@ -139,27 +216,40 @@ impl Default for DrawOptions {
     }
 }
 
-/// Largest accepted number of segments (277 MB of vertex data).
+/// Largest accepted number of segments (71 MB of instance data).
 pub const MAX_SEGMENTS: usize = 1 << 20;
-/// Two ends (3 × `f32` each), the corner (2 × `f32`), the colour (`u32`),
-/// the width (`f32`) and the flags (`u32`).
-const LINE_VERTEX_BYTES: usize = 44;
-/// Two triangles.
-const VERTICES_PER_SEGMENT: usize = 6;
-const SEGMENT_BYTES: usize = VERTICES_PER_SEGMENT * LINE_VERTEX_BYTES;
-/// Number of `f32` in the lines uniform block (three `vec4`).
-const LINES_FLOATS: usize = 12;
+/// One instance per segment: two ends (3 × `f32` each), the colour
+/// (`u32`), the width (`f32`), the flags (`u32`), the outline's colour
+/// (`u32`) and width (`f32`), and the corners of the edge's box (3 × `f32`
+/// each).
+const SEGMENT_BYTES: usize = 68;
+/// Two triangles, made from the vertex index.
+const VERTICES_PER_SEGMENT: u32 = 6;
+/// Number of `f32` in the lines uniform block (six `vec4`).
+const LINES_FLOATS: usize = 24;
 /// Samples the viewport asks for.
 pub const WANTED_SAMPLES: u32 = 4;
 
 const FLAG_TESTED: u32 = 1;
 const FLAG_DIMMED: u32 = 2;
+const FLAG_EDGE: u32 = 4;
+const FLAG_EXTENT: u32 = 8;
+
+/// The ink of the edges, summed per pixel by blending.
+const INK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// The density of the edges per tile, and the distances the lines' depth
+/// test reads: the bits of `f32` (`R32Float` does not render everywhere).
+const TILE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+const DISTANCE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 /// The segments on the GPU, made by [`Onscreen::upload_lines`]. They
 /// belong to the renderer that made them.
 pub struct GpuLines {
     buffer: Option<wgpu::Buffer>,
-    vertices: u32,
+    /// One per segment drawn.
+    instances: u32,
+    /// How many of them are edges of bodies.
+    edges: usize,
     /// What the positions are relative to.
     origin: Vec3,
     /// The axes, with the byte offset of each in the buffer: written again
@@ -215,7 +305,13 @@ fn narrow(v: Vec3) -> Option<[f32; 3]> {
     out.iter().all(|c| c.is_finite()).then_some(out)
 }
 
-/// The six vertices of one segment, or `None` when it cannot be drawn.
+fn pack_color([r, g, b]: [u8; 3]) -> u32 {
+    u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16) | (255 << 24)
+}
+
+/// The instance of one segment, or `None` when it cannot be drawn. An
+/// edge whose box does not fit in `f32` is drawn as one that is never
+/// short.
 fn pack_segment(segment: &Segment, origin: Vec3, axis_length: f64) -> Option<[u8; SEGMENT_BYTES]> {
     let scale = if segment.axis { axis_length } else { 1.0 };
     let (from, to) = (segment.from * scale, segment.to * scale);
@@ -224,33 +320,38 @@ fn pack_segment(segment: &Segment, origin: Vec3, axis_length: f64) -> Option<[u8
     }
     let a = narrow(from - origin)?;
     let b = narrow(to - origin)?;
-    let [r, g, bl] = segment.color;
-    let color = u32::from(r) | (u32::from(g) << 8) | (u32::from(bl) << 16) | (255 << 24);
-    let flags =
-        if segment.tested { FLAG_TESTED } else { 0 } | if segment.dimmed { FLAG_DIMMED } else { 0 };
+    let edge = segment.edge;
+    let extent = edge
+        .and_then(|edge| edge.extent)
+        .and_then(|[low, high]| Some((narrow(low - origin)?, narrow(high - origin)?)));
+    let flags = if segment.tested { FLAG_TESTED } else { 0 }
+        | if segment.dimmed { FLAG_DIMMED } else { 0 }
+        | if edge.is_some() { FLAG_EDGE } else { 0 }
+        | if extent.is_some() { FLAG_EXTENT } else { 0 };
     let width = segment.width.max(0.0);
+    let outline_width = edge.map_or(width, |edge| {
+        if edge.outline_width.is_finite() {
+            edge.outline_width.max(0.0)
+        } else {
+            width
+        }
+    });
+    let outline_color = pack_color(edge.map_or(segment.color, |edge| edge.outline_color));
+    let (low, high) = extent.unwrap_or(([0.0; 3], [0.0; 3]));
+    let mut bytes = float_bytes(&[a[0], a[1], a[2], b[0], b[1], b[2]]);
+    bytes.extend_from_slice(&pack_color(segment.color).to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&flags.to_le_bytes());
+    bytes.extend_from_slice(&outline_color.to_le_bytes());
+    bytes.extend_from_slice(&outline_width.to_le_bytes());
+    bytes.extend_from_slice(&float_bytes(&[
+        low[0], low[1], low[2], high[0], high[1], high[2],
+    ]));
     let mut out = [0_u8; SEGMENT_BYTES];
-    let corners: [[f32; 2]; VERTICES_PER_SEGMENT] = [
-        [0.0, -1.0],
-        [1.0, -1.0],
-        [1.0, 1.0],
-        [0.0, -1.0],
-        [1.0, 1.0],
-        [0.0, 1.0],
-    ];
-    for (vertex, corner) in out
-        .as_chunks_mut::<LINE_VERTEX_BYTES>()
-        .0
-        .iter_mut()
-        .zip(corners)
-    {
-        let floats = [a[0], a[1], a[2], b[0], b[1], b[2], corner[0], corner[1]];
-        let mut bytes = float_bytes(&floats);
-        bytes.extend_from_slice(&color.to_le_bytes());
-        bytes.extend_from_slice(&width.to_le_bytes());
-        bytes.extend_from_slice(&flags.to_le_bytes());
-        vertex.copy_from_slice(&bytes);
+    if bytes.len() != SEGMENT_BYTES {
+        return None;
     }
+    out.copy_from_slice(&bytes);
     Some(out)
 }
 
@@ -299,6 +400,19 @@ struct Targets {
     shown: wgpu::Texture,
     shown_view: wgpu::TextureView,
     lines_bind: wgpu::BindGroup,
+    /// The density of the edges: the side of a tile in pixels, the ink
+    /// (where the device draws it) with the group that reads it, and the
+    /// tiles the lines read.
+    tile: u32,
+    ink: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    tiles: wgpu::TextureView,
+    // Read back by tests, which a browser does not run.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    tiles_texture: wgpu::Texture,
+    /// The distances of the depth buffer (`distance.wgsl`), and the group
+    /// that makes them.
+    distance: wgpu::TextureView,
+    distance_bind: wgpu::BindGroup,
     capture: Option<Capture>,
     /// What a see-through picture needs besides; made for the first one.
     peel: Option<PeelTargets>,
@@ -631,6 +745,12 @@ pub struct Onscreen {
     /// sample when that pipeline is for several.
     fills_pipeline: wgpu::RenderPipeline,
     fills_flat_pipeline: Option<wgpu::RenderPipeline>,
+    /// What measures how crowded the edges are, or why this device does
+    /// not (its edges are then faded only for being short).
+    density: Result<Density, String>,
+    /// Turns the depth buffer into the distances the lines read.
+    distance_pipeline: wgpu::RenderPipeline,
+    distance_layout: wgpu::BindGroupLayout,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
     /// What draws a cut-open picture, or why this device does not; made
@@ -654,6 +774,169 @@ pub struct Onscreen {
     depth_read_pipeline: Option<wgpu::RenderPipeline>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
+}
+
+/// The passes of the edge density: the ink of the edges (the lines'
+/// shader into [`INK_FORMAT`], summed by blending) and the mean per tile.
+struct Density {
+    ink_pipeline: wgpu::RenderPipeline,
+    tiles_pipeline: wgpu::RenderPipeline,
+    tiles_layout: wgpu::BindGroupLayout,
+}
+
+impl Density {
+    fn build(
+        device: &wgpu::Device,
+        lines_shader: &wgpu::ShaderModule,
+        lines_pipeline_layout: &wgpu::PipelineLayout,
+        instance: &wgpu::VertexBufferLayout<'_>,
+    ) -> Density {
+        // The ink target as it will be made: a device that cannot render
+        // into a half float (WebGL2 without its extension) fails here,
+        // under the guard, and draws its edges unfaded by crowding.
+        let _probe = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("craft3d edge ink probe"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: INK_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let primitive = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        };
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let ink_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("craft3d edge ink"),
+            layout: Some(lines_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: lines_shader,
+                entry_point: Some("vs_ink"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(instance.clone())],
+            },
+            primitive,
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: lines_shader,
+                entry_point: Some("fs_ink"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: INK_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: add,
+                        alpha: add,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let tiles_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("craft3d edge tiles"),
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let tiles_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d edge tiles"),
+            source: wgpu::ShaderSource::Wgsl(EDGE_TILES_SOURCE.into()),
+        });
+        let tiles_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("craft3d edge tiles"),
+                bind_group_layouts: &[Some(&tiles_layout)],
+                immediate_size: 0,
+            });
+        let tiles_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("craft3d edge tiles"),
+            layout: Some(&tiles_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &tiles_shader,
+                entry_point: Some("vs_cover"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive,
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &tiles_shader,
+                entry_point: Some("fs_tiles"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[target(TILE_FORMAT)],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Density {
+            ink_pipeline,
+            tiles_pipeline,
+            tiles_layout,
+        }
+    }
+}
+
+/// The pass over the tiles of the edge density (no template).
+const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
+
+/// The shaders over the picture, filled in for a depth buffer of
+/// `samples` samples per pixel: the lines, the fills, the distances the
+/// two read, and the copy of the depth buffer for tests.
+pub(crate) struct OverlaySources {
+    pub(crate) lines: String,
+    pub(crate) fills: String,
+    pub(crate) distance: String,
+    // Read back by tests, which a browser does not run.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) depth_read: String,
+}
+
+pub(crate) fn overlay_sources(samples: u32) -> OverlaySources {
+    let (depth_type, load) = if samples > 1 {
+        (
+            "texture_multisampled_2d<f32>",
+            "textureLoad(depth_texture, p, s).r",
+        )
+    } else {
+        ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
+    };
+    let fill = |template: &str| {
+        template
+            .replace("{{DEPTH_TEST}}", include_str!("depth_test.wgsl"))
+            .replace("{{DEPTH}}", depth_type)
+            .replace("{{LOAD}}", load)
+    };
+    OverlaySources {
+        lines: fill(include_str!("lines.wgsl")),
+        fills: fill(include_str!("fills.wgsl")),
+        distance: fill(include_str!("distance.wgsl")),
+        depth_read: fill(include_str!("depth_read.wgsl")),
+    }
 }
 
 /// True when `adapter` renders `format` with `samples` samples.
@@ -703,7 +986,21 @@ impl Onscreen {
                 .get_downlevel_capabilities()
                 .flags
                 .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
-        Self::shaded(device, queue, samples, per_sample)
+        let mut onscreen = Self::shaded(device, queue, samples, per_sample)?;
+        // The ink of the edges is summed by blending in a half float: a
+        // device that cannot draw into one with blending fades its edges
+        // only for being short.
+        let ink = adapter.get_texture_format_features(INK_FORMAT);
+        if !(ink
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            && ink
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE))
+        {
+            onscreen.density = Err("it cannot blend into a half float".to_string());
+        }
+        Ok(onscreen)
     }
 
     /// A renderer with `samples` samples per pixel (1, 2, 4 or 8; the
@@ -786,6 +1083,12 @@ impl Onscreen {
             .map_err(String::as_str)
     }
 
+    /// Whether this renderer measures how crowded the edges are (and
+    /// fades them there), or why not.
+    pub fn edge_density(&self) -> Result<(), &str> {
+        self.density.as_ref().map(|_| ()).map_err(String::as_str)
+    }
+
     fn build(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -799,30 +1102,14 @@ impl Onscreen {
         // The depth buffer is bound as an unfilterable float texture, not
         // as a depth texture: naga's GLSL backend cannot `textureLoad` a
         // depth texture, and WebGPU binds a depth format either way.
-        let (depth_type, load) = if samples > 1 {
-            (
-                "texture_multisampled_2d<f32>",
-                "textureLoad(depth_texture, p, s).r",
-            )
-        } else {
-            ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
-        };
-        let depth_test = include_str!("depth_test.wgsl");
-        let lines_source = include_str!("lines.wgsl")
-            .replace("{{DEPTH_TEST}}", depth_test)
-            .replace("{{DEPTH}}", depth_type)
-            .replace("{{LOAD}}", load);
+        let sources = overlay_sources(samples);
         let lines_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d lines"),
-            source: wgpu::ShaderSource::Wgsl(lines_source.into()),
+            source: wgpu::ShaderSource::Wgsl(sources.lines.as_str().into()),
         });
-        let fills_source = include_str!("fills.wgsl")
-            .replace("{{DEPTH_TEST}}", depth_test)
-            .replace("{{DEPTH}}", depth_type)
-            .replace("{{LOAD}}", load);
         let fills_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d fills"),
-            source: wgpu::ShaderSource::Wgsl(fills_source.into()),
+            source: wgpu::ShaderSource::Wgsl(sources.fills.as_str().into()),
         });
 
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
@@ -865,7 +1152,77 @@ impl Onscreen {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
+        });
+        // The pass that makes the distances: the scene's numbers, the
+        // lines' and the depth buffer, as the lines' group had them.
+        let distance_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("craft3d distances"),
+            entries: &[
+                uniform_entry(0, both),
+                uniform_entry(1, both),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: samples > 1,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let distance_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d distances"),
+            source: wgpu::ShaderSource::Wgsl(sources.distance.as_str().into()),
+        });
+        let distance_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("craft3d distances"),
+                bind_group_layouts: &[Some(&distance_layout)],
+                immediate_size: 0,
+            });
+        let distance_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("craft3d distances"),
+            layout: Some(&distance_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &distance_shader,
+                entry_point: Some("vs_cover"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &distance_shader,
+                entry_point: Some("fs_distance"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[target(DISTANCE_FORMAT)],
+            }),
+            multiview_mask: None,
+            cache: None,
         });
 
         let scene_pipeline_layout =
@@ -947,38 +1304,27 @@ impl Onscreen {
                 bind_group_layouts: &[Some(&lines_layout)],
                 immediate_size: 0,
             });
+        let attribute = |format, offset, shader_location| wgpu::VertexAttribute {
+            format,
+            offset,
+            shader_location,
+        };
         let line_attributes = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 0,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 12,
-                shader_location: 1,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 24,
-                shader_location: 2,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Uint32,
-                offset: 32,
-                shader_location: 3,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32,
-                offset: 36,
-                shader_location: 4,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Uint32,
-                offset: 40,
-                shader_location: 5,
-            },
+            attribute(wgpu::VertexFormat::Float32x3, 0, 0),
+            attribute(wgpu::VertexFormat::Float32x3, 12, 1),
+            attribute(wgpu::VertexFormat::Uint32, 24, 2),
+            attribute(wgpu::VertexFormat::Float32, 28, 3),
+            attribute(wgpu::VertexFormat::Uint32, 32, 4),
+            attribute(wgpu::VertexFormat::Uint32, 36, 5),
+            attribute(wgpu::VertexFormat::Float32, 40, 6),
+            attribute(wgpu::VertexFormat::Float32x3, 44, 7),
+            attribute(wgpu::VertexFormat::Float32x3, 56, 8),
         ];
+        let instance = wgpu::VertexBufferLayout {
+            array_stride: SEGMENT_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &line_attributes,
+        };
         let lines_pipeline_for = |count: u32| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("craft3d lines"),
@@ -987,11 +1333,7 @@ impl Onscreen {
                     module: &lines_shader,
                     entry_point: Some("vs_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: LINE_VERTEX_BYTES as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &line_attributes,
-                    })],
+                    buffers: &[Some(instance.clone())],
                 },
                 primitive,
                 // The depth test is in the fragment shader, against the
@@ -1070,6 +1412,12 @@ impl Onscreen {
         };
         let fills_pipeline = fills_pipeline_for(samples);
         let fills_flat_pipeline = (samples > 1).then(|| fills_pipeline_for(1));
+        // On its own: a device that cannot draw into the formats still
+        // draws its lines.
+        let density = guarded(device, || {
+            Density::build(device, &lines_shader, &lines_pipeline_layout, &instance)
+        })
+        .map_err(|e| e.to_string());
 
         Onscreen {
             device: device.clone(),
@@ -1088,6 +1436,9 @@ impl Onscreen {
             lines_flat_pipeline,
             fills_pipeline,
             fills_flat_pipeline,
+            density,
+            distance_pipeline,
+            distance_layout,
             see_through: Err("it was not set up".to_string()),
             cut: None,
             cap_buffer: cut::cap_buffer(device),
@@ -1097,9 +1448,7 @@ impl Onscreen {
             captured: false,
             depth_numbers: [0.0; 3],
             #[cfg(not(target_arch = "wasm32"))]
-            depth_read_source: include_str!("depth_read.wgsl")
-                .replace("{{DEPTH}}", depth_type)
-                .replace("{{LOAD}}", load),
+            depth_read_source: sources.depth_read,
             #[cfg(not(target_arch = "wasm32"))]
             depth_read_pipeline: None,
             token: Arc::new(()),
@@ -1168,7 +1517,7 @@ impl Onscreen {
             .unwrap_or(Vec3::ZERO);
         let mut bytes: Vec<u8> = Vec::with_capacity(segments.len().saturating_mul(SEGMENT_BYTES));
         let mut axes = Vec::new();
-        let mut count = 0_usize;
+        let (mut count, mut edges) = (0_usize, 0_usize);
         for segment in segments {
             let Some(packed) = pack_segment(segment, origin, 1.0) else {
                 continue;
@@ -1178,11 +1527,11 @@ impl Onscreen {
             }
             bytes.extend_from_slice(&packed);
             count += 1;
+            edges += usize::from(segment.edge.is_some());
         }
-        let vertices =
-            u32::try_from(bytes.len() / LINE_VERTEX_BYTES).map_err(|_| GpuError::TooManyLines {
-                segments: segments.len(),
-            })?;
+        let instances = u32::try_from(count).map_err(|_| GpuError::TooManyLines {
+            segments: segments.len(),
+        })?;
         if bytes.len() as u64 > self.device.limits().max_buffer_size {
             return Err(GpuError::TooManyLines {
                 segments: segments.len(),
@@ -1228,7 +1577,8 @@ impl Onscreen {
         };
         Ok(GpuLines {
             buffer,
-            vertices,
+            instances,
+            edges,
             origin,
             axes,
             axis_length: Cell::new(1.0),
@@ -1277,7 +1627,7 @@ impl Onscreen {
         let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
         let device = self.device.clone();
         guarded(&device, || {
-            self.ensure_targets(params, options.capture);
+            self.ensure_targets(params, options.capture, overlay.edges.tile());
             if see_through {
                 self.ensure_peel_targets();
             }
@@ -1502,15 +1852,66 @@ impl Onscreen {
             pass.set_bind_group(0, &targets.lines_bind, &[]);
             pass.draw(0..3, 0..1);
         }
+        let values = self.read_back(device, encoder, &copy, &buffer, width, height, stride)?;
+        Ok((width, height, values))
+    }
+
+    /// The density of the edges per tile of the last draw, read back
+    /// (`edge_tiles.wgsl`): columns, rows and the means, row-major. For
+    /// the tests that hold it to the CPU's `EdgeDensity`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_edge_density(&mut self) -> Result<(u32, u32, Vec<f32>), GpuError> {
+        let device = self.device.clone();
+        guarded(&device, || {
+            let targets = self
+                .targets
+                .as_ref()
+                .filter(|_| self.drawn)
+                .ok_or(GpuError::NothingDrawn)?;
+            let texture = &targets.tiles_texture;
+            let (width, height) = (texture.width(), texture.height());
+            let stride = width
+                .checked_mul(4)
+                .and_then(|row| row.checked_next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+                .ok_or_else(|| GpuError::Readback("too many tiles".to_string()))?;
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("craft3d edge tiles read"),
+                size: u64::from(stride) * u64::from(height),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("craft3d edge tiles read"),
+            });
+            let values =
+                self.read_back(&device, encoder, texture, &buffer, width, height, stride)?;
+            Ok((width, height, values))
+        })?
+    }
+
+    /// Copies `texture` (4 bytes per texel, the bits of `f32`) into
+    /// `buffer` with `encoder` and maps it: the values, row-major.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments)]
+    fn read_back(
+        &self,
+        device: &wgpu::Device,
+        mut encoder: wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> Result<Vec<f32>, GpuError> {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &copy,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
+                buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(stride),
@@ -1554,15 +1955,15 @@ impl Onscreen {
         }
         drop(mapped);
         buffer.unmap();
-        Ok((width, height, values))
+        Ok(values)
     }
 
-    fn ensure_targets(&mut self, params: &RenderParams, capture: bool) {
+    fn ensure_targets(&mut self, params: &RenderParams, capture: bool, tile: u32) {
         let (width, height) = (params.width, params.height);
         let same_size = self
             .targets
             .as_ref()
-            .is_some_and(|t| (t.width, t.height) == (width, height));
+            .is_some_and(|t| (t.width, t.height, t.tile) == (width, height, tile));
         if same_size {
             let has_capture = self.targets.as_ref().is_some_and(|t| t.capture.is_some());
             if !capture || has_capture {
@@ -1618,6 +2019,71 @@ impl Onscreen {
                 | wgpu::TextureUsages::COPY_SRC,
         );
         let shown_view = view(&shown);
+        // One texel per tile, at least one.
+        let tiles_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("craft3d edge tiles"),
+            size: wgpu::Extent3d {
+                width: width.div_ceil(tile).max(1),
+                height: height.div_ceil(tile).max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TILE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let tiles = view(&tiles_texture);
+        let ink = self.density.as_ref().ok().map(|density| {
+            let ink = view(&texture(
+                "craft3d edge ink",
+                INK_FORMAT,
+                1,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            ));
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("craft3d edge tiles"),
+                layout: &density.tiles_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.lines_uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&ink),
+                    },
+                ],
+            });
+            (ink, bind)
+        });
+        let distance = view(&texture(
+            "craft3d distances",
+            DISTANCE_FORMAT,
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        ));
+        let distance_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("craft3d distances"),
+            layout: &self.distance_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.scene_uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.lines_uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&depth),
+                },
+            ],
+        });
         let lines_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d lines"),
             layout: &self.lines_layout,
@@ -1634,6 +2100,14 @@ impl Onscreen {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&depth),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&tiles),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&distance),
+                },
             ],
         });
         let capture = capture.then(|| Self::capture_targets(device, width, height));
@@ -1645,6 +2119,12 @@ impl Onscreen {
             shown,
             shown_view,
             lines_bind,
+            tile,
+            ink,
+            tiles,
+            tiles_texture,
+            distance,
+            distance_bind,
             capture,
             peel: None,
             cut: None,
@@ -1992,6 +2472,62 @@ impl Onscreen {
             pass.set_bind_group(0, &peel.blend_bind, &[]);
             pass.draw(0..3, 0..1);
         }
+        // The distances the lines and the fills read, from the depth
+        // buffer of the bodies (of the front when they are seen through).
+        if lines.buffer.is_some() || lines.fills.is_some() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d distances"),
+                color_attachments: &[color_attachment(
+                    &targets.distance,
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                )],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.distance_pipeline);
+            pass.set_bind_group(0, &targets.distance_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        // How crowded the edges in sight are: their ink, summed per pixel,
+        // then its mean per tile, which the lines read.
+        if let (Ok(density), Some((ink, tiles_bind)), Some(buffer)) =
+            (&self.density, &targets.ink, &lines.buffer)
+            && lines.edges > 0
+        {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d edge ink"),
+                    color_attachments: &[color_attachment(
+                        ink,
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    )],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&density.ink_pipeline);
+                pass.set_bind_group(0, &targets.lines_bind, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..VERTICES_PER_SEGMENT, 0..lines.instances);
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d edge tiles"),
+                color_attachments: &[color_attachment(
+                    &targets.tiles,
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                )],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&density.tiles_pipeline);
+            pass.set_bind_group(0, tiles_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
         {
             // The lines over the bodies, and the resolve of the samples
             // into the shown texture; over a see-through picture, which is
@@ -2044,12 +2580,12 @@ impl Onscreen {
                 pass.draw(0..lines.fill_vertices, 0..1);
             }
             if let Some(buffer) = &lines.buffer
-                && lines.vertices > 0
+                && lines.instances > 0
             {
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &targets.lines_bind, &[]);
                 pass.set_vertex_buffer(0, buffer.slice(..));
-                pass.draw(0..lines.vertices, 0..1);
+                pass.draw(0..VERTICES_PER_SEGMENT, 0..lines.instances);
             }
         }
         // The count of a cut-open capture: the picture's own with one
@@ -2131,6 +2667,7 @@ fn lines_uniforms(
     } else {
         f64::INFINITY
     };
+    let edges = &overlay.edges;
     let wide = [
         f64::from(params.width),
         f64::from(params.height),
@@ -2138,11 +2675,23 @@ fn lines_uniforms(
         f64::from(samples),
         f64::from(overlay.hidden_opacity) / 255.0,
         craft3d_render::SUBPIXEL_GRAIN,
-        0.0,
+        f64::from(edges.tile()),
         0.0,
         eye.x,
         eye.y,
         eye.z,
+        0.0,
+        edges.outline_near,
+        edges.outline_far,
+        edges.outline_step,
+        edges.outline_slope,
+        edges.fade_short,
+        edges.fade_long,
+        edges.dense_cap,
+        0.0,
+        edges.fade_floor,
+        0.0,
+        0.0,
         0.0,
     ];
     let mut out = [0.0_f32; LINES_FLOATS];
@@ -2150,12 +2699,20 @@ fn lines_uniforms(
         // Deliberate narrowing at the GPU boundary.
         *slot = value as f32;
     }
-    // Infinite slack is fine; an eye that does not fit is not.
+    // Infinite slack is fine; an eye that does not fit is not, nor are
+    // numbers of the edges' look that are not.
     if out
         .get(8..11)
         .is_some_and(|eye| eye.iter().any(|c| !c.is_finite()))
     {
         return Err(GpuError::OutOfRange("the camera"));
+    }
+    if out
+        .get(12..21)
+        .is_some_and(|look| look.iter().any(|c| !c.is_finite()))
+        || !(edges.outline_far > edges.outline_near && edges.outline_near > 0.0)
+    {
+        return Err(GpuError::OutOfRange("how the edges are drawn"));
     }
     Ok(out)
 }
@@ -2173,18 +2730,19 @@ mod tests {
             tested: true,
             dimmed: false,
             axis: false,
+            edge: None,
         }
     }
 
     #[test]
-    fn a_segment_packs_to_six_vertices_with_its_colour_width_and_flags() {
+    fn a_segment_packs_to_one_instance_with_its_colour_width_and_flags() {
         let packed = pack_segment(
             &segment(Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)),
             Vec3::new(1.0, 1.0, 1.0),
             1.0,
         )
         .unwrap();
-        assert_eq!(packed.len(), 6 * LINE_VERTEX_BYTES);
+        assert_eq!(packed.len(), SEGMENT_BYTES);
         let floats = |bytes: &[u8]| -> Vec<f32> {
             bytes
                 .as_chunks::<4>()
@@ -2193,35 +2751,41 @@ mod tests {
                 .map(|b| f32::from_le_bytes(*b))
                 .collect()
         };
-        let first = &packed[..LINE_VERTEX_BYTES];
+        assert_eq!(floats(&packed[..24]), [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(&packed[24..28], &[1, 2, 3, 255]);
+        assert_eq!(floats(&packed[28..32]), [1.5]);
+        assert_eq!(&packed[32..36], &FLAG_TESTED.to_le_bytes());
+        // Not an edge: its outline is itself, no box.
+        assert_eq!(&packed[36..40], &[1, 2, 3, 255]);
+        assert_eq!(floats(&packed[40..44]), [1.5]);
+        assert_eq!(floats(&packed[44..68]), [0.0; 6]);
+        // An edge: its outline, its box, and the flags that say so.
+        let edge = Segment {
+            edge: Some(EdgeSegment {
+                outline_color: [7, 8, 9],
+                outline_width: 2.5,
+                extent: Some([Vec3::new(1.0, 1.0, 1.0), Vec3::new(2.0, 3.0, 4.0)]),
+            }),
+            ..segment(Vec3::ZERO, Vec3::X)
+        };
+        let packed = pack_segment(&edge, Vec3::ZERO, 1.0).unwrap();
         assert_eq!(
-            floats(&first[..32]),
-            [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 0.0, -1.0]
+            &packed[32..36],
+            &(FLAG_TESTED | FLAG_EDGE | FLAG_EXTENT).to_le_bytes()
         );
-        assert_eq!(&first[32..36], &[1, 2, 3, 255]);
-        assert_eq!(floats(&first[36..40]), [1.5]);
-        assert_eq!(&first[40..44], &FLAG_TESTED.to_le_bytes());
-        // The corners go round two triangles.
-        let corners: Vec<[f32; 2]> = packed
-            .as_chunks::<LINE_VERTEX_BYTES>()
-            .0
-            .iter()
-            .map(|v| {
-                let f = floats(&v[24..32]);
-                [f[0], f[1]]
-            })
-            .collect();
-        assert_eq!(
-            corners,
-            [
-                [0.0, -1.0],
-                [1.0, -1.0],
-                [1.0, 1.0],
-                [0.0, -1.0],
-                [1.0, 1.0],
-                [0.0, 1.0]
-            ]
-        );
+        assert_eq!(&packed[36..40], &[7, 8, 9, 255]);
+        assert_eq!(floats(&packed[40..44]), [2.5]);
+        assert_eq!(floats(&packed[44..68]), [1.0, 1.0, 1.0, 2.0, 3.0, 4.0]);
+        // A box that does not fit: an edge that is never short.
+        let far = Segment {
+            edge: Some(EdgeSegment {
+                extent: Some([Vec3::ZERO, Vec3::new(1e300, 0.0, 0.0)]),
+                ..edge.edge.unwrap()
+            }),
+            ..edge
+        };
+        let packed = pack_segment(&far, Vec3::ZERO, 1.0).unwrap();
+        assert_eq!(&packed[32..36], &(FLAG_TESTED | FLAG_EDGE).to_le_bytes());
         // An axis is scaled by the axis length.
         let axis = Segment {
             axis: true,
@@ -2267,6 +2831,65 @@ mod tests {
             },
         ] {
             assert!(pack_fill(&bad, Vec3::ZERO).is_none(), "{bad:?}");
+        }
+    }
+
+    /// The shaders over the picture, for one sample per pixel (OpenGL,
+    /// WebGL2) and for several, validate with naga without an adapter, and
+    /// the single-sample ones translate to GLSL ES 3.10, as wgpu's OpenGL
+    /// backend gets them. (Not to ES 3.00, WebGL2: the depth test's array
+    /// of arrays, there since 2026-10-18, needs 3.10.)
+    #[test]
+    fn the_overlay_shaders_validate_without_an_adapter() {
+        use wgpu::naga;
+        for samples in [1, 4] {
+            let sources = overlay_sources(samples);
+            for (name, source) in [
+                ("lines", sources.lines.as_str()),
+                ("fills", sources.fills.as_str()),
+                ("distance", sources.distance.as_str()),
+                ("depth read", sources.depth_read.as_str()),
+                ("edge tiles", EDGE_TILES_SOURCE),
+            ] {
+                let label = format!("{name}, {samples} samples");
+                assert!(!source.contains("{{"), "{label}: a marker was left");
+                let module = naga::front::wgsl::parse_str(source)
+                    .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+                if samples > 1 {
+                    continue;
+                }
+                for entry in &module.entry_points {
+                    let options = naga::back::glsl::Options {
+                        version: naga::back::glsl::Version::Embedded {
+                            version: 310,
+                            is_webgl: false,
+                        },
+                        ..naga::back::glsl::Options::default()
+                    };
+                    let pipeline = naga::back::glsl::PipelineOptions {
+                        shader_stage: entry.stage,
+                        entry_point: entry.name.clone(),
+                        multiview: None,
+                    };
+                    let mut out = String::new();
+                    naga::back::glsl::Writer::new(
+                        &mut out,
+                        &module,
+                        &info,
+                        &options,
+                        &pipeline,
+                        naga::proc::BoundsCheckPolicies::default(),
+                    )
+                    .and_then(|mut writer| writer.write().map(|_| ()))
+                    .unwrap_or_else(|e| panic!("{label}, {}: GLSL: {e}", entry.name));
+                }
+            }
         }
     }
 

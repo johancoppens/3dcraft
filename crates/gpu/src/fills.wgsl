@@ -8,9 +8,9 @@
 // at the same pixel centres; a fragment covers every sample of its pixel,
 // so a multisampled pixel resolves to the one value the CPU computes.
 //
-// The source is a template: depth_test.wgsl is pasted in at its marker,
-// and `{{DEPTH}}` and `{{LOAD}}` are filled in for a multisampled or a
-// single-sampled depth texture.
+// The source is a template: depth_test.wgsl is pasted in at its marker. It
+// reads the distances of distance.wgsl, made from the depth buffer once
+// per frame.
 
 struct Scene {
     right: vec4<f32>,
@@ -39,7 +39,8 @@ struct Lines {
 
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<uniform> lines: Lines;
-@group(0) @binding(2) var depth_texture: {{DEPTH}};
+// The distances, as the bits of `f32`.
+@group(0) @binding(4) var distance_texture: texture_2d<u32>;
 
 struct FillIn {
     @builtin(vertex_index) index: u32,

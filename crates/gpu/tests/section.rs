@@ -769,6 +769,7 @@ fn no_overlay() -> OverlayParams {
         slack: 0.0,
         hidden_opacity: 70,
         axis_length: 1.0,
+        edges: craft3d_gpu::EdgeLook::default(),
     }
 }
 
@@ -937,6 +938,7 @@ fn the_cap_hides_the_lines_behind_it() {
         tested: true,
         dimmed: false,
         axis: false,
+        edge: None,
     };
     // Inside the body behind the cap, and in the half that is cut away.
     let segments = [line(-0.5, 0.5), line(1.2, -0.5)];
