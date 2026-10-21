@@ -3958,6 +3958,18 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     Ok(mass_from(body, all?, middle))
 }
 
+/// The area of each face of `body`, in the order of its faces, by the
+/// integrals [`mass_properties`] sums (the very same per face, whichever
+/// way the face points): an error for a face it would refuse. For
+/// questions about single faces (selecting faces by their area).
+pub fn face_areas(body: &Body) -> Vec<Result<f64, MassError>> {
+    let (per_face, _) = faces_of(body, Wanted::First);
+    per_face
+        .into_iter()
+        .map(|face| face.all.map(|sums| sums.area.abs()))
+        .collect()
+}
+
 /// Faces in a run of bodies [`mass_properties_each`] measures at once, at
 /// least (a body with more is a run of its own): enough to keep every
 /// thread busy, and the most measured for nothing after a body that fails.

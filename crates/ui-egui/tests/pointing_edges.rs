@@ -1138,12 +1138,20 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
         "the GPU's highlight differs from the CPU's at {} of {samples} samples",
         samples - agree
     );
-    // Without a highlight the device shows the plain picture again.
+    // Without a highlight the device shows the plain picture again. A
+    // click selects what it points at too (2026-10-21): the selection is
+    // cleared as well.
     call(
         &mut shell,
         &mut session,
         "ui.highlight",
         json!({"face": null}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"mode": "clear"}),
     );
     window.frame(&mut shell, &mut session, Vec::new());
     let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();

@@ -276,10 +276,14 @@ fn dispatch(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => call_tool(session, params, extension),
+        // The selection, readable at any time (decision B1 of 2026-10-21).
+        "resources/list" => Ok(json!({ "resources": [selection_resource()] })),
+        "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
+        "resources/read" => read_resource(session, params),
         other => Err(RpcError {
             code: METHOD_NOT_FOUND,
             message: format!(
-                "unknown method `{}`; this server implements initialize, ping, tools/list and tools/call",
+                "unknown method `{}`; this server implements initialize, ping, tools/list, tools/call, resources/list, resources/templates/list and resources/read",
                 shorten(other)
             ),
         }),
@@ -306,9 +310,62 @@ fn initialize(params: Option<&Map<String, Value>>) -> Result<Value, RpcError> {
     };
     Ok(json!({
         "protocolVersion": version,
-        "capabilities": { "tools": {} },
+        "capabilities": { "tools": {}, "resources": {} },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
         "instructions": INSTRUCTIONS,
+    }))
+}
+
+// -------------------------------------------------------------- resources
+
+/// The URI of the selection as a resource.
+const SELECTION_URI: &str = "craft3d://selection";
+
+fn selection_resource() -> Value {
+    json!({
+        "uri": SELECTION_URI,
+        "name": "selection",
+        "title": "What is selected",
+        "description": "What is selected in the active document (in the window when this server is bridged to one): items {kind, name, feature}, count, summary and what dropped out, as the command select.get gives it. The tool selection_get gives the same.",
+        "mimeType": "application/json",
+    })
+}
+
+/// The selection as the command `select.get` gives it; `{"document":
+/// null}` without a document.
+fn selection_json(session: &mut Session) -> Result<Value, String> {
+    if !session.has_document() {
+        return Ok(json!({ "document": null }));
+    }
+    session
+        .execute("select.get", &Value::Null)
+        .map_err(|e| e.message().to_string())
+}
+
+fn read_resource(
+    session: &mut Session,
+    params: Option<&Map<String, Value>>,
+) -> Result<Value, RpcError> {
+    let uri = match params.and_then(|p| p.get("uri")) {
+        Some(Value::String(uri)) => uri.as_str(),
+        _ => {
+            return Err(RpcError::invalid_params(
+                "resources/read: `uri` must be a string; resources/list lists them",
+            ));
+        }
+    };
+    if uri != SELECTION_URI {
+        return Err(RpcError::invalid_params(format!(
+            "resources/read: unknown resource `{}`; the resources are: {SELECTION_URI}",
+            shorten(uri)
+        )));
+    }
+    let selection = selection_json(session).map_err(|message| RpcError {
+        code: INTERNAL_ERROR,
+        message,
+    })?;
+    Ok(json!({
+        "contents": [{ "uri": SELECTION_URI, "mimeType": "application/json", "text": serialize(&selection) }],
     }))
 }
 
@@ -397,6 +454,15 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "selection_get",
+            "description": "Returns what is selected in the active document: what the developer clicked in the window (when this server is bridged to one) and what agents selected (select.set, select.query with then), as items {kind, name, feature}, count, summary (\"3 bodies, 2 faces\") and dropped (what no longer exists). Returns {\"document\": null} when no document is open. The same as the resource craft3d://selection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "doc_render_preview",
             "description": "Renders the active document's bodies to a PNG image (4:3, CPU renderer) and returns it with the coverage, triangle count and body list. For a detail: projection orthographic with a box or a zoom.",
             "inputSchema": {
@@ -445,7 +511,7 @@ fn tools() -> Value {
 /// The definition of `control_call` for a host with these methods.
 fn control_call_tool(extension: &Extension<'_>) -> Value {
     let mut description = String::from(
-        "Runs one method of the 3DCraft window this server belongs to: what the developer sees, not the document. Use it to read the view (ui.get: the camera, state.picked, the face, the edge or the vertex the developer clicked last, and state.highlight, state.highlightEdge and state.highlightVertex), to ask what the viewport shows at a pixel (ui.pick), to point at a face, an edge or a vertex for the developer (ui.highlight) and to take a picture of the viewport (ui.screenshot). The methods:",
+        "Runs one method of the 3DCraft window this server belongs to: what the developer sees, not the document. Use it to read the view (ui.get: the camera, state.picked, the face, the edge or the vertex the developer clicked last, and state.highlight, state.highlightEdge and state.highlightVertex), to ask what the viewport shows at a pixel (ui.pick), to point at a face, an edge or a vertex for the developer (ui.highlight), to set the selection the developer sees (ui.select; ui.get has it under selection, the tool selection_get too) and to take a picture of the viewport (ui.screenshot). The methods:",
     );
     for method in extension.methods {
         description.push_str(&format!(
@@ -534,6 +600,7 @@ fn call_tool(
         "command_batch" => tool_command_batch(session, arguments),
         "doc_inspect" => tool_doc_inspect(session, arguments),
         "doc_render_preview" => tool_doc_render_preview(session, arguments),
+        "selection_get" => tool_selection_get(session, arguments),
         "control_call" => match extension {
             Some(extension) => tool_control_call(session, arguments, extension),
             None => {
@@ -544,7 +611,7 @@ fn call_tool(
         },
         other => {
             return Err(RpcError::invalid_params(format!(
-                "unknown tool `{}`; the tools are: command_list, command_run, command_batch, doc_inspect, doc_render_preview{}",
+                "unknown tool `{}`; the tools are: command_list, command_run, command_batch, doc_inspect, selection_get, doc_render_preview{}",
                 shorten(other),
                 if extension.is_some() {
                     ", control_call"
@@ -696,6 +763,16 @@ fn tool_doc_inspect(
     }
 }
 
+fn tool_selection_get(
+    session: &mut Session,
+    arguments: Option<&Value>,
+) -> Result<ToolOutput, ToolFailure> {
+    Fields::new("selection_get", "argument", arguments, &[])?;
+    selection_json(session)
+        .map(|selection| ToolOutput::json(&selection))
+        .map_err(ToolFailure::Failed)
+}
+
 fn tool_doc_render_preview(
     session: &mut Session,
     arguments: Option<&Value>,
@@ -821,7 +898,7 @@ mod tests {
 
         // And the uncapped handler returns the tools.
         let reply = parse(handle_line(&mut session, list));
-        assert_eq!(reply["result"]["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(reply["result"]["tools"].as_array().unwrap().len(), 6);
     }
 
     #[test]

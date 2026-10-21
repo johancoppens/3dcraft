@@ -18,7 +18,7 @@
 //! Deviations from docs/control-protocol.md, for now: there are no
 //! background jobs (`wait`, `jobs.*`), no `session.*`/`doc.*` methods and
 //! tools (the `file.*` commands do the same through `engine.execute` and
-//! `command_run`) and no MCP resources.
+//! `command_run`); the one MCP resource is the selection.
 //!
 //! [`bridge`] is the MCP server without a session: it passes every message
 //! to a running desktop app, which answers it on the document in its

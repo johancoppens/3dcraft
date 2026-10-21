@@ -1,0 +1,1304 @@
+//! The selection's commands: read it, set it, and select by describing
+//! (`select.query`, decision B4 of 2026-10-21: JSON filters). The design
+//! note is `docs/design/selection.md`.
+
+use crate::commands::{Run, fail, spec};
+use crate::params::Params;
+use crate::selection::{
+    MAX_SELECTION, Resolver, SelectMode, SelectionItem, SelectionKind, feature_named, is_datum,
+    summary,
+};
+use crate::{CommandError, CommandSpec, Session};
+use craft3d_doc::{Document, FeatureId, FeatureKind, NameRole, PersistentName};
+use craft3d_geom::{Curve3, Surface};
+use craft3d_math::{Bbox3, Vec3};
+use craft3d_regen::{Names, Regen};
+use craft3d_topo::{Body, EdgeId, FaceId};
+use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+pub(crate) static SPECS: &[CommandSpec] = &[
+    spec!("select.get", "Selection", "{}",
+        "Returns what is selected in the active document: items (each {kind, name, feature}: kind body, face, edge, vertex, feature, sketch or datum; name the feature's name, or the persistent name of a face, edge or vertex; feature the feature's id, or the feature whose body has the face, edge or vertex), count, summary (\"3 bodies, 2 faces\") and dropped: what dropped out since it was last set because it no longer exists, one line each. The selection is shared by the window (click, Shift+click, a box, the feature list) and agents; it is not saved and not undone. Items are checked against the document as it is now: a name stays selected as long as what it names exists.", doc: true, select_get),
+    spec!("select.set", "Select", r#"{"items": [{"kind": "body|face|edge|vertex|feature|sketch|datum", "name": string, "feature": id or name}], "names": [string], "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
+        "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, select_set),
+    spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000}"#,
+        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for a cylindrical face whose outward normal points at its axis (the wall of a hole), false for the others; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, select_query),
+];
+
+/// Most filters one query holds, nested ones included.
+const MAX_FILTERS: usize = 1000;
+/// Deepest nesting of filters.
+const MAX_DEPTH: usize = 32;
+/// Most items a query looks at.
+const MAX_CANDIDATES: usize = 4_000_000;
+/// Longest glob, in characters.
+const MAX_GLOB: usize = 512;
+/// Samples along a curve that is not a line or a circle for its length.
+const LENGTH_SAMPLES: u32 = 256;
+/// The default result size.
+const DEFAULT_LIMIT: u64 = 1000;
+
+fn select_get(session: &mut Session, params: &Value) -> Run {
+    Params::new("select.get", params, &[])?;
+    session.document()?;
+    Ok(session.selection().json())
+}
+
+fn select_set(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "select.set";
+    let p = Params::new(ID, params, &["items", "names", "mode"])?;
+    let mode = match p.str("mode")? {
+        None => SelectMode::Replace,
+        Some(word) => SelectMode::parse(word).ok_or_else(|| {
+            CommandError::new(format!(
+                "{ID}: `mode` must be replace, add, remove, toggle or clear"
+            ))
+        })?,
+    };
+    let mut wanted: Vec<(Option<SelectionKind>, String, Option<String>)> = Vec::new();
+    let too_many = || {
+        CommandError::new(format!(
+            "{ID}: at most {MAX_SELECTION} items can be selected at once"
+        ))
+    };
+    match p.get("items") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            if items.len() > MAX_SELECTION {
+                return Err(too_many());
+            }
+            for item in items {
+                let Value::Object(map) = item else {
+                    return fail(format!(
+                        "{ID}: each of `items` is an object {{kind, name, feature}}"
+                    ));
+                };
+                if let Some(key) = map
+                    .keys()
+                    .find(|k| !["kind", "name", "feature"].contains(&k.as_str()))
+                {
+                    let key: String = key.chars().take(40).collect();
+                    return fail(format!(
+                        "{ID}: an item has kind, name and feature, not `{key}`"
+                    ));
+                }
+                let kind = match map.get("kind") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(word)) => {
+                        Some(SelectionKind::parse(word).ok_or_else(|| kind_error(ID))?)
+                    }
+                    Some(_) => return Err(kind_error(ID)),
+                };
+                let feature = match map.get("feature") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(text)) => Some(text.clone()),
+                    Some(Value::Number(n)) if n.is_u64() => Some(n.to_string()),
+                    Some(_) => {
+                        return fail(format!("{ID}: `feature` must be a feature id or name"));
+                    }
+                };
+                let name = match map.get("name") {
+                    Some(Value::String(name)) => name.clone(),
+                    None | Some(Value::Null) if feature.is_some() => String::new(),
+                    _ => return fail(format!("{ID}: each item needs a `name` (a string)")),
+                };
+                wanted.push((kind, name, feature));
+            }
+        }
+        Some(_) => return fail(format!("{ID}: `items` must be an array of objects")),
+    }
+    match p.get("names") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(names)) => {
+            if names.len().saturating_add(wanted.len()) > MAX_SELECTION {
+                return Err(too_many());
+            }
+            for name in names {
+                let Some(name) = name.as_str() else {
+                    return fail(format!("{ID}: `names` must be an array of strings"));
+                };
+                wanted.push((None, name.to_string(), None));
+            }
+        }
+        Some(_) => return fail(format!("{ID}: `names` must be an array of strings")),
+    }
+    if wanted.is_empty() && !matches!(mode, SelectMode::Clear | SelectMode::Replace) {
+        return fail(format!(
+            "{ID}: give `items` or `names` to {}",
+            match mode {
+                SelectMode::Add => "add",
+                SelectMode::Remove => "remove",
+                _ => "toggle",
+            }
+        ));
+    }
+    if mode == SelectMode::Clear && !wanted.is_empty() {
+        return fail(format!("{ID}: `clear` takes no items"));
+    }
+    // Checked against the document as it is now, so that what dropped out
+    // before is said before the new choice replaces it.
+    session.selection();
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let mut resolver = Resolver::new(open.history.current(), &regen);
+    let mut items = Vec::with_capacity(wanted.len());
+    for (kind, name, feature) in &wanted {
+        let found = resolver
+            .resolve(*kind, name, feature.as_deref())
+            .map_err(|why| CommandError::new(format!("{ID}: {why}")))?;
+        items.push(found.item);
+    }
+    drop(resolver);
+    let (added, removed) = open.selection.apply(items, mode);
+    let mut result = open.selection.view().json();
+    if let Some(map) = result.as_object_mut() {
+        map.insert("added".into(), added.into());
+        map.insert("removed".into(), removed.into());
+    }
+    Ok(result)
+}
+
+fn kind_error(id: &str) -> CommandError {
+    CommandError::new(format!(
+        "{id}: `kind` must be body, face, edge, vertex, feature, sketch or datum"
+    ))
+}
+
+// ------------------------------------------------------------- filters
+
+/// A filter of `select.query`, parsed and checked.
+#[derive(Clone, Debug)]
+enum Filter {
+    All(Vec<Filter>),
+    Any(Vec<Filter>),
+    Not(Box<Filter>),
+    Kind(BTreeSet<SelectionKind>),
+    Name(Glob),
+    Type(Glob),
+    In(FeatureId),
+    MadeBy(FeatureId),
+    CopyOf {
+        feature: FeatureId,
+        instance: Option<u64>,
+    },
+    Color {
+        color: Option<[u8; 3]>,
+        within: f64,
+    },
+    Material(Option<Glob>),
+    Measure(Measure, Range),
+    Surface(BTreeSet<&'static str>),
+    Hole(bool),
+    Normal {
+        along: Option<Vec3>,
+        perpendicular: Option<Vec3>,
+        tol: f64,
+    },
+    Axis {
+        along: Vec3,
+        tol: f64,
+    },
+    Inside([Vec3; 2]),
+    Above(usize, f64),
+    Below(usize, f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Measure {
+    Volume,
+    Area,
+    Radius,
+    Length,
+}
+
+/// A closed range of values.
+#[derive(Clone, Copy, Debug)]
+struct Range {
+    lo: f64,
+    hi: f64,
+}
+
+impl Range {
+    fn holds(self, value: f64) -> bool {
+        value.is_finite() && self.lo <= value && value <= self.hi
+    }
+}
+
+/// A pattern with `*` (any run of characters) and `?` (one character).
+#[derive(Clone, Debug)]
+struct Glob(Vec<char>);
+
+impl Glob {
+    fn new(text: &str, key: &str) -> Result<Self, String> {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() > MAX_GLOB {
+            return Err(format!("`{key}` is at most {MAX_GLOB} characters"));
+        }
+        Ok(Self(chars))
+    }
+
+    /// Whether `text` fits: the usual two-pointer match with one point to
+    /// go back to, linear in practice and never more than the product of
+    /// the lengths.
+    fn matches(&self, text: &str) -> bool {
+        let text: Vec<char> = text.chars().collect();
+        let pattern = &self.0;
+        let (mut t, mut p) = (0_usize, 0_usize);
+        let mut star: Option<(usize, usize)> = None;
+        while t < text.len() {
+            match (pattern.get(p), text.get(t)) {
+                (Some('*'), _) => {
+                    star = Some((p, t));
+                    p += 1;
+                }
+                (Some('?'), Some(_)) => {
+                    p += 1;
+                    t += 1;
+                }
+                (Some(a), Some(b)) if a == b => {
+                    p += 1;
+                    t += 1;
+                }
+                _ => match star {
+                    Some((sp, st)) => {
+                        p = sp + 1;
+                        t = st + 1;
+                        star = Some((sp, st + 1));
+                    }
+                    None => return false,
+                },
+            }
+        }
+        pattern
+            .get(p..)
+            .is_some_and(|rest| rest.iter().all(|&c| c == '*'))
+    }
+}
+
+/// What filters are parsed against: the document, for its features,
+/// variables and units.
+struct Parser<'a> {
+    doc: &'a Document,
+    /// The filters parsed so far.
+    count: usize,
+}
+
+impl Parser<'_> {
+    fn parse(&mut self, value: &Value, depth: usize) -> Result<Filter, String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("filters are nested at most {MAX_DEPTH} deep"));
+        }
+        self.count = self.count.saturating_add(1);
+        if self.count > MAX_FILTERS {
+            return Err(format!("a query has at most {MAX_FILTERS} filters"));
+        }
+        match value {
+            Value::Array(items) => Ok(Filter::All(
+                items
+                    .iter()
+                    .map(|item| self.parse(item, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            )),
+            Value::Object(map) => {
+                let mut all = Vec::new();
+                for (key, inner) in map {
+                    if let Some(filter) = self.key(key, inner, map, depth)? {
+                        all.push(filter);
+                    }
+                }
+                if all.is_empty() {
+                    return Err("a filter object needs at least one filter".into());
+                }
+                Ok(if all.len() == 1 {
+                    all.remove(0)
+                } else {
+                    Filter::All(all)
+                })
+            }
+            other => Err(format!(
+                "a filter is an object or an array of filters, not {}",
+                kind_of(other)
+            )),
+        }
+    }
+
+    /// The filter of one key of an object; `None` for a key that only
+    /// modifies another (`instance`, `within`).
+    fn key(
+        &mut self,
+        key: &str,
+        value: &Value,
+        map: &Map<String, Value>,
+        depth: usize,
+    ) -> Result<Option<Filter>, String> {
+        let list = |parser: &mut Self, value: &Value| -> Result<Vec<Filter>, String> {
+            let Value::Array(items) = value else {
+                return Err(format!("`{key}` takes an array of filters"));
+            };
+            items
+                .iter()
+                .map(|item| parser.parse(item, depth + 1))
+                .collect()
+        };
+        let filter = match key {
+            "all" => Filter::All(list(self, value)?),
+            "any" => Filter::Any(list(self, value)?),
+            "not" => Filter::Not(Box::new(self.parse(value, depth + 1)?)),
+            "kind" => Filter::Kind(kinds(value)?),
+            "name" => Filter::Name(Glob::new(text(value, key)?, key)?),
+            "type" => Filter::Type(Glob::new(text(value, key)?, key)?),
+            "in" => Filter::In(self.feature(value, key)?),
+            "madeBy" => Filter::MadeBy(self.feature(value, key)?),
+            "copyOf" => Filter::CopyOf {
+                feature: self.feature(value, key)?,
+                instance: match map.get("instance") {
+                    None | Some(Value::Null) => None,
+                    Some(n) => Some(n.as_u64().ok_or("`instance` must be a whole number")?),
+                },
+            },
+            "instance" => {
+                if !map.contains_key("copyOf") {
+                    return Err("`instance` goes with `copyOf`".into());
+                }
+                return Ok(None);
+            }
+            "color" => Filter::Color {
+                color: color(value)?,
+                within: match map.get("within") {
+                    None | Some(Value::Null) => 0.0,
+                    Some(n) => n
+                        .as_f64()
+                        .filter(|d| d.is_finite() && *d >= 0.0)
+                        .ok_or("`within` must be a distance in RGB, 0 or more")?,
+                },
+            },
+            "within" => {
+                if !map.contains_key("color") {
+                    return Err("`within` goes with `color`".into());
+                }
+                return Ok(None);
+            }
+            "material" => Filter::Material(match value {
+                Value::Null => None,
+                other => Some(Glob::new(text(other, key)?, key)?),
+            }),
+            "volume" => Filter::Measure(Measure::Volume, self.range(value, key, 3)?),
+            "area" => Filter::Measure(Measure::Area, self.range(value, key, 2)?),
+            "radius" => Filter::Measure(Measure::Radius, self.range(value, key, 1)?),
+            "length" => Filter::Measure(Measure::Length, self.range(value, key, 1)?),
+            "surface" => Filter::Surface(surfaces(value)?),
+            "hole" => Filter::Hole(value.as_bool().ok_or("`hole` must be true or false")?),
+            "normal" => {
+                let Value::Object(fields) = value else {
+                    return Err("`normal` takes {along: axis} or {perpendicular: axis}".into());
+                };
+                only(fields, "normal", &["along", "perpendicular", "tol"])?;
+                let along = fields.get("along").map(axis).transpose()?;
+                let perpendicular = fields.get("perpendicular").map(axis).transpose()?;
+                if along.is_none() && perpendicular.is_none() {
+                    return Err("`normal` takes {along: axis} or {perpendicular: axis}".into());
+                }
+                Filter::Normal {
+                    along,
+                    perpendicular,
+                    tol: self.angle(fields.get("tol"))?,
+                }
+            }
+            "axis" => {
+                let Value::Object(fields) = value else {
+                    return Err("`axis` takes {along: axis}".into());
+                };
+                only(fields, "axis", &["along", "tol"])?;
+                Filter::Axis {
+                    along: axis(fields.get("along").ok_or("`axis` takes {along: axis}")?)?,
+                    tol: self.angle(fields.get("tol"))?,
+                }
+            }
+            "inside" => {
+                let wrong = || "`inside` takes a box [[x, y, z], [x, y, z]]".to_string();
+                let Value::Array(corners) = value else {
+                    return Err(wrong());
+                };
+                let [a, b] = corners.as_slice() else {
+                    return Err(wrong());
+                };
+                let point = |parser: &Self, v: &Value| -> Result<Vec3, String> {
+                    let Value::Array(xyz) = v else {
+                        return Err(wrong());
+                    };
+                    let [x, y, z] = xyz.as_slice() else {
+                        return Err(wrong());
+                    };
+                    Ok(Vec3::new(
+                        parser.quantity(x, key, 1)?,
+                        parser.quantity(y, key, 1)?,
+                        parser.quantity(z, key, 1)?,
+                    ))
+                };
+                let (a, b) = (point(self, a)?, point(self, b)?);
+                Filter::Inside([a.min(b), a.max(b)])
+            }
+            "above" | "below" => {
+                let (along, at) = match value {
+                    Value::Object(fields) => {
+                        only(fields, key, &["x", "y", "z"])?;
+                        let mut given = fields.iter();
+                        let (Some((name, at)), None) = (given.next(), given.next()) else {
+                            return Err(format!("`{key}` takes one of x, y and z"));
+                        };
+                        let along = match name.as_str() {
+                            "x" => 0,
+                            "y" => 1,
+                            _ => 2,
+                        };
+                        (along, self.quantity(at, key, 1)?)
+                    }
+                    other => (2, self.quantity(other, key, 1)?),
+                };
+                if key == "above" {
+                    Filter::Above(along, at)
+                } else {
+                    Filter::Below(along, at)
+                }
+            }
+            other => {
+                let other: String = other.chars().take(40).collect();
+                return Err(format!(
+                    "unknown filter `{other}`; the filters are all, any, not, kind, name, type, in, madeBy, copyOf, color, material, volume, area, radius, length, surface, hole, normal, axis, inside, above and below"
+                ));
+            }
+        };
+        Ok(Some(filter))
+    }
+
+    fn feature(&self, value: &Value, key: &str) -> Result<FeatureId, String> {
+        let text = match value {
+            Value::String(text) => text.clone(),
+            Value::Number(n) if n.is_u64() => n.to_string(),
+            _ => return Err(format!("`{key}` takes a feature id or name")),
+        };
+        feature_named(self.doc, &text).ok_or_else(|| {
+            format!(
+                "`{key}`: there is no feature `{}`",
+                text.chars().take(80).collect::<String>()
+            )
+        })
+    }
+
+    /// A value of length to the `power`, in the document's unit: a number
+    /// is one already, an expression is evaluated with the document's
+    /// variables and converted.
+    fn quantity(&self, value: &Value, key: &str, power: i32) -> Result<f64, String> {
+        let number = match value {
+            Value::Number(n) => n.as_f64(),
+            Value::String(source) => {
+                let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
+                let quantity = craft3d_expr::evaluate(source, |name| {
+                    evaluation.as_ref().and_then(|e| e.value(name))
+                })
+                .map_err(|e| format!("`{key}`: {e}"))?;
+                let wanted = craft3d_expr::Dimension::new(power, 0);
+                if quantity.dimension.is_dimensionless() {
+                    Some(quantity.value)
+                } else if quantity.dimension == wanted {
+                    let factor = self.doc.units.length.as_expr_unit().factor();
+                    Some(quantity.value / factor.powi(power))
+                } else {
+                    return Err(format!(
+                        "`{key}` is a {}, but a length{} is needed",
+                        quantity.dimension,
+                        match power {
+                            2 => " squared (an area)",
+                            3 => " cubed (a volume)",
+                            _ => "",
+                        }
+                    ));
+                }
+            }
+            _ => None,
+        };
+        number
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| format!("`{key}` takes a number or an expression such as \"6 mm\""))
+    }
+
+    fn range(&self, value: &Value, key: &str, power: i32) -> Result<Range, String> {
+        let around = |eq: f64, tol: Option<f64>| {
+            let tol = tol
+                .unwrap_or_else(|| 1e-6 * eq.abs() + self.doc.tolerance.linear.abs().powi(power));
+            Range {
+                lo: eq - tol,
+                hi: eq + tol,
+            }
+        };
+        match value {
+            Value::Object(fields) => {
+                only(fields, key, &["eq", "tol", "min", "max"])?;
+                let get = |name: &str| -> Result<Option<f64>, String> {
+                    fields
+                        .get(name)
+                        .map(|v| self.quantity(v, key, power))
+                        .transpose()
+                };
+                let (eq, tol, min, max) = (get("eq")?, get("tol")?, get("min")?, get("max")?);
+                if let Some(tol) = tol
+                    && tol < 0.0
+                {
+                    return Err(format!("`{key}`: tol must not be negative"));
+                }
+                match (eq, min, max) {
+                    (Some(eq), None, None) => Ok(around(eq, tol)),
+                    (None, min, max) if (min.is_some() || max.is_some()) && tol.is_none() => {
+                        Ok(Range {
+                            lo: min.unwrap_or(f64::NEG_INFINITY),
+                            hi: max.unwrap_or(f64::INFINITY),
+                        })
+                    }
+                    _ => Err(format!(
+                        "`{key}` takes a value, {{eq, tol}} or {{min, max}}"
+                    )),
+                }
+            }
+            other => Ok(around(self.quantity(other, key, power)?, None)),
+        }
+    }
+
+    /// An angle tolerance: degrees as a number, or an expression with an
+    /// angle unit; half a degree when none is given.
+    fn angle(&self, value: Option<&Value>) -> Result<f64, String> {
+        let degrees = match value {
+            None | Some(Value::Null) => 0.5,
+            Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
+            Some(Value::String(source)) => {
+                let quantity =
+                    craft3d_expr::evaluate(source, |_| None).map_err(|e| format!("`tol`: {e}"))?;
+                if quantity.dimension == craft3d_expr::Dimension::ANGLE {
+                    quantity.value.to_degrees()
+                } else if quantity.dimension.is_dimensionless() {
+                    quantity.value
+                } else {
+                    return Err("`tol` is an angle".into());
+                }
+            }
+            Some(_) => f64::NAN,
+        };
+        if degrees.is_finite() && (0.0..=90.0).contains(&degrees) {
+            Ok(degrees.to_radians())
+        } else {
+            Err("`tol` is an angle from 0 to 90 degrees".into())
+        }
+    }
+}
+
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+fn text<'v>(value: &'v Value, key: &str) -> Result<&'v str, String> {
+    value
+        .as_str()
+        .ok_or_else(|| format!("`{key}` takes a string"))
+}
+
+fn only(fields: &Map<String, Value>, key: &str, allowed: &[&str]) -> Result<(), String> {
+    match fields.keys().find(|k| !allowed.contains(&k.as_str())) {
+        Some(unknown) => Err(format!(
+            "`{key}` takes {}, not `{}`",
+            allowed.join(", "),
+            unknown.chars().take(40).collect::<String>()
+        )),
+        None => Ok(()),
+    }
+}
+
+fn kinds(value: &Value) -> Result<BTreeSet<SelectionKind>, String> {
+    let wrong = || {
+        "`kind` is body, face, edge, vertex, feature, sketch or datum, or a list of them"
+            .to_string()
+    };
+    let one = |v: &Value| v.as_str().and_then(SelectionKind::parse).ok_or_else(wrong);
+    match value {
+        Value::Array(items) if !items.is_empty() => items.iter().map(one).collect(),
+        Value::Array(_) => Err(wrong()),
+        other => Ok(BTreeSet::from([one(other)?])),
+    }
+}
+
+const SURFACES: [&str; 6] = ["plane", "cylinder", "cone", "sphere", "torus", "freeform"];
+
+fn surfaces(value: &Value) -> Result<BTreeSet<&'static str>, String> {
+    let wrong = || format!("`surface` is {} or a list of them", SURFACES.join(", "));
+    let one = |v: &Value| {
+        v.as_str()
+            .and_then(|word| SURFACES.iter().copied().find(|s| *s == word))
+            .ok_or_else(wrong)
+    };
+    match value {
+        Value::Array(items) if !items.is_empty() => items.iter().map(one).collect(),
+        Value::Array(_) => Err(wrong()),
+        other => Ok(BTreeSet::from([one(other)?])),
+    }
+}
+
+/// An axis: `x`, `-y`, `+z`, or `[x, y, z]`, as a unit vector.
+fn axis(value: &Value) -> Result<Vec3, String> {
+    let wrong = || "an axis is x, y, z, -x, -y, -z or [x, y, z]".to_string();
+    let v = match value {
+        Value::String(word) => {
+            let (sign, letter) = match word.strip_prefix('-') {
+                Some(rest) => (-1.0, rest),
+                None => (1.0, word.strip_prefix('+').unwrap_or(word)),
+            };
+            let unit = match letter {
+                "x" | "X" => Vec3::X,
+                "y" | "Y" => Vec3::Y,
+                "z" | "Z" => Vec3::Z,
+                _ => return Err(wrong()),
+            };
+            unit * sign
+        }
+        Value::Array(items) => {
+            let [x, y, z] = items.as_slice() else {
+                return Err(wrong());
+            };
+            let n = |v: &Value| v.as_f64().filter(|n| n.is_finite()).ok_or_else(wrong);
+            Vec3::new(n(x)?, n(y)?, n(z)?)
+        }
+        _ => return Err(wrong()),
+    };
+    v.normalized()
+        .ok_or_else(|| "an axis needs a direction (not [0, 0, 0])".to_string())
+}
+
+fn color(value: &Value) -> Result<Option<[u8; 3]>, String> {
+    let wrong = || "`color` is \"#rrggbb\", [r, g, b] (0 to 255) or null".to_string();
+    match value {
+        Value::Null => Ok(None),
+        Value::String(hex) => {
+            let digits = hex.strip_prefix('#').unwrap_or(hex);
+            if digits.len() != 6 || !digits.is_ascii() {
+                return Err(wrong());
+            }
+            let byte = |at: usize| {
+                digits
+                    .get(at..at + 2)
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                    .ok_or_else(wrong)
+            };
+            Ok(Some([byte(0)?, byte(2)?, byte(4)?]))
+        }
+        Value::Array(items) => {
+            let [r, g, b] = items.as_slice() else {
+                return Err(wrong());
+            };
+            let c = |v: &Value| {
+                v.as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(wrong)
+            };
+            Ok(Some([c(r)?, c(g)?, c(b)?]))
+        }
+        _ => Err(wrong()),
+    }
+}
+
+// ---------------------------------------------------------- candidates
+
+/// One thing a query looks at.
+struct Candidate<'a> {
+    kind: SelectionKind,
+    /// The feature itself, or the feature whose body has the entity.
+    feature: FeatureId,
+    /// The place of a face, edge or vertex in its body.
+    index: usize,
+    name: String,
+    /// A face's, edge's or vertex's persistent name.
+    persistent: Option<PersistentName>,
+    body: Option<&'a Arc<Body>>,
+}
+
+/// What filters are evaluated with: the document and its regeneration,
+/// and what was worked out per body, once.
+struct Context<'a> {
+    doc: &'a Document,
+    regen: &'a Regen,
+    areas: BTreeMap<FeatureId, Vec<Option<f64>>>,
+    colors: BTreeMap<FeatureId, Vec<Option<[u8; 3]>>>,
+    /// Per feature, the features its body is made from, all the way.
+    made_from: BTreeMap<FeatureId, BTreeSet<FeatureId>>,
+}
+
+impl<'a> Context<'a> {
+    /// The feature instance `instance` of the body of `feature` was made
+    /// from: a boolean's target (0) or tool (1), a pattern's or a
+    /// transform's source for every instance.
+    fn source_of(&self, feature: FeatureId, instance: u64) -> Option<FeatureId> {
+        let built = self
+            .regen
+            .feature(feature)
+            .and_then(|r| r.followed.as_deref())
+            .or_else(|| self.doc.feature(feature))?;
+        let sources = built.kind.sources();
+        usize::try_from(instance)
+            .ok()
+            .and_then(|i| sources.get(i))
+            .or_else(|| sources.first())
+            .map(|(id, _)| *id)
+    }
+
+    /// Whether the entity of persistent name `name` is a copy made by
+    /// `pattern` (of instance `instance` when given): its name's way
+    /// passes through that feature (names.md, the role copy: the
+    /// instances along the way, one per feature it went through).
+    fn copy_of(&self, name: &PersistentName, pattern: FeatureId, instance: Option<u64>) -> bool {
+        let fits = |at: FeatureId, n: u64| at == pattern && instance.is_none_or(|want| want == n);
+        for link in chain(name) {
+            if link.role != NameRole::Copy {
+                continue;
+            }
+            let stop = link.of.as_deref().map(|of| of.feature);
+            let mut at = link.feature;
+            if link.sources == [0] {
+                // Instance 0 of every feature along the way, until the
+                // feature of the name after `/`.
+                for _ in 0..=self.doc.features.len() {
+                    if fits(at, 0) {
+                        return true;
+                    }
+                    match self.source_of(at, 0) {
+                        Some(next) if Some(next) != stop && next != at => at = next,
+                        _ => break,
+                    }
+                }
+            } else {
+                for &n in &link.sources {
+                    if fits(at, n) {
+                        return true;
+                    }
+                    match self.source_of(at, n) {
+                        Some(next) => at = next,
+                        None => break,
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn feature_kind(&self, id: FeatureId) -> Option<&'a FeatureKind> {
+        self.doc.feature(id).map(|f| &f.kind)
+    }
+
+    /// The features the body of `id` was made from, `id` included.
+    fn made_from(&mut self, id: FeatureId) -> &BTreeSet<FeatureId> {
+        let doc = self.doc;
+        let regen = self.regen;
+        self.made_from.entry(id).or_insert_with(|| {
+            let mut seen = BTreeSet::from([id]);
+            let mut todo = vec![id];
+            // Bounded: each feature is visited once.
+            while let Some(at) = todo.pop() {
+                let built = regen
+                    .feature(at)
+                    .and_then(|r| r.followed.as_deref())
+                    .or_else(|| doc.feature(at));
+                for (source, _) in built.map(|f| f.kind.sources()).unwrap_or_default() {
+                    if seen.insert(source) {
+                        todo.push(source);
+                    }
+                }
+            }
+            seen
+        })
+    }
+
+    fn face_area(&mut self, c: &Candidate<'_>) -> Option<f64> {
+        let body = c.body?;
+        self.areas
+            .entry(c.feature)
+            .or_insert_with(|| {
+                craft3d_topo::face_areas(body)
+                    .into_iter()
+                    .map(Result::ok)
+                    .collect()
+            })
+            .get(c.index)
+            .copied()
+            .flatten()
+    }
+
+    fn face_color(&mut self, c: &Candidate<'_>) -> Option<[u8; 3]> {
+        let (doc, regen) = (self.doc, self.regen);
+        let faces = c.body.map_or(0, |b| b.faces.len());
+        self.colors
+            .entry(c.feature)
+            .or_insert_with(|| {
+                crate::appearance::face_appearances(doc, regen, c.feature, faces)
+                    .into_iter()
+                    .map(|a| a.map(|a| a.color))
+                    .collect()
+            })
+            .get(c.index)
+            .copied()
+            .flatten()
+    }
+
+    fn eval(&mut self, filter: &Filter, c: &Candidate<'_>) -> bool {
+        match filter {
+            Filter::All(all) => all.iter().all(|f| self.eval(f, c)),
+            Filter::Any(any) => any.iter().any(|f| self.eval(f, c)),
+            Filter::Not(inner) => !self.eval(inner, c),
+            Filter::Kind(kinds) => kinds.contains(&c.kind),
+            Filter::Name(glob) => {
+                glob.matches(&c.name)
+                    || (!c.kind.is_entity() && glob.matches(&c.feature.to_string()))
+            }
+            Filter::Type(glob) => self
+                .feature_kind(c.feature)
+                .is_some_and(|k| glob.matches(k.type_name())),
+            Filter::In(body) => {
+                (c.kind.is_entity() || c.kind == SelectionKind::Body) && c.feature == *body
+            }
+            Filter::MadeBy(maker) => match &c.persistent {
+                Some(name) => chain(name).any(|link| link.feature == *maker),
+                None => self.made_from(c.feature).contains(maker),
+            },
+            Filter::CopyOf { feature, instance } => match &c.persistent {
+                Some(name) => self.copy_of(name, *feature, *instance),
+                None => c.kind == SelectionKind::Body && c.feature == *feature,
+            },
+            Filter::Color { color, within } => {
+                let has = match c.kind {
+                    SelectionKind::Face => self.face_color(c),
+                    SelectionKind::Body | SelectionKind::Edge | SelectionKind::Vertex => {
+                        crate::appearance::body_appearance(self.doc, self.regen, c.feature)
+                            .map(|a| a.color)
+                    }
+                    _ => return false,
+                };
+                match (has, color) {
+                    (None, None) => true,
+                    (Some(has), Some(want)) => {
+                        let d: f64 = has
+                            .iter()
+                            .zip(want)
+                            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+                            .sum::<f64>()
+                            .sqrt();
+                        d <= *within
+                    }
+                    _ => false,
+                }
+            }
+            Filter::Material(glob) => {
+                if c.body.is_none() {
+                    return false;
+                }
+                let has = crate::appearance::body_material(self.doc, self.regen, c.feature)
+                    .map(|(_, material)| material.name);
+                match (has, glob) {
+                    (None, None) => true,
+                    (Some(name), Some(glob)) => glob.matches(&name),
+                    _ => false,
+                }
+            }
+            Filter::Measure(measure, range) => self
+                .measure(*measure, c)
+                .is_some_and(|value| range.holds(value)),
+            Filter::Surface(kinds) => {
+                surface_of(c).is_some_and(|(surface, _)| kinds.contains(surface_kind(surface)))
+            }
+            Filter::Hole(wanted) => {
+                let hole = surface_of(c).is_some_and(|(surface, reversed)| {
+                    matches!(surface, Surface::Cylinder(_)) && reversed
+                });
+                c.kind == SelectionKind::Face && hole == *wanted
+            }
+            Filter::Normal {
+                along,
+                perpendicular,
+                tol,
+            } => {
+                let Some((surface, reversed)) = surface_of(c) else {
+                    return false;
+                };
+                let square = |v: Vec3, d: Vec3| v.dot(d).abs() <= tol.sin();
+                let parallel = |v: Vec3, d: Vec3| v.dot(d) >= tol.cos();
+                match surface {
+                    Surface::Plane(plane) => {
+                        let z = plane.frame().z();
+                        let n = if reversed { -z } else { z };
+                        along.is_none_or(|d| parallel(n, d))
+                            && perpendicular.is_none_or(|d| square(n, d))
+                    }
+                    Surface::Cylinder(_) | Surface::Cone(_) => {
+                        let a = surface_axis(surface).unwrap_or(Vec3::ZERO);
+                        along.is_none()
+                            && perpendicular.is_some_and(|d| parallel(a, d) || parallel(-a, d))
+                    }
+                    _ => false,
+                }
+            }
+            Filter::Axis { along, tol } => {
+                let a = match c.kind {
+                    SelectionKind::Face => surface_of(c).and_then(|(s, _)| surface_axis(s)),
+                    SelectionKind::Edge => edge_of(c).and_then(|edge| match &edge.curve {
+                        Curve3::Circle(circle) => Some(circle.frame().z()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                a.is_some_and(|a| a.dot(*along).abs() >= tol.cos())
+            }
+            Filter::Inside([lo, hi]) => self.bounds(c).is_some_and(|(a, b)| {
+                let slack = self.doc.tolerance.linear.abs();
+                (0..3).all(|k| {
+                    axis_of(a, k) >= axis_of(*lo, k) - slack
+                        && axis_of(b, k) <= axis_of(*hi, k) + slack
+                })
+            }),
+            Filter::Above(k, at) => self
+                .bounds(c)
+                .is_some_and(|(a, _)| axis_of(a, *k) >= at - self.doc.tolerance.linear.abs()),
+            Filter::Below(k, at) => self
+                .bounds(c)
+                .is_some_and(|(_, b)| axis_of(b, *k) <= at + self.doc.tolerance.linear.abs()),
+        }
+    }
+
+    fn measure(&mut self, measure: Measure, c: &Candidate<'_>) -> Option<f64> {
+        match (measure, c.kind) {
+            (Measure::Volume, SelectionKind::Body) => {
+                crate::mass::mass_of(c.body?).ok().map(|m| m.volume)
+            }
+            (Measure::Area, SelectionKind::Body) => {
+                crate::mass::mass_of(c.body?).ok().map(|m| m.area)
+            }
+            (Measure::Area, SelectionKind::Face) => self.face_area(c),
+            (Measure::Radius, SelectionKind::Face) => match surface_of(c)?.0 {
+                Surface::Cylinder(s) => Some(s.radius()),
+                Surface::Sphere(s) => Some(s.radius()),
+                _ => None,
+            },
+            (Measure::Radius, SelectionKind::Edge) => match &edge_of(c)?.curve {
+                Curve3::Circle(circle) => Some(circle.radius()),
+                _ => None,
+            },
+            (Measure::Length, SelectionKind::Edge) => edge_length(edge_of(c)?),
+            _ => None,
+        }
+    }
+
+    /// The box around the item: exact for flat faces and straight edges,
+    /// certainly containing it otherwise (`Body::held_bbox`).
+    fn bounds(&self, c: &Candidate<'_>) -> Option<(Vec3, Vec3)> {
+        let body = c.body?;
+        let index = u32::try_from(c.index).ok()?;
+        let boxed: Option<Bbox3> = match c.kind {
+            SelectionKind::Body => body.held_bbox().ok(),
+            SelectionKind::Face => body.held_face_bbox(FaceId(index)).ok(),
+            SelectionKind::Edge => body.edge_bbox(EdgeId(index)).ok(),
+            SelectionKind::Vertex => {
+                let p = body.vertices.get(c.index)?.point;
+                return Some((p, p));
+            }
+            _ => None,
+        };
+        boxed?.corners()
+    }
+}
+
+fn axis_of(v: Vec3, k: usize) -> f64 {
+    match k {
+        0 => v.x,
+        1 => v.y,
+        _ => v.z,
+    }
+}
+
+/// A name and the names it is the image of, outermost first.
+fn chain(name: &PersistentName) -> impl Iterator<Item = &PersistentName> {
+    let mut at = Some(name);
+    // Bounded by the name itself: each link is a smaller part of it.
+    std::iter::from_fn(move || {
+        let here = at?;
+        at = here.of.as_deref();
+        Some(here)
+    })
+}
+
+fn surface_of<'a>(c: &Candidate<'a>) -> Option<(&'a Surface, bool)> {
+    if c.kind != SelectionKind::Face {
+        return None;
+    }
+    let face = c.body?.faces.get(c.index)?;
+    Some((&face.surface, face.reversed))
+}
+
+fn edge_of<'a>(c: &Candidate<'a>) -> Option<&'a craft3d_topo::Edge> {
+    if c.kind != SelectionKind::Edge {
+        return None;
+    }
+    c.body?.edges.get(c.index)
+}
+
+fn surface_kind(surface: &Surface) -> &'static str {
+    match surface {
+        Surface::Plane(_) => "plane",
+        Surface::Cylinder(_) => "cylinder",
+        Surface::Cone(_) => "cone",
+        Surface::Sphere(_) => "sphere",
+        Surface::Torus(_) => "torus",
+        Surface::Bezier(_) | Surface::Nurbs(_) => "freeform",
+    }
+}
+
+fn surface_axis(surface: &Surface) -> Option<Vec3> {
+    match surface {
+        Surface::Cylinder(s) => Some(s.frame().z()),
+        Surface::Cone(s) => Some(s.frame().z()),
+        Surface::Torus(s) => Some(s.frame().z()),
+        _ => None,
+    }
+}
+
+/// The length of an edge: exact for a line and a circular arc, the
+/// polygon through [`LENGTH_SAMPLES`] points otherwise.
+fn edge_length(edge: &craft3d_topo::Edge) -> Option<f64> {
+    let (t0, t1) = edge.range;
+    let length = match &edge.curve {
+        Curve3::Line(_) => (edge.curve.eval(t1) - edge.curve.eval(t0)).length(),
+        Curve3::Circle(circle) => circle.radius() * (t1 - t0).abs(),
+        _ => {
+            let mut previous = edge.curve.eval(t0);
+            let mut total = 0.0;
+            for i in 1..=LENGTH_SAMPLES {
+                let t = t0 + (t1 - t0) * f64::from(i) / f64::from(LENGTH_SAMPLES);
+                let point = edge.curve.eval(t);
+                total += (point - previous).length();
+                previous = point;
+            }
+            total
+        }
+    };
+    length.is_finite().then_some(length)
+}
+
+/// Every candidate of `kinds`, in document order.
+fn candidates<'a>(
+    doc: &'a Document,
+    regen: &'a Regen,
+    kinds: &BTreeSet<SelectionKind>,
+) -> Result<Vec<Candidate<'a>>, String> {
+    let mut out = Vec::new();
+    let mut push = |c: Candidate<'a>| -> Result<(), String> {
+        if out.len() >= MAX_CANDIDATES {
+            return Err(format!(
+                "the query looks at more than {MAX_CANDIDATES} items; ask for fewer kinds"
+            ));
+        }
+        out.push(c);
+        Ok(())
+    };
+    let wants = |kind| kinds.contains(&kind);
+    for feature in &doc.features {
+        let outcome = regen.feature(feature.id);
+        let body = outcome.and_then(|o| o.own_body());
+        let feature_like = |kind: SelectionKind| Candidate {
+            kind,
+            feature: feature.id,
+            index: 0,
+            name: feature.name.clone(),
+            persistent: None,
+            body,
+        };
+        if wants(SelectionKind::Body) && body.is_some() {
+            push(feature_like(SelectionKind::Body))?;
+        }
+        if wants(SelectionKind::Feature) {
+            push(feature_like(SelectionKind::Feature))?;
+        }
+        if wants(SelectionKind::Sketch) && matches!(feature.kind, FeatureKind::Sketch(_)) {
+            push(feature_like(SelectionKind::Sketch))?;
+        }
+        if wants(SelectionKind::Datum) && is_datum(&feature.kind) {
+            push(feature_like(SelectionKind::Datum))?;
+        }
+    }
+    for (feature, body) in regen.bodies() {
+        let Some(names) = regen.feature(feature).and_then(|o| o.names.as_ref()) else {
+            continue;
+        };
+        entities(feature, body, names, kinds, &mut push)?;
+    }
+    Ok(out)
+}
+
+fn entities<'a>(
+    feature: FeatureId,
+    body: &'a Arc<Body>,
+    names: &Names,
+    kinds: &BTreeSet<SelectionKind>,
+    push: &mut impl FnMut(Candidate<'a>) -> Result<(), String>,
+) -> Result<(), String> {
+    let entity = |kind, index, name: PersistentName| Candidate {
+        kind,
+        feature,
+        index,
+        name: name.to_string(),
+        persistent: Some(name),
+        body: Some(body),
+    };
+    if kinds.contains(&SelectionKind::Face) {
+        for (index, name) in names.faces.iter().enumerate().take(body.faces.len()) {
+            push(entity(SelectionKind::Face, index, name.clone()))?;
+        }
+    }
+    if kinds.contains(&SelectionKind::Edge) {
+        for index in 0..body.edges.len() {
+            if let Some(name) = names.edge_name(index) {
+                push(entity(SelectionKind::Edge, index, name))?;
+            }
+        }
+    }
+    if kinds.contains(&SelectionKind::Vertex) {
+        for index in 0..body.vertices.len() {
+            if let Some(name) = names.vertex_name(index) {
+                push(entity(SelectionKind::Vertex, index, name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn select_query(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "select.query";
+    let p = Params::new(ID, params, &["kind", "where", "then", "limit"])?;
+    let then = match p.str("then")? {
+        None | Some("none") => None,
+        Some("replace") => Some(SelectMode::Replace),
+        Some("add") => Some(SelectMode::Add),
+        Some("remove") => Some(SelectMode::Remove),
+        Some(_) => return fail(format!("{ID}: `then` must be none, replace, add or remove")),
+    };
+    let limit = p
+        .integer("limit", 1, MAX_SELECTION as u64)?
+        .unwrap_or(DEFAULT_LIMIT);
+    let limit = usize::try_from(limit).unwrap_or(MAX_SELECTION);
+    let kinds: BTreeSet<SelectionKind> = match p.get("kind") {
+        None | Some(Value::Null) => SelectionKind::ALL.into_iter().collect(),
+        Some(value) => kinds(value).map_err(|e| CommandError::new(format!("{ID}: {e}")))?,
+    };
+    // Checked against the document as it is now before it changes.
+    if then.is_some() {
+        session.selection();
+    }
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let filter = match p.get("where") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            Parser { doc, count: 0 }
+                .parse(value, 0)
+                .map_err(|e| CommandError::new(format!("{ID}: {e}")))?,
+        ),
+    };
+    let all =
+        candidates(doc, &regen, &kinds).map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let mut context = Context {
+        doc,
+        regen: &regen,
+        areas: BTreeMap::new(),
+        colors: BTreeMap::new(),
+        made_from: BTreeMap::new(),
+    };
+    let mut count = 0_usize;
+    let mut found: Vec<(SelectionItem, Option<String>, Option<FeatureId>)> = Vec::new();
+    for c in &all {
+        if filter.as_ref().is_some_and(|f| !context.eval(f, c)) {
+            continue;
+        }
+        count += 1;
+        if found.len() < limit {
+            let body = c
+                .kind
+                .is_entity()
+                .then(|| doc.feature(c.feature).map(|f| f.name.clone()))
+                .flatten();
+            // The feature that first made it: the end of its name's way.
+            let origin = c
+                .persistent
+                .as_ref()
+                .and_then(|name| chain(name).last())
+                .map(|link| link.feature);
+            found.push((
+                SelectionItem {
+                    kind: c.kind,
+                    name: c.name.clone(),
+                    feature: c.feature.to_string(),
+                },
+                body,
+                origin,
+            ));
+        }
+    }
+    drop(all);
+    let items: Vec<SelectionItem> = found.iter().map(|(item, ..)| item.clone()).collect();
+    let mut line = summary(&items);
+    let bodies: BTreeSet<&str> = found.iter().filter_map(|(_, b, _)| b.as_deref()).collect();
+    if !bodies.is_empty() && found.iter().all(|(item, ..)| item.kind.is_entity()) {
+        let shown: Vec<&str> = bodies.iter().copied().take(3).collect();
+        line = format!("{line} in {}", shown.join(", "));
+        if bodies.len() > 3 {
+            line = format!("{line} and {} more", bodies.len() - 3);
+        }
+    }
+    if count > found.len() {
+        line = format!(
+            "{count} fit; the first {} are given (narrow the query or raise limit, at most {MAX_SELECTION})",
+            found.len()
+        );
+    }
+    let listed: Vec<Value> = found
+        .iter()
+        .map(|(item, body, origin)| {
+            let mut entry = item.json();
+            if let Some(map) = entry.as_object_mut() {
+                if let Some(body) = body {
+                    map.insert("body".into(), body.clone().into());
+                }
+                if let Some(origin) = origin {
+                    let named = doc.feature(*origin).map(|f| f.name.clone());
+                    map.insert(
+                        "origin".into(),
+                        json!({ "feature": origin.to_string(), "name": named }),
+                    );
+                }
+            }
+            entry
+        })
+        .collect();
+    let mut result = json!({
+        "items": listed,
+        "count": count,
+        "truncated": count > found.len(),
+        "summary": line,
+    });
+    if let Some(mode) = then {
+        open.selection.apply(items, mode);
+        if let Some(map) = result.as_object_mut() {
+            map.insert("selection".into(), open.selection.view().json());
+        }
+    }
+    Ok(result)
+}

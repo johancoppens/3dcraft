@@ -502,10 +502,15 @@ A corpus import floor set and enforced; the web build loads and views a model.
 Sketching and feature editing with the mouse, menus, selection, shortcuts and measurement tools; later assemblies and drawings.
 
 #### Done
-Nothing yet (the camera, the tabs, pointing and the section plane are M4 and M8.5).
+- The selection shared with agents (slice 1 of the AI-selection plan, decisions B1 and B4): click, Shift+click, double click, box, Esc and the feature list in the window; picking through (same spot again, Alt+click, a right-click list); `select.get`, `select.set`, `ui.select`, the MCP resource `craft3d://selection`; `select.query` with JSON filters ([`design/selection.md`](design/selection.md)) (2026-10-21)
+
+The camera, the tabs, pointing and the section plane are M4 and M8.5.
 
 #### Open
-- [ ] Defined when phase 1 is done
+- [ ] Named sets: a query kept in the document and computed again at every regeneration (B2)
+- [ ] More of the query: relations (neighbours, the same size as, coaxial, symmetric), extremes, countersinks as holes
+- [ ] Preview and confirmation of large AI actions (B6)
+- [ ] The rest defined when phase 1 is done
 
 #### Acceptance
 Defined when phase 1 is done; depends on whether a target app is chosen.

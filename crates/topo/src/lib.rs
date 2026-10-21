@@ -34,9 +34,10 @@ mod transform;
 pub use check::{Defect, check, check_capped, check_remembered, check_remembered_capped, genus};
 pub use inside::{stranded, stranded_loops};
 pub use mass::{
-    Inertia, MassBound, MassError, MassProperties, ShellVolume, inertia, mass_and_inertia,
-    mass_bound, mass_properties, mass_properties_each, mass_properties_each_while,
-    mass_with_shells, mass_with_shells_each_while, mass_work, shell_volumes,
+    Inertia, MassBound, MassError, MassProperties, ShellVolume, face_areas, inertia,
+    mass_and_inertia, mass_bound, mass_properties, mass_properties_each,
+    mass_properties_each_while, mass_with_shells, mass_with_shells_each_while, mass_work,
+    shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};

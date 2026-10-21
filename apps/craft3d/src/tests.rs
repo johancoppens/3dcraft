@@ -427,6 +427,7 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
             "ui.set",
             "ui.pick",
             "ui.highlight",
+            "ui.select",
             "ui.fit",
             "ui.screenshot",
             "ui.notice",

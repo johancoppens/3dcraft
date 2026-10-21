@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 craft3d-math.workspace = true
 craft3d-topo.workspace = true
+craft3d-geom.workspace = true
 craft3d-doc.workspace = true
 craft3d-ops.workspace = true
 craft3d-regen.workspace = true
@@ -29,5 +30,4 @@ serde_json.workspace = true
 png.workspace = true
 craft3d-step.workspace = true
 craft3d-testkit.workspace = true
-craft3d-geom.workspace = true
 craft3d-zipstore.workspace = true

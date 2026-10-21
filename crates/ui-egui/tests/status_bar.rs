@@ -33,6 +33,7 @@ fn items() -> Vec<StatusFit> {
         item(StatusSlot::Units, 50.0, 50.0),
         item(StatusSlot::Path, 400.0, 48.0),
         item(StatusSlot::Autosave, 120.0, 48.0),
+        item(StatusSlot::Selection, 180.0, 48.0),
         item(StatusSlot::Command, 60.0, 60.0),
         item(StatusSlot::Answer, 500.0, 48.0),
         item(StatusSlot::Render, 250.0, 250.0),

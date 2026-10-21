@@ -1411,6 +1411,46 @@ pub fn cut_faces(
     Ok(faces)
 }
 
+/// Every face under the position (`x`, `y`) of the picture [`pick_cut`]
+/// looks at, front to back: one hit per face, its nearest point along the
+/// ray through the position, as [`pick_cut`] would find it with the
+/// faces in front taken away. A section leaves out what it cuts away (its
+/// cap is not a face and is not listed). Empty outside the picture; an
+/// error as [`pick_cut`]. Ties keep the mesh's order.
+pub fn pick_all(
+    mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+    section: Option<&Section>,
+) -> Result<Vec<Hit>, RenderError> {
+    let Some(sample) = Sample::new(mesh, camera, width, height, x, y, section)? else {
+        return Ok(Vec::new());
+    };
+    let mut state = SampleState {
+        every: Some(Vec::new()),
+        ..SampleState::default()
+    };
+    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+            continue;
+        };
+        seen.hit(&sample.view, x, y, &mut state, None);
+    }
+    let mut every = state.every.unwrap_or_default();
+    // Stable: a tie keeps the mesh's order, as the renderer's first
+    // triangle wins.
+    every.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut seen_faces = BTreeSet::new();
+    Ok(every
+        .into_iter()
+        .filter(|(_, hit)| seen_faces.insert(hit.face))
+        .map(|(_, hit)| hit)
+        .collect())
+}
+
 /// The picture one position is looked up in.
 struct Sample {
     view: View,
@@ -1473,6 +1513,9 @@ struct SampleState {
     best: Option<(f64, Hit)>,
     /// Whether the number of surfaces left out there by a section is odd.
     odd: bool,
+    /// Every triangle drawn there, with its depth key, when asked for
+    /// ([`pick_all`]).
+    every: Option<Vec<(f64, Hit)>>,
 }
 
 impl SampleState {
@@ -1605,9 +1648,12 @@ impl Seen {
             }
             return;
         }
-        let best = &mut state.best;
         // Strict, as in the renderer: the first triangle wins a tie.
-        if best.as_ref().is_some_and(|(nearest, _)| key >= *nearest) || key.is_nan() {
+        let nearer = state
+            .best
+            .as_ref()
+            .is_none_or(|(nearest, _)| key < *nearest);
+        if key.is_nan() || (!nearer && state.every.is_none()) {
             return;
         }
         let (qa, qb, qc) = (qa / q, qb / q, qc / q);
@@ -1615,15 +1661,18 @@ impl Seen {
         if !point.is_finite() {
             return;
         }
-        *best = Some((
-            key,
-            Hit {
-                face: self.face,
-                triangle: self.triangle,
-                depth: distance_at(view, [wa, wb, wc], [a, b, c]),
-                point,
-            },
-        ));
+        let hit = Hit {
+            face: self.face,
+            triangle: self.triangle,
+            depth: distance_at(view, [wa, wb, wc], [a, b, c]),
+            point,
+        };
+        if let Some(every) = &mut state.every {
+            every.push((key, hit));
+        }
+        if nearer {
+            state.best = Some((key, hit));
+        }
     }
 }
 

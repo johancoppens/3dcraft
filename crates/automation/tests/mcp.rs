@@ -170,7 +170,10 @@ fn initialize_describes_the_server() {
         }),
     );
     assert_eq!(result["protocolVersion"], "2025-06-18");
-    assert_eq!(result["capabilities"], json!({"tools": {}}));
+    assert_eq!(
+        result["capabilities"],
+        json!({"tools": {}, "resources": {}})
+    );
     assert_eq!(result["serverInfo"]["name"], "craft3d");
     assert_eq!(result["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
     let instructions = result["instructions"].as_str().unwrap();
@@ -255,7 +258,7 @@ fn ping_returns_an_empty_result_for_any_id_type() {
 // ------------------------------------------------------------------ tools
 
 #[test]
-fn tools_list_describes_five_tools_with_closed_schemas() {
+fn tools_list_describes_six_tools_with_closed_schemas() {
     let mut s = session();
     let tools = result(&mut s, "tools/list", json!({}))["tools"].clone();
     let tools = tools.as_array().unwrap();
@@ -267,6 +270,7 @@ fn tools_list_describes_five_tools_with_closed_schemas() {
             "command_run",
             "command_batch",
             "doc_inspect",
+            "selection_get",
             "doc_render_preview"
         ]
     );
@@ -311,7 +315,7 @@ fn tools_list_describes_five_tools_with_closed_schemas() {
             .as_array()
             .unwrap()
             .len(),
-        5
+        6
     );
     // The schemas agree with what the server enforces: every declared
     // property is accepted (or refused for its value, never as unknown).
@@ -940,7 +944,7 @@ fn a_batch_with_a_malformed_step_runs_nothing() {
 fn unknown_methods_are_method_not_found() {
     let mut s = session();
     for method in [
-        "resources/list",
+        "resources/subscribe",
         "prompts/list",
         "tools/run",
         "engine.execute",
@@ -1188,4 +1192,63 @@ fn serve_answers_requests_skips_notifications_and_survives_bad_lines() {
     let inspect: Value =
         serde_json::from_str(replies[5]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(inspect["document"], 0);
+}
+
+// -------------------------------------------------------------- selection
+
+/// An agent asks what is selected at any time: the tool selection_get
+/// and the resource craft3d://selection, the same answer as select.get.
+/// Selecting by description over MCP: "select the face with normal -y".
+#[test]
+fn the_selection_is_a_tool_and_a_resource() {
+    let mut s = session();
+    assert_eq!(
+        tool_json(&mut s, "selection_get", json!({})),
+        json!({"document": null})
+    );
+    let listed = result(&mut s, "resources/list", json!({}));
+    assert_eq!(listed["resources"][0]["uri"], "craft3d://selection");
+    assert_eq!(
+        result(&mut s, "resources/templates/list", json!({}))["resourceTemplates"],
+        json!([])
+    );
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cube", "size": [10, 20, 30]}),
+    );
+    let back = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"normal": {"along": "-y"}}, "then": "replace"}),
+    );
+    assert_eq!(back["count"], 1);
+    let got = tool_json(&mut s, "selection_get", json!({}));
+    assert_eq!(got["summary"], "1 face");
+    assert_eq!(got["items"][0]["name"], back["items"][0]["name"]);
+    let read = result(
+        &mut s,
+        "resources/read",
+        json!({"uri": "craft3d://selection"}),
+    );
+    assert_eq!(read["contents"][0]["mimeType"], "application/json");
+    let text = read["contents"][0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), got);
+    for params in [
+        json!({}),
+        json!({"uri": 3}),
+        json!({"uri": "craft3d://nothing"}),
+    ] {
+        let (code, message) = rpc_error(&mut s, "resources/read", params);
+        assert_eq!(code, -32602, "{message}");
+        assert!(message.starts_with("resources/read"), "{message}");
+    }
+    let (code, _) = rpc_error(
+        &mut s,
+        "tools/call",
+        json!({"name": "selection_get", "arguments": {"what": 1}}),
+    );
+    assert_eq!(code, -32602);
+    assert_still_serving(&mut s);
 }

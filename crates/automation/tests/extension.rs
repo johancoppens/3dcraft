@@ -272,7 +272,7 @@ fn an_mcp_server_with_a_host_has_the_tool_control_call() {
     let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
     let reply = send_mcp(&mut session, &mut calls, list.clone());
     let tools = reply["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     let tool = tools.iter().find(|t| t["name"] == "control_call").unwrap();
     let description = tool["description"].as_str().unwrap();
     assert!(description.contains("host.echo {\"text\": string}: Returns its params"));
@@ -284,7 +284,7 @@ fn an_mcp_server_with_a_host_has_the_tool_control_call() {
         &craft3d_automation::mcp::handle_line(&mut session, &list.to_string()).unwrap(),
     )
     .unwrap();
-    assert_eq!(plain["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(plain["result"]["tools"].as_array().unwrap().len(), 6);
     let refused: Value = serde_json::from_str(
         &craft3d_automation::mcp::handle_line(
             &mut session,
