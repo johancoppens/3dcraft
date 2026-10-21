@@ -90,7 +90,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
@@ -674,7 +674,16 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         let mut material = |appearance: Option<craft3d_doc::Appearance>| {
             appearance.map(|a| export_material(&mut model.materials, a.color))
         };
-        let own = material(body.appearance);
+        // A body without a colour whose faces have some: the rest of its
+        // faces in the colour the pictures draw it in, since in 3MF a
+        // triangle without a material of its own has its object's, and an
+        // object whose triangles have materials needs one.
+        let own = body.appearance.or_else(|| {
+            body.faces.iter().any(Option::is_some).then(|| {
+                craft3d_doc::Appearance::color(craft3d_render::RenderParams::default().color)
+            })
+        });
+        let own = material(own);
         let faces: Vec<Option<u32>> = body.faces.iter().map(|a| material(*a)).collect();
         let mut object = craft3d_io::to_object_with_materials(&body.mesh, name, |face| {
             faces.get(face as usize).copied().flatten()
@@ -2000,7 +2009,19 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             bodies.push(entry);
         }
     }
-    Ok(json!({
+    let face_colors: Vec<Value> = doc
+        .faces
+        .iter()
+        .map(|entry| {
+            json!({
+                "feature": entry.feature.to_string(),
+                "face": entry.face.to_string(),
+                "color": entry.appearance.hex(),
+            })
+        })
+        .collect();
+    let lost_faces = crate::appearance_cmds::lost_faces_json(doc, &regen);
+    let mut out = json!({
         "document": index,
         "path": open.path,
         "dirty": open.dirty(),
@@ -2023,7 +2044,18 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             "undo": open.history.undo_labels().collect::<Vec<_>>(),
             "redo": open.history.redo_labels().collect::<Vec<_>>(),
         },
-    }))
+    });
+    // The colours given to single faces, and those whose face is gone:
+    // only when there are any.
+    if let Some(map) = out.as_object_mut() {
+        if !face_colors.is_empty() {
+            map.insert("faceAppearances".into(), face_colors.into());
+        }
+        if !lost_faces.is_empty() {
+            map.insert("lostFaces".into(), lost_faces.into());
+        }
+    }
+    Ok(out)
 }
 
 fn document_measure(session: &mut Session, params: &Value) -> Run {

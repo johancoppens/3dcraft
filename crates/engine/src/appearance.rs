@@ -25,6 +25,14 @@
 //!   Fusion and Onshape colour it. A face the feature made itself (a
 //!   fillet's round) has the body's colour, and so has a face whose way
 //!   meets no appearance.
+//! - **A face given a colour of its own** (`Document::faces`, by the
+//!   feature whose body has it and its name there) has it, before its
+//!   body's at that feature; the faces later features make of it (copies
+//!   through a boolean, a pattern, a transform, a blend; the pieces of a
+//!   face cut in two, which share its name) find it on the same way back,
+//!   which looks at each step for an entry of the face's name in that
+//!   step's body before the body's own appearance. So the nearest
+//!   feature on the way wins, a face over its body at the same feature.
 //!
 //! Neither changes regeneration: a colour is not part of the history.
 
@@ -142,6 +150,33 @@ fn own_appearance(doc: &Document, feature: FeatureId) -> Option<Appearance> {
     doc.body_properties(feature)?.appearance
 }
 
+/// The colour given to a face of the body of `at` whose name there is the
+/// copy in `at` along `path` of `of` (`way`), or `name` itself.
+fn own_face_appearance(
+    doc: &Document,
+    at: FeatureId,
+    way: Option<(&[u64], &PersistentName)>,
+    name: &PersistentName,
+) -> Option<Appearance> {
+    let entries = doc.face_properties(at);
+    if entries.is_empty() {
+        return None;
+    }
+    match way {
+        Some((path, of)) => entries
+            .iter()
+            .find(|e| {
+                e.face.feature == at
+                    && e.face.role == NameRole::Copy
+                    && e.face.by.is_none()
+                    && e.face.sources == path
+                    && e.face.of.as_deref() == Some(of)
+            })
+            .map(|e| e.appearance),
+        None => doc.face_appearance(at, name),
+    }
+}
+
 /// The appearance of the body `feature` makes (see the module
 /// documentation); `None` for the default look.
 pub fn body_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
@@ -184,7 +219,7 @@ fn face_appearance(
     feature: FeatureId,
     name: &PersistentName,
 ) -> Option<Appearance> {
-    if doc.bodies.is_empty() {
+    if doc.bodies.is_empty() && doc.faces.is_empty() {
         return None;
     }
     // Where the way stands: a feature, and what is left of the way from
@@ -193,6 +228,10 @@ fn face_appearance(
     let mut way: Option<(Vec<u64>, &PersistentName)> = None;
     let mut current = name;
     for _ in 0..=doc.features.len().saturating_mul(2) {
+        let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
+        if let Some(own) = own_face_appearance(doc, at, here, current) {
+            return Some(own);
+        }
         if let Some(own) = own_appearance(doc, at) {
             return Some(own);
         }
@@ -243,7 +282,7 @@ pub fn face_appearances(
     feature: FeatureId,
     faces: usize,
 ) -> Vec<Option<Appearance>> {
-    if doc.bodies.is_empty() {
+    if doc.bodies.is_empty() && doc.faces.is_empty() {
         return vec![None; faces];
     }
     let mut memo = Memo::default();
@@ -260,10 +299,16 @@ pub fn face_appearances(
     let walks = own_appearance(doc, feature).is_none();
     (0..faces)
         .map(|face| match names.get(face) {
-            Some(name) if walks && name.role == NameRole::Copy && name.feature == feature => {
-                face_appearance(doc, regen, &mut memo, feature, name).or(body)
+            Some(name) => {
+                if let Some(own) = doc.face_appearance(feature, name) {
+                    Some(own)
+                } else if walks && name.role == NameRole::Copy && name.feature == feature {
+                    face_appearance(doc, regen, &mut memo, feature, name).or(body)
+                } else {
+                    body
+                }
             }
-            _ => body,
+            None => body,
         })
         .collect()
 }
@@ -288,4 +333,43 @@ pub(crate) fn color_faces(
             colors.set(id, Some(appearance.color));
         }
     }
+}
+
+/// A face colour whose face is not in its body: the feature built a body
+/// with named faces and none of them is called that (by its own name or
+/// an alias). It is kept (undoing the edit that took the face brings the
+/// colour back) and colours nothing; never another face.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LostFace {
+    pub feature: FeatureId,
+    pub face: PersistentName,
+}
+
+/// The face colours of the document whose faces are gone (see
+/// [`LostFace`]). One of a feature that did not build (failed,
+/// suppressed, rolled back) is not lost: it waits for the body.
+pub fn lost_faces(doc: &Document, regen: &Regen) -> Vec<LostFace> {
+    let mut lost = Vec::new();
+    let mut at = 0;
+    while let Some(first) = doc.faces.get(at) {
+        let feature = first.feature;
+        let entries = doc.face_properties(feature);
+        at = at.saturating_add(entries.len().max(1));
+        let Some(names) = regen
+            .feature(feature)
+            .filter(|result| result.body.is_some())
+            .and_then(|result| result.names.as_deref())
+        else {
+            continue;
+        };
+        for entry in entries {
+            if craft3d_regen::faces_named(names, &entry.face).is_empty() {
+                lost.push(LostFace {
+                    feature,
+                    face: entry.face.clone(),
+                });
+            }
+        }
+    }
+    lost
 }

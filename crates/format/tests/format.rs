@@ -3497,6 +3497,59 @@ fn body_appearances_and_materials_are_written_like_this_and_round_trip() {
     assert!(!to_manifest_json(&small()).unwrap().contains("bodies"));
 }
 
+/// Version 26: a colour per face, by the body's feature and the face's
+/// name there, as it is written.
+#[test]
+fn face_appearances_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{Appearance, PersistentName};
+    let mut doc = small();
+    let face = |text: &str| text.parse::<PersistentName>().unwrap();
+    doc.set_face_appearance(
+        FeatureId(1),
+        face("F1:face(1)"),
+        Some(Appearance {
+            color: [47, 111, 214],
+            metallic: None,
+            roughness: Some(0.5),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["document"]["faces"],
+        serde_json::json!([{
+            "feature": 1,
+            "face": {"feature": 1, "role": "face", "sources": [1]},
+            "appearance": {"color": [47, 111, 214], "roughness": 0.5}
+        }])
+    );
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A document without any writes no `faces` at all.
+    assert!(!to_manifest_json(&small()).unwrap().contains("\"faces\""));
+    // A file whose entry names a face of a later feature, or no face, is
+    // refused like any invalid document.
+    for bad in [
+        r#"{"feature": 1, "role": "face", "sources": [1]}"#
+            .replace("\"feature\": 1", "\"feature\": 9"),
+        r#"{"feature": 1, "role": "side", "sources": []}"#.replace("side", "between"),
+    ] {
+        let text = json.replacen(
+            r#""face": {
+          "feature": 1,
+          "role": "face",
+          "sources": [
+            1
+          ]
+        }"#,
+            &format!("\"face\": {bad}"),
+            1,
+        );
+        assert_ne!(text, json, "the fixture's text moved");
+        assert!(from_manifest_json(text.as_bytes()).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn a_version_15_file_opens_without_appearances_and_is_saved_as_the_current_version() {
     let v15 = r#"{"format": "3dcraft", "format_version": 15, "document": {

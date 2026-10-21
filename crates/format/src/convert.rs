@@ -40,6 +40,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         rollback,
         next_feature_id,
         bodies,
+        faces,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -81,6 +82,59 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         rollback: rollback.map(|doc::FeatureId(id)| id),
         next_feature_id: *next_feature_id,
         bodies: bodies.iter().map(body_to_manifest).collect(),
+        faces: faces.iter().map(face_to_manifest).collect(),
+    }
+}
+
+fn appearance_to_manifest(appearance: doc::Appearance) -> manifest::Appearance {
+    let doc::Appearance {
+        color,
+        metallic,
+        roughness,
+    } = appearance;
+    manifest::Appearance {
+        color,
+        metallic,
+        roughness,
+    }
+}
+
+fn appearance_to_doc(appearance: manifest::Appearance) -> doc::Appearance {
+    let manifest::Appearance {
+        color,
+        metallic,
+        roughness,
+    } = appearance;
+    doc::Appearance {
+        color,
+        metallic,
+        roughness,
+    }
+}
+
+fn face_to_manifest(face: &doc::FaceProperties) -> manifest::FaceProperties {
+    let doc::FaceProperties {
+        feature: doc::FeatureId(feature),
+        face,
+        appearance,
+    } = face;
+    manifest::FaceProperties {
+        feature: *feature,
+        face: name_to_manifest(face),
+        appearance: appearance_to_manifest(*appearance),
+    }
+}
+
+fn face_to_doc(face: manifest::FaceProperties) -> doc::FaceProperties {
+    let manifest::FaceProperties {
+        feature,
+        face,
+        appearance,
+    } = face;
+    doc::FaceProperties {
+        feature: doc::FeatureId(feature),
+        face: name_to_doc(face),
+        appearance: appearance_to_doc(appearance),
     }
 }
 
@@ -1294,6 +1348,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         rollback,
         next_feature_id,
         bodies,
+        faces,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1334,6 +1389,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         rollback: rollback.map(doc::FeatureId),
         next_feature_id,
         bodies: bodies.into_iter().map(body_to_doc).collect(),
+        faces: faces.into_iter().map(face_to_doc).collect(),
     }
 }
 

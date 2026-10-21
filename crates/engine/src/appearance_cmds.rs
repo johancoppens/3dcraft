@@ -1,18 +1,22 @@
-//! A colour and a material per body: `body.appearance` and
-//! `body.material`, and what `document.inspect` and `document.measure`
-//! say of them (the mass and the inertia tensor of a body with a
-//! density).
+//! A colour and a material per body, a colour per face:
+//! `body.appearance`, `body.material` and `face.appearance`, and what
+//! `document.inspect` and `document.measure` say of them (the mass and
+//! the inertia tensor of a body with a density).
 //!
-//! The body is given by the feature that makes it; the entry is kept in
-//! the document beside the history (`Document::bodies`) and reaches the
-//! bodies made from that body by the rule of `appearance`.
+//! The body is given by the feature that makes it, a face by that and its
+//! persistent name there; the entries are kept in the document beside the
+//! history (`Document::bodies`, `Document::faces`) and reach the bodies
+//! and faces made from them by the rule of `appearance`.
 
-use crate::appearance::{body_appearance, body_material};
+use crate::appearance::{body_appearance, body_material, face_appearances, lost_faces};
 use crate::commands::{Run, edit, fail, feature_ref, spec};
 use crate::mass::mass_and_inertia_of;
 use crate::params::Params;
+use crate::selection::{MAX_SELECTION, Resolver, SelectionKind, feature_named};
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_doc::{Appearance, Document, FeatureId, FeatureKind, LengthUnit, Material};
+use craft3d_doc::{
+    Appearance, Document, FeatureId, FeatureKind, LengthUnit, Material, PersistentName,
+};
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
 use serde_json::{Map, Value, json};
@@ -23,6 +27,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Gives the body of a feature a colour (sRGB: \"#c8102e\" or [200, 16, 46], each 0 to 255), and optionally metallic and roughness (0 to 1, kept for exporters; the viewport shades from the colour). The body keeps it through every regeneration and edit; bodies made from it keep it too: a boolean's result has its target's colour; the faces a tool cut take the target's colour too, while the faces a union or an intersection takes from a coloured tool keep the tool's; set a colour on the later feature to colour its whole body. view.render, view.replay, the viewport and 3MF exports show it. clear takes the colour away (the theme's again).", doc: true, body_appearance_cmd),
     spec!("body.material", "Body Material", r#"{"body": id or name, "name": string, "density": number (kg/m³) or "7.85 g/cm3", "clear": boolean = false}"#,
         "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3). document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep; body.material itself measures nothing and says which bodies have the material. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). clear takes it away.", doc: true, body_material_cmd),
+    spec!("face.appearance", "Face Colour", r##"{"faces": [persistent name], "body": id or name = the body that has the face, "selection": boolean = false, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "clear": boolean = false}"##,
+        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour; a colour set on a later feature's body goes before it. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, face_appearance_cmd),
 ];
 
 /// The feature of `key`, which must be one that can make a body.
@@ -182,6 +188,254 @@ fn body_appearance_cmd(session: &mut Session, params: &Value) -> Run {
             body_appearance(doc, regen, at).map(|a| appearance_json(&a))
         }),
     }))
+}
+
+/// The faces `face.appearance` names, each as given: the body when it was
+/// said, and the name.
+type Wanted = Vec<(Option<String>, String)>;
+
+/// The faces `face.appearance` is about, from `faces` (and `body`) or from
+/// the selection, and what of the selection was not a face.
+fn wanted_faces(session: &mut Session, p: &Params) -> Result<(Wanted, Vec<String>), CommandError> {
+    const ID: &str = "face.appearance";
+    let mut skipped = Vec::new();
+    if p.bool("selection")?.unwrap_or(false) {
+        if let Some(key) = ["faces", "body"].into_iter().find(|key| p.has(key)) {
+            return fail(format!(
+                "{ID}: `selection` takes the selection's faces; leave out `{key}`"
+            ));
+        }
+        let mut faces = Vec::new();
+        for item in session.selection().items {
+            if item.kind == SelectionKind::Face {
+                faces.push((Some(item.feature), item.name));
+            } else {
+                skipped.push(format!("{} {}", item.kind.name(), item.name));
+            }
+        }
+        if faces.is_empty() {
+            let holds = if skipped.is_empty() {
+                "it is empty".to_string()
+            } else {
+                format!("it holds {}", skipped.join(", "))
+            };
+            return fail(format!(
+                "{ID}: the selection has no faces ({holds}); select a face first (in the window, or with select.set)"
+            ));
+        }
+        return Ok((faces, skipped));
+    }
+    let body = match p.get("body") {
+        None => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(other) => {
+            return fail(format!(
+                "{ID}: `body` must be a feature id or name, got {other}"
+            ));
+        }
+    };
+    let names = match p.get("faces") {
+        Some(Value::Array(items)) if !items.is_empty() => items,
+        Some(Value::Array(_)) => return fail(format!("{ID}: `faces` is empty")),
+        Some(other) => {
+            return fail(format!(
+                "{ID}: `faces` must be a list of persistent names ([\"F3:face(1)\"]), got {other}"
+            ));
+        }
+        None => {
+            return fail(format!(
+                "{ID}: give `faces` (a list of persistent names) or `selection`: true"
+            ));
+        }
+    };
+    if names.len() > MAX_SELECTION {
+        return fail(format!(
+            "{ID}: at most {MAX_SELECTION} faces at once, got {}",
+            names.len()
+        ));
+    }
+    let mut faces = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(text) = name.as_str() else {
+            return fail(format!(
+                "{ID}: `faces` must be a list of persistent names, got {name}"
+            ));
+        };
+        faces.push((body.clone(), text.to_string()));
+    }
+    Ok((faces, skipped))
+}
+
+/// The face of `wanted` in the document: the body's feature and the face's
+/// own name there (an alias read as the face's name). With `clear`, a face
+/// that is gone is found by the entry of its colour.
+fn find_face(
+    doc: &Document,
+    resolver: &mut Resolver<'_>,
+    (body, name): (Option<&str>, &str),
+    clear: bool,
+) -> Result<(FeatureId, PersistentName), CommandError> {
+    const ID: &str = "face.appearance";
+    let shown: String = name.chars().take(80).collect();
+    match resolver.resolve(Some(SelectionKind::Face), name, body) {
+        Ok(found) => {
+            let feature = feature_named(doc, &found.item.feature).ok_or_else(|| {
+                CommandError::new(format!(
+                    "{ID}: `{shown}`: no feature {}",
+                    found.item.feature
+                ))
+            })?;
+            let face = found
+                .item
+                .name
+                .parse::<PersistentName>()
+                .map_err(|e| CommandError::new(format!("{ID}: `{shown}`: {e}")))?;
+            Ok((feature, face))
+        }
+        Err(why) => {
+            let lost = clear
+                .then(|| name.parse::<PersistentName>().ok())
+                .flatten()
+                .and_then(|parsed| {
+                    let parsed = parsed.canonical();
+                    let only = body.and_then(|b| feature_named(doc, b));
+                    let mut owners = doc
+                        .faces
+                        .iter()
+                        .filter(|e| e.face == parsed && only.is_none_or(|o| o == e.feature))
+                        .map(|e| e.feature);
+                    let first = owners.next()?;
+                    owners.next().is_none().then_some((first, parsed))
+                });
+            lost.ok_or_else(|| CommandError::new(format!("{ID}: {why}")))
+        }
+    }
+}
+
+fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "face.appearance";
+    let p = Params::new(
+        ID,
+        params,
+        &[
+            "faces",
+            "body",
+            "selection",
+            "color",
+            "metallic",
+            "roughness",
+            "clear",
+        ],
+    )?;
+    session.document()?;
+    let clear = p.bool("clear")?.unwrap_or(false);
+    let appearance = if clear {
+        if let Some(key) = ["color", "metallic", "roughness"]
+            .into_iter()
+            .find(|key| p.has(key))
+        {
+            return fail(format!(
+                "{ID}: `clear` takes the colour away; leave out `{key}`"
+            ));
+        }
+        None
+    } else {
+        let color = color_param(ID, p.get("color").ok_or_else(|| p.missing("color"))?)?;
+        Some(Appearance {
+            color,
+            metallic: factor(&p, "metallic")?,
+            roughness: factor(&p, "roughness")?,
+        })
+    };
+    let (wanted, skipped) = wanted_faces(session, &p)?;
+    let faces = {
+        let open = session.document_mut()?;
+        let regen = open.regen();
+        let doc = open.history.current();
+        let mut resolver = Resolver::new(doc, &regen);
+        let mut faces: Vec<(FeatureId, PersistentName)> = Vec::with_capacity(wanted.len());
+        for (body, name) in &wanted {
+            let found = find_face(doc, &mut resolver, (body.as_deref(), name), clear)?;
+            if !faces.contains(&found) {
+                faces.push(found);
+            }
+        }
+        faces
+    };
+    let label = match (clear, faces.as_slice()) {
+        (false, [(_, one)]) => format!("Colour face {one}"),
+        (true, [(_, one)]) => format!("Clear colour of face {one}"),
+        (false, many) => format!("Colour {} faces", many.len()),
+        (true, many) => format!("Clear colour of {} faces", many.len()),
+    };
+    let to_set = faces.clone();
+    edit(session, ID, &label, move |doc| {
+        for (feature, face) in to_set {
+            doc.set_face_appearance(feature, face, appearance)?;
+        }
+        Ok(())
+    })?;
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let listed: Vec<Value> = faces
+        .iter()
+        .map(|(feature, face)| {
+            // What the face shows now: its own colour, or (cleared) what
+            // it takes from elsewhere.
+            let shown = regen
+                .feature(*feature)
+                .and_then(|r| Some((r.body.as_ref()?, r.names.as_deref()?)))
+                .and_then(|(body, names)| {
+                    let index = craft3d_regen::faces_named(names, face).first()?.0;
+                    let all = face_appearances(doc, &regen, *feature, body.faces.len());
+                    all.get(usize::try_from(index).ok()?).copied()
+                })
+                .flatten();
+            json!({
+                "feature": feature.to_string(),
+                "face": face.to_string(),
+                "shown": shown.as_ref().map_or(Value::Null, appearance_json),
+            })
+        })
+        .collect();
+    let mut out = json!({
+        "faces": listed,
+        "appearance": appearance.as_ref().map_or(Value::Null, appearance_json),
+        "faceAppearances": doc.faces.len(),
+    });
+    if let Some(map) = out.as_object_mut() {
+        let lost = lost_faces_json(doc, &regen);
+        if !lost.is_empty() {
+            map.insert("lostFaces".into(), lost.into());
+        }
+        if !skipped.is_empty() {
+            map.insert("skipped".into(), skipped.into());
+        }
+    }
+    Ok(out)
+}
+
+/// The face colours whose faces are gone, for `face.appearance` and
+/// `document.inspect`: one entry each, with a sentence.
+pub(crate) fn lost_faces_json(doc: &Document, regen: &Regen) -> Vec<Value> {
+    lost_faces(doc, regen)
+        .into_iter()
+        .map(|lost| {
+            let made = doc
+                .feature(lost.feature)
+                .map_or_else(|| lost.feature.to_string(), |f| f.name.clone());
+            json!({
+                "feature": lost.feature.to_string(),
+                "face": lost.face.to_string(),
+                "notice": format!(
+                    "the body of `{made}` no longer has a face {}: its colour is kept for when the face comes back (undo) and colours no other face; face.appearance with clear takes it away",
+                    lost.face
+                ),
+            })
+        })
+        .collect()
 }
 
 fn body_material_cmd(session: &mut Session, params: &Value) -> Run {

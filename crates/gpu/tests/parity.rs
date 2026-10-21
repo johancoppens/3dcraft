@@ -930,6 +930,47 @@ fn colored_scenes() -> Vec<Scene> {
     scenes
 }
 
+/// What `face.appearance` makes: a body in one colour with one face in a
+/// colour of its own (the face's colour before its body's), opaque and
+/// seen through, for a few reference solids.
+#[test]
+fn one_face_in_its_own_colour_on_a_coloured_body_matches_the_cpu_renderer() {
+    let mut scenes = Vec::new();
+    for (index, mut scene) in solid_scenes().into_iter().take(8).enumerate() {
+        let faces = scene
+            .mesh
+            .face_ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |m| m + 1);
+        let body = PALETTE[index % PALETTE.len()];
+        let own = [0x2f, 0x6f, 0xd6];
+        let mut colors = FaceColors::new();
+        for face in 0..faces {
+            let color = if face == (index as u32) % faces.max(1) {
+                own
+            } else {
+                body
+            };
+            assert!(colors.set(face, Some(color)));
+        }
+        scene.colors = colors;
+        scene.name = scene.name.replacen("solids-", "face-colour-", 1);
+        scene.evidence = index == 0;
+        if index % 2 == 1 {
+            scene.params.opacity = OPACITIES[index % 3];
+            scene.name.push_str("-seethrough");
+        }
+        scenes.push(scene);
+    }
+    let (opaque, seen): (Vec<Scene>, Vec<Scene>) = scenes
+        .into_iter()
+        .partition(|scene| scene.params.opacity >= 1.0);
+    assert_eq!(check(&opaque), opaque.len() * offscreens().len());
+    assert_eq!(check_see_through(&seen), seen.len() * offscreens().len());
+}
+
 #[test]
 fn faces_in_colours_of_their_own_match_the_cpu_renderer() {
     let scenes = colored_scenes();

@@ -512,6 +512,17 @@ fn colours_and_materials_rebuild_nothing() {
         ),
         ("body.appearance", json!({"body": "Plate", "clear": true})),
         ("body.material", json!({"body": "Pin", "clear": true})),
+        (
+            "face.appearance",
+            json!({"body": "Boolean1", "faces": ["F3:copy(0)/F1:face(1)"], "color": RED}),
+        ),
+        (
+            "face.appearance",
+            json!({"faces": ["F2:face(0)"], "color": BLUE}),
+        ),
+        ("edit.undo", json!({})),
+        ("edit.undo", json!({})),
+        ("edit.redo", json!({})),
         ("edit.undo", json!({})),
         ("edit.redo", json!({})),
     ] {
