@@ -632,25 +632,44 @@ impl Shell {
         let patches = cube_patches(&self.state.camera, &style, center, arm);
         for (facet, points) in &patches {
             let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
+            // A patch turning edge-on fades out gradually.
+            let fade = view_cube::patch_opacity(
+                facet.toward,
+                f64::from(tokens.view_cube_fade),
+                f64::from(tokens.view_cube_fade_full),
+            ) as f32;
             painter.add(egui::Shape::convex_polygon(
                 points.clone(),
-                color_alpha(tokens.plate_fill, tokens.view_cube_base_opacity),
+                color_alpha(tokens.view_cube_base, tokens.view_cube_base_opacity)
+                    .gamma_multiply(fade),
                 egui::Stroke::NONE,
             ));
             let shape = if over {
                 egui::Shape::convex_polygon(
                     points.clone(),
-                    color_alpha(tokens.view_cube_hover, tokens.view_cube_hover_opacity),
+                    color_alpha(tokens.view_cube_hover, tokens.view_cube_hover_opacity)
+                        .gamma_multiply(fade),
                     egui::Stroke::new(
                         tokens.view_cube_hover_width,
-                        color(tokens.view_cube_hover_outline),
+                        color(tokens.view_cube_hover_outline).gamma_multiply(fade),
                     ),
                 )
             } else {
+                // A face has a thin outline; a capsule or a circle not.
+                let outline = if facet.kind() == view_cube::FacetKind::Face
+                    && tokens.view_cube_outline_width > 0.0
+                {
+                    egui::Stroke::new(
+                        tokens.view_cube_outline_width,
+                        color(tokens.view_cube_outline).gamma_multiply(fade),
+                    )
+                } else {
+                    egui::Stroke::NONE
+                };
                 egui::Shape::convex_polygon(
                     points.clone(),
-                    cube_fill(&tokens, facet),
-                    egui::Stroke::NONE,
+                    cube_fill(&tokens, facet).gamma_multiply(fade),
+                    outline,
                 )
             };
             painter.add(shape);

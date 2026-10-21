@@ -108,15 +108,26 @@ pub struct Tokens {
     pub view_cube_gap: f32,
     pub view_cube_face_rounding: f32,
     /// A patch of the view cube that faces the viewer less than this (0
-    /// edge-on, 1 straight on) is not drawn: no slivers on the silhouette.
+    /// edge-on, 1 straight on) is not drawn: no sub-pixel slivers on the
+    /// silhouette. From there it fades in, fully opaque from
+    /// `view_cube_fade_full` on, so a face turning away dims gradually.
     pub view_cube_fade: f32,
+    pub view_cube_fade_full: f32,
     /// The glass of the view cube: the colour of its faces and of its
     /// capsules and circles, drawn over the picture without outlines.
     pub view_cube_glass: Rgb,
     pub view_cube_glass_dim: Rgb,
-    /// The base under every patch (`plate_fill` at this opacity), so the
-    /// glass and its names read over any model and any background.
+    /// The base under every patch (`view_cube_base` at this opacity), so
+    /// the glass and its names read over any model and any background.
+    /// The cube is light: a near-white base, the glass a dark tint that
+    /// shades the faces turned from the light, dark names.
+    pub view_cube_base: Rgb,
     pub view_cube_base_opacity: u8,
+    /// The thin line round each face of the cube, so the light faces stand
+    /// out from a light viewport: its colour and width in points (no line
+    /// at width 0).
+    pub view_cube_outline: Rgb,
+    pub view_cube_outline_width: f32,
     /// The opacity of a face (0 to 255) turned away from the light and
     /// of one facing it; the light comes from `view_cube_light`, a
     /// direction in the world (the top is lit most).
@@ -292,7 +303,8 @@ impl Tokens {
             sketch_construction: [63, 120, 181],
             sketch_selected: [184, 50, 31],
             axes: [[210, 63, 54], [58, 154, 77], [52, 103, 209]],
-            edge: [38, 36, 34],
+            // A dark warm grey, not black: the shading carries the form.
+            edge: [88, 84, 78],
             datum: [126, 87, 194],
             datum_fill_opacity: 48,
             datum_width: 1.25,
@@ -328,19 +340,26 @@ impl Tokens {
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,
-            view_cube_fade: 0.25,
+            view_cube_fade: 0.03,
+            view_cube_fade_full: 0.2,
+            // A light cube, lit from above: the faces turned from the
+            // light shaded grey, the capsules and corners a darker grey
+            // between them, dark names, a gold patch under the pointer.
             view_cube_glass: [58, 56, 53],
-            view_cube_glass_dim: [42, 40, 38],
-            view_cube_base_opacity: 220,
-            view_cube_face_opacity: [59, 74],
+            view_cube_glass_dim: [104, 100, 94],
+            view_cube_base: [252, 251, 249],
+            view_cube_base_opacity: 235,
+            view_cube_outline: [150, 146, 140],
+            view_cube_outline_width: 1.0,
+            view_cube_face_opacity: [80, 0],
             view_cube_light: [0.3, -0.5, 0.8],
-            view_cube_edge_opacity: 26,
-            view_cube_corner_opacity: 30,
+            view_cube_edge_opacity: 120,
+            view_cube_corner_opacity: 130,
             view_cube_hover: [217, 164, 65],
-            view_cube_hover_opacity: 170,
-            view_cube_hover_outline: [246, 213, 142],
+            view_cube_hover_opacity: 200,
+            view_cube_hover_outline: [168, 106, 18],
             view_cube_hover_width: 1.2,
-            view_cube_label: [247, 242, 230],
+            view_cube_label: [27, 26, 25],
             view_cube_label_size: 0.46,
             view_cube_label_width: 0.76,
             view_cube_label_hide: 0.18,
@@ -605,6 +624,28 @@ impl Tokens {
                 "chrome_failed on notice_fill",
                 self.chrome_failed,
                 self.notice_fill,
+            ),
+            (
+                "view_cube_label on the cube's darkest face",
+                self.view_cube_label,
+                blend(
+                    self.view_cube_glass,
+                    self.view_cube_face_opacity[0].max(self.view_cube_face_opacity[1]),
+                    blend(
+                        self.view_cube_base,
+                        self.view_cube_base_opacity,
+                        self.viewport_background,
+                    ),
+                ),
+            ),
+            (
+                "view_cube_label on the patch under the pointer",
+                self.view_cube_label,
+                blend(
+                    self.view_cube_hover,
+                    self.view_cube_hover_opacity,
+                    self.viewport_background,
+                ),
             ),
             (
                 "text_dim on viewport_background",
