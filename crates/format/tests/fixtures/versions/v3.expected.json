@@ -1,0 +1,36 @@
+{
+  "format_version": 3,
+  "written_by": "31021b1e1c3589cf09bf338c037a226d6b4fe26a",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v3.steps.json --out v3.3dcraft, then info v3.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Profile",
+      "status": "ok",
+      "dof": 3
+    },
+    {
+      "id": "F2",
+      "name": "Side",
+      "status": "ok",
+      "dof": 4
+    },
+    {
+      "id": "F3",
+      "name": "Base",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 4000.000000000002,
+      "area": 2200.000000000002
+    }
+  ]
+}

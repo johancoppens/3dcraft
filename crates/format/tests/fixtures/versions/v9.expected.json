@@ -1,0 +1,67 @@
+{
+  "format_version": 9,
+  "written_by": "04aa72902626758f51406e9a4e4e6e2120f195b0",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v9.steps.json --out v9.3dcraft, then info v9.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Round",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cube",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Corner",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Tile",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Rim",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 15,
+      "vertices": 10,
+      "volume": 7922.743338823083,
+      "area": 2744.632726156544
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 10,
+      "edges": 21,
+      "vertices": 13,
+      "volume": 7804.696111127535,
+      "area": 2284.4247478164175
+    },
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 15,
+      "vertices": 10,
+      "volume": 7174.247779607697,
+      "area": 2732.5309649148753
+    }
+  ]
+}

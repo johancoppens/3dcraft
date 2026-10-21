@@ -1,0 +1,9 @@
+[
+  ["variable.set", {"name": "holes", "expr": "4"}],
+  ["sketch.create", {"plane": "xy", "name": "Plate"}],
+  ["sketch.polyline", {"sketch": "Plate", "closed": true, "points": [[0, 0], [70, 0], [70, 30], [0, 30]]}],
+  ["sketch.circle", {"sketch": "Plate", "center": [21, 15], "radius": 1.5}],
+  ["sketch.pattern", {"sketch": "Plate", "entities": ["e10"], "count": "holes", "angle": "360 deg / holes", "center": [15, 15], "skip": [2]}],
+  ["sketch.pattern", {"sketch": "Plate", "entities": [], "patterns": ["p1"], "count": 2, "step": [35, 0]}],
+  ["feature.extrude", {"sketch": "Plate", "distance": "2 mm", "name": "Panel"}]
+]

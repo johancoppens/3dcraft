@@ -1,0 +1,13 @@
+[
+  ["variable.set", {"name": "nx", "expr": "3"}],
+  ["sketch.create", {"plane": "xy", "name": "Plate"}],
+  ["sketch.polyline", {"sketch": "Plate", "closed": true, "points": [[0, 0], [40, 0], [40, 20], [0, 20]]}],
+  ["sketch.circle", {"sketch": "Plate", "center": [8, 5], "radius": 2}],
+  ["sketch.pattern", {"sketch": "Plate", "entities": ["e10"], "count": "nx", "step": [12, 0], "count2": 2, "step2": [0, 10]}],
+  ["feature.extrude", {"sketch": "Plate", "distance": "3 mm", "name": "Perforated"}],
+  ["sketch.create", {"plane": "xy", "name": "Ring"}],
+  ["sketch.circle", {"sketch": "Ring", "center": [70, 0], "radius": 15}],
+  ["sketch.circle", {"sketch": "Ring", "center": [80, 0], "radius": 2}],
+  ["sketch.pattern", {"sketch": "Ring", "entities": ["e4"], "count": 6, "angle": "60 deg", "center": "e1"}],
+  ["feature.extrude", {"sketch": "Ring", "distance": "4 mm", "name": "Flange"}]
+]

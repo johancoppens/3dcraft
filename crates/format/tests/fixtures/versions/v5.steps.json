@@ -1,0 +1,15 @@
+[
+  ["variable.set", {"name": "hole", "expr": "4 mm"}],
+  ["feature.block", {"size": ["40 mm", "20 mm", "5 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"radius": "hole", "height": "7 mm", "position": ["20 mm", "10 mm", "-1 mm"], "name": "Drill"}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Hole"}],
+  ["sketch.create", {"plane": "zx", "name": "Section"}],
+  ["sketch.polyline", {"sketch": "Section", "closed": true, "points": [[0, 30], [10, 30], [10, 35], [0, 35]]}],
+  ["feature.revolve", {"sketch": "Section", "axis": "x", "angle": "270 deg", "name": "Ring"}],
+  ["feature.transform", {"source": "Ring", "translate": ["100 mm", "0", "0"], "angle": "30 deg", "axis": [0, 0, 1], "name": "Moved"}],
+  ["feature.mirror", {"source": "Hole", "normal": [1, 0, 0], "point": ["-10 mm", "0", "0"], "keep": true, "name": "Mirrored"}],
+  ["feature.pattern", {"source": "Mirrored", "count": "3", "step": ["0", "30 mm", "0"], "name": "Row"}],
+  ["feature.block", {"size": ["10 mm", "10 mm", "10 mm"], "position": ["0", "-60 mm", "0"], "name": "Cube"}],
+  ["feature.sphere", {"radius": "6 mm", "position": ["10 mm", "-50 mm", "10 mm"], "name": "Ball"}],
+  ["feature.boolean", {"op": "union", "target": "Cube", "tool": "Ball", "name": "Joined"}]
+]

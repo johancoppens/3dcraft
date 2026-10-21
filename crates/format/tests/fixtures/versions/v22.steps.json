@@ -1,0 +1,7 @@
+[
+  ["sketch.create", {"plane": "xy", "offset": "5 mm", "name": "Outline"}],
+  ["sketch.polyline", {"sketch": "Outline", "closed": true, "points": [[0, 0], [40, 0], [40, 20], [0, 20]]}],
+  ["sketch.circle", {"sketch": "Outline", "center": [20, 10], "radius": 4}],
+  ["feature.fill", {"sketch": "Outline", "name": "Sheet"}],
+  ["feature.block", {"size": ["10 mm", "10 mm", "10 mm"], "position": ["60 mm", "0", "0"], "name": "Cube"}]
+]

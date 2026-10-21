@@ -1,0 +1,20 @@
+[
+  ["variable.set", {"name": "w", "expr": "40 mm"}],
+  ["variable.set", {"name": "t", "expr": "8 mm"}],
+  ["sketch.create", {"plane": "xy", "name": "Profile"}],
+  ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [[0, 0], [38, 1], [39, 19], [1, 21]]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "fixed", "entities": ["e1"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "horizontal", "entities": ["e5"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "horizontal", "entities": ["e7"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "vertical", "entities": ["e6"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "vertical", "entities": ["e8"]}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e5"], "value": "w"}],
+  ["sketch.constrain", {"sketch": "Profile", "type": "distance", "entities": ["e6"], "value": "w / 2"}],
+  ["feature.extrude", {"sketch": "Profile", "distance": "t", "name": "Plate"}],
+  ["sketch.create", {"face": "F2:endCap(e5,e6,e7,e8)", "offset": "2 mm", "name": "OnTop"}],
+  ["sketch.circle", {"sketch": "OnTop", "center": [20, 10], "radius": 5}],
+  ["feature.extrude", {"sketch": "OnTop", "distance": "12 mm", "name": "Peg"}],
+  ["sketch.create", {"plane": "yz", "offset": "60 mm", "name": "Middle"}],
+  ["sketch.circle", {"sketch": "Middle", "center": [0, 0], "radius": 4}],
+  ["feature.extrude", {"sketch": "Middle", "distance": "10 mm", "symmetric": true, "name": "Axle"}]
+]

@@ -12,7 +12,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the speed of a cusp's axis on a block edge, the meshes of rational faces with weights a thousand apart).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
-3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
+3. **R1, the first release:** the pinned set of modelling tasks, installers, material and colour per body, a user guide ([R1](#r1-first-release)).
 
 ## Milestones
 
@@ -440,11 +440,11 @@ The first version for people outside the project; it follows M9 and does not wai
 - Flat faces exported by followed names, in a documented upright frame that is never mirrored, and several faces laid out on one sheet (`file.export {faces, gap, width, xAxis, origin}`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-17)
 - A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md)) (2026-10-15)
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
+- The format promise: every `.3dcraft` file a released version wrote opens in every later one, held by a frozen fixture per format version written by that version's own build and regenerated to what it made ([`file-formats.md`](file-formats.md) › *The promise*) (2026-10-21)
 
 #### Open
 - [ ] A pinned set of about twenty modelling tasks (each with a drawing or description and a known volume), grown out of the field tests
 - [ ] Installers for Linux, macOS and Windows
-- [ ] A promise that a `.3dcraft` file of this version stays readable, with a migration test per format version
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models
 - [ ] A clean quit also drops the autosave of a document that was not saved, because the window does not ask before closing yet
@@ -533,6 +533,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | R1: the format promise, a frozen fixture per format version (1 to 24) written by its own build and regenerated to what it made |
 | 2026-10-18 | minor | Boolean checklist item 5: sheet bodies (`feature.fill`, trim and cut by subtract and intersect); format version 22 |
 | 2026-10-16 | minor | M1: `floor`, `ceil`, `round`, `trunc` and `mod` in expressions; format version 17 renames old variables with those names |
 | 2026-10-16 | minor | M9: fillets along the rims of offset and shelled freeform faces |

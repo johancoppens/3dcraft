@@ -1,0 +1,11 @@
+[
+  ["variable.set", {"name": "kerf", "expr": "0.4 mm"}],
+  ["sketch.create", {"plane": "xy", "name": "Outline"}],
+  ["sketch.polyline", {"sketch": "Outline", "closed": true, "points": [[0, 0], [30, 0], [30, 20], [0, 20]]}],
+  ["feature.offsetProfile", {"sketch": "Outline", "distance": "kerf / 2", "name": "Grown"}],
+  ["feature.extrude", {"sketch": "Grown", "distance": "3 mm", "name": "Part"}],
+  ["sketch.create", {"plane": "xy", "name": "Notch"}],
+  ["sketch.polyline", {"sketch": "Notch", "closed": true, "points": [[50, 0], [80, 0], [80, 20], [65, 10], [50, 20]]}],
+  ["feature.offsetProfile", {"sketch": "Notch", "distance": "-1 mm", "corners": "sharp", "name": "Shrunk"}],
+  ["feature.extrude", {"sketch": "Shrunk", "distance": "2 mm", "name": "Inset"}]
+]

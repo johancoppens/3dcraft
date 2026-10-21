@@ -1,0 +1,8 @@
+[
+  ["variable.set", {"name": "r", "expr": "8 mm"}],
+  ["feature.cone", {"radius": "r", "height": "2 * r", "name": "Cone"}],
+  ["feature.torus", {"major": "20 mm", "minor": "r / 2", "position": ["0", "0", "40 mm"], "axis": [1, 0, 0], "angle": "90 deg", "name": "Ring"}],
+  ["feature.block", {"size": ["30 mm", "10 mm", "4 mm"], "position": ["60 mm", "0", "0"], "axis": [0, 0, 1], "angle": "30 deg", "name": "Turned"}],
+  ["feature.cylinder", {"radius": "r / 2", "height": "25 mm", "position": ["-40 mm", "0", "0"], "axis": [0, 1, 0], "angle": "45 deg", "name": "Leaning"}],
+  ["history.rollback", {"feature": "Leaning"}]
+]

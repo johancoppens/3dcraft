@@ -1,0 +1,12 @@
+[
+  ["feature.cylinder", {"radius": "5 mm", "height": "20 mm", "name": "Bolt"}],
+  ["feature.thread", {"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm", "name": "Cut"}],
+  ["feature.cylinder", {"radius": "4 mm", "height": "16 mm", "position": ["30 mm", "0", "0"], "name": "Screw"}],
+  ["feature.thread", {"face": "F3:face(0)", "start": "F3:face(1)", "size": "M8", "length": "10 mm", "cosmetic": true, "name": "Drawn"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "12 mm", "position": ["60 mm", "0", "0"], "name": "Pin"}],
+  ["feature.thread", {"face": "F5:face(0)", "start": "F5:face(1)", "size": "M6", "pitch": "0.75 mm", "length": "8 mm", "name": "Fine"}],
+  ["datum.helix", {"axis": "z", "radius": "10 mm", "pitch": "6 mm", "turns": "2", "name": "Coil"}],
+  ["sketch.create", {"plane": "zx", "name": "Wire"}],
+  ["sketch.circle", {"sketch": "Wire", "center": [0, 10], "radius": 1}],
+  ["feature.sweep", {"sketch": "Wire", "path": "Coil", "name": "Spring"}]
+]

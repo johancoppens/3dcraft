@@ -1,0 +1,39 @@
+{
+  "format_version": 17,
+  "written_by": "f4bce6d60c8f496d3574bcf85d87e3bfdd7ea777",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v17.steps.json --out v17.3dcraft, then info v17.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Drills",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Holes",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 10,
+      "edges": 20,
+      "vertices": 16,
+      "volume": 1343.469035085126,
+      "area": 1672.0000000000023
+    }
+  ]
+}

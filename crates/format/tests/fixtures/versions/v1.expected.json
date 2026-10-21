@@ -1,0 +1,57 @@
+{
+  "format_version": 1,
+  "written_by": "09b7434505bf0d87969a0cbcadafb03c18ed5c4c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v1.steps.json --out v1.3dcraft, then info v1.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Boss",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Ball",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Spare",
+      "status": "suppressed"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 4000.000000000002,
+      "area": 2200.000000000002
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 942.4777960769372,
+      "area": 534.0707511102653
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 1,
+      "edges": 0,
+      "vertices": 0,
+      "volume": 904.7786842338612,
+      "area": 452.38934211693055
+    }
+  ]
+}

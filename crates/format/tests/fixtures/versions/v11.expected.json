@@ -1,0 +1,48 @@
+{
+  "format_version": 11,
+  "written_by": "c140eee17a8d25ea5684b2c29a31a984d1649dde",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v11.steps.json --out v11.3dcraft, then info v11.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Box",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Tray",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Step",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Grown",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 11,
+      "edges": 24,
+      "vertices": 16,
+      "volume": 7152.000000000011,
+      "area": 7432.0000000000055
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 5980.000000000001,
+      "area": 2038.0000000000007
+    }
+  ]
+}
