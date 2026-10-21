@@ -1,0 +1,7 @@
+[
+ ["datum.plane", {"through": [[2348.824, 300.0, 615.126], [2348.824, 400.0, 615.126], [2406.948, 300.0, 696.499]], "name": "P"}],
+ ["sketch.create", {"plane": "P", "name": "S"}],
+ ["sketch.circle", {"sketch": "S", "center": [0, 0], "radius": 30}],
+ ["feature.extrude", {"sketch": "S", "distance": 180, "name": "Drill"}],
+ ["feature.cone", {"radius": 30, "height": 60, "position": [2493.669, 300.0, 511.665], "axis": [0.813733, 0.0, -0.581238], "name": "Tip"}]
+]
