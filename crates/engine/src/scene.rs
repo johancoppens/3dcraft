@@ -1547,6 +1547,17 @@ fn build(
     }
     scene.bbox = bbox;
     scene.datums = scene_datums(doc, regen, &bbox);
+    // A face colour whose face an edit took away colours nothing (never
+    // another face); said here so the window shows it.
+    for lost in crate::appearance::lost_faces(doc, regen) {
+        let made = doc
+            .feature(lost.feature)
+            .map_or_else(|| lost.feature.to_string(), |f| f.name.clone());
+        scene.problems.push(format!(
+            "the colour of face {} of `{made}` colours nothing: the face is gone (undo brings it back; face.appearance with clear takes the colour away)",
+            lost.face
+        ));
+    }
     (scene, None)
 }
 

@@ -722,6 +722,28 @@ fn part_coloured() -> Session {
             json!({"body": name, "color": [214, 176, 40]}),
         );
     }
+    // And one face in a colour of its own, through the engine's scene
+    // (face.appearance, 2026-10-22): the top of the plate's body.
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let plate = inspect["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == "Plate")
+        .unwrap()
+        .clone();
+    let top = plate["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_string())
+        .find(|n| n.ends_with(":face(1)") || n.contains("endCap"))
+        .unwrap_or_else(|| plate["faceNames"][0].as_str().unwrap().to_string());
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Plate", "faces": [top], "color": [200, 60, 190]}),
+    );
     s
 }
 

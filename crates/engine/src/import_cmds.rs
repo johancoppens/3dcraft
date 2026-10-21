@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.import", "Import", r#"{"path": string, "names": [string] = automatic}"#,
-        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances. The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
+        "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances, and a face styled in another colour than its solid keeps it as a face colour (face.appearance, by its name F5:face(i)). The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,6 +106,7 @@ pub(crate) fn import_bytes(
     };
     let mut reports = Vec::with_capacity(placed.len());
     let mut colors = Vec::with_capacity(placed.len());
+    let mut face_colors: Vec<Vec<Option<[u8; 3]>>> = Vec::with_capacity(placed.len());
     let mut step_names: Vec<String> = Vec::with_capacity(placed.len());
     let mut leaves: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for (index, at) in placed.iter().enumerate() {
@@ -126,6 +127,7 @@ pub(crate) fn import_bytes(
             ))
         })?;
         colors.push(read.color);
+        face_colors.push(parsed.face_colors(&read.face_ids));
         step_names.push(placement_name(&mut leaves, &at.path, &item.name));
         let r = &read.report;
         reports.push(json!({
@@ -191,8 +193,26 @@ pub(crate) fn import_bytes(
             };
             // The file's colour of the solid, as the body's appearance
             // (in the same undo step).
-            if let Some(Some(color)) = colors.get(index) {
-                doc.set_appearance(added, Some(craft3d_doc::Appearance::color(*color)))?;
+            let body = colors.get(index).copied().flatten();
+            if let Some(color) = body {
+                doc.set_appearance(added, Some(craft3d_doc::Appearance::color(color)))?;
+            }
+            // Each face styled in a colour other than its solid's keeps
+            // it as a colour of its own, by its name `F5:face(i)` (up to
+            // the document's cap on face colours).
+            for (face, color) in face_colors.get(index).into_iter().flatten().enumerate() {
+                let Some(color) = color.filter(|&c| Some(c) != body) else {
+                    continue;
+                };
+                if doc.faces.len() >= craft3d_doc::MAX_FACE_APPEARANCES {
+                    break;
+                }
+                let name = craft3d_doc::PersistentName::new(
+                    added,
+                    craft3d_doc::NameRole::Face,
+                    vec![u64::try_from(face).unwrap_or(u64::MAX)],
+                );
+                doc.set_face_appearance(added, name, Some(craft3d_doc::Appearance::color(color)))?;
             }
             ids.push(added);
         }

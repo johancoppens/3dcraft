@@ -79,6 +79,18 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
             }
         }
     }
+    // The colours given to faces (format 26), as listed, none of them lost.
+    if let Some(faces) = want.get("faceAppearances") {
+        if inspect.get("faceAppearances") != Some(faces) {
+            found.push(format!(
+                "{tag}: faceAppearances {} (were {faces})",
+                inspect["faceAppearances"]
+            ));
+        }
+        if let Some(lost) = inspect.get("lostFaces") {
+            found.push(format!("{tag}: lostFaces {lost}"));
+        }
+    }
     let bodies = inspect["bodies"].as_array().unwrap();
     let wanted = want["bodies"].as_array().unwrap();
     let ids =

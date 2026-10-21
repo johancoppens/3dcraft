@@ -1,0 +1,9 @@
+[
+  ["feature.block", {"size": ["40 mm", "30 mm", "10 mm"], "name": "Plate"}],
+  ["face.appearance", {"faces": ["F1:face(1)"], "color": "#2f6fd6"}],
+  ["feature.block", {"size": ["6 mm", "40 mm", "4 mm"], "position": ["17 mm", "-5 mm", "8 mm"], "name": "Slot"}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Slot", "name": "Cut"}],
+  ["face.appearance", {"body": "Cut", "faces": ["F3:copy(1)/F2:face(0)"], "color": [20, 160, 60], "roughness": 0.3}],
+  ["feature.pattern", {"source": "Cut", "count": 2, "step": ["0 mm", "40 mm", "0 mm"], "name": "Row"}],
+  ["face.appearance", {"faces": ["F4:copy(1)/F3:copy(0)/F1:face(5)"], "color": "#c8102e", "metallic": 0.8}]
+]

@@ -17,7 +17,7 @@ pub mod datum;
 pub mod name;
 pub mod sketch;
 
-pub use appearance::{Appearance, BodyProperties, Material};
+pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
 pub use blob::{Blob, sha256};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
@@ -1456,6 +1456,11 @@ pub struct Document {
     /// read it.
     #[serde(default)]
     pub bodies: Vec<BodyProperties>,
+    /// The appearance given to single faces, by the feature whose body
+    /// has the face and the face's persistent name there, in ascending
+    /// order of the two ([`appearance`]). Not part of the history either.
+    #[serde(default)]
+    pub faces: Vec<FaceProperties>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1658,6 +1663,7 @@ impl Document {
             }
         }
         self.validate_bodies()?;
+        self.validate_faces()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1924,6 +1930,7 @@ impl Document {
                 .map(|f| f.id);
         }
         self.bodies.retain(|entry| entry.feature != id);
+        self.faces.retain(|entry| entry.feature != id);
         Ok(self.features.remove(index))
     }
 

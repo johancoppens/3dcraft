@@ -49,6 +49,21 @@ pub struct Document {
     /// there are none (and in files before version 16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bodies: Vec<BodyProperties>,
+    /// The appearance given to single faces, by the id of the feature
+    /// whose body has the face and the face's name there, in ascending
+    /// order of the two. Absent when there are none (and in files before
+    /// version 26).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faces: Vec<FaceProperties>,
+}
+
+/// What one face of the body of a feature looks like.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaceProperties {
+    pub feature: u64,
+    pub face: Name,
+    pub appearance: Appearance,
 }
 
 /// What the body of one feature looks like and is made of.
