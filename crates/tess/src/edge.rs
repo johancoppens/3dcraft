@@ -157,7 +157,7 @@ fn turns_within(curve: &Curve3, ta: f64, tb: f64, angle: f64) -> bool {
 
 /// The points of every edge of a body, from its start to its end vertex,
 /// and the parameters of its curve they were taken at.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct EdgeSamples {
     /// Per edge. The ends are the vertices' own positions, so edges
     /// meeting at a vertex agree.
@@ -181,6 +181,29 @@ fn most_points(first: usize) -> usize {
     first.saturating_mul(16).saturating_add(32)
 }
 
+/// A chord to cut at the point of its curve across from a point of
+/// another edge ([`EdgeSamples::split_across`]).
+pub(crate) type Across = (crate::face::Chord, Vec3);
+
+/// How many points an edge may grow to in the rounds that follow when
+/// halving has failed (`body.rs`), given the most points any edge of the
+/// body had for its own curve (`widest`): twice [`most_points`] of that.
+/// An edge cut across from the points of another one beside it needs as
+/// many points as that one (a crescent between a short and a long edge);
+/// still a multiple of what the body's own curves need, so a damaged
+/// body that no cutting cures costs a bounded multiple of the work of
+/// one that makes sense.
+fn most_across(widest: usize) -> usize {
+    most_points(widest).saturating_mul(2)
+}
+
+/// The part of a chord's length within which a point across from its
+/// end is that end already.
+pub(crate) const ACROSS_MARGIN: f64 = 1e-6;
+
+/// How many halvings find the parameter across from a point.
+const ACROSS_HALVINGS: usize = 64;
+
 impl EdgeSamples {
     /// Cuts each of the `wanted` chords in two, at the point of the curve
     /// half way between the parameters of its ends. Returns the edges
@@ -190,7 +213,28 @@ impl EdgeSamples {
     /// exist, when the numbers cannot tell the new point from its ends,
     /// or when the edge has as many points as it may have
     /// ([`most_points`], and what `params.max_segments` allows).
+    #[cfg(test)]
     pub(crate) fn split(&mut self, body: &Body, wanted: &[Chord], params: &TessParams) -> Vec<u32> {
+        self.split_within(body, wanted, params, false)
+    }
+
+    /// [`EdgeSamples::split`], or with the room of the rounds that cut
+    /// across (`across`: [`most_across`] instead of [`most_points`]).
+    pub(crate) fn split_within(
+        &mut self,
+        body: &Body,
+        wanted: &[Chord],
+        params: &TessParams,
+        across: bool,
+    ) -> Vec<u32> {
+        let widest = self.first.iter().copied().max().unwrap_or(0);
+        let most = |first: usize| {
+            if across {
+                most_across(widest)
+            } else {
+                most_points(first)
+            }
+        };
         let limit = (params.max_segments as usize).saturating_mul(8);
         let mut by_edge: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for &(edge, chord) in wanted {
@@ -208,7 +252,7 @@ impl EdgeSamples {
                 continue;
             };
             let first = self.first.get(index as usize).copied().unwrap_or(0);
-            let mut room = most_points(first).min(limit).saturating_sub(points.len());
+            let mut room = most(first).min(limit).saturating_sub(points.len());
             let mut new_points = Vec::with_capacity(points.len() + chords.len());
             let mut new_at = Vec::with_capacity(points.len() + chords.len());
             let mut cut = false;
@@ -234,6 +278,109 @@ impl EdgeSamples {
                     new_at.push(middle);
                     room -= 1;
                     cut = true;
+                }
+            }
+            if cut {
+                *points = new_points;
+                *at = new_at;
+                changed.push(index);
+            }
+        }
+        changed
+    }
+
+    /// Cuts each chord of `wanted` at the point of its curve that lies
+    /// across from the given point: whose foot on the chord is the
+    /// point's foot (`Across`). A chord is left as it is where the point's
+    /// foot is not inside it by more than [`ACROSS_MARGIN`] of its length,
+    /// where the new point cannot be told from the chord's ends, or when
+    /// the edge has as many points as [`most_across`] allows. Returns the
+    /// edges that changed, in order.
+    pub(crate) fn split_across(
+        &mut self,
+        body: &Body,
+        wanted: &[Across],
+        params: &TessParams,
+    ) -> Vec<u32> {
+        let limit = (params.max_segments as usize).saturating_mul(8);
+        let mut by_edge: BTreeMap<u32, BTreeMap<u32, Vec<Vec3>>> = BTreeMap::new();
+        for &((edge, chord), point) in wanted {
+            by_edge
+                .entry(edge)
+                .or_default()
+                .entry(chord)
+                .or_default()
+                .push(point);
+        }
+        let mut changed = Vec::new();
+        for (index, chords) in by_edge {
+            let (Some(edge), Some(points), Some(at)) = (
+                body.edges.get(index as usize),
+                self.points.get_mut(index as usize),
+                self.at.get_mut(index as usize),
+            ) else {
+                continue;
+            };
+            let widest = self.first.iter().copied().max().unwrap_or(0);
+            let mut room = most_across(widest).min(limit).saturating_sub(points.len());
+            let mut new_points = Vec::with_capacity(points.len() + chords.len());
+            let mut new_at = Vec::with_capacity(points.len() + chords.len());
+            let mut cut = false;
+            for (k, (&p, &t)) in points.iter().zip(at.iter()).enumerate() {
+                new_points.push(p);
+                new_at.push(t);
+                let (Some(targets), Some(&q), Some(&u)) = (
+                    u32::try_from(k).ok().and_then(|k| chords.get(&k)),
+                    points.get(k + 1),
+                    at.get(k + 1),
+                ) else {
+                    continue;
+                };
+                let along = q - p;
+                let whole = along.length_squared();
+                if !(whole > 0.0 && whole.is_finite()) {
+                    continue;
+                }
+                // The parts of the chord the points lie across from, in
+                // order and each once.
+                let mut parts: Vec<f64> = targets
+                    .iter()
+                    .map(|&target| (target - p).dot(along) / whole)
+                    .filter(|s| *s > ACROSS_MARGIN && *s < 1.0 - ACROSS_MARGIN)
+                    .collect();
+                parts.sort_by(f64::total_cmp);
+                parts.dedup();
+                for s in parts {
+                    // The curve's foot on the chord moves from its start to
+                    // its end as the parameter does: the parameter whose
+                    // foot is at `s`, by halving.
+                    let foot = |x: f64| (edge.curve.eval(x) - p).dot(along) / whole;
+                    let (mut low, mut high) = (t, u);
+                    for _ in 0..ACROSS_HALVINGS {
+                        let middle = 0.5 * (low + high);
+                        if !(low < middle && middle < high) {
+                            break;
+                        }
+                        if foot(middle) < s {
+                            low = middle;
+                        } else {
+                            high = middle;
+                        }
+                    }
+                    let middle = 0.5 * (low + high);
+                    let point = edge.curve.eval(middle);
+                    let last = new_at.last().copied().unwrap_or(t);
+                    let apart = last < middle
+                        && middle < u
+                        && point.is_finite()
+                        && new_points.last().is_none_or(|&l| l != point)
+                        && point != q;
+                    if room > 0 && apart {
+                        new_points.push(point);
+                        new_at.push(middle);
+                        room -= 1;
+                        cut = true;
+                    }
                 }
             }
             if cut {

@@ -418,8 +418,8 @@ fn a_row_of_blades_with_rounds_of_a_tenth_on_its_disc() {
 }
 
 /// The union of `a` and `b` as a feature, which must build and pass the
-/// deep check, or (`unmeshed`) may instead be refused by the check that
-/// meshes the result to see whether it passes through itself; then the
+/// deep check, or (`unmeshed`) may instead be refused by the self-check
+/// as touching itself (no longer for a mesh it cannot make); then the
 /// identities of the three booleans of their bodies, in place and
 /// turned, to the tolerance over the area (the difference made without
 /// the refusal of zero thickness: the parts it leaves may touch).
@@ -432,9 +432,9 @@ fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
         &json!({"op": "union", "target": a, "tool": b, "keepTool": true, "name": "U"}),
     );
     let refused_unmeshed = united["status"] == "failed"
-        && united["error"].as_str().is_some_and(|e| {
-            e.contains("cannot be meshed to see whether it passes through itself")
-        });
+        && united["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("the result touches itself"));
     if !(unmeshed && refused_unmeshed) {
         assert_ne!(united["status"], "failed", "{united}");
         assert_ok(&mut s, "U");
@@ -478,11 +478,13 @@ fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
 /// crosses the base circle at 2.6e-5 rad, 1.9e-4 mm from the cone's seam.
 /// An imprinted curve lies in the face, so it leaves a vertex of the
 /// boundary on the face's side of it however shallow the angle
-/// (`regions::order_run`). The union is right; the feature is refused
-/// next by the self-check's mesh: the crescents between the base circle
-/// and the curves (3.9e-4 and 7.8e-4 mm across, their tips at 2.6e-5
-/// rad) need more rounds of finer chords than the tessellator gives
-/// (owed, docs/roadmap.md: faces the tessellator cannot mesh).
+/// (`regions::order_run`). The union is right. The self-check's mesh of
+/// it refused it next (the crescents between the base circle and the
+/// curves, 3.9e-4 and 7.8e-4 mm across with tips at 2.6e-5 rad, needed
+/// more rounds of halved chords than the tessellator gave); meshed since
+/// 2026-10-21 (`docs/design/tessellator.md`), the self-check now finds a
+/// vertex at a crescent's tip 5.6e-9 from an edge that is not its own
+/// and refuses it as touching itself (owed, docs/roadmap.md).
 #[test]
 fn the_rover_drill_tip_on_a_tilted_drill() {
     united_and_identities("rover_drill_tip.steps.json", "Drill", "Tip", true);

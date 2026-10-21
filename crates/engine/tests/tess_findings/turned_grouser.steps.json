@@ -1,0 +1,97 @@
+[
+ [
+  "file.new",
+  {
+   "units": "mm",
+   "tolerance": 0.0001
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "257.5 mm",
+   "name": "GrouserSk"
+  }
+ ],
+ [
+  "sketch.path",
+  {
+   "sketch": "GrouserSk",
+   "start": [
+    -10.8846,
+    -144.0
+   ],
+   "segments": [
+    {
+     "arc": [
+      -10.8846,
+      144.0
+     ],
+     "center": [
+      -700.0,
+      0
+     ]
+    },
+    {
+     "line": [
+      -19.0595,
+      144.0
+     ]
+    },
+    {
+     "arc": [
+      -19.0595,
+      -144.0
+     ],
+     "center": [
+      -700.0,
+      0
+     ],
+     "clockwise": true
+    },
+    {
+     "line": "start"
+    }
+   ]
+  }
+ ],
+ [
+  "feature.extrude",
+  {
+   "sketch": "GrouserSk",
+   "distance": "15 mm",
+   "name": "Grouser0"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F2:endCap(e4,e6,e9,e10)",
+     "F2:side(e4)"
+    ],
+    [
+     "F2:endCap(e4,e6,e9,e10)",
+     "F2:side(e9)"
+    ]
+   ],
+   "radius": "2.5 mm",
+   "name": "Grouser"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Grouser",
+   "angle": "7.5 deg",
+   "axis": [
+    0,
+    1,
+    0
+   ],
+   "name": "Turned"
+  }
+ ]
+]

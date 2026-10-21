@@ -73,7 +73,7 @@
 //! a bounded number of rounds, each the same for any number of threads
 //! (see `tessellate` below).
 
-use crate::edge::{EdgeSamples, edge_points_of};
+use crate::edge::{Across, EdgeSamples, edge_points_of};
 use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
 use crate::long::{Cuts, LONG_ROUNDS, long_chords};
 use crate::{Mesh, TessError, TessParams};
@@ -171,6 +171,24 @@ fn in_order<T: Send>(
 /// size) to below a modelling tolerance of 10⁻⁸ of it. Edges nearer to
 /// each other than that are not apart.
 const MAX_ROUNDS: usize = 12;
+
+/// How many rounds of cuts across from the points of other edges may
+/// follow the rounds of halving (`tessellate_some`).
+const ALIGN_ROUNDS: usize = MAX_ROUNDS;
+
+/// What a face asks of the points of its edges in a round.
+#[derive(Default)]
+struct Wishes {
+    /// Chords to cut in two.
+    halve: Vec<Chord>,
+    /// Chords to cut across from a point of another edge.
+    across: Vec<Across>,
+    /// Whether the face cannot be meshed on its chords as they are and
+    /// the rounds of halving could not mend that: two of them cross in
+    /// parameter space (which no triangulation survives), or in the last
+    /// round its mesh failed on chords it asked for.
+    refused: bool,
+}
 
 /// The faces that use one of `edges` (sorted), in face order.
 fn faces_using(body: &Body, edges: &[u32]) -> Vec<usize> {
@@ -477,16 +495,22 @@ fn tessellate_some(
         })
         .collect();
     let mut last = false;
-    for round in 0..=MAX_ROUNDS {
+    // Rounds of cuts across from the points of other edges, once the
+    // rounds of halving end with chords that still cross (`Across`).
+    let mut aligning: Option<usize> = None;
+    // The points and faces as the rounds of halving left them: what the
+    // body is when the rounds after them do not mesh it either.
+    let mut before_aligning: Option<(EdgeSamples, Vec<Option<FaceResult>>)> = None;
+    for round in 0..=MAX_ROUNDS + ALIGN_ROUNDS + 1 {
         let points = &edges.points;
         let budget = params
             .max_triangles
             .filter(|_| mesh)
             .map(|max| Budget::for_round(max, &results, &todo));
         let budget = budget.as_ref();
-        let face_round = |index: usize| -> (Vec<Chord>, Option<FaceResult>) {
+        let face_round = |index: usize| -> (Wishes, Option<FaceResult>) {
             let Some(face) = body.faces.get(index) else {
-                return (Vec::new(), None);
+                return (Wishes::default(), None);
             };
             // A face made before from the same surface, edges and points
             // (`remembered`): its mesh, which asked for no finer chords.
@@ -494,7 +518,7 @@ fn tessellate_some(
                 .then(|| crate::remembered::key(body, points, face, params, last))
                 .flatten();
             if let Some(found) = key.as_deref().and_then(crate::remembered::find) {
-                return (Vec::new(), Some(Ok(FaceMesh::clone(&found))));
+                return (Wishes::default(), Some(Ok(FaceMesh::clone(&found))));
             }
             let before = craft3d_geom::allowance::spent();
             let mut starved = false;
@@ -511,12 +535,20 @@ fn tessellate_some(
                         Vec::new()
                     };
                     let result = wanted.is_empty().then_some(Err(error));
-                    return (wanted, result);
+                    return (
+                        Wishes {
+                            halve: wanted,
+                            ..Wishes::default()
+                        },
+                        result,
+                    );
                 }
             };
-            let wanted = boundary.chords_to_refine(body, params);
+            let refine = boundary.chords_to_refine(body, params, aligning.is_some());
+            let wanted = refine.halve;
+            let asks = !wanted.is_empty() || !refine.across.is_empty();
             let mut ask = Vec::new();
-            let result = (mesh && (last || wanted.is_empty())).then(|| {
+            let result = (mesh && (last || !asks)).then(|| {
                 let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask, !last)?;
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
@@ -526,9 +558,15 @@ fn tessellate_some(
             // as for the chords the boundary asks for; the error stands in
             // the last round.
             if !last && !ask.is_empty() && matches!(result, Some(Err(_))) {
-                return (ask, None);
+                return (
+                    Wishes {
+                        halve: ask,
+                        ..Wishes::default()
+                    },
+                    None,
+                );
             }
-            if let (Some(key), true, Some(Ok(made))) = (key, wanted.is_empty(), &result) {
+            if let (Some(key), false, Some(Ok(made))) = (key, asks, &result) {
                 // Kept with what making it took on this thread, which
                 // finding it charges again (`craft3d_geom::allowance`).
                 let took = craft3d_geom::allowance::spent().saturating_sub(before);
@@ -536,12 +574,22 @@ fn tessellate_some(
                     crate::remembered::keep(key, made, took);
                 }
             }
-            (wanted, result)
+            let failed = last && !ask.is_empty() && matches!(result, Some(Err(_)));
+            let mut halve = wanted;
+            if failed {
+                halve.extend(ask);
+            }
+            let wishes = Wishes {
+                halve,
+                across: refine.across,
+                refused: refine.crossed || failed,
+            };
+            (wishes, result)
         };
         // Whether the face was looked at, what it asks for and its mesh.
-        let one = |index: usize| -> (bool, Vec<Chord>, Option<FaceResult>) {
+        let one = |index: usize| -> (bool, Wishes, Option<FaceResult>) {
             if budget.is_some_and(Budget::spent) {
-                return (false, Vec::new(), None);
+                return (false, Wishes::default(), None);
             }
             let (wanted, result) = face_round(index);
             if let Some(budget) = budget {
@@ -583,11 +631,15 @@ fn tessellate_some(
             return Err(TessError::Spent);
         }
         let mut wanted: Vec<Chord> = Vec::new();
+        let mut across: Vec<Across> = Vec::new();
+        let mut refused = false;
         for (&index, (_, more, result)) in todo.iter().zip(done) {
             if let Some(flag) = asking.get_mut(index) {
-                *flag = !more.is_empty();
+                *flag = !more.halve.is_empty() || !more.across.is_empty();
             }
-            wanted.extend(more);
+            wanted.extend(more.halve);
+            across.extend(more.across);
+            refused |= more.refused;
             if let Some(slot) = results.get_mut(index) {
                 *slot = result;
             }
@@ -595,16 +647,39 @@ fn tessellate_some(
         if !last {
             wanted.extend(coincident_chords(body, &edges.points));
         }
-        if last || wanted.is_empty() {
+        // The rounds of halving are over and a face is refused for its
+        // chords (they cross, which no triangulation survives, or its mesh
+        // failed on chords it asked for): the body could not be meshed
+        // this way. Its wishes are cut with more room, and a few more
+        // rounds follow in which chords that cross or pass a strip
+        // narrower than their bulge are also cut across from the points
+        // of the segments they meet (`Across`).
+        let over = last || (wanted.is_empty() && across.is_empty());
+        let entering = mesh && over && refused && aligning.is_none();
+        if over && !entering {
             break;
         }
-        let changed = edges.split(body, &wanted, params);
+        if entering {
+            aligning = Some(round + 1);
+            before_aligning = Some((edges.clone(), results.clone()));
+        }
+        let mut changed = edges.split_within(body, &wanted, params, aligning.is_some());
+        if !across.is_empty() {
+            changed.extend(edges.split_across(body, &across, params));
+            changed.sort_unstable();
+            changed.dedup();
+        }
         if changed.is_empty() && !mesh {
             break;
         }
         // Nothing left to cut, or enough tried: the faces that still ask
         // are taken as they are.
-        last = changed.is_empty() || round + 1 >= MAX_ROUNDS;
+        last = !entering
+            && (changed.is_empty()
+                || match aligning {
+                    None => round + 1 >= MAX_ROUNDS,
+                    Some(from) => round + 1 >= from + ALIGN_ROUNDS,
+                });
         let users = faces_using(body, &changed);
         todo = (0..count)
             .filter(|index| {
@@ -613,6 +688,13 @@ fn tessellate_some(
                         || asking.get(*index).copied().unwrap_or(false))
             })
             .collect();
+    }
+    // Those rounds are kept only where they mesh the body: otherwise its
+    // points and its errors are those the rounds of halving ended with.
+    if let Some(before) = before_aligning
+        && results.iter().any(|result| matches!(result, Some(Err(_))))
+    {
+        (edges, results) = before;
     }
     if mesh {
         part_shared_rungs(body, params, &edges.points, &mut results)?;
