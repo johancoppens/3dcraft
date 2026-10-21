@@ -313,6 +313,8 @@ struct Tally {
     right: usize,
     /// Results that carry a table of their own.
     tolerant: usize,
+    /// Results with other shell or face counts than the reference's.
+    other_topology: usize,
     refused: std::collections::BTreeMap<String, usize>,
     reference_refused: usize,
     worst_ratio: f64,
@@ -403,19 +405,36 @@ fn run_case(scale: f64, k: f64, a_kind: usize, b_kind: usize, seed: u64) -> Tall
                 // ... and its tolerances are those it was built at, at most.
                 assert!(result.body.working_tolerance(tol.linear) <= working);
                 let v = mass_properties(&result.body).unwrap().volume;
-                // Each operand's faces within its working tolerance of the
-                // unperturbed ones, its boundaries within it along every
-                // edge, and the boolean's merging within it: the volume
-                // moves by at most a slab of that thickness over the
-                // faces and a strip of it along the edges, as far out as
-                // the bodies reach.
-                let bound = working * (aa + ab + (la + lb) * diagonal) + 1e-9 * v0.abs();
+                // The bound, derived. Every point of a perturbed operand
+                // is within `W` (the working tolerance) of the unperturbed
+                // one's boundary, so each solid differs from its original
+                // by at most the shell of half-width `W` about its
+                // boundary, `2 W A`, and a boolean's result by at most the
+                // sum over both operands (the symmetric difference of the
+                // results lies in the union of the operands'). The
+                // measure integrates each face over its own surface within
+                // its projected boundary (`topo::mass_properties`), so
+                // where an edge lies off a face the gap between the faces
+                // is a surface the integral leaves out: at most `W` wide
+                // along each edge, with `(x - c) · n / 3` at most `D / 3`
+                // on it (`c` the middle of the body, inside the box of
+                // diagonal `D`): `W L D / 3` over the edges' length `L`.
+                // Plus the integrator's own rounding.
+                let bound = 2.0 * working * (aa + ab)
+                    + working * (la + lb) * diagonal / 3.0
+                    + 1e-9 * v0.abs();
                 let ratio = (v - v0).abs() / bound;
                 tally.worst_ratio = tally.worst_ratio.max(ratio);
                 assert!(
                     ratio <= 1.0,
                     "scale {scale}, k {k}, kinds {a_kind}/{b_kind}, seed {seed}, {op:?}: volume {v} against {v0}, bound {bound:e}"
                 );
+                // Perturbing within the tolerances changes no topology: the
+                // result has the reference's shells and faces.
+                let counts = |b: &Body| (b.shells.len(), b.faces.len());
+                if counts(&result.body) != counts(&reference.body) {
+                    tally.other_topology += 1;
+                }
                 tally.right += 1;
                 tally.tolerant += usize::from(result.body.is_tolerant());
                 // The same operands give the same body, bit for bit.
@@ -462,6 +481,7 @@ fn perturbed_bodies_pass_with_their_tolerances_and_booleans_on_them_are_right_or
         total.booleans += t.booleans;
         total.right += t.right;
         total.tolerant += t.tolerant;
+        total.other_topology += t.other_topology;
         for (r, n) in t.refused {
             *total.refused.entry(r).or_default() += n;
         }
@@ -471,6 +491,7 @@ fn perturbed_bodies_pass_with_their_tolerances_and_booleans_on_them_are_right_or
     println!("{total:#?}");
     // Most of them are results, not refusals.
     assert!(total.right * 2 > total.booleans, "{total:#?}");
+    assert_eq!(total.other_topology, 0, "{total:#?}");
 }
 
 #[test]
@@ -499,4 +520,81 @@ fn exact_operands_give_an_exact_result() {
     let tol = tolerance(1.0);
     let made = boolean(&first(0, 1.0), &second(0, 1.0), BooleanOp::Subtract, &tol).unwrap();
     assert!(!made.body.is_tolerant());
+}
+
+/// The probe of the review of 2026-10-21: an operand whose gap no entity
+/// records is invalid, and stays so when the other operand is loose (the
+/// working tolerance must not hide it).
+#[test]
+fn an_unrecorded_gap_in_an_operand_is_refused_beside_a_loose_one() {
+    let tol = tolerance(1.0);
+    let mut a = first(0, 1.0);
+    a.set_edge_tolerance(EdgeId(0), 1e-4).unwrap();
+    assert_eq!(check(&a, &tol), Vec::new());
+    let mut b = second(0, 1.0);
+    let f = &mut b.faces[1];
+    f.surface = f
+        .surface
+        .transformed(&Transform::translation(Vec3::new(0.0, 0.0, 5e-5)))
+        .unwrap();
+    assert!(!check(&b, &tol).is_empty());
+    let exact = first(0, 1.0);
+    for (x, y) in [(&exact, &b), (&a, &b), (&b, &a)] {
+        match boolean(x, y, BooleanOp::Union, &tol) {
+            Err(KernelError::InvalidBody { operation, .. }) => {
+                assert!(operation.contains("operand"), "{operation}");
+            }
+            other => panic!("{:?}", other.map(|r| r.raised)),
+        }
+    }
+}
+
+/// New entities get a tolerance only where they need one, measured: a row
+/// of cuts on a block with one loose face does not spread looseness to
+/// what the cuts make away from it.
+#[test]
+fn looseness_does_not_spread_through_a_row_of_booleans() {
+    let tol = tolerance(1.0);
+    let cap = 1000.0 * tol.linear;
+    let mut body = first(0, 1.0);
+    // The top face moved 3e-4 off its four edges, recorded.
+    let top = (0..body.faces.len())
+        .max_by(|&x, &y| {
+            let z = |f: usize| {
+                let e = &body.edges[edges_of(&body, FaceId(f as u32))[0].0 as usize];
+                e.curve.eval(e.range.0).z + e.curve.eval(e.range.1).z
+            };
+            z(x).total_cmp(&z(y))
+        })
+        .unwrap();
+    let f = &mut body.faces[top];
+    f.surface = f
+        .surface
+        .transformed(&Transform::translation(Vec3::new(0.0, 0.0, 3e-4)))
+        .unwrap();
+    for edge in edges_of(&body, FaceId(top as u32)) {
+        record_edge(&mut body, edge, &tol, cap).unwrap();
+    }
+    let loose = |b: &Body| b.tolerances.edges().count() + b.tolerances.vertices().count();
+    let start = loose(&body);
+    assert_eq!(start, 8);
+    // Sixteen holes: eight from below that stop short of the top, eight
+    // through the top (whose circles lie on the moved plane exactly).
+    for i in 0..16 {
+        let (x, y) = (0.3 + 0.2 * f64::from(i % 8), 0.5 + f64::from(i / 8));
+        let (z, h) = if i < 8 { (-0.5, 1.5) } else { (1.0, 1.5) };
+        let tool = primitives::cylinder(&at(x, y, z, 1.0), 0.07, h).unwrap();
+        let made = boolean(&body, &tool, BooleanOp::Subtract, &tol).unwrap();
+        assert_eq!(check(&made.body, &tol), Vec::new());
+        // Whatever it was given is reported, and is not more than the
+        // body's largest.
+        for r in &made.raised {
+            assert!(r.tolerance <= body.working_tolerance(tol.linear));
+        }
+        body = made.body;
+        assert!(body.working_tolerance(tol.linear) <= 3.375e-4 * 1.0001);
+    }
+    // The four edges of the top and their vertices are still the only
+    // loose entities; the holes' edges and vertices are exact.
+    assert_eq!(loose(&body), start, "{:?}", body.tolerances);
 }

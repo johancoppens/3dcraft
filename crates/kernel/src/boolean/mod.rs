@@ -142,7 +142,7 @@ pub enum VertexSource {
 
 /// The result of a boolean and where each of its entities came from:
 /// `faces[i]` belongs to `FaceId(i)` of `body`, and so on.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct BooleanResult {
     pub body: Body,
     pub faces: Vec<FaceSource>,
@@ -153,6 +153,69 @@ pub struct BooleanResult {
     pub merged: Vec<Vec<FaceSource>>,
     pub edges: Vec<EdgeSource>,
     pub vertices: Vec<VertexSource>,
+    /// Every tolerance the boolean gave an entity of the result that the
+    /// entity did not have in its operand (operands with loose entities
+    /// only; empty for two exact operands): what it measured where the
+    /// boolean, working at the operands' largest tolerance, left an entity
+    /// off the document's.
+    pub raised: Vec<Raised>,
+}
+
+/// As derived, but `raised` only when it holds something: the result of
+/// two exact operands prints as it did before tolerant entities existed
+/// (the boolean corpus's digest is of this text).
+impl std::fmt::Debug for BooleanResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let BooleanResult {
+            body,
+            faces,
+            merged,
+            edges,
+            vertices,
+            raised,
+        } = self;
+        let mut out = f.debug_struct("BooleanResult");
+        out.field("body", body)
+            .field("faces", faces)
+            .field("merged", merged)
+            .field("edges", edges)
+            .field("vertices", vertices);
+        if !raised.is_empty() {
+            out.field("raised", raised);
+        }
+        out.finish()
+    }
+}
+
+/// An entity of a boolean's result given a tolerance it did not have
+/// ([`BooleanResult::raised`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Raised {
+    pub entity: RaisedEntity,
+    /// Its tolerance in the result.
+    pub tolerance: f64,
+    /// Where it came from: one the boolean made, or one kept from an
+    /// operand (loose there, or exact there and next to what the boolean
+    /// changed).
+    pub origin: Origin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaisedEntity {
+    Vertex(VertexId),
+    Edge(EdgeId),
+}
+
+/// Where an entity of a boolean's result came from, as tolerant modelling
+/// tells it apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Made by the boolean (an intersection edge, a new vertex).
+    New,
+    /// Kept from an operand in which it had a tolerance of its own.
+    Loose,
+    /// Kept from an operand in which it was exact.
+    Exact,
 }
 
 /// How a boolean is carried out.
@@ -1724,11 +1787,21 @@ pub fn boolean_with(
         // entities carrying what they were built at (`loose`).
         let cap = loose::cap(tolerance, options);
         let working = loose::working_tolerance(a, b, tolerance.linear, cap)?;
+        // Each operand held to the document's tolerance and its own
+        // table first: a gap no entity records is a defect, not something
+        // the working tolerance may hide.
+        if !options.trust_operands {
+            loose::operands_valid(a, b, tolerance, cap)?;
+        }
         let at = Tolerance {
             linear: working,
             ..*tolerance
         };
-        let mut result = exact(a, b, op, &at, options)?;
+        let inner = BooleanOptions {
+            trust_operands: true,
+            ..*options
+        };
+        let mut result = exact(a, b, op, &at, &inner)?;
         loose::carry(&mut result, a, b, tolerance, cap, working)?;
         return Ok(result);
     }

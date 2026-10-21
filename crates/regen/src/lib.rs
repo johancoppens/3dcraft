@@ -1176,7 +1176,9 @@ fn checked(doc: &Document, mut body: Body) -> Result<Body, String> {
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     // Remembered: a body the operation that made it checked already
     // (every boolean does) is not checked again.
-    match craft3d_topo::check_remembered(&body, &tolerance).first() {
+    // Held to the document's cap on any entity's own tolerance.
+    let cap = doc.tolerance.loosest_linear();
+    match craft3d_topo::check_remembered_capped(&body, &tolerance, cap).first() {
         None => {
             // Kept as long as the document is open, and as it was built
             // its vectors hold the room they grew by: a third of a body
@@ -1742,6 +1744,34 @@ mod tests {
 
     fn exprs(values: [&str; 3]) -> [Expr; 3] {
         values.map(Expr::new)
+    }
+
+    /// Regeneration holds every body to the document's cap on any
+    /// entity's own tolerance, both ways: a larger cap lets a looser
+    /// entity through, a smaller one refuses one the default would take.
+    #[test]
+    fn bodies_are_held_to_the_documents_cap() {
+        let frame = craft3d_math::Frame::WORLD;
+        let block = craft3d_kernel::primitives::block(&frame, 1.0, 1.0, 1.0).unwrap();
+        let mut doc = Document::new(Units::default());
+        // 5e-3 is above the default cap (1e-3 at 1e-6).
+        let mut loose = block.clone();
+        loose
+            .set_edge_tolerance(craft3d_topo::EdgeId(0), 5e-3)
+            .unwrap();
+        assert!(checked(&doc, loose.clone()).is_err());
+        doc.tolerance.loosest = Some(1e-2);
+        assert!(checked(&doc, loose).is_ok());
+        // 5e-4 is within the default cap, above a cap of 1e-4.
+        let mut looser = block;
+        looser
+            .set_edge_tolerance(craft3d_topo::EdgeId(0), 5e-4)
+            .unwrap();
+        doc.tolerance.loosest = None;
+        assert!(checked(&doc, looser.clone()).is_ok());
+        doc.tolerance.loosest = Some(1e-4);
+        let refused = checked(&doc, looser).unwrap_err();
+        assert!(refused.contains("cap"), "{refused}");
     }
 
     fn sample(units: Units) -> Document {

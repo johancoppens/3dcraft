@@ -911,7 +911,8 @@ fn file_new_takes_the_cap_on_entity_tolerances() {
     });
     run(&mut s, "file.new", json!({"tolerance": 1e-5}));
     let inspected = run(&mut s, "document.inspect", json!({}));
-    assert_eq!(inspected["tolerance"]["loosest"].as_f64(), Some(1e-2));
+    // Absent when the document sets none (1000 times the tolerance).
+    assert!(inspected["tolerance"].get("loosest").is_none());
     run(
         &mut s,
         "file.new",

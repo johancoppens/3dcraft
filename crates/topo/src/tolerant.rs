@@ -37,10 +37,7 @@ use craft3d_math::{Bits, Tolerance};
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// The cap on any entity's tolerance when the document sets none, as a
-/// multiple of its linear tolerance (1 µm at the default 1e-6 mm): the
-/// decision of 2026-10-18.
-pub const DEFAULT_LOOSEST: f64 = 1000.0;
+pub use craft3d_math::DEFAULT_LOOSEST;
 
 /// The most pieces a proof that an edge lies within its tolerance of a
 /// surface may take (the measure of 2026-10-18 proved every coedge of the
@@ -48,9 +45,18 @@ pub const DEFAULT_LOOSEST: f64 = 1000.0;
 /// the document's tolerance; a loose edge is proven at its own, looser).
 pub const PROOF_PIECES: usize = 1 << 16;
 
-/// A measured distance is recorded this much larger: the proof's bound
-/// holds the body as it is, and the same body moved (an isometry rounds
-/// every number again) must still pass.
+/// A measured distance is recorded this much larger. Not for the rounding
+/// of an isometry (about 1e-15 of the size), but because what is checked
+/// later is a *proof*, not the distance: `certify::curve_on_surface`
+/// bounds each piece of the curve by its ends' distances plus a
+/// derivative term that shrinks with the piece, and halves pieces until
+/// that bound is within the target. A target equal to the true distance
+/// can never be met (the term never reaches zero); one an eighth above it
+/// is met once the pieces are short enough for the term to be an eighth
+/// of the distance, i.e. after a few halvings more than the measure took,
+/// wherever the body is moved. An eighth keeps the recorded tolerance
+/// close to the gap (1.125 times it; other modellers record the gap plus
+/// rounding) at a bounded cost in pieces.
 pub const RECORD_MARGIN: f64 = 1.125;
 
 /// The tolerances of a body's loose vertices and edges; an entity not in
@@ -346,7 +352,10 @@ pub fn measure_vertex(body: &Body, vertex: VertexId) -> Result<Option<f64>, Tole
         .point;
     let mut worst: Option<f64> = None;
     for (i, e) in body.edges.iter().enumerate() {
-        let own = body.edge_tolerance(EdgeId(i as u32)).unwrap_or(0.0);
+        let Ok(i) = u32::try_from(i) else {
+            break;
+        };
+        let own = body.edge_tolerance(EdgeId(i)).unwrap_or(0.0);
         for (v, t) in [(e.start, e.range.0), (e.end, e.range.1)] {
             if v == vertex {
                 let d = e.curve.eval(t).distance(point);

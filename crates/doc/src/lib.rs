@@ -150,8 +150,8 @@ impl Default for Tolerance {
 
 impl Tolerance {
     /// The cap on an entity's tolerance when the document sets none, as a
-    /// multiple of the linear tolerance (`craft3d_topo::DEFAULT_LOOSEST`).
-    pub const DEFAULT_LOOSEST: f64 = 1000.0;
+    /// multiple of the linear tolerance (`craft3d_math::DEFAULT_LOOSEST`).
+    pub const DEFAULT_LOOSEST: f64 = craft3d_math::DEFAULT_LOOSEST;
 
     /// The cap on any entity's own tolerance: the document's, or
     /// [`Self::DEFAULT_LOOSEST`] times the linear tolerance.

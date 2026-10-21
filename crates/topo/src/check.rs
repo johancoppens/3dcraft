@@ -466,8 +466,21 @@ const PASSED_WORDS: usize = 1 << 22;
 /// bits, not as text: formatting every number of a large body cost a
 /// quarter of a long row of cuts.
 pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
+    check_remembered_capped(body, tolerance, crate::default_loosest(tolerance.linear))
+}
+
+/// [`check_remembered`] with the cap on any entity's tolerance given (the
+/// document's), as [`check_capped`]; the cap is part of what is
+/// remembered.
+pub fn check_remembered_capped(body: &Body, tolerance: &Tolerance, cap: f64) -> Vec<Defect> {
     use craft3d_geom::allowance;
     let mut key = craft3d_math::bits_of(tolerance);
+    // The default cap adds nothing: the key of a check at it is what it
+    // was before caps existed.
+    if cap.to_bits() != crate::default_loosest(tolerance.linear).to_bits() {
+        key.push(u64::MAX);
+        cap.push_bits(&mut key);
+    }
     body.push_bits(&mut key);
     // Charged by the work the check took, once per body and operation
     // under a bound, whether it is checked now or found to have passed
@@ -489,10 +502,13 @@ pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
         }
     }
     let (defects, units) = if first {
-        allowance::measured(|| check(body, tolerance))
+        allowance::measured(|| check_capped(body, tolerance, cap))
     } else {
         // Paid for already in this operation.
-        (allowance::uncounted(|| check(body, tolerance)), 0)
+        (
+            allowance::uncounted(|| check_capped(body, tolerance, cap)),
+            0,
+        )
     };
     if first && allowance::counting() && defects.is_empty() && key.len() <= PASSED_WORDS {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);

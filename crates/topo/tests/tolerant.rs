@@ -15,7 +15,7 @@ use craft3d_math::{Bits, Frame, Tolerance, Transform, Vec3, bits_of};
 use craft3d_testkit::solids;
 use craft3d_topo::{
     Body, Defect, EdgeId, FaceId, RECORD_MARGIN, ToleranceError, VertexId, check, check_capped,
-    measure_edge, merge, record_edge, record_vertex,
+    check_remembered, check_remembered_capped, measure_edge, merge, record_edge, record_vertex,
 };
 
 fn tolerance(scale: f64) -> Tolerance {
@@ -271,6 +271,22 @@ fn the_table_is_held_to_the_cap_and_the_invariant() {
     let edge = edges_of(&moved, top_face(&moved))[0];
     assert!(record_edge(&mut moved, edge, &tol, 1e-3).is_err());
     assert!(!moved.is_tolerant());
+}
+
+#[test]
+fn the_remembered_check_holds_the_cap_it_is_given() {
+    let tol = tolerance(1.0);
+    let mut body = block(1.0);
+    body.set_edge_tolerance(EdgeId(0), 5e-4).unwrap();
+    // Passes at the default cap and is remembered...
+    assert_eq!(check_remembered(&body, &tol), Vec::new());
+    // ... which does not let it pass a smaller cap, nor a larger one fail.
+    assert!(
+        check_remembered_capped(&body, &tol, 1e-4)
+            .iter()
+            .any(|d| matches!(d, Defect::ToleranceAboveCap { .. }))
+    );
+    assert_eq!(check_remembered_capped(&body, &tol, 1e-2), Vec::new());
 }
 
 #[test]
