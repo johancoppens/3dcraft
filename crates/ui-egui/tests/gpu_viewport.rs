@@ -88,7 +88,7 @@ fn part() -> Session {
 
 /// How far the GPU's density of the edges per tile may be from the CPU's
 /// (`viewport::EdgeDensity`, a share of a tile's pixels) at a density of
-/// `d`: 0.05 and a tenth of `d`. The two measure the same lines' ink but
+/// `d`: 0.025 and a tenth of `d` (twice what was measured near the cap). The two measure the same lines' ink but
 /// differently: the CPU in closed form (a line's length in a tile times
 /// its ink across, in four strands across its width, and its round ends),
 /// the GPU per pixel; and they decide what is hidden differently where an
@@ -101,7 +101,7 @@ fn part() -> Session {
 /// The fade goes with the cap over the density, so a tenth of it is a
 /// tenth of the fade.
 fn density_tolerance(d: f64) -> f64 {
-    0.05 + 0.1 * d.abs()
+    0.025 + 0.1 * d.abs()
 }
 
 fn scene(session: &mut Session, quality: SceneQuality) -> Arc<Scene> {
@@ -691,16 +691,17 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     direct_path_against_the_oracle(0.0);
 }
 
-/// The part with bodies of their own colours, whose edges are drawn in
-/// shades of them: the post very dark (light edges), the ball red, the
-/// plate a light grey; and beside the plate a comb of thin plates whose
-/// edges crowd and fade.
+/// The part with bodies of their own colours, far from the theme's body
+/// colour and from one another, whose edges are drawn in shades of them:
+/// the post very dark (light edges), the ball red, the plate blue, the
+/// bead green; and beside the plate a comb of thin yellow plates.
 fn part_coloured() -> Session {
     let mut s = part();
     for (body, color) in [
         ("Post", [29, 29, 32]),
         ("Ball", [156, 47, 37]),
-        ("Plate", [233, 230, 223]),
+        ("Plate", [52, 96, 196]),
+        ("Bead", [60, 160, 70]),
     ] {
         run(
             &mut s,
@@ -709,21 +710,192 @@ fn part_coloured() -> Session {
         );
     }
     for k in 0..16 {
+        let name = format!("Tooth{k}");
         run(
             &mut s,
             "feature.block",
-            json!({"size": [0.6, 12, 10], "position": [64.0 + f64::from(k) * 1.5, 4, 0]}),
+            json!({"name": name, "size": [0.6, 12, 10], "position": [64.0 + f64::from(k) * 1.5, 4, 0]}),
+        );
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": name, "color": [214, 176, 40]}),
         );
     }
     s
 }
 
 /// Edges in shades of their bodies' colours, outlines wider and darker,
-/// crowded edges faded, drawn by the window's device against the oracle
-/// (2026-10-21).
+/// drawn by the window's device against the oracle (2026-10-21); the
+/// samples cover every body's colour, curved edges included.
 #[test]
 fn the_direct_path_draws_edges_in_shades_of_their_bodies_and_matches_the_oracle() {
     direct_path_against_the_oracle_of(part_coloured(), "viewport-edges", 0.0);
+}
+
+/// Short edges (specks a few pixels across) and crowded ones (a comb of
+/// plates a pixel or two apart) faded by the window's device as the
+/// oracle fades them, at the theme's own widths (2026-10-21). A faded
+/// edge is not all ink anywhere, and its pixels lie on feature edges,
+/// where a multisampled pixel mixes the faces that meet and the CPU's
+/// is one of them: so the pixels are not compared level by level but by
+/// which of three CPU pictures the GPU's is nearest, the oracle's and the
+/// same without the fade for shortness or without the fade for
+/// crowding, at every pixel along the edges in sight where the oracle
+/// and the unfaded picture differ by `DISTINCT` levels or more: at two
+/// thirds of them or more the GPU's pixel must be nearest the oracle's.
+#[test]
+fn the_direct_path_fades_short_and_crowded_edges_as_the_oracle_does() {
+    /// How far apart the faded and the unfaded pictures must be at a pixel
+    /// for it to count.
+    const DISTINCT: u8 = 24;
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    for k in 0..24 {
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [0.4, 30, 30], "position": [f64::from(k) * 1.2, 0, 0]}),
+        );
+    }
+    for k in 0..36 {
+        let (x, y) = (f64::from(k % 6) * 6.0, f64::from(k / 6) * 6.0);
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [0.5, 0.5, 0.5], "position": [x, 45.0 + y, 0]}),
+        );
+    }
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    shell.attach_gpu(&state).unwrap();
+    assert!(shell.draws_directly());
+    let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let [w, h] = shell.viewport_size();
+    let (_, _, gpu_rgb) = shell.direct_picture().unwrap().unwrap();
+    let scene = scene(&mut session, shell.scene_quality());
+    let camera = shell.state.camera;
+    let quality = Quality {
+        width: w,
+        height: h,
+        ssaa: 1,
+    };
+    let params = viewport::render_params(quality, &tokens);
+    let frame = craft3d_render::render_colored(
+        &scene.mesh,
+        &scene.face_colors,
+        &camera.to_render(),
+        &params,
+    )
+    .unwrap();
+    let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
+    let overlay = viewport::overlay_see_through(
+        Some(&scene),
+        &camera,
+        &frame,
+        None,
+        slack,
+        &viewport::Marks::default(),
+        false,
+    );
+    let picture = |tokens: &Tokens| {
+        viewport::rasterise(
+            Composed {
+                width: w,
+                height: h,
+                rgb: frame.rgb.clone(),
+                overlay: overlay.clone(),
+                coverage: frame.coverage(),
+                triangles: scene.triangles(),
+                backend: Backend::Cpu,
+            },
+            tokens,
+            1.0,
+        )
+        .rgb
+    };
+    let oracle = picture(&tokens);
+    let long = picture(&Tokens {
+        edge_fade_short: 0.0,
+        edge_fade_long: 0.0,
+        ..tokens
+    });
+    let sparse = picture(&Tokens {
+        edge_dense_cap: 1e9,
+        ..tokens
+    });
+    // Every pixel along the edges in sight, once.
+    let mut pixels = std::collections::BTreeSet::new();
+    for line in overlay
+        .lines
+        .iter()
+        .filter(|l| l.edge.is_some() && !l.hidden)
+    {
+        let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
+        let steps = (length * 2.0).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let (x, y) = (
+                line.from[0] + (line.to[0] - line.from[0]) * t,
+                line.from[1] + (line.to[1] - line.from[1]) * t,
+            );
+            if x >= 0.0 && y >= 0.0 && x < f64::from(w) && y < f64::from(h) {
+                pixels.insert((y as usize, x as usize));
+            }
+        }
+    }
+    let wu = w as usize;
+    let at = |rgb: &[u8], (y, x): (usize, usize)| {
+        let i = (y * wu + x) * 3;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    };
+    // (pixels, nearest the oracle, within 8 levels of it)
+    let (mut short, mut crowd) = ((0, 0, 0), (0, 0, 0));
+    for &p in &pixels {
+        let (o, g) = (at(&oracle, p), at(&gpu_rgb, p));
+        for (other, count) in [(at(&long, p), &mut short), (at(&sparse, p), &mut crowd)] {
+            if levels(o, other) < DISTINCT {
+                continue;
+            }
+            count.0 += 1;
+            count.1 += usize::from(levels(g, o) < levels(g, other));
+            count.2 += usize::from(levels(g, o) <= 8);
+        }
+    }
+    println!(
+        "fade: {} pixels along the edges; short: {} distinct, {} nearest the oracle, {} within 8 levels; crowded: {} distinct, {} nearest, {} within 8",
+        pixels.len(),
+        short.0,
+        short.1,
+        short.2,
+        crowd.0,
+        crowd.1,
+        crowd.2
+    );
+    for (suffix, rgb) in [
+        ("cpu", &oracle),
+        ("gpu", &gpu_rgb),
+        ("cpu-long", &long),
+        ("cpu-sparse", &sparse),
+    ] {
+        write_png(&evidence(&format!("viewport-fade-{suffix}.png")), w, h, rgb);
+    }
+    assert!(short.0 >= 50 && crowd.0 >= 200, "the test is hollow");
+    // Measured on Intel Vulkan: short 96 % nearest the oracle, crowded
+    // 80 % (where many edges cross, the multisampled mixing and the
+    // density's tolerance move a pixel most); a GPU without the fade is
+    // nearest the unfaded picture nearly everywhere (the mutations of the
+    // dev log of 2026-10-21: under 20 %).
+    for (what, (all, nearest, _)) in [("short", short), ("crowded", crowd)] {
+        assert!(
+            nearest * 3 >= all * 2,
+            "{what}: the GPU's pixel is nearest the oracle at {nearest} of {all}"
+        );
+    }
 }
 
 /// The part with datums: a plane through the post, a plane at an angle
@@ -799,6 +971,12 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     // pictures, whatever the renderers drew beneath it.
     shell.tokens.edge_width = 3.0;
     shell.tokens.edge_silhouette_width = 4.0;
+    // No fade: lines this wide crowd a tile on their own, and a faded line
+    // is not all ink at its middle. The fades have a test of their own
+    // (`the_direct_path_fades_short_and_crowded_edges_as_the_oracle_does`).
+    shell.tokens.edge_fade_short = 0.0;
+    shell.tokens.edge_fade_long = 0.0;
+    shell.tokens.edge_dense_cap = 1e9;
     shell.tokens.sketch_width = 3.0;
     shell.tokens.construction_width = 3.0;
     shell.tokens.axis_width = 3.0;
@@ -1086,9 +1264,48 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     /// (difference, where, the CPU's pixel, the GPU's).
     type Worst = (f64, [f64; 2], [u8; 3], [u8; 3]);
     let mut worst: Vec<Worst> = Vec::new();
+    // The lines that go on from line `k` through shared ends, a few
+    // segments either way: a curved edge's neighbouring segments do not
+    // crowd it.
+    let same = |a: [f64; 2], b: [f64; 2]| a == b;
+    let chain = |k: usize| {
+        let mut near = vec![k];
+        for _ in 0..6 {
+            let more: Vec<usize> = everything
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(j, l)| {
+                    !near.contains(j)
+                        && near.iter().any(|&n| {
+                            let m = &everything.lines[n];
+                            m.kind == l.kind
+                                && (same(m.to, l.from)
+                                    || same(m.from, l.to)
+                                    || same(m.from, l.from)
+                                    || same(m.to, l.to))
+                        })
+                })
+                .map(|(j, _)| j)
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            near.extend(more);
+        }
+        near
+    };
+    // Samples per edge colour of the CPU's picture.
+    let mut colour_samples: Vec<([u8; 3], usize)> = Vec::new();
     for (k, line) in everything.lines.iter().enumerate() {
         let length = (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1]);
-        let steps = (length / 2.0).floor() as usize;
+        // Every 2 pixels, and the middle of a segment shorter than 4.
+        let steps = ((length / 2.0).floor() as usize).max(2);
+        let neighbours = if line.kind == viewport::LineKind::Edge {
+            chain(k)
+        } else {
+            vec![k]
+        };
         for i in 1..steps {
             let t = i as f64 / steps as f64;
             let p = [
@@ -1104,7 +1321,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                 .lines
                 .iter()
                 .enumerate()
-                .any(|(j, other)| j != k && distance_to(p, other) < 4.0)
+                .any(|(j, other)| !neighbours.contains(&j) && distance_to(p, other) < 4.0)
                 || everything
                     .points
                     .iter()
@@ -1112,12 +1329,20 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
             if crowded {
                 continue;
             }
-            // Away from the ends of the CPU's stretches of this line.
+            // Away from where the CPU cut this line into stretches (an
+            // edge going behind a body, its outline starting or stopping:
+            // decided per piece of a pixel there, per pixel on the GPU);
+            // the joints of a curved edge's segments are drawn alike.
             let near_end = overlay.lines.iter().any(|s| {
-                s.kind == line.kind
-                    && [s.from, s.to]
-                        .iter()
-                        .any(|e| (p[0] - e[0]).hypot(p[1] - e[1]) < 3.0)
+                let ends: Vec<[f64; 2]> = match s.edge {
+                    Some(edge) => [(edge.cut[0], s.from), (edge.cut[1], s.to)]
+                        .into_iter()
+                        .filter(|(cut, _)| *cut)
+                        .map(|(_, end)| end)
+                        .collect(),
+                    None => vec![s.from, s.to],
+                };
+                s.kind == line.kind && ends.iter().any(|e| (p[0] - e[0]).hypot(p[1] - e[1]) < 3.0)
             });
             if near_end {
                 continue;
@@ -1140,6 +1365,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
             }
             let (c, g) = (pixel(&cpu_rgb, w, at), pixel(&gpu_rgb, w, at));
             let mut diff = levels(c, g);
+            if let Some(s) = shown.filter(|s| s.edge.is_some() && !s.hidden) {
+                let ink = s.color(&tokens);
+                match colour_samples.iter_mut().find(|(k, _)| *k == ink) {
+                    Some((_, n)) => *n += 1,
+                    None => colour_samples.push((ink, 1)),
+                }
+            }
             // The hidden part of a body's edge, dimmed over see-through
             // bodies, lies on a feature edge of what is behind the front:
             // in the band, where a multisampled pixel is a mix of the
@@ -1207,6 +1439,26 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         "lines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree; worst {:?}",
         &worst[..worst.len().min(5)]
     );
+    // Every body's edges are sampled, between faces and as outlines: the
+    // colour of each, as the CPU drew it, at enough samples.
+    println!("edge colours sampled: {colour_samples:?}");
+    for (body, color) in viewport::body_colors(&scene) {
+        if body.edges.is_empty() {
+            continue;
+        }
+        let colors = tokens.edge_colors(color.unwrap_or(tokens.body));
+        let seen = |ink: [u8; 3]| {
+            colour_samples
+                .iter()
+                .find(|(k, _)| *k == ink)
+                .map_or(0, |(_, n)| *n)
+        };
+        assert!(
+            seen(colors.inner) + seen(colors.silhouette) >= 5,
+            "the edges of {} are hardly sampled: {colour_samples:?}",
+            body.name
+        );
+    }
     if see_through {
         // Through see-through bodies no stretch of an edge is left out:
         // what is hidden is dimmed.

@@ -597,9 +597,9 @@ pub const OUTLINE_STEP: f64 = 2.0;
 /// back. `depth` is the edge's view distance at the point, `near` and
 /// `far` the distances of the surface beside it at [`OUTLINE_NEAR`] and
 /// [`OUTLINE_FAR`] pixels across (`None` where nothing is drawn), and
-/// `allowance` the step that does not count yet, in model units (the
-/// token `edge_silhouette_step` in pixels' worth at the edge's depth,
-/// plus the slack of the depth test).
+/// `allowance` the step that does not count yet, in model units
+/// ([`OUTLINE_STEP`] pixels' worth at the edge's depth, plus the slack of
+/// the depth test).
 ///
 /// Nothing beside the edge is a step. Otherwise the surface is carried
 /// on to the edge along the straight line through the two (in the

@@ -791,6 +791,23 @@ impl Density {
         lines_pipeline_layout: &wgpu::PipelineLayout,
         instance: &wgpu::VertexBufferLayout<'_>,
     ) -> Density {
+        // The ink target as it will be made: a device that cannot render
+        // into a half float (WebGL2 without its extension) fails here,
+        // under the guard, and draws its edges unfaded by crowding.
+        let _probe = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("craft3d edge ink probe"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: INK_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
         let primitive = wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             cull_mode: None,
@@ -847,7 +864,7 @@ impl Density {
         });
         let tiles_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d edge tiles"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("edge_tiles.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(EDGE_TILES_SOURCE.into()),
         });
         let tiles_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -881,6 +898,44 @@ impl Density {
             tiles_pipeline,
             tiles_layout,
         }
+    }
+}
+
+/// The pass over the tiles of the edge density (no template).
+const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
+
+/// The shaders over the picture, filled in for a depth buffer of
+/// `samples` samples per pixel: the lines, the fills, the distances the
+/// two read, and the copy of the depth buffer for tests.
+pub(crate) struct OverlaySources {
+    pub(crate) lines: String,
+    pub(crate) fills: String,
+    pub(crate) distance: String,
+    // Read back by tests, which a browser does not run.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) depth_read: String,
+}
+
+pub(crate) fn overlay_sources(samples: u32) -> OverlaySources {
+    let (depth_type, load) = if samples > 1 {
+        (
+            "texture_multisampled_2d<f32>",
+            "textureLoad(depth_texture, p, s).r",
+        )
+    } else {
+        ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
+    };
+    let fill = |template: &str| {
+        template
+            .replace("{{DEPTH_TEST}}", include_str!("depth_test.wgsl"))
+            .replace("{{DEPTH}}", depth_type)
+            .replace("{{LOAD}}", load)
+    };
+    OverlaySources {
+        lines: fill(include_str!("lines.wgsl")),
+        fills: fill(include_str!("fills.wgsl")),
+        distance: fill(include_str!("distance.wgsl")),
+        depth_read: fill(include_str!("depth_read.wgsl")),
     }
 }
 
@@ -1047,30 +1102,14 @@ impl Onscreen {
         // The depth buffer is bound as an unfilterable float texture, not
         // as a depth texture: naga's GLSL backend cannot `textureLoad` a
         // depth texture, and WebGPU binds a depth format either way.
-        let (depth_type, load) = if samples > 1 {
-            (
-                "texture_multisampled_2d<f32>",
-                "textureLoad(depth_texture, p, s).r",
-            )
-        } else {
-            ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
-        };
-        let depth_test = include_str!("depth_test.wgsl");
-        let lines_source = include_str!("lines.wgsl")
-            .replace("{{DEPTH_TEST}}", depth_test)
-            .replace("{{DEPTH}}", depth_type)
-            .replace("{{LOAD}}", load);
+        let sources = overlay_sources(samples);
         let lines_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d lines"),
-            source: wgpu::ShaderSource::Wgsl(lines_source.into()),
+            source: wgpu::ShaderSource::Wgsl(sources.lines.as_str().into()),
         });
-        let fills_source = include_str!("fills.wgsl")
-            .replace("{{DEPTH_TEST}}", depth_test)
-            .replace("{{DEPTH}}", depth_type)
-            .replace("{{LOAD}}", load);
         let fills_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d fills"),
-            source: wgpu::ShaderSource::Wgsl(fills_source.into()),
+            source: wgpu::ShaderSource::Wgsl(sources.fills.as_str().into()),
         });
 
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
@@ -1156,12 +1195,7 @@ impl Onscreen {
         });
         let distance_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d distances"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("distance.wgsl")
-                    .replace("{{DEPTH}}", depth_type)
-                    .replace("{{LOAD}}", load)
-                    .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(sources.distance.as_str().into()),
         });
         let distance_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1414,9 +1448,7 @@ impl Onscreen {
             captured: false,
             depth_numbers: [0.0; 3],
             #[cfg(not(target_arch = "wasm32"))]
-            depth_read_source: include_str!("depth_read.wgsl")
-                .replace("{{DEPTH}}", depth_type)
-                .replace("{{LOAD}}", load),
+            depth_read_source: sources.depth_read,
             #[cfg(not(target_arch = "wasm32"))]
             depth_read_pipeline: None,
             token: Arc::new(()),
@@ -2799,6 +2831,65 @@ mod tests {
             },
         ] {
             assert!(pack_fill(&bad, Vec3::ZERO).is_none(), "{bad:?}");
+        }
+    }
+
+    /// The shaders over the picture, for one sample per pixel (OpenGL,
+    /// WebGL2) and for several, validate with naga without an adapter, and
+    /// the single-sample ones translate to GLSL ES 3.10, as wgpu's OpenGL
+    /// backend gets them. (Not to ES 3.00, WebGL2: the depth test's array
+    /// of arrays, there since 2026-10-18, needs 3.10.)
+    #[test]
+    fn the_overlay_shaders_validate_without_an_adapter() {
+        use wgpu::naga;
+        for samples in [1, 4] {
+            let sources = overlay_sources(samples);
+            for (name, source) in [
+                ("lines", sources.lines.as_str()),
+                ("fills", sources.fills.as_str()),
+                ("distance", sources.distance.as_str()),
+                ("depth read", sources.depth_read.as_str()),
+                ("edge tiles", EDGE_TILES_SOURCE),
+            ] {
+                let label = format!("{name}, {samples} samples");
+                assert!(!source.contains("{{"), "{label}: a marker was left");
+                let module = naga::front::wgsl::parse_str(source)
+                    .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+                if samples > 1 {
+                    continue;
+                }
+                for entry in &module.entry_points {
+                    let options = naga::back::glsl::Options {
+                        version: naga::back::glsl::Version::Embedded {
+                            version: 310,
+                            is_webgl: false,
+                        },
+                        ..naga::back::glsl::Options::default()
+                    };
+                    let pipeline = naga::back::glsl::PipelineOptions {
+                        shader_stage: entry.stage,
+                        entry_point: entry.name.clone(),
+                        multiview: None,
+                    };
+                    let mut out = String::new();
+                    naga::back::glsl::Writer::new(
+                        &mut out,
+                        &module,
+                        &info,
+                        &options,
+                        &pipeline,
+                        naga::proc::BoundsCheckPolicies::default(),
+                    )
+                    .and_then(|mut writer| writer.write().map(|_| ()))
+                    .unwrap_or_else(|e| panic!("{label}, {}: GLSL: {e}", entry.name));
+                }
+            }
         }
     }
 
