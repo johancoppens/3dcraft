@@ -6,6 +6,8 @@
 //! The control points every face and edge of every item would hold are
 //! counted from the references alone (list lengths, nothing allocated),
 //! once per file, and a file above [`MAX_CONTROL_POINT_USES`] is refused.
+//! A solid an assembly places N times counts N times: each placement is
+//! a body of its own.
 
 use crate::{ImportError, Parsed, err};
 use craft3d_step::{Entity, Param};
@@ -33,7 +35,13 @@ fn points(parsed: &Parsed, id: u64, depth: usize, memo: &mut BTreeMap<u64, usize
     };
     let entity = &instance.entity;
     let first_record = || entity.records().first();
-    let n = if entity.is("B_SPLINE_SURFACE_WITH_KNOTS") {
+    let any = |keywords: &[&str]| keywords.iter().any(|k| entity.is(k));
+    let n = if any(&[
+        "B_SPLINE_SURFACE_WITH_KNOTS",
+        "UNIFORM_SURFACE",
+        "QUASI_UNIFORM_SURFACE",
+        "BEZIER_SURFACE",
+    ]) {
         let net = match entity {
             Entity::Simple(r) => r.params.get(3),
             Entity::Complex(_) => entity
@@ -42,7 +50,12 @@ fn points(parsed: &Parsed, id: u64, depth: usize, memo: &mut BTreeMap<u64, usize
         };
         let rows = net.and_then(Param::as_list).unwrap_or(&[]);
         rows.len().saturating_mul(list_len(rows.first())).max(1)
-    } else if entity.is("B_SPLINE_CURVE_WITH_KNOTS") {
+    } else if any(&[
+        "B_SPLINE_CURVE_WITH_KNOTS",
+        "UNIFORM_CURVE",
+        "QUASI_UNIFORM_CURVE",
+        "BEZIER_CURVE",
+    ]) {
         let list = match entity {
             Entity::Simple(r) => r.params.get(2),
             Entity::Complex(_) => entity
@@ -53,20 +66,32 @@ fn points(parsed: &Parsed, id: u64, depth: usize, memo: &mut BTreeMap<u64, usize
     } else if entity.is("POLYLINE") {
         list_len(first_record().and_then(|r| r.params.get(1))).max(1)
     } else if depth < DEPTH
-        && [
+        && any(&[
             "SURFACE_CURVE",
             "SEAM_CURVE",
             "INTERSECTION_CURVE",
             "SURFACE_OF_LINEAR_EXTRUSION",
             "SURFACE_OF_REVOLUTION",
-        ]
-        .iter()
-        .any(|k| entity.is(k))
+            "OFFSET_SURFACE",
+        ])
     {
+        // A curve swept round an axis is nine rows of its points (four
+        // rational quarters), along a direction two.
+        let rows = if entity.is("SURFACE_OF_REVOLUTION") {
+            9
+        } else if entity.is("SURFACE_OF_LINEAR_EXTRUSION") {
+            2
+        } else {
+            1
+        };
         first_record()
             .and_then(|r| r.params.get(1))
             .and_then(Param::as_ref)
             .map_or(1, |inner| points(parsed, inner, depth + 1, memo))
+            .saturating_mul(rows)
+    } else if entity.is("CIRCLE") || entity.is("ELLIPSE") {
+        // As a spline when swept: nine points.
+        9
     } else {
         1
     };
@@ -79,7 +104,15 @@ fn points(parsed: &Parsed, id: u64, depth: usize, memo: &mut BTreeMap<u64, usize
 pub(crate) fn check(parsed: &Parsed) -> Result<usize, ImportError> {
     let mut memo = BTreeMap::new();
     let mut total: usize = 0;
-    for item in parsed.items() {
+    // An item placed N times by assemblies is built N times.
+    let mut copies = vec![0usize; parsed.items().len()];
+    for placed in parsed.placed() {
+        if let Some(n) = copies.get_mut(placed.item) {
+            *n = n.saturating_add(1);
+        }
+    }
+    for (index, item) in parsed.items().iter().enumerate() {
+        let times = copies.get(index).copied().unwrap_or(1).max(1);
         let mut seen: BTreeSet<u64> = BTreeSet::new();
         let mut stack = vec![item.id];
         while let Some(id) = stack.pop() {
@@ -95,14 +128,17 @@ pub(crate) fn check(parsed: &Parsed) -> Result<usize, ImportError> {
                 .find_map(|k| entity.record(k));
             if let Some(face) = face {
                 if let Some(surface) = face.params.get(2).and_then(Param::as_ref) {
-                    total = total.saturating_add(points(parsed, surface, 0, &mut memo));
+                    total = total.saturating_add(
+                        points(parsed, surface, 0, &mut memo).saturating_mul(times),
+                    );
                 }
                 if let Some(bounds) = face.params.get(1) {
                     bounds.for_each_ref(&mut |r| stack.push(r));
                 }
             } else if let Some(edge) = entity.record("EDGE_CURVE") {
                 if let Some(curve) = edge.params.get(3).and_then(Param::as_ref) {
-                    total = total.saturating_add(points(parsed, curve, 0, &mut memo));
+                    total = total
+                        .saturating_add(points(parsed, curve, 0, &mut memo).saturating_mul(times));
                 }
             } else if entity.is("VERTEX_POINT") || entity.is("CARTESIAN_POINT") {
                 // Nothing below a vertex holds control points.

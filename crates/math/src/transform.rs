@@ -78,6 +78,23 @@ impl Transform {
         linear.about(point)
     }
 
+    /// The rigid motion that takes the world frame to `frame`: local
+    /// coordinates `(a, b, c)` of the frame to the point
+    /// `origin + a x + b y + c z`. Its inverse takes points into the
+    /// frame's coordinates, so `from_frame(f).inverse().then(&from_frame(g))`
+    /// carries `f` onto `g`.
+    pub fn from_frame(frame: &Frame) -> Transform {
+        let (x, y, z) = (frame.x(), frame.y(), frame.z());
+        Transform {
+            rows: [
+                Vec3::new(x.x, y.x, z.x),
+                Vec3::new(x.y, y.y, z.y),
+                Vec3::new(x.z, y.z, z.z),
+            ],
+            translation: frame.origin(),
+        }
+    }
+
     /// Rotation by `angle` radians about the line through `point` along
     /// `axis`, counter-clockwise seen from the axis tip. `None` for a zero
     /// axis or anything not finite.
@@ -208,6 +225,26 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         a.distance(b) < 1e-13
+    }
+
+    #[test]
+    fn a_frame_as_a_transform_carries_one_frame_onto_another() {
+        let f = Frame::new(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        let g = Frame::new(Vec3::new(-5.0, 0.5, 9.0), Vec3::Y, Vec3::Z).unwrap();
+        let t = Transform::from_frame(&f);
+        assert!(close(
+            t.point(Vec3::new(1.0, 2.0, 3.0)),
+            f.point(1.0, 2.0, 3.0)
+        ));
+        assert!(t.is_isometry(1e-12) && (t.determinant() - 1.0).abs() < 1e-12);
+        let carry = t.inverse().unwrap().then(&Transform::from_frame(&g));
+        let p = f.point(0.7, -1.1, 2.5);
+        assert!(close(carry.point(p), g.point(0.7, -1.1, 2.5)));
     }
 
     #[test]

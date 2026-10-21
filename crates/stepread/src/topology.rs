@@ -12,7 +12,7 @@
 //! start vertex, used the other way round by every loop. An oriented face
 //! or shell with `.F.` turns its faces over (the normal and every loop).
 
-use crate::geometry::Reader;
+use crate::geometry::{Read, Reader, extruded};
 use crate::{ImportError, Imported, Item, ItemKind, Options, Report, boolean, err, keywords};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
@@ -41,7 +41,7 @@ struct Builder<'a, 'r> {
     /// Curves and surfaces read, by instance id: read once however many
     /// edges and faces use them (`crate::budget` bounds the copies).
     curves: BTreeMap<u64, Curve3>,
-    surfaces: BTreeMap<u64, (Surface, bool)>,
+    surfaces: BTreeMap<u64, Read>,
     face_ids: Vec<u64>,
     edge_ids: Vec<u64>,
     vertex_ids: Vec<u64>,
@@ -316,7 +316,7 @@ impl Builder<'_, '_> {
         let bounds = record.params.get(1).and_then(Param::as_list).unwrap_or(&[]);
         let surface_id = self.reference(id, record.params.get(2), "face_geometry")?;
         let same_sense = self.flag(id, record.params.get(3), "same_sense")?;
-        let (surface, opposite) = match self.surfaces.get(&surface_id) {
+        let read = match self.surfaces.get(&surface_id) {
             Some(read) => read.clone(),
             None => {
                 let read = self.reader.surface(surface_id)?;
@@ -334,6 +334,14 @@ impl Builder<'_, '_> {
                 loops.push(self.body.add_loop(coedges));
             }
         }
+        let (surface, opposite) = match read {
+            Read::Done(surface, opposite) => (surface, opposite),
+            Read::Extrusion {
+                id: swept,
+                curve,
+                along,
+            } => (self.extrusion_over(swept, &curve, along, &loops)?, false),
+        };
         // A face without an edge loop is its whole surface: only a surface
         // that closes all around is one (a sphere, a torus, a spline
         // surface closed both ways).
@@ -355,6 +363,58 @@ impl Builder<'_, '_> {
         self.faces.insert(id, face);
         self.face_ids.push(id);
         Ok(face)
+    }
+
+    /// The B-spline surface of an extrusion over as much of its direction
+    /// as the face's edges reach: `v` of a point `X = C(u) + v V` lies
+    /// between `(X·V − max P·V) / |V|²` and `(X·V − min P·V) / |V|²` over
+    /// the control points `P` of the curve (their hull holds the curve),
+    /// taken over points along every edge and widened by a quarter and
+    /// one unit of `V` each way (past its ends the surface goes on as the
+    /// straight lines it is, so the width only keeps projections inside).
+    fn extrusion_over(
+        &self,
+        swept: u64,
+        curve: &craft3d_geom::NurbsCurve,
+        along: Vec3,
+        loops: &[LoopId],
+    ) -> Result<Surface, ImportError> {
+        let length = along.length_squared();
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in curve.control_points() {
+            let x = p.dot(along);
+            (low, high) = (low.min(x), high.max(x));
+        }
+        let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
+        for l in loops {
+            let Some(l) = self.body.loop_(*l) else {
+                continue;
+            };
+            for c in &l.coedges {
+                let Some(edge) = self.body.edge(c.edge) else {
+                    continue;
+                };
+                let (t0, t1) = edge.range;
+                for k in 0..=32 {
+                    let x = edge
+                        .curve
+                        .eval(t0 + (t1 - t0) * f64::from(k) / 32.0)
+                        .dot(along);
+                    v0 = v0.min((x - high) / length);
+                    v1 = v1.max((x - low) / length);
+                }
+            }
+        }
+        if !(v0.is_finite() && v1.is_finite() && v1 >= v0 && length > 0.0) {
+            return self.bad(
+                swept,
+                "an extrusion without bounding edges, or edges that are not finite",
+            );
+        }
+        let margin = 0.25 * (v1 - v0) + 1.0;
+        extruded(curve, along, (v0 - margin, v1 + margin))
+            .map(Surface::Nurbs)
+            .map_err(|e| ImportError(format!("{}: {e}", self.describe(swept))))
     }
 
     /// A shell's faces; `turned` when the shell is used turned over.
@@ -842,6 +902,8 @@ pub(crate) fn build(
     Ok(Imported {
         body,
         name,
+        path: String::new(),
+        color: None,
         report: report.clone(),
         face_ids,
         edge_ids,
