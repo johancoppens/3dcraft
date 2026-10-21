@@ -142,7 +142,7 @@ printf '%s\n' \
 | Method | Params |
 |---|---|
 | `ui.inspect` | Full UI state: camera, display mode, panels, selection, window size, renderer (`gpu`/`cpu`) and timings. Today `ui.get`: `renderer {backend, adapter, fallback, direct, msaa}` is the viewport's renderer, `render.renderer` the one that made the image on screen, `render.msaa` its samples per pixel; `state.quality {chordal, maxTriangles}` is the display quality, `scene.tolerance` the chordal tolerance the scene was meshed with and `scene.coarsened` whether that is coarser than the quality asked for |
-| `ui.set` | `{view?, camera?, displayMode?, panels?, selection?, theme?, quality?}`: change UI state; an unknown field is an error, checked before anything changes. Today also `quality {chordal, maxTriangles}` (above) |
+| `ui.set` | `{view?, camera?, displayMode?, panels?, selection?, quality?}`: change UI state; an unknown field is an error, checked before anything changes. Today also `quality {chordal, maxTriangles}` (above) |
 | `ui.screenshot` | `{path?, width?, height?, scale?}`: PNG of the viewport (CPU oracle); `{window: true, path?}`: PNG of the whole window as drawn, panels and controls included |
 | `ui.notice` | `{text}`: show a one-line caption in the status bar (for narrated demos) |
 | `ui.focus` | raise the window |

@@ -4,6 +4,13 @@
 //!
 //! Colours are plain sRGB bytes, so the offscreen picture (`ui.screenshot`,
 //! drawn without egui) uses the very same values as the window.
+//!
+//! One theme, *Mission* (2026-10-21, the developer's choice): light. Soft-
+//! white panels, black chrome at the top and the bottom (menu, tabs,
+//! status bar), black plates and cube over a light warm-grey viewport, gold
+//! for what is on (black ink on gold), copper for the selection. Whether
+//! egui's own widgets get its light or its dark visuals follows from the
+//! fills ([`is_light`]), never from a flag.
 
 /// An opaque sRGB colour.
 pub type Rgb = [u8; 3];
@@ -43,9 +50,21 @@ pub struct Tokens {
     pub datum_point_radius: f32,
     /// Opacity of sketch lines and points behind a body, 0 to 255.
     pub hidden_opacity: u8,
+    /// The panels (the feature tree, a dialog) and their text.
     pub panel_fill: Rgb,
     pub text: Rgb,
     pub text_dim: Rgb,
+    /// The chrome: the menu bar at the top and the status bar at the
+    /// bottom, and the text on them (the row of tabs is `tab_fill`, with
+    /// `chrome_text` on the active tab and `chrome_text_dim` on the
+    /// others). The last command is named in the status bar in
+    /// `chrome_ok` or `chrome_failed`, which read on `status_fill`.
+    pub menu_fill: Rgb,
+    pub status_fill: Rgb,
+    pub chrome_text: Rgb,
+    pub chrome_text_dim: Rgb,
+    pub chrome_ok: Rgb,
+    pub chrome_failed: Rgb,
     /// Feature states in the tree.
     pub ok: Rgb,
     pub failed: Rgb,
@@ -89,27 +108,28 @@ pub struct Tokens {
     pub view_cube_gap: f32,
     pub view_cube_face_rounding: f32,
     /// A patch of the view cube that faces the viewer less than this (0
-    /// edge-on, 1 straight on) is not drawn: no slivers on the silhouette.
+    /// edge-on, 1 straight on) is not drawn: no sub-pixel slivers on the
+    /// silhouette. From there it fades in, fully opaque from
+    /// `view_cube_fade_full` on, so a face turning away dims gradually.
     pub view_cube_fade: f32,
-    /// The glass of the view cube: the colour of its faces and of its
-    /// capsules and circles, drawn over the picture without outlines.
+    pub view_cube_fade_full: f32,
+    /// The glass of the view cube: the tint of all its patches, faces,
+    /// capsules and circles alike, drawn over the picture without
+    /// outlines; its opacity is how a patch is turned from the light.
     pub view_cube_glass: Rgb,
-    pub view_cube_glass_dim: Rgb,
-    /// The dark base under every patch (`panel_fill` at this opacity), so
-    /// the glass and its names read over a light model too; on the dark
-    /// background it is hardly seen.
+    /// The base under every patch (`view_cube_base` at this opacity), so
+    /// the glass and its names read over any model and any background.
+    /// The cube is light: a near-white base, the glass a dark tint that
+    /// shades the faces turned from the light, dark names.
+    pub view_cube_base: Rgb,
     pub view_cube_base_opacity: u8,
     /// The opacity of a face (0 to 255) turned away from the light and
     /// of one facing it; the light comes from `view_cube_light`, a
     /// direction in the world (the top is lit most).
     pub view_cube_face_opacity: [u8; 2],
     pub view_cube_light: [f32; 3],
-    /// The opacity of a capsule and of a corner's circle seen straight on;
-    /// less as they turn away.
-    pub view_cube_edge_opacity: u8,
-    pub view_cube_corner_opacity: u8,
     /// The patch under the pointer: its fill, the fill's opacity, and its
-    /// thin bright outline with the outline's width in points.
+    /// outline with the outline's width in points (none at 0).
     pub view_cube_hover: Rgb,
     pub view_cube_hover_opacity: u8,
     pub view_cube_hover_outline: Rgb,
@@ -132,11 +152,15 @@ pub struct Tokens {
     pub view_cube_shadow: Rgb,
     pub view_cube_shadow_opacity: u8,
     pub view_cube_shadow_size: [f32; 3],
-    /// The glass plates behind the controls over the viewport: a dark base
-    /// (`panel_fill` at `plate_opacity`, so the controls read over a light
-    /// model too), the glass tint over it (`glass` at
-    /// `plate_glass_opacity`) and a faint rim; their corner radius is
-    /// `nav_radius`.
+    /// The glass plates behind the controls over the viewport: a base
+    /// (`plate_fill` at `plate_opacity`, so the controls read over any
+    /// model), the glass tint over it (`glass` at `plate_glass_opacity`)
+    /// and a faint rim; their corner radius is `nav_radius`. Text and
+    /// icons on a plate are `plate_text`, `plate_text_dim` for what is
+    /// off.
+    pub plate_fill: Rgb,
+    pub plate_text: Rgb,
+    pub plate_text_dim: Rgb,
     pub plate_opacity: u8,
     pub plate_glass_opacity: u8,
     pub plate_rim: Rgb,
@@ -251,38 +275,48 @@ pub struct Tokens {
 
 impl Default for Tokens {
     fn default() -> Self {
-        Self::dark()
+        Self::mission()
     }
 }
 
 impl Tokens {
-    /// The one theme of phase 1.
-    pub fn dark() -> Self {
+    /// The theme, Mission: soft-white panels like a rover's thermal
+    /// blankets, black chrome at the top and the bottom and black plates
+    /// over the viewport, gold for what is on (black ink on gold), copper
+    /// for the selection, a light warm-grey viewport.
+    pub fn mission() -> Self {
         Self {
-            viewport_background: [30, 33, 40],
-            body: [198, 204, 214],
-            face_highlight: [64, 196, 212],
+            viewport_background: [235, 233, 229],
+            body: [221, 217, 210],
+            face_highlight: [217, 134, 44],
             section_cap: craft3d_engine::SECTION_CAP_COLOR,
-            sketch: [255, 196, 64],
-            sketch_construction: [110, 170, 235],
-            sketch_selected: [255, 120, 80],
-            axes: [[226, 82, 82], [96, 190, 96], [86, 136, 240]],
-            edge: [22, 24, 30],
-            datum: [190, 140, 255],
+            sketch: [183, 112, 12],
+            sketch_construction: [63, 120, 181],
+            sketch_selected: [184, 50, 31],
+            axes: [[210, 63, 54], [58, 154, 77], [52, 103, 209]],
+            // A dark warm grey, not black: the shading carries the form.
+            edge: [88, 84, 78],
+            datum: [126, 87, 194],
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
             hidden_opacity: 70,
-            panel_fill: [38, 41, 49],
-            text: [222, 226, 232],
-            text_dim: [140, 147, 160],
-            ok: [104, 190, 120],
-            failed: [236, 96, 88],
-            inactive: [120, 126, 138],
-            attention: [240, 180, 80],
-            selection_fill: [58, 72, 104],
-            notice_fill: [16, 18, 22],
-            notice_text: [245, 246, 248],
+            panel_fill: [247, 246, 243],
+            text: [27, 26, 25],
+            text_dim: [104, 100, 94],
+            menu_fill: [21, 20, 19],
+            status_fill: [21, 20, 19],
+            chrome_text: [237, 234, 228],
+            chrome_text_dim: [158, 153, 143],
+            chrome_ok: [224, 169, 62],
+            chrome_failed: [240, 103, 90],
+            ok: [42, 125, 68],
+            failed: [195, 54, 43],
+            inactive: [157, 152, 144],
+            attention: [168, 106, 18],
+            selection_fill: [241, 227, 211],
+            notice_fill: [18, 18, 18],
+            notice_text: [247, 242, 230],
             notice_opacity: 215,
             radius: 4,
             notice_radius: 6,
@@ -297,42 +331,50 @@ impl Tokens {
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,
-            view_cube_fade: 0.25,
-            view_cube_glass: [170, 190, 230],
-            view_cube_glass_dim: [150, 168, 205],
-            view_cube_base_opacity: 150,
-            view_cube_face_opacity: [59, 74],
+            view_cube_fade: 0.03,
+            view_cube_fade_full: 0.2,
+            // A light cube without lines, shaded only by the light from
+            // above: off-white, the top lightest, what is turned from the
+            // light a little darker, capsules and corners by the same
+            // rule; dark names, a gold patch under the pointer.
+            view_cube_glass: [58, 56, 53],
+            view_cube_base: [252, 251, 249],
+            view_cube_base_opacity: 240,
+            view_cube_face_opacity: [72, 0],
             view_cube_light: [0.3, -0.5, 0.8],
-            view_cube_edge_opacity: 26,
-            view_cube_corner_opacity: 30,
-            view_cube_hover: [92, 140, 230],
-            view_cube_hover_opacity: 170,
-            view_cube_hover_outline: [170, 200, 255],
-            view_cube_hover_width: 1.2,
-            view_cube_label: [225, 233, 250],
+            view_cube_hover: [217, 164, 65],
+            view_cube_hover_opacity: 230,
+            view_cube_hover_outline: [168, 106, 18],
+            view_cube_hover_width: 0.0,
+            view_cube_label: [27, 26, 25],
             view_cube_label_size: 0.46,
             view_cube_label_width: 0.76,
             view_cube_label_hide: 0.18,
             view_cube_label_min: 7.0,
             view_cube_shadow: [0, 0, 0],
-            view_cube_shadow_opacity: 60,
+            view_cube_shadow_opacity: 80,
             view_cube_shadow_size: [0.93, 0.72, 0.09],
-            plate_opacity: 200,
+            plate_fill: [22, 21, 20],
+            plate_text: [245, 242, 236],
+            plate_text_dim: [168, 163, 155],
+            // Black plates and cube over a light viewport: nearly opaque,
+            // so light text on them keeps its contrast.
+            plate_opacity: 240,
             plate_glass_opacity: 22,
-            plate_rim: [185, 205, 245],
+            plate_rim: [255, 255, 255],
             plate_rim_opacity: 30,
             divider_opacity: 45,
             divider_width: 1.0,
             divider_inset: 0.2,
-            glass: [170, 190, 230],
-            accent: [92, 140, 230],
+            glass: [43, 42, 40],
+            accent: [224, 169, 62],
             control_opacity: 32,
             control_font: 13.0,
             disabled_opacity: 0.35,
-            knob: [245, 248, 255],
+            knob: [20, 18, 16],
             field_width: 160.0,
             field_radius: 6,
-            field_typing: [20, 22, 28],
+            field_typing: [0, 0, 0],
             field_inset: 10.0,
             field_arrow_inset: 22.0,
             field_arrow_edge: 9.0,
@@ -342,14 +384,14 @@ impl Tokens {
             field_bar_radius: 1,
             slider_width: 90.0,
             inset: 10.0,
-            work_accent: [64, 196, 212],
-            work_track: [58, 62, 72],
+            work_accent: [201, 138, 30],
+            work_track: [220, 215, 207],
             work_spinner_width: 2.5,
             work_bar: 4.0,
-            tab_fill: [44, 47, 56],
-            tab_active_fill: [30, 33, 40],
-            tab_hover_fill: [52, 56, 66],
-            tab_accent: [64, 196, 212],
+            tab_fill: [30, 29, 28],
+            tab_active_fill: [44, 43, 41],
+            tab_hover_fill: [38, 37, 36],
+            tab_accent: [224, 169, 62],
             tab_height: 26.0,
             tab_max_width: 200.0,
             tab_min_width: 72.0,
@@ -372,7 +414,8 @@ impl Tokens {
             nav_icon_width: 1.5,
             nav_inset: 9.0,
             nav_icon_gap: 6.0,
-            nav_on_opacity: 96,
+            // What is on is solid gold with black ink on it.
+            nav_on_opacity: 255,
             status_gap: 13.0,
             status_least: 48.0,
             problem_font: 13.0,
@@ -380,27 +423,223 @@ impl Tokens {
     }
 
     /// Makes egui's own widgets (panels, labels, buttons) use the tokens.
+    /// egui's own widgets (panels, labels, buttons, menus) in the tokens: on
+    /// egui's light visuals when the panels are light, on its dark ones
+    /// when they are dark.
     pub fn apply(&self, ctx: &egui::Context) {
-        let tokens = *self;
-        ctx.set_theme(egui::Theme::Dark);
-        ctx.all_styles_mut(move |style| {
-            let visuals = &mut style.visuals;
-            visuals.dark_mode = true;
-            visuals.panel_fill = color(tokens.panel_fill);
-            visuals.window_fill = color(tokens.panel_fill);
-            visuals.override_text_color = Some(color(tokens.text));
-            visuals.selection.bg_fill = color(tokens.selection_fill);
-            let radius = egui::CornerRadius::same(tokens.radius);
-            for widget in [
-                &mut visuals.widgets.noninteractive,
-                &mut visuals.widgets.inactive,
-                &mut visuals.widgets.hovered,
-                &mut visuals.widgets.active,
-                &mut visuals.widgets.open,
-            ] {
-                widget.corner_radius = radius;
-            }
+        let visuals = self.panel_visuals();
+        ctx.set_theme(if visuals.dark_mode {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
         });
+        ctx.all_styles_mut(move |style| style.visuals = visuals.clone());
+    }
+
+    /// The visuals of the panels: egui's light or dark ones, whichever the
+    /// panel's fill is, in the tokens' colours.
+    pub fn panel_visuals(&self) -> egui::Visuals {
+        let mut visuals = if is_light(self.panel_fill) {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = color(self.panel_fill);
+        visuals.window_fill = color(self.panel_fill);
+        visuals.override_text_color = Some(color(self.text));
+        visuals.selection.bg_fill = color(self.selection_fill);
+        self.round(&mut visuals);
+        visuals
+    }
+
+    /// The visuals of the chrome (the menu bar): egui's light or dark ones,
+    /// whichever `menu_fill` is, with `chrome_text` on it, so a dark menu
+    /// bar over light panels has light text and a hover that reads.
+    pub fn chrome_visuals(&self) -> egui::Visuals {
+        let mut visuals = if is_light(self.menu_fill) {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = color(self.menu_fill);
+        visuals.window_fill = color(self.menu_fill);
+        visuals.override_text_color = Some(color(self.chrome_text));
+        for (widget, fill) in [
+            (&mut visuals.widgets.hovered, self.tab_hover_fill),
+            (&mut visuals.widgets.active, self.tab_active_fill),
+            (&mut visuals.widgets.open, self.tab_active_fill),
+        ] {
+            widget.weak_bg_fill = color(fill);
+            widget.bg_fill = color(fill);
+            widget.bg_stroke = egui::Stroke::NONE;
+        }
+        self.round(&mut visuals);
+        visuals
+    }
+
+    fn round(&self, visuals: &mut egui::Visuals) {
+        let radius = egui::CornerRadius::same(self.radius);
+        for widget in [
+            &mut visuals.widgets.noninteractive,
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            widget.corner_radius = radius;
+        }
+    }
+}
+
+/// The relative luminance of an sRGB colour (WCAG 2), 0 for black to 1 for
+/// white.
+pub fn luminance(rgb: Rgb) -> f64 {
+    let channel = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let [r, g, b] = rgb;
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// The WCAG 2 contrast ratio of two colours, 1 to 21: text needs 4.5,
+/// large text and the parts of a control 3.
+pub fn contrast(a: Rgb, b: Rgb) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// True for a colour that dark text reads on better than light text.
+pub fn is_light(rgb: Rgb) -> bool {
+    contrast(rgb, [0, 0, 0]) > contrast(rgb, [255, 255, 255])
+}
+
+/// `top` at `alpha` (0 to 255) over `under`, as the painter blends it.
+pub fn blend(top: Rgb, alpha: u8, under: Rgb) -> Rgb {
+    let a = f64::from(alpha) / 255.0;
+    let mut out = [0; 3];
+    for ((o, t), u) in out.iter_mut().zip(top).zip(under) {
+        *o = (f64::from(t) * a + f64::from(u) * (1.0 - a))
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+impl Tokens {
+    /// What a plate looks like over the viewport's background: its base and
+    /// its glass tint.
+    pub fn plate_over_background(&self) -> Rgb {
+        let base = blend(
+            self.plate_fill,
+            self.plate_opacity,
+            self.viewport_background,
+        );
+        blend(self.glass, self.plate_glass_opacity, base)
+    }
+
+    /// Every pair of text and the fill it is drawn on, by name: each must
+    /// keep a contrast of 4.5:1 (WCAG AA for text).
+    pub fn text_pairs(&self) -> Vec<(&'static str, Rgb, Rgb)> {
+        let plate = self.plate_over_background();
+        vec![
+            ("text on panel_fill", self.text, self.panel_fill),
+            ("text_dim on panel_fill", self.text_dim, self.panel_fill),
+            ("text on selection_fill", self.text, self.selection_fill),
+            ("ok on panel_fill", self.ok, self.panel_fill),
+            ("failed on panel_fill", self.failed, self.panel_fill),
+            ("chrome_text on menu_fill", self.chrome_text, self.menu_fill),
+            (
+                "chrome_text_dim on menu_fill",
+                self.chrome_text_dim,
+                self.menu_fill,
+            ),
+            (
+                "chrome_text on status_fill",
+                self.chrome_text,
+                self.status_fill,
+            ),
+            (
+                "chrome_text_dim on status_fill",
+                self.chrome_text_dim,
+                self.status_fill,
+            ),
+            ("chrome_ok on status_fill", self.chrome_ok, self.status_fill),
+            (
+                "chrome_failed on status_fill",
+                self.chrome_failed,
+                self.status_fill,
+            ),
+            (
+                "chrome_text on tab_active_fill",
+                self.chrome_text,
+                self.tab_active_fill,
+            ),
+            (
+                "chrome_text_dim on tab_fill",
+                self.chrome_text_dim,
+                self.tab_fill,
+            ),
+            (
+                "chrome_text_dim on tab_hover_fill",
+                self.chrome_text_dim,
+                self.tab_hover_fill,
+            ),
+            ("plate_text on a plate", self.plate_text, plate),
+            ("plate_text_dim on a plate", self.plate_text_dim, plate),
+            (
+                "plate_text on field_typing",
+                self.plate_text,
+                self.field_typing,
+            ),
+            ("knob on accent", self.knob, self.accent),
+            (
+                "knob on a toggle that is on",
+                self.knob,
+                blend(self.accent, self.nav_on_opacity, plate),
+            ),
+            (
+                "notice_text on notice_fill",
+                self.notice_text,
+                self.notice_fill,
+            ),
+            (
+                "chrome_failed on notice_fill",
+                self.chrome_failed,
+                self.notice_fill,
+            ),
+            (
+                "view_cube_label on the cube's darkest face",
+                self.view_cube_label,
+                blend(
+                    self.view_cube_glass,
+                    self.view_cube_face_opacity[0].max(self.view_cube_face_opacity[1]),
+                    blend(
+                        self.view_cube_base,
+                        self.view_cube_base_opacity,
+                        self.viewport_background,
+                    ),
+                ),
+            ),
+            (
+                "view_cube_label on the patch under the pointer",
+                self.view_cube_label,
+                blend(
+                    self.view_cube_hover,
+                    self.view_cube_hover_opacity,
+                    self.viewport_background,
+                ),
+            ),
+            (
+                "text_dim on viewport_background",
+                self.text_dim,
+                self.viewport_background,
+            ),
+        ]
     }
 }
 
@@ -414,4 +653,47 @@ pub fn color(rgb: Rgb) -> egui::Color32 {
 pub fn color_alpha(rgb: Rgb, alpha: u8) -> egui::Color32 {
     let [r, g, b] = rgb;
     egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_contrast_ratio_is_the_wcag_one() {
+        assert!((contrast([0, 0, 0], [255, 255, 255]) - 21.0).abs() < 1e-9);
+        assert!((contrast([7, 7, 7], [7, 7, 7]) - 1.0).abs() < 1e-9);
+        // The figures of tokens.md for Mission (the design's own check).
+        let m = Tokens::mission();
+        assert!((contrast(m.text, m.panel_fill) - 16.08).abs() < 0.01);
+        assert!((contrast(m.knob, m.accent) - 8.82).abs() < 0.01);
+        assert!(is_light(m.panel_fill) && !is_light(m.menu_fill));
+        assert!(is_light([255, 255, 255]) && !is_light([0, 0, 0]));
+    }
+
+    #[test]
+    fn every_text_keeps_a_contrast_of_four_and_a_half() {
+        let tokens = Tokens::default();
+        let mut low = Vec::new();
+        for (what, ink, fill) in tokens.text_pairs() {
+            let ratio = contrast(ink, fill);
+            println!("{what}: {ratio:.2}");
+            if ratio < 4.5 {
+                low.push(format!("{what} {ratio:.2}"));
+            }
+        }
+        assert!(low.is_empty(), "{low:?}");
+    }
+
+    #[test]
+    fn light_panels_get_light_visuals_and_the_black_chrome_dark_ones() {
+        let tokens = Tokens::default();
+        let panels = tokens.panel_visuals();
+        assert!(!panels.dark_mode);
+        assert_eq!(panels.override_text_color, Some(color(tokens.text)));
+        let chrome = tokens.chrome_visuals();
+        assert!(chrome.dark_mode);
+        assert_eq!(chrome.override_text_color, Some(color(tokens.chrome_text)));
+        assert_eq!(chrome.panel_fill, color(tokens.menu_fill));
+    }
 }

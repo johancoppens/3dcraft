@@ -133,37 +133,24 @@ fn thickness(points: &[egui::Pos2]) -> f32 {
     if t.is_finite() { t } else { 0.0 }
 }
 
-/// How a patch of the view cube is filled at rest: glass, a face lit by
-/// how it is turned to the theme's light, a capsule or a circle quieter
-/// and fainter as it turns away.
+/// How a patch of the view cube is filled at rest: the glass over its
+/// base, by one rule for faces, capsules and circles alike: how the patch
+/// is turned to the theme's light (`view_cube_light`), so the cube is
+/// shaded only by the light and no patch stands out by a colour of its
+/// own.
 pub fn cube_fill(tokens: &Tokens, facet: &view_cube::Facet) -> egui::Color32 {
-    match facet.kind() {
-        view_cube::FacetKind::Face => {
-            let [x, y, z] = tokens.view_cube_light.map(f64::from);
-            let length = (x * x + y * y + z * z).sqrt();
-            let n = facet.normal();
-            let lit = if length > 0.0 && length.is_finite() {
-                ((n[0] * x + n[1] * y + n[2] * z) / length).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let [lo, hi] = tokens.view_cube_face_opacity.map(f64::from);
-            // Between two opacities.
-            let alpha = (lo + (hi - lo) * lit).round().clamp(0.0, 255.0) as u8;
-            color_alpha(tokens.view_cube_glass, alpha)
-        }
-        kind => {
-            let full = if kind == view_cube::FacetKind::Edge {
-                tokens.view_cube_edge_opacity
-            } else {
-                tokens.view_cube_corner_opacity
-            };
-            let t = (facet.toward * 1.6).clamp(0.0, 1.0);
-            // A fraction of an opacity.
-            let alpha = (f64::from(full) * t).round().clamp(0.0, 255.0) as u8;
-            color_alpha(tokens.view_cube_glass_dim, alpha)
-        }
-    }
+    let [x, y, z] = tokens.view_cube_light.map(f64::from);
+    let length = (x * x + y * y + z * z).sqrt();
+    let n = facet.normal();
+    let lit = if length > 0.0 && length.is_finite() {
+        ((n[0] * x + n[1] * y + n[2] * z) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let [lo, hi] = tokens.view_cube_face_opacity.map(f64::from);
+    // Between two opacities.
+    let alpha = (lo + (hi - lo) * lit).round().clamp(0.0, 255.0) as u8;
+    color_alpha(tokens.view_cube_glass, alpha)
 }
 
 /// The name of a face of the view cube as a mesh lying in the face's
@@ -305,14 +292,14 @@ fn cube_shadow(tokens: &Tokens, center: egui::Pos2, arm: f32) -> egui::Mesh {
     mesh
 }
 
-/// A glass plate behind controls: a dark base so the controls read over a
-/// light model too, the glass tint over it and a faint rim.
+/// A glass plate behind controls: a `plate_fill` base so the controls read
+/// over any model, the glass tint over it and a faint rim.
 pub(super) fn plate(painter: &egui::Painter, rect: Rect, tokens: &Tokens) {
     let radius = egui::CornerRadius::same(tokens.nav_radius);
     painter.rect_filled(
         rect,
         radius,
-        color_alpha(tokens.panel_fill, tokens.plate_opacity),
+        color_alpha(tokens.plate_fill, tokens.plate_opacity),
     );
     painter.rect_filled(
         rect,
@@ -632,24 +619,32 @@ impl Shell {
         let patches = cube_patches(&self.state.camera, &style, center, arm);
         for (facet, points) in &patches {
             let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
+            // A patch turning edge-on fades out gradually.
+            let fade = view_cube::patch_opacity(
+                facet.toward,
+                f64::from(tokens.view_cube_fade),
+                f64::from(tokens.view_cube_fade_full),
+            ) as f32;
             painter.add(egui::Shape::convex_polygon(
                 points.clone(),
-                color_alpha(tokens.panel_fill, tokens.view_cube_base_opacity),
+                color_alpha(tokens.view_cube_base, tokens.view_cube_base_opacity)
+                    .gamma_multiply(fade),
                 egui::Stroke::NONE,
             ));
             let shape = if over {
                 egui::Shape::convex_polygon(
                     points.clone(),
-                    color_alpha(tokens.view_cube_hover, tokens.view_cube_hover_opacity),
+                    color_alpha(tokens.view_cube_hover, tokens.view_cube_hover_opacity)
+                        .gamma_multiply(fade),
                     egui::Stroke::new(
                         tokens.view_cube_hover_width,
-                        color(tokens.view_cube_hover_outline),
+                        color(tokens.view_cube_hover_outline).gamma_multiply(fade),
                     ),
                 )
             } else {
                 egui::Shape::convex_polygon(
                     points.clone(),
-                    cube_fill(&tokens, facet),
+                    cube_fill(&tokens, facet).gamma_multiply(fade),
                     egui::Stroke::NONE,
                 )
             };
@@ -757,7 +752,7 @@ mod tests {
     fn no_patch_of_the_cube_is_painted_outside_its_silhouette() {
         use crate::state::{CameraState, ProjectionKind};
         use egui::epaint::{Mesh, Shape, Stroke, TessellationOptions, Tessellator};
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let style = view_cube::style(&tokens);
         let (center, arm) = (pos2(500.0, 400.0), 62.0_f32);
         let mut worst = f32::MIN;
@@ -825,7 +820,7 @@ mod tests {
     #[test]
     fn the_names_lie_on_their_faces() {
         use crate::state::CameraState;
-        let tokens = Tokens::dark();
+        let tokens = Tokens::default();
         let style = view_cube::style(&tokens);
         let (center, arm) = (pos2(300.0, 200.0), 62.0_f32);
         let mut drawn = 0;

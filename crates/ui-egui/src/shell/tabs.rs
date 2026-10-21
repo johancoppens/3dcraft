@@ -398,9 +398,9 @@ impl Shell {
                         }
                         let room = (close_rect.left() - 4.0 - left).max(0.0);
                         let text = if tab.active {
-                            tokens.text
+                            tokens.chrome_text
                         } else {
-                            tokens.text_dim
+                            tokens.chrome_text_dim
                         };
                         let mut job = egui::text::LayoutJob::simple_singleline(
                             tab.name.clone(),
@@ -421,13 +421,13 @@ impl Shell {
                             painter.rect_filled(
                                 close_rect,
                                 egui::CornerRadius::same(tokens.radius),
-                                color_alpha(tokens.text_dim, 60),
+                                color_alpha(tokens.chrome_text_dim, 60),
                             );
                         }
                         let tint = if closer.hovered() || response.hovered() || tab.active {
-                            tokens.text
+                            tokens.chrome_text
                         } else {
-                            tokens.text_dim
+                            tokens.chrome_text_dim
                         };
                         painter.text(
                             close_rect.center(),

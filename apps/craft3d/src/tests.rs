@@ -504,18 +504,32 @@ fn ui_screenshot_over_tcp_is_a_png_of_the_requested_size_that_is_not_blank() {
     let shot = client.ok("ui.screenshot", json!({"width": 300, "height": 200}));
     let (_, _, rgb) = decode(&unbase64(shot["base64"].as_str().unwrap()));
     let background = [rgb[0], rgb[1], rgb[2]];
+    // Seen from the top the plate is one flat face of one shade: the
+    // commonest colour that is not the background. A pixel of the plate is
+    // of that shade, not an axis, not the background, and not the line
+    // along the plate's edges, which is drawn on its outline and so
+    // reaches half its width beyond it (over the light background of
+    // 2026-10-21 that half is a light grey, so the shade is what tells).
+    let mut counts = std::collections::BTreeMap::new();
+    for p in rgb.chunks(3).filter(|p| *p != background) {
+        *counts.entry([p[0], p[1], p[2]]).or_insert(0_usize) += 1;
+    }
+    let face = counts
+        .iter()
+        .max_by_key(|(_, n)| **n)
+        .map(|(p, _)| *p)
+        .unwrap();
     let body = |x: usize, y: usize| {
         let i = (y * 300 + x) * 3;
         let p = [rgb[i], rgb[i + 1], rgb[i + 2]];
-        // Shaded grey: not an axis, not the background, and not the dark
-        // line along the plate's edges, which is drawn on its outline and
-        // so reaches half its width beyond it.
-        p != background && p[0].abs_diff(p[2]) < 40 && p[0] > 80
+        p.iter().zip(face).all(|(a, b)| a.abs_diff(b) <= 8)
     };
     let columns = (0..300).filter(|&x| (0..200).any(|y| body(x, y))).count();
     let rows = (0..200).filter(|&y| (0..300).any(|x| body(x, y))).count();
-    assert!((columns as f64 - 285.7).abs() <= 2.0, "{columns} columns");
-    assert!((rows as f64 - 190.5).abs() <= 2.0, "{rows} rows");
+    // Less the inner half of the edge line on either side, which is not
+    // the face's shade: half of `edge_width` (one point) each side.
+    assert!((columns as f64 - 284.7).abs() <= 2.0, "{columns} columns");
+    assert!((rows as f64 - 189.5).abs() <= 2.0, "{rows} rows");
     drop(client);
     rig.finish();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1392,8 +1406,10 @@ fn an_agent_points_at_a_face_over_the_control_channel_and_over_mcp() {
         i32::from(rgb[at + 1]),
         i32::from(rgb[at + 2]),
     );
+    // The highlight's copper (Mission, 2026-10-21; it was cyan): red over
+    // green over blue, saturated, where the body is a warm grey.
     assert!(
-        g > 2 * r && b > 2 * r,
+        r > g + 30 && g > b + 30,
         "({r}, {g}, {b}) is not the highlight"
     );
     assert!(tool_json(&replies[6]).get("base64").is_none());

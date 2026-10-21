@@ -55,7 +55,7 @@ impl CubeStyle {
             chamfer,
             gap: pick(self.gap, 0.0, chamfer * 1.2, 0.0),
             face_rounding: pick(self.face_rounding, 0.0, 2.0, 0.9),
-            fade: pick(self.fade, 0.0, 0.95, 0.25),
+            fade: pick(self.fade, 0.0, 0.95, 0.03),
         }
     }
 }
@@ -522,6 +522,22 @@ pub fn inside_by(polygon: &[[f64; 2]], at: [f64; 2]) -> Option<f64> {
         .reduce(f64::min)
 }
 
+/// How opaque a patch is drawn: nothing below the cut `fade` (it is not
+/// drawn at all), rising smoothly to fully opaque at `full`, so a face
+/// that turns away dims gradually instead of vanishing at once. A `full`
+/// at or below `fade` is a hard cut.
+pub fn patch_opacity(toward: f64, fade: f64, full: f64) -> f64 {
+    if !(toward.is_finite() && fade.is_finite()) || toward < fade {
+        return 0.0;
+    }
+    if !full.is_finite() || full <= fade {
+        return 1.0;
+    }
+    let t = ((toward - fade) / (full - fade)).clamp(0.0, 1.0);
+    // Smoothstep: no kink where it starts or ends.
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// How opaque a face's name is: nothing on a face seen more nearly
 /// edge-on than `hide`, fully a little above it.
 pub fn label_opacity(toward: f64, hide: f64) -> f64 {
@@ -716,7 +732,10 @@ mod tests {
                         .chain(&facet.patch)
                         .all(|p| p[0].hypot(p[1]) <= 1.0 + 1e-9)
                 );
-                assert!(facet.toward >= 0.25 && facet.toward <= 1.0 + 1e-12);
+                assert!(
+                    facet.toward >= f64::from(Tokens::default().view_cube_fade)
+                        && facet.toward <= 1.0 + 1e-12
+                );
                 assert_eq!(facet.label_frame.is_some(), facet.kind() == FacetKind::Face);
             }
         }
@@ -734,7 +753,7 @@ mod tests {
     /// the front, without perspective, the numbers are in the picture.
     #[test]
     fn faces_capsules_and_circles_with_one_gap_between_them() {
-        let style = style(&Tokens::dark());
+        let style = style(&Tokens::default());
         let (c, g) = (style.chamfer, style.gap);
         let front = looking("front");
         let seen = facets_styled(&front, &style);
@@ -821,7 +840,7 @@ mod tests {
     /// standard views and in between.
     #[test]
     fn every_face_capsule_and_circle_is_hit_and_the_gaps_are_not_dead() {
-        let style = style(&Tokens::dark());
+        let style = style(&Tokens::default());
         let mut kinds = [0; 3];
         let mut views: Vec<CameraState> = crate::state::VIEWS
             .iter()
@@ -910,7 +929,7 @@ mod tests {
     /// left out.
     #[test]
     fn names_lie_in_their_face_and_are_hidden_edge_on() {
-        let hide = f64::from(Tokens::dark().view_cube_label_hide);
+        let hide = f64::from(Tokens::default().view_cube_label_hide);
         let front = looking("front");
         let face = facets(&front)
             .into_iter()
@@ -946,7 +965,7 @@ mod tests {
         // Turned until the front is nearly edge-on: no name on it.
         for yaw in [-90.0 + 80.0, -90.0 + 84.0, -90.0 + 88.0] {
             let grazing = CameraState { yaw, ..front };
-            let toward = seen(&grazing, &style(&Tokens::dark()))
+            let toward = seen(&grazing, &style(&Tokens::default()))
                 .into_iter()
                 .find(|f| f.side == [0, -1, 0])
                 .map_or(0.0, |f| f.toward);
@@ -961,6 +980,58 @@ mod tests {
     /// from the top X right and Y up, from the right Y right, and from
     /// the iso corner all three show, X to the lower right, Y to the
     /// upper right... as the named views have them.
+    /// A face turning away dims gradually and is still there a little
+    /// tilt off a standard view (the developer, 2026-10-21: from the front
+    /// with a small tilt the top and side vanished at once with the cut of
+    /// 0.25). The opacity rises smoothly from the cut to full.
+    #[test]
+    fn faces_turning_away_fade_out_gradually() {
+        let tokens = Tokens::default();
+        let style = style(&tokens);
+        let (fade, full) = (
+            f64::from(tokens.view_cube_fade),
+            f64::from(tokens.view_cube_fade_full),
+        );
+        assert!(fade > 0.0 && fade <= 0.05 && full > fade);
+        // Rising, 0 below the cut and 1 from full on.
+        let mut last = 0.0;
+        for k in 0..=100 {
+            let t = f64::from(k) / 100.0;
+            let o = patch_opacity(t, fade, full);
+            assert!((0.0..=1.0).contains(&o) && o >= last, "{t}: {o}");
+            last = o;
+        }
+        assert_eq!(patch_opacity(fade * 0.5, fade, full), 0.0);
+        assert_eq!(patch_opacity(full, fade, full), 1.0);
+        assert_eq!(patch_opacity(f64::NAN, fade, full), 0.0);
+        assert_eq!(patch_opacity(0.5, fade, f64::NAN), 1.0);
+        // From the front tilted up by 5 and by 15 degrees, the top is
+        // drawn, faint at 5 and stronger at 15.
+        let front = looking("front");
+        let top_at = |pitch: f64| {
+            let camera = CameraState { pitch, ..front };
+            facets_styled(&camera, &style)
+                .into_iter()
+                .find(|f| f.side == [0, 0, 1])
+                .map(|f| patch_opacity(f.toward, fade, full))
+        };
+        let (five, fifteen) = (top_at(5.0).unwrap(), top_at(15.0).unwrap());
+        assert!(
+            five > 0.0 && five < fifteen && fifteen <= 1.0,
+            "{five} {fifteen}"
+        );
+        // Turned 5 degrees about Z, the right side is there too.
+        let turned = CameraState {
+            yaw: front.yaw + 5.0,
+            ..front
+        };
+        assert!(
+            facets_styled(&turned, &style)
+                .iter()
+                .any(|f| f.side == [1, 0, 0])
+        );
+    }
+
     #[test]
     fn the_triad_points_the_world_axes_as_the_standard_views_show_them() {
         let arm = |camera: &CameraState, axis: usize| {

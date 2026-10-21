@@ -246,12 +246,17 @@ fn the_section_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
         );
         rgb
     };
+    evidence("section-cpu-top-whole.png", width, height, &whole_top);
     // What the block covers in the whole picture, the cap covers less the
     // disc: the same ratio as the areas, within the lines' pixels.
+    // The light background, under the fill of the XY datum plane, is near
+    // the body's colour too (Mission, 2026-10-21), but the datum's purple
+    // makes it bluer than red, where the warm grey body is not.
     let body = shell.tokens.body;
+    assert!(body[0] > body[2]);
     let covered = whole_top
         .chunks(3)
-        .filter(|px| px.iter().zip(body).all(|(&a, b)| a.abs_diff(b) < 60))
+        .filter(|px| px.iter().zip(body).all(|(&a, b)| a.abs_diff(b) < 60) && px[0] >= px[2])
         .count() as f64;
     let ratio = count(&top, cap) as f64 / covered;
     let expected = (2400.0 - std::f64::consts::PI * 49.0) / 2400.0;

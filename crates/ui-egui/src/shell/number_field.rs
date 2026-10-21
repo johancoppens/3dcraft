@@ -277,7 +277,7 @@ impl NumberField<'_> {
                     align,
                     arrow,
                     egui::FontId::proportional(tokens.control_font + 2.0),
-                    color(tokens.text),
+                    color(tokens.plate_text),
                 );
             }
         }
@@ -286,14 +286,14 @@ impl NumberField<'_> {
             egui::Align2::LEFT_CENTER,
             self.label,
             font.clone(),
-            fade(color(tokens.text_dim)),
+            fade(color(tokens.plate_text_dim)),
         );
         painter.text(
             pos2(rect.right() - inset, middle),
             egui::Align2::RIGHT_CENTER,
             shown(self.value, self.scale, self.decimals, self.unit),
             font,
-            fade(color(tokens.text)),
+            fade(color(tokens.plate_text)),
         );
         if !self.enabled {
             return outcome;
@@ -420,6 +420,13 @@ impl NumberField<'_> {
         );
         let inner = rect.shrink2(vec2(tokens.field_text_pad, 2.0));
         let id = ui.id().with(("number-text", self.id));
+        // The field is black whatever the panels are: its selection and
+        // its cursor as on a plate.
+        let panels = ui.visuals().clone();
+        let visuals = ui.visuals_mut();
+        visuals.selection.bg_fill = color_alpha(tokens.accent, 110);
+        visuals.selection.stroke.color = color(tokens.plate_text);
+        visuals.text_cursor.stroke.color = color(tokens.plate_text);
         let edit = ui.put(
             inner,
             egui::TextEdit::singleline(&mut state.text)
@@ -427,9 +434,10 @@ impl NumberField<'_> {
                 .frame(egui::Frame::NONE)
                 .font(egui::FontId::proportional(tokens.control_font))
                 .char_limit(MAX_TYPED)
-                .text_color(color(tokens.text))
+                .text_color(color(tokens.plate_text))
                 .vertical_align(egui::Align::Center),
         );
+        *ui.visuals_mut() = panels;
         if !state.focused {
             // As in Blender: the whole text selected, so typing replaces it.
             edit.request_focus();
@@ -463,7 +471,8 @@ impl NumberField<'_> {
         }
         if let Some(error) = &state.error {
             let font = egui::FontId::proportional(tokens.control_font - 1.0);
-            let galley = painter.layout_no_wrap(shortened(error, 120), font, color(tokens.failed));
+            let galley =
+                painter.layout_no_wrap(shortened(error, 120), font, color(tokens.chrome_failed));
             let at = pos2(rect.left(), rect.top() - 4.0 - galley.size().y);
             let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
             painter.rect_filled(
@@ -471,7 +480,7 @@ impl NumberField<'_> {
                 radius,
                 color_alpha(tokens.notice_fill, tokens.notice_opacity),
             );
-            painter.galley(at, galley, color(tokens.failed));
+            painter.galley(at, galley, color(tokens.chrome_failed));
         }
     }
 }
