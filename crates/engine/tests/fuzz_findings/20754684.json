@@ -1,0 +1,252 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S0",
+            "offset": -10.0,
+            "plane": "xy"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                -10.0,
+                -10.0
+              ],
+              [
+                5.0,
+                -10.0
+              ],
+              [
+                5.0,
+                10.0
+              ],
+              [
+                -10.0,
+                0.0
+              ]
+            ],
+            "sketch": "S0"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 5.0,
+            "name": "N0",
+            "sketch": "S0"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N1",
+            "open": [
+              "{N0}:side(e8)"
+            ],
+            "source": "N0",
+            "thickness": 0.625
+          }
+        }
+      ],
+      "step": "shell"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "face": "{N1}:copy(1)/{N0}:startCap(e5,e6,e7,e8)",
+            "name": "S2"
+          }
+        },
+        {
+          "command": "sketch.circle",
+          "params": {
+            "center": [
+              -7.5,
+              0.0
+            ],
+            "radius": 5.0,
+            "sketch": "S2"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 10.0,
+            "join": "N1",
+            "name": "N2",
+            "sketch": "S2",
+            "symmetric": true
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S3",
+            "offset": 10.0,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                0.0,
+                5.0
+              ],
+              [
+                0.0,
+                0.0
+              ],
+              [
+                10.0,
+                10.0
+              ],
+              [
+                5.0,
+                10.0
+              ]
+            ],
+            "sketch": "S3"
+          }
+        },
+        {
+          "command": "feature.revolve",
+          "params": {
+            "angle": "90 deg",
+            "axis": "y",
+            "cut": "N2",
+            "name": "N3",
+            "sketch": "S3"
+          }
+        }
+      ],
+      "step": "revolve"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.mirror",
+          "params": {
+            "keep": true,
+            "name": "N4",
+            "normal": [
+              10.0,
+              0.0,
+              0.0
+            ],
+            "point": [
+              -3.7330958943548573,
+              -0.0,
+              -5.0
+            ],
+            "source": "N3"
+          }
+        }
+      ],
+      "step": "mirror"
+    },
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S5",
+            "offset": 10.0,
+            "plane": "yz"
+          }
+        },
+        {
+          "command": "sketch.polyline",
+          "params": {
+            "closed": true,
+            "points": [
+              [
+                5.0,
+                0.0
+              ],
+              [
+                10.0,
+                0.0
+              ],
+              [
+                10.0,
+                5.0
+              ],
+              [
+                5.0,
+                5.0
+              ]
+            ],
+            "sketch": "S5"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 20.0,
+            "join": "N3",
+            "name": "N5",
+            "sketch": "S5"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N6",
+            "op": "subtract",
+            "target": "N4",
+            "tool": "N5"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "count": 4,
+            "name": "N7",
+            "source": "N6",
+            "step": [
+              25.0,
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ],
+      "step": "pattern"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 20754684
+}

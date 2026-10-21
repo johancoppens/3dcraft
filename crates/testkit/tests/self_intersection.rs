@@ -245,6 +245,26 @@ fn joined(bodies: &[&Body]) -> Body {
     merge(bodies).unwrap().0
 }
 
+/// A top hat (times `k`, in `frame`) standing on the unit box's lid: an
+/// upper block [.3, .7]² × [1, 1.5], its tread at z = 1 a ring `w` wide
+/// facing down onto the lid, and a lower block [.3 + w, .7 − w]² ×
+/// [.5, 1] under the ring's hole. A valid solid by itself; on the box it
+/// is sunk half its height through the lid.
+fn top_hat(frame: &Frame, k: f64, w: f64) -> Body {
+    let (a, b) = (0.3 * k, 0.7 * k);
+    let mut points = corners(frame, [a + w, a + w, 0.5 * k], [b - w, b - w, k]);
+    points.extend(corners(frame, [a, a, k], [b, b, 1.5 * k]));
+    let up = |s: [usize; 4]| s.map(|i| i + 8);
+    let (lower, upper) = (&SIDES, SIDES.map(up));
+    // The tread: from the lower block's top corners (4..8) out to the
+    // upper block's bottom corners (8..12), facing down.
+    let ring: [[usize; 4]; 4] = [[4, 5, 9, 8], [5, 7, 11, 9], [7, 6, 10, 11], [6, 4, 8, 10]];
+    let mut faces: Vec<&[usize]> = vec![&lower[0], &lower[2], &lower[3], &lower[4], &lower[5]];
+    faces.extend(ring.iter().map(|r| r.as_slice()));
+    faces.extend([&upper[1], &upper[2], &upper[3], &upper[4], &upper[5]].map(|s| s.as_slice()));
+    polyhedron(&points, &faces)
+}
+
 // ------------------------------------------------------- valid bodies
 
 #[test]
@@ -399,6 +419,36 @@ fn moved_mirrored_and_merged_bodies() {
 }
 
 // ------------------------------------------------------ seeded defects
+
+/// A top hat sunk through the box's lid up to its tread: the lower
+/// block's walls cross the lid, and the surface around them reaches above
+/// the lid only across the tread, which lies in the lid's plane facing
+/// the other way. The depth measure once stopped at the tread (a
+/// triangle in the plane of the face it is measured against was never
+/// followed) and found nothing (review of 2026-10-21); a tread facing the
+/// lid is another sheet lying against it, followed on.
+#[test]
+fn a_top_hat_sunk_to_its_tread_is_caught() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in [Frame::WORLD, tilted(k)] {
+            let lid = |w: f64| {
+                let cube = primitives::block(&frame, k, k, k).unwrap();
+                let hat = top_hat(&frame, k, w);
+                // (Its self-check is not asked: the tread is a few
+                // tolerances wide, so its corners are near each other.)
+                assert_eq!(check(&hat, &tol), [], "the hat alone is valid");
+                joined(&[&cube, &hat])
+            };
+            for w in [1.5, 3.0] {
+                let body = lid(w * tol.linear);
+                let found = assert_caught(&body, k, "a top hat sunk to its tread");
+                let deepest = found.crossings.iter().map(|c| c.depth).fold(0.0, f64::max);
+                assert!(deepest > 0.1 * k, "{w}: {deepest} at scale {k}: {found}");
+            }
+        }
+    }
+}
 
 /// (a), (b) and (g) on a solid of flat faces, where the mesh is the body
 /// and the margin is twice the modelling tolerance.

@@ -3325,6 +3325,36 @@ fn finish_boundary(
                 }
             }
         }
+        // Halve the pieces that a vertex of the region lies beside on the
+        // other side in space than in the plane (`passed_on_the_wrong_side`):
+        // a seam that leaves a vertex almost along a chord of the loop
+        // there, or runs past a vertex of a loop closer than its pieces'
+        // sag. The refinement cannot cut a seam, so it is cut here, as an
+        // edge's chord is cut when a face asks for it.
+        for _ in 0..SEAM_HALVINGS {
+            let crossed: Vec<usize> = line
+                .windows(2)
+                .enumerate()
+                .filter(|(_, pair)| {
+                    let [p, q] = pair else { return false };
+                    passed_on_the_wrong_side(param, region, (p.1, p.2), (q.1, q.2), seam.shift)
+                })
+                .map(|(k, _)| k)
+                .collect();
+            if crossed.is_empty() {
+                break;
+            }
+            for &k in crossed.iter().rev() {
+                let (Some(p), Some(q)) = (line.get(k), line.get(k + 1)) else {
+                    continue;
+                };
+                let middle = at(0.5 * (p.0 + q.0));
+                line.insert(k + 1, middle);
+            }
+            if line.len() > limit {
+                return Err(too_many());
+            }
+        }
         let (mut last, mut twin_last) = (seam.from, seam.twin_from);
         for &(_, uv, pos) in line.iter().skip(1).take(line.len().saturating_sub(2)) {
             let ([a, b], [da, db]) = (uv, seam.shift);
@@ -3348,6 +3378,63 @@ fn finish_boundary(
         region.link(twin_last, seam.twin_to, None);
     }
     Ok(())
+}
+
+/// How many rounds of halving the seam's pieces get at most because a
+/// vertex of the region lies beside one on the other side in space than
+/// in the plane (`passed_on_the_wrong_side`): a piece 2⁻²⁴ of what it was
+/// is as near its curve as a seam gets; a vertex still on the wrong side
+/// then lies on the seam's curve, and the refinement says so.
+const SEAM_HALVINGS: usize = 24;
+
+/// Whether a vertex of the region lies, in space, on the other side of
+/// the seam piece from `p` to `q` than in the parameter plane, among those
+/// within the piece's diametral circle on the surface (measured in the
+/// tangent plane at the piece's middle, through the derivatives there:
+/// the vertices a triangulation joins to the piece's ends in a triangle
+/// that stands on it, as in Ruppert's encroachment). The piece is taken in
+/// its copy (as given, or moved by `shift`) nearer to the vertex. A
+/// triangle between the piece and such a vertex faces, in space, against
+/// the surface, and no point the refinement adds mends it, since the
+/// piece is a side it may not cut. Cut in two, the piece's chords lie
+/// four times nearer to the seam's curve and their circles are half as
+/// wide, so a vertex that is not on the seam's curve itself is out of
+/// them or on its own side after a few halvings. (At a pole, where the
+/// derivatives have no cross product, nothing can be told: false.)
+fn passed_on_the_wrong_side(
+    param: &Param,
+    region: &Region,
+    (p_uv, p): (Uv, Vec3),
+    (q_uv, q): (Uv, Vec3),
+    shift: Uv,
+) -> bool {
+    let middle = [0.5 * (p_uv[0] + q_uv[0]), 0.5 * (p_uv[1] + q_uv[1])];
+    let (_, [da, db]) = param.derivatives(middle);
+    let reference = da.cross(db);
+    let along = |x: f64, y: f64| da * x + db * y;
+    let radius = 0.5 * along(q_uv[0] - p_uv[0], q_uv[1] - p_uv[1]).length();
+    if !positive(reference.length_squared()) || !positive(radius) {
+        return false;
+    }
+    let chord = q - p;
+    let twin = [middle[0] + shift[0], middle[1] + shift[1]];
+    region.verts.iter().any(|v| {
+        if v.free.is_some() || v.pos == p || v.pos == q {
+            return false;
+        }
+        // From the middle of the piece, in whichever copy is nearer.
+        let from = |m: Uv| along(v.uv[0] - m[0], v.uv[1] - m[1]).length();
+        let (near, far) = (from(middle), from(twin));
+        let moved = if far < near { shift } else { [0.0, 0.0] };
+        if near.min(far) >= radius {
+            return false;
+        }
+        let (pa, pb) = (p_uv[0] + moved[0], p_uv[1] + moved[1]);
+        let (qa, qb) = (q_uv[0] + moved[0], q_uv[1] + moved[1]);
+        let plane = (qa - pa) * (v.uv[1] - pb) - (qb - pb) * (v.uv[0] - pa);
+        let space = chord.cross(v.pos - p).dot(reference);
+        (plane < 0.0 && space > 0.0) || (plane > 0.0 && space < 0.0)
+    })
 }
 
 /// How many pieces each parameter of a spline face is cut into to see

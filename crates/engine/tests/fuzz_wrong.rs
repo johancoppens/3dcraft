@@ -44,6 +44,17 @@
 //!   tolerances' thickness as lumps of their own, which the sorting into
 //!   lumps read as cavities by the sign of a volume too small to measure:
 //!   accepted and valid, three lumps.
+//! - `20754684.json`, `20811107.json` and `20792240.json`, the run of
+//!   2026-10-20, each a fault of the check and not of the kernel: a
+//!   pattern whose instance has a skin of a cylinder wall thinner than
+//!   the mesh's chord, meshed flat in the plane of the face beside it
+//!   and taken for an overlap of the two; a groove whose ceiling is
+//!   tangent to the top face along a line, where a touch was measured
+//!   as a crossing as deep as the body by a walk over the top face's own
+//!   triangles; and a mirror of united tori with a bite whose face could
+//!   not be meshed, its seam running past a vertex of the loop on the
+//!   other side in space than in the parameter plane. All three accepted
+//!   and valid.
 
 #![allow(
     clippy::unwrap_used,
@@ -172,6 +183,9 @@ fn the_fuzzers_findings_end_valid_or_refused_for_their_reason() {
         ("20815546.json", &[][..]),
         ("20820477.json", &[][..]),
         ("20756595.json", &[][..]),
+        ("20754684.json", &[][..]),
+        ("20792240.json", &[][..]),
+        ("20811107.json", &[][..]),
     ] {
         let refused = replay(file);
         assert_eq!(refused.len(), reasons.len(), "{file}: {refused:?}");

@@ -34,8 +34,21 @@
 //! faces with straight edges "on each other" is within twice the
 //! modelling tolerance, the distance at which the body itself cannot tell
 //! two points apart. For curved faces only triangles that are in one
-//! plane exactly count, which no approximation brings about: both faces
-//! were then cut from the same geometry at the same places.
+//! plane exactly count; that an approximation can bring about all the
+//! same (2026-10-20): a strip of a curved face between two lines in a
+//! flat face's plane, bulging out of it by less than the chord, gets no
+//! point inside and is meshed as that plane. So an overlap deeper than
+//! the margin is certain only where the faces themselves are at the same
+//! place: the two surfaces are asked at points of the common area
+//! (`faces_apart`), and where they are further apart than twice the
+//! tolerance the overlap is of the meshes, not of the faces, and counts
+//! as within the margin. That lowers it to a doubt, no more: like every
+//! finding within the margin it is looked at again on finer meshes, and
+//! one still there after the last ends as marginal, which
+//! `document.check` counts but does not call a problem. A real overlap of
+//! two faces has an area, and on a finer mesh the pairs of triangles
+//! inside it lie where the surfaces are one, and are certain again; one
+//! narrower than the finest mesh's triangles stays a doubt.
 //!
 //! Findings within the margin between curved faces are looked at again
 //! with a mesh four times finer, a few times over; what is still within
@@ -57,7 +70,7 @@
 //! matter of the approximation.
 
 use crate::body::tessellate_faces;
-use crate::intersections::{Crossing, CrossingKind, Rules, contacts, raw_cap};
+use crate::intersections::{Crossing, CrossingKind, Rules, common_area, contacts, raw_cap};
 use crate::{Mesh, TessError, TessParams, tessellate_body_with_threads};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Vec3};
@@ -1095,6 +1108,38 @@ fn trim_far_holes(
     Ok(trimmed)
 }
 
+/// Whether the surfaces of the two faces of `c`, an overlap of two
+/// triangles of `mesh` in one plane, are further apart than `near`
+/// somewhere in the triangles' common area: at its centroid, and halfway
+/// from there to each of its corners. Each face lies within the
+/// tolerance of its surface, so where the surfaces are more than twice
+/// the tolerance apart no point is on both faces, whatever their meshes
+/// do. A surface that cannot be asked (a projection that fails) is taken
+/// to be at the place: the finding then stands, never one made up.
+fn faces_apart(body: &Body, mesh: &Mesh, c: &Crossing, near: f64) -> bool {
+    let [i, j] = c.triangles;
+    let (Some(a), Some(b)) = (mesh.corners(i), mesh.corners(j)) else {
+        return false;
+    };
+    let common = common_area(&a, &b);
+    let Some(count) = u32::try_from(common.len()).ok().filter(|&n| n >= 3) else {
+        return false;
+    };
+    let centroid = common.iter().fold(Vec3::ZERO, |sum, &p| sum + p) * (1.0 / f64::from(count));
+    let surface = |face: u32| body.faces.get(face as usize).map(|f| &f.surface);
+    let [face_f, face_g] = c.faces;
+    let (Some(sf), Some(sg)) = (surface(face_f), surface(face_g)) else {
+        return false;
+    };
+    let foot = |s: &Surface, p: Vec3| s.project(p).map(|(u, v)| s.eval(u, v));
+    std::iter::once(centroid)
+        .chain(common.iter().map(|&p| p.lerp(centroid, 0.5)))
+        .any(|p| match (foot(sf, p), foot(sg, p)) {
+            (Ok(qf), Ok(qg)) => qf.distance(qg) > near,
+            _ => false,
+        })
+}
+
 /// The check on one mesh, and whether something within the margin is
 /// left that a finer mesh could settle.
 fn one_pass(
@@ -1173,7 +1218,18 @@ fn one_pass(
         .map(|c: &Crossing| {
             let [f, g] = c.faces;
             let margin = margin_of(f, g);
-            let certain = c.depth > margin.max(found.rounding);
+            let mut certain = c.depth > margin.max(found.rounding);
+            // An overlap of meshes in one plane is an overlap of the faces
+            // only where their surfaces are at the same place (module
+            // documentation); the mesh of a flat face with straight edges
+            // is the face, so only a curved face can be elsewhere.
+            if certain
+                && c.kind == CrossingKind::CoplanarOverlap
+                && deviation(f) + deviation(g) > 0.0
+                && faces_apart(body, near_only, c, 2.0 * tolerance)
+            {
+                certain = false;
+            }
             unsettled |= !certain && deviation(f) + deviation(g) > 0.0;
             FaceCrossing {
                 faces: c.faces,

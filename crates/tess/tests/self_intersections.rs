@@ -777,6 +777,120 @@ fn a_spike_is_found_when_it_is_deeper_than_the_tolerance() {
     }
 }
 
+/// (h) A sheet that only touches a flat face at a corner, inside one of
+/// the face's few large triangles, and hangs from an edge of the face's
+/// triangulation further on, where a wall stands up on the face. The
+/// surface around the touching triangle was followed across the face's
+/// own triangles to that wall, and the touch called a crossing as deep
+/// as the wall is high (fuzz seed 20811107, 2026-10-20): the far side of
+/// the face's plane is reached through the face's surface, not past it.
+#[test]
+fn a_touch_is_not_a_crossing_by_what_lies_beyond_the_face_itself() {
+    for scale in SCALES {
+        let (a, b, c, d, m) = (
+            v(-10.0, -10.0, 0.0),
+            v(10.0, -10.0, 0.0),
+            v(10.0, 10.0, 0.0),
+            v(-10.0, 10.0, 0.0),
+            v(0.0, 0.0, 0.0),
+        );
+        let (p, q, r) = (v(0.0, -2.0, 0.0), v(1.0, -2.0, -1.0), v(-1.0, -2.0, -1.0));
+        // The plate, face 0, in four triangles, the touched one first; a
+        // wall standing up on its edge b-m, face 2; the sheet, face 1: up
+        // to the plate at `top` (inside the first triangle, at the
+        // sheet's own corner), down to q and r, and on from there to the
+        // plate's edge m-c.
+        // `far` is the face of the plate's triangles on the far side: the
+        // plate's own (0), or another face in its plane (3), as a flat
+        // face cut in two by an edge is; `lift` raises the plate's far
+        // corner c out of its plane, as in the mesh of a curved face.
+        let build_with = |top: Vec3, far: u32, lift: f64| {
+            let c = c + v(0.0, 0.0, lift);
+            let mut soup = Soup::default();
+            soup.triangle(a, b, m, 0);
+            soup.triangle(b, c, m, far);
+            soup.triangle(c, d, m, far);
+            soup.triangle(d, a, m, 0);
+            soup.quad(b, m, m + v(0.0, 0.0, 5.0), b + v(0.0, 0.0, 5.0), 2);
+            soup.triangle(top, q, r, 1);
+            soup.triangle(q, r, m, 1);
+            soup.triangle(r, m, c, 1);
+            soup.scaled(scale)
+        };
+        for (far, lift) in [(0, 0.0), (3, 0.0), (0, 0.5)] {
+            let build = |top: Vec3| build_with(top, far, lift);
+            let found = all_crossings(&build(p));
+            assert!(
+                found.iter().all(|c| c.depth <= 1e-9 * scale),
+                "scale {scale}, far face {far}, lifted {lift}: {found:?}"
+            );
+            // Sunk into the plate by a tenth, the sheet does cross it.
+            let found = all_crossings(&build(p + v(0.0, 0.0, 0.1)));
+            let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
+            assert!(
+                (deepest - 0.1 * scale).abs() < 1e-6 * scale,
+                "scale {scale}, far face {far}, lifted {lift}: {found:?}"
+            );
+        }
+    }
+}
+
+/// (i) A top hat sunk through a box's lid up to its tread: the lower
+/// block's walls cross the lid, and the surface around them reaches above
+/// it only across the tread, a ring in the lid's plane facing down onto
+/// it. A triangle in the plane of `y` facing the other way is another
+/// sheet against `y`, not `y`'s surface going on: the walk goes across it
+/// (it stopped there for a day, 2026-10-21, and found nothing).
+#[test]
+fn a_top_hat_sunk_to_its_tread_is_found() {
+    for scale in SCALES {
+        for w in [0.01, 0.5, 1.0] {
+            let mut soup = Soup::default();
+            soup.boxed(v(0.0, 0.0, 0.0), v(10.0, 10.0, 10.0), 0);
+            let (a, b) = (3.0, 7.0);
+            let (i0, i1) = (a + w, b - w);
+            // The lower block without its top, the upper without its
+            // bottom.
+            let lower = [
+                v(i0, i0, 5.0),
+                v(i1, i0, 5.0),
+                v(i1, i1, 5.0),
+                v(i0, i1, 5.0),
+            ];
+            let inner = lower.map(|p| p + v(0.0, 0.0, 5.0));
+            let outer = [v(a, a, 10.0), v(b, a, 10.0), v(b, b, 10.0), v(a, b, 10.0)];
+            let top = outer.map(|p| p + v(0.0, 0.0, 5.0));
+            soup.quad(lower[0], lower[3], lower[2], lower[1], 6);
+            for n in 0..4 {
+                let m = (n + 1) % 4;
+                soup.quad(lower[n], lower[m], inner[m], inner[n], 7);
+                // The tread, facing down.
+                soup.quad(inner[n], inner[m], outer[m], outer[n], 8);
+                soup.quad(outer[n], outer[m], top[m], top[n], 9);
+            }
+            soup.quad(top[0], top[1], top[2], top[3], 10);
+            for (what, mesh) in [
+                ("square", soup.scaled(scale)),
+                (
+                    "askew",
+                    soup.moved(&askew().then(&Transform::scaling(scale))),
+                ),
+            ] {
+                let found = all_crossings(&mesh);
+                let deepest = found
+                    .iter()
+                    .filter(|c| c.faces == [1, 7])
+                    .map(|c| c.depth)
+                    .fold(0.0, f64::max);
+                assert!(
+                    deepest > 2.0 * scale,
+                    "{what}, tread {w}, scale {scale}: {found:?}"
+                );
+            }
+        }
+    }
+}
+
 /// The handle and the spout of the Utah teapot go into its body, which
 /// has no holes for them: a real mesh with real crossings.
 #[test]
