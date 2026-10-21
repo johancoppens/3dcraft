@@ -24,7 +24,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("select.set", "Select", r#"{"items": [{kind, name, feature}], "names": [string], "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
         "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, select_set),
     spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000}"#,
-        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for a cylindrical face whose outward normal points at its axis (the wall of a hole), false for the others; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, select_query),
+        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, select_query),
 ];
 
 /// Most filters one query holds, nested ones included.
@@ -718,8 +718,13 @@ struct Candidate<'a> {
     kind: SelectionKind,
     /// The feature itself, or the feature whose body has the entity.
     feature: FeatureId,
-    /// The place of a face, edge or vertex in its body.
+    /// The place of a face, edge or vertex in its body (of a face cut
+    /// into pieces that keep its name: the first piece's).
     index: usize,
+    /// A face's pieces: every face of the body with its name, in order.
+    /// A boolean can cut a face into pieces that all keep its name; the
+    /// name means them together, so they are one item.
+    pieces: Vec<usize>,
     name: String,
     /// A face's, edge's or vertex's persistent name.
     persistent: Option<PersistentName>,
@@ -821,19 +826,19 @@ impl<'a> Context<'a> {
         })
     }
 
+    /// The area of a face: of all its pieces together.
     fn face_area(&mut self, c: &Candidate<'_>) -> Option<f64> {
         let body = c.body?;
-        self.areas
-            .entry(c.feature)
-            .or_insert_with(|| {
-                craft3d_topo::face_areas(body)
-                    .into_iter()
-                    .map(Result::ok)
-                    .collect()
-            })
-            .get(c.index)
-            .copied()
-            .flatten()
+        let areas = self.areas.entry(c.feature).or_insert_with(|| {
+            craft3d_topo::face_areas(body)
+                .into_iter()
+                .map(Result::ok)
+                .collect()
+        });
+        c.pieces
+            .iter()
+            .map(|&k| areas.get(k).copied().flatten())
+            .sum()
     }
 
     fn face_color(&mut self, c: &Candidate<'_>) -> Option<[u8; 3]> {
@@ -917,12 +922,7 @@ impl<'a> Context<'a> {
             Filter::Surface(kinds) => {
                 surface_of(c).is_some_and(|(surface, _)| kinds.contains(surface_kind(surface)))
             }
-            Filter::Hole(wanted) => {
-                let hole = surface_of(c).is_some_and(|(surface, reversed)| {
-                    matches!(surface, Surface::Cylinder(_)) && reversed
-                });
-                c.kind == SelectionKind::Face && hole == *wanted
-            }
+            Filter::Hole(wanted) => c.kind == SelectionKind::Face && is_hole(c) == *wanted,
             Filter::Normal {
                 along,
                 perpendicular,
@@ -1005,7 +1005,17 @@ impl<'a> Context<'a> {
         let index = u32::try_from(c.index).ok()?;
         let boxed: Option<Bbox3> = match c.kind {
             SelectionKind::Body => body.held_bbox().ok(),
-            SelectionKind::Face => body.held_face_bbox(FaceId(index)).ok(),
+            SelectionKind::Face => {
+                let mut all = Bbox3::EMPTY;
+                for &k in &c.pieces {
+                    let piece = body.held_face_bbox(FaceId(u32::try_from(k).ok()?)).ok()?;
+                    if let Some((lo, hi)) = piece.corners() {
+                        all.add(lo);
+                        all.add(hi);
+                    }
+                }
+                Some(all)
+            }
             SelectionKind::Edge => body.edge_bbox(EdgeId(index)).ok(),
             SelectionKind::Vertex => {
                 let p = body.vertices.get(c.index)?.point;
@@ -1034,6 +1044,76 @@ fn chain(name: &PersistentName) -> impl Iterator<Item = &PersistentName> {
         at = here.of.as_deref();
         Some(here)
     })
+}
+
+/// Largest gap, in radians, between the directions round its axis at which
+/// a hole's wall has boundary points: a wall that goes all the way round
+/// has points in every direction (its rims, its seam); a concave fillet
+/// or the end of a slot has a gap of a quarter or half a turn.
+const HOLE_GAP: f64 = std::f64::consts::PI / 6.0;
+/// Points looked at along each edge of a hole's boundary.
+const HOLE_SAMPLES: u32 = 24;
+
+/// Whether a face is the wall of a hole: a cylinder whose outward normal
+/// points at its axis (its material is outside it), and whose pieces
+/// together go all the way round the axis. A concave fillet (a cylinder
+/// too, but a quarter turn) is not one; neither is a cone (a countersink)
+/// or a freeform surface, for now.
+fn is_hole(c: &Candidate<'_>) -> bool {
+    let Some(body) = c.body else {
+        return false;
+    };
+    let Some((Surface::Cylinder(cylinder), true)) = surface_of(c) else {
+        return false;
+    };
+    let frame = cylinder.frame();
+    let (origin, x, y) = (frame.origin(), frame.x(), frame.y());
+    let mut angles: Vec<f64> = Vec::new();
+    for &k in &c.pieces {
+        let Some(face) = body.faces.get(k) else {
+            return false;
+        };
+        // Every piece is a wall of the same cylinder, its inside out.
+        if !face.reversed || face.surface != Surface::Cylinder(*cylinder) {
+            return false;
+        }
+        for &l in &face.loops {
+            for coedge in body
+                .loop_(l)
+                .map(|l| l.coedges.as_slice())
+                .unwrap_or_default()
+            {
+                let Some(edge) = body.edge(coedge.edge) else {
+                    continue;
+                };
+                let (t0, t1) = edge.range;
+                for i in 0..=HOLE_SAMPLES {
+                    let t = t0 + (t1 - t0) * f64::from(i) / f64::from(HOLE_SAMPLES);
+                    let d = edge.curve.eval(t) - origin;
+                    let a = d.dot(y).atan2(d.dot(x));
+                    if a.is_finite() {
+                        angles.push(a);
+                    }
+                }
+            }
+        }
+    }
+    if angles.is_empty() {
+        return false;
+    }
+    angles.sort_by(f64::total_cmp);
+    let (Some(&first), Some(&last)) = (angles.first(), angles.last()) else {
+        return false;
+    };
+    let wrap = first + std::f64::consts::TAU - last;
+    let widest = angles
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => Some(b - a),
+            _ => None,
+        })
+        .fold(wrap, f64::max);
+    widest <= HOLE_GAP
 }
 
 fn surface_of<'a>(c: &Candidate<'a>) -> Option<(&'a Surface, bool)> {
@@ -1117,6 +1197,7 @@ fn candidates<'a>(
             kind,
             feature: feature.id,
             index: 0,
+            pieces: Vec::new(),
             name: feature.name.clone(),
             persistent: None,
             body,
@@ -1154,13 +1235,27 @@ fn entities<'a>(
         kind,
         feature,
         index,
+        pieces: vec![index],
         name: name.to_string(),
         persistent: Some(name),
         body: Some(body),
     };
     if kinds.contains(&SelectionKind::Face) {
+        // One item per name, at its first piece, with all its pieces.
+        let mut faces: Vec<Candidate<'a>> = Vec::new();
+        let mut at: BTreeMap<String, usize> = BTreeMap::new();
         for (index, name) in names.faces.iter().enumerate().take(body.faces.len()) {
-            push(entity(SelectionKind::Face, index, name.clone()))?;
+            let text = name.to_string();
+            match at.get(&text).and_then(|&k| faces.get_mut(k)) {
+                Some(first) => first.pieces.push(index),
+                None => {
+                    at.insert(text, faces.len());
+                    faces.push(entity(SelectionKind::Face, index, name.clone()));
+                }
+            }
+        }
+        for face in faces {
+            push(face)?;
         }
     }
     if kinds.contains(&SelectionKind::Edge) {

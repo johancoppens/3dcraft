@@ -546,24 +546,27 @@ impl Scene {
         if let Some(feature) = feature {
             let shown: String = feature.chars().take(60).collect();
             // A name first, as the commands do, then an id with or
-            // without its F.
-            let body = self
-                .bodies
-                .iter()
-                .find(|body| body.name == feature)
-                .or_else(|| {
-                    let digits = feature.strip_prefix('F').unwrap_or(feature);
-                    let id = digits.parse::<u64>().ok()?;
-                    self.bodies
-                        .iter()
-                        .find(|body| body.feature == format!("F{id}"))
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "there is no body of a feature `{shown}`; the bodies: {}",
-                        self.body_list()
-                    )
-                })?;
+            // without its F; but text written as an id (`F3`) is that id,
+            // never a body an older file named so (rule 4).
+            let by_id = || {
+                let digits = feature.strip_prefix('F').unwrap_or(feature);
+                let id = digits.parse::<u64>().ok()?;
+                self.bodies
+                    .iter()
+                    .find(|body| body.feature == format!("F{id}"))
+            };
+            let by_name = || self.bodies.iter().find(|body| body.name == feature);
+            let body = if craft3d_doc::looks_like_id(feature) {
+                by_id()
+            } else {
+                by_name().or_else(by_id)
+            }
+            .ok_or_else(|| {
+                format!(
+                    "there is no body of a feature `{shown}`; the bodies: {}",
+                    self.body_list()
+                )
+            })?;
             let ids = ids_in(body);
             if ids.is_empty() {
                 return Err(format!(
@@ -814,17 +817,20 @@ impl Scene {
                     .iter()
                     .position(|body| body.feature == format!("F{id}"))
             };
-            let index = self
-                .bodies
-                .iter()
-                .position(|body| body.name == feature)
-                .or_else(by_id)
-                .ok_or_else(|| {
-                    format!(
-                        "there is no body of a feature `{shown}`; the bodies: {}",
-                        self.body_list()
-                    )
-                })?;
+            // Written as an id (`F3`), it is that id: never a body that
+            // an older file named `F3` (rule 4).
+            let by_name = || self.bodies.iter().position(|body| body.name == feature);
+            let index = if craft3d_doc::looks_like_id(feature) {
+                by_id()
+            } else {
+                by_name().or_else(by_id)
+            }
+            .ok_or_else(|| {
+                format!(
+                    "there is no body of a feature `{shown}`; the bodies: {}",
+                    self.body_list()
+                )
+            })?;
             let (found, name) = self
                 .bodies
                 .get(index)

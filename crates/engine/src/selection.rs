@@ -276,38 +276,35 @@ impl Selection {
     }
 
     /// Checks every item against `regen` of revision `revision` (once per
-    /// revision): what no longer exists drops out and is said; a renamed
-    /// feature's item takes its new name.
+    /// revision): what no longer exists drops out and is said in
+    /// `dropped`, which holds what dropped out at the last change of the
+    /// document (an undo that follows clears it); a renamed feature's
+    /// item takes its new name. Items are found again by their feature's
+    /// id, never by its name, so a selection cannot move to another
+    /// feature that took the name (rule 4).
     pub(crate) fn check(&mut self, doc: &Document, regen: &Regen, revision: u64) {
         if self.checked == Some(revision) {
             return;
         }
         self.checked = Some(revision);
-        if self.items.is_empty() {
-            return;
-        }
-        let mut resolver = Resolver::new(doc, regen);
         let mut kept = Vec::with_capacity(self.items.len());
         let mut dropped = Vec::new();
-        for item in &self.items {
-            // A feature by its id, whatever it is called now.
-            let found = if item.kind.is_entity() {
-                resolver.resolve(Some(item.kind), &item.name, Some(&item.feature))
-            } else {
-                resolver.resolve(Some(item.kind), &item.feature, None)
-            };
-            match found {
-                Ok(found) => kept.push(found.item),
-                Err(why) => dropped.push(format!("{} {}: {why}", item.kind.name(), item.name)),
+        if !self.items.is_empty() {
+            let mut resolver = Resolver::new(doc, regen);
+            for item in &self.items {
+                match resolver.find_again(item) {
+                    Ok(found) => kept.push(found.item),
+                    Err(why) => {
+                        dropped.push(format!("{} {}: {why}", item.kind.name(), item.name));
+                    }
+                }
             }
         }
-        if kept != self.items {
+        dropped.truncate(MAX_DROPPED);
+        if kept != self.items || dropped != self.dropped {
             self.items = kept;
-            self.serial = next_serial();
-        }
-        if !dropped.is_empty() {
-            dropped.truncate(MAX_DROPPED);
             self.dropped = dropped;
+            self.serial = next_serial();
         }
     }
 
@@ -331,13 +328,19 @@ pub(crate) struct Found {
 }
 
 /// The feature a reference means: its name, or its id (`F3`, `3`).
+///
+/// Text written as an id (`F3`, or `3`) means that id and nothing else:
+/// an older file may still have a feature *named* `F1`, and a selection
+/// stored by id must never move to it (rule 4).
 pub(crate) fn feature_named(doc: &Document, text: &str) -> Option<FeatureId> {
-    if let Some(feature) = doc.feature_by_name(text) {
-        return Some(feature.id);
+    if craft3d_doc::looks_like_id(text)
+        || (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+    {
+        let digits = text.strip_prefix('F').unwrap_or(text);
+        let id = FeatureId(digits.parse::<u64>().ok()?);
+        return doc.feature(id).map(|f| f.id);
     }
-    let digits = text.strip_prefix('F').unwrap_or(text);
-    let id = FeatureId(digits.parse::<u64>().ok()?);
-    doc.feature(id).map(|f| f.id)
+    doc.feature_by_name(text).map(|feature| feature.id)
 }
 
 /// Whether a feature is reference geometry.
@@ -513,6 +516,49 @@ impl<'a> Resolver<'a> {
         Err(format!("no body has a {} `{shown}`", kind.name()))
     }
 
+    /// A stored item found again: its feature by id only (`F3`), a face,
+    /// an edge or a vertex by its name in that feature's body.
+    pub(crate) fn find_again(&mut self, item: &SelectionItem) -> Result<Found, String> {
+        let id = item
+            .feature
+            .strip_prefix('F')
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .map(FeatureId)
+            .filter(|id| self.doc.feature(*id).is_some())
+            .ok_or_else(|| format!("there is no feature {}", cut(&item.feature)))?;
+        if !item.kind.is_entity() {
+            return self.feature_item(Some(item.kind), id);
+        }
+        if !self.bodies.iter().any(|(body, ..)| *body == id) {
+            let made = self
+                .doc
+                .feature(id)
+                .map_or_else(|| id.to_string(), |f| f.name.clone());
+            return Err(match self.regen.feature(id).and_then(|o| o.consumed_by) {
+                Some(taker) => format!("the body of `{made}` went into {taker}"),
+                None => format!("`{made}` has no body"),
+            });
+        }
+        let wanted = item
+            .name
+            .parse::<PersistentName>()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|_| item.name.clone());
+        match self.lookup(id, item.kind, &wanted) {
+            Some(canonical) => Ok(Found {
+                item: SelectionItem {
+                    kind: item.kind,
+                    name: canonical,
+                    feature: id.to_string(),
+                },
+            }),
+            None => Err(format!(
+                "the body of {id} has no {} of that name any more",
+                item.kind.name()
+            )),
+        }
+    }
+
     fn feature_item(&self, kind: Option<SelectionKind>, id: FeatureId) -> Result<Found, String> {
         let Some(feature) = self.doc.feature(id) else {
             return Err(format!("there is no feature {id}"));
@@ -586,5 +632,49 @@ impl Session {
                 .check(open.history.current(), &regen, revision);
         }
         open.selection.serial()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use crate::Workspace;
+    use serde_json::json;
+
+    /// An older file may have a feature named `F1` (new names may not be
+    /// written like an id): a selection stored by id stays on its own
+    /// feature, and `F1` means the id.
+    #[test]
+    fn a_feature_named_like_another_id_never_takes_its_selection() {
+        let mut s = Session::new(Workspace::none());
+        s.execute("file.new", &json!({})).unwrap();
+        for x in [0, 3] {
+            s.execute(
+                "feature.block",
+                &json!({"size": [1, 1, 1], "position": [x, 0, 0]}),
+            )
+            .unwrap();
+        }
+        let mut doc: Document = (**s.document().unwrap().history.current()).clone();
+        doc.features[0].name = "Plate".into();
+        doc.features[1].name = "F1".into();
+        let regen = craft3d_regen::regenerate(&doc);
+        let mut selection = Selection::default();
+        selection.apply(
+            vec![SelectionItem {
+                kind: SelectionKind::Body,
+                name: "Block1".into(),
+                feature: "F1".into(),
+            }],
+            SelectMode::Replace,
+        );
+        selection.check(&doc, &regen, 7);
+        let view = selection.view();
+        assert_eq!(view.items[0].feature, "F1");
+        assert_eq!(view.items[0].name, "Plate");
+        assert!(view.dropped.is_empty());
+        assert_eq!(feature_named(&doc, "F1"), Some(FeatureId(1)));
+        assert_eq!(feature_named(&doc, "Plate"), Some(FeatureId(1)));
     }
 }

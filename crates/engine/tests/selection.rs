@@ -654,3 +654,210 @@ fn the_housings_bolt_and_oil_holes_are_found_by_their_size() {
     assert_eq!(left["count"], 3, "{left}");
     assert_eq!(run(&mut s, "select.get", json!({}))["count"], 6);
 }
+
+/// The window finds a body by its feature's id when the text is written
+/// as one, even when an older file named another body `F1`.
+#[test]
+fn a_body_named_like_an_id_is_not_found_by_that_id() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [1, 1, 1]}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [3, 0, 0]}),
+    );
+    let face_of = |s: &mut Session, f: &str| {
+        run(
+            s,
+            "select.query",
+            json!({"kind": "face", "where": {"in": f, "normal": {"along": "z"}}}),
+        )["items"][0]["name"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (first, second) = (face_of(&mut s, "F1"), face_of(&mut s, "F2"));
+    let shared = s
+        .scene_with(craft3d_engine::SceneQuality::Preview)
+        .unwrap()
+        .unwrap();
+    let mut scene = (*shared).clone();
+    std::sync::Arc::make_mut(&mut scene.bodies)[1].name = "F1".into();
+    let found = scene.faces_named(Some("F1"), &first).unwrap();
+    assert_eq!(found.feature, "F1");
+    assert!(scene.faces_named(Some("F1"), &second).is_err());
+}
+
+/// A slot cut right through a block splits its top and bottom into two
+/// pieces each that keep the face's name: the name is one item, the
+/// query's count is the selection's, and its area is both pieces'.
+#[test]
+fn the_pieces_of_a_split_face_are_one_item() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Bar", "size": [30, 10, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Slot", "size": [4, 20, 20], "position": [13, -5, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Bar", "tool": "Slot", "name": "Cut"}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({}));
+    let names = inspect["bodies"][0]["faceNames"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let mut unique = names.clone();
+    unique.sort_by_key(|n| n.as_str().unwrap().to_string());
+    unique.dedup();
+    assert!(
+        names.len() > unique.len(),
+        "the cut splits faces: {names:?}"
+    );
+    let all = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "then": "replace"}),
+    );
+    assert_eq!(all["count"].as_u64(), Some(unique.len() as u64));
+    assert_eq!(all["selection"]["count"], all["count"]);
+    let top = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"normal": {"along": "z"}, "area": {"eq": 260, "tol": 1e-6}}}),
+    );
+    assert_eq!(top["count"], 1, "both pieces, 2 × 13 × 10: {top}");
+}
+
+/// A part with a concave fillet of the same radius as its hole: the
+/// fillet is a cylinder turned inside out too, but only a quarter of the
+/// way round its axis, so it is not a hole.
+#[test]
+fn a_concave_fillet_of_the_holes_radius_is_not_a_hole() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Base", "size": [40, 40, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Wall", "size": [10, 40, 30], "position": [0, 0, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Base", "tool": "Wall", "name": "L"}),
+    );
+    // The inner edge of the L, along y at x = 10, z = 10.
+    let edges = run(&mut s, "document.edges", json!({"feature": "L"}));
+    let inner = edges["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            let at = |p: &Value, k: usize| p[k].as_f64().unwrap();
+            [&e["start"], &e["end"]]
+                .iter()
+                .all(|p| (at(p, 0) - 10.0).abs() < 1e-9 && (at(p, 2) - 10.0).abs() < 1e-9)
+        })
+        .expect("the inner edge")
+        .clone();
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [inner["faces"]], "radius": 3, "name": "Round"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": 3, "height": 20, "position": [30, 20, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Round", "tool": "Drill", "name": "Part"}),
+    );
+    let walls = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"surface": "cylinder", "radius": 3}}),
+    );
+    assert_eq!(walls["count"], 2, "the hole and the fillet: {walls}");
+    let holes = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"hole": true, "radius": 3}}),
+    );
+    assert_eq!(holes["count"], 1, "{holes}");
+    assert_eq!(holes["items"][0]["origin"]["name"], "Drill");
+}
+
+/// A feature cannot be named the way an id is written, so `F1` always
+/// means the feature with id 1; a selection stays on its feature when
+/// names change.
+#[test]
+fn a_selection_stays_on_its_feature_when_names_change() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [1, 1, 1]}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [3, 0, 0]}),
+    );
+    let face = run(
+        &mut s,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "F1", "normal": {"along": "z"}}}),
+    )["items"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"name": "F1"}, {"kind": "face", "name": face, "feature": "F1"}]}),
+    );
+    for bad in ["F2", "F1", "F007"] {
+        let e = s
+            .execute("feature.rename", &json!({"feature": "F1", "name": bad}))
+            .unwrap_err();
+        assert!(e.message().contains("F followed by digits"), "{e}");
+        assert!(
+            s.execute("feature.block", &json!({"size": [1, 1, 1], "name": bad}))
+                .is_err()
+        );
+    }
+    run(
+        &mut s,
+        "feature.rename",
+        json!({"feature": "F1", "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.rename",
+        json!({"feature": "F2", "name": "F1x"}),
+    );
+    let got = run(&mut s, "select.get", json!({}));
+    assert_eq!(got["items"][0]["feature"], "F1", "{got}");
+    assert_eq!(got["items"][0]["name"], "Plate");
+    assert_eq!(got["items"][1]["feature"], "F1");
+    assert_eq!(got["dropped"], json!([]));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    let back = run(&mut s, "select.get", json!({}));
+    assert_eq!(back["items"][0]["feature"], "F1");
+    assert_eq!(back["items"][0]["name"], "Block1");
+}
