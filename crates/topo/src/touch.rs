@@ -219,7 +219,7 @@ pub fn touches(
                 continue;
             }
             let distance = edge.curve.eval(t).distance(p);
-            if distance <= near && !at_a_corner(body, &by_ends, v, edge, p, near) {
+            if distance <= near && !at_a_corner(body, &by_ends, v, edge, p, distance, near) {
                 pairs.push(Touch {
                     vertex: v,
                     touches: Touched::Edge(id),
@@ -252,13 +252,19 @@ pub fn touches(
 /// within `near` of the other side without the shell coming back to
 /// itself there; the same margin as the boolean's for two faces at a
 /// shared edge (`wedged`). A vertex further from the corner than that is
-/// looked at as before.
+/// looked at as before. The corner has to open (sin(φ/2) above
+/// [`CORNER_GUARD`]) and the vertex has to be as far from the edge as
+/// the corner puts it (at least half of `d sin φ`, `d` its distance from
+/// `w`): two edges that leave a vertex along one line, or that come back
+/// towards each other, are the shell meeting itself (a grid of blocks
+/// sharing an edge).
 fn at_a_corner(
     body: &Body,
     by_ends: &std::collections::BTreeMap<(u32, u32), Vec<u32>>,
     v: u32,
     edge: &crate::Edge,
     p: Vec3,
+    distance: f64,
     near: f64,
 ) -> bool {
     // The unit direction out of vertex `w` along `e`.
@@ -290,10 +296,15 @@ fn at_a_corner(
                 };
                 // sin(φ/2) from the two unit directions.
                 let half = 0.5 * (side - along).length();
-                half > 0.0 && q.distance(p) * half <= near
+                let d = q.distance(p);
+                half > CORNER_GUARD && d * half <= near && distance >= d * half
             })
     })
 }
+
+/// Below this sine of half the angle two edges leave a vertex along one
+/// line, to rounding: the guard tangency is read by in the boolean.
+const CORNER_GUARD: f64 = 1e-6;
 
 /// The vertices in a grid of cells, about one vertex per cell (never
 /// narrower than the distance looked for), so that the vertices in a box

@@ -41,6 +41,9 @@ pub(crate) fn build(
         ));
     }
     let mut sections = Vec::with_capacity(count);
+    // Per section, why its sketch is no closed profile when it is an open
+    // chain instead.
+    let mut open: Vec<Option<String>> = Vec::with_capacity(count);
     let mut tolerance = None;
     for (index, section) in feature.sections.iter().enumerate() {
         let number = index + 1;
@@ -97,6 +100,7 @@ pub(crate) fn build(
                     outline,
                     start: section.start.map(|e| e.0),
                 });
+                open.push(Some(reason.to_string()));
                 continue;
             }
         };
@@ -130,6 +134,20 @@ pub(crate) fn build(
             outline: profile.outer.clone(),
             start: section.start.map(|e| e.0),
         });
+        open.push(None);
+    }
+    // Closed and open sections mixed: most likely a profile left open by
+    // mistake, so the open one is named with why it is no closed profile.
+    if let (Some(at), Some(closed)) = (
+        open.iter().position(Option::is_some),
+        open.iter().position(Option::is_none),
+    ) && let Some(Some(reason)) = open.get(at)
+    {
+        return Err(format!(
+            "sections: section {}: {reason}; its curves make an open chain, but section {} is a closed loop: the sections of a loft are all closed loops (a solid) or all open chains (a sheet)",
+            at + 1,
+            closed + 1
+        ));
     }
     let tolerance =
         tolerance.ok_or_else(|| "sections: a loft needs sketches to pass through".to_string())?;
