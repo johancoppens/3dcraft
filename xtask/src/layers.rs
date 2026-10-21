@@ -19,6 +19,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("solve", 3),
     ("kernel", 3),
     ("tess", 3),
+    ("stepread", 3),
     ("regen", 4),
     ("render", 4),
     ("gpu", 4),

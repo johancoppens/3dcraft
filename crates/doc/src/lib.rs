@@ -12,11 +12,13 @@
 //! here without being saved (AGENTS.md §8).
 
 pub mod appearance;
+pub mod blob;
 pub mod datum;
 pub mod name;
 pub mod sketch;
 
 pub use appearance::{Appearance, BodyProperties, Material};
+pub use blob::{Blob, sha256};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
     PlaneBy, PlaneRef, PointRef, WorldAxis,
@@ -564,6 +566,22 @@ pub struct Split {
     pub number: Option<u64>,
 }
 
+/// A solid or a sheet read from a STEP file (ISO 10303-21) that the
+/// document holds: the file's bytes, and which of its solids this is.
+/// The document regenerates the body from the bytes, without the file
+/// on disk (AGENTS.md rule 2); `craft3d-format` stores the bytes once per
+/// content beside the manifest. `file_name` is the name the file had,
+/// without its directories, for messages only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Import {
+    pub file_name: String,
+    /// The solid's position among the file's solids and sheets, in the
+    /// order of their instances in the file (`craft3d-stepread`).
+    pub solid: u32,
+    pub data: Blob,
+}
+
 /// How two bodies are combined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -925,6 +943,7 @@ pub enum FeatureKind {
     OffsetProfile(OffsetProfile),
     Fill(Fill),
     Split(Split),
+    Import(Import),
 }
 
 impl FeatureKind {
@@ -961,6 +980,7 @@ impl FeatureKind {
             FeatureKind::OffsetProfile(_) => "offsetProfile",
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
+            FeatureKind::Import(_) => "import",
         }
     }
 
@@ -1041,7 +1061,8 @@ impl FeatureKind {
             | FeatureKind::DatumPoint(_)
             | FeatureKind::DatumHelix(_)
             | FeatureKind::OffsetProfile(_)
-            | FeatureKind::Fill(_) => None,
+            | FeatureKind::Fill(_)
+            | FeatureKind::Import(_) => None,
         }
     }
 
@@ -1157,7 +1178,8 @@ impl FeatureKind {
             | FeatureKind::Sweep(_)
             | FeatureKind::DeleteFace(_)
             | FeatureKind::Fill(_)
-            | FeatureKind::Split(_) => {
+            | FeatureKind::Split(_)
+            | FeatureKind::Import(_) => {
                 out = Vec::new();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
@@ -1268,7 +1290,8 @@ impl FeatureKind {
             | FeatureKind::Sweep(_)
             | FeatureKind::DeleteFace(_)
             | FeatureKind::Fill(_)
-            | FeatureKind::Split(_) => Vec::new(),
+            | FeatureKind::Split(_)
+            | FeatureKind::Import(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),

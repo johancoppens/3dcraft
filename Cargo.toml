@@ -29,6 +29,7 @@ craft3d-testkit = { path = "crates/testkit" }
 craft3d-meshio = { path = "crates/meshio" }
 craft3d-drawing = { path = "crates/drawing" }
 craft3d-step = { path = "crates/step" }
+craft3d-stepread = { path = "crates/stepread" }
 craft3d-zipstore = { path = "crates/zipstore" }
 craft3d-io = { path = "crates/io" }
 # Not modelling code: image encoding only (decisions.md, D10).
