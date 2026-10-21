@@ -35,5 +35,22 @@
       "volume": 23280.000000000007,
       "area": 7792.000000000003
     }
+  ],
+  "faceAppearances": [
+    {
+      "color": "#2f6fd6",
+      "face": "F1:face(1)",
+      "feature": "F1"
+    },
+    {
+      "color": "#14a03c",
+      "face": "F3:copy(1)/F2:face(0)",
+      "feature": "F3"
+    },
+    {
+      "color": "#c8102e",
+      "face": "F4:copy(1)/F3:copy(0)/F1:face(5)",
+      "feature": "F4"
+    }
   ]
 }

@@ -606,3 +606,148 @@ fn bad_parameters_are_errors_and_change_nothing() {
         json!({"faces": ["F1:face(0)"], "color": "#fff"}),
     );
 }
+
+#[test]
+fn a_face_coloured_by_a_name_that_becomes_an_alias_keeps_its_colour() {
+    // Three blocks in a row; instance 1's top green. Moved together, the
+    // tops merge into one face named after instance 0, with instance 1's
+    // name as an alias: the merged top is green (the entry is found by
+    // the alias), never silently dropped.
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Seed"}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Seed", "count": 3, "step": [20, 0, 0], "name": "Row"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F2:copy(1)/F1:face(1)"], "color": GREEN}),
+    );
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [10, 0, 0]}),
+    );
+    assert_eq!(coloured(&mut s, "F2", GREEN), ["F2:copy(0)/F1:face(1)"]);
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("lostFaces").is_none(), "{inspect}");
+    // Several of its names with colours: the face's own name first, then
+    // its aliases in instance order. (A name given to face.appearance is
+    // read as the face's own name, so instance 2's top is coloured while
+    // the tops are apart.)
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [20, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F2:copy(2)/F1:face(1)"], "color": RED}),
+    );
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [10, 0, 0]}),
+    );
+    assert_eq!(coloured(&mut s, "F2", GREEN).len(), 1);
+    // The merged face's own name, by any of its names.
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Row", "faces": ["F2:copy(2)/F1:face(1)"], "color": BLUE}),
+    );
+    assert_eq!(coloured(&mut s, "F2", BLUE).len(), 1);
+    assert!(coloured(&mut s, "F2", GREEN).is_empty());
+    // Apart again: each top its own colour.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [20, 0, 0]}),
+    );
+    assert_eq!(coloured(&mut s, "F2", BLUE), ["F2:copy(0)/F1:face(1)"]);
+    assert_eq!(coloured(&mut s, "F2", GREEN), ["F2:copy(1)/F1:face(1)"]);
+    assert_eq!(coloured(&mut s, "F2", RED), ["F2:copy(2)/F1:face(1)"]);
+}
+
+#[test]
+fn a_body_colour_on_a_later_feature_goes_before_an_earlier_face_colour() {
+    let mut s = session();
+    new_doc(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Box"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Box", "translate": [0, 0, 5], "name": "Up"}),
+    );
+    assert_eq!(coloured(&mut s, "F2", BLUE), ["F2:copy(0)/F1:face(1)"]);
+    // The nearest feature wins: the later body's colour, on every face.
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Up", "color": RED}),
+    );
+    assert_eq!(coloured(&mut s, "F2", RED).len(), 6);
+    // A face colour on that later body goes before it again.
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F2:copy(0)/F1:face(1)"], "color": GREEN}),
+    );
+    assert_eq!(coloured(&mut s, "F2", GREEN), ["F2:copy(0)/F1:face(1)"]);
+    assert_eq!(coloured(&mut s, "F2", RED).len(), 5);
+}
+
+#[test]
+fn a_step_file_brings_its_face_colours_back_as_face_colours() {
+    let dir = workdir("face-appearance", "step-import");
+    let mut s = session_in(&dir);
+    slotted_plate(&mut s);
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"body": "Cut", "faces": ["F3:copy(1)/F2:face(0)"], "color": GREEN}),
+    );
+    let mut before: Vec<Option<[u8; 3]>> = scene_faces(&mut s, "F3")
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect();
+    run(&mut s, "file.export", json!({"path": "faces.step"}));
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "file.import", json!({"path": "faces.step"}));
+    // The body has no colour of its own (some faces have none in the
+    // file); the styled faces keep theirs, by their names in the import.
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(
+        inspect["bodies"][0].get("appearance").is_none(),
+        "{inspect}"
+    );
+    assert_eq!(inspect["faceAppearances"].as_array().unwrap().len(), 3);
+    let mut after: Vec<Option<[u8; 3]>> = scene_faces(&mut s, "F1")
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect();
+    before.sort();
+    after.sort();
+    assert_eq!(after, before);
+    // One undo step for the import and its colours.
+    run(&mut s, "edit.undo", json!({}));
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(inspect.get("faceAppearances").is_none());
+}

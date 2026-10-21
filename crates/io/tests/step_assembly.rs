@@ -623,6 +623,19 @@ fn colours_read_back_per_solid() {
     assert_eq!(bodies[0].color, Some([10, 20, 30]));
     let bodies = read(&exported(&body, None, &[])).unwrap();
     assert_eq!(bodies[0].color, None);
+    // Some faces styled, others not: the body has no colour (the others
+    // have the solid's, which the file does not give); the styled faces
+    // keep their own (2026-10-22, face colours).
+    let mut some = vec![None; body.faces.len()];
+    some[1] = Some([10, 20, 30]);
+    some[2] = Some([10, 20, 30]);
+    let file = exported(&body, None, &some);
+    let bodies = read(&file).unwrap();
+    assert_eq!(bodies[0].color, None);
+    let text = craft3d_step::write(&file).unwrap();
+    let parsed = parse(text.as_bytes()).unwrap();
+    let built = parsed.build(0, &options()).unwrap();
+    assert_eq!(parsed.face_colors(&built.face_ids), some);
     // A colour that is no colour (outside 0 to 1) is left out, the body
     // read.
     let mut file = exported(&body, Some([200, 100, 50]), &[]);

@@ -151,9 +151,12 @@ fn own_appearance(doc: &Document, feature: FeatureId) -> Option<Appearance> {
 }
 
 /// The colour given to a face of the body of `at` whose name there is the
-/// copy in `at` along `path` of `of` (`way`), or `name` itself.
+/// copy in `at` along `path` of `of` (`way`), or `name` itself: an entry
+/// of that name, else one of another name the same face answers to there
+/// ([`colour_by_names`]).
 fn own_face_appearance(
     doc: &Document,
+    regen: &Regen,
     at: FeatureId,
     way: Option<(&[u64], &PersistentName)>,
     name: &PersistentName,
@@ -162,7 +165,7 @@ fn own_face_appearance(
     if entries.is_empty() {
         return None;
     }
-    match way {
+    let direct = match way {
         Some((path, of)) => entries
             .iter()
             .find(|e| {
@@ -174,7 +177,41 @@ fn own_face_appearance(
             })
             .map(|e| e.appearance),
         None => doc.face_appearance(at, name),
+    };
+    if direct.is_some() {
+        return direct;
     }
+    // The face may have another name there too (an alias: faces of
+    // several instances or operands merged into one).
+    let names = regen.feature(at)?.names.as_deref()?;
+    if names.aliases.is_empty() {
+        return None;
+    }
+    let here = match way {
+        Some((path, of)) => PersistentName {
+            of: Some(std::sync::Arc::new(of.clone())),
+            ..PersistentName::new(at, NameRole::Copy, path.to_vec())
+        },
+        None => name.clone(),
+    };
+    let face = craft3d_regen::faces_named(names, &here).first()?.0;
+    colour_by_names(doc, at, names, usize::try_from(face).ok()?)
+}
+
+/// The colour given to face `face` of the body of `feature` (whose names
+/// are `names`) by any name it answers to: its own name first, then its
+/// aliases in their order (the target's or the first instance's before
+/// the others'), the first that has one. So a face that several coloured
+/// faces were merged into has the colour of the first of them.
+fn colour_by_names(
+    doc: &Document,
+    feature: FeatureId,
+    names: &craft3d_regen::Names,
+    face: usize,
+) -> Option<Appearance> {
+    names
+        .names_of(face)
+        .find_map(|name| doc.face_appearance(feature, name))
 }
 
 /// The appearance of the body `feature` makes (see the module
@@ -229,7 +266,7 @@ fn face_appearance(
     let mut current = name;
     for _ in 0..=doc.features.len().saturating_mul(2) {
         let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
-        if let Some(own) = own_face_appearance(doc, at, here, current) {
+        if let Some(own) = own_face_appearance(doc, regen, at, here, current) {
             return Some(own);
         }
         if let Some(own) = own_appearance(doc, at) {
@@ -287,11 +324,11 @@ pub fn face_appearances(
     }
     let mut memo = Memo::default();
     let body = body_appearance_with(doc, regen, &mut memo, feature);
-    let names = regen
+    let all = regen
         .feature(feature)
-        .and_then(|result| result.names.as_deref())
-        .map(|names| names.faces.as_slice())
-        .unwrap_or_default();
+        .and_then(|result| result.names.as_deref());
+    let names = all.map(|names| names.faces.as_slice()).unwrap_or_default();
+    let has_entries = !doc.face_properties(feature).is_empty();
     // A face whose name does not say it came in through an instance of
     // this feature has the body's colour, as the walk would find at its
     // first step (and when the feature has an appearance of its own,
@@ -300,8 +337,13 @@ pub fn face_appearances(
     (0..faces)
         .map(|face| match names.get(face) {
             Some(name) => {
-                if let Some(own) = doc.face_appearance(feature, name) {
-                    Some(own)
+                let own = if has_entries {
+                    all.and_then(|all| colour_by_names(doc, feature, all, face))
+                } else {
+                    None
+                };
+                if own.is_some() {
+                    own
                 } else if walks && name.role == NameRole::Copy && name.feature == feature {
                     face_appearance(doc, regen, &mut memo, feature, name).or(body)
                 } else {

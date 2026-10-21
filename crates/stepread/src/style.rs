@@ -12,10 +12,12 @@
 //! to a fixed depth (the entities above, no recursion), so a hostile
 //! file cannot make it loop.
 //!
-//! A body has one colour in the document (`craft3d-doc`'s appearance per
-//! body), so a solid takes its own style, else that of one of its
-//! shells, else the colour most of its styled faces have (the first of
-//! equals in face order); faces' own colours beyond that are not kept.
+//! A body has one colour of its own in the document (`craft3d-doc`'s
+//! appearance per body): a solid takes its own style, else that of one of
+//! its shells, else, when every face is styled, the colour most of its faces
+//! have (the first of equals in face order). Faces whose own colour differs from it keep
+//! theirs as face colours (`Parsed::face_colors`, given to the faces by
+//! `file.import`).
 
 use crate::{Parsed, real};
 use craft3d_step::Param;
@@ -258,7 +260,13 @@ pub(crate) fn color_of(parsed: &Parsed, item: u64, faces: &[u64]) -> Option<[u8;
             return found;
         }
     }
-    // The colour most faces have; of equals, the one met first.
+    // The colour most faces have; of equals, the one met first. Only
+    // when every face has one: a face without a style of its own has the
+    // solid's, which the file does not give, so the body has none, and
+    // the faces that have one keep theirs as face colours.
+    if faces.iter().any(|face| !colors.contains_key(face)) {
+        return None;
+    }
     let mut counts: BTreeMap<[u8; 3], (usize, usize)> = BTreeMap::new();
     for (at, face) in faces.iter().enumerate() {
         if let Some(&c) = colors.get(face) {

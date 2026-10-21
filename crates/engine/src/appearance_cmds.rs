@@ -20,6 +20,7 @@ use craft3d_doc::{
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -28,7 +29,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("body.material", "Body Material", r#"{"body": id or name, "name": string, "density": number (kg/m³) or "7.85 g/cm3", "clear": boolean = false}"#,
         "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3). document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep; body.material itself measures nothing and says which bodies have the material. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). clear takes it away.", doc: true, body_material_cmd),
     spec!("face.appearance", "Face Colour", r##"{"faces": [persistent name], "body": id or name = the body that has the face, "selection": boolean = false, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "clear": boolean = false}"##,
-        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour; a colour set on a later feature's body goes before it. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, face_appearance_cmd),
+        "Gives faces a colour of their own (sRGB: \"#2f6fd6\" or [47, 111, 214]), and optionally metallic and roughness (0 to 1). The faces are given by their persistent names (as document.inspect, select.get or ui.pick give them; body says whose body when the name alone does not), or selection: true takes the faces of the current selection (select.get): select a face, then colour it. The colour is kept in the document by the body's feature and the face's name there, so it survives every regeneration and every upstream edit that keeps the face; the faces later features make of it (the copies of a pattern, a transform or a boolean, the pieces of a face cut in two) take it too, by the rule of body.appearance (the wall a tool cut has the target's colour). It goes before the body's colour at the same feature; a colour set with body.appearance on a strictly later feature's body goes before it (that body is then all in that colour, as for any earlier colour), and a face colour on that later body before that again. A face that several faces were merged into (aliases) has the colour of its own name, else of its aliases in their order. A face an edit takes away keeps its entry, colours nothing and is listed under lostFaces here and in document.inspect (undo brings the face and its colour back); it never moves to another face. clear takes the colour away (also a lost face's, by its name and body). The viewport, view.render, view.replay and the 3MF and STEP exports show it. One undo step.", doc: true, face_appearance_cmd),
 ];
 
 /// The feature of `key`, which must be one that can make a body.
@@ -313,6 +314,10 @@ fn find_face(
     }
 }
 
+/// The colours of a body's faces and its faces by every name they answer
+/// to, for `face.appearance`'s reply.
+type Shown<'a> = (Vec<Option<Appearance>>, BTreeMap<&'a PersistentName, usize>);
+
 fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "face.appearance";
     let p = Params::new(
@@ -355,9 +360,10 @@ fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
         let doc = open.history.current();
         let mut resolver = Resolver::new(doc, &regen);
         let mut faces: Vec<(FeatureId, PersistentName)> = Vec::with_capacity(wanted.len());
+        let mut seen = std::collections::BTreeSet::new();
         for (body, name) in &wanted {
             let found = find_face(doc, &mut resolver, (body.as_deref(), name), clear)?;
-            if !faces.contains(&found) {
+            if seen.insert(found.clone()) {
                 faces.push(found);
             }
         }
@@ -379,27 +385,37 @@ fn face_appearance_cmd(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    let listed: Vec<Value> = faces
-        .iter()
-        .map(|(feature, face)| {
-            // What the face shows now: its own colour, or (cleared) what
-            // it takes from elsewhere.
-            let shown = regen
-                .feature(*feature)
-                .and_then(|r| Some((r.body.as_ref()?, r.names.as_deref()?)))
-                .and_then(|(body, names)| {
-                    let index = craft3d_regen::faces_named(names, face).first()?.0;
-                    let all = face_appearances(doc, &regen, *feature, body.faces.len());
-                    all.get(usize::try_from(index).ok()?).copied()
-                })
-                .flatten();
-            json!({
-                "feature": feature.to_string(),
-                "face": face.to_string(),
-                "shown": shown.as_ref().map_or(Value::Null, appearance_json),
+    // What each face shows now (its own colour, or, cleared, what it
+    // takes from elsewhere): the colours of a body found once, and its
+    // faces by name once.
+    let mut bodies: BTreeMap<FeatureId, Option<Shown<'_>>> = BTreeMap::new();
+    let mut listed: Vec<Value> = Vec::with_capacity(faces.len());
+    for (feature, face) in &faces {
+        let shown = bodies
+            .entry(*feature)
+            .or_insert_with(|| {
+                let result = regen.feature(*feature)?;
+                let (body, names) = (result.body.as_ref()?, result.names.as_deref()?);
+                let mut by_name = BTreeMap::new();
+                for index in 0..names.faces.len() {
+                    for name in names.names_of(index) {
+                        by_name.entry(name).or_insert(index);
+                    }
+                }
+                Some((
+                    face_appearances(doc, &regen, *feature, body.faces.len()),
+                    by_name,
+                ))
             })
-        })
-        .collect();
+            .as_ref()
+            .and_then(|(all, by_name)| all.get(*by_name.get(face)?).copied())
+            .flatten();
+        listed.push(json!({
+            "feature": feature.to_string(),
+            "face": face.to_string(),
+            "shown": shown.as_ref().map_or(Value::Null, appearance_json),
+        }));
+    }
     let mut out = json!({
         "faces": listed,
         "appearance": appearance.as_ref().map_or(Value::Null, appearance_json),

@@ -337,6 +337,17 @@ pub(crate) fn boolean(param: &Param) -> Option<bool> {
 }
 
 impl Parsed {
+    /// The colour each of `faces` (instance ids of `ADVANCED_FACE`s, as
+    /// [`Read::face_ids`] lists a body's) is styled with in the file
+    /// itself, in their order: `None` for a face without a style of its
+    /// own (it has its solid's).
+    pub fn face_colors(&self, faces: &[u64]) -> Vec<Option<[u8; 3]>> {
+        faces
+            .iter()
+            .map(|face| self.colors.get(face).copied())
+            .collect()
+    }
+
     /// The solids and sheets, in file order.
     pub fn items(&self) -> &[Item] {
         &self.items
