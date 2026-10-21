@@ -129,7 +129,8 @@ pub(crate) fn source_of(
 /// (`F3:side(e1)`, which is no copy). A link with the one number 0 goes on
 /// through instance 0 until it reaches the feature of the link after it;
 /// a link with other numbers takes them one step each, the last onto
-/// that feature (docs/design/names.md). `None` for a name that is
+/// that feature, or, when the link after it is no copy, onto a body that
+/// goes on through instance 0 to it (docs/design/names.md). `None` for a name that is
 /// not a copy, and for a way that does not lead there in the history as
 /// it is.
 pub(crate) fn steps<'a>(
@@ -163,8 +164,16 @@ pub(crate) fn steps<'a>(
                 steps.push((at, instance));
                 at = source_of(doc, earlier, at, instance)?;
             }
-            if at != next.feature {
-                return None;
+            // Down to a name that is no copy, the way goes on through
+            // instance 0 (`PersistentName::copy` leaves that run out).
+            let absorbs = !(next.role == NameRole::Copy && next.by.is_none());
+            while at != next.feature {
+                if !absorbs {
+                    return None;
+                }
+                budget = budget.checked_sub(1)?;
+                steps.push((at, 0));
+                at = source_of(doc, earlier, at, 0)?;
             }
         }
         link = next;

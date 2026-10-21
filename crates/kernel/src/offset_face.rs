@@ -671,6 +671,21 @@ pub(crate) fn offset_for(
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, KernelError> {
+    offset_for_known(body, offsets, blends, None, operation, tolerance)
+}
+
+/// [`offset_for`], with the fillets among the faces that move already
+/// recognised (`crate::offset_blend::fillets` of exactly those faces and
+/// `blends`), so a caller that needed them first does not prove them
+/// twice.
+pub(crate) fn offset_for_known(
+    body: &Body,
+    offsets: &[FaceOffset],
+    blends: &Blends,
+    known: Option<BTreeMap<FaceId, Fillet>>,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -737,7 +752,10 @@ pub(crate) fn offset_for(
     // would reach zero.
     let moving: BTreeMap<FaceId, f64> = offsets.iter().map(|o| (o.face, o.distance)).collect();
     let keys: BTreeSet<FaceId> = moving.keys().copied().collect();
-    let fillets = crate::offset_blend::fillets(body, &keys, &blends.radii, tolerance);
+    let fillets = match known {
+        Some(known) => known,
+        None => crate::offset_blend::fillets(body, &keys, &blends.radii, tolerance),
+    };
     if let Some(faces) = crate::offset_blend::stays(&fillets, &moving) {
         return Err(refuse(operation, faces, None, crate::offset_blend::STAYS));
     }

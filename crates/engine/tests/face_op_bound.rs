@@ -35,7 +35,7 @@ fn the_start_cap_of_every_blade_moves_alike() {
     use craft3d_geom::allowance;
     let mut verdicts = Vec::new();
     for cap in [
-        "F13:copy(1)/F10:copy(0)/F9:startCap(e5,e8)",
+        "F13:copy(1)/F9:startCap(e5,e8)",
         "F13:copy(1,1)/F9:startCap(e5,e8)",
         "F13:copy(1,2)/F9:startCap(e5,e8)",
     ] {

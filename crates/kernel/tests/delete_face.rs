@@ -431,9 +431,104 @@ fn what_is_not_built_is_refused_with_the_faces() {
     let (round, blends) = filleted(&block, &two, 0.5, k);
     let message = refused(&round, &blends[..1], k);
     assert!(message.contains("more than three faces meet"), "{message}");
-    // Both at once meet: they are no holes, and only one strip at a time
-    // is collapsed.
-    refused(&round, &blends, k);
+    // Both at once (since 2026-10-21) are collapsed together: the block
+    // (`blends_that_meet_deleted_together_are_the_block`).
+    healed_to(&round, &blends, &block, k);
+    // The ball without the fillets round it is still refused: the
+    // fillets would end against nothing.
+    let others: Vec<FaceId> = made
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| matches!(f, FilletFace::Fillet(_)))
+        .map(|(i, _)| FaceId(i as u32))
+        .take(2)
+        .collect();
+    let mut some = others.clone();
+    some.push(FaceId(ball as u32));
+    refused(&made.body, &some, k);
+}
+
+/// Blends that meet, deleted together (2026-10-21, the general method of
+/// a shell as thick as its rounds): every strip's ends and every corner
+/// shrink to points, the sides of each strip become one edge, and the
+/// faces round them are continued until they meet. Three fillets and
+/// the ball in their corner, two fillets in a mitre, the twelve rounds
+/// and eight balls of a block rounded all round, three chamfers and the
+/// flat corner between them: each time the block, at three scales and
+/// turned.
+#[test]
+fn blends_that_meet_deleted_together_are_the_block() {
+    let turn =
+        craft3d_math::Transform::rotation(craft3d_math::Vec3::new(1.0, 0.3, -0.6), 0.9).unwrap();
+    for k in SCALES {
+        for turned in [false, true] {
+            let place = |body: Body| {
+                if turned {
+                    body.transformed(&turn).unwrap()
+                } else {
+                    body
+                }
+            };
+            let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+            let mut all = Vec::new();
+            for (x, y) in [(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (4.0, 3.0)] {
+                all.push([x, y, 1.0]);
+            }
+            for z in [0.0, 2.0] {
+                all.extend([[2.0, 0.0, z], [2.0, 3.0, z], [0.0, 1.5, z], [4.0, 1.5, z]]);
+            }
+            let sets: [Vec<[f64; 3]>; 3] = [
+                vec![[2.0, 0.0, 2.0], [0.0, 1.5, 2.0], [0.0, 0.0, 1.0]],
+                vec![[2.0, 0.0, 2.0], [0.0, 1.5, 2.0]],
+                all,
+            ];
+            for middles in &sets {
+                let edges: Vec<EdgeId> = middles.iter().map(|m| edge_at(&block, k, *m)).collect();
+                let request: Vec<FilletEdge> = edges
+                    .iter()
+                    .map(|edge| FilletEdge {
+                        edge: *edge,
+                        radius: 0.5 * k,
+                    })
+                    .collect();
+                let made = fillet(&block, &request, &tolerance(k)).unwrap();
+                let blends: Vec<FaceId> = made
+                    .faces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| !matches!(f, FilletFace::Kept(_)))
+                    .map(|(i, _)| FaceId(i as u32))
+                    .collect();
+                healed_to(&place(made.body), &blends, &place(block.clone()), k);
+            }
+            // Three chamfers and the flat triangle in their corner.
+            let corner = [[2.0, 0.0, 2.0], [0.0, 1.5, 2.0], [0.0, 0.0, 1.0]];
+            let request: Vec<ChamferEdge> = corner
+                .iter()
+                .map(|m| {
+                    let edge = edge_at(&block, k, *m);
+                    ChamferEdge {
+                        edge,
+                        first: faces_of(&block, edge)[0],
+                        size: ChamferSize::Distances {
+                            first: 0.5 * k,
+                            second: 0.5 * k,
+                        },
+                    }
+                })
+                .collect();
+            let made = chamfer(&block, &request, &tolerance(k)).unwrap();
+            let bevels: Vec<FaceId> = made
+                .faces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| !matches!(f, ChamferFace::Kept(_)))
+                .map(|(i, _)| FaceId(i as u32))
+                .collect();
+            healed_to(&place(made.body), &bevels, &place(block.clone()), k);
+        }
+    }
 }
 
 #[test]

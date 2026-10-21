@@ -36,22 +36,25 @@ pub(crate) fn build(
         "faces",
         NOUN,
     )?;
-    // The corner where blends meet is no face that can go on its own:
-    // said by its name before the kernel says it in numbers.
-    for (index, name) in deletion.faces.iter().enumerate() {
-        if matches!(
-            name.root().role,
-            NameRole::ChamferCorner | NameRole::FilletCorner
-        ) {
-            return Err(format!(
-                "faces.{index}: {name} is the corner where three blends meet; deleting a corner is not built (delete the blends with feature.suppress, or edit them)"
-            ));
-        }
-    }
     let picked = face_ops::pick(&deletion.faces, "faces", NOUN, source_id, &source)?;
     let unit = doc.units.length.symbol();
-    let made = delete_faces(source.body, &picked, &source.tolerance)
-        .map_err(|error| explain(error, "faces", 1.0, unit, &source))?;
+    let made = delete_faces(source.body, &picked, &source.tolerance).map_err(|error| {
+        // The corner where blends meet goes only with the blends round
+        // it (since 2026-10-21): said by its name.
+        let corner = deletion.faces.iter().enumerate().find(|(_, name)| {
+            matches!(
+                name.root().role,
+                NameRole::ChamferCorner | NameRole::FilletCorner
+            )
+        });
+        match corner {
+            Some((index, name)) => format!(
+                "faces.{index}: {name} is the corner where three blends meet; it goes only together with the blends that meet there ({})",
+                explain(error, "faces", 1.0, unit, &source)
+            ),
+            None => explain(error, "faces", 1.0, unit, &source),
+        }
+    })?;
     let contributors: Contributors = made
         .faces
         .iter()

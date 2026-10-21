@@ -334,7 +334,7 @@ impl Reason {
                 "a freeform edge is not built yet (the fillet face would be a canal surface that is neither a cylinder nor a torus)"
             }
             Reason::Spindle => {
-                "the radius is half the rim's or more: the ball's centre would come nearer to the axis than its own radius, and the fillet face would be a torus that reaches its own axis, which is not built yet"
+                "the radius is half the rim's or more and less than the rim's: the ball's centre would come nearer to the axis than its own radius, and the fillet face would be a torus that reaches its own axis, which is not built yet; the rim's own radius is (along an earlier round of that radius the fillet is a piece of the ball), and so is less than half of it"
             }
             Reason::EndsBadly => {
                 "the fillet does not end cleanly: at one end of the edge it would stop in a face of its own, because the faces there are neither all convex or all concave like the edge, nor square to it, nor does the edge go on in another filleted edge; fillet the edges it continues in as well, or leave this one out"
@@ -655,6 +655,11 @@ struct Plan {
     /// edge. The tool is cut there, so that its end lies in the plane of
     /// the face it runs into (see [`end_plane`]).
     trims: [Option<(Vec3, Vec3)>; 2],
+    /// A fillet along a circle whose ball would reach past the axis (its
+    /// radius more than the rim's, along an earlier round more than the
+    /// round's): the face across the rim and the radius that puts the
+    /// ball's centre on the axis, which [`blend_inner`] tries.
+    past_axis: Option<(FaceId, f64)>,
     /// Along a straight edge next to a cylinder: the blend in the plane
     /// across the edge ([`section`]). `None` between two planes and along
     /// a circle.
@@ -679,6 +684,22 @@ impl Plan {
 
     fn largest(&self) -> f64 {
         self.distances[0].max(self.distances[1])
+    }
+
+    /// Whether the border on face `side` (0 or 1) of a blend along a
+    /// circle lies on the circle's axis, within `tol`: the foot there is
+    /// as far toward the axis as the rim is from it, so the border is one
+    /// point (a fillet along an earlier round of its own radius: the
+    /// ball's centre on the axis, the fillet a piece of the ball, which
+    /// touches the face across the round only in that point).
+    fn border_on_axis(&self, side: usize, tol: f64) -> bool {
+        let Path::Circle { radius, radial, .. } = &self.path else {
+            return false;
+        };
+        let Some(foot) = self.feet().get(side).copied() else {
+            return false;
+        };
+        (radius + foot.dot(*radial)).abs() <= tol
     }
 
     /// Where the blend leaves the first and the second face: offsets from
@@ -955,6 +976,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         }
         section = Some(made);
     }
+    let mut past_axis = None;
     if let (
         Some(radius),
         Path::Circle {
@@ -965,13 +987,28 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     ) = (round, &path)
     {
         // The middle of the ball's section has to stay clear of the axis
-        // by more than the radius: a torus that reaches its own axis is
-        // not a surface the kernel has.
+        // by more than the radius, or lie on it: a torus that reaches its
+        // own axis is not a surface the kernel has.
         let [distance, _] = distances;
         let centre = (into_first + into_second) * (distance / (1.0 + cosine));
         let from_axis = rim + centre.dot(*radial);
-        if from_axis.is_finite() && from_axis > tol && from_axis - radius <= 2.0 * tol {
+        // On the axis (within the tolerance, as `revolve` takes it) the
+        // fillet face is a piece of the ball about that centre: the rim
+        // of an earlier round of the same radius (2026-10-21).
+        if from_axis > tol && from_axis - radius <= 2.0 * tol {
             return Err(refused(edge, Reason::Spindle));
+        }
+        // Past the axis no ball of this size touches the face across
+        // the rim; the radius that puts its centre on the axis may fit
+        // (`blend_inner` tries it, to say so).
+        if from_axis.is_finite() && from_axis < -tol {
+            let reach = rim - from_axis;
+            let own = radius * rim / reach;
+            let feet = [into_first * distances[0], into_second * distances[1]];
+            let side = usize::from(feet[1].dot(*radial) < feet[0].dot(*radial));
+            if own.is_finite() && own > tol {
+                past_axis = faces.get(side).map(|face| (*face, own));
+            }
         }
     }
     Ok(Plan {
@@ -985,6 +1022,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         ends,
         longer: [0.0, 0.0],
         trims: [None, None],
+        past_axis,
         section,
         scale,
     })
@@ -2006,6 +2044,15 @@ fn finish(
                 });
             }
         }
+        // A border drawn into a point on the axis meets its face there
+        // only, at a vertex; the face has to be there still.
+        for (side, flag) in met.iter_mut().enumerate() {
+            let still = plan
+                .faces
+                .get(side)
+                .is_some_and(|face| state.faces.iter().any(|m| m.kept.contains(face)));
+            *flag |= still && plan.border_on_axis(side, tolerance.linear);
+        }
         if met != [true, true] {
             let missing = if met[0] { plan.faces[1] } else { plan.faces[0] };
             return Err(BlendError::Refused {
@@ -2509,6 +2556,35 @@ fn blend_inner(
             return Err(refused(edge, Reason::FreeMixed));
         }
         return mixed(body, edges, free, tolerance);
+    }
+    // A ball past the axis of a rim: when the radius that puts its centre
+    // on the axis builds (along an earlier round of that radius), that
+    // is the largest that fits; the sizes between are past the axis (no
+    // ball of them touches the face across) or reach it (refused).
+    if let Some((plan, (face, own))) = plans.iter().find_map(|p| p.past_axis.map(|past| (p, past)))
+        && let Size::Radius(asked) = edges
+            .iter()
+            .find(|r| r.edge == plan.edge)
+            .map_or(Size::Radius(own), |r| r.size)
+    {
+        let at_own: Vec<Request> = edges
+            .iter()
+            .map(|r| match r.size {
+                Size::Radius(radius) if radius == asked => Request {
+                    size: Size::Radius(own),
+                    ..*r
+                },
+                _ => *r,
+            })
+            .collect();
+        if blend_inner(body, &at_own, tolerance, nested).is_ok() {
+            return Err(BlendError::TooLarge {
+                edge: plan.edge,
+                face,
+                size: asked,
+                largest: own,
+            });
+        }
     }
     let routed = in_place(body, &uses, &at, edges, &plans);
     match construct(body, &uses, &at, edges, plans.clone(), &routed, tolerance) {

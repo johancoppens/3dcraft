@@ -26,7 +26,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract};
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, fillet};
 use craft3d_kernel::offset_face::{Blends, FaceOffset, offset_faces, offset_faces_with};
-use craft3d_kernel::shell::shell_with;
+use craft3d_kernel::shell::{Skin, shell_with};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use rational_common::rationalized;
@@ -800,6 +800,46 @@ fn a_rounded_block_moved_shelled_and_thickened_to_the_closed_form() {
             off.abs() <= 0.5 * tol.linear * m.area,
             "thicken at {k}: off by {off:e}"
         );
+    }
+}
+
+/// The rounded block (its fillet a fitted spline between a spline top and
+/// a flat front) shelled open at its bottom as thick as the fillet's
+/// radius or more (2026-10-21): the hollow's edge there is sharp, the
+/// fillet collapsed into it, so the hollow is a plain block.
+#[test]
+fn a_freeform_fillet_shelled_past_its_radius_leaves_a_sharp_hollow() {
+    let ([a, b, c], rho) = ([3.0, 2.0, 1.5], 0.4);
+    let block = |w: f64, depth: f64, height: f64, r: f64| w * depth * height - w * corner(r);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (body, fillet_face, _, _) = rounded_block(k, [a, b, c], rho, &tol);
+        let bottom = (0..body.faces.len())
+            .map(|f| FaceId(f as u32))
+            .find(|f| {
+                let face = body.face(*f).unwrap();
+                matches!(&face.surface, Surface::Plane(p) if {
+                    let n = p.frame().z() * if face.reversed { -1.0 } else { 1.0 };
+                    n.z < -0.5
+                })
+            })
+            .unwrap();
+        for t in [0.4, 0.5] {
+            let shelled = shell_with(&body, t * k, &[bottom], &Blends::default(), &tol)
+                .unwrap_or_else(|e| panic!("shell {t} at {k}: {e}"));
+            assert_eq!(check(&shelled.body, &tol), []);
+            let m = mass(&shelled.body);
+            let expected = block(a, b, c, rho) - (a - 2.0 * t) * (b - 2.0 * t) * (c - t);
+            let off = m.volume - expected * k.powi(3);
+            println!("block shelled {t}, k {k}: off {off:e}");
+            assert!(
+                off.abs() <= 0.5 * tol.linear * m.area,
+                "shell {t} at {k}: off by {off:e}"
+            );
+            // The fillet has a skin and no face in the hollow.
+            assert!(shelled.faces.contains(&(Skin::Outer, fillet_face)));
+            assert!(!shelled.faces.contains(&(Skin::Inner, fillet_face)));
+        }
     }
 }
 

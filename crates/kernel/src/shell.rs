@@ -25,9 +25,12 @@
 
 use crate::KernelError;
 use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, Operand, VertexSource, boolean_with};
-use crate::offset_face::{Blends, FaceOffset, offset_for, refuse};
-use craft3d_math::Tolerance;
-use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
+use crate::offset_blend::Fillet;
+use crate::offset_face::{Blends, FaceOffset, offset_for_known, refuse};
+use craft3d_geom::Surface;
+use craft3d_math::{Tolerance, Vec3};
+use craft3d_topo::{Body, EdgeId, FaceId, VertexId, edge_faces};
+use std::collections::{BTreeMap, BTreeSet};
 
 const OPERATION: &str = "shell";
 
@@ -49,6 +52,163 @@ pub struct Shelled {
     pub faces: Vec<(Skin, FaceId)>,
     pub edges: Vec<Option<(Skin, EdgeId)>>,
     pub vertices: Vec<Option<(Skin, VertexId)>>,
+}
+
+const LOST: &str = "the shell lost track of a face of the hollow; this is a bug";
+
+/// Normals nearer to each other than this sine are one direction (as
+/// delete face takes them).
+const TANGENT: f64 = 1e-6;
+
+/// Whether `a` and `b` are tangent across `edge` (at its middle).
+fn tangent_across(body: &Body, a: FaceId, b: FaceId, edge: EdgeId) -> bool {
+    let Some(e) = body.edge(edge) else {
+        return false;
+    };
+    let at = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+    match (
+        body.face(a).and_then(|f| f.outward(at)),
+        body.face(b).and_then(|f| f.outward(at)),
+    ) {
+        (Some(na), Some(nb)) => na.cross(nb).length() <= TANGENT && na.dot(nb) > 0.0,
+        _ => false,
+    }
+}
+
+/// The faces of `body` whose face of the hollow would vanish at
+/// `thickness` and that the hollow does without: convex rolling-ball
+/// blends whose radius the thickness reaches (within the tolerance), a
+/// cylinder, a sphere or a torus's tube whose radius shrinks inward, or a
+/// fillet face [`crate::offset_blend`] recognises, that keep a wall and
+/// run along faces that keep one too, tangent to them: a strip (its two
+/// sides tangent to the faces beside it) or a corner (tangent across
+/// every edge to such blends).
+///
+/// **Why the hollow is then the hollow of the body with those blends
+/// collapsed.** The hollow is the solid eroded by a ball of radius `t`:
+/// the points at least `t` from its outside. A rolling-ball blend of
+/// radius `r` is, there, the solid opened by a ball of radius `r` (eroded
+/// and grown back by it). For `t ≥ r` the erosion by `t` of the opening
+/// is the erosion of the solid itself: the opening lies in the solid, and
+/// a point whose ball of radius `t` fits in the solid has a ball of
+/// radius `t − r` round it that does, which grown by `r` lies in the
+/// opening, so its ball of radius `t` fits there too. So exactly the
+/// blends whose radius the thickness reaches are left out, every other
+/// face keeps its own (a fillet of a larger radius is rebuilt, one of
+/// the other kind grows); a blend along a face left open would need its
+/// lip cut by the opening, and stays refused.
+fn vanishing(
+    body: &Body,
+    thickness: f64,
+    open: &[FaceId],
+    fillets: &BTreeMap<FaceId, Fillet>,
+    tolerance: &Tolerance,
+) -> BTreeSet<FaceId> {
+    let tol = tolerance.linear;
+    let mut found: BTreeSet<FaceId> = BTreeSet::new();
+    for (index, face) in body.faces.iter().enumerate() {
+        let Ok(id) = u32::try_from(index).map(FaceId) else {
+            continue;
+        };
+        if open.contains(&id) {
+            continue;
+        }
+        // Inward, along the surface's own normal.
+        let along = if face.reversed { thickness } else { -thickness };
+        let radius = match &face.surface {
+            Surface::Cylinder(c) => Some(c.radius()),
+            Surface::Sphere(s) => Some(s.radius()),
+            Surface::Torus(t) => Some(t.radii().1),
+            Surface::Bezier(_) | Surface::Nurbs(_) | Surface::Plane(_) | Surface::Cone(_) => None,
+        };
+        if radius.is_some_and(|r| r + along <= tol) {
+            found.insert(id);
+        }
+    }
+    // The fillet faces among the freeform ones, and the faces each rolls
+    // along, read off it.
+    let mut supports: BTreeMap<FaceId, [FaceId; 2]> = BTreeMap::new();
+    for (face, fillet) in fillets {
+        if !open.contains(face) && fillet.ball.convex && fillet.ball.radius - thickness <= tol {
+            found.insert(*face);
+            supports.insert(*face, fillet.supports);
+        }
+    }
+    // Only blends: a strip whose sides, the edges along which its ball
+    // rolls (lines along a cylinder's axis, circles about a torus's,
+    // the edges to the faces a fillet face rolls along), are tangent to
+    // faces that keep a wall; a ball (a sphere) whose every edge it
+    // shares tangentially with such blends. A face left without what
+    // makes it one goes, until none does.
+    let uses = edge_faces(body);
+    let other = |edge: EdgeId, face: FaceId| -> Option<FaceId> {
+        match uses.get(edge.0 as usize)?.as_slice() {
+            [a, b] if *a == face && *b != face => Some(*b),
+            [a, b] if *b == face && *a != face => Some(*a),
+            _ => None,
+        }
+    };
+    let rolls_along = |face: FaceId, edge: EdgeId| -> Option<bool> {
+        let f = body.face(face)?;
+        let e = body.edge(edge)?;
+        let (at, along) = e.curve.derivatives(0.5 * (e.range.0 + e.range.1));
+        let along = along.normalized()?;
+        let parallel = |direction: Vec3| {
+            direction
+                .normalized()
+                .is_some_and(|d| d.cross(along).length() <= TANGENT)
+        };
+        Some(match &f.surface {
+            Surface::Cylinder(c) => parallel(c.frame().z()),
+            Surface::Torus(t) => {
+                let frame = t.frame();
+                parallel(frame.z().cross(at - frame.origin()))
+            }
+            Surface::Bezier(_) | Surface::Nurbs(_) => supports
+                .get(&face)
+                .is_some_and(|s| other(edge, face).is_some_and(|o| s.contains(&o))),
+            Surface::Sphere(_) | Surface::Plane(_) | Surface::Cone(_) => false,
+        })
+    };
+    for _ in 0..=found.len() {
+        let before = found.len();
+        let kept: BTreeSet<FaceId> = found
+            .iter()
+            .copied()
+            .filter(|face| {
+                let Some(f) = body.face(*face) else {
+                    return false;
+                };
+                let edges: Vec<EdgeId> = f
+                    .loops
+                    .iter()
+                    .filter_map(|l| body.loop_(*l))
+                    .flat_map(|l| l.coedges.iter().map(|c| c.edge))
+                    .collect();
+                let tangent = |edge: EdgeId| {
+                    other(edge, *face)
+                        .is_some_and(|o| !open.contains(&o) && tangent_across(body, *face, o, edge))
+                };
+                if matches!(f.surface, Surface::Sphere(_)) {
+                    return !edges.is_empty()
+                        && edges.iter().all(|e| {
+                            tangent(*e) && other(*e, *face).is_some_and(|o| found.contains(&o))
+                        });
+                }
+                let sides: Vec<EdgeId> = edges
+                    .iter()
+                    .copied()
+                    .filter(|e| rolls_along(*face, *e) == Some(true))
+                    .collect();
+                sides.len() == 2 && sides.iter().all(|e| tangent(*e))
+            })
+            .collect();
+        found = kept;
+        if found.len() == before {
+            break;
+        }
+    }
+    found
 }
 
 fn skin(operand: Operand) -> Skin {
@@ -118,18 +278,95 @@ pub fn shell_with(
             "every face is left open: there is nothing to leave a wall behind",
         ));
     }
-    let offsets: Vec<FaceOffset> = (0..body.faces.len())
-        .filter_map(|index| u32::try_from(index).ok().map(FaceId))
-        .map(|face| FaceOffset {
-            face,
-            distance: if open.contains(&face) {
-                thickness
-            } else {
-                -thickness
-            },
+    // Blends whose radius the thickness reaches leave no face in the
+    // hollow: it is the hollow of the body with them collapsed into the
+    // edges and corners they round (see `vanishing`).
+    // The fillet faces among the freeform faces, recognised once: the
+    // hollow's offset takes them as they are when nothing vanishes.
+    let freeform = body
+        .faces
+        .iter()
+        .any(|f| matches!(f.surface, Surface::Bezier(_) | Surface::Nurbs(_)));
+    let fillets = if freeform {
+        let all: BTreeSet<FaceId> = (0..body.faces.len())
+            .filter_map(|i| u32::try_from(i).ok().map(FaceId))
+            .collect();
+        crate::offset_blend::fillets(body, &all, &blends.radii, tolerance)
+    } else {
+        BTreeMap::new()
+    };
+    let vanish = vanishing(body, thickness, open, &fillets, tolerance);
+    let collapsed = if vanish.is_empty() {
+        None
+    } else {
+        let faces: Vec<FaceId> = vanish.iter().copied().collect();
+        crate::delete_face::delete_faces(body, &faces, tolerance).ok()
+    };
+    // The faces that keep a wall but have none behind them.
+    let gone: BTreeSet<FaceId> = if collapsed.is_some() {
+        vanish.clone()
+    } else {
+        BTreeSet::new()
+    };
+    // The body the hollow is offset from, and per face of it the face of
+    // `body` it is (the same numbers when nothing vanishes).
+    let (inner_of, inner_faces, inner_edges, inner_vertices) = match &collapsed {
+        Some(c) => (
+            &c.body,
+            c.faces.clone(),
+            c.edges.clone(),
+            c.vertices.clone(),
+        ),
+        None => (
+            body,
+            (0..body.faces.len())
+                .filter_map(|i| u32::try_from(i).ok().map(FaceId))
+                .collect(),
+            (0..body.edges.len())
+                .map(|i| u32::try_from(i).ok().map(EdgeId))
+                .collect(),
+            (0..body.vertices.len())
+                .map(|i| u32::try_from(i).ok().map(VertexId))
+                .collect(),
+        ),
+    };
+    let offsets: Vec<FaceOffset> = inner_faces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, original)| {
+            u32::try_from(index).ok().map(|face| FaceOffset {
+                face: FaceId(face),
+                distance: if open.contains(original) {
+                    thickness
+                } else {
+                    -thickness
+                },
+            })
         })
         .collect();
-    let hollow = offset_for(body, &offsets, blends, OPERATION, tolerance)?;
+    let inner_blends = Blends {
+        radii: inner_faces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, original)| {
+                let radius = blends.radii.get(original)?;
+                Some((FaceId(u32::try_from(index).ok()?), *radius))
+            })
+            .collect(),
+    };
+    let known = if collapsed.is_none() {
+        Some(fillets)
+    } else {
+        None
+    };
+    let hollow = offset_for_known(
+        inner_of,
+        &offsets,
+        &inner_blends,
+        known,
+        OPERATION,
+        tolerance,
+    )?;
     // Both passed the checker a moment ago.
     let options = BooleanOptions {
         trust_operands: true,
@@ -142,11 +379,20 @@ pub fn shell_with(
                 error: Box::new(error),
             }
         })?;
-    let faces: Vec<(Skin, FaceId)> = cut
-        .faces
-        .iter()
-        .map(|source| (skin(source.operand), source.face))
-        .collect();
+    let inner = |face: FaceId| inner_faces.get(face.0 as usize).copied();
+    let mut faces: Vec<(Skin, FaceId)> = Vec::with_capacity(cut.faces.len());
+    for source in &cut.faces {
+        let face = match source.operand {
+            Operand::A => source.face,
+            Operand::B => inner(source.face).ok_or(KernelError::FaceOp {
+                operation: OPERATION,
+                faces: Vec::new(),
+                edge: None,
+                reason: LOST,
+            })?,
+        };
+        faces.push((skin(source.operand), face));
+    }
     // What a shell is.
     for index in 0..body.faces.len() {
         let Ok(face) = u32::try_from(index).map(FaceId) else {
@@ -171,7 +417,7 @@ pub fn shell_with(
                     "the hollow does not come out through this open face: it is closed off behind it",
                 ));
             }
-        } else if !has(Skin::Outer) || !has(Skin::Inner) {
+        } else if !has(Skin::Outer) || (!has(Skin::Inner) && !gone.contains(&face)) {
             return Err(refuse(
                 OPERATION,
                 vec![face],
@@ -180,11 +426,25 @@ pub fn shell_with(
             ));
         }
     }
+    // An edge or a vertex of the hollow is the one of the solid it lies
+    // behind, or none where blends vanished (the edge they collapsed
+    // into, named by its faces).
     let edges = cut
         .edges
         .iter()
         .map(|source| match source {
-            EdgeSource::Kept { operand, edge } => Some((skin(*operand), *edge)),
+            EdgeSource::Kept {
+                operand: Operand::A,
+                edge,
+            } => Some((Skin::Outer, *edge)),
+            EdgeSource::Kept {
+                operand: Operand::B,
+                edge,
+            } => inner_edges
+                .get(edge.0 as usize)
+                .copied()
+                .flatten()
+                .map(|e| (Skin::Inner, e)),
             EdgeSource::Intersection { .. } => None,
         })
         .collect();
@@ -192,7 +452,18 @@ pub fn shell_with(
         .vertices
         .iter()
         .map(|source| match source {
-            VertexSource::Kept { operand, vertex } => Some((skin(*operand), *vertex)),
+            VertexSource::Kept {
+                operand: Operand::A,
+                vertex,
+            } => Some((Skin::Outer, *vertex)),
+            VertexSource::Kept {
+                operand: Operand::B,
+                vertex,
+            } => inner_vertices
+                .get(vertex.0 as usize)
+                .copied()
+                .flatten()
+                .map(|v| (Skin::Inner, v)),
             VertexSource::New { .. } => None,
         })
         .collect();

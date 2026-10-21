@@ -228,6 +228,10 @@ fn face_appearance(
             way = Some((path, of));
         } else if !rest.is_empty() {
             way = Some((rest.to_vec(), of));
+        } else if next != of.feature && !(of.role == NameRole::Copy && of.by.is_none()) {
+            // Other instances, then instance 0 on and on down to a name
+            // that is no copy (`PersistentName::copy` leaves that run out).
+            way = Some((vec![0], of));
         } else {
             current = of;
         }

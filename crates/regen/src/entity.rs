@@ -955,7 +955,7 @@ mod tests {
             aliases,
             BTreeMap::from([
                 (0, vec![name("F5:copy(0)/F1:vertex(3)")]),
-                (2, vec![name("F5:copy(1)/F2:copy(0)/F1:vertex(3)")]),
+                (2, vec![name("F5:copy(1)/F1:vertex(3)")]),
             ])
         );
     }

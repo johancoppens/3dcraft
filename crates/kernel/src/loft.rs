@@ -420,18 +420,80 @@ fn chain_ends(section: &Section, flip: bool) -> Option<(Vec3, Vec3)> {
     Some(if flip { (end, start) } else { (start, end) })
 }
 
+/// The side an open section's sketch says a sheet through it faces: of
+/// the two directions in its plane square to its chord (from one end of
+/// the chain to the other), the one down in the sketch (against its `y`
+/// axis); for a chord that runs along `y` (within the angular tolerance)
+/// the one along `x`. Read off the plane's frame and the chain's ends
+/// only, so neither the ids of the curves nor the way they were drawn
+/// change it. `None` for a chain whose ends coincide.
+fn sketch_down(section: &Section, tolerance: &Tolerance) -> Option<Vec3> {
+    let (start, end) = chain_ends(section, false)?;
+    let frame = &section.plane;
+    let square = (end - start).cross(frame.z()).normalized()?;
+    let down = square.dot(frame.y());
+    Some(if down.abs() > tolerance.angular {
+        if down < 0.0 { square } else { -square }
+    } else if square.dot(frame.x()) >= 0.0 {
+        square
+    } else {
+        -square
+    })
+}
+
+/// The side a sheet lofted through open `sections` faces, which every
+/// section's sketch must agree on: the sum of [`sketch_down`] over the
+/// sections, so the order of the sections does not change it either.
+/// Refused when two sections' sketches say opposite sides (the downs of
+/// two sections at a right angle or more: a sketch whose `y` axis points
+/// the other way), since the sum would then turn on how many sections
+/// say which.
+fn open_facing(sections: &[Section], tolerance: &Tolerance) -> Result<Vec3, KernelError> {
+    let mut downs = Vec::with_capacity(sections.len());
+    for (index, section) in sections.iter().enumerate() {
+        let down = sketch_down(section, tolerance).ok_or_else(|| {
+            refuse(
+                &[index],
+                format!("the ends of open section {} coincide", index + 1),
+            )
+        })?;
+        downs.push(down);
+    }
+    let sum = downs.iter().fold(Vec3::ZERO, |sum, d| sum + *d);
+    for (index, down) in downs.iter().enumerate() {
+        // At most 256 sections: every pair is looked at.
+        if let Some(other) = downs
+            .iter()
+            .take(index)
+            .position(|other| other.dot(*down) <= tolerance.angular)
+        {
+            return Err(refuse(
+                &[other, index],
+                format!(
+                    "the sketches of open sections {} and {} disagree on which side the sheet faces (it faces down in each section's sketch, against its y axis, and one of them is turned the other way): draw the sections on planes whose y axes point the same way, or name the curve section 1 starts with (`start`)",
+                    other + 1,
+                    index + 1
+                ),
+            ));
+        }
+    }
+    Ok(sum)
+}
+
 /// Whether open section `index` is walked against the way its chain is
 /// given: from the curve `start` names when it names one (a curve at
-/// either end of the chain); otherwise the first section as given, and
-/// every later one so that its ends lie nearest to those of the section
-/// before it (seen from their middles, the squared distances between the
-/// start of one and the start of the other and between the ends added
-/// up; as given when both ways are equally near).
+/// either end of the chain); otherwise the first section the way for
+/// which the sheet faces `facing` (its chain's direction × the loft's,
+/// `travel`), and every later one so that its ends lie nearest to those
+/// of the section before it (seen from their middles, the squared
+/// distances between the start of one and the start of the other and
+/// between the ends added up; as given when both ways are equally near).
 fn open_flip(
     index: usize,
     section: &Section,
     middle: Vec3,
     before: Option<(Vec3, Vec3, Vec3)>,
+    facing: Option<(Vec3, Vec3)>,
 ) -> Result<bool, KernelError> {
     let number = index + 1;
     let segments = &section.outline.segments;
@@ -453,7 +515,23 @@ fn open_flip(
         };
     }
     let Some((s0, e0, m0)) = before else {
-        return Ok(false);
+        let Some((facing, travel)) = facing else {
+            return Ok(false);
+        };
+        let Some((s, e)) = chain_ends(section, false) else {
+            return Err(internal());
+        };
+        let along = (e - s).cross(travel);
+        let side = along.dot(facing);
+        if side.abs() <= 1e-9 * along.length() * facing.length() {
+            return Err(refuse(
+                &[index],
+                format!(
+                    "the chord of open section {number} lies along the loft: which side the sheet faces cannot be told; name the curve it starts with (`start`)"
+                ),
+            ));
+        }
+        return Ok(side < 0.0);
     };
     let Some((s, e)) = chain_ends(section, false) else {
         return Err(internal());
@@ -1137,6 +1215,12 @@ pub fn loft(
     let mut outlines = Vec::with_capacity(count);
     // The ends of the open section before, as walked, and its middle.
     let mut before_ends: Option<(Vec3, Vec3, Vec3)> = None;
+    // The side an open loft's sheet faces, from the sections' sketches,
+    // unless the first section names the curve it starts with.
+    let facing = match sections.first() {
+        Some(first) if open && first.start.is_none() => Some(open_facing(sections, tolerance)?),
+        _ => None,
+    };
     for (index, section) in sections.iter().enumerate() {
         let (before, after) = if options.closed {
             ((index + count - 1) % count, (index + 1) % count)
@@ -1158,7 +1242,8 @@ pub fn loft(
         let forward = if lean > 0.0 { normal } else { -normal };
         let flip = if open {
             let middle = center(index)?;
-            let flip = open_flip(index, section, middle, before_ends)?;
+            let facing = facing.map(|f| (f, travel));
+            let flip = open_flip(index, section, middle, before_ends, facing)?;
             before_ends = chain_ends(section, flip).map(|(s, e)| (s, e, middle));
             flip
         } else {

@@ -753,6 +753,301 @@ fn collapse(
     })
 }
 
+/// The representative of `vertex` among the vertices merged with it
+/// (the least of them), with `parent` the forest of [`collapse_network`].
+fn root(parent: &BTreeMap<VertexId, VertexId>, vertex: VertexId) -> VertexId {
+    let mut at = vertex;
+    // Every link points at a smaller vertex, so this ends; bounded all
+    // the same.
+    for _ in 0..=parent.len() {
+        match parent.get(&at) {
+            Some(up) if *up != at => at = *up,
+            _ => break,
+        }
+    }
+    at
+}
+
+/// Merges the vertices `a` and `b` (the larger points at the smaller).
+fn unite(parent: &mut BTreeMap<VertexId, VertexId>, a: VertexId, b: VertexId) {
+    let (ra, rb) = (root(parent, a), root(parent, b));
+    if ra != rb {
+        let (low, high) = if ra < rb { (ra, rb) } else { (rb, ra) };
+        parent.insert(high, low);
+    }
+}
+
+/// The part a face of a group plays when the group is collapsed as a
+/// whole ([`collapse_network`]).
+enum Part {
+    /// A strip between two faces (a blend along an edge): its sides
+    /// become one edge, or vanish with it, its ends shrink to points.
+    Strip(FaceId, Pairing),
+    /// A face every edge of which it shares with the group (the ball
+    /// where three blends meet): it shrinks to a point.
+    Corner(FaceId),
+}
+
+/// (c): a group of faces that meet, each a strip along an edge (a
+/// chamfer, a fillet) or a face it shares every edge with the group (a
+/// corner where blends meet, a blend that runs along another), collapsed
+/// together: the ends of every strip and every edge of every corner
+/// shrink to points (their vertices merged), the two sides of a strip
+/// become one edge between the faces beside it, or vanish where they
+/// shrink to a point too (a blend along a blend that goes with it), and
+/// the faces round the group are continued until they meet
+/// ([`crate::tweak::resurface_at`], as for one strip).
+fn collapse_network(
+    work: &Work,
+    group: &BTreeSet<FaceId>,
+    tolerance: &Tolerance,
+) -> Result<Work, KernelError> {
+    let body = &work.body;
+    let uses = edge_faces(body);
+    let all: Vec<FaceId> = group.iter().copied().collect();
+    let in_group = |face: Option<FaceId>| face.is_some_and(|f| group.contains(&f));
+    // What each face is.
+    let mut parts = Vec::with_capacity(group.len());
+    for face in group {
+        let strip = pairings(body, *face).into_iter().find(|pairing| {
+            pairing
+                .sides
+                .iter()
+                .any(|side| !in_group(other_face(&uses, side.edge, *face)))
+        });
+        if let Some(pairing) = strip {
+            parts.push(Part::Strip(*face, pairing));
+            continue;
+        }
+        let edges: Vec<Coedge> = body
+            .face(*face)
+            .into_iter()
+            .flat_map(|f| &f.loops)
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| l.coedges.iter().copied())
+            .collect();
+        if edges.is_empty()
+            || !edges
+                .iter()
+                .all(|c| in_group(other_face(&uses, c.edge, *face)))
+        {
+            return Err(work.refused(&[*face], None, NOT_HEALABLE));
+        }
+        parts.push(Part::Corner(*face));
+    }
+    // The edges that shrink to points, and the vertices merged.
+    let mut across: BTreeSet<EdgeId> = BTreeSet::new();
+    let mut parent: BTreeMap<VertexId, VertexId> = BTreeMap::new();
+    for part in &parts {
+        match part {
+            Part::Strip(face, pairing) => match pairing.ends {
+                Some(ends) => {
+                    for end in ends {
+                        if in_group(other_face(&uses, end.edge, *face)) {
+                            // Shared with another face of the group: the
+                            // tangent check is its.
+                        } else if let (Some(e), Some(at)) = (
+                            other_face(&uses, end.edge, *face),
+                            middle_of(body, end.edge),
+                        ) && tangent_at(body, e, *face, at) == Some(true)
+                        {
+                            // A blend that goes on there and stays.
+                            return Err(work.refused(&[*face, e], Some(end.edge), TANGENT_END));
+                        }
+                        across.insert(end.edge);
+                    }
+                }
+                None => {
+                    let [a, b] = pairing.sides;
+                    let (Some((va, _)), Some((vb, _))) = (ends_of(body, a), ends_of(body, b))
+                    else {
+                        return Err(work.refused(&[*face], None, SIDES));
+                    };
+                    unite(&mut parent, va, vb);
+                }
+            },
+            Part::Corner(face) => {
+                for coedge in body
+                    .face(*face)
+                    .into_iter()
+                    .flat_map(|f| &f.loops)
+                    .filter_map(|l| body.loop_(*l))
+                    .flat_map(|l| &l.coedges)
+                {
+                    across.insert(coedge.edge);
+                }
+            }
+        }
+    }
+    for edge in &across {
+        let Some(e) = body.edge(*edge) else {
+            return Err(work.refused(&all, Some(*edge), SIDES));
+        };
+        unite(&mut parent, e.start, e.end);
+    }
+    let shrinks = |edge: EdgeId| {
+        body.edge(edge)
+            .is_some_and(|e| e.start != e.end && root(&parent, e.start) == root(&parent, e.end))
+    };
+    // The loops of the faces round the group, as they become.
+    let mut loops: BTreeMap<LoopId, Vec<Coedge>> = BTreeMap::new();
+    let loop_of = |loops: &mut BTreeMap<LoopId, Vec<Coedge>>, face: FaceId, edge: EdgeId| {
+        let (loop_, _) = find_use(body, face, edge)?;
+        loops.entry(loop_).or_insert_with(|| {
+            body.loop_(loop_)
+                .map(|l| l.coedges.clone())
+                .unwrap_or_default()
+        });
+        Some(loop_)
+    };
+    let mut removed: Vec<(FaceId, EdgeId)> = Vec::new();
+    let mut joined: Vec<(FaceId, Coedge, FaceId, Coedge)> = Vec::new();
+    let mut renewed: BTreeSet<EdgeId> = BTreeSet::new();
+    for part in &parts {
+        let Part::Strip(face, pairing) = part else {
+            continue;
+        };
+        if let Some(ends) = pairing.ends {
+            for end in ends {
+                if let Some(e) = other_face(&uses, end.edge, *face)
+                    && !group.contains(&e)
+                {
+                    removed.push((e, end.edge));
+                }
+            }
+        }
+        let [s1, s2] = pairing.sides;
+        let (n1, n2) = (
+            other_face(&uses, s1.edge, *face),
+            other_face(&uses, s2.edge, *face),
+        );
+        // A side another face of the group shrinks to a point, or one
+        // that shrinks itself, goes; the others stay as one edge.
+        let gone = |side: &Coedge| across.contains(&side.edge) || shrinks(side.edge);
+        match (gone(&s1), gone(&s2)) {
+            (false, false) => {
+                let (Some(n1), Some(n2)) = (n1, n2) else {
+                    return Err(work.refused(&[*face], None, SIDES));
+                };
+                if n1 == n2 || group.contains(&n1) || group.contains(&n2) {
+                    return Err(work.refused(&[*face, n1, n2], None, SIDES));
+                }
+                joined.push((n1, s1, n2, s2));
+                renewed.insert(s1.edge);
+            }
+            (true, true) => {
+                for (side, beside) in [(s1, n1), (s2, n2)] {
+                    if let Some(beside) = beside
+                        && !group.contains(&beside)
+                        && !across.contains(&side.edge)
+                    {
+                        removed.push((beside, side.edge));
+                    }
+                }
+            }
+            _ => {
+                // One side shrinks to a point and the other does not: the
+                // strip does not run between two faces that meet.
+                return Err(work.refused(&[*face], None, NO_COLLAPSE));
+            }
+        }
+    }
+    for (face, edge) in &removed {
+        let Some(loop_) = loop_of(&mut loops, *face, *edge) else {
+            return Err(work.refused(&all, Some(*edge), SIDES));
+        };
+        if let Some(coedges) = loops.get_mut(&loop_) {
+            let before = coedges.len();
+            coedges.retain(|c| c.edge != *edge);
+            if coedges.len() + 1 != before {
+                return Err(work.refused(&[*face], Some(*edge), MERGED_FACE));
+            }
+        }
+    }
+    for (n1, s1, n2, s2) in &joined {
+        let (Some(l1), Some(l2)) = (
+            loop_of(&mut loops, *n1, s1.edge),
+            loop_of(&mut loops, *n2, s2.edge),
+        ) else {
+            return Err(work.refused(&all, None, SIDES));
+        };
+        let Some(r1) = loops
+            .get(&l1)
+            .and_then(|c| c.iter().find(|c| c.edge == s1.edge))
+            .map(|c| c.reversed)
+        else {
+            return Err(work.refused(&all, None, SIDES));
+        };
+        if let Some(slot) = loops
+            .get_mut(&l2)
+            .and_then(|c| c.iter_mut().find(|c| c.edge == s2.edge))
+        {
+            *slot = Coedge {
+                edge: s1.edge,
+                reversed: !r1,
+            };
+        }
+    }
+    // What stays round the group: no loop left empty, no edge between
+    // two faces that stay shrunk to a point.
+    for (index, face) in body.faces.iter().enumerate() {
+        let id = FaceId(index_u32(index));
+        if group.contains(&id) {
+            continue;
+        }
+        for loop_ in &face.loops {
+            let coedges = match loops.get(loop_) {
+                Some(changed) => changed.clone(),
+                None => body
+                    .loop_(*loop_)
+                    .map(|l| l.coedges.clone())
+                    .unwrap_or_default(),
+            };
+            if coedges.is_empty() {
+                return Err(work.refused(&[id], None, MERGED_FACE));
+            }
+            if let Some(c) = coedges.iter().find(|c| shrinks(c.edge)) {
+                return Err(work.refused(&[id], Some(c.edge), CROWDED_END));
+            }
+        }
+    }
+    let mut change = Change {
+        gone: group.clone(),
+        loops: loops.into_iter().map(|(l, c)| (l, Some(c))).collect(),
+        renewed,
+        ..Change::default()
+    };
+    let mut also: BTreeSet<VertexId> = BTreeSet::new();
+    for vertex in parent.keys() {
+        let rep = root(&parent, *vertex);
+        if rep != *vertex {
+            change.merged.insert(*vertex, rep);
+            also.insert(rep);
+        }
+    }
+    let (changed, now) = rebuilt(work, &change);
+    let mut found: BTreeSet<VertexId> = BTreeSet::new();
+    for vertex in &also {
+        let Some(vertex) = now.get(vertex) else {
+            return Err(work.refused(&all, None, SIDES));
+        };
+        found.insert(*vertex);
+    }
+    let first = all.first().map_or(FaceId(0), |f| work.original_face(*f));
+    let made = tweak::resurface_at(
+        &changed.body,
+        &BTreeMap::new(),
+        &found,
+        OPERATION,
+        tolerance,
+    )
+    .map_err(|error| changed.tweak_error(first, error))?;
+    Ok(Work {
+        body: made,
+        ..changed
+    })
+}
+
 /// `body` without the faces `faces`, closed again by the faces round
 /// them (see the module documentation).
 ///
@@ -847,9 +1142,21 @@ pub fn delete_faces(
             Plan::NotHoles(reason, faces) => (reason, faces),
         };
         let [face] = named.as_slice() else {
-            // Several faces that meet: only the holes they leave can be
-            // filled.
-            return Err(work.refused(&why.1, None, why.0));
+            // Several faces that meet: the holes they leave filled, or
+            // the group collapsed as a whole (blends and the corners
+            // between them).
+            match collapse_network(&work, &current, tolerance)
+                .and_then(|next| held(&next, &named, tolerance).map(|()| next))
+            {
+                Ok(next) => {
+                    work = next;
+                    continue;
+                }
+                Err(KernelError::FaceOp { reason, .. }) if reason == NOT_HEALABLE => {
+                    return Err(work.refused(&why.1, None, why.0));
+                }
+                Err(error) => return Err(error),
+            }
         };
         let Some(face) = work.current_face(*face) else {
             return Err(refuse(OPERATION, named, None, NOT_HEALABLE));

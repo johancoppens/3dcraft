@@ -24,7 +24,7 @@ use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::extrude::Role;
 use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::{Curve2, Loop2, SketchCurve, Spline2, open_chain};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Transform, Vec3};
 use craft3d_topo::{BodyKind, ShellId, boundary_loops, check, mass_properties};
 
 type P = [f64; 2];
@@ -313,6 +313,152 @@ fn a_later_section_is_walked_the_way_the_one_before_it_is() {
     let block = boxed(k, BLOCK.0, BLOCK.1);
     let below = solve(&block, &sheet, BooleanOp::Subtract, k);
     assert_close(mass(&below.body).volume, volume_under(), "drawn backwards");
+}
+
+/// Which side a sheet faces is read off the sections' sketches (down in
+/// each sketch, against its y axis), never off the order of the
+/// sections, the ids of their curves or the way a chain was drawn
+/// (2026-10-21, the garabit-findings review): the same block keeps the
+/// volume under the sheet every time, at three scales and turned off
+/// every axis.
+#[test]
+fn the_side_a_sheet_faces_follows_the_sketches_not_ids_order_or_drawing() {
+    let backwards = |z: [f64; 3], id: u64, k: f64| {
+        spline(
+            id,
+            2,
+            &[
+                [HALF_WIDTH * k, z[2] * k],
+                [0.0, z[1] * k],
+                [-HALF_WIDTH * k, z[0] * k],
+            ],
+        )
+    };
+    // The first and the second section as curves, for each variant.
+    type Variant = (&'static str, bool, [SketchCurve; 1], [SketchCurve; 1]);
+    let variants = |k: f64| -> Vec<Variant> {
+        vec![
+            (
+                "as drawn",
+                false,
+                [heights(1, HALF_WIDTH, FIRST, k)],
+                [heights(2, HALF_WIDTH, SECOND, k)],
+            ),
+            (
+                "in reverse order",
+                true,
+                [heights(1, HALF_WIDTH, FIRST, k)],
+                [heights(2, HALF_WIDTH, SECOND, k)],
+            ),
+            (
+                "the first chain drawn backwards",
+                false,
+                [backwards(FIRST, 1, k)],
+                [heights(2, HALF_WIDTH, SECOND, k)],
+            ),
+            (
+                "both drawn backwards, in reverse order",
+                true,
+                [backwards(FIRST, 1, k)],
+                [backwards(SECOND, 2, k)],
+            ),
+            (
+                "ids swapped",
+                false,
+                [heights(9, HALF_WIDTH, FIRST, k)],
+                [heights(3, HALF_WIDTH, SECOND, k)],
+            ),
+        ]
+    };
+    let turns = [
+        None,
+        Transform::rotation(Vec3::new(1.0, -2.0, 0.7), 0.83),
+        Transform::rotation(Vec3::new(0.3, 1.0, -0.4), 2.9),
+    ];
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = boxed(k, BLOCK.0, BLOCK.1);
+        for turn in &turns {
+            let place = |frame: Frame| match turn {
+                Some(t) => t.frame(&frame).unwrap(),
+                None => frame,
+            };
+            let block = match turn {
+                Some(t) => block.transformed(t).unwrap(),
+                None => block.clone(),
+            };
+            for (what, reverse, first, second) in variants(k) {
+                let mut sections = vec![
+                    Section {
+                        plane: place(across(0.0)),
+                        outline: chain(&first, k),
+                        start: None,
+                    },
+                    Section {
+                        plane: place(across(LENGTH * k)),
+                        outline: chain(&second, k),
+                        start: None,
+                    },
+                ];
+                if reverse {
+                    sections.reverse();
+                }
+                let options = Options {
+                    ruled: true,
+                    closed: false,
+                };
+                let sheet = loft(&sections, &options, &tol).unwrap().body;
+                let below = solve(&block, &sheet, BooleanOp::Subtract, k);
+                let k3 = k * k * k;
+                let volume = mass(&below.body).volume / k3;
+                let what = format!("{what} at {k}, turned {}", turn.is_some());
+                if turn.is_some() {
+                    // Turned, the faces are exact only to the tolerance:
+                    // within it times the block's area (the other side
+                    // is 51 549 away).
+                    let slack = tol.linear / k * mass(&block).area / (k * k);
+                    assert!(
+                        (volume - volume_under()).abs() <= slack,
+                        "{what}: {volume} is not {}",
+                        volume_under()
+                    );
+                } else {
+                    assert_close(volume, volume_under(), &what);
+                }
+            }
+        }
+    }
+}
+
+/// Sections whose sketches disagree on which way is down are refused, and
+/// a `start` on the first section settles it.
+#[test]
+fn sections_whose_sketches_disagree_on_down_are_refused() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    // The second sketch upside down: its normal −x and its x axis the
+    // world's y, so its y axis is the world's −z (heights drawn negated
+    // put the same curve in the same place).
+    let upside_down = Frame::new(Vec3::new(LENGTH, 0.0, 0.0), -Vec3::X, Vec3::Y).unwrap();
+    assert!(upside_down.y().dot(Vec3::Z) < -0.999);
+    let flipped: Vec<P> = [[-50.0, -14.0], [0.0, -2.0], [50.0, -10.0]].to_vec();
+    let sections = [
+        open_section(&[heights(1, HALF_WIDTH, FIRST, k)], 0.0, k),
+        Section {
+            plane: upside_down,
+            outline: chain(&[spline(2, 2, &flipped)], k),
+            start: None,
+        },
+    ];
+    let options = Options {
+        ruled: true,
+        closed: false,
+    };
+    let refused = loft(&sections, &options, &tol).unwrap_err();
+    assert!(refused.to_string().contains("disagree"), "{refused}");
+    let mut started = sections.clone();
+    started[0].start = Some(1);
+    assert!(loft(&started, &options, &tol).is_ok());
 }
 
 #[test]

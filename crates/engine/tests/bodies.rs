@@ -807,7 +807,7 @@ fn a_chain_of_copies_saves_reopens_and_regenerates_the_same() {
         names
             .as_array()
             .unwrap()
-            .contains(&json!("F5:copy(4)/F4:copy(0)/F2:side(e6)")),
+            .contains(&json!("F5:copy(4)/F2:side(e6)")),
         "{names}"
     );
     let before = run(&mut s, "document.inspect", json!({}));
