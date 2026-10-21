@@ -11,7 +11,8 @@ use super::march::Marcher;
 use crate::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::cmp::Ordering;
-use std::sync::{Mutex, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// One curve along which two surfaces meet.
 #[derive(Clone, Debug, PartialEq)]
@@ -269,16 +270,55 @@ pub fn meet_surfaces(
 
 /// The numeric intersections made lately, by what they were asked for
 /// (written out in full, so that two questions are the same only when
-/// every number of them is, bit for bit), with how much each holds; the
-/// most recently used last.
+/// every number of them is, bit for bit), each with how much it holds,
+/// the work marching it took (`crate::allowance`) and when it was last
+/// used; and the questions by when they were last used, to let go of the
+/// one asked longest ago first.
 ///
-/// Each with the work marching it took (`crate::allowance`).
-type Shelf = Vec<(String, Result<SurfaceMeeting, GeomError>, usize, u64)>;
-static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
-/// How many intersections are kept, and how many points of their curves
-/// all of them hold at most.
-const SHELF_SIZE: usize = 64;
-const SHELF_POINTS: usize = 1 << 18;
+/// **Sized for big booleans** (2026-10-21). It held 64 intersections and
+/// a quarter of a million points, looked up one by one. A union of bodies
+/// of 106 and 670 faces, all near one another (the instances of a pattern
+/// of rings), intersects 65 000 pairs of faces, 9800 of them numerically;
+/// the union, difference and intersection of the same two bodies, and the
+/// same boolean regenerated, ask the same questions, and marched every one
+/// of them again (16 s each in the test profile, the fuzzer's seed
+/// 20830834). Now they are found by their question in a map and kept by
+/// what they weigh, [`SHELF_SIZE`] questions, [`SHELF_POINTS`] points of
+/// curves and [`SHELF_BYTES`] of questions at most, and the same boolean
+/// asked again takes 6 to 8 s.
+struct Shelf {
+    by_key: BTreeMap<Arc<str>, Kept>,
+    by_use: BTreeMap<u64, Arc<str>>,
+    clock: u64,
+    points: usize,
+    bytes: usize,
+}
+
+struct Kept {
+    result: Result<SurfaceMeeting, GeomError>,
+    weight: usize,
+    units: u64,
+    used: u64,
+}
+
+static SHELF: Mutex<Shelf> = Mutex::new(Shelf {
+    by_key: BTreeMap::new(),
+    by_use: BTreeMap::new(),
+    clock: 0,
+    points: 0,
+    bytes: 0,
+});
+/// How many intersections are kept, how many points of their curves all
+/// of them hold at most, and how many bytes their questions take at most
+/// (a question names both surfaces in full: a spline's every control
+/// point). The points are what weighs: the union of 106 and 670 faces
+/// above keeps 4600 intersections, 3.6 million points of their curves
+/// (a couple of hundred MB at most, for the whole shelf). Fewer than its
+/// questions is no help when a boolean is asked again: they come in the
+/// same order, and each would be let go of before it is asked again.
+const SHELF_SIZE: usize = 1 << 17;
+const SHELF_POINTS: usize = 1 << 22;
+const SHELF_BYTES: usize = 64 << 20;
 
 /// How many points an intersection holds, roughly: what it costs to keep.
 fn weight(result: &Result<SurfaceMeeting, GeomError>) -> usize {
@@ -342,33 +382,61 @@ fn remembered(
 /// The intersection asked for by `key`, with the work it took, from the
 /// shelf.
 fn shelf_find(key: &str) -> Option<(Result<SurfaceMeeting, GeomError>, u64)> {
-    let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-    let at = shelf.iter().position(|(k, _, _, _)| *k == key)?;
-    let entry = shelf.remove(at);
-    let found = (entry.1.clone(), entry.3);
-    shelf.push(entry);
+    let mut guard = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let shelf = &mut *guard;
+    shelf.clock = shelf.clock.wrapping_add(1);
+    let clock = shelf.clock;
+    let kept = shelf.by_key.get_mut(key)?;
+    let found = (kept.result.clone(), kept.units);
+    let before = kept.used;
+    kept.used = clock;
+    if let Some(name) = shelf.by_use.remove(&before) {
+        shelf.by_use.insert(clock, name);
+    }
     Some(found)
 }
 
-/// Puts `result` on the shelf with the work it took.
+/// Puts `result` on the shelf with the work it took, letting go of those
+/// asked for longest ago while there is not room.
 fn shelf_put(key: String, result: &Result<SurfaceMeeting, GeomError>, units: u64) {
-    let size = weight(result);
-    if size > SHELF_POINTS {
+    let weight = weight(result);
+    let bytes = key.len();
+    if weight > SHELF_POINTS || bytes > SHELF_BYTES {
         return;
     }
-    let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-    if !shelf.iter().any(|(k, _, _, _)| *k == key) {
-        shelf.push((key, result.clone(), size, units));
+    let mut guard = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let shelf = &mut *guard;
+    if shelf.by_key.contains_key(key.as_str()) {
+        return;
     }
-    while shelf.len() > SHELF_SIZE
-        || shelf
-            .iter()
-            .map(|(_, _, n, _)| *n)
-            .fold(0_usize, usize::saturating_add)
-            > SHELF_POINTS
+    while !shelf.by_key.is_empty()
+        && (shelf.by_key.len() >= SHELF_SIZE
+            || shelf.points.saturating_add(weight) > SHELF_POINTS
+            || shelf.bytes.saturating_add(bytes) > SHELF_BYTES)
     {
-        let _forgotten = shelf.remove(0);
+        let Some((_, oldest)) = shelf.by_use.pop_first() else {
+            break;
+        };
+        if let Some(gone) = shelf.by_key.remove(&oldest) {
+            shelf.points = shelf.points.saturating_sub(gone.weight);
+            shelf.bytes = shelf.bytes.saturating_sub(oldest.len());
+        }
     }
+    shelf.clock = shelf.clock.wrapping_add(1);
+    let used = shelf.clock;
+    shelf.points = shelf.points.saturating_add(weight);
+    shelf.bytes = shelf.bytes.saturating_add(bytes);
+    let key: Arc<str> = Arc::from(key);
+    shelf.by_use.insert(used, Arc::clone(&key));
+    shelf.by_key.insert(
+        key,
+        Kept {
+            result: result.clone(),
+            weight,
+            units,
+            used,
+        },
+    );
 }
 
 /// [`meet_surfaces`] without its closed forms: the numeric marcher on any
@@ -389,6 +457,33 @@ pub fn meet_surfaces_numeric(
 mod tests {
     use super::*;
     use crate::{BezierPatch, Sphere};
+
+    #[test]
+    fn the_shelf_keeps_the_questions_of_a_big_boolean_and_lets_go_of_the_oldest() {
+        // (Keys of their own: the shelf is shared with the other tests.)
+        let key = |n: usize| format!("shelf test {n}");
+        let none: Result<SurfaceMeeting, GeomError> = Ok(SurfaceMeeting::None);
+        // A boolean of a few hundred faces a side asks tens of thousands
+        // of questions; the shelf held 64.
+        for n in 0..20_000 {
+            shelf_put(key(n), &none, n as u64);
+        }
+        for n in (0..20_000).step_by(997) {
+            let (found, units) = shelf_find(&key(n)).unwrap();
+            assert!(matches!(found, Ok(SurfaceMeeting::None)));
+            assert_eq!(units, n as u64);
+        }
+        // Full: the ones asked for longest ago go first.
+        for n in 20_000..20_000 + SHELF_SIZE {
+            shelf_put(key(n), &none, 0);
+        }
+        assert!(shelf_find(&key(1)).is_none());
+        assert!(shelf_find(&key(20_000 + SHELF_SIZE - 1)).is_some());
+        let shelf = SHELF.lock().unwrap();
+        assert!(shelf.by_key.len() <= SHELF_SIZE);
+        assert_eq!(shelf.by_key.len(), shelf.by_use.len());
+        assert!(shelf.points <= SHELF_POINTS && shelf.bytes <= SHELF_BYTES);
+    }
 
     #[test]
     fn a_numeric_intersection_asked_again_is_the_one_made_the_first_time() {

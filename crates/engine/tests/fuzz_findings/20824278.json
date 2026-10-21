@@ -1,0 +1,8 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-09}},
+  {"command":"sketch.create","params":{"name":"S3","offset":0.0,"plane":"xy"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[0.005,0.0075],[0.015,0.0075],[0.015,0.01],[0.01,0.01]],"sketch":"S3"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","name":"N3","sketch":"S3"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 5","axis":[0.01,0.0,1.0],"count":5,"name":"N7","point":[0.0,0.00875,-0.005],"source":"N3"}},
+  {"command":"feature.shell","params":{"name":"N9","open":[],"source":"N7","thickness":0.0003125}}
+]

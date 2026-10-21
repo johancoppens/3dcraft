@@ -320,6 +320,21 @@ const MOST_TRIES: usize = 8;
 /// Halvings in the search for the largest distance that fits.
 const HALVINGS: usize = 48;
 
+/// The work the halving for the largest distance that fits may do, after
+/// the try at the whole distance has failed ([`craft3d_geom::allowance`]
+/// units). The operation is refused either way; the halving only finds
+/// what to tell (the largest part that fits), and it halves to the
+/// tolerance, twenty tries and more. Where each try is cheap (analytic
+/// faces count nothing) it goes on to the tolerance, as before. Where each
+/// is dear (a shell or an offset of chamfers and fillets of cones, balls
+/// and tori: 5 to 18 million units a try, and more time than that in the
+/// classification of points against their faces), twenty tries ran past
+/// a minute in release (the fuzzer's seeds 20795706, 20814691, 20818576,
+/// 20832173 and 20833261, 2026-10-21): it stops when this much is spent,
+/// with the largest part found to fit so far (a part that does fit), or,
+/// when none was found yet, with the reason the whole distance does not.
+pub const HALVING_WORK: u64 = 32_000_000;
+
 pub(crate) fn refuse(
     operation: &'static str,
     faces: Vec<FaceId>,
@@ -918,7 +933,11 @@ fn bounded_fitting(
         _ => None,
     };
     let (mut fits, mut fails) = (0.0_f64, 1.0_f64);
+    let halving_from = craft3d_geom::allowance::spent();
     for _ in 0..HALVINGS {
+        if craft3d_geom::allowance::spent().saturating_sub(halving_from) >= HALVING_WORK {
+            break;
+        }
         let middle = 0.5 * (fits + fails);
         if middle * largest <= tol || (fails - fits) * largest <= tol {
             break;
@@ -937,7 +956,8 @@ fn bounded_fitting(
         }
     }
     if fits == 0.0 {
-        // Not a matter of how far.
+        // Not a matter of how far, or no part found to fit within the
+        // halving's work: the reason the whole does not.
         return Err(refuse(operation, faces, edge, reason));
     }
     Err(KernelError::FaceOpTooFar {
@@ -1064,5 +1084,73 @@ pub(crate) fn same_numbers(made: Body) -> Offset {
             .map(|i| Some(VertexId(i)))
             .collect(),
         body: made,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use std::cell::Cell;
+
+    /// The search with tries that cost `units` each and fit up to `limit`
+    /// of the whole distance (1 mm): what it ends with, and how many
+    /// tries it made.
+    fn search(units: u64, limit: f64) -> (Result<Body, KernelError>, usize) {
+        let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
+        let tries = Cell::new(0_usize);
+        let attempt = |fraction: f64| {
+            tries.set(tries.get() + 1);
+            craft3d_geom::allowance::charge(units);
+            if fraction <= limit {
+                Ok(Body::new(BodyKind::Solid))
+            } else {
+                Err(TweakError::Vanishes {
+                    faces: vec![FaceId(0)],
+                    edge: None,
+                    reason: tweak::EDGE_GONE,
+                })
+            }
+        };
+        let got = fitting_with(attempt, None, 1.0, "test", &tolerance, u64::MAX);
+        (got, tries.get())
+    }
+
+    /// Tries that cost nothing (analytic faces count no work) halve to the
+    /// tolerance: the largest part that fits is found to within it.
+    #[test]
+    fn cheap_tries_halve_to_the_tolerance() {
+        let (got, tries) = search(0, 0.3);
+        match got {
+            Err(KernelError::FaceOpTooFar { largest, .. }) => {
+                assert!(largest <= 0.3 && largest > 0.3 - 2e-6, "{largest}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(tries > 15, "{tries}");
+    }
+
+    /// Dear tries end the halving once it has spent [`HALVING_WORK`]: the
+    /// refusal comes with the largest part found to fit so far (a part
+    /// that does fit), or, when none was found yet, with the reason the
+    /// whole does not fit; either way after a few tries, not twenty.
+    #[test]
+    fn dear_tries_end_the_halving_at_its_work_bound() {
+        // The whole, then 0.5 (fails), 0.25 (fits), 0.375 and 0.3125
+        // (fail): four tries of a quarter of the halving's work each.
+        let (got, tries) = search(HALVING_WORK / 4, 0.3);
+        match got {
+            Err(KernelError::FaceOpTooFar { largest, .. }) => assert_eq!(largest, 0.25),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(tries, 5);
+        // Nothing found to fit before the bound: refused by the reason.
+        let (got, tries) = search(HALVING_WORK / 2, 0.01);
+        match got {
+            Err(KernelError::FaceOp { reason, .. }) => assert_eq!(reason, tweak::EDGE_GONE),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(tries, 3);
     }
 }

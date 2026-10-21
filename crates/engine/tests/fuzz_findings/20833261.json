@@ -1,0 +1,8 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-09}},
+  {"command":"feature.sphere","params":{"name":"N1","position":[-0.01,0.0,-0.005],"radius":0.0025}},
+  {"command":"feature.cylinder","params":{"height":0.005,"name":"N4","position":[-0.01125422960432183,-0.0024946743444379566,-0.0075],"radius":0.0025}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N5","op":"intersect","target":"N1","tool":"N4"}},
+  {"command":"feature.chamfer","params":{"chain":false,"distance":0.00125,"edges":[["F3:copy(0)/F1:face(0)","F3:copy(1)/F2:face(0)"]],"name":"N6"}},
+  {"command":"feature.offsetFace","params":{"distance":0.01,"faces":["F4:chamfer(0)"],"name":"N8"}}
+]

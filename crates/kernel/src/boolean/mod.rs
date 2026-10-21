@@ -744,7 +744,7 @@ fn run(
                 .iter()
                 .map(|s| s.curve.eval(0.5 * (s.range.0 + s.range.1))),
         );
-        zero_thickness(&result, tolerance, &meetings)?;
+        zero_thickness(&result, tolerance, &distinct(meetings))?;
         // A sheet that comes back to itself in a point is refused; a
         // solid's shell that does so is left to the rules above and to
         // regeneration (a wall that thins to nothing: accepted, decided
@@ -754,6 +754,20 @@ fn run(
         }
     }
     Ok(result)
+}
+
+/// The places in their first order, each once: a place found by several
+/// of the ways [`zero_thickness`] is given its places (a vertex of the
+/// section that is also where an operand touches itself, the same touch
+/// from both operands) gets the same answer each time, so it is looked at
+/// once. A union of many shelled balls had 39 671 places, 2282 of them
+/// distinct (fuzz seed 20757788, 2026-10-21).
+fn distinct(places: Vec<Vec3>) -> Vec<Vec3> {
+    let mut seen = std::collections::BTreeSet::new();
+    places
+        .into_iter()
+        .filter(|p| seen.insert([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]))
+        .collect()
 }
 
 /// Refuses a result whose parts (shells) touch each other, which is
@@ -799,32 +813,57 @@ fn zero_thickness(
             }
         }
     }
-    // The faces' boxes, grown by the distance, in a grid of cells about
-    // as wide as a typical face, so that a place finds the faces near it
-    // without looking at all of them.
+    // The faces' boxes, grown by the distance (their size sets how far
+    // `within_a_shell` looks about a place).
+    let grown = |b: craft3d_math::Bbox3| {
+        b.corners().map(|(lo, hi)| {
+            let grow = Vec3::new(near, near, near);
+            (lo - grow, hi + grow)
+        })
+    };
     let boxes: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
+        .map(|f| body.face_bbox(face_id(f)).ok().and_then(grown))
+        .collect();
+    // Which faces may be at a place: those whose box holds it and the box
+    // of what they hold too (a piece of a ball near where it is, not the
+    // whole ball: `Body::held_face_bbox`), grown by the distance and the
+    // tolerance (a foot on a face's boundary may lie that far outside
+    // it), in a grid of cells about as wide as a typical face, so that a
+    // place finds the faces near it without looking at all of them. A
+    // union of many balls cut into pieces had every one of its 1100 faces'
+    // boxes hold every place (fuzz seed 20757788, 2026-10-21).
+    let reach = near + tol;
+    let held: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
         .map(|f| {
-            body.face_bbox(face_id(f))
+            let whole = boxes.get(f).copied().flatten()?;
+            let Some((lo, hi)) = body
+                .held_face_bbox(face_id(f))
                 .ok()
                 .and_then(|b| b.corners())
-                .map(|(lo, hi)| {
-                    let grow = Vec3::new(near, near, near);
-                    (lo - grow, hi + grow)
-                })
+            else {
+                return Some(whole);
+            };
+            let grow = Vec3::new(reach, reach, reach);
+            let (lo, hi) = ((lo - grow).max(whole.0), (hi + grow).min(whole.1));
+            (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then_some((lo, hi))
         })
         .collect();
-    let grid = FaceGrid::new(&boxes);
+    let grid = FaceGrid::new(&held);
     let mut outlines: BTreeMap<usize, Option<outline::Outline>> = BTreeMap::new();
-    for &p in meetings {
+    // Per place, the faces at it with their nearest points, as the first
+    // half found them, for the second half to start from.
+    let mut at_places: Vec<Option<Vec<(usize, Vec3)>>> = vec![None; meetings.len()];
+    for (index, &p) in meetings.iter().enumerate() {
         if !p.is_finite() || body.shells.len() < 2 {
             continue;
         }
+        let mut at = Vec::new();
         // Per shell, the faces the place is on and the nearest point of
         // each.
         let mut on: BTreeMap<usize, Vec<(usize, Vec3)>> = BTreeMap::new();
         for f in grid.near(p) {
             let shell = face_shell.get(f).copied().unwrap_or(usize::MAX);
-            let inside = boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+            let inside = held.get(f).copied().flatten().is_some_and(|(lo, hi)| {
                 lo.x <= p.x
                     && p.x <= hi.x
                     && lo.y <= p.y
@@ -852,7 +891,11 @@ fn zero_thickness(
                 )
             {
                 on.entry(shell).or_default().push((f, foot));
+                at.push((f, foot));
             }
+        }
+        if let Some(slot) = at_places.get_mut(index) {
+            *slot = Some(at);
         }
         if on.len() < 2 {
             continue;
@@ -895,15 +938,25 @@ fn zero_thickness(
             }
         }
     }
-    within_a_shell(
-        result,
-        tol,
-        meetings,
-        &boxes,
-        &grid,
-        &face_shell,
-        &mut outlines,
-    )
+    let faces = Faces {
+        boxes: &boxes,
+        held: &held,
+        grid: &grid,
+        shell: &face_shell,
+    };
+    within_a_shell(result, tol, meetings, &faces, &mut outlines, &at_places)
+}
+
+/// What [`zero_thickness`] knows of the result's faces, for
+/// [`within_a_shell`]: per face its box and the box of what it holds
+/// (grown by the distance looked within), the grid of the latter, and the
+/// shell it is in.
+#[derive(Clone, Copy)]
+struct Faces<'a> {
+    boxes: &'a [Option<(Vec3, Vec3)>],
+    held: &'a [Option<(Vec3, Vec3)>],
+    grid: &'a FaceGrid,
+    shell: &'a [usize],
 }
 
 /// Refuses a result one of whose shells touches itself at a vertex: a
@@ -1039,11 +1092,16 @@ fn within_a_shell(
     result: &BooleanResult,
     tol: f64,
     meetings: &[Vec3],
-    boxes: &[Option<(Vec3, Vec3)>],
-    grid: &FaceGrid,
-    face_shell: &[usize],
+    faces: &Faces<'_>,
     outlines: &mut BTreeMap<usize, Option<outline::Outline>>,
+    at_places: &[Option<Vec<(usize, Vec3)>>],
 ) -> Result<(), Stop> {
+    let Faces {
+        boxes,
+        held,
+        grid,
+        shell: face_shell,
+    } = *faces;
     let body = &result.body;
     let near = 2.0 * tol;
     let reach = 2.0 * near;
@@ -1165,7 +1223,7 @@ fn within_a_shell(
         })
     };
 
-    for &p in meetings {
+    for (index, &p) in meetings.iter().enumerate() {
         if !p.is_finite() {
             continue;
         }
@@ -1174,7 +1232,7 @@ fn within_a_shell(
             .into_iter()
             .filter(|&f| {
                 face_shell.get(f).is_some_and(|&s| s != usize::MAX)
-                    && boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+                    && held.get(f).copied().flatten().is_some_and(|(lo, hi)| {
                         lo.x <= p.x
                             && p.x <= hi.x
                             && lo.y <= p.y
@@ -1191,8 +1249,28 @@ fn within_a_shell(
             parts.entry(f).or_insert_with(|| parts_of(f));
         }
         // The nearest point of each candidate when the place is on it,
-        // made when a pair needs it.
+        // made when a pair needs it, or found by the first half for every
+        // candidate (the same test on the same faces). A pair one of whose
+        // faces is not at the place goes on to the next whatever else is
+        // true of it, so then only the faces at the place are paired: the
+        // same pairs in the same order, without the square of every face
+        // whose box holds the place (a union of many balls, each face's
+        // box its whole sphere: 1100 candidates a place).
         let mut feet: BTreeMap<usize, Option<Vec3>> = BTreeMap::new();
+        let paired: Vec<usize> = match at_places.get(index).and_then(Option::as_ref) {
+            Some(at) => {
+                for &f in &candidates {
+                    let found = at.iter().find(|(g, _)| *g == f).map(|&(_, foot)| foot);
+                    feet.insert(f, found);
+                }
+                candidates
+                    .iter()
+                    .copied()
+                    .filter(|f| feet.get(f).copied().flatten().is_some())
+                    .collect()
+            }
+            None => candidates.clone(),
+        };
         let mut foot =
             |f: usize, outlines: &mut BTreeMap<usize, Option<outline::Outline>>| -> Option<Vec3> {
                 *feet.entry(f).or_insert_with(|| {
@@ -1210,8 +1288,8 @@ fn within_a_shell(
                     .then_some(foot)
                 })
             };
-        for (i, &f) in candidates.iter().enumerate() {
-            for &g in candidates.iter().skip(i + 1) {
+        for (i, &f) in paired.iter().enumerate() {
+            for &g in paired.iter().skip(i + 1) {
                 if face_shell.get(f) != face_shell.get(g) {
                     // Between shells: the first half's.
                     continue;

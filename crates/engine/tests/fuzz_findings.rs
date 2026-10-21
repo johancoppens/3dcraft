@@ -26,6 +26,15 @@
 //!   self-check asked every one of 10 000 boxes per triangle. Now they
 //!   are joined in pairs and the boxes are asked through a tree.
 //! - Slow but ending (1573, 12372, 6597): replayed to keep them so.
+//! - The run of 2026-10-20 (docs/design/booleans.md › The fuzzer's
+//!   timeouts of 2026-10-20). Patterns and booleans of bodies whose faces
+//!   lie near one another (20757788, 20757179, 20830834, 20824278,
+//!   20824950): the zero-thickness check looked at every place many times
+//!   and at every face whose box (a whole ball) held it, and numeric
+//!   intersections asked again were made again. Shells and offsets of
+//!   chamfers on cones, balls and tori (20795706, 20814691, 20818576,
+//!   20832173, 20833261): refused, after a halving of a dozen tries of
+//!   seconds each, now held to `HALVING_WORK`.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -216,6 +225,52 @@ findings! {
     #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
     circular_pattern_of_a_pattern_at_scale_1e3: "6597" => [
         "N2": OK, "N4": OK, "N7": OK,
+    ],
+    // The run of 2026-10-20: one in the gate (seconds), the others up to
+    // two minutes in release.
+    pattern_of_four_patterns_of_shelled_balls: "20757788-four" => [
+        "N0": OK, "N1": OK, "N2": OK, "N5": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    pattern_of_six_patterns_of_shelled_balls: "20757788" => [
+        "N0": OK, "N1": OK, "N2": OK, "N5": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    pattern_of_a_mirrored_pattern_of_rings_at_scale_1e3: "20757179" => [
+        "S0": OK, "N0": OK, "N3": OK, "N4": OK, "N5": OK, "S7": OK, "N7": OK, "N8": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    subtractions_of_a_pattern_of_shelled_tubes: "20830834" => [
+        "N0": OK, "N1": OK, "N2": OK, "N5": OK, "N8": OK, "N10": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_pattern_of_rings_at_scale_1e_3: "20824278" => [
+        "S3": OK, "N3": OK, "N7": OK, "N9": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    extrude_after_a_pattern_of_rings_at_scale_1e_3: "20824950" => [
+        "S0": OK, "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "S5": OK, "N5": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_on_a_torus_in_common_with_a_cone_at_scale_1e3: "20795706" => [
+        "N0": OK, "N1": OK, "N3": OK, "N7": OK, "N8": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_mirrored_pattern_of_a_chamfered_union_at_scale_1e_3: "20814691" => [
+        "S0": OK, "N0": OK, "S1": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": OK,
+        "N6": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_chamfered_cone_less_its_mirror_at_scale_1e_3: "20818576" => [
+        "N0": OK, "N2": OK, "N3": OK, "N6": OK, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    shell_of_a_chamfered_torus_in_common_with_balls_at_scale_1e3: "20832173" => [
+        "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N5": OK, "N7": REFUSED,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    offset_of_a_chamfer_on_a_ball_in_common_with_a_cylinder_at_scale_1e_3: "20833261" => [
+        "N1": OK, "N4": OK, "N5": OK, "N6": OK, "N8": REFUSED,
     ],
 }
 

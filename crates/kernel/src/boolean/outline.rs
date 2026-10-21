@@ -116,30 +116,29 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
     if !(x.is_finite() && y.is_finite() && z.is_finite()) {
         return None;
     }
-    let distance = |t: f64| {
+    // The distance from `p` and the speed at `t`, from one sine and
+    // cosine: each point of the search is a stretch's end twice over.
+    let at = |t: f64| {
         let (s, c) = t.sin_cos();
-        (a * c - x).hypot(b * s - y)
+        ((a * c - x).hypot(b * s - y), (a * s).hypot(b * c))
     };
-    let speed = |t: f64| {
-        let (s, c) = t.sin_cos();
-        (a * s).hypot(b * c)
-    };
+    let distance = |t: f64| at(t).0;
     // The speed is monotone between multiples of a quarter turn.
-    let fastest = |t0: f64, t1: f64| {
+    let fastest = |t0: f64, v0: f64, t1: f64, v1: f64| {
         if (t0 / FRAC_PI_2).floor() != (t1 / FRAC_PI_2).floor() {
             a.max(b)
         } else {
-            speed(t0).max(speed(t1))
+            v0.max(v1)
         }
     };
     let (t0, t1) = range;
-    let (d0, d1) = (distance(t0), distance(t1));
+    let ((d0, v0), (d1, v1)) = (at(t0), at(t1));
     let mut best = if d0 <= d1 { (d0, t0) } else { (d1, t1) };
-    let mut stack = vec![(t0, d0, t1, d1)];
+    let mut stack = vec![(t0, d0, v0, t1, d1, v1)];
     let mut steps = 0_usize;
-    while let Some((ta, da, tb, db)) = stack.pop() {
+    while let Some((ta, da, va, tb, db, vb)) = stack.pop() {
         steps += 1;
-        let length = fastest(ta, tb) * (tb - ta);
+        let length = fastest(ta, va, tb, vb) * (tb - ta);
         // Not worth looking at: cannot be closer, or as short as rounding.
         if steps > 20_000
             || da.min(db) - 0.5 * length >= best.0
@@ -151,12 +150,12 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
         if !(tm > ta && tm < tb) {
             continue;
         }
-        let dm = distance(tm);
+        let (dm, vm) = at(tm);
         if dm < best.0 {
             best = (dm, tm);
         }
-        stack.push((ta, da, tm, dm));
-        stack.push((tm, dm, tb, db));
+        stack.push((ta, da, va, tm, dm, vm));
+        stack.push((tm, dm, vm, tb, db, vb));
     }
     let mut t = best.1;
     for _ in 0..40 {

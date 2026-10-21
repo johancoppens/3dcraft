@@ -129,6 +129,12 @@ struct Node {
     /// A lower bound on the smallest singular value of the Jacobian over
     /// this piece; zero when none is known.
     sigma: f64,
+    /// The least `sigma` of the leaves under this node (its own, for a
+    /// leaf; not a number when one of them is not): no node under it, and
+    /// no piece a leaf under it is split into, has a lower `sigma`, so a
+    /// search for the least bound that has found one as low passes it by
+    /// ([`PatchTree::sigma_search`]).
+    floor: f64,
 }
 
 /// The leaves of a [`PatchTree`] split further where its bound on the
@@ -2009,6 +2015,21 @@ impl PatchTree {
         } else {
             sigma
         };
+        // (A parent's `sigma` is at least the least of its children's, and
+        // a leaf's pieces keep at least its own: the floor is below all.)
+        let floor = match children {
+            Some(kids) => kids
+                .iter()
+                .filter_map(|&k| self.nodes.get(k).map(|n| n.floor))
+                .fold(f64::INFINITY, |a, b| {
+                    if a.is_nan() || b.is_nan() {
+                        f64::NAN
+                    } else {
+                        a.min(b)
+                    }
+                }),
+            None => sigma,
+        };
         let slab = children.is_none().then(|| Slab::around(patch));
         let patch = children.is_none().then(|| patch.clone());
         self.nodes.push(Node {
@@ -2019,6 +2040,7 @@ impl PatchTree {
             patch,
             slab,
             sigma,
+            floor,
         });
         self.nodes.len() - 1
     }
@@ -2129,6 +2151,16 @@ impl PatchTree {
                 return self.least_sigma();
             }
             let node = self.nodes.get(index)?;
+            // Nothing under the node is lower than what was found: the
+            // least stays what it is whatever is looked at there (every
+            // node after it is asked with the same `least`). A search
+            // whose reach takes in most of a surface went through every
+            // node of its tree, 17 500 a question, 3000 questions in one
+            // try of an offset of a chamfer on a torus (48 s; the fuzzer's
+            // seed 20795706, 2026-10-21).
+            if node.floor >= least {
+                continue;
+            }
             if !(box_distance(&node.bbox, p) <= reach) {
                 continue;
             }

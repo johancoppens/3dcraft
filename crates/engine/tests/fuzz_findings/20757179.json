@@ -1,0 +1,13 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":0.001}},
+  {"command":"sketch.create","params":{"name":"S0","offset":-2500.0,"plane":"zx"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[0.0,-2500.0],[10000.0,-5000.0],[10000.0,0.0],[5000.0,0.0],[5000.0,10000.0],[0.0,7500.0]],"sketch":"S0"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","name":"N0","sketch":"S0"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 5","axis":[0.0,0.0,1.0],"count":5,"name":"N3","point":[2500.0,-2500.0,14.670994081297977],"source":"N0"}},
+  {"command":"feature.mirror","params":{"keep":true,"name":"N4","normal":[1.0,0.0,0.0],"point":[-8555.650134826275,-13529.096205211841,-10000.0],"source":"N3"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 6","axis":[0.0,0.0,1.0],"count":6,"name":"N5","point":[-17111.30026965255,1945.0118806090686,-8957.782615203621],"source":"N4"}},
+  {"command":"sketch.create","params":{"name":"S7","offset":0.0,"plane":"yz"}},
+  {"command":"sketch.polyline","params":{"closed":true,"points":[[0.0,-2500.0],[10000.0,-2500.0],[10000.0,2500.0],[5000.0,2500.0],[5000.0,7500.0],[0.0,7500.0]],"sketch":"S7"}},
+  {"command":"feature.revolve","params":{"angle":"360 deg","axis":"y","name":"N7","sketch":"S7"}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N8","op":"subtract","target":"N7","tool":"N5"}}
+]
