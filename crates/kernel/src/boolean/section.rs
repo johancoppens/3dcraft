@@ -138,7 +138,7 @@ impl Solid<'_> {
     }
 
     /// A box around an edge; empty for an edge the body does not have.
-    fn edge_box(&self, id: EdgeId) -> Bbox3 {
+    pub fn edge_box(&self, id: EdgeId) -> Bbox3 {
         let Some(edge) = self.body.edge(id) else {
             return Bbox3::EMPTY;
         };
@@ -1071,6 +1071,10 @@ pub(super) fn section(
     // Pairs of faces whose surfaces only touch (points, no curve), in the
     // order they were met.
     let mut touching: Vec<(usize, usize)> = Vec::new();
+    // Pairs of faces on one surface: a boundary edge of either face that
+    // lies on the other is imprinted on it from the edge itself, once
+    // every pair has been met (`lying_edges`).
+    let mut coincident: Vec<(usize, usize)> = Vec::new();
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
@@ -1138,6 +1142,7 @@ pub(super) fn section(
                         .entry(fb)
                         .or_default()
                         .push((fa, same_normal));
+                    coincident.push((fa, fb));
                 }
                 // Points where the surfaces only touch divide nothing.
                 SurfaceMeeting::Meets(meeting) => {
@@ -1197,15 +1202,321 @@ pub(super) fn section(
         }
     }
     for (fa, fb) in touching {
-        lying_edges(a, fa, b, fb, vertices, tolerance, &mut sections)?;
+        lying_edges(
+            a,
+            fa,
+            b,
+            fb,
+            Lying::Near,
+            vertices,
+            tolerance,
+            &mut sections,
+        )?;
+    }
+    // The boundary edges of both bodies, once per boolean: two solids
+    // have none, and then there is nothing to imprint.
+    if !coincident.is_empty() {
+        let (boundary_a, boundary_b) = (boundary_edges(a.body), boundary_edges(b.body));
+        if !(boundary_a.is_empty() && boundary_b.is_empty()) {
+            for (fa, fb) in coincident {
+                lying_edges(
+                    a,
+                    fa,
+                    b,
+                    fb,
+                    Lying::Boundary(&boundary_a, &boundary_b),
+                    vertices,
+                    tolerance,
+                    &mut sections,
+                )?;
+            }
+        }
     }
     Ok(sections)
+}
+
+/// Which edges of a pair of faces [`lying_edges`] looks at.
+#[derive(Clone, Copy)]
+enum Lying<'e> {
+    /// Every edge of either face near the other face.
+    Near,
+    /// The edges of either face that only one face of its body uses (the
+    /// boundary of a sheet: these of A, these of B), which no second face
+    /// of their own imprints.
+    Boundary(&'e BTreeSet<EdgeId>, &'e BTreeSet<EdgeId>),
+}
+
+/// The edges of `body` that one face uses, once.
+fn boundary_edges(body: &Body) -> BTreeSet<EdgeId> {
+    let mut uses: BTreeMap<EdgeId, usize> = BTreeMap::new();
+    for face in &body.faces {
+        for loop_ in face.loops.iter().filter_map(|&l| body.loop_(l)) {
+            for coedge in &loop_.coedges {
+                *uses.entry(coedge.edge).or_insert(0) += 1;
+            }
+        }
+    }
+    uses.into_iter()
+        .filter(|&(_, n)| n == 1)
+        .map(|(edge, _)| edge)
+        .collect()
+}
+
+/// The most pieces [`edge_crossings`] halves an edge into, per edge of
+/// the other face.
+const CROSSING_PIECES: usize = 1 << 16;
+/// How long, in tolerances, a piece of an edge must be (its chord) to be
+/// taken to lie along another edge when it is within the tolerance of it
+/// at nine places ([`edge_crossings`]): two curves that cross at an angle
+/// θ are within the tolerance of each other over 2 / sin θ tolerances,
+/// so only crossings flatter than about two degrees, within the
+/// tolerance of each other over that length, read as a shared stretch.
+const ALONG: f64 = 64.0;
+/// Where an edge crosses another on one surface, when the pieces it takes
+/// to tell are more than [`CROSSING_PIECES`].
+const CROSSING_UNRESOLVED: Reason = "where an edge of one body crosses an edge of the other, on a surface both lie on, could not be told within the work allowed (the edges run close to each other, or bend more than can be bounded, over a long stretch)";
+
+/// The distance between the segments from `a.0` to `a.1` and from `b.0`
+/// to `b.1` (either may be a point): the closest points by the clamped
+/// solution of the two lines' normal equations, each clamp tried from
+/// both segments' side, and the least of that and the four end-to-segment
+/// distances (which covers parallel and degenerate segments). NaN in, NaN
+/// out.
+fn segments_apart(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> f64 {
+    let to_segment = |p: Vec3, (s0, s1): (Vec3, Vec3)| {
+        let d = s1 - s0;
+        let len2 = d.dot(d);
+        let t = if len2 > 0.0 {
+            ((p - s0).dot(d) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance(s0 + d * t)
+    };
+    let mut best = to_segment(a.0, b)
+        .min(to_segment(a.1, b))
+        .min(to_segment(b.0, a))
+        .min(to_segment(b.1, a));
+    let (u, v, w) = (a.1 - a.0, b.1 - b.0, a.0 - b.0);
+    let (uu, uv, vv, uw, vw) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let det = uu * vv - uv * uv;
+    if det > 0.0 {
+        let s = ((uv * vw - vv * uw) / det).clamp(0.0, 1.0);
+        let t = ((uu * vw - uv * uw) / det).clamp(0.0, 1.0);
+        best = best.min((a.0 + u * s).distance(b.0 + v * t));
+    }
+    if [a.0, a.1, b.0, b.1].iter().any(|p| !p.is_finite()) {
+        return f64::NAN;
+    }
+    best
+}
+
+/// Adds to `cuts` where edge `id` of `own`, which lies on the surface of
+/// face `face` of `other`, crosses an edge of that face: where it enters
+/// or leaves the face. Both curves lie on one surface, so neither meets
+/// the other's surface there and [`edge_cuts`] cannot see the place; it
+/// is found between the two curves, for curves and surfaces of any kind.
+///
+/// Branch and bound over pairs of a piece of the edge and a piece of the
+/// other edge, with two lower bounds on how near they come. The chords:
+/// each piece lies within `turn · h² / 2` of its chord (`turn` bounds the
+/// curve's second derivative, `hits::turn_bound`; h is half the piece's
+/// parameter range), so the distance between the two chords less both
+/// strays bounds the distance between the pieces from below, and pieces
+/// side by side at any distance beyond the tolerance are dropped as soon
+/// as their chords hug them (at once for two lines). And the middle:
+/// the distance from the middle of the edge's piece to the other piece
+/// (`nearest`) changes along the piece by no more than the edge's speed
+/// bound times the change of parameter, so a middle further than the
+/// tolerance plus that bound times the half width drops the pair. The
+/// longer piece of a pair is halved, down to pieces of the edge a
+/// quarter of the tolerance long. (For lines, circles and ellipses the
+/// bounds are proofs; for a rational spline the speed and bend bounds
+/// come from its Bézier nets and are estimates, so a crossing of a
+/// heavily weighted spline edge could in principle be missed.) A piece
+/// within the tolerance of the other edge at nine
+/// places along it lies along that edge (the checker's measure of an edge
+/// lying on something, sampled): the two share a stretch there, which
+/// their vertices bound, and it is no crossing. Pieces left that follow
+/// one another are one place where the edges meet: a vertex of either
+/// edge within twice the tolerance of both edges there (next to a shared
+/// stretch the run reaches from the vertex where it ends into it, all of
+/// it as near the other edge), as a hit near an end is that end in
+/// [`edge_cuts`]; else the point of the run nearest the other edge.
+fn edge_crossings(
+    own: &Solid,
+    id: EdgeId,
+    other: &Solid,
+    face: usize,
+    named: &[(Operand, FaceId)],
+    tol: f64,
+    cuts: &mut Vec<Cut>,
+) -> Result<(), Stop> {
+    let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
+    let (Some(start), Some(end)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
+        return Err(Stop::of(LOST));
+    };
+    let (t0, t1) = edge.range;
+    let speed = super::hits::speed_bound(&edge.curve);
+    if !(speed.is_finite() && speed > 0.0 && t1 > t0) {
+        return Err(Stop::of(LOST).at(named));
+    }
+    let edge_box = own.edge_box(id);
+    for crossed in other.edges_near(face, |bx| boxes_meet(bx, &edge_box, 2.0 * tol)) {
+        let piece = other.body.edge(crossed).ok_or(Stop::of(LOST))?;
+        let (Some(p0), Some(p1)) = (other.body.vertex(piece.start), other.body.vertex(piece.end))
+        else {
+            return Err(Stop::of(LOST));
+        };
+        let distance = |t: f64| -> Result<f64, Stop> {
+            nearest(&piece.curve, piece.range, edge.curve.eval(t))
+                .map(|(_, d)| d)
+                .ok_or(Stop::of(LOST).at(named))
+        };
+        // How far a piece of either curve strays from its chord: the
+        // point at a parameter is within turn · h² / 2 of the point the
+        // same share of the way along the chord (h the half width of the
+        // piece's parameter range). `None` without a bound: then only
+        // the edge is halved, and its pieces are told by the distance
+        // from their middle alone.
+        let bends = super::hits::turn_bound(&edge.curve)
+            .zip(super::hits::turn_bound(&piece.curve))
+            .filter(|(a, b)| a.is_finite() && b.is_finite());
+        let other_speed = super::hits::speed_bound(&piece.curve);
+        let (e0, e1) = piece.range;
+        // Pairs of a piece of the edge and a piece of the other edge.
+        let mut open: Vec<(f64, f64, f64, f64)> = vec![(t0, t1, e0, e1)];
+        let mut kept: Vec<(f64, f64, f64, f64)> = Vec::new();
+        let mut pieces = 0_usize;
+        while let Some((lo, hi, elo, ehi)) = open.pop() {
+            pieces += 1;
+            if pieces > CROSSING_PIECES {
+                return Err(Stop::of(CROSSING_UNRESOLVED).at(named));
+            }
+            let (middle, half) = (0.5 * (lo + hi), 0.5 * (hi - lo));
+            let (other_middle, other_half) = (0.5 * (elo + ehi), 0.5 * (ehi - elo));
+            let reach = speed * half;
+            // Apart by more than the tolerance where the chords of the
+            // two pieces, less how far each piece strays from its chord,
+            // are: two pieces running side by side at any distance
+            // beyond the tolerance are told apart at once.
+            if let Some((bend, other_bend)) = bends {
+                let stray = 0.5 * (bend * half * half + other_bend * other_half * other_half);
+                let gap = segments_apart(
+                    (edge.curve.eval(lo), edge.curve.eval(hi)),
+                    (piece.curve.eval(elo), piece.curve.eval(ehi)),
+                );
+                if gap - stray > tol {
+                    continue;
+                }
+            }
+            let d = nearest(&piece.curve, (elo, ehi), edge.curve.eval(middle))
+                .map(|(_, d)| d)
+                .ok_or(Stop::of(LOST).at(named))?;
+            // (A NaN is dropped too.)
+            if d.is_nan() || d > tol + reach {
+                continue;
+            }
+            if reach <= 0.25 * tol || !(hi > middle && middle > lo) {
+                kept.push((lo, hi, middle, distance(middle)?));
+                continue;
+            }
+            // (Only a piece much longer than the band in which a crossing
+            // is within the tolerance of the other edge: a shorter one
+            // around a crossing is within it at all nine places.)
+            let mut along = edge.curve.eval(lo).distance(edge.curve.eval(hi)) >= ALONG * tol;
+            for k in 0..=8 {
+                if !along {
+                    break;
+                }
+                let here = distance(lo + (hi - lo) * f64::from(k) / 8.0)?;
+                if here.is_nan() || here > tol {
+                    along = false;
+                    break;
+                }
+            }
+            if along {
+                continue;
+            }
+            // The longer piece is halved (the other edge's only where
+            // both bend by a known amount); depth first, the lower half
+            // first.
+            if bends.is_some()
+                && other_speed * other_half > reach
+                && ehi > other_middle
+                && other_middle > elo
+            {
+                open.push((lo, hi, other_middle, ehi));
+                open.push((lo, hi, elo, other_middle));
+            } else {
+                open.push((middle, hi, elo, ehi));
+                open.push((lo, middle, elo, ehi));
+            }
+        }
+        // A piece of the edge may be kept with more than one piece of the
+        // other edge: once, in order along the edge (the pieces are
+        // halves of halves of the edge's range, so the same piece has the
+        // same ends).
+        kept.sort_by(|p, q| p.0.total_cmp(&q.0));
+        kept.dedup_by(|p, q| p.0 == q.0);
+        // Runs of pieces that follow one another, each one place: the
+        // range of the run, and the parameter and distance of its point
+        // nearest the other edge.
+        let mut runs: Vec<(f64, f64, f64, f64)> = Vec::new();
+        for (lo, hi, t, d) in kept {
+            match runs.last_mut() {
+                Some(run) if run.1 == lo => {
+                    run.1 = hi;
+                    if d < run.3 {
+                        (run.2, run.3) = (t, d);
+                    }
+                }
+                _ => runs.push((lo, hi, t, d)),
+            }
+        }
+        for (lo, hi, t, d) in runs {
+            if d > tol {
+                continue;
+            }
+            // A vertex of either edge in the run, on both edges, is the
+            // place: next to a stretch the two share, the run reaches
+            // from the vertex where the stretch ends into it, every point
+            // of it as near the other edge as the place.
+            let at = edge.curve.eval(t);
+            let on_both = |v: Vec3| {
+                locate(&edge.curve, (lo, hi), v, 2.0 * tol).is_some()
+                    && locate(&piece.curve, piece.range, v, 2.0 * tol).is_some()
+            };
+            let point = [start.point, end.point, p0.point, p1.point]
+                .into_iter()
+                .filter(|&v| on_both(v))
+                .min_by(|v, w| v.distance(at).total_cmp(&w.distance(at)))
+                .unwrap_or(at);
+            let (a_edge, b_edge) = match own.operand {
+                Operand::A => (Some(id), Some(crossed)),
+                Operand::B => (Some(crossed), Some(id)),
+            };
+            cuts.push(Cut {
+                t: 0.0,
+                point,
+                a_edge,
+                b_edge,
+                end: false,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Where the surfaces of face `fa` of A and `fb` of B only touch (geometry
 /// gave points and no curve), the edges of either face that lie on the
 /// other face's surface, imprinted on the other face from their own
-/// curves.
+/// curves; and where the faces lie on one surface (`Lying::Boundary`),
+/// the boundary edges of either face (used by one face of their body: a
+/// sheet's rim), which have no second face to imprint them, as a solid's
+/// edges have, so that the face of the other body is divided where the
+/// sheet on it ends, from where the rim enters the face to where it
+/// leaves it ([`edge_crossings`]).
 ///
 /// Two surfaces tangent along a curve with no closed form (the face of a
 /// fillet, exact or approximated, against the faces it rounds; a rational
@@ -1227,11 +1538,13 @@ pub(super) fn section(
 /// out. An edge of neither face divides nothing where surfaces only
 /// touch: on both sides of such a touch the face is on the same side of
 /// the other body.
+#[allow(clippy::too_many_arguments)]
 fn lying_edges(
     a: &Solid,
     fa: usize,
     b: &Solid,
     fb: usize,
+    which: Lying,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
     sections: &mut Sections,
@@ -1246,11 +1559,22 @@ fn lying_edges(
         return Ok(());
     };
     let reach = EDGE_REACH * tol;
+    let (boundary_a, boundary_b) = match which {
+        Lying::Near => (None, None),
+        Lying::Boundary(of_a, of_b) => (Some(of_a), Some(of_b)),
+    };
     // The edges of each face that come within the tolerance of the other
     // face's surface somewhere (nine places along them).
-    let close = |own: &Solid, face: usize, other: Sheet| -> Result<Vec<EdgeId>, Stop> {
+    let close = |own: &Solid,
+                 face: usize,
+                 other: Sheet,
+                 boundary: Option<&BTreeSet<EdgeId>>|
+     -> Result<Vec<EdgeId>, Stop> {
         let mut found = Vec::new();
         for id in own.edges_near(face, |bx| boxes_meet(bx, &near, reach)) {
+            if boundary.is_some_and(|b| !b.contains(&id)) {
+                continue;
+            }
             let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
             let (t0, t1) = edge.range;
             if (0..=8).any(|k| {
@@ -1262,13 +1586,28 @@ fn lying_edges(
         }
         Ok(found)
     };
-    let (of_a, of_b) = (close(a, fa, ob.sheet())?, close(b, fb, oa.sheet())?);
+    let (of_a, of_b) = (
+        close(a, fa, ob.sheet(), boundary_a)?,
+        close(b, fb, oa.sheet(), boundary_b)?,
+    );
     if of_a.is_empty() && of_b.is_empty() {
         return Ok(());
     }
     let mut found = Vec::new();
     edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
     edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+    // A boundary edge lies on the other face's surface, and so do that
+    // face's own edges: no edge meets the other's surface where the two
+    // cross, so where the boundary edge enters or leaves the other face
+    // is found between the curves themselves.
+    if matches!(which, Lying::Boundary(..)) {
+        for &id in &of_a {
+            edge_crossings(a, id, b, fb, &named, tol, &mut found)?;
+        }
+        for &id in &of_b {
+            edge_crossings(b, id, a, fa, &named, tol, &mut found)?;
+        }
+    }
     for (own, edges, other, operand) in [
         (a, &of_a, ob.sheet(), Operand::A),
         (b, &of_b, oa.sheet(), Operand::B),
