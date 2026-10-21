@@ -113,32 +113,23 @@ pub struct Tokens {
     /// `view_cube_fade_full` on, so a face turning away dims gradually.
     pub view_cube_fade: f32,
     pub view_cube_fade_full: f32,
-    /// The glass of the view cube: the colour of its faces and of its
-    /// capsules and circles, drawn over the picture without outlines.
+    /// The glass of the view cube: the tint of all its patches, faces,
+    /// capsules and circles alike, drawn over the picture without
+    /// outlines; its opacity is how a patch is turned from the light.
     pub view_cube_glass: Rgb,
-    pub view_cube_glass_dim: Rgb,
     /// The base under every patch (`view_cube_base` at this opacity), so
     /// the glass and its names read over any model and any background.
     /// The cube is light: a near-white base, the glass a dark tint that
     /// shades the faces turned from the light, dark names.
     pub view_cube_base: Rgb,
     pub view_cube_base_opacity: u8,
-    /// The thin line round each face of the cube, so the light faces stand
-    /// out from a light viewport: its colour and width in points (no line
-    /// at width 0).
-    pub view_cube_outline: Rgb,
-    pub view_cube_outline_width: f32,
     /// The opacity of a face (0 to 255) turned away from the light and
     /// of one facing it; the light comes from `view_cube_light`, a
     /// direction in the world (the top is lit most).
     pub view_cube_face_opacity: [u8; 2],
     pub view_cube_light: [f32; 3],
-    /// The opacity of a capsule and of a corner's circle seen straight on;
-    /// less as they turn away.
-    pub view_cube_edge_opacity: u8,
-    pub view_cube_corner_opacity: u8,
     /// The patch under the pointer: its fill, the fill's opacity, and its
-    /// thin bright outline with the outline's width in points.
+    /// outline with the outline's width in points (none at 0).
     pub view_cube_hover: Rgb,
     pub view_cube_hover_opacity: u8,
     pub view_cube_hover_outline: Rgb,
@@ -342,30 +333,26 @@ impl Tokens {
             view_cube_face_rounding: 0.9,
             view_cube_fade: 0.03,
             view_cube_fade_full: 0.2,
-            // A light cube, lit from above: the faces turned from the
-            // light shaded grey, the capsules and corners a darker grey
-            // between them, dark names, a gold patch under the pointer.
+            // A light cube without lines, shaded only by the light from
+            // above: off-white, the top lightest, what is turned from the
+            // light a little darker, capsules and corners by the same
+            // rule; dark names, a gold patch under the pointer.
             view_cube_glass: [58, 56, 53],
-            view_cube_glass_dim: [104, 100, 94],
             view_cube_base: [252, 251, 249],
-            view_cube_base_opacity: 235,
-            view_cube_outline: [150, 146, 140],
-            view_cube_outline_width: 1.0,
-            view_cube_face_opacity: [80, 0],
+            view_cube_base_opacity: 240,
+            view_cube_face_opacity: [72, 0],
             view_cube_light: [0.3, -0.5, 0.8],
-            view_cube_edge_opacity: 120,
-            view_cube_corner_opacity: 130,
             view_cube_hover: [217, 164, 65],
-            view_cube_hover_opacity: 200,
+            view_cube_hover_opacity: 230,
             view_cube_hover_outline: [168, 106, 18],
-            view_cube_hover_width: 1.2,
+            view_cube_hover_width: 0.0,
             view_cube_label: [27, 26, 25],
             view_cube_label_size: 0.46,
             view_cube_label_width: 0.76,
             view_cube_label_hide: 0.18,
             view_cube_label_min: 7.0,
             view_cube_shadow: [0, 0, 0],
-            view_cube_shadow_opacity: 60,
+            view_cube_shadow_opacity: 80,
             view_cube_shadow_size: [0.93, 0.72, 0.09],
             plate_fill: [22, 21, 20],
             plate_text: [245, 242, 236],

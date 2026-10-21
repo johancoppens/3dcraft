@@ -133,37 +133,24 @@ fn thickness(points: &[egui::Pos2]) -> f32 {
     if t.is_finite() { t } else { 0.0 }
 }
 
-/// How a patch of the view cube is filled at rest: glass, a face lit by
-/// how it is turned to the theme's light, a capsule or a circle quieter
-/// and fainter as it turns away.
+/// How a patch of the view cube is filled at rest: the glass over its
+/// base, by one rule for faces, capsules and circles alike: how the patch
+/// is turned to the theme's light (`view_cube_light`), so the cube is
+/// shaded only by the light and no patch stands out by a colour of its
+/// own.
 pub fn cube_fill(tokens: &Tokens, facet: &view_cube::Facet) -> egui::Color32 {
-    match facet.kind() {
-        view_cube::FacetKind::Face => {
-            let [x, y, z] = tokens.view_cube_light.map(f64::from);
-            let length = (x * x + y * y + z * z).sqrt();
-            let n = facet.normal();
-            let lit = if length > 0.0 && length.is_finite() {
-                ((n[0] * x + n[1] * y + n[2] * z) / length).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let [lo, hi] = tokens.view_cube_face_opacity.map(f64::from);
-            // Between two opacities.
-            let alpha = (lo + (hi - lo) * lit).round().clamp(0.0, 255.0) as u8;
-            color_alpha(tokens.view_cube_glass, alpha)
-        }
-        kind => {
-            let full = if kind == view_cube::FacetKind::Edge {
-                tokens.view_cube_edge_opacity
-            } else {
-                tokens.view_cube_corner_opacity
-            };
-            let t = (facet.toward * 1.6).clamp(0.0, 1.0);
-            // A fraction of an opacity.
-            let alpha = (f64::from(full) * t).round().clamp(0.0, 255.0) as u8;
-            color_alpha(tokens.view_cube_glass_dim, alpha)
-        }
-    }
+    let [x, y, z] = tokens.view_cube_light.map(f64::from);
+    let length = (x * x + y * y + z * z).sqrt();
+    let n = facet.normal();
+    let lit = if length > 0.0 && length.is_finite() {
+        ((n[0] * x + n[1] * y + n[2] * z) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let [lo, hi] = tokens.view_cube_face_opacity.map(f64::from);
+    // Between two opacities.
+    let alpha = (lo + (hi - lo) * lit).round().clamp(0.0, 255.0) as u8;
+    color_alpha(tokens.view_cube_glass, alpha)
 }
 
 /// The name of a face of the view cube as a mesh lying in the face's
@@ -655,21 +642,10 @@ impl Shell {
                     ),
                 )
             } else {
-                // A face has a thin outline; a capsule or a circle not.
-                let outline = if facet.kind() == view_cube::FacetKind::Face
-                    && tokens.view_cube_outline_width > 0.0
-                {
-                    egui::Stroke::new(
-                        tokens.view_cube_outline_width,
-                        color(tokens.view_cube_outline).gamma_multiply(fade),
-                    )
-                } else {
-                    egui::Stroke::NONE
-                };
                 egui::Shape::convex_polygon(
                     points.clone(),
                     cube_fill(&tokens, facet).gamma_multiply(fade),
-                    outline,
+                    egui::Stroke::NONE,
                 )
             };
             painter.add(shape);
