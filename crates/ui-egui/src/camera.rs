@@ -314,6 +314,19 @@ impl Projector {
         (p - self.eye).dot(self.forward)
     }
 
+    /// Whether the camera is a perspective one.
+    pub fn perspective(&self) -> bool {
+        self.perspective
+    }
+
+    /// How long a pixel of the image is, in model units, at `depth` in
+    /// front of the eye: across the view, the size of what one pixel
+    /// shows there.
+    pub fn footprint(&self, depth: f64) -> f64 {
+        let size = 2.0 * self.half / self.height;
+        if self.perspective { size * depth } else { size }
+    }
+
     /// The nearest depth a perspective camera can draw: a point closer to
     /// the eye plane has no place on the screen.
     pub fn near(&self) -> f64 {

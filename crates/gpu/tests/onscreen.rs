@@ -37,6 +37,7 @@ fn no_overlay() -> OverlayParams {
         slack: 0.0,
         hidden_opacity: 70,
         axis_length: 1.0,
+        edges: craft3d_gpu::EdgeLook::default(),
     }
 }
 
@@ -301,6 +302,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
         tested,
         dimmed,
         axis: false,
+        edge: None,
     };
     let segments = [
         // A sketch line behind the block: dimmed where the block is.
@@ -322,6 +324,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             tested: true,
             dimmed: true,
             axis: false,
+            edge: None,
         },
         Segment {
             from: Vec3::new(30.0, 30.0, 12.0),
@@ -331,6 +334,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             tested: true,
             dimmed: true,
             axis: false,
+            edge: None,
         },
     ];
     // Model x and z to pixels: 60 model units over 300 pixels.
@@ -352,6 +356,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
                 slack: 200.0 * 1e-6,
                 hidden_opacity: 70,
                 axis_length: 1.0,
+                edges: craft3d_gpu::EdgeLook::default(),
             };
             // Depth only: the lines on black show what the test decided.
             onscreen
@@ -518,6 +523,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: true,
                 dimmed: true,
                 axis: false,
+                edge: None,
             },
             Segment {
                 from: Vec3::new(1e300, 0.0, 0.0),
@@ -527,6 +533,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: true,
                 dimmed: false,
                 axis: true,
+                edge: None,
             },
             Segment {
                 from: Vec3::ZERO,
@@ -536,6 +543,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 tested: false,
                 dimmed: false,
                 axis: true,
+                edge: None,
             },
         ];
         let lines = onscreen.upload_lines(&hostile).unwrap();
@@ -545,16 +553,19 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 slack: f64::NAN,
                 hidden_opacity: 255,
                 axis_length: f64::INFINITY,
+                edges: craft3d_gpu::EdgeLook::default(),
             },
             OverlayParams {
                 slack: -1.0,
                 hidden_opacity: 0,
                 axis_length: f64::NAN,
+                edges: craft3d_gpu::EdgeLook::default(),
             },
             OverlayParams {
                 slack: 1e300,
                 hidden_opacity: 70,
                 axis_length: 1e300,
+                edges: craft3d_gpu::EdgeLook::default(),
             },
         ] {
             onscreen

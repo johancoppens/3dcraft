@@ -71,6 +71,7 @@ fn overlay() -> OverlayParams {
         slack: 1e-5,
         hidden_opacity: 0,
         axis_length: 1.0,
+        edges: craft3d_gpu::EdgeLook::default(),
     }
 }
 

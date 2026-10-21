@@ -70,6 +70,7 @@ fn no_overlay() -> OverlayParams {
         slack: 0.0,
         hidden_opacity: 70,
         axis_length: 1.0,
+        edges: craft3d_gpu::EdgeLook::default(),
     }
 }
 
@@ -522,6 +523,7 @@ fn lines_over_a_see_through_picture_are_tested_against_the_front() {
         tested: true,
         dimmed,
         axis: false,
+        edge: None,
     };
     let segments = [
         // Between the two sheets: hidden by the front one.
@@ -545,6 +547,7 @@ fn lines_over_a_see_through_picture_are_tested_against_the_front() {
             slack: 200.0 * 1e-6,
             hidden_opacity: 70,
             axis_length: 1.0,
+            edges: craft3d_gpu::EdgeLook::default(),
         };
         let mut picture = |segments: &[Segment]| {
             let lines = onscreen.upload_lines(segments).unwrap();

@@ -14,10 +14,14 @@
 use crate::backend::{Backend, RendererReport};
 use crate::state::CameraState;
 use crate::theme::Tokens;
-use crate::viewport::{AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, Marks, depth_slack};
+use crate::viewport::{
+    self, AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, Marks, OUTLINE_FAR, OUTLINE_NEAR,
+    OUTLINE_SLOPE, OUTLINE_STEP, depth_slack,
+};
 use craft3d_engine::Scene;
 use craft3d_gpu::{
-    DrawOptions, Fill, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams, Segment,
+    DrawOptions, EdgeLook, EdgeSegment, Fill, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams,
+    Segment,
 };
 use craft3d_math::Vec3;
 use craft3d_render::{Highlight, RenderParams};
@@ -27,6 +31,10 @@ use std::sync::Arc;
 /// A picture read back from the device, for tests: width, height and 3
 /// bytes per pixel.
 pub type ReadBack = (u32, u32, Vec<u8>);
+
+/// The density of the edges per tile, read back for tests: columns, rows
+/// and the means, row-major.
+pub type EdgeTiles = (u32, u32, Vec<f32>);
 
 /// What one drawn frame was.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,6 +167,38 @@ pub fn segments_marked(
         1.0
     };
     let mut out = Vec::new();
+    // In a picture that is cut open an edge is drawn where it is kept, and
+    // the outline of the cut is drawn as edges. A body's edges are drawn
+    // in shades of its own colour (`Tokens::edge_colors`).
+    for (body, color) in scene.into_iter().flat_map(viewport::body_colors) {
+        let colors = tokens.edge_colors(color.unwrap_or(tokens.body));
+        for edge in body.edges.iter() {
+            let extent = edge.split_first().map(|(&first, rest)| {
+                rest.iter()
+                    .fold([first, first], |[lo, hi], p| [lo.min(*p), hi.max(*p)])
+            });
+            for pair in edge.windows(2) {
+                if let [a, b] = *pair
+                    && let Some([a, b]) = marks.kept(a, b)
+                {
+                    out.push(Segment {
+                        from: a,
+                        to: b,
+                        color: colors.inner,
+                        width: tokens.edge_width * scale,
+                        tested: true,
+                        dimmed: see_through,
+                        axis: false,
+                        edge: Some(EdgeSegment {
+                            outline_color: colors.silhouette,
+                            outline_width: tokens.edge_silhouette_width * scale,
+                            extent,
+                        }),
+                    });
+                }
+            }
+        }
+    }
     let mut line = |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, axis: bool| {
         out.push(Segment {
             from: a,
@@ -168,21 +208,9 @@ pub fn segments_marked(
             tested,
             dimmed,
             axis,
+            edge: None,
         });
     };
-    // In a picture that is cut open an edge is drawn where it is kept, and
-    // the outline of the cut is drawn as edges.
-    for body in scene.into_iter().flat_map(|scene| scene.bodies.iter()) {
-        for edge in body.edges.iter() {
-            for pair in edge.windows(2) {
-                if let [a, b] = *pair
-                    && let Some([a, b]) = marks.kept(a, b)
-                {
-                    line(a, b, LineKind::Edge, true, see_through, false);
-                }
-            }
-        }
-    }
     for &[a, b] in marks.outline() {
         line(a, b, LineKind::Edge, true, see_through, false);
     }
@@ -242,6 +270,7 @@ pub fn segments_marked(
                 tested: true,
                 dimmed: true,
                 axis: false,
+                edge: None,
             });
         }
     }
@@ -254,6 +283,7 @@ pub fn segments_marked(
             tested: true,
             dimmed: true,
             axis: false,
+            edge: None,
         });
     }
     for point in marks
@@ -269,9 +299,33 @@ pub fn segments_marked(
             tested: true,
             dimmed: true,
             axis: false,
+            edge: None,
         });
     }
     out
+}
+
+/// How the GPU draws the edges of bodies at `scale` pixels per point: the
+/// rules of the CPU viewport ([`viewport::surface_steps_back`],
+/// [`viewport::fade_short`], [`viewport::edge_fade`],
+/// [`viewport::EdgeDensity`]) with the theme's numbers.
+pub fn edge_look(tokens: &Tokens, scale: f32) -> EdgeLook {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale.min(16.0))
+    } else {
+        1.0
+    };
+    EdgeLook {
+        outline_near: OUTLINE_NEAR,
+        outline_far: OUTLINE_FAR,
+        outline_step: OUTLINE_STEP,
+        outline_slope: OUTLINE_SLOPE,
+        fade_short: f64::from(tokens.edge_fade_short) * scale,
+        fade_long: f64::from(tokens.edge_fade_long) * scale,
+        dense_cap: f64::from(tokens.edge_dense_cap),
+        fade_floor: f64::from(tokens.edge_fade_floor),
+        tile: viewport::tile_pixels(tokens, scale),
+    }
 }
 
 /// The squares of the datum planes of `marks` as the GPU fills them under
@@ -584,6 +638,7 @@ impl Direct {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),
             hidden_opacity: wanted.tokens.hidden_opacity,
             axis_length: wanted.camera.distance * AXIS_LENGTH,
+            edges: edge_look(&wanted.tokens, wanted.scale),
         };
         self.onscreen
             .draw(
@@ -632,6 +687,13 @@ impl Direct {
                 panic_text(payload.as_ref())
             ))),
         }
+    }
+
+    /// The density of the edges per tile of the picture as shown, read
+    /// back: columns, rows, means. For tests; the window never calls it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_edge_density(&mut self) -> Result<EdgeTiles, String> {
+        self.onscreen.read_edge_density().map_err(|e| e.to_string())
     }
 
     /// The picture as shown, read back: for tests. The window never

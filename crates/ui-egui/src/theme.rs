@@ -37,8 +37,33 @@ pub struct Tokens {
     pub sketch_selected: Rgb,
     /// The world axes at the origin: X, Y, Z.
     pub axes: [Rgb; 3],
-    /// The edges of a body.
+    /// The edges that belong to no body: the outline of a section's cap.
+    /// A body's own edges take their colour from the body's
+    /// ([`Tokens::edge_colors`]).
     pub edge: Rgb,
+    /// An edge of a body is the body's colour with each sRGB channel
+    /// scaled by `edge_shade` (its hue kept, its lightness lowered), as long
+    /// as that contrasts with the body's colour by `edge_min_contrast` or
+    /// more (WCAG ratio of relative luminances); on a body too dark for
+    /// that, the colour lifted `edge_lift` of the way to white. The outline
+    /// of a body against what lies behind it is scaled by
+    /// `edge_silhouette_shade`: darker than the edges between its faces.
+    pub edge_shade: f32,
+    pub edge_min_contrast: f32,
+    pub edge_lift: f32,
+    pub edge_silhouette_shade: f32,
+    /// Edges fade, down to `edge_fade_floor` of their opacity: an edge
+    /// whose extent on screen (the diagonal of its box, projected) is
+    /// below `edge_fade_long` points, fully at `edge_fade_short`; and edges
+    /// where the share of the picture their ink covers (averaged over
+    /// tiles of `edge_tile` points, blended smoothly between the tiles)
+    /// is above `edge_dense_cap`, by that share over theirs: together
+    /// they cover no more of a crowded tile than of one at the cap.
+    pub edge_fade_short: f32,
+    pub edge_fade_long: f32,
+    pub edge_dense_cap: f32,
+    pub edge_fade_floor: f32,
+    pub edge_tile: f32,
     /// Datum planes, axes and points: their lines, their dots, the fill of
     /// a plane and their names.
     pub datum: Rgb,
@@ -87,8 +112,10 @@ pub struct Tokens {
     pub sketch_width: f32,
     pub construction_width: f32,
     pub axis_width: f32,
-    /// Width of a body's edges, in points.
+    /// Width of a body's edges between two of its faces, and of its
+    /// outline against what lies behind it, in points.
     pub edge_width: f32,
+    pub edge_silhouette_width: f32,
     /// Radius of a sketch point's dot, in points.
     pub point_radius: f32,
     /// Width of a highlighted edge, in points; its colour is
@@ -296,6 +323,18 @@ impl Tokens {
             axes: [[210, 63, 54], [58, 154, 77], [52, 103, 209]],
             // A dark warm grey, not black: the shading carries the form.
             edge: [88, 84, 78],
+            // An edge 40 % of its body's lightness, an outline 25 %: on the
+            // pier's red (L 0.09) that is 2.2:1; black wheels (L 0.01) get
+            // light edges instead, since darker than black reads as nothing.
+            edge_shade: 0.4,
+            edge_min_contrast: 1.5,
+            edge_lift: 0.45,
+            edge_silhouette_shade: 0.25,
+            edge_fade_short: 3.0,
+            edge_fade_long: 12.0,
+            edge_dense_cap: 0.15,
+            edge_fade_floor: 0.05,
+            edge_tile: 16.0,
             datum: [126, 87, 194],
             datum_fill_opacity: 48,
             datum_width: 1.25,
@@ -324,6 +363,7 @@ impl Tokens {
             construction_width: 1.0,
             axis_width: 1.25,
             edge_width: 1.0,
+            edge_silhouette_width: 1.6,
             point_radius: 2.25,
             highlight_width: 3.0,
             highlight_radius: 4.0,
@@ -643,6 +683,49 @@ impl Tokens {
     }
 }
 
+impl Tokens {
+    /// The colours of a body's edges, from the body's colour: the edges
+    /// between two of its faces, and its outline (see
+    /// [`Tokens::edge_shade`]). Every channel is rounded once.
+    pub fn edge_colors(&self, body: Rgb) -> EdgeColors {
+        let scaled = |factor: f32| {
+            let factor = if factor.is_finite() {
+                f64::from(factor).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            body.map(|c| (f64::from(c) * factor).round().clamp(0.0, 255.0) as u8)
+        };
+        let darker = scaled(self.edge_shade);
+        let inner = if contrast(darker, body) >= f64::from(self.edge_min_contrast) {
+            darker
+        } else {
+            let lift = if self.edge_lift.is_finite() {
+                f64::from(self.edge_lift).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            body.map(|c| {
+                let c = f64::from(c);
+                (c + (255.0 - c) * lift).round().clamp(0.0, 255.0) as u8
+            })
+        };
+        EdgeColors {
+            inner,
+            silhouette: scaled(self.edge_silhouette_shade),
+        }
+    }
+}
+
+/// The colours of a body's edges ([`Tokens::edge_colors`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeColors {
+    /// An edge between two faces of the body.
+    pub inner: Rgb,
+    /// The body's outline against what lies behind it.
+    pub silhouette: Rgb,
+}
+
 /// A token colour as egui takes it.
 pub fn color(rgb: Rgb) -> egui::Color32 {
     let [r, g, b] = rgb;
@@ -683,6 +766,49 @@ mod tests {
             }
         }
         assert!(low.is_empty(), "{low:?}");
+    }
+
+    /// An edge contrasts with its own body by the stated ratio or more,
+    /// whatever the body's colour: darker than the body on a light or an
+    /// ordinary one (the pier's red, the rover's white), lighter on a very
+    /// dark one (black wheels); the outline is never lighter than the
+    /// edges between faces on the darker side.
+    #[test]
+    fn an_edge_takes_its_colour_from_its_body_and_contrasts_with_it() {
+        let tokens = Tokens::default();
+        let ratio = f64::from(tokens.edge_min_contrast);
+        assert!(ratio >= 1.5);
+        let pier = [156, 47, 37];
+        let rover = [233, 230, 223];
+        let wheel = [29, 29, 32];
+        for body in [pier, rover, tokens.body, [91, 42, 34], [58, 58, 60]] {
+            let edges = tokens.edge_colors(body);
+            assert!(luminance(edges.inner) < luminance(body), "{body:?}");
+            assert!(luminance(edges.silhouette) <= luminance(edges.inner));
+            assert!(contrast(edges.inner, body) >= ratio, "{body:?}");
+        }
+        // The hue is kept: the pier's red edge is red.
+        let red = tokens.edge_colors(pier).inner;
+        assert_eq!(red, [62, 19, 15]);
+        let edges = tokens.edge_colors(wheel);
+        assert!(luminance(edges.inner) > luminance(wheel));
+        assert!(contrast(edges.inner, wheel) >= ratio);
+        // Every grey from black to white: the rule never gives less.
+        for v in 0..=255_u8 {
+            let body = [v, v, v];
+            let edges = tokens.edge_colors(body);
+            assert!(
+                contrast(edges.inner, body) >= ratio,
+                "grey {v}: {:?}",
+                edges.inner
+            );
+        }
+        // Hostile factors keep the colour within bytes.
+        let mut odd = tokens;
+        odd.edge_shade = f32::NAN;
+        odd.edge_lift = -3.0;
+        odd.edge_silhouette_shade = 9.0;
+        let _ = odd.edge_colors(pier);
     }
 
     #[test]

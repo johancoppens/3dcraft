@@ -195,7 +195,7 @@ fn measure(
     let gpu_inked = |x: f64, y: f64| {
         nearest_four(x, y).any(|i| {
             let (p, q) = (lvl(&gpu_rgb, i), lvl(&base_rgb, i));
-            let contrast = (0..3).map(|c| tokens.edge[c].abs_diff(q[c])).max().unwrap();
+            let contrast = (0..3).map(|c| q[c]).max().unwrap();
             let diff = (0..3).map(|c| p[c].abs_diff(q[c])).max().unwrap();
             u32::from(diff) * 4 > u32::from(contrast) && diff > 3
         })
@@ -320,12 +320,20 @@ fn edges_behind_a_thin_plate_are_hidden_at_every_zoom_and_a_hollow_stays_in_sigh
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
-    // The edges in a colour that stands out from every shade of the grey
-    // faces: in the light theme (2026-10-21) the theme's near-black edge
-    // is within a few levels of a face turned away from the light, where
-    // its ink could not be told. What is measured is where an edge is
-    // hidden, not its colour.
-    shell.tokens.edge = [255, 0, 0];
+    // The edges in a colour that stands out from every shade of the
+    // faces: in the light theme (2026-10-21) a dark edge is within a few
+    // levels of a face turned away from the light, where its ink could
+    // not be told. What is measured is where an edge is hidden, not its
+    // colour. Since 2026-10-21 an edge is a shade of its body's colour: the bodies
+    // in a light red and their edges, inner and outline, black, which
+    // stands out by 51 levels or more from the red of a face in any
+    // light (the ambient share of 255); nothing faded.
+    shell.tokens.body = [255, 60, 60];
+    shell.tokens.edge_shade = 0.0;
+    shell.tokens.edge_silhouette_shade = 0.0;
+    shell.tokens.edge_fade_short = 0.0;
+    shell.tokens.edge_fade_long = 0.0;
+    shell.tokens.edge_dense_cap = 1e9;
     let mut leg_session = leg();
     let mut corner_session = corner();
     let mut failures = Vec::new();

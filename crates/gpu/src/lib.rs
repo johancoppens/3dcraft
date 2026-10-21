@@ -86,8 +86,8 @@ mod renderer;
 pub use mesh::{GpuMesh, MAX_TRIANGLES};
 pub use offscreen::{AdapterSummary, Offscreen};
 pub use onscreen::{
-    DepthBuffer, DrawOptions, Fill, GpuLines, MAX_FILLS, MAX_SEGMENTS, Onscreen, OverlayParams,
-    Segment, WANTED_SAMPLES,
+    DepthBuffer, DrawOptions, EdgeLook, EdgeSegment, Fill, GpuLines, MAX_FILLS, MAX_SEGMENTS,
+    Onscreen, OverlayParams, Segment, WANTED_SAMPLES,
 };
 pub use renderer::Renderer;
 

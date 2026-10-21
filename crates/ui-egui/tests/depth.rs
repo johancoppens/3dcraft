@@ -105,6 +105,17 @@ fn length(line: &OverlayLine) -> f64 {
     (line.to[0] - line.from[0]).hypot(line.to[1] - line.from[1])
 }
 
+/// The overlay with no stretch of an edge marked as an outline: where the
+/// lines are and what is hidden, not how they are inked.
+fn unmarked(mut overlay: Overlay) -> Overlay {
+    for line in &mut overlay.lines {
+        if let Some(edge) = &mut line.edge {
+            edge.silhouette = false;
+        }
+    }
+    overlay
+}
+
 fn evidence(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/m4");
     std::fs::create_dir_all(&dir).unwrap();
@@ -294,7 +305,9 @@ fn the_edges_of_a_block_show_where_they_face_the_viewer_and_not_behind_it() {
                         "{what}: {total} pixels of edge drawn, {facing} face the viewer, {all} in all"
                     );
                     // Every edge that faces the viewer is there in full:
-                    // one line from corner to corner.
+                    // from corner to corner, in stretches that follow on
+                    // from each other (an edge is cut where it stops or
+                    // starts being the block's outline, 2026-10-21).
                     for edge in edges
                         .iter()
                         .filter(|(a, b)| *a != furthest && *b != furthest)
@@ -303,14 +316,33 @@ fn the_edges_of_a_block_show_where_they_face_the_viewer_and_not_behind_it() {
                             projector.project(edge.0).unwrap(),
                             projector.project(edge.1).unwrap(),
                         );
-                        let whole = |l: &OverlayLine| {
-                            let same =
-                                |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-6;
-                            (same(l.from, [a.x, a.y]) && same(l.to, [b.x, b.y]))
-                                || (same(l.from, [b.x, b.y]) && same(l.to, [a.x, a.y]))
+                        let same =
+                            |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-6;
+                        // Walk from one corner along stretches that start
+                        // where the last one ended until the other corner.
+                        let whole = |from: [f64; 2], to: [f64; 2]| {
+                            let mut at = from;
+                            for _ in 0..drawn.len() {
+                                if same(at, to) {
+                                    return true;
+                                }
+                                let Some(next) = drawn.iter().find(|l| {
+                                    same(l.from, at) && !same(l.to, at) && {
+                                        // Along the edge, towards `to`.
+                                        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+                                        let cross =
+                                            (l.to[0] - from[0]) * dy - (l.to[1] - from[1]) * dx;
+                                        cross.abs() < 1e-6 * dx.hypot(dy).max(1.0)
+                                    }
+                                }) else {
+                                    return false;
+                                };
+                                at = next.to;
+                            }
+                            same(at, to)
                         };
                         assert!(
-                            drawn.iter().any(whole),
+                            whole([a.x, a.y], [b.x, b.y]) || whole([b.x, b.y], [a.x, a.y]),
                             "{what}: the edge {edge:?} is cut or missing"
                         );
                     }
@@ -418,9 +450,14 @@ fn the_picture_shows_edges_dark_a_sketch_in_its_colour_and_a_hidden_sketch_dimme
             tokens.sketch
         );
     }
-    // On an edge of the top face, away from the corners: the edge colour.
+    // On an edge of the top face, away from the corners: the colour of
+    // the block's outline (the background lies beyond it), a shade of the
+    // block's own colour (2026-10-21).
     let (x, y) = at(Vec3::new(20.0, 5.0, 15.0));
-    assert_eq!(pixel(&picture.rgb, x, y), tokens.edge);
+    assert_eq!(
+        pixel(&picture.rgb, x, y),
+        tokens.edge_colors(tokens.body).silhouette
+    );
     // Beside the edge, on the face: untouched.
     let (x, y) = at(Vec3::new(12.0, 5.0, 15.0));
     assert_eq!(pixel(&picture.rgb, x, y), pixel(&bodies.rgb, x, y));
@@ -447,12 +484,21 @@ fn a_depth_buffer_that_is_wrong_hides_nothing_and_breaks_nothing() {
         let overlay = viewport::overlay_on(Some(&scene), &camera, &broken, None);
         assert_eq!(overlay, plain, "{cut} depths");
     }
-    // Depths that are not numbers hide nothing.
+    // Depths that are not numbers hide nothing; with nothing drawn beside
+    // them every edge is an outline, which changes how it is inked only.
     for bad in [f64::NAN, f64::INFINITY] {
         let mut broken = frame.clone();
         broken.depth.fill(bad);
         let overlay = viewport::overlay_on(Some(&scene), &camera, &broken, None);
-        assert_eq!(overlay, plain, "{bad}");
+        assert!(
+            overlay
+                .lines
+                .iter()
+                .filter_map(|line| line.edge)
+                .all(|edge| edge.silhouette),
+            "{bad}"
+        );
+        assert_eq!(unmarked(overlay), plain, "{bad}");
     }
     // A surface right at the eye hides everything that can be hidden:
     // the sketch stays, marked; the edges go.

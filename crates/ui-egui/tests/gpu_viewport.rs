@@ -86,6 +86,24 @@ fn part() -> Session {
     s
 }
 
+/// How far the GPU's density of the edges per tile may be from the CPU's
+/// (`viewport::EdgeDensity`, a share of a tile's pixels) at a density of
+/// `d`: 0.05 and a tenth of `d`. The two measure the same lines' ink but
+/// differently: the CPU in closed form (a line's length in a tile times
+/// its ink across, in four strands across its width, and its round ends),
+/// the GPU per pixel; and they decide what is hidden differently where an
+/// edge goes behind a body (at the middle of each piece of a pixel on the
+/// CPU, under each pixel on the GPU), which counts the more the more
+/// edges cross a tile there. Measured on Intel Vulkan: 0.019 where the
+/// edges of the part go behind the post (one edge of 3 pixels across a
+/// tile is 0.19), 0.080 at 0.90 in the comb of `part_coloured`, whose
+/// edges lie a pixel apart (0.57 of the tolerance).
+/// The fade goes with the cap over the density, so a tenth of it is a
+/// tenth of the fade.
+fn density_tolerance(d: f64) -> f64 {
+    0.05 + 0.1 * d.abs()
+}
+
 fn scene(session: &mut Session, quality: SceneQuality) -> Arc<Scene> {
     session.scene_with(quality).unwrap().unwrap()
 }
@@ -673,6 +691,41 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     direct_path_against_the_oracle(0.0);
 }
 
+/// The part with bodies of their own colours, whose edges are drawn in
+/// shades of them: the post very dark (light edges), the ball red, the
+/// plate a light grey; and beside the plate a comb of thin plates whose
+/// edges crowd and fade.
+fn part_coloured() -> Session {
+    let mut s = part();
+    for (body, color) in [
+        ("Post", [29, 29, 32]),
+        ("Ball", [156, 47, 37]),
+        ("Plate", [233, 230, 223]),
+    ] {
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": body, "color": color}),
+        );
+    }
+    for k in 0..16 {
+        run(
+            &mut s,
+            "feature.block",
+            json!({"size": [0.6, 12, 10], "position": [64.0 + f64::from(k) * 1.5, 4, 0]}),
+        );
+    }
+    s
+}
+
+/// Edges in shades of their bodies' colours, outlines wider and darker,
+/// crowded edges faded, drawn by the window's device against the oracle
+/// (2026-10-21).
+#[test]
+fn the_direct_path_draws_edges_in_shades_of_their_bodies_and_matches_the_oracle() {
+    direct_path_against_the_oracle_of(part_coloured(), "viewport-edges", 0.0);
+}
+
 /// The part with datums: a plane through the post, a plane at an angle
 /// about an axis along the plate's front edge, that axis, and a point
 /// above the ball.
@@ -745,6 +798,7 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     // Wide lines, so the pixel nearest a line's centre is all ink in both
     // pictures, whatever the renderers drew beneath it.
     shell.tokens.edge_width = 3.0;
+    shell.tokens.edge_silhouette_width = 4.0;
     shell.tokens.sketch_width = 3.0;
     shell.tokens.construction_width = 3.0;
     shell.tokens.axis_width = 3.0;
@@ -801,7 +855,13 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
             opacity,
             ..viewport::render_params(quality, &tokens)
         };
-        craft3d_render::render(&scene.mesh, &camera.to_render(), &params).unwrap()
+        craft3d_render::render_colored(
+            &scene.mesh,
+            &scene.face_colors,
+            &camera.to_render(),
+            &params,
+        )
+        .unwrap()
     };
     let cpu_frame = layer(shell.opacity());
     assert_eq!(shell.opacity(), 1.0 - transparency);
@@ -858,6 +918,32 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     };
     let seams = common::seams(&scene.mesh, &render_camera, w, h);
     let everything = viewport::overlay_untested(Some(&scene), &camera, w, h, None, &marks);
+    // How crowded the edges are (2026-10-21): the GPU's tiles against the
+    // CPU's, each within `density_tolerance`.
+    let density = viewport::EdgeDensity::new(&overlay, w, h, &tokens, 1.0);
+    let density_differ = {
+        let (columns, rows, cpu) = density.tiles();
+        let (gc, gr, gpu) = shell.direct_edge_density().unwrap().unwrap();
+        assert_eq!((gc as usize, gr as usize), (columns, rows));
+        let (mut most, mut at) = (0.0, (0, 0.0, 0.0));
+        for (k, (c, g)) in cpu.iter().zip(&gpu).enumerate() {
+            let d = (c - f64::from(*g)).abs() / density_tolerance(*c);
+            if d > most {
+                most = d;
+                at = (k, *c, f64::from(*g));
+            }
+        }
+        println!(
+            "edge density: most at tile ({}, {}): {:.4} on the CPU, {:.4} on the GPU",
+            at.0 % columns.max(1),
+            at.0 / columns.max(1),
+            at.1,
+            at.2
+        );
+        most
+    };
+    println!("edge density: the tiles differ by {density_differ:.2} of the tolerance at most");
+    assert!(density_differ <= 1.0, "{density_differ} of the tolerance");
     let lines = near_lines(&everything, w, h, 3.5);
     let (wu, hu) = (w as usize, h as usize);
 
@@ -1062,9 +1148,30 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
             // CPU picture, so the GPU's pixel is, per channel, the dimmed
             // ink over a level within the range of the CPU picture's
             // 3 x 3 pixels around it.
-            if see_through && matches!(shown, Some(s) if s.hidden) {
-                let alpha = f64::from(tokens.hidden_opacity) / 255.0;
-                let ink = line.kind.color(&tokens);
+            //
+            // An edge drawn faded (short on screen, or where edges crowd,
+            // 2026-10-21) is not all ink at its middle either, and lies on
+            // a feature edge too: the same holds with its alpha, the fade
+            // at the pixel (times the hidden opacity where it is dimmed),
+            // the fade taken over the CPU's density give or take
+            // `density_tolerance`, within which the two renderers' tiles
+            // agree (checked above).
+            let hidden = matches!(shown, Some(s) if s.hidden);
+            let (fade_lo, fade_hi) = shown.and_then(|s| s.edge).map_or((1.0, 1.0), |edge| {
+                let d = density.at(at[0], at[1]);
+                let long = viewport::fade_short(edge.extent, &tokens, 1.0);
+                let fade = |d: f64| viewport::edge_fade(long, d.max(0.0), &tokens);
+                let slack = density_tolerance(d);
+                (fade(d + slack), fade(d - slack))
+            });
+            if (see_through && hidden) || fade_lo < 1.0 {
+                let dimmed = if hidden {
+                    f64::from(tokens.hidden_opacity) / 255.0
+                } else {
+                    1.0
+                };
+                let alphas = [dimmed * fade_lo, dimmed * fade_hi];
+                let ink = shown.map_or(line.kind.color(&tokens), |s| s.color(&tokens));
                 let (ax, ay) = (at[0] as usize, at[1] as usize);
                 diff = (0..3)
                     .map(|ch| {
@@ -1073,8 +1180,14 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
                             .map(|n| f64::from(under[n * 3 + ch]));
                         let lo = around.clone().fold(f64::INFINITY, f64::min);
                         let hi = around.fold(f64::NEG_INFINITY, f64::max);
-                        let dim = |under: f64| under + (f64::from(ink[ch]) - under) * alpha;
-                        let (lo, hi) = (dim(lo).min(dim(hi)), dim(lo).max(dim(hi)));
+                        let dims: Vec<f64> = [lo, hi]
+                            .into_iter()
+                            .flat_map(|under| {
+                                alphas.map(|alpha| under + (f64::from(ink[ch]) - under) * alpha)
+                            })
+                            .collect();
+                        let lo = dims.iter().copied().fold(f64::INFINITY, f64::min);
+                        let hi = dims.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                         let got = f64::from(g[ch]);
                         (lo - got).max(got - hi).max(0.0).ceil() as u8
                     })

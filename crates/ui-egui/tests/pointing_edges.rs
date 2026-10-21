@@ -522,6 +522,7 @@ fn a_click_on_an_edge_picks_it_and_shows_it_highlighted() {
                                 to: [b.x, b.y],
                                 kind: LineKind::Highlight,
                                 hidden: false,
+                                edge: None,
                             },
                         )
                     })

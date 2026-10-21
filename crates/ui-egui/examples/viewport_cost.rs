@@ -170,6 +170,7 @@ fn time_direct(
         slack: depth_slack(Backend::Gpu, Some(scene), camera),
         hidden_opacity: tokens.hidden_opacity,
         axis_length: camera.distance * AXIS_LENGTH,
+        edges: craft3d_gpu::EdgeLook::default(),
     };
     let render_camera = camera.to_render();
     let (mut upload, mut submit, mut done) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
