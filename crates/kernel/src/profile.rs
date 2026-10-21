@@ -1527,3 +1527,269 @@ fn detect(
         })
         .collect())
 }
+
+/// The most curves (pieces of splines counted) of one open chain.
+pub const MAX_CHAIN_CURVES: usize = 1024;
+
+const MORE_THAN_ONE_CHAIN: &str = "the curves make more than one chain: an open chain is one run of curves joined end to end, with two free ends";
+
+/// The one open chain the curves of a sketch join into: lines, arcs and
+/// splines joined end to end, without branches, with two free ends (an
+/// open section of a loft, which makes a sheet).
+///
+/// Curves are read as [`detect_profiles`] reads them: ends within the
+/// tolerance are one junction with one representative point, a spline is
+/// cut at its corners, and no two curves may touch or cross anywhere but
+/// where they join. The chain starts at the free end of the end curve with
+/// the smaller id (of a single curve, at its own start) and is walked to
+/// the other free end; each [`Segment`] says whether it runs against its
+/// curve. A circle, a spline that closes on itself, curves that close into
+/// a loop, a branch and curves that make more than one chain are refused.
+pub fn open_chain(curves: &[SketchCurve], tolerance: &Tolerance) -> Result<Loop2, KernelError> {
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    if curves.is_empty() {
+        return Err(KernelError::NoProfile);
+    }
+    if curves.len() > MAX_CHAIN_CURVES {
+        return Err(KernelError::TooManyCurves {
+            count: curves.len(),
+            limit: MAX_CHAIN_CURVES,
+        });
+    }
+    let mut sorted = curves.to_vec();
+    sorted.sort_by_key(|c| c.id);
+    for (a, b) in sorted.iter().zip(sorted.iter().skip(1)) {
+        if a.id == b.id {
+            return Err(KernelError::DuplicateCurveId { id: a.id });
+        }
+    }
+    for curve in &sorted {
+        validate(curve, tol)?;
+    }
+    spline_work(&sorted)?;
+    // Splines cut at their corners, as for a profile; a piece of degree 1
+    // is a line.
+    let mut pieces: Vec<u32> = Vec::with_capacity(sorted.len());
+    let mut cut: Vec<SketchCurve> = Vec::with_capacity(sorted.len());
+    let too_many = |count: usize| KernelError::TooManyCurves {
+        count: count.saturating_add(1),
+        limit: MAX_CHAIN_CURVES,
+    };
+    for curve in sorted {
+        match &curve.curve {
+            Curve2::Circle { .. } => {
+                return Err(KernelError::InvalidProfile {
+                    reason: "a circle is closed: an open chain is lines, arcs and splines joined end to end",
+                });
+            }
+            Curve2::Spline(spline) => {
+                if let (Some(first), Some(last)) = (spline.control.first(), spline.control.last())
+                    && distance(*first, *last) <= tol
+                {
+                    return Err(KernelError::InvalidProfile {
+                        reason: "a spline that closes on itself: an open chain has two free ends",
+                    });
+                }
+                for (piece, part) in spline.profile_pieces(false).into_iter().enumerate() {
+                    if cut.len() >= MAX_CHAIN_CURVES {
+                        return Err(too_many(cut.len()));
+                    }
+                    let straight = match (part.degree, part.control.as_slice()) {
+                        (1, &[start, end]) => Some(Curve2::Line { start, end }),
+                        _ => None,
+                    };
+                    if let Some(Curve2::Line { start, end }) = straight
+                        && distance(start, end) <= tol
+                    {
+                        return Err(degenerate(
+                            curve.id,
+                            "two control points in a row of the polyline coincide",
+                        ));
+                    }
+                    pieces.push(u32::try_from(piece).unwrap_or(u32::MAX));
+                    cut.push(SketchCurve {
+                        id: curve.id,
+                        curve: straight.unwrap_or(Curve2::Spline(part)),
+                    });
+                }
+            }
+            Curve2::Line { .. } | Curve2::Arc { .. } => {
+                if cut.len() >= MAX_CHAIN_CURVES {
+                    return Err(too_many(cut.len()));
+                }
+                pieces.push(0);
+                cut.push(curve);
+            }
+        }
+    }
+    // Ends: two per curve, consecutive (end `2 k` starts curve `k`).
+    let mut ends = Vec::with_capacity(2 * cut.len());
+    for (index, curve) in cut.iter().enumerate() {
+        let (start, end, line) = match &curve.curve {
+            Curve2::Line { start, end } => (*start, *end, true),
+            Curve2::Arc { start, end, .. } => (*start, *end, false),
+            Curve2::Spline(spline) => {
+                let (Some(start), Some(end)) = (spline.control.first(), spline.control.last())
+                else {
+                    return Err(internal());
+                };
+                (*start, *end, true)
+            }
+            Curve2::Circle { .. } => return Err(internal()),
+        };
+        for (which, point) in [start, end].into_iter().enumerate() {
+            ends.push(End {
+                curve: index,
+                which,
+                point,
+                line,
+            });
+        }
+    }
+    // The end each end meets, if any: at most one. (At most 2048 ends, so
+    // every pair is looked at.)
+    let mut mates: Vec<Option<usize>> = Vec::with_capacity(ends.len());
+    for (i, a) in ends.iter().enumerate() {
+        let near: Vec<usize> = ends
+            .iter()
+            .enumerate()
+            .filter(|(j, b)| *j != i && distance(a.point, b.point) <= tol)
+            .map(|(j, _)| j)
+            .collect();
+        match near.as_slice() {
+            [] => mates.push(None),
+            [j] => {
+                if ends.get(*j).is_some_and(|b| b.curve == a.curve) {
+                    return Err(degenerate(
+                        cut.get(a.curve).map_or(0, |c| c.id),
+                        "its two ends coincide",
+                    ));
+                }
+                mates.push(Some(*j));
+            }
+            _ => {
+                let mut ids: Vec<u64> = std::iter::once(i)
+                    .chain(near.iter().copied())
+                    .filter_map(|e| ends.get(e).and_then(|e| cut.get(e.curve)).map(|c| c.id))
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ids.truncate(MAX_REPORTED);
+                return Err(KernelError::BranchingProfile { curves: ids });
+            }
+        }
+    }
+    let free: Vec<usize> = (0..ends.len())
+        .filter(|&i| mates.get(i).is_some_and(Option::is_none))
+        .collect();
+    let first_free = match free.as_slice() {
+        [] => {
+            return Err(KernelError::InvalidProfile {
+                reason: "the curves close into a loop: an open chain has two free ends (a closed loop is a profile)",
+            });
+        }
+        [a, _] => *a,
+        _ => {
+            return Err(KernelError::InvalidProfile {
+                reason: MORE_THAN_ONE_CHAIN,
+            });
+        }
+    };
+    // Representatives: an arc's end before a line's, then the smaller id.
+    let mut snapped = Vec::with_capacity(ends.len());
+    for (i, end) in ends.iter().enumerate() {
+        let point = match mates.get(i).copied().flatten().and_then(|m| ends.get(m)) {
+            Some(other) if (other.line, other.curve) < (end.line, end.curve) => other.point,
+            _ => end.point,
+        };
+        snapped.push(point);
+    }
+    // Every curve in its own direction, between the representatives.
+    let mut own = Vec::with_capacity(cut.len());
+    for (index, (curve, &piece)) in cut.iter().zip(&pieces).enumerate() {
+        let (Some(&start), Some(&end)) = (snapped.get(2 * index), snapped.get(2 * index + 1))
+        else {
+            return Err(internal());
+        };
+        let shape = match &curve.curve {
+            Curve2::Line { .. } => Shape::Line,
+            &Curve2::Arc {
+                center,
+                start: s,
+                end: e,
+            } => Shape::Arc {
+                center,
+                radius: (distance(center, s) + distance(center, e)) / 2.0,
+            },
+            Curve2::Spline(spline) => {
+                let mut spline = spline.clone();
+                if let Some(first) = spline.control.first_mut() {
+                    *first = start;
+                }
+                if let Some(last) = spline.control.last_mut() {
+                    *last = end;
+                }
+                Shape::Spline(spline)
+            }
+            Curve2::Circle { .. } => return Err(internal()),
+        };
+        if distance(start, end) <= tol {
+            return Err(degenerate(
+                curve.id,
+                "it is shorter than the tolerance once its ends are joined to its neighbours",
+            ));
+        }
+        own.push(Segment {
+            source: curve.id,
+            piece,
+            reversed: false,
+            start,
+            end,
+            shape,
+        });
+    }
+    // No two curves touch or cross but where they join.
+    let mate_curve: Vec<[Option<usize>; 2]> = (0..cut.len())
+        .map(|k| {
+            [2 * k, 2 * k + 1].map(|e| {
+                mates
+                    .get(e)
+                    .copied()
+                    .flatten()
+                    .and_then(|m| ends.get(m))
+                    .map(|m| m.curve)
+            })
+        })
+        .collect();
+    check_clear(&own, &mate_curve, tol)?;
+    // From the first free end to the other.
+    let mut segments = Vec::with_capacity(own.len());
+    let mut entry = first_free;
+    for _ in 0..own.len() {
+        let end = ends.get(entry).ok_or_else(internal)?;
+        let segment = own.get(end.curve).ok_or_else(internal)?;
+        let reversed = end.which == 1;
+        segments.push(if reversed {
+            segment.opposite()
+        } else {
+            segment.clone()
+        });
+        let exit = 2 * end.curve + usize::from(!reversed);
+        match mates.get(exit).copied().flatten() {
+            Some(next) => entry = next,
+            None => break,
+        }
+    }
+    if segments.len() != own.len() {
+        return Err(KernelError::InvalidProfile {
+            reason: MORE_THAN_ONE_CHAIN,
+        });
+    }
+    Ok(Loop2 { segments })
+}

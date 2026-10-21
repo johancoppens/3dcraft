@@ -61,8 +61,13 @@ use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-/// Most sections of one loft.
-pub const MAX_SECTIONS: usize = 64;
+/// Most sections of one loft: as many as the spline through them takes
+/// (`craft3d_geom::refine::MAX_INTERPOLATED`; its matrix is dense, and so
+/// is the closed loft's). Measured on a terrain of sections of a spline of
+/// 51 control points (the Garabit valley, 2026-10-21; debug build): 64
+/// sections loft in 1.2 s and 45 MB, 256 in 6.2 s and 200 MB, and a block
+/// cut out of the 256 in 9 s more (224 MB in all). The cap was 64 before.
+pub const MAX_SECTIONS: usize = craft3d_geom::refine::MAX_INTERPOLATED;
 
 /// Most curves in the loop of one section, after matching.
 pub const MAX_SECTION_CURVES: usize = 1024;
@@ -379,6 +384,87 @@ pub(crate) fn pinned(
     )?)
 }
 
+/// True when the loop is an open chain (two free ends), not a closed loop.
+fn is_open(outline: &Loop2) -> bool {
+    match (outline.segments.first(), outline.segments.last()) {
+        (Some(first), Some(last)) => first.start != last.end,
+        _ => false,
+    }
+}
+
+/// The middle of an open section: the mean of the ends of its curves.
+fn chain_middle(section: &Section) -> Option<Vec3> {
+    let segments = &section.outline.segments;
+    if segments.is_empty() {
+        return None;
+    }
+    let mut sum = Vec3::ZERO;
+    for s in segments {
+        sum = sum
+            + section.plane.point(s.start[0], s.start[1], 0.0)
+            + section.plane.point(s.end[0], s.end[1], 0.0);
+    }
+    Some(sum * (0.5 / segments.len() as f64))
+}
+
+/// The ends of an open section, in the direction it is walked.
+fn chain_ends(section: &Section, flip: bool) -> Option<(Vec3, Vec3)> {
+    let (first, last) = (
+        section.outline.segments.first()?,
+        section.outline.segments.last()?,
+    );
+    let (start, end) = (
+        section.plane.point(first.start[0], first.start[1], 0.0),
+        section.plane.point(last.end[0], last.end[1], 0.0),
+    );
+    Some(if flip { (end, start) } else { (start, end) })
+}
+
+/// Whether open section `index` is walked against the way its chain is
+/// given: from the curve `start` names when it names one (a curve at
+/// either end of the chain); otherwise the first section as given, and
+/// every later one so that its ends lie nearest to those of the section
+/// before it (seen from their middles, the squared distances between the
+/// start of one and the start of the other and between the ends added
+/// up; as given when both ways are equally near).
+fn open_flip(
+    index: usize,
+    section: &Section,
+    middle: Vec3,
+    before: Option<(Vec3, Vec3, Vec3)>,
+) -> Result<bool, KernelError> {
+    let number = index + 1;
+    let segments = &section.outline.segments;
+    let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
+        return Err(internal());
+    };
+    if let Some(start) = section.start {
+        return if first.source == start {
+            Ok(false)
+        } else if last.source == start {
+            Ok(true)
+        } else {
+            Err(refuse(
+                &[index],
+                format!(
+                    "start: curve {start} is not at an end of the open chain of section {number}; an open section starts at one of its ends"
+                ),
+            ))
+        };
+    }
+    let Some((s0, e0, m0)) = before else {
+        return Ok(false);
+    };
+    let Some((s, e)) = chain_ends(section, false) else {
+        return Err(internal());
+    };
+    let (s0, e0, s, e) = (s0 - m0, e0 - m0, s - middle, e - middle);
+    let keep = (s - s0).length_squared() + (e - e0).length_squared();
+    let turn = (e - s0).length_squared() + (s - e0).length_squared();
+    let same = (keep - turn).abs() <= 1e-9 * (keep + turn);
+    Ok(turn < keep && !same)
+}
+
 /// A section before its whole circle, if it is one, is cut up.
 enum Outline {
     /// A whole circle, walked counter-clockwise about `axis`.
@@ -406,7 +492,12 @@ fn turned(segment: &Segment) -> Segment {
 /// The curves of section `index` in the order and direction they are
 /// walked: counter-clockwise about `forward` (the plane's normal, or its
 /// opposite), from the curve the section starts with.
-fn outline(index: usize, section: &Section, flip: bool) -> Result<Outline, KernelError> {
+fn outline(
+    index: usize,
+    section: &Section,
+    flip: bool,
+    open: bool,
+) -> Result<Outline, KernelError> {
     let plane = &section.plane;
     let segments: Vec<Segment> = if flip {
         section.outline.segments.iter().rev().map(turned).collect()
@@ -422,7 +513,9 @@ fn outline(index: usize, section: &Section, flip: bool) -> Result<Outline, Kerne
         }
     };
     let number = index + 1;
-    if let [only] = segments.as_slice() {
+    if let [only] = segments.as_slice()
+        && !open
+    {
         let Shape::Circle { center, radius } = only.shape else {
             return Err(KernelError::InvalidProfile {
                 reason: crate::profile::ONE_SEGMENT_OPEN,
@@ -988,6 +1081,15 @@ pub fn loft(
         ));
     }
 
+    // Open sections (chains with two free ends) make a sheet: every
+    // section is open, or none is.
+    let open = sections.first().is_some_and(|s| is_open(&s.outline));
+    if open && options.closed {
+        return Err(refuse(
+            &[],
+            "a closed loft (a ring) through open sections is not supported yet",
+        ));
+    }
     // Where each section is, and which way the loft passes through it.
     let mut centers = Vec::with_capacity(count);
     for (index, section) in sections.iter().enumerate() {
@@ -996,20 +1098,45 @@ pub fn loft(
                 reason: crate::profile::NO_SEGMENTS,
             });
         }
-        let region = Profile {
-            outer: section.outline.clone(),
-            holes: Vec::new(),
-        };
-        let center = region
-            .centroid()
-            .map(|c| section.plane.point(c[0], c[1], 0.0))
-            .filter(|c| c.is_finite())
-            .ok_or_else(|| refuse(&[index], format!("section {} encloses no area", index + 1)))?;
+        if is_open(&section.outline) != open {
+            return Err(refuse(
+                &[0, index],
+                format!(
+                    "section 1 is {} and section {} is {}: the sections of a loft are all closed loops (a solid) or all open chains (a sheet)",
+                    if open {
+                        "an open chain"
+                    } else {
+                        "a closed loop"
+                    },
+                    index + 1,
+                    if open {
+                        "a closed loop"
+                    } else {
+                        "an open chain"
+                    },
+                ),
+            ));
+        }
+        let center = if open {
+            chain_middle(section)
+        } else {
+            let region = Profile {
+                outer: section.outline.clone(),
+                holes: Vec::new(),
+            };
+            region
+                .centroid()
+                .map(|c| section.plane.point(c[0], c[1], 0.0))
+        }
+        .filter(|c| c.is_finite())
+        .ok_or_else(|| refuse(&[index], format!("section {} encloses no area", index + 1)))?;
         centers.push(center);
     }
     let center = |k: usize| centers.get(k).copied().ok_or_else(internal);
     let mut walks = Vec::with_capacity(count);
     let mut outlines = Vec::with_capacity(count);
+    // The ends of the open section before, as walked, and its middle.
+    let mut before_ends: Option<(Vec3, Vec3, Vec3)> = None;
     for (index, section) in sections.iter().enumerate() {
         let (before, after) = if options.closed {
             ((index + count - 1) % count, (index + 1) % count)
@@ -1029,97 +1156,116 @@ pub fn loft(
             ));
         };
         let forward = if lean > 0.0 { normal } else { -normal };
-        // Counter-clockwise about `forward`.
-        let counter_clockwise = section.outline.signed_area() > 0.0;
-        let flip = counter_clockwise != (lean > 0.0);
-        outlines.push(outline(index, section, flip)?);
+        let flip = if open {
+            let middle = center(index)?;
+            let flip = open_flip(index, section, middle, before_ends)?;
+            before_ends = chain_ends(section, flip).map(|(s, e)| (s, e, middle));
+            flip
+        } else {
+            // Counter-clockwise about `forward`.
+            let counter_clockwise = section.outline.signed_area() > 0.0;
+            counter_clockwise != (lean > 0.0)
+        };
+        outlines.push(outline(index, section, flip, open)?);
         walks.push(forward);
     }
 
-    // Where each section starts. The first section with corners starts
-    // at the curve it names, or at its curve with the smallest id; every
-    // other section starts, unless it names a curve, in the direction
-    // (from its centre) in which the section next to it starts. A whole
-    // circle is cut into quarters from there.
-    let settled = outlines
-        .iter()
-        .position(|o| matches!(o, Outline::Pieces(_)))
-        .unwrap_or(0);
-    let mut pieces: Vec<Option<Vec<Piece>>> = (0..count).map(|_| None).collect();
-    let order = (settled..count).chain((0..settled).rev());
-    for index in order {
-        let neighbour = if index > settled {
-            index - 1
-        } else {
-            index + 1
-        };
-        let section = sections.get(index).ok_or_else(internal)?;
-        let forward = *walks.get(index).ok_or_else(internal)?;
-        // The direction the neighbour starts in, laid in this plane.
-        let towards = match (
-            pieces
-                .get(neighbour)
-                .and_then(Option::as_ref)
-                .and_then(|p| p.first()),
-            centers.get(neighbour),
-        ) {
-            (Some(first), Some(&middle)) if index != settled => {
-                let d = first.start - middle;
-                (d - forward * d.dot(forward)).normalized()
-            }
-            _ => None,
-        };
-        let made = match outlines.get(index).ok_or_else(internal)? {
-            Outline::Pieces(own) => {
-                let mut own = own.clone();
-                let smallest = || {
-                    own.iter()
-                        .enumerate()
-                        .min_by_key(|(_, p)| p.source)
-                        .map_or(0, |(i, _)| i)
-                };
-                let first = match (section.start, towards) {
-                    (Some(start), _) => own
-                        .iter()
-                        .position(|p| p.source == start)
-                        .ok_or_else(internal)?,
-                    (None, None) => smallest(),
-                    (None, Some(towards)) => {
-                        let before = pieces.get(neighbour).and_then(Option::as_ref);
-                        match before.filter(|b| b.len() == own.len()) {
-                            Some(before) => {
-                                nearest_turn(&own, center(index)?, before, center(neighbour)?)
+    // An open section is walked as it is: from the end its orientation
+    // chose, along the chain.
+    let pieces: Vec<Vec<Piece>> = if open {
+        outlines
+            .iter()
+            .map(|o| match o {
+                Outline::Pieces(own) => Ok(own.clone()),
+                Outline::Whole { .. } => Err(internal()),
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        // Where each section starts. The first section with corners starts
+        // at the curve it names, or at its curve with the smallest id; every
+        // other section starts, unless it names a curve, in the direction
+        // (from its centre) in which the section next to it starts. A whole
+        // circle is cut into quarters from there.
+        let settled = outlines
+            .iter()
+            .position(|o| matches!(o, Outline::Pieces(_)))
+            .unwrap_or(0);
+        let mut pieces: Vec<Option<Vec<Piece>>> = (0..count).map(|_| None).collect();
+        let order = (settled..count).chain((0..settled).rev());
+        for index in order {
+            let neighbour = if index > settled {
+                index - 1
+            } else {
+                index + 1
+            };
+            let section = sections.get(index).ok_or_else(internal)?;
+            let forward = *walks.get(index).ok_or_else(internal)?;
+            // The direction the neighbour starts in, laid in this plane.
+            let towards = match (
+                pieces
+                    .get(neighbour)
+                    .and_then(Option::as_ref)
+                    .and_then(|p| p.first()),
+                centers.get(neighbour),
+            ) {
+                (Some(first), Some(&middle)) if index != settled => {
+                    let d = first.start - middle;
+                    (d - forward * d.dot(forward)).normalized()
+                }
+                _ => None,
+            };
+            let made = match outlines.get(index).ok_or_else(internal)? {
+                Outline::Pieces(own) => {
+                    let mut own = own.clone();
+                    let smallest = || {
+                        own.iter()
+                            .enumerate()
+                            .min_by_key(|(_, p)| p.source)
+                            .map_or(0, |(i, _)| i)
+                    };
+                    let first = match (section.start, towards) {
+                        (Some(start), _) => own
+                            .iter()
+                            .position(|p| p.source == start)
+                            .ok_or_else(internal)?,
+                        (None, None) => smallest(),
+                        (None, Some(towards)) => {
+                            let before = pieces.get(neighbour).and_then(Option::as_ref);
+                            match before.filter(|b| b.len() == own.len()) {
+                                Some(before) => {
+                                    nearest_turn(&own, center(index)?, before, center(neighbour)?)
+                                }
+                                None => in_direction(&own, center(index)?, towards),
                             }
-                            None => in_direction(&own, center(index)?, towards),
+                            .unwrap_or_else(smallest)
                         }
-                        .unwrap_or_else(smallest)
-                    }
-                };
-                own.rotate_left(first);
-                own
+                    };
+                    own.rotate_left(first);
+                    own
+                }
+                &Outline::Whole {
+                    source,
+                    center,
+                    axis,
+                    radius,
+                } => {
+                    let towards = towards.unwrap_or(section.plane.x());
+                    circle_pieces(index, source, center, axis, radius, towards, 4)?
+                }
+            };
+            if let Some(slot) = pieces.get_mut(index) {
+                *slot = Some(made);
             }
-            &Outline::Whole {
-                source,
-                center,
-                axis,
-                radius,
-            } => {
-                let towards = towards.unwrap_or(section.plane.x());
-                circle_pieces(index, source, center, axis, radius, towards, 4)?
-            }
-        };
-        if let Some(slot) = pieces.get_mut(index) {
-            *slot = Some(made);
         }
-    }
-    let pieces: Vec<Vec<Piece>> = pieces
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(internal)?;
+        pieces
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(internal)?
+    };
 
     // A loft of whole circles about one axis, in straight bands, is a row
     // of cylinders and cones without a seam.
-    let tube = tube(&outlines, options, tolerance);
+    let tube = !open && tube(&outlines, options, tolerance);
     let pieces = if tube {
         let mut whole = Vec::with_capacity(count);
         for (index, outline) in outlines.iter().enumerate() {
@@ -1156,7 +1302,7 @@ pub fn loft(
     // Faces that meet tangentially where every section is tangent.
     // Bands of two sections each, straight across.
     let two_by_two = options.ruled || (count == 2 && !options.closed);
-    tangent_columns(&mut sections_walked, two_by_two, tolerance)?;
+    tangent_columns(&mut sections_walked, two_by_two, open, tolerance)?;
     let sections_walked = sections_walked;
     let walk = |k: usize| sections_walked.get(k).ok_or_else(internal);
 
@@ -1241,7 +1387,11 @@ pub fn loft(
     let bands = bands(count, &steps, options)?;
 
     let mut b = Builder {
-        body: Body::new(BodyKind::Solid),
+        body: Body::new(if open {
+            BodyKind::Sheet
+        } else {
+            BodyKind::Solid
+        }),
         faces: Vec::new(),
     };
     // Vertices and edges of the sections that bound a band.
@@ -1254,11 +1404,16 @@ pub fn loft(
             continue;
         }
         let w = walk(index)?;
-        let vertices: Vec<VertexId> = w
+        let mut vertices: Vec<VertexId> = w
             .pieces
             .iter()
             .map(|p| b.body.add_vertex(p.start))
             .collect();
+        // An open chain ends at a vertex of its own.
+        if open {
+            let last = w.pieces.last().ok_or_else(internal)?;
+            vertices.push(b.body.add_vertex(last.end));
+        }
         let after = vertices.iter().cycle().skip(1);
         let edges: Vec<EdgeId> = w
             .pieces
@@ -1279,10 +1434,15 @@ pub fn loft(
         // The edges between the sections, one per vertex.
         let mut rails = Vec::with_capacity(width);
         if !tube {
-            for j in 0..width {
+            for j in 0..width + usize::from(open) {
+                // (The rail at the end of an open chain runs through the
+                // ends of the last curves.)
                 let per_section: Vec<Vec3> = sections_walked
                     .iter()
-                    .filter_map(|w| w.pieces.get(j).map(|p| p.start))
+                    .filter_map(|w| match w.pieces.get(j) {
+                        Some(p) => Some(p.start),
+                        None => w.pieces.last().map(|p| p.end),
+                    })
                     .collect();
                 let mut control = band.points(&per_section);
                 let (Some(&from), Some(&to)) = (low.0.get(j), high.0.get(j)) else {
@@ -1333,7 +1493,8 @@ pub fn loft(
             let loops = if tube {
                 vec![vec![coedge(bottom, false)], vec![coedge(top, true)]]
             } else {
-                let (Some(&here), Some(&there)) = (rails.get(j), rails.get((j + 1) % width)) else {
+                let next = if open { j + 1 } else { (j + 1) % width };
+                let (Some(&here), Some(&there)) = (rails.get(j), rails.get(next)) else {
                     return Err(internal());
                 };
                 vec![vec![
@@ -1376,7 +1537,7 @@ pub fn loft(
         }
     }
 
-    if !options.closed {
+    if !options.closed && !open {
         for (index, role) in [(0, Role::StartCap), (count - 1, Role::EndCap)] {
             let (w, (_, edges)) = (walk(index)?, ring(index)?);
             let plane = &sections.get(index).ok_or_else(internal)?.plane;
@@ -1471,6 +1632,7 @@ pub fn loft(
 fn tangent_columns(
     walks: &mut [Walk],
     straight: bool,
+    open: bool,
     tolerance: &Tolerance,
 ) -> Result<(), KernelError> {
     let width = walks.first().map_or(0, |w| w.pieces.len());
@@ -1514,6 +1676,10 @@ fn tangent_columns(
     // Per joint, per section: the derivatives before and after it, where
     // every section is tangent there (`None`: a corner).
     let tangents = |walks: &[Walk], j: usize| -> Option<Vec<(Vec3, Vec3)>> {
+        // The ends of an open chain are no joint.
+        if open && j + 1 == width {
+            return None;
+        }
         walks
             .iter()
             .map(|w| {

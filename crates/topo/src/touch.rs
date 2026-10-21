@@ -173,6 +173,14 @@ pub fn touches(
             }
         }
     }
+    // The edges between two vertices, by their ends (the smaller first).
+    let mut by_ends: std::collections::BTreeMap<(u32, u32), Vec<u32>> =
+        std::collections::BTreeMap::new();
+    for (e, edge) in body.edges.iter().enumerate() {
+        let id = u32::try_from(e).map_err(|_| TouchError::TooMany)?;
+        let (a, b) = (edge.start.0, edge.end.0);
+        by_ends.entry((a.min(b), a.max(b))).or_default().push(id);
+    }
     // Vertices on edges they are not an end of.
     for (e, edge) in body.edges.iter().enumerate() {
         let id = u32::try_from(e).map_err(|_| TouchError::TooMany)?;
@@ -211,7 +219,7 @@ pub fn touches(
                 continue;
             }
             let distance = edge.curve.eval(t).distance(p);
-            if distance <= near {
+            if distance <= near && !at_a_corner(body, &by_ends, v, edge, p, distance, near) {
                 pairs.push(Touch {
                     vertex: v,
                     touches: Touched::Edge(id),
@@ -232,6 +240,71 @@ pub fn touches(
     pairs.truncate(limit);
     Ok(pairs)
 }
+
+/// True when vertex `v` (at `p`) is near `edge` only because the two
+/// leave a common vertex at a sharp angle: an edge joins `v` to an end
+/// `w` of `edge`, and `v` is within `near / sin(φ / 2)` of `w`, φ the
+/// angle between the two edges' directions out of `w`. Two curves that
+/// leave a point at an angle φ stay within `near` of each other for about
+/// `near / φ` from it, so a face with a corner sharper than the tolerance
+/// can resolve (the end wall of a crack that thins to a point: the
+/// Garabit pier's diagonal, 2026-10-21) has the far end of one side
+/// within `near` of the other side without the shell coming back to
+/// itself there; the same margin as the boolean's for two faces at a
+/// shared edge (`wedged`). A vertex further from the corner than that is
+/// looked at as before. The corner has to open (sin(φ/2) above
+/// [`CORNER_GUARD`]) and the vertex has to be as far from the edge as
+/// the corner puts it (at least half of `d sin φ`, `d` its distance from
+/// `w`): two edges that leave a vertex along one line, or that come back
+/// towards each other, are the shell meeting itself (a grid of blocks
+/// sharing an edge).
+fn at_a_corner(
+    body: &Body,
+    by_ends: &std::collections::BTreeMap<(u32, u32), Vec<u32>>,
+    v: u32,
+    edge: &crate::Edge,
+    p: Vec3,
+    distance: f64,
+    near: f64,
+) -> bool {
+    // The unit direction out of vertex `w` along `e`.
+    let out_of = |e: &crate::Edge, w: u32| -> Option<Vec3> {
+        let (t, sign) = if e.start.0 == w {
+            (e.range.0, 1.0)
+        } else if e.end.0 == w {
+            (e.range.1, -1.0)
+        } else {
+            return None;
+        };
+        (e.curve.derivatives(t).1 * sign).normalized()
+    };
+    [edge.start.0, edge.end.0].into_iter().any(|w| {
+        let Some(q) = body.vertices.get(w as usize).map(|x| x.point) else {
+            return false;
+        };
+        let Some(along) = out_of(edge, w) else {
+            return false;
+        };
+        by_ends
+            .get(&(v.min(w), v.max(w)))
+            .into_iter()
+            .flatten()
+            .filter_map(|&k| body.edges.get(k as usize))
+            .any(|other| {
+                let Some(side) = out_of(other, w) else {
+                    return false;
+                };
+                // sin(φ/2) from the two unit directions.
+                let half = 0.5 * (side - along).length();
+                let d = q.distance(p);
+                half > CORNER_GUARD && d * half <= near && distance >= d * half
+            })
+    })
+}
+
+/// Below this sine of half the angle two edges leave a vertex along one
+/// line, to rounding: the guard tangency is read by in the boolean.
+const CORNER_GUARD: f64 = 1e-6;
 
 /// The vertices in a grid of cells, about one vertex per cell (never
 /// narrower than the distance looked for), so that the vertices in a box

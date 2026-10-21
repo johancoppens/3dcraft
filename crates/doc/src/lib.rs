@@ -369,8 +369,10 @@ pub struct Revolve {
     pub symmetric: bool,
 }
 
-/// Most sections one loft has.
-pub const MAX_LOFT_SECTIONS: usize = 64;
+/// Most sections one loft has: what the kernel's loft takes
+/// (`craft3d_kernel::loft::MAX_SECTIONS`, the most points its spline
+/// through the sections interpolates; a test holds the two equal).
+pub const MAX_LOFT_SECTIONS: usize = 256;
 
 /// One profile of a loft: a sketch with one closed loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

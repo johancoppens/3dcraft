@@ -72,7 +72,7 @@ use craft3d_geom::{Curve3, GeomError};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use outline::locate;
-use regions::Half;
+use regions::{ANGLE_GUARD, Half};
 use section::Solid;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1258,41 +1258,82 @@ fn within_a_shell(
     // sqrt((1 + n_f · n_g) / 2) for faces that leave the edge on one side
     // of each other), up to `most`: one sliver of a wedge or a groove, not
     // two walls.
-    let wedged = |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64| -> bool {
-        let most = most.max(reach);
-        let faces = body.face(face_id(f)).zip(body.face(face_id(g)));
-        edges.iter().any(|&e| {
-            // An edge further than `most` joins nothing here, whatever
-            // else is known of it.
-            let within = body
-                .edge_bbox(craft3d_topo::EdgeId(e))
-                .is_ok_and(|b| b.contains(p, most));
-            if !within {
-                return false;
-            }
-            match on_edge(e, p) {
-                // Its nearest point not known: joined only as close as
-                // its box allows.
-                Err(()) => true,
-                Ok(None) => false,
-                Ok(Some(q)) => {
-                    let angle = faces.and_then(|(sf, sg)| Some((sf.outward(q)?, sg.outward(q)?)));
-                    let Some((nf, ng)) = angle else {
-                        // No normal there (an apex, a pole): the widest
-                        // margin, and no further.
-                        return q.distance(p) <= most;
-                    };
-                    let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
-                    let margin = if half > 0.0 {
-                        near / half
-                    } else {
-                        f64::INFINITY
-                    };
-                    q.distance(p) <= margin.max(reach).min(most)
+    //
+    // Beyond `most` (a tenth of the smaller face, which keeps the reading
+    // local) a shared edge still joins the faces at the place when the
+    // gap between them there, `gap`, is at least half of what two planes
+    // leaving the edge at θ have at that distance (`2 d sin(θ/2)`): they
+    // do not come back towards each other, the gap is the wedge's (a
+    // crack between faces at 1.19°, cut short by a third face 55 µm from
+    // a corner of a face that is itself that small: the Garabit pier's
+    // diagonal, 2026-10-21); it reads a wedge only at a place further from
+    // the edge than `reach` (a place on the edge is joined there by the
+    // reading above, or not at all: two blocks of a grid that share an
+    // edge). Both readings ask the faces to open at the edge (sin(θ/2)
+    // above `ANGLE_GUARD`, the guard tangency is read by):
+    // faces tangent there make no wedge, and two gaps that meet where
+    // faces touch tangentially are two walls of the shell that meet (the
+    // block on a saddle's tangent plane). With `opening` (the reading
+    // through a third face) only those readings count.
+    let wedged =
+        |f: usize, g: usize, edges: &[u32], p: Vec3, most: f64, gap: f64, opening: bool| -> bool {
+            let most = most.max(reach);
+            let faces = body.face(face_id(f)).zip(body.face(face_id(g)));
+            edges.iter().any(|&e| {
+                // An edge further than `most` joins nothing here by its box,
+                // only by the wedge's gap below.
+                let within = body
+                    .edge_bbox(craft3d_topo::EdgeId(e))
+                    .is_ok_and(|b| b.contains(p, most));
+                // The point of the edge nearest the place: its foot when that
+                // is inside the edge's range, otherwise the nearer end (the
+                // distance to the edge as a set of points: a wedge whose edge
+                // a third face cuts short at a vertex is still a wedge about
+                // that vertex, the Garabit pier's diagonal, 2026-10-21).
+                let nearest = match on_edge(e, p) {
+                    Ok(Some(q)) => Ok(Some(q)),
+                    Ok(None) => Ok(body.edge(craft3d_topo::EdgeId(e)).and_then(|edge| {
+                        let ends = [edge.start, edge.end]
+                            .map(|v| body.vertices.get(v.0 as usize).map(|v| v.point));
+                        match ends {
+                            [Some(a), Some(b)] => {
+                                Some(if a.distance(p) <= b.distance(p) { a } else { b })
+                            }
+                            [Some(a), None] | [None, Some(a)] => Some(a),
+                            [None, None] => None,
+                        }
+                    })),
+                    Err(()) => Err(()),
+                };
+                match nearest {
+                    // Its nearest point not known: joined only as close as
+                    // its box allows.
+                    Err(()) => within && !opening,
+                    Ok(None) => false,
+                    Ok(Some(q)) => {
+                        let angle =
+                            faces.and_then(|(sf, sg)| Some((sf.outward(q)?, sg.outward(q)?)));
+                        let Some((nf, ng)) = angle else {
+                            // No normal there (an apex, a pole): the widest
+                            // margin, and no further.
+                            return !opening && within && q.distance(p) <= most;
+                        };
+                        let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                        let margin = if half > 0.0 {
+                            near / half
+                        } else {
+                            f64::INFINITY
+                        };
+                        let d = q.distance(p);
+                        if opening && half <= ANGLE_GUARD {
+                            return false;
+                        }
+                        (!opening && within && d <= margin.max(reach).min(most))
+                            || (half > ANGLE_GUARD && d > reach && d <= margin && gap >= d * half)
+                    }
                 }
-            }
-        })
-    };
+            })
+        };
 
     for (index, &p) in meetings.iter().enumerate() {
         if !p.is_finite() {
@@ -1383,7 +1424,7 @@ fn within_a_shell(
                         .map_or(0.0, |(lo, hi)| lo.distance(hi))
                 };
                 let reach = 0.1 * size(f).min(size(g));
-                if a.distance(b) > near || wedged(f, g, &edges, p, reach) {
+                if a.distance(b) > near || wedged(f, g, &edges, p, reach, a.distance(b), false) {
                     continue;
                 }
                 let (Some(Some(of)), Some(Some(og))) = (outlines.get(&f), outlines.get(&g)) else {
@@ -1392,6 +1433,44 @@ fn within_a_shell(
                 if !(walls_apart(of, b, og, near, reach) && walls_apart(og, a, of, near, reach)) {
                     // Material between them, thinning to nothing: not
                     // two parts that touch (see `walls_apart`).
+                    continue;
+                }
+                // Through a third face at the place: one of the two is
+                // joined there to a face `h` that makes a wedge with the
+                // other (the end face of a girder whose bottom edge is
+                // the place, near the leg's face only as the girder's
+                // bottom is, which leaves the leg's face at 1.19°: the
+                // Garabit pier's diagonal, 2026-10-21). The place is one
+                // point; that it is near the other face is the wedge's
+                // doing, whichever face of `h`'s edge it is read on.
+                let mut through = false;
+                for &h in &paired {
+                    if through {
+                        break;
+                    }
+                    if h == f || h == g || face_shell.get(h) != face_shell.get(f) {
+                        continue;
+                    }
+                    let Some(c) = foot(h, outlines) else {
+                        continue;
+                    };
+                    let Some((hv, he)) = parts.get(&h) else {
+                        return Err(Stop::of(LOST));
+                    };
+                    for ((x, xe, foot_x), (yv, ye)) in
+                        [((f, fe, a), (gv, ge)), ((g, ge, b), (fv, fe))]
+                    {
+                        if joined(&common(yv, hv), &common(ye, he), p) {
+                            let edges = common(xe, he);
+                            let reach = 0.1 * size(x).min(size(h));
+                            if wedged(x, h, &edges, p, reach, foot_x.distance(c), true) {
+                                through = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if through {
                     continue;
                 }
                 let source = |f: usize| result.faces.get(f).map(|s| (s.operand, s.face));
