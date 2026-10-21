@@ -173,7 +173,10 @@ fn in_order<T: Send>(
 const MAX_ROUNDS: usize = 12;
 
 /// How many rounds of cuts across from the points of other edges may
-/// follow the rounds of halving (`tessellate_some`).
+/// follow the rounds of halving (`tessellate_some`): as many as those
+/// had, since what they must still do near the tip of a crescent is what
+/// the halving could not finish (about a dozen halvings for the drill
+/// tip's, 2026-10-21).
 const ALIGN_ROUNDS: usize = MAX_ROUNDS;
 
 /// What a face asks of the points of its edges in a round.
@@ -674,8 +677,11 @@ fn tessellate_some(
         }
         // Nothing left to cut, or enough tried: the faces that still ask
         // are taken as they are.
+        // (A rescue that reached its budget ends: the body is then left as
+        // the rounds of halving made it, with their errors.)
         last = !entering
             && (changed.is_empty()
+                || edges.rescue_exhausted()
                 || match aligning {
                     None => round + 1 >= MAX_ROUNDS,
                     Some(from) => round + 1 >= from + ALIGN_ROUNDS,
@@ -1013,14 +1019,17 @@ pub fn tess_work() -> (u64, u64, u64) {
 /// edge's start vertex to its end vertex, within the chordal tolerance of
 /// its curve. For a viewer that draws the edges of a body.
 ///
-/// These are the very points [`tessellate_body`] puts along the edge for
-/// every face that uses it, so the lines lie exactly on the borders of the
-/// mesh's faces. That takes the boundaries of the faces (not their
-/// triangles): where a face needs an edge finer than its curve does, the
-/// edge is finer here too. Not seen without the triangles: a face whose
-/// triangles cannot follow a chord, which `tessellate_body` cuts finer
-/// (`mesh_face` in `face.rs`; [`tessellate_body_and_edges`] has those
-/// edges as the mesh has them). A face that cannot be tessellated is no
+/// These are the points the rounds of halving put along the edge for
+/// every face that uses it, which are those of [`tessellate_body`] for
+/// almost every body, so the lines lie on the borders of the mesh's
+/// faces. That takes the boundaries of the faces (not their triangles):
+/// where a face needs an edge finer than its curve does, the edge is finer
+/// here too. Not seen without the triangles: a face whose triangles cannot
+/// follow a chord, which `tessellate_body` cuts finer (`mesh_face` in
+/// `face.rs`), and a body that only the rounds after the halving mesh
+/// (cuts across, `tessellate_some`; the rover's drill tip at a chord of
+/// 6e-3: 1886 points there, 840 here). [`tessellate_body_and_edges`] has
+/// the edges as the mesh has them, always. A face that cannot be tessellated is no
 /// error here. The result depends on the body and the parameters only.
 pub fn tessellate_edges(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
     params.validate()?;

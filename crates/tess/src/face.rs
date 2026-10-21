@@ -4064,7 +4064,7 @@ impl Boundary<'_> {
                 }
                 let s = (end - from).dot(along) / whole;
                 if s > ACROSS_MARGIN && s < 1.0 - ACROSS_MARGIN {
-                    across.push((chord, end));
+                    across.push((chord, end, other.chord.map(|(edge, _)| edge)));
                 }
             }
             if across.len() == before {

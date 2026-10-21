@@ -166,6 +166,15 @@ pub(crate) struct EdgeSamples {
     at: Vec<Vec<f64>>,
     /// Per edge, how many points it had before any chord was cut.
     first: Vec<usize>,
+    /// Per edge, the most points of its own curve of an edge it was cut
+    /// across from (`split_across`); none yet when shorter than the edge's
+    /// own list.
+    paired: Vec<usize>,
+    /// Points added in the rounds that cut across (`body.rs`), all edges
+    /// together, and whether a cut was left out because they reached
+    /// [`EdgeSamples::rescue_budget`].
+    added: usize,
+    exhausted: bool,
 }
 
 /// How many points an edge may grow to by cutting chords, given how many
@@ -183,18 +192,20 @@ fn most_points(first: usize) -> usize {
 
 /// A chord to cut at the point of its curve across from a point of
 /// another edge ([`EdgeSamples::split_across`]).
-pub(crate) type Across = (crate::face::Chord, Vec3);
+/// The last is that edge (none for a seam).
+pub(crate) type Across = (crate::face::Chord, Vec3, Option<u32>);
 
 /// How many points an edge may grow to in the rounds that follow when
-/// halving has failed (`body.rs`), given the most points any edge of the
-/// body had for its own curve (`widest`): twice [`most_points`] of that.
-/// An edge cut across from the points of another one beside it needs as
-/// many points as that one (a crescent between a short and a long edge);
-/// still a multiple of what the body's own curves need, so a damaged
-/// body that no cutting cures costs a bounded multiple of the work of
-/// one that makes sense.
-fn most_across(widest: usize) -> usize {
-    most_points(widest).saturating_mul(2)
+/// halving has failed (`body.rs`), given the points of its own curve or,
+/// when more, those of an edge it was cut across from (`own`): twice
+/// [`most_points`] of that. Twice: those rounds may halve every chord
+/// once more than the rounds before allowed, and an edge paired with a
+/// longer one beside it (a crescent between a short and a long edge)
+/// needs as many points as that one may have. An edge paired with none
+/// grows by its own need only; and all edges together by no more than
+/// [`EdgeSamples::rescue_budget`].
+fn most_across(own: usize) -> usize {
+    most_points(own).saturating_mul(2)
 }
 
 /// The part of a chord's length within which a point across from its
@@ -227,14 +238,7 @@ impl EdgeSamples {
         params: &TessParams,
         across: bool,
     ) -> Vec<u32> {
-        let widest = self.first.iter().copied().max().unwrap_or(0);
-        let most = |first: usize| {
-            if across {
-                most_across(widest)
-            } else {
-                most_points(first)
-            }
-        };
+        let budget = self.rescue_budget();
         let limit = (params.max_segments as usize).saturating_mul(8);
         let mut by_edge: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for &(edge, chord) in wanted {
@@ -252,7 +256,19 @@ impl EdgeSamples {
                 continue;
             };
             let first = self.first.get(index as usize).copied().unwrap_or(0);
-            let mut room = most(first).min(limit).saturating_sub(points.len());
+            let mut room = if across {
+                let own = first.max(self.paired.get(index as usize).copied().unwrap_or(0));
+                let left = budget.saturating_sub(self.added);
+                if left < chords.len() {
+                    self.exhausted = true;
+                }
+                most_across(own)
+                    .min(limit)
+                    .saturating_sub(points.len())
+                    .min(left)
+            } else {
+                most_points(first).min(limit).saturating_sub(points.len())
+            };
             let mut new_points = Vec::with_capacity(points.len() + chords.len());
             let mut new_at = Vec::with_capacity(points.len() + chords.len());
             let mut cut = false;
@@ -280,6 +296,11 @@ impl EdgeSamples {
                     cut = true;
                 }
             }
+            if across {
+                self.added = self
+                    .added
+                    .saturating_add(new_points.len().saturating_sub(points.len()));
+            }
             if cut {
                 *points = new_points;
                 *at = new_at;
@@ -287,6 +308,22 @@ impl EdgeSamples {
             }
         }
         changed
+    }
+
+    /// How many points the rounds that cut across may add to all edges
+    /// together: twice what [`most_points`] allows each edge, summed.
+    /// Coincident or tangled edges that no cut cures stop there, at a
+    /// bounded multiple of the work on a body that makes sense.
+    fn rescue_budget(&self) -> usize {
+        self.first.iter().fold(0_usize, |sum, &first| {
+            sum.saturating_add(most_across(first))
+        })
+    }
+
+    /// Whether a cut of the rounds that cut across was left out because
+    /// all edges together reached [`EdgeSamples::rescue_budget`].
+    pub(crate) fn rescue_exhausted(&self) -> bool {
+        self.exhausted
     }
 
     /// Cuts each chord of `wanted` at the point of its curve that lies
@@ -303,14 +340,22 @@ impl EdgeSamples {
         params: &TessParams,
     ) -> Vec<u32> {
         let limit = (params.max_segments as usize).saturating_mul(8);
+        let budget = self.rescue_budget();
         let mut by_edge: BTreeMap<u32, BTreeMap<u32, Vec<Vec3>>> = BTreeMap::new();
-        for &((edge, chord), point) in wanted {
+        if self.paired.len() < self.first.len() {
+            self.paired.resize(self.first.len(), 0);
+        }
+        for &((edge, chord), point, other) in wanted {
             by_edge
                 .entry(edge)
                 .or_default()
                 .entry(chord)
                 .or_default()
                 .push(point);
+            let theirs = other.and_then(|other| self.first.get(other as usize).copied());
+            if let (Some(paired), Some(theirs)) = (self.paired.get_mut(edge as usize), theirs) {
+                *paired = (*paired).max(theirs);
+            }
         }
         let mut changed = Vec::new();
         for (index, chords) in by_edge {
@@ -321,8 +366,17 @@ impl EdgeSamples {
             ) else {
                 continue;
             };
-            let widest = self.first.iter().copied().max().unwrap_or(0);
-            let mut room = most_across(widest).min(limit).saturating_sub(points.len());
+            let first = self.first.get(index as usize).copied().unwrap_or(0);
+            let own = first.max(self.paired.get(index as usize).copied().unwrap_or(0));
+            let left = budget.saturating_sub(self.added);
+            let wished: usize = chords.values().map(Vec::len).sum();
+            if left < wished {
+                self.exhausted = true;
+            }
+            let mut room = most_across(own)
+                .min(limit)
+                .saturating_sub(points.len())
+                .min(left);
             let mut new_points = Vec::with_capacity(points.len() + chords.len());
             let mut new_at = Vec::with_capacity(points.len() + chords.len());
             let mut cut = false;
@@ -383,6 +437,9 @@ impl EdgeSamples {
                     }
                 }
             }
+            self.added = self
+                .added
+                .saturating_add(new_points.len().saturating_sub(points.len()));
             if cut {
                 *points = new_points;
                 *at = new_at;
@@ -487,6 +544,7 @@ pub(crate) fn edge_points_of(
         points: Vec::with_capacity(body.edges.len()),
         at: Vec::with_capacity(body.edges.len()),
         first: Vec::with_capacity(body.edges.len()),
+        ..EdgeSamples::default()
     };
     for (index, edge) in body.edges.iter().enumerate() {
         if wanted.is_some_and(|wanted| !wanted.get(index).copied().unwrap_or(false)) {
