@@ -1083,9 +1083,12 @@ impl Depths<'_, '_> {
     /// The surface around `x` is followed across the edges of its
     /// triangles, but never through the face `y` is a triangle of (unless
     /// it is `x`'s own face too), nor through a triangle that lies in the
-    /// plane of `y` to rounding: those are the surface at `y`'s plane,
-    /// and a side of it reached through them was reached through `y`'s
-    /// surface, not past it. (A flat face of a few large triangles: the
+    /// plane of `y` to rounding and faces the way `y` does: those are
+    /// `y`'s oriented surface going on, and a side of it reached through
+    /// them was reached through `y`'s surface, not past it. A triangle in
+    /// the plane facing the other way is another sheet lying against `y`
+    /// (the tread of a step whose lower part is sunk through `y`), and
+    /// the walk goes on through it. (A flat face of a few large triangles: the
     /// surface around a triangle that only touched one of them at a
     /// corner was followed over the face's other triangles to a wall
     /// standing on its far side, and called a crossing as deep as that
@@ -1096,6 +1099,11 @@ impl Depths<'_, '_> {
         };
         let (face_x, face_y) = (self.mesh.face(x), self.mesh.face(y));
         let flat = 1024.0 * f64::EPSILON * self.mesh.largest;
+        let facing = |&[a, b, c]: &[Vec3; 3]| (b - a).cross(c - a);
+        let y_facing = self.mesh.points(y).map(|corners| facing(&corners));
+        // Facing the way `y` does: `y`'s oriented surface going on.
+        let same_way =
+            |corners: &[Vec3; 3]| y_facing.is_some_and(|n| positive(facing(corners).dot(n)));
         let (mut above, mut below) = (0.0_f64, 0.0_f64);
         let mut seen = BTreeSet::from([x]);
         let mut queue = std::collections::VecDeque::from([x]);
@@ -1116,7 +1124,7 @@ impl Depths<'_, '_> {
                 low = low.min(h);
                 high = high.max(h);
             }
-            if t != x && low >= -flat && high <= flat {
+            if t != x && low >= -flat && high <= flat && same_way(&corners) {
                 continue;
             }
             above = above.max(high);

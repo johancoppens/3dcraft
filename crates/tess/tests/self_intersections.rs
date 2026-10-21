@@ -835,6 +835,62 @@ fn a_touch_is_not_a_crossing_by_what_lies_beyond_the_face_itself() {
     }
 }
 
+/// (i) A top hat sunk through a box's lid up to its tread: the lower
+/// block's walls cross the lid, and the surface around them reaches above
+/// it only across the tread, a ring in the lid's plane facing down onto
+/// it. A triangle in the plane of `y` facing the other way is another
+/// sheet against `y`, not `y`'s surface going on: the walk goes across it
+/// (it stopped there for a day, 2026-10-21, and found nothing).
+#[test]
+fn a_top_hat_sunk_to_its_tread_is_found() {
+    for scale in SCALES {
+        for w in [0.01, 0.5, 1.0] {
+            let mut soup = Soup::default();
+            soup.boxed(v(0.0, 0.0, 0.0), v(10.0, 10.0, 10.0), 0);
+            let (a, b) = (3.0, 7.0);
+            let (i0, i1) = (a + w, b - w);
+            // The lower block without its top, the upper without its
+            // bottom.
+            let lower = [
+                v(i0, i0, 5.0),
+                v(i1, i0, 5.0),
+                v(i1, i1, 5.0),
+                v(i0, i1, 5.0),
+            ];
+            let inner = lower.map(|p| p + v(0.0, 0.0, 5.0));
+            let outer = [v(a, a, 10.0), v(b, a, 10.0), v(b, b, 10.0), v(a, b, 10.0)];
+            let top = outer.map(|p| p + v(0.0, 0.0, 5.0));
+            soup.quad(lower[0], lower[3], lower[2], lower[1], 6);
+            for n in 0..4 {
+                let m = (n + 1) % 4;
+                soup.quad(lower[n], lower[m], inner[m], inner[n], 7);
+                // The tread, facing down.
+                soup.quad(inner[n], inner[m], outer[m], outer[n], 8);
+                soup.quad(outer[n], outer[m], top[m], top[n], 9);
+            }
+            soup.quad(top[0], top[1], top[2], top[3], 10);
+            for (what, mesh) in [
+                ("square", soup.scaled(scale)),
+                (
+                    "askew",
+                    soup.moved(&askew().then(&Transform::scaling(scale))),
+                ),
+            ] {
+                let found = all_crossings(&mesh);
+                let deepest = found
+                    .iter()
+                    .filter(|c| c.faces == [1, 7])
+                    .map(|c| c.depth)
+                    .fold(0.0, f64::max);
+                assert!(
+                    deepest > 2.0 * scale,
+                    "{what}, tread {w}, scale {scale}: {found:?}"
+                );
+            }
+        }
+    }
+}
+
 /// The handle and the spout of the Utah teapot go into its body, which
 /// has no holes for them: a real mesh with real crossings.
 #[test]

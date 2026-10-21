@@ -42,7 +42,13 @@
 //! place: the two surfaces are asked at points of the common area
 //! (`faces_apart`), and where they are further apart than twice the
 //! tolerance the overlap is of the meshes, not of the faces, and counts
-//! as within the margin.
+//! as within the margin. That lowers it to a doubt, no more: like every
+//! finding within the margin it is looked at again on finer meshes, and
+//! one still there after the last ends as marginal, which
+//! `document.check` counts but does not call a problem. A real overlap of
+//! two faces has an area, and on a finer mesh the pairs of triangles
+//! inside it lie where the surfaces are one, and are certain again; one
+//! narrower than the finest mesh's triangles stays a doubt.
 //!
 //! Findings within the margin between curved faces are looked at again
 //! with a mesh four times finer, a few times over; what is still within
