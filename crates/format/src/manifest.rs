@@ -451,6 +451,14 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         number: Option<u64>,
     },
+    /// Solid or sheet number `solid` (in file order) of an imported STEP
+    /// file whose bytes are the ZIP entry `blobs/<sha256>.step`; `file_name`
+    /// is the name it had, for messages (format version 25).
+    Import {
+        file_name: String,
+        solid: u32,
+        sha256: String,
+    },
 }
 
 /// How an offset profile goes round a corner where its curves part.

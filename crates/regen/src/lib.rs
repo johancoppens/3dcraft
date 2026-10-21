@@ -1164,10 +1164,61 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
                 feature.kind.type_name()
             ));
         }
+        FeatureKind::Import(import) => return imported(doc, feature.id, import),
     }
     .map_err(|e| e.to_string())?;
 
     checked(doc, body)
+}
+
+/// Metres per unit of length.
+pub fn metres_per_unit(unit: craft3d_doc::LengthUnit) -> f64 {
+    use craft3d_doc::LengthUnit;
+    match unit {
+        LengthUnit::Micrometre => 1e-6,
+        LengthUnit::Millimetre => 1e-3,
+        LengthUnit::Centimetre => 1e-2,
+        LengthUnit::Metre => 1.0,
+        LengthUnit::Inch => 0.0254,
+        LengthUnit::Foot => 0.3048,
+    }
+}
+
+/// One solid or sheet of an imported STEP file, read from the bytes the
+/// document holds, in the document's unit and checked with its tolerance
+/// (`craft3d-stepread`, docs/design/step-import.md). The file is parsed
+/// once for all the features that read solids of it.
+///
+/// A file is not a body this kernel made, so the whole body is looked at
+/// for places where it passes through or touches itself, as a loft's is
+/// (docs/design/regeneration.md › *Never through itself*).
+fn imported(
+    doc: &Document,
+    feature: FeatureId,
+    import: &craft3d_doc::Import,
+) -> Result<Body, String> {
+    let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or("the document's tolerance is not positive and finite".to_string())?;
+    let file = &import.file_name;
+    let parsed = craft3d_stepread::parse_shared(import.data.bytes(), &import.data.sha256())
+        .map_err(|e| format!("`{file}`: {e}"))?;
+    let options = craft3d_stepread::Options {
+        metres_per_unit: metres_per_unit(doc.units.length),
+        tolerance,
+        loosest: doc.tolerance.loosest_linear(),
+    };
+    let index = usize::try_from(import.solid).unwrap_or(usize::MAX);
+    let read = parsed
+        .build(index, &options)
+        .map_err(|e| format!("`{file}`: {e}"))?;
+    let body = checked(doc, read.body)?;
+    let names = Names::numbered(feature, &body);
+    selfcheck::crossing(&body, &names.faces, tolerance.linear).refused(
+        "data",
+        "imported body",
+        "the file's solid is not a valid solid; correct it where it was made",
+    )?;
+    Ok(body)
 }
 
 /// Never hand on an invalid body (docs/design/kernel.md).

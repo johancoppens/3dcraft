@@ -37,7 +37,7 @@ These are the invariants. Every part is built so that they hold by construction,
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
  L4  derivation    regen (history -> bodies), render (CPU oracle), gpu (wgpu), format (.3dcraft)
- L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), ops (undo history)
+ L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), ops (undo history), stepread (STEP -> bodies)
  L2  document      doc (pure data: the recipe)
  L1  model data    topo (B-rep, checks, measures), expr (units, formulas)
  L0  foundation    math, geom (curves, surfaces, intersections); step, meshio, drawing, zipstore (standalone formats)
@@ -121,7 +121,7 @@ Edges first: each edge becomes points once, and both faces that share it use the
 
 ## 8. Files
 
-`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 17, never silently dropping a field); STEP AP214 export with colours; STL, 3MF (with colours) and OBJ meshes; DXF and SVG of flat outlines. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
+`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 17, never silently dropping a field); STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ meshes; DXF and SVG of flat outlines. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
 
 ## 9. Known structural debt
 

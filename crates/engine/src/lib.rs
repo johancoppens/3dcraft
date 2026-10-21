@@ -24,6 +24,7 @@ mod drawing_cmds;
 mod face_cmds;
 mod file_cmds;
 mod helix_cmds;
+mod import_cmds;
 mod interference_cmds;
 mod loft_cmds;
 mod mass;
@@ -316,6 +317,7 @@ impl Session {
             [
                 commands::SPECS,
                 file_cmds::SPECS,
+                import_cmds::SPECS,
                 sketch_cmds::SPECS,
                 sketch_path_cmds::SPECS,
                 sketch_pattern_cmds::SPECS,

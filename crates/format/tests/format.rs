@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 24,
+  "format_version": 25,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 25"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 26"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 25,
+            file: 26,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 25")
+        text.contains("version 26")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -764,7 +764,7 @@ fn a_step_or_stl_file_opened_as_a_document_says_what_it_is() {
         let error = from_bytes(bytes).unwrap_err();
         assert!(matches!(error, FormatError::Foreign { .. }), "{error}");
         assert!(error.to_string().contains("STEP"), "{error}");
-        assert!(error.to_string().contains("not built yet"), "{error}");
+        assert!(error.to_string().contains("file.import"), "{error}");
     }
     let stl = b"solid part\n  facet normal 0 0 1\n    outer loop\n";
     let error = from_bytes(stl).unwrap_err();
@@ -1656,7 +1656,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 24);
+    assert_eq!(value["format_version"], 25);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1842,7 +1842,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 24);
+    assert_eq!(value["format_version"], 25);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2858,7 +2858,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 24);
+    assert_eq!(value["format_version"], 25);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3651,7 +3651,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 24);
+    assert_eq!(value["format_version"], 25);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3764,7 +3764,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 24);
+    assert_eq!(FORMAT_VERSION, 25);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -3810,7 +3810,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 24);
+    assert_eq!(FORMAT_VERSION, 25);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -3868,7 +3868,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 24);
+    assert_eq!(FORMAT_VERSION, 25);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -3890,6 +3890,81 @@ fn a_split_is_written_like_this_and_round_trips() {
     // A version-23 file opens as it was and is saved as version 24.
     let older = to_manifest_json(&small()).unwrap();
     let old = older.replacen(&version_field(), "\"format_version\": 23", 1);
+    assert_ne!(old, older);
+    let opened = from_manifest_json(old.as_bytes()).unwrap();
+    assert_eq!(opened, small());
+    assert_eq!(to_manifest_json(&opened).unwrap(), older);
+}
+
+/// An import (format 25): the feature names the file's bytes by their
+/// SHA-256, and the archive holds them once as `blobs/<sha256>.step`,
+/// however many features read solids of it; a file without the bytes, or
+/// with bytes that do not hash to their name, is refused; a version-24
+/// file (which has no import) opens unchanged.
+#[test]
+fn an_import_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Blob, Import};
+    let step = b"ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n".to_vec();
+    let blob = Blob::new(step.clone());
+    let sha = blob.sha256();
+    assert_eq!(sha.len(), 64);
+    let mut doc = small();
+    for solid in 0..2 {
+        doc.add_feature(
+            None,
+            FeatureKind::Import(Import {
+                file_name: "part.step".to_string(),
+                solid,
+                data: blob.clone(),
+            }),
+        )
+        .unwrap();
+    }
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(FORMAT_VERSION, 25);
+    assert_eq!(
+        value["document"]["features"][2]["kind"],
+        serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
+    );
+    let bytes = to_bytes(&doc).unwrap();
+    let entries = read_stored(&bytes).unwrap();
+    let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
+    let blob_name = format!("blobs/{sha}.step");
+    assert_eq!(names, [MANIFEST_NAME, blob_name.as_str()]);
+    assert_eq!(entries[1].data, step.as_slice());
+    let read = from_bytes(&bytes).unwrap();
+    assert_eq!(read, doc);
+    // The same bytes again: a document is a function of its content.
+    assert_eq!(to_bytes(&read).unwrap(), bytes);
+    // The manifest alone has no bytes.
+    assert!(matches!(
+        from_manifest_json(json.as_bytes()),
+        Err(FormatError::MissingBlob { .. })
+    ));
+    let missing = write_stored(&[(MANIFEST_NAME, json.as_bytes())]).unwrap();
+    let error = from_bytes(&missing).unwrap_err();
+    assert!(error.to_string().contains(&blob_name), "{error}");
+    // Bytes that do not hash to their name.
+    let mut changed = step.clone();
+    changed[0] = b'X';
+    let damaged = write_stored(&[
+        (MANIFEST_NAME, json.as_bytes()),
+        (blob_name.as_str(), &changed),
+    ])
+    .unwrap();
+    assert!(matches!(
+        from_bytes(&damaged),
+        Err(FormatError::DamagedBlob { .. })
+    ));
+    // An unknown field on an import is refused, as on every kind.
+    let extra = json.replacen("\"solid\": 0", "\"solid\": 0, \"scale\": 2", 1);
+    assert_ne!(extra, json);
+    assert!(from_manifest_json(extra.as_bytes()).is_err());
+    // A version-24 file opens as it was and is saved as version 25.
+    let older = to_manifest_json(&small()).unwrap();
+    let old = older.replacen(&version_field(), "\"format_version\": 24", 1);
     assert_ne!(old, older);
     let opened = from_manifest_json(old.as_bytes()).unwrap();
     assert_eq!(opened, small());
@@ -3918,4 +3993,61 @@ fn the_cap_on_entity_tolerances_is_kept_and_absent_means_the_default() {
         craft3d_doc::Tolerance::default().loosest_linear(),
         1000.0 * craft3d_doc::Tolerance::default().linear
     );
+}
+
+/// A document whose imported files together would make a `.3dcraft` file
+/// larger than a file that is read is not saved: saving it would lose the
+/// work at the next open. `size_with` says so before an import.
+#[test]
+fn a_document_too_large_to_open_again_is_not_saved() {
+    use craft3d_doc::{Blob, Import};
+    let mut doc = small();
+    let size = 90 * 1024 * 1024;
+    for k in 0..3u8 {
+        let blob = Blob::new(vec![b'0' + k; size]);
+        if k < 2 {
+            doc.add_feature(
+                None,
+                FeatureKind::Import(Import {
+                    file_name: format!("part{k}.step"),
+                    solid: 0,
+                    data: blob,
+                }),
+            )
+            .unwrap();
+        } else {
+            // A third would not fit.
+            let total = craft3d_format::size_with(&doc, &blob, 1).unwrap();
+            assert!(total > MAX_FILE_BYTES, "{total}");
+            // The same bytes again cost nothing.
+            let again = Blob::new(vec![b'0'; size]);
+            assert!(craft3d_format::size_with(&doc, &again, 1).unwrap() <= MAX_FILE_BYTES);
+            doc.add_feature(
+                None,
+                FeatureKind::Import(Import {
+                    file_name: "part2.step".to_string(),
+                    solid: 0,
+                    data: blob,
+                }),
+            )
+            .unwrap();
+        }
+    }
+    let error = to_bytes(&doc).unwrap_err();
+    assert!(matches!(error, FormatError::TooLarge { .. }), "{error}");
+    assert!(error.to_string().contains("imported files"), "{error}");
+}
+
+/// An entry under `blobs/` that no feature names is not read: a file with
+/// a stray (even damaged) one opens.
+#[test]
+fn a_blob_no_feature_names_is_not_read() {
+    let json = to_manifest_json(&small()).unwrap();
+    let stray = format!("blobs/{}.step", "0".repeat(64));
+    let bytes = write_stored(&[
+        (MANIFEST_NAME, json.as_bytes()),
+        (stray.as_str(), b"not what the name says"),
+    ])
+    .unwrap();
+    assert_eq!(from_bytes(&bytes).unwrap(), small());
 }

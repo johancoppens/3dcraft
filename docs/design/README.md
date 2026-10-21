@@ -17,6 +17,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`tessellator.md`](tessellator.md) | edges first, faces, seams, poles, angle, budgets, display and picture quality |
 | [`rendering.md`](rendering.md) | the CPU oracle, the GPU renderer and its tolerances, see-through, section, pointing, the viewport |
 | [`engine.md`](engine.md) | Session, commands, undo, threads, scenes, recovery, automation |
+| [`step-import.md`](step-import.md) | STEP files read into bodies: typed reading, sewing on topology only, the import feature and its data, names, oracles |
 | [`files.md`](files.md) | `.3dcraft`, STEP, meshes, flat outlines (the formats themselves: [`../file-formats.md`](../file-formats.md)) |
 | [`plan.md`](plan.md) | the design plan of 2026-10-12 as written then: goals, principles, the CAD holes, workspace, layering, the workspace sketch, the revision history of `architecture.md` |
 

@@ -17,3 +17,4 @@ craft3d-doc.workspace = true
 craft3d-kernel.workspace = true
 craft3d-solve.workspace = true
 craft3d-tess.workspace = true
+craft3d-stepread.workspace = true

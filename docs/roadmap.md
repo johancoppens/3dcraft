@@ -33,7 +33,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
 | R1 | First release | 🟡 2026-10-15 | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
 | V1 | Design verification | ⬜ | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
-| M10 | STEP import, corpus, web | ⬜ | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
+| M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
 | M12+ | Later candidates | ⬜ | Ideas that are not planned yet. | [Ideas](#ideas-m12) |
 
@@ -479,14 +479,15 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - The tessellator meshes faces on spline surfaces that close on themselves and closed surfaces of every kind with their seams as edges, also from pole to pole or to an apex (`crates/tess/tests/closed_freeform.rs`, `periodic.rs` › `closed_faces_with_their_seams_as_edges`) (2026-10-14)
 - The exact measure follows such faces, closed in u, in v, both ways and to a point (before, it gave a wrong volume without an error for a face that closes in v) (2026-10-14)
 - The booleans cut such faces, across the seam, along it, through the poles and around the axis (`crates/kernel/tests/boolean_closed_twins.rs`, `boolean_closed_freeform.rs`; [`design/booleans.md`](design/booleans.md) › *Freeform faces that close on themselves*) (2026-10-14)
+- STEP import, first slice: `file.import`, one `import` feature per solid holding the file's bytes (shared between undo steps, stored once in the `.3dcraft` file, format 25), typed reading and sewing on topology only in `craft3d-stepread`, every edge proven on its faces and a gap recorded as the entity's tolerance up to the document's cap, beyond it refused naming the entity ([`design/step-import.md`](design/step-import.md)) (2026-10-21)
 
 #### Open
-- [ ] Share large blobs between undo snapshots instead of copying them, before imported bodies enter the document (undo keeps a whole document per step, [`decisions.md`](decisions.md))
+- [ ] Share large blobs between undo snapshots instead of copying them: done for imported files (2026-10-21, an `Arc` per file); open for anything else large a document may hold
 - [ ] The tessellator on what such booleans leave (a closed spline face that is everything outside its loops, a ball's face cut along its seam: 77 of 594 results declined, listed by that test)
 - [ ] The measure of a boundary through both poles of a spline surface that also crosses its seam (declined by `topo`)
 - [ ] The tessellator on an egg without loops that closes in v and on a NURBS torus around a window across both seams (ignored reproducer `closed_freeform.rs` › `what_the_tessellator_declines_on_closed_freeform`)
 - [ ] A period for spline surfaces in `craft3d-geom`, so that knots that are not clamped are covered (`geom::closure` reads clamped knots only)
-- [ ] The STEP reader to bodies (`Import` feature) and typed reading
+- [ ] The STEP reader, next slices: assemblies, colours and face names, the kinds still refused ([`design/step-import.md`](design/step-import.md) › *Findings*)
 - [ ] A pinned public STEP corpus
 - [ ] `craft3d-web`
 - [ ] Performance budgets and a generated scorecard

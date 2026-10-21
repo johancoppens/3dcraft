@@ -442,6 +442,7 @@ dependencies = [
  "craft3d-regen",
  "craft3d-render",
  "craft3d-step",
+ "craft3d-stepread",
  "craft3d-tess",
  "craft3d-testkit",
  "craft3d-topo",
@@ -505,6 +506,7 @@ dependencies = [
  "craft3d-math",
  "craft3d-meshio",
  "craft3d-step",
+ "craft3d-stepread",
  "craft3d-tess",
  "craft3d-testkit",
  "craft3d-topo",
@@ -551,6 +553,7 @@ dependencies = [
  "craft3d-kernel",
  "craft3d-math",
  "craft3d-solve",
+ "craft3d-stepread",
  "craft3d-tess",
  "craft3d-topo",
 ]
@@ -578,6 +581,16 @@ dependencies = [
 [[package]]
 name = "craft3d-step"
 version = "0.0.1"
+
+[[package]]
+name = "craft3d-stepread"
+version = "0.0.1"
+dependencies = [
+ "craft3d-geom",
+ "craft3d-math",
+ "craft3d-step",
+ "craft3d-topo",
+]
 
 [[package]]
 name = "craft3d-tess"

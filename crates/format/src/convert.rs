@@ -304,6 +304,15 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 face: name_to_manifest(face),
                 number: *number,
             },
+            doc::FeatureKind::Import(doc::Import {
+                file_name,
+                solid,
+                data,
+            }) => manifest::FeatureKind::Import {
+                file_name: file_name.clone(),
+                solid: *solid,
+                sha256: data.sha256(),
+            },
             doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
@@ -1271,7 +1280,7 @@ fn orientation_to_doc(orientation: manifest::Orientation) -> doc::Orientation {
     }
 }
 
-pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
+pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Document {
     let manifest::Document {
         units: manifest::Units { length, angle },
         tolerance:
@@ -1318,14 +1327,20 @@ pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
                 }
             })
             .collect(),
-        features: features.into_iter().map(feature_to_doc).collect(),
+        features: features
+            .into_iter()
+            .map(|f| feature_to_doc(f, blobs))
+            .collect(),
         rollback: rollback.map(doc::FeatureId),
         next_feature_id,
         bodies: bodies.into_iter().map(body_to_doc).collect(),
     }
 }
 
-fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
+/// The bytes of the blobs of a file, by their SHA-256.
+pub(crate) type Blobs = std::collections::BTreeMap<String, doc::Blob>;
+
+fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
     let manifest::Feature {
         id,
         name,
@@ -1479,6 +1494,20 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 source: doc::FeatureId(source),
                 face: name_to_doc(face),
                 number,
+            }),
+            manifest::FeatureKind::Import {
+                file_name,
+                solid,
+                sha256,
+            } => doc::FeatureKind::Import(doc::Import {
+                file_name,
+                solid,
+                // Every blob the manifest names is there: checked before
+                // conversion (`missing_blob`).
+                data: blobs
+                    .get(&sha256)
+                    .cloned()
+                    .unwrap_or_else(|| doc::Blob::new(Vec::new())),
             }),
             manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),

@@ -1,0 +1,9 @@
+[
+  ["feature.block", {"size": ["30 mm", "20 mm", "10 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"radius": "4 mm", "height": "20 mm", "position": ["15 mm", "10 mm", "-5 mm"], "name": "Pin"}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Pin", "name": "Holed"}],
+  ["feature.sphere", {"radius": "5 mm", "position": ["50 mm", "0 mm", "0 mm"], "name": "Ball"}],
+  ["file.export", {"path": "v25-part.step"}],
+  ["file.import", {"path": "v25-part.step", "names": ["HoledCopy", "BallCopy"]}],
+  ["feature.transform", {"source": "BallCopy", "translate": ["0 mm", "30 mm", "0 mm"], "name": "Moved"}]
+]
