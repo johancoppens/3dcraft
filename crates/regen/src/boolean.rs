@@ -36,11 +36,13 @@ pub(crate) fn combine(
     tool: &Body,
     op: BooleanOp,
     tolerance: &Tolerance,
+    loosest: f64,
     names: [Option<&Names>; 2],
 ) -> Result<Combined, String> {
     use craft3d_kernel::KernelError;
     use craft3d_kernel::boolean::{
-        BooleanOp as Op, EdgeSource, FaceSource, Operand, VertexSource, boolean,
+        BooleanOp as Op, BooleanOptions, EdgeSource, FaceSource, Operand, VertexSource,
+        boolean_with,
     };
     let op = match op {
         BooleanOp::Union => Op::Union,
@@ -51,7 +53,13 @@ pub(crate) fn combine(
         Operand::A => 0,
         Operand::B => 1,
     };
-    let result = boolean(target, tool, op, tolerance).map_err(|e| match e {
+    // The document's cap: operands with loose entities are worked on at
+    // their largest tolerance up to it.
+    let options = BooleanOptions {
+        loosest: Some(loosest),
+        ..BooleanOptions::default()
+    };
+    let result = boolean_with(target, tool, op, tolerance, &options).map_err(|e| match e {
         KernelError::ZeroThickness { at, faces, .. } => {
             let [a, b] = faces.map(|(operand, face)| {
                 let [first, second] = names;
@@ -141,6 +149,7 @@ pub(crate) fn build(
         b,
         boolean.op,
         &tolerance,
+        doc.tolerance.loosest_linear(),
         [target.names.as_deref(), tool.names.as_deref()],
     )?;
     let operand = |operand: u64| {

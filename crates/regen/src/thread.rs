@@ -544,6 +544,7 @@ pub(crate) fn build(
         &swept.body,
         BooleanOp::Subtract,
         &source.tolerance,
+        source.loosest,
         [Some(source.names), Some(&groove_names)],
     )
     .map_err(|error| format!("the groove of the thread cannot be cut: {error}"))?;

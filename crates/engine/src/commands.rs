@@ -47,8 +47,8 @@ macro_rules! spec {
 pub(crate) use spec;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6}"#,
-        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3.", doc: false, file_new),
+    spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6, "loosest": number = 1000 × tolerance}"#,
+        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3. loosest is the cap on the tolerance any vertex or edge may have of its own (geometry that is not exact to the document's tolerance, as imported files bring it), at least the tolerance: an operation on a body with an entity looser than it refuses.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
@@ -92,7 +92,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -381,7 +381,7 @@ pub(crate) fn length_unit(doc: &Document) -> &'static str {
 // ------------------------------------------------------------------- file
 
 fn file_new(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.new", params, &["units", "tolerance"])?;
+    let p = Params::new("file.new", params, &["units", "tolerance", "loosest"])?;
     let length = match p.str("units")? {
         None => LengthUnit::default(),
         Some(symbol) => LengthUnit::from_symbol(symbol).ok_or_else(|| {
@@ -407,6 +407,16 @@ fn file_new(session: &mut Session, params: &Value) -> Run {
             linear,
             ..Tolerance::default()
         };
+    }
+    if let Some(loosest) = p.number("loosest")? {
+        if !(loosest.is_finite() && loosest >= document.tolerance.linear) {
+            return fail(format!(
+                "file.new: `loosest` must be a finite length at least the tolerance {:e} {}; got {loosest:e}",
+                document.tolerance.linear,
+                length.symbol()
+            ));
+        }
+        document.tolerance.loosest = Some(loosest);
     }
     let index = session.add_document(OpenDocument::new(document, None))?;
     Ok(json!({ "document": index, "units": length.symbol() }))
@@ -1982,7 +1992,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             craft3d_doc::AngleUnit::Degree => "deg",
             craft3d_doc::AngleUnit::Radian => "rad",
         }},
-        "tolerance": { "linear": doc.tolerance.linear, "angular": doc.tolerance.angular },
+        // `loosest` (the cap on any entity's own tolerance) only where the
+        // document sets one: absent means 1000 times `linear`.
+        "tolerance": match doc.tolerance.loosest {
+            Some(loosest) => json!({ "linear": doc.tolerance.linear, "angular": doc.tolerance.angular, "loosest": loosest }),
+            None => json!({ "linear": doc.tolerance.linear, "angular": doc.tolerance.angular }),
+        },
         "variables": variables,
         "features": features,
         "rollback": doc.rollback.map(|id| id.to_string()),
@@ -2125,6 +2140,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             CommandError::new("document.check: the document's tolerance is not positive and finite")
         })?;
     let mut problems = Vec::new();
+    let mut loose: Vec<Value> = Vec::new();
     for variable in regen.variables.iter().filter(|_| only.is_none()) {
         if let Err(error) = &variable.value {
             problems.push(json!({ "variable": variable.name, "problem": error }));
@@ -2181,7 +2197,19 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         }
         if let Some(body) = outcome.own_body() {
             checked += 1;
-            for defect in craft3d_topo::check(body, &tolerance) {
+            // Entities with a tolerance of their own (a boolean on loose
+            // operands, an import) are said, not hidden.
+            if body.is_tolerant() {
+                loose.push(json!({
+                    "feature": outcome.id.to_string(), "name": name,
+                    "edges": body.tolerances.edges().count(),
+                    "vertices": body.tolerances.vertices().count(),
+                    "largest": body.working_tolerance(doc.tolerance.linear),
+                }));
+            }
+            for defect in
+                craft3d_topo::check_capped(body, &tolerance, doc.tolerance.loosest_linear())
+            {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("invalid body: {defect}"),
                 }));
@@ -2256,6 +2284,9 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     }
     let mut result =
         json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems });
+    if let (false, Some(map)) = (loose.is_empty(), result.as_object_mut()) {
+        map.insert("loose".into(), loose.into());
+    }
     if let (Some(status), Some(map)) = (status, result.as_object_mut()) {
         map.insert("status".into(), status.into());
     }

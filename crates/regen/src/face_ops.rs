@@ -40,6 +40,8 @@ pub(crate) struct Source<'a> {
     /// The name of the feature that made it.
     pub made_by: String,
     pub tolerance: Tolerance,
+    /// The document's cap on any entity's own tolerance.
+    pub loosest: f64,
 }
 
 /// The body of `source`, which the faces of `param` are faces of: there,
@@ -77,6 +79,7 @@ pub(crate) fn source<'a>(
         names,
         made_by,
         tolerance,
+        loosest: doc.tolerance.loosest_linear(),
     })
 }
 

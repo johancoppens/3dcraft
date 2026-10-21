@@ -225,6 +225,8 @@ impl Body {
         }
 
         body.shells = self.shells.clone();
+        // Distances, which an isometry keeps; the ids are the same.
+        body.tolerances = self.tolerances.clone();
         Ok(body)
     }
 
@@ -1189,6 +1191,11 @@ pub fn merge(bodies: &[&Body]) -> Result<(Body, Vec<Offsets>), TransformError> {
             }
             merged.shells.push(Shell { faces });
         }
+        merged
+            .tolerances
+            .extend_shifted(&body.tolerances, vertex, |e| {
+                shift(e.0, body.edges.len(), offset.edges).map(EdgeId)
+            })?;
     }
     Ok((merged, offsets))
 }

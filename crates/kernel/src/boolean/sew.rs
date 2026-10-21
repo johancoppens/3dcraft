@@ -527,5 +527,6 @@ pub(super) fn finish(mut work: Work, kind: BodyKind) -> Result<BooleanResult, St
         merged,
         edges,
         vertices,
+        raised: Vec::new(),
     })
 }

@@ -3895,3 +3895,27 @@ fn a_split_is_written_like_this_and_round_trips() {
     assert_eq!(opened, small());
     assert_eq!(to_manifest_json(&opened).unwrap(), older);
 }
+
+#[test]
+fn the_cap_on_entity_tolerances_is_kept_and_absent_means_the_default() {
+    let mut document = Document::new(Units::default());
+    let plain = to_manifest_json(&document).unwrap();
+    // Not written when it is the default: older files and newer ones agree.
+    assert!(!plain.contains("loosest"));
+    assert_eq!(
+        from_manifest_json(plain.as_bytes())
+            .unwrap()
+            .tolerance
+            .loosest,
+        None
+    );
+    document.tolerance.loosest = Some(5e-4);
+    let json = to_manifest_json(&document).unwrap();
+    let back = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(back.tolerance, document.tolerance);
+    assert_eq!(back.tolerance.loosest_linear(), 5e-4);
+    assert_eq!(
+        craft3d_doc::Tolerance::default().loosest_linear(),
+        1000.0 * craft3d_doc::Tolerance::default().linear
+    );
+}

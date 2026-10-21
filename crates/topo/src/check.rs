@@ -136,6 +136,31 @@ pub enum Defect {
         shell: ShellId,
         reason: String,
     },
+    /// A loose edge (one with a tolerance of its own) whose curve could not
+    /// be proven within `tolerance` of the surface of `face` over the whole
+    /// edge (`craft3d_geom::certify::curve_on_surface`); `at` is the
+    /// curve's parameter where the proof stopped.
+    EdgeNotProven {
+        face: FaceId,
+        edge: EdgeId,
+        at: f64,
+        tolerance: f64,
+    },
+    /// An entity's own tolerance is above the cap the document allows any
+    /// entity (`what` names it).
+    ToleranceAboveCap {
+        what: String,
+        tolerance: f64,
+        cap: f64,
+    },
+    /// A vertex is tighter than an edge that ends at it: a vertex's ball
+    /// must hold every end of its edges' tubes.
+    VertexTighterThanEdge {
+        vertex: VertexId,
+        edge: EdgeId,
+        vertex_tolerance: f64,
+        edge_tolerance: f64,
+    },
 }
 
 impl fmt::Display for Defect {
@@ -259,6 +284,34 @@ impl fmt::Display for Defect {
             Defect::ShellNesting { shell, reason } => {
                 write!(f, "shell {}: {reason}", shell.0)
             }
+            Defect::EdgeNotProven {
+                face,
+                edge,
+                at,
+                tolerance,
+            } => write!(
+                f,
+                "edge {} could not be proven within its tolerance {tolerance:e} of the surface of face {} (the proof stopped at parameter {at})",
+                edge.0, face.0
+            ),
+            Defect::ToleranceAboveCap {
+                what,
+                tolerance,
+                cap,
+            } => write!(
+                f,
+                "{what} has a tolerance of {tolerance:e}, above the cap of {cap:e} the document allows any entity"
+            ),
+            Defect::VertexTighterThanEdge {
+                vertex,
+                edge,
+                vertex_tolerance,
+                edge_tolerance,
+            } => write!(
+                f,
+                "vertex {} has a tolerance of {vertex_tolerance:e}, tighter than the {edge_tolerance:e} of edge {}, which ends at it",
+                vertex.0, edge.0
+            ),
         }
     }
 }
@@ -413,8 +466,21 @@ const PASSED_WORDS: usize = 1 << 22;
 /// bits, not as text: formatting every number of a large body cost a
 /// quarter of a long row of cuts.
 pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
+    check_remembered_capped(body, tolerance, crate::default_loosest(tolerance.linear))
+}
+
+/// [`check_remembered`] with the cap on any entity's tolerance given (the
+/// document's), as [`check_capped`]; the cap is part of what is
+/// remembered.
+pub fn check_remembered_capped(body: &Body, tolerance: &Tolerance, cap: f64) -> Vec<Defect> {
     use craft3d_geom::allowance;
     let mut key = craft3d_math::bits_of(tolerance);
+    // The default cap adds nothing: the key of a check at it is what it
+    // was before caps existed.
+    if cap.to_bits() != crate::default_loosest(tolerance.linear).to_bits() {
+        key.push(u64::MAX);
+        cap.push_bits(&mut key);
+    }
     body.push_bits(&mut key);
     // Charged by the work the check took, once per body and operation
     // under a bound, whether it is checked now or found to have passed
@@ -436,10 +502,13 @@ pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
         }
     }
     let (defects, units) = if first {
-        allowance::measured(|| check(body, tolerance))
+        allowance::measured(|| check_capped(body, tolerance, cap))
     } else {
         // Paid for already in this operation.
-        (allowance::uncounted(|| check(body, tolerance)), 0)
+        (
+            allowance::uncounted(|| check_capped(body, tolerance, cap)),
+            0,
+        )
     };
     if first && allowance::counting() && defects.is_empty() && key.len() <= PASSED_WORDS {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
@@ -481,8 +550,27 @@ pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
 /// to `tess::body_self_intersections` a marginal finding at most. Two lumps
 /// that share a point are two shells; in one shell their counts fit no
 /// genus and are a [`Defect::Euler`].
+///
+/// **Tolerant entities** (`crate::Tolerances`): a vertex is held to its
+/// own tolerance, an edge to its own, each the larger of it and the
+/// document's. A loose edge's curve is *proven* within its tolerance of
+/// each face's surface over the whole edge, not only at five places. The
+/// table is checked too: its entities exist, its tolerances are positive,
+/// none is above the cap (here [`crate::DEFAULT_LOOSEST`] times the linear
+/// tolerance; [`check_capped`] takes the document's), and no vertex is
+/// tighter than an edge that ends at it. A body with an empty table is
+/// checked exactly as before the table existed.
 pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
+    check_capped(body, tol, crate::default_loosest(tol.linear))
+}
+
+/// [`check`] with the cap on any entity's tolerance given (the document's,
+/// `doc::Tolerance::loosest`).
+pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
     let mut defects = Vec::new();
+    if body.is_tolerant() {
+        table_defects(body, tol, cap, &mut defects);
+    }
 
     for (i, vertex) in body.vertices.iter().enumerate() {
         if !vertex.point.is_finite() {
@@ -513,7 +601,7 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
                 Some(v) => {
                     let distance = edge.curve.eval(t).distance(v.point);
                     // NaN (a non-finite vertex, reported above) is not "off".
-                    if distance > tol.linear {
+                    if distance > body.vertex_tolerance_at(vertex, tol.linear) {
                         defects.push(Defect::VertexOffEdge {
                             edge: id,
                             vertex,
@@ -599,11 +687,23 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
                         .unwrap_or(f64::INFINITY)
                     })
                     .fold(0.0, f64::max);
-                if worst > tol.linear {
+                let within = body.edge_tolerance_at(*edge, tol.linear);
+                if worst > within {
                     defects.push(Defect::EdgeOffSurface {
                         face: id,
                         edge: *edge,
                         distance: worst,
+                    });
+                } else if body.edge_tolerance(*edge).is_some()
+                    && let Err(at) = proven_on(&e.curve, e.range, &face.surface, within)
+                {
+                    // A loose edge is proven, not sampled: what lies
+                    // between the five places is what a file gets wrong.
+                    defects.push(Defect::EdgeNotProven {
+                        face: id,
+                        edge: *edge,
+                        at,
+                        tolerance: within,
                     });
                 }
             }
@@ -643,7 +743,13 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
     // Loops inside each other, where the face can be charted (planes).
     // Only where the references hold: a dangling one is reported above.
     if defects.is_empty() {
-        for (face, loop_) in crate::stranded(body, tol) {
+        // At the body's largest tolerance (the document's, for a body with
+        // no loose entity).
+        let working = Tolerance {
+            linear: body.working_tolerance(tol.linear),
+            ..*tol
+        };
+        for (face, loop_) in crate::stranded(body, &working) {
             defects.push(Defect::StrandedLoop { face, loop_ });
         }
     }
@@ -692,6 +798,79 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
         shell_defects(body, &mut defects);
     }
     defects
+}
+
+/// Whether `curve` over `range` lies within `within` of `surface`, proven
+/// over the whole range; `Err` with the parameter where the proof
+/// stopped.
+fn proven_on(
+    curve: &craft3d_geom::Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    within: f64,
+) -> Result<(), f64> {
+    use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
+    curve_on_surface(
+        &CurveBound::new(curve),
+        range,
+        surface,
+        None,
+        &[],
+        Within {
+            target: within,
+            most: crate::PROOF_PIECES,
+        },
+    )
+    .map(|_| ())
+    .map_err(|not| not.at)
+}
+
+/// What is wrong with the table of tolerances itself: entities that do not
+/// exist, tolerances that are not positive and finite or are above the
+/// cap, and vertices tighter than an edge that ends at them.
+fn table_defects(body: &Body, tol: &Tolerance, cap: f64, defects: &mut Vec<Defect>) {
+    let table = &body.tolerances;
+    let mut entry = |what: String, exists: bool, t: f64| {
+        if !exists {
+            defects.push(Defect::DanglingReference {
+                from: "the table of tolerances".to_string(),
+                to: what,
+            });
+        } else if !(t.is_finite() && t > 0.0) {
+            defects.push(Defect::NonFinite {
+                what: format!("the tolerance of {what}"),
+            });
+        } else if t > cap {
+            defects.push(Defect::ToleranceAboveCap {
+                what,
+                tolerance: t,
+                cap,
+            });
+        }
+    };
+    for (v, t) in table.vertices() {
+        entry(format!("vertex {}", v.0), body.vertex(v).is_some(), t);
+    }
+    for (e, t) in table.edges() {
+        entry(format!("edge {}", e.0), body.edge(e).is_some(), t);
+    }
+    for (e, _) in table.edges() {
+        let Some(edge) = body.edge(e) else {
+            continue;
+        };
+        let edge_tolerance = body.edge_tolerance_at(e, tol.linear);
+        for vertex in [edge.start, edge.end] {
+            let vertex_tolerance = body.vertex_tolerance_at(vertex, tol.linear);
+            if body.vertex(vertex).is_some() && vertex_tolerance < edge_tolerance {
+                defects.push(Defect::VertexTighterThanEdge {
+                    vertex,
+                    edge: e,
+                    vertex_tolerance,
+                    edge_tolerance,
+                });
+            }
+        }
+    }
 }
 
 /// What holds for each shell on its own, once every face is in exactly one
