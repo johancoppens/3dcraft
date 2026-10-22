@@ -33,7 +33,7 @@ const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
-    v26_to_v27, v27_to_v28,
+    v26_to_v27, v27_to_v28, v28_to_v29,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -381,6 +381,15 @@ fn v26_to_v27(manifest: Value) -> Result<Value, String> {
 /// version was raised so that an older build says a newer 3DCraft is
 /// needed instead of refusing an unknown field.
 fn v27_to_v28(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 29 adds the sketch constraint kinds `x` and `y`: a point's
+/// signed coordinate in its sketch, an expression (`sketch.point` with
+/// coordinates written as expressions). Nothing a version-28 file contains
+/// changes meaning; the version was raised so that an older build says a
+/// newer 3DCraft is needed instead of refusing an unknown constraint kind.
+fn v28_to_v29(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

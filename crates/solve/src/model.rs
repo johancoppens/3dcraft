@@ -232,6 +232,16 @@ pub enum Constraint {
         point: EntityId,
         at: Option<[f64; 2]>,
     },
+    /// The point's x coordinate in the sketch: `p.x = value`, signed.
+    CoordinateX {
+        point: EntityId,
+        value: f64,
+    },
+    /// The point's y coordinate in the sketch: `p.y = value`, signed.
+    CoordinateY {
+        point: EntityId,
+        value: f64,
+    },
     /// Distance between two points, or between a point and a line (in either
     /// order). `value >= 0`.
     Distance {

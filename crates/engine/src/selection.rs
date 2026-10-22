@@ -613,7 +613,21 @@ impl<'a> Resolver<'a> {
             }),
             _ => return None,
         };
-        table.get(wanted).cloned()
+        if let Some(found) = table.get(wanted) {
+            return Some(found.clone());
+        }
+        // The short form of a cap (`F2:startCap()`) names the cap of that
+        // role when the body has one (`Names::face_answers_to`); with
+        // several (a sketch of two profiles) it names none of them here.
+        let short = wanted.parse::<PersistentName>().ok()?;
+        if kind != SelectionKind::Face || !short.is_short_cap() {
+            return None;
+        }
+        let mut caps = (0..names.faces.len()).filter(|&k| names.face_answers_to(k, &short));
+        match (caps.next(), caps.next()) {
+            (Some(k), None) => names.faces.get(k).map(|name| (name.to_string(), k)),
+            _ => None,
+        }
     }
 
     /// What `name` means: `kind` when given (otherwise read from the name:

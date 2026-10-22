@@ -485,6 +485,14 @@ fn problem(
                 point: find(*point)?,
                 at: None,
             },
+            ConstraintKind::X { point, value } => S::CoordinateX {
+                point: find(*point)?,
+                value: length(doc, variables, &name, value)?,
+            },
+            ConstraintKind::Y { point, value } => S::CoordinateY {
+                point: find(*point)?,
+                value: length(doc, variables, &name, value)?,
+            },
             ConstraintKind::Distance {
                 a,
                 b,

@@ -1132,6 +1132,50 @@ impl PersistentName {
         self.by.as_ref().map_or(&[], |by| by.near.as_slice())
     }
 
+    /// True for the short form of a cap: a start or end cap named without
+    /// the outline it was made from, `F2:startCap()`, or a copy of one
+    /// (`F7:copy(0)/F2:endCap()`). No feature names a face so (a cap is
+    /// named after the curves of its loop), so the form is free to mean
+    /// "the cap of that role of that feature" ([`Self::shortens`]).
+    pub fn is_short_cap(&self) -> bool {
+        let root = self.root();
+        matches!(root.role, NameRole::StartCap | NameRole::EndCap) && root.sources.is_empty()
+    }
+
+    /// True when this name is the short form of a cap ([`Self::is_short_cap`])
+    /// and `full` is a cap of the same role of the same feature, by way of
+    /// the same copies: `F2:startCap()` shortens `F2:startCap(e5,e6,e7)`,
+    /// `F7:copy(0)/F2:endCap()` shortens `F7:copy(0)/F2:endCap(e1,e2,e3)`.
+    /// The one place that says what the short form means: every lookup of
+    /// a face by its name goes through it.
+    pub fn shortens(&self, full: &PersistentName) -> bool {
+        if !self.is_short_cap() {
+            return false;
+        }
+        let (mut short, mut long) = (self, full);
+        for _ in 0..MAX_NAME_DEPTH {
+            if (short.feature, short.role) != (long.feature, long.role)
+                || short.by.is_some()
+                || long.by.is_some()
+            {
+                return false;
+            }
+            match (&short.of, &long.of) {
+                (Some(next_short), Some(next_long)) => {
+                    if short.sources != long.sources {
+                        return false;
+                    }
+                    (short, long) = (next_short, next_long);
+                }
+                // The caps: the short one has no outline, the full one
+                // has one.
+                (None, None) => return !long.sources.is_empty(),
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// The name at the end of the chain: what the entity was when it was
     /// first made.
     pub fn root(&self) -> &PersistentName {
@@ -1642,6 +1686,28 @@ impl TryFrom<String> for PersistentName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_cap_stands_for_the_caps_of_its_role() {
+        let name = |text: &str| text.parse::<PersistentName>().unwrap();
+        let short = name("F2:startCap()");
+        assert!(short.is_short_cap());
+        assert!(short.shortens(&name("F2:startCap(e5,e6,e7)")));
+        assert!(!short.shortens(&name("F2:endCap(e5,e6,e7)")));
+        assert!(!short.shortens(&name("F3:startCap(e5,e6,e7)")));
+        assert!(!short.shortens(&short));
+        assert!(!short.shortens(&name("F7:copy(0)/F2:startCap(e5,e6,e7)")));
+        let copied = name("F7:copy(0)/F2:endCap()");
+        assert!(copied.is_short_cap());
+        assert!(copied.shortens(&name("F7:copy(0)/F2:endCap(e1,e2)")));
+        assert!(!copied.shortens(&name("F7:copy(1)/F2:endCap(e1,e2)")));
+        assert!(!copied.shortens(&name("F2:endCap(e1,e2)")));
+        // A full name is no short form of anything.
+        let full = name("F2:startCap(e5,e6,e7)");
+        assert!(!full.is_short_cap());
+        assert!(!full.shortens(&full));
+        assert!(!name("F2:side(e5)").is_short_cap());
+    }
 
     #[test]
     fn a_piece_is_named_after_the_first_with_its_number() {

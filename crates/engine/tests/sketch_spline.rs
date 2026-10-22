@@ -1018,8 +1018,10 @@ fn bad_requests_change_nothing() {
             &["two finite numbers"],
         ),
         (
+            // An expression is a coordinate since 2026-10-22; `a` names
+            // no variable.
             json!({"control": [[20, 0], [21, 1], ["a", 0], [23, 1]]}),
-            &["two finite numbers"],
+            &["control", "`a`"],
         ),
         (
             json!({"control": [[20, 0], [21, 1], {"x": 1}, [23, 1]]}),

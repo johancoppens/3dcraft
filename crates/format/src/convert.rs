@@ -1259,6 +1259,14 @@ fn constraint_to_manifest(constraint: &doc::Constraint) -> manifest::SketchConst
                 line: raw(line),
             },
             D::Fixed { point } => M::Fixed { point: raw(point) },
+            D::X { point, value } => M::X {
+                point: raw(point),
+                value: expr_to_manifest(value),
+            },
+            D::Y { point, value } => M::Y {
+                point: raw(point),
+                value: expr_to_manifest(value),
+            },
             D::Distance {
                 a: p,
                 b: q,
@@ -1369,6 +1377,14 @@ fn constraint_to_doc(constraint: manifest::SketchConstraint) -> doc::Constraint 
                 line: Id(line),
             },
             M::Fixed { point } => D::Fixed { point: Id(point) },
+            M::X { point, value } => D::X {
+                point: Id(point),
+                value: doc::Expr(value),
+            },
+            M::Y { point, value } => D::Y {
+                point: Id(point),
+                value: doc::Expr(value),
+            },
             M::Distance {
                 a,
                 b,

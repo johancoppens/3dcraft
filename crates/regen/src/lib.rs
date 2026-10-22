@@ -498,8 +498,13 @@ impl Names {
         (0..self.faces.len()).flat_map(|face| self.names_of(face))
     }
 
-    /// True when face `face` is called `name`, by its own name or an alias.
+    /// True when face `face` is called `name`, by its own name or an alias,
+    /// or `name` is the short form of a cap (`F2:startCap()`) and the face
+    /// is a cap of that role of that feature ([`PersistentName::shortens`]).
     pub fn face_answers_to(&self, face: usize, name: &PersistentName) -> bool {
+        if name.is_short_cap() {
+            return self.names_of(face).any(|n| name.shortens(n));
+        }
         self.names_of(face).any(|n| n == name)
     }
 

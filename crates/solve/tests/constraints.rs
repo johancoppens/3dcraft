@@ -472,6 +472,58 @@ fn alone_fixed() {
 }
 
 #[test]
+fn alone_coordinates_are_signed() {
+    let sc = scene();
+    let sol = alone(
+        &sc,
+        C::CoordinateX {
+            point: sc.p[1],
+            value: -2.75,
+        },
+        1,
+        LINEAR,
+    );
+    let b = sol.point(sc.p[1]).unwrap();
+    // Only x moves: a coordinate of one point, nothing else.
+    assert!((b[0] + 2.75).abs() <= LINEAR && b[1] == 1.3, "{b:?}");
+
+    let sc = scene();
+    let sol = alone(
+        &sc,
+        C::CoordinateY {
+            point: sc.p[2],
+            value: -0.5,
+        },
+        1,
+        LINEAR,
+    );
+    let c = sol.point(sc.p[2]).unwrap();
+    assert!((c[1] + 0.5).abs() <= LINEAR && c[0] == 1.2, "{c:?}");
+}
+
+#[test]
+fn pinned_coordinate_residual_is_the_offset() {
+    let mut p = Pinned::new();
+    let a = p.pt(1.0, 2.0);
+    p.conflict(
+        C::CoordinateX {
+            point: a,
+            value: -3.0,
+        },
+        4.0,
+    );
+    let mut p = Pinned::new();
+    let a = p.pt(1.0, 2.0);
+    p.conflict(
+        C::CoordinateY {
+            point: a,
+            value: 2.5,
+        },
+        0.5,
+    );
+}
+
+#[test]
 fn alone_distances() {
     let sc = scene();
     let sol = alone(

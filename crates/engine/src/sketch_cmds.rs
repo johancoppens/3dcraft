@@ -1,10 +1,12 @@
 //! The sketch commands: drawing entities, constraining them, and reading
 //! back how the sketch solved.
 //!
-//! Coordinates are plain numbers in the document's length unit: they are
-//! where an entity is drawn, and the solver moves it from there. Dimension
-//! values are expressions. Entities are referred to as `"e3"` (or `3`),
-//! constraints as `"c3"`.
+//! A coordinate given as a number, in the document's length unit, is where
+//! a point is drawn, and the solver moves it from there. A coordinate given
+//! as an expression (a string: `"-width / 2"`, `"10 mm"`) is drawn at its
+//! value and held there by an `x` or `y` constraint, so it follows the
+//! variables. Dimension values are expressions. Entities are referred to
+//! as `"e3"` (or `3`), constraints as `"c3"`.
 
 use crate::commands::{
     Run, doc_error, edit, fail, feature_ref, feature_result, insert_feature, spec,
@@ -25,18 +27,20 @@ const MAX_POLYLINE_POINTS: usize = 1_000;
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" or datum plane = "xy", "face": face name, "offset": expr = 0, "name": string = automatic}"#,
         "Adds an empty sketch on a world plane, on a datum plane (plane: its name or id; the sketch has the datum's origin and axes and follows it), or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"; \"F2:endCap()\" is the plane where F2 ends, whatever its outline; an alias from faceAliases names the same face), moved by offset along the normal. A primitive's faces are numbered (\"F3:face(1)\"): for a block 0 bottom, 1 top, 2 front, 3 back, 4 left, 5 right in its own axes; for a cylinder 0 the wall, 1 the bottom, 2 the top. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion, from the extruded sketch's origin dropped onto the face.", doc: true, sketch_create),
-    spec!("sketch.point", "Sketch Point", r#"{"sketch": id or name, "at": [number, number]}"#,
-        "Adds a point to a sketch, at coordinates in document units. Returns its entity id.", doc: true, sketch_point),
+    spec!("sketch.point", "Sketch Point", r#"{"sketch": id or name, "at": [x, y]}"#,
+        "Adds a point to a sketch. Coordinates [x, y] that are both numbers, in document units, are where the point is drawn; the solver may move it. When either is an expression (a string such as \"-width / 2\" or \"10 mm\"; signed, from the sketch origin along the sketch axes) the point is held: drawn at the values and kept there by an x and a y constraint (a number beside an expression is held at that number), so it follows the variables; to hold one coordinate only, use sketch.constrain with type x or y. Returns its entity id and the constraints that hold it. Everywhere a sketch command takes coordinates [x, y] for a new point (line, polyline, rect, circle, arc, path, spline) they work the same way.", doc: true, sketch_point),
     spec!("sketch.line", "Sketch Line", r#"{"sketch": id or name, "from": point id or [x, y], "to": point id or [x, y], "construction": boolean = false}"#,
         "Adds a line between two points. Give an existing point (\"e1\") to share a corner, or coordinates to make a new point.", doc: true, sketch_line),
     spec!("sketch.polyline", "Sketch Polyline", r#"{"sketch": id or name, "points": [point id or [x, y], ...], "closed": boolean = false, "construction": boolean = false}"#,
         "Adds lines through the points in order, sharing the corners; closed joins the last point to the first. Returns the points and the lines.", doc: true, sketch_polyline),
-    spec!("sketch.circle", "Sketch Circle", r#"{"sketch": id or name, "center": point id or [x, y], "radius": number, "construction": boolean = false}"#,
-        "Adds a circle about a point.", doc: true, sketch_circle),
+    spec!("sketch.rect", "Sketch Rectangle", r#"{"sketch": id or name, "from": point id or [x, y], "to": point id or [x, y], "construction": boolean = false}"#,
+        "Adds a rectangle along the sketch axes with opposite corners from and to (coordinates may be expressions, held as for sketch.point: [\"-width / 2\", 0] to [\"width / 2\", \"height\"] is fully defined and follows the variables). Four lines, kept horizontal and vertical by constraints. Returns points (from, then the corner at to's x and from's y, to, the corner at from's x and to's y), lines (from points[i] to points[i+1], the last back to from) and constraints.", doc: true, sketch_rect),
+    spec!("sketch.circle", "Sketch Circle", r#"{"sketch": id or name, "center": point id or [x, y], "radius": number or expr, "construction": boolean = false}"#,
+        "Adds a circle about a point. A radius given as a number is how it is drawn; one given as an expression (a string such as \"bore / 2\") is held by a radius constraint, so it follows the variables. Returns the circle, its center and the constraint, if any.", doc: true, sketch_circle),
     spec!("sketch.arc", "Sketch Arc", r#"{"sketch": id or name, "center": point id or [x, y], "start": point id or [x, y], "end": point id or [x, y], "construction": boolean = false}"#,
         "Adds an arc about center, counter-clockwise from start to end. Solving keeps both ends at the same distance from the center.", doc: true, sketch_arc),
-    spec!("sketch.constrain", "Constrain", r#"{"sketch": id or name, "type": "coincident|pointOn|horizontal|vertical|parallel|perpendicular|tangent|equal|concentric|symmetric|midpoint|fixed|distance|angle|radius|diameter", "entities": [entity id, ...], "value": expr, "direction": "direct|horizontal|vertical" = "direct"}"#,
-        "Adds a constraint between entities. distance, angle, radius and diameter take a value; a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. A spline is shaped by constraints on its control points; itself it takes pointOn (a point held on the curve: one degree of freedom less; beyond its ends the curve counts as going on straight) and tangent, to a line, an arc or another spline that it shares an end point with (the same point, or two made coincident): the spline then leaves that point along the other curve. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
+    spec!("sketch.constrain", "Constrain", r#"{"sketch": id or name, "type": "coincident|pointOn|horizontal|vertical|parallel|perpendicular|tangent|equal|concentric|symmetric|midpoint|fixed|x|y|distance|angle|radius|diameter", "entities": [entity id, ...], "value": expr, "direction": "direct|horizontal|vertical" = "direct"}"#,
+        "Adds a constraint between entities. x, y, distance, angle, radius and diameter take a value; x and y hold one point's coordinate in the sketch, signed (\"-width / 2\" is left of the origin); a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. A spline is shaped by constraints on its control points; itself it takes pointOn (a point held on the curve: one degree of freedom less; beyond its ends the curve counts as going on straight) and tangent, to a line, an arc or another spline that it shares an end point with (the same point, or two made coincident): the spline then leaves that point along the other curve. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
     spec!("sketch.edit", "Edit Sketch", r#"{"sketch": id or name, "constraint": constraint id, "value": expr, "entity": entity id, "construction": boolean, "at": [number, number], "plane": "xy|yz|zx" or datum plane, "face": face name, "offset": expr}"#,
         "Changes a sketch: the value of a dimension (constraint and value), an entity's construction flag or a point's position before solving (entity with construction or at), or what it lies on (plane or face) and the offset.", doc: true, sketch_edit),
     spec!("sketch.delete", "Delete From Sketch", r#"{"sketch": id or name, "entity": entity id, "constraint": constraint id, "pattern": pattern id}"#,
@@ -100,6 +104,95 @@ pub(crate) fn coordinates(value: &Value) -> Option<(f64, f64)> {
     Some((finite(x)?, finite(y)?))
 }
 
+/// The coordinates of a new point that were written as expressions: each
+/// becomes an `x` or `y` constraint on the point, so the point follows the
+/// variables the expression names.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Held {
+    pub(crate) x: Option<Expr>,
+    pub(crate) y: Option<Expr>,
+}
+
+impl Held {
+    /// Adds the constraints that hold `point` at the expressions, `x`
+    /// first; returns their ids.
+    pub(crate) fn pin(
+        &self,
+        sketch: &mut Sketch,
+        point: EntityId,
+    ) -> Result<Vec<ConstraintId>, SketchError> {
+        let mut added = Vec::new();
+        if let Some(value) = &self.x {
+            added.push(sketch.add_constraint(ConstraintKind::X {
+                point,
+                value: value.clone(),
+            })?);
+        }
+        if let Some(value) = &self.y {
+            added.push(sketch.add_constraint(ConstraintKind::Y {
+                point,
+                value: value.clone(),
+            })?);
+        }
+        Ok(added)
+    }
+}
+
+/// Most characters of a coordinate written as an expression.
+const MAX_COORDINATE_EXPR: usize = 1_000;
+
+/// `[x, y]` for a new point: two numbers (where it is drawn), or a pair
+/// with an expression in it (a string, evaluated with the document's
+/// variables): drawn there and held there, a number beside the expression
+/// at that number. `None` when `value` is not such a pair.
+pub(crate) fn held_coordinates(
+    session: &Session,
+    command: &str,
+    key: &str,
+    value: &Value,
+) -> Result<Option<(f64, f64, Held)>, CommandError> {
+    let Some([x, y]) = value.as_array().map(Vec::as_slice) else {
+        return Ok(None);
+    };
+    let one = |axis: &str, item: &Value| -> Result<Option<(f64, Option<Expr>)>, CommandError> {
+        match item {
+            Value::Number(n) => Ok(n.as_f64().filter(|v| v.is_finite()).map(|v| (v, None))),
+            Value::String(text) => {
+                if text.chars().count() > MAX_COORDINATE_EXPR {
+                    return fail(format!(
+                        "{command}: `{key}`: the {axis} expression is longer than {MAX_COORDINATE_EXPR} characters"
+                    ));
+                }
+                let at = session
+                    .evaluate_typed(text, crate::typed::TypedKind::Length)
+                    .map_err(|e| {
+                        CommandError::new(format!("{command}: `{key}`: {axis}: {}", e.message()))
+                    })?;
+                Ok(Some((at, Some(Expr::new(text.clone())))))
+            }
+            _ => Ok(None),
+        }
+    };
+    match (one("x", x)?, one("y", y)?) {
+        // A pair with an expression in it is held whole: a number beside
+        // the expression is held at that number (`["-width / 2", 0]` is a
+        // place, not a guess along y).
+        (Some((x, held_x)), Some((y, held_y))) if held_x.is_some() || held_y.is_some() => {
+            let number = |v: f64| Expr::new(v.to_string());
+            Ok(Some((
+                x,
+                y,
+                Held {
+                    x: Some(held_x.unwrap_or_else(|| number(x))),
+                    y: Some(held_y.unwrap_or_else(|| number(y))),
+                },
+            )))
+        }
+        (Some((x, _)), Some((y, _))) => Ok(Some((x, y, Held::default()))),
+        _ => Ok(None),
+    }
+}
+
 /// The instances of an image point, one per level of its patterns, the
 /// innermost first (`e8[last][2]`): at most `MAX_PATTERN_DEPTH`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,11 +235,11 @@ impl std::fmt::Display for ImagePath {
 }
 
 /// Where a line, circle or arc is attached: a point that exists, or the
-/// place for a new one.
-#[derive(Clone, Copy)]
+/// place for a new one, with the coordinates written as expressions.
+#[derive(Clone)]
 pub(crate) enum PointArg {
     Existing(EntityId),
-    New(f64, f64),
+    New(f64, f64, Held),
     /// The image of a seed point in an instance of its pattern: `"e5[3]"`,
     /// `"e5[last]"`, and with nested patterns `"e5[last][2]"`.
     Image(EntityId, ImagePath),
@@ -238,12 +331,17 @@ impl EntityArg {
 }
 
 impl PointArg {
-    pub(crate) fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
+    pub(crate) fn parse(
+        session: &Session,
+        command: &str,
+        key: &str,
+        value: &Value,
+    ) -> Result<Self, CommandError> {
         match value {
-            Value::Array(_) => match coordinates(value) {
-                Some((x, y)) => Ok(PointArg::New(x, y)),
+            Value::Array(_) => match held_coordinates(session, command, key, value)? {
+                Some((x, y, held)) => Ok(PointArg::New(x, y, held)),
                 None => fail(format!(
-                    "{command}: `{key}` must be a point id or two finite numbers [x, y]"
+                    "{command}: `{key}` must be a point id or coordinates [x, y]: two finite numbers, or expressions such as \"-width / 2\""
                 )),
             },
             Value::Number(_) | Value::String(_) => match EntityArg::parse(command, key, value)? {
@@ -256,16 +354,41 @@ impl PointArg {
         }
     }
 
-    pub(crate) fn required(p: &Params, command: &str, key: &str) -> Result<Self, CommandError> {
-        Self::parse(command, key, p.get(key).ok_or_else(|| p.missing(key))?)
+    pub(crate) fn required(
+        session: &Session,
+        p: &Params,
+        command: &str,
+        key: &str,
+    ) -> Result<Self, CommandError> {
+        Self::parse(
+            session,
+            command,
+            key,
+            p.get(key).ok_or_else(|| p.missing(key))?,
+        )
     }
 
-    /// The point's id, adding it to the sketch when it is new.
-    pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
+    /// The point's id, adding it to the sketch when it is new (with the
+    /// constraints that hold its expressions).
+    pub(crate) fn place(&self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
         match self {
-            PointArg::Existing(id) => sketch.point_entity(id).map(|_| id),
-            PointArg::New(x, y) => sketch.add_point(x, y),
-            PointArg::Image(of, path) => sketch.image_path(of, path.levels()),
+            PointArg::Existing(id) => sketch.point_entity(*id).map(|_| *id),
+            PointArg::New(x, y, held) => {
+                let point = sketch.add_point(*x, *y)?;
+                held.pin(sketch, point)?;
+                Ok(point)
+            }
+            PointArg::Image(of, path) => sketch.image_path(*of, path.levels()),
+        }
+    }
+
+    /// Where the point is drawn: a new one's coordinates, an existing
+    /// one's stored position; `None` for an image point.
+    pub(crate) fn drawn(&self, sketch: &Sketch) -> Option<(f64, f64)> {
+        match self {
+            PointArg::Existing(id) => sketch.point(*id).ok(),
+            PointArg::New(x, y, _) => Some((*x, *y)),
+            PointArg::Image(..) => None,
         }
     }
 }
@@ -425,19 +548,29 @@ fn sketch_point(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(COMMAND, params, &["sketch", "at"])?;
     let id = sketch_ref(session, &p, COMMAND)?;
     let at = p.get("at").ok_or_else(|| p.missing("at"))?;
-    let Some((x, y)) = coordinates(at) else {
-        return fail(format!("{COMMAND}: `at` must be two finite numbers [x, y]"));
+    let Some((x, y, held)) = held_coordinates(session, COMMAND, "at", at)? else {
+        return fail(format!(
+            "{COMMAND}: `at` must be [x, y]: two finite numbers, or expressions such as \"-width / 2\""
+        ));
     };
-    let point = change(session, COMMAND, "Add point", id, |s| s.add_point(x, y))?;
-    sketch_result(session, id, json!({ "entity": point.to_string() }))
+    let (point, held) = change(session, COMMAND, "Add point", id, |s| {
+        let point = s.add_point(x, y)?;
+        Ok((point, held.pin(s, point)?))
+    })?;
+    let held: Vec<String> = held.iter().map(ToString::to_string).collect();
+    sketch_result(
+        session,
+        id,
+        json!({ "entity": point.to_string(), "constraints": held }),
+    )
 }
 
 fn sketch_line(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.line";
     let p = Params::new(COMMAND, params, &["sketch", "from", "to", "construction"])?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let from = PointArg::required(&p, COMMAND, "from")?;
-    let to = PointArg::required(&p, COMMAND, "to")?;
+    let from = PointArg::required(session, &p, COMMAND, "from")?;
+    let to = PointArg::required(session, &p, COMMAND, "to")?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let (line, start, end) = change(session, COMMAND, "Add line", id, |s| {
         let (start, end) = (from.place(s)?, to.place(s)?);
@@ -484,7 +617,7 @@ fn sketch_polyline(session: &mut Session, params: &Value) -> Run {
     }
     let mut corners = Vec::with_capacity(items.len());
     for item in items {
-        corners.push(PointArg::parse(COMMAND, "points", item)?);
+        corners.push(PointArg::parse(session, COMMAND, "points", item)?);
     }
     let (points, lines) = change(session, COMMAND, "Add polyline", id, |s| {
         let mut points = Vec::with_capacity(corners.len());
@@ -517,17 +650,99 @@ fn sketch_circle(session: &mut Session, params: &Value) -> Run {
         &["sketch", "center", "radius", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let center = PointArg::required(&p, COMMAND, "center")?;
-    let radius = p.number("radius")?.ok_or_else(|| p.missing("radius"))?;
+    let center = PointArg::required(session, &p, COMMAND, "center")?;
+    let (radius, held) = match p.get("radius") {
+        None => return Err(p.missing("radius")),
+        Some(Value::String(text)) => {
+            if text.chars().count() > MAX_COORDINATE_EXPR {
+                return fail(format!(
+                    "{COMMAND}: `radius` is longer than {MAX_COORDINATE_EXPR} characters"
+                ));
+            }
+            let radius = session
+                .evaluate_typed(text, crate::typed::TypedKind::Length)
+                .map_err(|e| CommandError::new(format!("{COMMAND}: `radius`: {}", e.message())))?;
+            (radius, Some(Expr::new(text.clone())))
+        }
+        Some(_) => (
+            p.number("radius")?.ok_or_else(|| p.missing("radius"))?,
+            None,
+        ),
+    };
     let construction = p.bool("construction")?.unwrap_or(false);
-    let (circle, center) = change(session, COMMAND, "Add circle", id, |s| {
+    let (circle, center, held) = change(session, COMMAND, "Add circle", id, |s| {
         let center = center.place(s)?;
-        Ok((s.add_circle(center, radius, construction)?, center))
+        let circle = s.add_circle(center, radius, construction)?;
+        let held = match held {
+            Some(value) => Some(s.add_constraint(ConstraintKind::Radius {
+                curve: circle,
+                value,
+            })?),
+            None => None,
+        };
+        Ok((circle, center, held))
     })?;
+    let held: Vec<String> = held.iter().map(ToString::to_string).collect();
     sketch_result(
         session,
         id,
-        json!({ "entity": circle.to_string(), "center": center.to_string() }),
+        json!({ "entity": circle.to_string(), "center": center.to_string(), "constraints": held }),
+    )
+}
+
+fn sketch_rect(session: &mut Session, params: &Value) -> Run {
+    const COMMAND: &str = "sketch.rect";
+    let p = Params::new(COMMAND, params, &["sketch", "from", "to", "construction"])?;
+    let id = sketch_ref(session, &p, COMMAND)?;
+    let from = PointArg::required(session, &p, COMMAND, "from")?;
+    let to = PointArg::required(session, &p, COMMAND, "to")?;
+    let construction = p.bool("construction")?.unwrap_or(false);
+    let (points, lines, constraints) = change(session, COMMAND, "Add rectangle", id, |s| {
+        let (Some(a), Some(c)) = (from.drawn(s), to.drawn(s)) else {
+            return Err(SketchError::Invalid(
+                "a corner of a rectangle cannot be an image point yet; draw it with sketch.polyline".into(),
+            ));
+        };
+        let (width, height) = ((c.0 - a.0).abs(), (c.1 - a.1).abs());
+        // Drawn with no width or height, its sides would have no direction
+        // to keep horizontal or vertical.
+        if !(width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()) {
+            return Err(SketchError::Invalid(format!(
+                "the corners are drawn {width} apart along x and {height} along y; a rectangle needs both"
+            )));
+        }
+        let p1 = from.place(s)?;
+        let p3 = to.place(s)?;
+        if p1 == p3 {
+            return Err(SketchError::Invalid(
+                "`from` and `to` are the same point".into(),
+            ));
+        }
+        let p2 = s.add_point(c.0, a.1)?;
+        let p4 = s.add_point(a.0, c.1)?;
+        let points = [p1, p2, p3, p4];
+        let mut lines = Vec::with_capacity(4);
+        let mut constraints = Vec::with_capacity(4);
+        for (i, (start, end)) in [(p1, p2), (p2, p3), (p3, p4), (p4, p1)]
+            .into_iter()
+            .enumerate()
+        {
+            let line = s.add_line(start, end, construction)?;
+            let kind = if i % 2 == 0 {
+                ConstraintKind::Horizontal { a: line, b: None }
+            } else {
+                ConstraintKind::Vertical { a: line, b: None }
+            };
+            constraints.push(s.add_constraint(kind)?);
+            lines.push(line);
+        }
+        Ok((points, lines, constraints))
+    })?;
+    let constraints: Vec<String> = constraints.iter().map(ToString::to_string).collect();
+    sketch_result(
+        session,
+        id,
+        json!({ "points": ids(&points), "lines": ids(&lines), "constraints": constraints }),
     )
 }
 
@@ -539,9 +754,9 @@ fn sketch_arc(session: &mut Session, params: &Value) -> Run {
         &["sketch", "center", "start", "end", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let center = PointArg::required(&p, COMMAND, "center")?;
-    let start = PointArg::required(&p, COMMAND, "start")?;
-    let end = PointArg::required(&p, COMMAND, "end")?;
+    let center = PointArg::required(session, &p, COMMAND, "center")?;
+    let start = PointArg::required(session, &p, COMMAND, "start")?;
+    let end = PointArg::required(session, &p, COMMAND, "end")?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let (arc, points) = change(session, COMMAND, "Add arc", id, |s| {
         let points = [center.place(s)?, start.place(s)?, end.place(s)?];

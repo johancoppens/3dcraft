@@ -252,6 +252,7 @@ pub(crate) fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f6
 }
 
 fn points_param(
+    session: &Session,
     p: &Params,
     command: &'static str,
     key: &'static str,
@@ -267,7 +268,7 @@ fn points_param(
             }
             items
                 .iter()
-                .map(|item| PointArg::parse(command, key, item))
+                .map(|item| PointArg::parse(session, command, key, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Some)
         }
@@ -279,10 +280,10 @@ fn points_param(
 
 /// Where a point given to the command is: an existing point's stored
 /// position, or the coordinates given.
-fn position(sketch: &Sketch, point: PointArg) -> Result<(f64, f64), SketchError> {
+fn position(sketch: &Sketch, point: &PointArg) -> Result<(f64, f64), SketchError> {
     match point {
-        PointArg::Existing(id) => sketch.point(id),
-        PointArg::New(x, y) => Ok((x, y)),
+        PointArg::Existing(id) => sketch.point(*id),
+        PointArg::New(x, y, _) => Ok((*x, *y)),
         PointArg::Image(of, path) => invalid(format!(
             "{of}[{path}]: a spline on an image point is not supported yet"
         )),
@@ -308,8 +309,8 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         ],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let control = points_param(&p, COMMAND, "control")?;
-    let through = points_param(&p, COMMAND, "through")?;
+    let control = points_param(session, &p, COMMAND, "control")?;
+    let through = points_param(session, &p, COMMAND, "through")?;
     let (mut given, fitted) = match (control, through) {
         (Some(control), None) => (control, false),
         (None, Some(through)) => (through, true),
@@ -331,7 +332,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
     let closed = p.bool("closed")?.unwrap_or(false);
     let construction = p.bool("construction")?.unwrap_or(false);
     if closed {
-        let Some(first) = given.first().copied() else {
+        let Some(first) = given.first().cloned() else {
             return fail(format!("{COMMAND}: a closed spline needs points"));
         };
         given.push(first);
@@ -355,7 +356,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         // to pass through, ask the impossible).
         let places: Vec<(f64, f64)> = given
             .iter()
-            .map(|point| position(s, *point))
+            .map(|point| position(s, point))
             .collect::<Result<_, _>>()?;
         for (i, pair) in places.windows(2).enumerate() {
             if let [a, b] = pair
@@ -382,6 +383,13 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
                 } else if i == 0 || i == last {
                     // The ends are shared as given.
                     point.place(s)?
+                } else if matches!(point, PointArg::New(_, _, held) if *held != Default::default()) {
+                    // The point made is a control point, not the point
+                    // given: an expression could not hold it.
+                    return invalid(format!(
+                        "point {} of `through` has a coordinate written as an expression; a point the spline passes through between its ends is fitted, not held: give it as numbers, or give `control` points",
+                        i + 1
+                    ));
                 } else {
                     s.add_point(at.0, at.1)?
                 });

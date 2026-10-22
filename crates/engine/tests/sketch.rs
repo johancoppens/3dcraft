@@ -699,7 +699,7 @@ fn bad_requests_are_refused_with_a_reason_and_change_nothing() {
         ),
         (
             "sketch.point",
-            json!({"sketch": "Profile", "at": [0, "1 mm"]}),
+            json!({"sketch": "Profile", "at": [0, true]}),
             "two finite numbers",
         ),
         (
@@ -744,7 +744,7 @@ fn bad_requests_are_refused_with_a_reason_and_change_nothing() {
         ),
         (
             "sketch.circle",
-            json!({"sketch": "Profile", "center": [0, 0], "radius": "2 mm"}),
+            json!({"sketch": "Profile", "center": [0, 0], "radius": [2]}),
             "finite number",
         ),
         (

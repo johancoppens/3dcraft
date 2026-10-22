@@ -48,7 +48,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 type Xy = (f64, f64);
 
 /// Where a segment ends.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum End {
     /// At the path's own start point.
     Start,
@@ -56,7 +56,7 @@ enum End {
 }
 
 /// How a segment gets from the corner before it to its end.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Shape {
     Line,
     Center {
@@ -73,7 +73,7 @@ enum Shape {
     Tangent,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Segment {
     end: End,
     shape: Shape,
@@ -120,7 +120,7 @@ fn segment_bool(
     }
 }
 
-fn parse_segment(index: usize, value: &Value) -> Result<Segment, CommandError> {
+fn parse_segment(session: &Session, index: usize, value: &Value) -> Result<Segment, CommandError> {
     let at = format!("{COMMAND}: segments[{index}]");
     let Value::Object(map) = value else {
         return fail(format!(
@@ -153,6 +153,7 @@ fn parse_segment(index: usize, value: &Value) -> Result<Segment, CommandError> {
     let end = match end {
         Value::String(word) if word == "start" => End::Start,
         Value::Array(_) | Value::Number(_) | Value::String(_) => End::Point(PointArg::parse(
+            session,
             COMMAND,
             &format!("segments[{index}].{key}"),
             end,
@@ -189,7 +190,12 @@ fn parse_segment(index: usize, value: &Value) -> Result<Segment, CommandError> {
 
     let shape = match (center, through, radius) {
         (Some(center), None, None) => Shape::Center {
-            center: PointArg::parse(COMMAND, &format!("segments[{index}].center"), center)?,
+            center: PointArg::parse(
+                session,
+                COMMAND,
+                &format!("segments[{index}].center"),
+                center,
+            )?,
             clockwise: clockwise.unwrap_or(false),
         },
         (None, Some(through), None) => match coordinates(through) {
@@ -460,22 +466,23 @@ fn draw_segment(
 ) -> Result<Step, SketchError> {
     let (from, from_at) = from;
     let tolerance = path.tolerance;
-    let (end, snapped) = match (segment.end, segment.shape) {
+    let (end, snapped) = match (&segment.end, &segment.shape) {
         (End::Start, _) => (start, None),
         // An end given by coordinates is a new point of this arc alone, so
         // it can be put on the circle without moving anything else.
-        (End::Point(PointArg::New(x, y)), Shape::Center { center, .. }) => {
-            let center_at = match center {
-                PointArg::New(cx, cy) => Some((cx, cy)),
-                PointArg::Existing(id) => s.point(id).ok(),
-                PointArg::Image(..) => None,
-            };
-            match center_at.and_then(|c| snap(c, from_at, (x, y), tolerance)) {
+        (End::Point(PointArg::New(x, y, held)), Shape::Center { center, .. }) => {
+            let (x, y) = (*x, *y);
+            let center_at = center.drawn(s);
+            let (point, snapped) = match center_at.and_then(|c| snap(c, from_at, (x, y), tolerance))
+            {
                 Some(snap) => (s.add_point(snap.end.0, snap.end.1)?, Some(snap)),
                 None => (s.add_point(x, y)?, None),
-            }
+            };
+            held.pin(s, point)?;
+            (point, snapped)
         }
         (End::Point(PointArg::Image(of, path)), _) => {
+            let (of, path) = (*of, *path);
             return invalid(format!(
                 "{of}[{path}]: an image point as the end of a path segment is not supported yet; draw that segment with sketch.line"
             ));
@@ -492,7 +499,7 @@ fn draw_segment(
             "its ends are too far apart to compute"
         });
     }
-    let (center, ccw) = match segment.shape {
+    let (center, ccw) = match segment.shape.clone() {
         Shape::Line => {
             let entity = s.add_line(from, end, path.construction)?;
             let Some(arrives) = unit(chord) else {
@@ -531,7 +538,7 @@ fn draw_segment(
         }
     };
     let center_at = s.point(center)?;
-    let warning = match (segment.shape, snapped) {
+    let warning = match (segment.shape.clone(), snapped) {
         (Shape::Center { .. }, None) => off_circle(center_at, from_at, end_at, tolerance),
         _ => None,
     };
@@ -663,7 +670,7 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
         &["sketch", "start", "segments", "closed", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let start = PointArg::required(&p, COMMAND, "start")?;
+    let start = PointArg::required(session, &p, COMMAND, "start")?;
     let Some(Value::Array(items)) = p.get("segments") else {
         return match p.get("segments") {
             None => Err(p.missing("segments")),
@@ -683,7 +690,7 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
     }
     let mut segments = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        segments.push(parse_segment(index, item)?);
+        segments.push(parse_segment(session, index, item)?);
     }
     let tolerance = session.document()?.history.current().tolerance.linear;
     let path = Path {
