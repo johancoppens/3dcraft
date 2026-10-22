@@ -1579,6 +1579,22 @@ fn the_window_icon_decodes() {
     assert_eq!(icon.rgba[3], 0);
 }
 
+/// The window opens decorated by the system, opaque and resizable, with
+/// the title, app id and icon of the installers.
+#[test]
+fn the_window_has_system_decorations() {
+    let viewport = app::viewport(&Options::default(), "untitled – 3DCraft");
+    assert_eq!(viewport.decorations, Some(true));
+    assert_eq!(viewport.transparent, Some(false));
+    assert_eq!(viewport.resizable, Some(true));
+    assert_ne!(viewport.fullsize_content_view, Some(true));
+    assert_ne!(viewport.titlebar_shown, Some(false));
+    assert_ne!(viewport.title_shown, Some(false));
+    assert_eq!(viewport.title.as_deref(), Some("untitled – 3DCraft"));
+    assert_eq!(viewport.app_id.as_deref(), Some(app::APP_ID));
+    assert!(viewport.icon.is_some());
+}
+
 // The window with an engine thread: commands run there, and the thread
 // that draws keeps turning.
 

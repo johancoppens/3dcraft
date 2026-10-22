@@ -20,7 +20,11 @@ log.workspace = true
 png.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
-winit.workspace = true
+# Window decorations on Wayland: GNOME draws none for a window, so winit
+# draws the title bar and borders itself (sctk-adwaita, the GNOME look;
+# only built for Wayland targets). eframe's default features would bring
+# it, but the workspace turns those off (docs/development.md, Window).
+winit = { workspace = true, features = ["wayland-csd-adwaita"] }
 
 [dev-dependencies]
 png.workspace = true

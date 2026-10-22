@@ -22,6 +22,10 @@ pub const APP_ID: &str = "io.github.johancoppens.craft3d";
 /// The sizes of the PNG icons in `packaging/icons` (`craft3d-<size>.png`).
 const ICON_SIZES: [u32; 8] = [16, 32, 48, 64, 128, 256, 512, 1024];
 
+/// The PNG sizes in the macOS `.icns` and the Windows `.ico`.
+const ICNS_SIZES: [u32; 7] = [16, 32, 64, 128, 256, 512, 1024];
+const ICO_SIZES: [u32; 5] = [16, 32, 48, 64, 256];
+
 /// What the command line asked for.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
@@ -475,7 +479,7 @@ impl Packer {
             plist.replace("@VERSION@", &self.version).as_bytes(),
         )?;
         write(&contents.join("PkgInfo"), b"APPL????")?;
-        let icns = icns(&self.icon_pngs(&[16, 32, 64, 128, 256, 512, 1024])?)?;
+        let icns = icns(&self.icon_pngs(&ICNS_SIZES)?)?;
         write(&contents.join("Resources").join("craft3d.icns"), &icns)?;
         copy(
             &self.repo.join("LICENSE"),
@@ -542,7 +546,7 @@ impl Packer {
             copy(&exe, &dir.join(file_name), true)?;
         }
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
-        let ico = ico(&self.icon_pngs(&[16, 32, 48, 64, 256])?)?;
+        let ico = ico(&self.icon_pngs(&ICO_SIZES)?)?;
         write(&dir.join("craft3d.ico"), &ico)?;
         Ok(dir)
     }
@@ -814,6 +818,27 @@ mod tests {
         assert_eq!(at, icns.len());
         assert_eq!(kinds, ["icp4", "icp5", "ic11", "ic10"]);
         assert!(super::icns(&[fake_png(20)]).is_err());
+    }
+
+    /// The icons in the repository make the `.ico` and `.icns` the
+    /// packages carry: every PNG they take is there, square and in size.
+    #[test]
+    fn the_repository_icons_make_ico_and_icns() {
+        let root = repo_root().join("packaging/icons");
+        let pngs = |sizes: &[u32]| -> Vec<Vec<u8>> {
+            sizes
+                .iter()
+                .map(|n| std::fs::read(root.join(format!("craft3d-{n}.png"))).unwrap())
+                .collect()
+        };
+        let ico = ico(&pngs(&ICO_SIZES)).unwrap();
+        assert_eq!(usize::from(ico[4]), ICO_SIZES.len());
+        let icns = icns(&pngs(&ICNS_SIZES)).unwrap();
+        assert_eq!(&icns[..4], b"icns");
+        assert_eq!(
+            u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize,
+            icns.len()
+        );
     }
 
     /// The files the packages carry are in the repository and agree with
