@@ -207,7 +207,7 @@ Two short forms save an agent a round trip (2026-10-22, from the R1 acceptance):
 | `doc_render_preview` | PNG image content; `view`, `max_side` (default 1024, maximum 2048), `mode` (`shaded`, `shadedEdges`, `wireframe`, `ids`) |
 | `command_list` | `filter`, `enabled_only` |
 | `command_run` | `id`, `params`, `wait` |
-| `command_batch` | ordered `steps`, `stop_on_error` (default true), `terse` (default false: only the failures, the features that were added but failed (`featuresFailed`) and the last result come back); not atomic |
+| `command_batch` | ordered `steps`, `stop_on_error` (default true), `terse` (default false: only the failures, the features that a step left failing and that still fail at the end (`featuresFailed`) and the last result come back); not atomic |
 | `jobs_list`, `jobs_cancel` | Background jobs |
 | bridge only: `ui_inspect`, `ui_screenshot`, `ui_set`, `control_call` | Need a running desktop app |
 

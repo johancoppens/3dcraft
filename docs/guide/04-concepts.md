@@ -27,9 +27,11 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
 - `history.rollback {"feature": "Bored"}` rebuilds only up to that feature, and new features go in right
   after it: a way to insert something early in the history. `{"feature": null}` removes the marker. A
   feature inserted there that takes a body (a fillet, a chamfer, a boolean) takes it from the features
-  after the marker that were made from that body: when the marker is removed they fail with *the body of
-  `Bored` already went into `Bevel`*, and the message gives the `feature.edit` that points them at the new
-  feature (`{"feature": "Drilled", "target": "Bevel"}`).
+  after the marker that name that body (a boolean's `target` or `tool`, the `source` of a transform, mirror,
+  pattern or shell): when the marker is removed they fail with *the body of `Bored` already went into
+  `Bevel`*, and the message gives the `feature.edit` that points them at the new feature
+  (`{"feature": "Drilled", "target": "Bevel"}`). A fillet, a chamfer or a face operation after the marker
+  names faces, not a body, and follows them into the new body by itself; there is nothing to re-point.
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units
@@ -49,11 +51,14 @@ Every length, angle and count may be an **expression** in the document's variabl
   expected. Units mix freely (`1 in + 3 mm` is 28.4 mm). An expression that cannot be worked out
   (`width + 3 deg`, an unknown name) is kept, but the variable *fails*: its result and `document.check`
   carry the error, and what uses it fails too until it is fixed. A variable cannot be defined from itself:
-  "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused).
+  "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused). Only
+  that direct self-reference is refused: a cycle through other variables (`a` = `b + 1 mm`, then `b` =
+  `a + 1 mm`) is kept, and every variable on it fails with *circular definition* until one is changed.
 - **A unit belongs to the number just before it.** `1/16 in` is 1 / (16 in), an inverse length, and
   `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit after a parenthesis or a
-  name is refused (`(pi / 4) rad`); multiply by one instead (`(pi / 4) * 1 rad`). The result of
-  `variable.set` warns of an inverse length or angle.
+  name is refused (`(pi / 4) rad`); multiply by one instead (`(pi / 4) * 1 rad`). When a variable comes
+  out as an inverse length or angle because a `/` is followed by a number with a unit, its result has a
+  `warning`; an inverse written as meant (`1 / (2 mm)`, `10 mm / (360 deg)`) has none.
 - **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's) is
   in degrees. `pi` is a plain number, so `2 * pi / n` there is a few degrees, not a turn: write
   `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`. An angle

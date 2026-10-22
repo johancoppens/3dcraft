@@ -963,7 +963,7 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
             "{name}: `{}` is {}, but a length is needed{}",
             expr.source(),
             quantity.dimension.described(),
-            quantity.dimension.unit_hint()
+            quantity.dimension.unit_hint(expr.source())
         ))
     }
 }
@@ -1032,7 +1032,7 @@ fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String
             "{name}: `{}` is {}, but a plain number is needed{}",
             expr.source(),
             quantity.dimension.described(),
-            quantity.dimension.unit_hint()
+            quantity.dimension.unit_hint(expr.source())
         ))
     }
 }
@@ -1054,7 +1054,7 @@ fn angle(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Res
             "{name}: `{}` is {}, but an angle is needed{}",
             expr.source(),
             quantity.dimension.described(),
-            quantity.dimension.unit_hint()
+            quantity.dimension.unit_hint(expr.source())
         ))
     }
 }

@@ -99,14 +99,14 @@ impl Typed<'_> {
                 return Err(failed(format!(
                     "`{shown}` is {}, but a length is needed{}",
                     quantity.dimension.described(),
-                    quantity.dimension.unit_hint()
+                    quantity.dimension.unit_hint(source)
                 )));
             }
             TypedKind::Number => {
                 return Err(failed(format!(
                     "`{shown}` is {}, but a plain number is needed{}",
                     quantity.dimension.described(),
-                    quantity.dimension.unit_hint()
+                    quantity.dimension.unit_hint(source)
                 )));
             }
         };

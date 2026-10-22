@@ -33,7 +33,8 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
 - **Something made from a suppressed feature**: switch it on (`feature.suppress {"suppressed": false}`).
 - ***The body of `Bossed` already went into `Bevel`***: another feature took that body first, most often
   one inserted at the rollback marker. Build on the newer feature: the message gives the `feature.edit`
-  (`{"feature": "Drilled", "target": "Bevel"}`).
+  (`{"feature": "Drilled", "target": "Bevel"}` for a boolean; for a fillet, a chamfer or a face operation
+  its `edges` or `faces` named by faces of the newer body).
 - **Not built yet**: some cases are refused as *not supported* (a fillet of a radius that would make a
   torus reach its own axis, a shell at a vertex where four faces meet, a boolean the kernel cannot settle
   within the tolerance). The message says which faces; change the design around it (a slightly different

@@ -6,6 +6,7 @@ use crate::MAX_BATCH_STEPS;
 use crate::fields::Fields;
 use craft3d_engine::Session;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// The registry as agents read it: every command with its params notation
 /// and whether it can run right now.
@@ -96,7 +97,16 @@ pub(crate) struct BatchOutcome {
 /// `terse` is for long batches, where the results of every step would be
 /// a lot to send and to read: the report then holds the failures only,
 /// each with the number of its step, and the result of the last step that
-/// succeeded.
+/// succeeded. It also holds `featuresFailed`, when there are any: the
+/// features that fail at the end of the batch and that a step of it
+/// reported failing (a feature it added or edited that could not be
+/// built, or one its edit broke, listed under that step's `failed`), each
+/// with the last such step. A failure a later step repaired is not in
+/// it; neither is a feature that failed before the batch and that no step
+/// touched, nor a failed assertion (`assert.list` and `document.check` say
+/// those). A step that changes the active document (`file.new`,
+/// `file.open`, `file.activate`, `file.close`, `recovery.open`) starts the
+/// collection again.
 pub(crate) fn run_batch(
     session: &mut Session,
     steps: &[Step],
@@ -105,7 +115,8 @@ pub(crate) fn run_batch(
 ) -> BatchOutcome {
     let mut results = Vec::with_capacity(if terse { 0 } else { steps.len() });
     let mut errors = Vec::new();
-    let mut features_failed = Vec::new();
+    // Feature id -> the last step that reported it failing.
+    let mut reported: BTreeMap<String, usize> = BTreeMap::new();
     let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
     for (index, step) in steps.iter().enumerate() {
@@ -113,16 +124,14 @@ pub(crate) fn run_batch(
             Ok(result) => {
                 completed = completed.saturating_add(1);
                 if terse {
-                    // A feature that was added but could not be built is no
-                    // error of the command; without this it would be seen
-                    // only when it is the last step.
-                    if result.get("status").and_then(Value::as_str) == Some("failed") {
-                        features_failed.push(json!({
-                            "step": index,
-                            "id": result.get("id"),
-                            "name": result.get("name"),
-                            "error": result.get("error"),
-                        }));
+                    // A feature that could not be built is no error of the
+                    // command; without this it would be seen only when it
+                    // is the last step.
+                    if SWITCHES_DOCUMENT.contains(&step.command) {
+                        reported.clear();
+                    }
+                    for id in reported_failing(&result) {
+                        reported.insert(id, index);
                     }
                     last = json!({ "step": index, "result": result });
                 } else {
@@ -145,6 +154,23 @@ pub(crate) fn run_batch(
     let report = if terse {
         let mut report =
             json!({ "completed": completed, "failed": failed, "errors": errors, "last": last });
+        // What still fails at the end, of what the steps reported.
+        let features_failed: Vec<Value> = if reported.is_empty() {
+            Vec::new()
+        } else {
+            session
+                .failed_features()
+                .into_iter()
+                .filter_map(|mut entry| {
+                    let id = entry.get("id").and_then(Value::as_str)?.to_string();
+                    let step = *reported.get(&id)?;
+                    if let Some(map) = entry.as_object_mut() {
+                        map.insert("step".into(), step.into());
+                    }
+                    Some(entry)
+                })
+                .collect()
+        };
         if let (false, Some(map)) = (features_failed.is_empty(), report.as_object_mut()) {
             map.insert("featuresFailed".into(), features_failed.into());
         }
@@ -153,6 +179,49 @@ pub(crate) fn run_batch(
         json!({ "completed": completed, "failed": failed, "results": results })
     };
     BatchOutcome { failed, report }
+}
+
+/// Commands after which the active document may be another one.
+const SWITCHES_DOCUMENT: &[&str] = &[
+    "file.new",
+    "file.open",
+    "file.activate",
+    "file.close",
+    "recovery.open",
+];
+
+/// The ids of the features a step's result reports failing: the feature
+/// the result is about when its status is `failed` (only a feature's
+/// result has an id `F<n>`; an assertion's has none), the sweep an
+/// extrusion with `cut` made, and the features under `failed`.
+fn reported_failing(result: &Value) -> Vec<String> {
+    let is_feature_id = |id: &str| {
+        id.strip_prefix('F')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let mut ids = Vec::new();
+    if result.get("status").and_then(Value::as_str) == Some("failed")
+        && let Some(id) = result.get("id").and_then(Value::as_str)
+        && is_feature_id(id)
+    {
+        ids.push(id.to_string());
+    }
+    if let Some(sweep) = result.get("sweep") {
+        ids.extend(reported_failing(sweep));
+    }
+    for entry in result
+        .get("failed")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = entry.get("id").and_then(Value::as_str)
+            && is_feature_id(id)
+        {
+            ids.push(id.to_string());
+        }
+    }
+    ids
 }
 
 /// What a caught panic said, for the error that replaces it.

@@ -424,6 +424,21 @@ impl Session {
         self.documents.get(self.active).is_some()
     }
 
+    /// The features of the active document that fail now, each as the
+    /// entries of an edit's `failed` (`{feature, id, error, causedBy?}`),
+    /// in history order; empty without a document. Regenerates when the
+    /// document changed since it was last regenerated.
+    pub fn failed_features(&mut self) -> Vec<Value> {
+        let mut out = Value::Object(serde_json::Map::new());
+        if !self.has_document() || commands::add_failed(self, &[], None, &mut out).is_err() {
+            return Vec::new();
+        }
+        out.get("failed")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Why `spec` cannot run right now, if it cannot.
     pub fn disabled_reason(&self, spec: &CommandSpec) -> Option<&'static str> {
         (spec.needs_document && !self.has_document())

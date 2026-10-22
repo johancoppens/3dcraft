@@ -66,6 +66,11 @@ fn plate(s: &mut craft3d_engine::Session) {
         "feature.boolean",
         json!({"op": "subtract", "target": "Bossed", "tool": "HoleTool", "name": "Drilled"}),
     );
+    run(
+        s,
+        "feature.fillet",
+        json!({"edges": [["F1:face(2)", "F1:face(4)"]], "radius": "3 mm", "name": "Round"}),
+    );
 }
 
 #[test]
@@ -87,13 +92,31 @@ fn a_feature_inserted_at_the_marker_says_how_to_rethread_the_ones_after_it() {
         "{error}"
     );
     assert!(!error.contains("keep"), "{error}");
-    // Doing what it says repairs the part.
+    // The fillet after the marker names faces, not a body: it follows them
+    // into the chamfer's body by itself and is not among the failures.
+    assert!(
+        rolled["failed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["feature"] != "Round"),
+        "{rolled}"
+    );
+    // Doing what it says repairs the part, the fillet with it.
     run(
         &mut s,
         "feature.edit",
         json!({"feature": "Drilled", "target": "Bevel"}),
     );
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+    let round = run(&mut s, "document.inspect", json!({"measures": false}))["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Round")
+        .cloned()
+        .unwrap();
+    assert_eq!(round["status"], "ok", "{round}");
 
     // A transform that took the body: `keep` is offered.
     let mut s = session();
@@ -188,7 +211,7 @@ fn a_unit_in_the_wrong_place_or_spelled_otherwise_says_what_to_write() {
     let block = run(
         &mut s,
         "feature.block",
-        json!({"size": ["v", 10, 10], "name": "Thin"}),
+        json!({"size": ["1/16 in", 10, 10], "name": "Thin"}),
     );
     let error = block["error"].as_str().unwrap();
     assert!(
@@ -196,7 +219,30 @@ fn a_unit_in_the_wrong_place_or_spelled_otherwise_says_what_to_write() {
         "{error}"
     );
     assert!(error.contains("write `1 in / 16`"), "{error}");
+    // Inverses written as meant are not warned of, and their refusal
+    // where a length is needed gives no such advice.
+    for meant in ["10 mm / (360 deg)", "1 / (2 mm)"] {
+        let result = set(&mut s, meant);
+        assert!(result.get("warning").is_none(), "{meant}: {result}");
+    }
+    let inspected = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(
+        inspected["variables"][0].get("warning").is_none(),
+        "{inspected}"
+    );
+    let thin = run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["v", 10, 10], "name": "Thin2"}),
+    );
+    let error = thin["error"].as_str().unwrap();
+    assert!(
+        error.contains("is a length^-1, but a length is needed"),
+        "{error}"
+    );
+    assert!(!error.contains("belongs to the number"), "{error}");
     // Written as meant: 1.5875 mm, built.
+    // Written as meant, `v` builds Thin2 (Thin, written inline, still fails).
     set(&mut s, "1 in / 16");
     let measured = run(&mut s, "document.measure", json!({}));
     let volume = measured["volume"].as_f64().unwrap();
@@ -252,6 +298,40 @@ fn a_variable_defined_from_itself_is_refused_with_its_current_value() {
         .as_f64()
         .unwrap();
     assert!((volume - 200.0).abs() < 1e-9, "{volume}");
+    // A cycle through another variable is kept: both fail with a
+    // circular definition, until one is changed.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "a", "expr": "b + 1 mm"}),
+    );
+    let b = run(
+        &mut s,
+        "variable.set",
+        json!({"name": "b", "expr": "a + 1 mm"}),
+    );
+    assert!(
+        b["error"].as_str().unwrap().contains("circular definition"),
+        "{b}"
+    );
+    let inspected = run(&mut s, "document.inspect", json!({"measures": false}));
+    for name in ["a", "b"] {
+        let variable = inspected["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == name)
+            .unwrap();
+        assert!(
+            variable["error"]
+                .as_str()
+                .unwrap()
+                .contains("circular definition"),
+            "{variable}"
+        );
+    }
+    let b = run(&mut s, "variable.set", json!({"name": "b", "expr": "2 mm"}));
+    assert_eq!(b["value"], 2.0, "{b}");
 }
 
 #[test]

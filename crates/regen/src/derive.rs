@@ -97,11 +97,7 @@ fn went_into(doc: &Document, id: FeatureId, role: &str, taker: FeatureId) -> Str
     let mut text = format!(
         "{role}: the body of `{name}` already went into `{taker_name}` ({taker}); build on `{taker_name}` instead"
     );
-    if matches!(role, "target" | "tool" | "source") {
-        text.push_str(&format!(
-            " (feature.edit with \"{role}\": \"{taker_name}\")"
-        ));
-    }
+    text.push_str(&repair(role, &taker_name));
     let keep = match taker_feature.map(|f| &f.kind) {
         Some(FeatureKind::Transform(_) | FeatureKind::Mirror(_)) => Some("keep"),
         Some(FeatureKind::Boolean(b)) if b.tool == id => Some("keepTool"),
@@ -111,6 +107,57 @@ fn went_into(doc: &Document, id: FeatureId, role: &str, taker: FeatureId) -> Str
         text.push_str(&format!(", or give `{taker_name}` {keep}: true"));
     }
     text
+}
+
+/// The `feature.edit` that builds the feature on `taker` instead, for the
+/// parameter `role` the body was read as: a body parameter is given the
+/// taker; a fillet, a chamfer or a face operation has none (it is made
+/// from the body of the faces it names), so its `edges` or `faces` are
+/// named again by faces of the taker. Empty for any other role.
+fn repair(role: &str, taker: &str) -> String {
+    if matches!(role, "target" | "tool" | "source") {
+        format!(" (feature.edit with \"{role}\": \"{taker}\")")
+    } else if let Some(param) = ["edges", "faces"]
+        .into_iter()
+        .find(|param| role.starts_with(param))
+    {
+        format!(
+            " (feature.edit with \"{param}\" named by faces of `{taker}`: document.inspect lists them under faceNames)"
+        )
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::repair;
+
+    #[test]
+    fn the_repair_names_a_parameter_the_feature_has() {
+        assert_eq!(
+            repair("target", "Bevel"),
+            " (feature.edit with \"target\": \"Bevel\")"
+        );
+        assert_eq!(
+            repair("source", "Moved"),
+            " (feature.edit with \"source\": \"Moved\")"
+        );
+        // A fillet or chamfer (`edges`) and a face operation (`faces`) have
+        // no body parameter: they are pointed at it through their names.
+        for (role, param) in [("edges", "edges"), ("faces.0", "faces")] {
+            let text = repair(role, "Bevel");
+            assert!(
+                text.contains(&format!("\"{param}\" named by faces of `Bevel`")),
+                "{text}"
+            );
+            assert!(
+                !text.contains("target") && !text.contains("source"),
+                "{text}"
+            );
+        }
+        assert_eq!(repair("sections.1", "Bevel"), "");
+    }
 }
 
 pub(crate) fn lengths(

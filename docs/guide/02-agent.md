@@ -146,8 +146,10 @@ Every command answers with JSON. The parts worth knowing:
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
   26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4. A
-  `command_batch` with `terse` lists such features under `featuresFailed` (each with its step); they are
-  not counted in its `failed`, which counts commands that were refused.
+  `command_batch` with `terse` lists under `featuresFailed` the features that still fail when the batch
+  ends and that one of its steps added, edited or broke (each with that step and its `causedBy`); they are
+  not counted in its `failed`, which counts commands that were refused. A failed assertion is not listed
+  there: read `assert.list` or `document.check`.
 - **`failed`** in the result of `variable.set` and of the edits that can break other features
   (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`): the features
   the change made fail, each `{feature, id, error}` (and `causedBy`), left out when there are none. "Make
