@@ -61,7 +61,7 @@ pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
-pub use follow::{follow_face, newest_body, short_face_name};
+pub use follow::{follow_face, follow_face_to_first, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{

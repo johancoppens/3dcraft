@@ -42,6 +42,7 @@ mod scene;
 mod section;
 mod select_cmds;
 mod selection;
+mod set_cmds;
 mod sheet_cmds;
 mod sketch_cmds;
 mod sketch_path_cmds;
@@ -349,6 +350,7 @@ impl Session {
                 interference_cmds::SPECS,
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
+                set_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
             ]

@@ -55,6 +55,19 @@ pub struct Document {
     /// version 26).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faces: Vec<FaceProperties>,
+    /// Named sets: a query of `select.query` kept under a name, as JSON
+    /// text, in the order they were defined. Absent when there are none
+    /// (and in files before version 27).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sets: Vec<NamedSet>,
+}
+
+/// A query kept under a name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedSet {
+    pub name: String,
+    pub query: String,
 }
 
 /// What one face of the body of a feature looks like.

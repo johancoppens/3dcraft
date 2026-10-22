@@ -12,7 +12,7 @@
 
 use crate::Session;
 use craft3d_doc::{Document, FeatureId, FeatureKind, PersistentName};
-use craft3d_regen::{Names, Regen};
+use craft3d_regen::{Names, Regen, Status};
 use craft3d_topo::Body;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -162,15 +162,55 @@ fn next_serial() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// One item of a selection as it is kept: as it was selected (its seed),
+/// and what it is now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Entry {
+    /// The item as it was selected: what it is found again from at every
+    /// change of the document, so that it follows its entity into later
+    /// features and comes back to it when they go.
+    seed: SelectionItem,
+    /// What it is now; `None` while it is hidden.
+    now: Option<SelectionItem>,
+    /// Why it is hidden: its feature is suppressed, rolled back or failed,
+    /// so it has no body now but will again.
+    hidden: Option<String>,
+}
+
+impl Entry {
+    fn new(item: SelectionItem) -> Self {
+        Self {
+            seed: item.clone(),
+            now: Some(item),
+            hidden: None,
+        }
+    }
+
+    /// Whether `item` means this entry: what it is now, or what it was
+    /// selected as.
+    fn means(&self, item: &SelectionItem) -> bool {
+        self.now.as_ref().is_some_and(|now| now.same(item)) || self.seed.same(item)
+    }
+}
+
 /// The selection of one open document.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Selection {
-    items: Vec<SelectionItem>,
+    entries: Vec<Entry>,
     serial: u64,
     /// The names that dropped out at the last check, and why.
     dropped: Vec<String>,
     /// The revision of the document the items were last checked against.
     checked: Option<u64>,
+}
+
+/// An item that is selected but hidden for now ([`SelectionView::hidden`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenItem {
+    /// The item as it was selected.
+    pub item: SelectionItem,
+    /// Why it is hidden: "`Boss` is suppressed".
+    pub why: String,
 }
 
 /// The selection as it is now ([`Session::selection`]).
@@ -182,6 +222,10 @@ pub struct SelectionView {
     /// What dropped out because it no longer exists, since the selection
     /// was last set: one line each.
     pub dropped: Vec<String>,
+    /// What is selected but has no body for now (its feature is
+    /// suppressed, rolled back or failed): it comes back, in its place,
+    /// when the feature does.
+    pub hidden: Vec<HiddenItem>,
 }
 
 impl SelectionView {
@@ -192,6 +236,13 @@ impl SelectionView {
             "count": self.items.len(),
             "summary": summary(&self.items),
             "dropped": self.dropped,
+            "hidden": self.hidden.iter().map(|h| {
+                let mut entry = h.item.json();
+                if let Some(map) = entry.as_object_mut() {
+                    map.insert("why".into(), h.why.clone().into());
+                }
+                entry
+            }).collect::<Vec<_>>(),
         })
     }
 }
@@ -223,24 +274,39 @@ impl SelectMode {
 
 impl Selection {
     /// Changes the items by `mode`; the serial moves when they changed.
-    /// Returns how many were added and how many removed.
+    /// Returns how many were added and how many removed. An item that
+    /// means an entry already kept (what it is now, or what it was
+    /// selected as) is that entry: it keeps its seed.
     pub(crate) fn apply(&mut self, items: Vec<SelectionItem>, mode: SelectMode) -> (usize, usize) {
-        let before = self.items.clone();
+        let before = self.entries.clone();
         match mode {
-            SelectMode::Clear => self.items.clear(),
+            SelectMode::Clear => self.entries.clear(),
             SelectMode::Replace => {
-                self.items.clear();
-                self.add(items);
+                let old = std::mem::take(&mut self.entries);
+                for item in items {
+                    if self.entries.len() >= MAX_SELECTION {
+                        break;
+                    }
+                    if self.entries.iter().any(|kept| kept.means(&item)) {
+                        continue;
+                    }
+                    let entry = old
+                        .iter()
+                        .find(|kept| kept.means(&item))
+                        .cloned()
+                        .unwrap_or_else(|| Entry::new(item));
+                    self.entries.push(entry);
+                }
             }
             SelectMode::Add => self.add(items),
             SelectMode::Remove => self
-                .items
-                .retain(|kept| !items.iter().any(|i| i.same(kept))),
+                .entries
+                .retain(|kept| !items.iter().any(|i| kept.means(i))),
             SelectMode::Toggle => {
                 for item in items {
-                    match self.items.iter().position(|kept| kept.same(&item)) {
+                    match self.entries.iter().position(|kept| kept.means(&item)) {
                         Some(at) => {
-                            self.items.remove(at);
+                            self.entries.remove(at);
                         }
                         None => self.add(vec![item]),
                     }
@@ -248,16 +314,16 @@ impl Selection {
             }
         }
         let added = self
-            .items
+            .entries
             .iter()
-            .filter(|i| !before.iter().any(|b| b.same(i)))
+            .filter(|e| !before.iter().any(|b| b.seed.same(&e.seed)))
             .count();
         let removed = before
             .iter()
-            .filter(|b| !self.items.iter().any(|i| i.same(b)))
+            .filter(|b| !self.entries.iter().any(|e| e.seed.same(&b.seed)))
             .count();
         // A new choice: what dropped out of the old one is old news.
-        if self.items != before || !self.dropped.is_empty() {
+        if self.entries != before || !self.dropped.is_empty() {
             self.serial = next_serial();
         }
         self.dropped.clear();
@@ -266,59 +332,99 @@ impl Selection {
 
     fn add(&mut self, items: Vec<SelectionItem>) {
         for item in items {
-            if self.items.len() >= MAX_SELECTION {
+            if self.entries.len() >= MAX_SELECTION {
                 break;
             }
-            if !self.items.iter().any(|kept| kept.same(&item)) {
-                self.items.push(item);
+            if !self.entries.iter().any(|kept| kept.means(&item)) {
+                self.entries.push(Entry::new(item));
             }
         }
     }
 
     /// Checks every item against `regen` of revision `revision` (once per
-    /// revision): what no longer exists drops out and is said in
+    /// revision), from what it was selected as ([`Resolver::follow`]): an
+    /// entity whose body went into a later feature is followed to its
+    /// image there, a renamed feature's item takes its new name, what is
+    /// hidden for now (its feature suppressed, rolled back or failed) is
+    /// kept, and what no longer exists drops out and is said in
     /// `dropped`, which holds what dropped out at the last change of the
-    /// document (an undo that follows clears it); a renamed feature's
-    /// item takes its new name. Items are found again by their feature's
-    /// id, never by its name, so a selection cannot move to another
-    /// feature that took the name (rule 4).
+    /// document (an undo that follows clears it). Items are found again
+    /// by their feature's id, never by its name, so a selection cannot
+    /// move to another feature that took the name (rule 4).
     pub(crate) fn check(&mut self, doc: &Document, regen: &Regen, revision: u64) {
         if self.checked == Some(revision) {
             return;
         }
         self.checked = Some(revision);
-        let mut kept = Vec::with_capacity(self.items.len());
+        let mut kept = Vec::with_capacity(self.entries.len());
         let mut dropped = Vec::new();
-        if !self.items.is_empty() {
+        if !self.entries.is_empty() {
             let mut resolver = Resolver::new(doc, regen);
-            for item in &self.items {
-                match resolver.find_again(item) {
-                    Ok(found) => kept.push(found.item),
-                    Err(why) => {
-                        dropped.push(format!("{} {}: {why}", item.kind.name(), item.name));
+            for entry in &self.entries {
+                match resolver.follow(&entry.seed) {
+                    Fate::Found(now) => kept.push(Entry {
+                        seed: entry.seed.clone(),
+                        now: Some(now),
+                        hidden: None,
+                    }),
+                    Fate::Hidden(why) => kept.push(Entry {
+                        seed: entry.seed.clone(),
+                        now: None,
+                        hidden: Some(why),
+                    }),
+                    Fate::Gone(why) => {
+                        let shown = entry.now.as_ref().unwrap_or(&entry.seed);
+                        dropped.push(format!("{} {}: {why}", shown.kind.name(), shown.name));
                     }
                 }
             }
         }
         dropped.truncate(MAX_DROPPED);
-        if kept != self.items || dropped != self.dropped {
-            self.items = kept;
+        if kept != self.entries || dropped != self.dropped {
+            self.entries = kept;
             self.dropped = dropped;
             self.serial = next_serial();
         }
     }
 
     pub(crate) fn view(&self) -> SelectionView {
+        let mut items: Vec<SelectionItem> = Vec::with_capacity(self.entries.len());
+        let mut hidden = Vec::new();
+        for entry in &self.entries {
+            match (&entry.now, &entry.hidden) {
+                // Two seeds followed into one entity are one item.
+                (Some(now), _) => {
+                    if !items.iter().any(|i| i.same(now)) {
+                        items.push(now.clone());
+                    }
+                }
+                (None, why) => hidden.push(HiddenItem {
+                    item: entry.seed.clone(),
+                    why: why.clone().unwrap_or_default(),
+                }),
+            }
+        }
         SelectionView {
-            items: self.items.clone(),
+            items,
             serial: self.serial,
             dropped: self.dropped.clone(),
+            hidden,
         }
     }
 
     pub(crate) fn serial(&self) -> u64 {
         self.serial
     }
+}
+
+/// What became of a kept item at a check ([`Resolver::follow`]).
+pub(crate) enum Fate {
+    /// What it is now.
+    Found(SelectionItem),
+    /// It has no body for now, and why.
+    Hidden(String),
+    /// It no longer exists, and why.
+    Gone(String),
 }
 
 /// An item as it was found: with its body and its place there.
@@ -354,22 +460,25 @@ pub(crate) fn is_datum(kind: &FeatureKind) -> bool {
     )
 }
 
-/// The names of one body's faces, edges and vertices, looked up by text.
+/// The names of one body's faces, edges and vertices, looked up by text:
+/// the canonical name and the place of the entity (of a face cut into
+/// pieces, its first piece).
 #[derive(Default)]
 struct BodyIndex {
-    faces: Option<BTreeMap<String, String>>,
-    edges: Option<BTreeMap<String, String>>,
-    vertices: Option<BTreeMap<String, String>>,
+    faces: Option<BTreeMap<String, (String, usize)>>,
+    edges: Option<BTreeMap<String, (String, usize)>>,
+    vertices: Option<BTreeMap<String, (String, usize)>>,
 }
 
-/// A body of a regeneration: its feature, the body and its names.
-type BodyNames<'a> = (FeatureId, &'a Arc<Body>, Option<&'a Arc<Names>>);
+/// A body of a regeneration: its feature, the body, its names, and
+/// whether it is still its feature's own (not taken by a later feature).
+type BodyNames<'a> = (FeatureId, &'a Arc<Body>, Option<&'a Arc<Names>>, bool);
 
 /// Finds what names mean in one regeneration of a document.
 pub(crate) struct Resolver<'a> {
     doc: &'a Document,
     regen: &'a Regen,
-    /// The bodies, in history order.
+    /// Every body, taken by a later feature or not, in history order.
     bodies: Vec<BodyNames<'a>>,
     index: BTreeMap<FeatureId, BodyIndex>,
 }
@@ -379,7 +488,14 @@ impl<'a> Resolver<'a> {
         let bodies = regen
             .features
             .iter()
-            .filter_map(|f| Some((f.id, f.own_body()?, f.names.as_ref())))
+            .filter_map(|f| {
+                Some((
+                    f.id,
+                    f.body.as_ref()?,
+                    f.names.as_ref(),
+                    f.consumed_by.is_none(),
+                ))
+            })
             .collect();
         Self {
             doc,
@@ -390,10 +506,15 @@ impl<'a> Resolver<'a> {
     }
 
     /// The canonical name `wanted` has among the entities of `kind` of the
-    /// body of `feature`: a face by its name or an alias, an edge by its
-    /// name or an alias, a vertex by its name.
-    fn lookup(&mut self, feature: FeatureId, kind: SelectionKind, wanted: &str) -> Option<String> {
-        let (_, body, names) = self.bodies.iter().find(|(id, ..)| *id == feature)?;
+    /// body of `feature`, and the entity's place there: a face by its name
+    /// or an alias, an edge by its name or an alias, a vertex by its name.
+    fn lookup(
+        &mut self,
+        feature: FeatureId,
+        kind: SelectionKind,
+        wanted: &str,
+    ) -> Option<(String, usize)> {
+        let (_, body, names, _) = self.bodies.iter().find(|(id, ..)| *id == feature)?;
         let names = (*names)?;
         let entry = self.index.entry(feature).or_default();
         let table = match kind {
@@ -404,9 +525,11 @@ impl<'a> Resolver<'a> {
                     for alias in names.aliases_of(k) {
                         table
                             .entry(alias.to_string())
-                            .or_insert_with(|| canonical.clone());
+                            .or_insert_with(|| (canonical.clone(), k));
                     }
-                    table.insert(canonical.clone(), canonical);
+                    table
+                        .entry(canonical.clone())
+                        .or_insert_with(|| (canonical, k));
                 }
                 table
             }),
@@ -418,9 +541,9 @@ impl<'a> Resolver<'a> {
                         for alias in names.edge_aliases_of(k) {
                             table
                                 .entry(alias.to_string())
-                                .or_insert_with(|| canonical.clone());
+                                .or_insert_with(|| (canonical.clone(), k));
                         }
-                        table.insert(canonical.clone(), canonical);
+                        table.insert(canonical.clone(), (canonical, k));
                     }
                 }
                 table
@@ -430,7 +553,7 @@ impl<'a> Resolver<'a> {
                 for k in 0..body.vertices.len() {
                     if let Some(name) = names.vertex_name(k) {
                         let canonical = name.to_string();
-                        table.insert(canonical.clone(), canonical);
+                        table.insert(canonical.clone(), (canonical, k));
                     }
                 }
                 table
@@ -490,20 +613,17 @@ impl<'a> Resolver<'a> {
         let candidates: Vec<FeatureId> = self
             .bodies
             .iter()
+            .filter(|(.., own)| *own)
             .map(|(id, ..)| *id)
             .filter(|id| only.is_none_or(|only| only == *id))
             .collect();
         if let Some(only) = only
             && candidates.is_empty()
         {
-            let made = self
-                .doc
-                .feature(only)
-                .map_or_else(|| only.to_string(), |f| f.name.clone());
-            return Err(format!("`{made}` has no body"));
+            return Err(format!("`{}` has no body", self.called(only)));
         }
         for body in candidates {
-            if let Some(canonical) = self.lookup(body, kind, &wanted) {
+            if let Some((canonical, _)) = self.lookup(body, kind, &wanted) {
                 return Ok(Found {
                     item: SelectionItem {
                         kind,
@@ -516,47 +636,195 @@ impl<'a> Resolver<'a> {
         Err(format!("no body has a {} `{shown}`", kind.name()))
     }
 
-    /// A stored item found again: its feature by id only (`F3`), a face,
-    /// an edge or a vertex by its name in that feature's body.
-    pub(crate) fn find_again(&mut self, item: &SelectionItem) -> Result<Found, String> {
-        let id = item
+    /// The feature's name, or its id when it has none.
+    fn called(&self, id: FeatureId) -> String {
+        self.doc
+            .feature(id)
+            .map_or_else(|| id.to_string(), |f| f.name.clone())
+    }
+
+    /// Why feature `id` has no body for now, when that is so because of
+    /// its state (suppressed, rolled back, failed): it may have one again.
+    /// `None` when it is built and has none, or is not there.
+    fn absent(&self, id: FeatureId) -> Option<String> {
+        let name = self.called(id);
+        match &self.regen.feature(id)?.status {
+            Status::Suppressed => Some(format!("`{name}` is suppressed")),
+            Status::RolledBack => Some(format!("`{name}` is rolled back")),
+            Status::Failed(why) => Some(format!("`{name}` failed: {}", cut(why))),
+            Status::Ok => None,
+        }
+    }
+
+    /// What became of an item kept as `seed`, found again from what it
+    /// was selected as: its feature by id only (`F3`), a face, an edge or
+    /// a vertex by its name in that feature's body. A body or an entity
+    /// whose body went into a later feature (a boolean, a fillet, a
+    /// pattern) is followed to its image in the newest body, by the rule
+    /// features follow names by (`craft3d_regen::follow_face`), through
+    /// the copy names; of a pattern's several copies, the first. An item
+    /// whose feature has no body for now (suppressed, rolled back, failed)
+    /// is hidden, not gone: it comes back with the feature. Only what no
+    /// longer exists anywhere is gone.
+    pub(crate) fn follow(&mut self, seed: &SelectionItem) -> Fate {
+        let Some(id) = seed
             .feature
             .strip_prefix('F')
             .and_then(|digits| digits.parse::<u64>().ok())
             .map(FeatureId)
             .filter(|id| self.doc.feature(*id).is_some())
-            .ok_or_else(|| format!("there is no feature {}", cut(&item.feature)))?;
-        if !item.kind.is_entity() {
-            return self.feature_item(Some(item.kind), id);
+        else {
+            return Fate::Gone(format!("there is no feature {}", cut(&seed.feature)));
+        };
+        match seed.kind {
+            SelectionKind::Body => self.follow_body(id),
+            kind if kind.is_entity() => self.follow_entity(kind, id, &seed.name),
+            kind => match self.feature_item(Some(kind), id) {
+                Ok(found) => Fate::Found(found.item),
+                Err(why) => Fate::Gone(why),
+            },
         }
-        if !self.bodies.iter().any(|(body, ..)| *body == id) {
-            let made = self
-                .doc
-                .feature(id)
-                .map_or_else(|| id.to_string(), |f| f.name.clone());
-            return Err(match self.regen.feature(id).and_then(|o| o.consumed_by) {
-                Some(taker) => format!("the body of `{made}` went into {taker}"),
-                None => format!("`{made}` has no body"),
-            });
+    }
+
+    /// The feature `id` has no body now: hidden or gone.
+    fn without_body(&self, id: FeatureId) -> Fate {
+        match self.absent(id) {
+            Some(why) => Fate::Hidden(why),
+            None => Fate::Gone(format!("`{}` has no body", self.called(id))),
         }
-        let wanted = item
-            .name
+    }
+
+    fn follow_body(&mut self, id: FeatureId) -> Fate {
+        if self
+            .regen
+            .feature(id)
+            .and_then(|o| o.body.as_ref())
+            .is_none()
+        {
+            return self.without_body(id);
+        }
+        let newest = craft3d_regen::newest_body(&self.regen.features, id);
+        if self
+            .regen
+            .feature(newest)
+            .and_then(|o| o.own_body())
+            .is_none()
+        {
+            return Fate::Gone(format!(
+                "the body of `{}` went into `{}`, which has none",
+                self.called(id),
+                self.called(newest)
+            ));
+        }
+        Fate::Found(SelectionItem {
+            kind: SelectionKind::Body,
+            name: self.called(newest),
+            feature: newest.to_string(),
+        })
+    }
+
+    fn follow_entity(&mut self, kind: SelectionKind, id: FeatureId, name: &str) -> Fate {
+        let Some(outcome) = self.regen.feature(id) else {
+            return self.without_body(id);
+        };
+        if outcome.body.is_none() {
+            return self.without_body(id);
+        }
+        let own = outcome.consumed_by.is_none();
+        let wanted = name
             .parse::<PersistentName>()
             .map(|name| name.to_string())
-            .unwrap_or_else(|_| item.name.clone());
-        match self.lookup(id, item.kind, &wanted) {
-            Some(canonical) => Ok(Found {
-                item: SelectionItem {
-                    kind: item.kind,
-                    name: canonical,
-                    feature: id.to_string(),
-                },
-            }),
-            None => Err(format!(
+            .unwrap_or_else(|_| name.to_string());
+        let Some((canonical, index)) = self.lookup(id, kind, &wanted) else {
+            return Fate::Gone(format!(
                 "the body of {id} has no {} of that name any more",
-                item.kind.name()
-            )),
+                kind.name()
+            ));
+        };
+        if own {
+            return Fate::Found(SelectionItem {
+                kind,
+                name: canonical,
+                feature: id.to_string(),
+            });
         }
+        let followed = match kind {
+            SelectionKind::Face => canonical
+                .parse::<PersistentName>()
+                .map_err(|e| e.to_string())
+                .and_then(|name| self.follow_face(&name)),
+            SelectionKind::Edge => self.follow_edge(id, index),
+            _ => Err(format!(
+                "the body of `{}` went into `{}`, and a vertex is not followed into a later feature yet",
+                self.called(id),
+                self.called(craft3d_regen::newest_body(&self.regen.features, id))
+            )),
+        };
+        match followed {
+            Ok((feature, name)) => Fate::Found(SelectionItem {
+                kind,
+                name,
+                feature: feature.to_string(),
+            }),
+            Err(why) => Fate::Gone(why),
+        }
+    }
+
+    /// The face `name` of a body taken by later features, in the newest
+    /// body: that body's feature and the face's canonical name there.
+    fn follow_face(&mut self, name: &PersistentName) -> Result<(FeatureId, String), String> {
+        let followed =
+            craft3d_regen::follow_face_to_first(self.doc, &self.regen.features, name, "face")?
+                .unwrap_or_else(|| name.clone());
+        let newest = followed.feature;
+        self.lookup(newest, SelectionKind::Face, &followed.to_string())
+            .map(|(canonical, _)| (newest, canonical))
+            .ok_or_else(|| format!("{followed} is not a face of `{}`", self.called(newest)))
+    }
+
+    /// The edge at `index` of the body of `id`, taken by later features,
+    /// in the newest body: the edge there between the images of the faces
+    /// it lies between (the first, when there are several).
+    fn follow_edge(&mut self, id: FeatureId, index: usize) -> Result<(FeatureId, String), String> {
+        let (_, body, names, _) = self
+            .bodies
+            .iter()
+            .find(|(f, ..)| *f == id)
+            .ok_or_else(|| format!("{id} has no body"))?;
+        let names = names.ok_or_else(|| format!("`{}` names no edges", self.called(id)))?;
+        let faces = craft3d_regen::faces_of_edges(body)
+            .into_iter()
+            .nth(index)
+            .unwrap_or_default();
+        let sides: Vec<PersistentName> = faces
+            .iter()
+            .filter_map(|face| usize::try_from(face.0).ok())
+            .filter_map(|face| names.faces.get(face).cloned())
+            .collect();
+        let (a, b) = match sides.as_slice() {
+            [a, b] => (a.clone(), b.clone()),
+            [a] => (a.clone(), a.clone()),
+            _ => return Err("the edge does not lie between faces".to_string()),
+        };
+        let follow = |name: &PersistentName| -> Result<PersistentName, String> {
+            Ok(
+                craft3d_regen::follow_face_to_first(self.doc, &self.regen.features, name, "edge")?
+                    .unwrap_or_else(|| name.clone()),
+            )
+        };
+        let (a, b) = (follow(&a)?, follow(&b)?);
+        let newest = a.feature;
+        let taker = self.called(newest);
+        let Some((_, body, Some(names), _)) = self.bodies.iter().find(|(f, ..)| *f == newest)
+        else {
+            return Err(format!("`{taker}` names no edges"));
+        };
+        let edge = craft3d_regen::edges_between(body, names, &a, &b)
+            .first()
+            .and_then(|edge| usize::try_from(edge.0).ok())
+            .and_then(|edge| names.edge_name(edge))
+            .ok_or_else(|| format!("the edge between {a} and {b} is gone in `{taker}`"))?;
+        Ok((newest, edge.to_string()))
     }
 
     fn feature_item(&self, kind: Option<SelectionKind>, id: FeatureId) -> Result<Found, String> {

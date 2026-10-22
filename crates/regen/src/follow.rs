@@ -190,6 +190,19 @@ pub(crate) fn face(
     name: &PersistentName,
     role: &str,
 ) -> Result<Option<PersistentName>, String> {
+    face_with(doc, earlier, name, role, false)
+}
+
+/// [`face`]; where a taker made several copies of the face (the
+/// instances of a pattern), the first of them (the lowest instance of the
+/// first split) when `first`, an error otherwise.
+fn face_with(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+    first: bool,
+) -> Result<Option<PersistentName>, String> {
     let takers = chain(earlier, name.feature);
     if takers.is_empty() || !name.is_face() {
         return Ok(None);
@@ -271,6 +284,10 @@ pub(crate) fn face(
                 from = called(doc, *member);
                 current = PersistentName::copy(*member, *k, current);
             }
+            [(member, k), ..] if first => {
+                from = called(doc, *member);
+                current = PersistentName::copy(*member, *k, current);
+            }
             _ => {
                 let all: Vec<String> = found
                     .iter()
@@ -302,6 +319,21 @@ pub fn follow_face(
     role: &str,
 ) -> Result<Option<PersistentName>, String> {
     face(doc, results, name, role)
+}
+
+/// [`follow_face`] for what is pointed at rather than built on (the
+/// selection): where a taker made several copies of the face (the
+/// instances of a pattern), the way goes on with the first of them, the
+/// lowest instance (instance 0 is the body as it was, where it was), as
+/// the face that stayed where it was; [`follow_face`] refuses then, since
+/// a feature must not choose for its author.
+pub fn follow_face_to_first(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Option<PersistentName>, String> {
+    face_with(doc, results, name, role, true)
 }
 
 /// Follows every name in `list`, each as `{param}.{i}`; `true` when one

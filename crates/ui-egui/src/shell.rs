@@ -1334,7 +1334,9 @@ impl Shell {
                 vertex: found.vertex.as_ref().map(entity),
             });
             // One thing is pointed at: the vertex, or else the edge, or
-            // else the face.
+            // else the face. Lit by pointing; a click that selects it
+            // says so after (`click_select`).
+            self.highlight_set_elsewhere();
             self.state.highlight_vertex = found
                 .vertex
                 .as_ref()

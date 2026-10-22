@@ -15,6 +15,7 @@ pub mod appearance;
 pub mod blob;
 pub mod datum;
 pub mod name;
+pub mod sets;
 pub mod sketch;
 
 pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
@@ -28,6 +29,7 @@ pub use name::{
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
     OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation, offset_groups,
 };
+pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
@@ -1461,6 +1463,10 @@ pub struct Document {
     /// order of the two ([`appearance`]). Not part of the history either.
     #[serde(default)]
     pub faces: Vec<FaceProperties>,
+    /// Named sets: queries kept under a name, in the order they were
+    /// defined ([`sets`]). Not part of the history either.
+    #[serde(default)]
+    pub sets: Vec<NamedSet>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1664,6 +1670,7 @@ impl Document {
         }
         self.validate_bodies()?;
         self.validate_faces()?;
+        self.validate_sets()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
