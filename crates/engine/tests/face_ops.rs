@@ -1063,6 +1063,83 @@ fn the_classic_enclosure_rounded_then_shelled_as_thick_as_its_rounds() {
     }
 }
 
+/// A box rounded all round, shelled open at its top (2026-10-22): the
+/// rounds of the top's rim keep their walls, a lip `t` thick all along
+/// that ends square to the top (faces named after the hollow behind the
+/// top), and from the rounds' radius on the walls run straight up with a
+/// ring of the top left on the lip. Volume in closed form, checked deep,
+/// followed through an edit of the thickness, at three scales.
+#[test]
+fn a_box_rounded_all_round_shells_open_at_its_top_with_a_lip() {
+    let rounded = |w: f64, d: f64, h: f64, r: f64| {
+        let (a, b, c) = (w - 2.0 * r, d - 2.0 * r, h - 2.0 * r);
+        a * b * c
+            + 2.0 * r * (a * b + a * c + b * c)
+            + PI * r * r * (a + b + c)
+            + 4.0 / 3.0 * PI * r.powi(3)
+    };
+    let (w, d, h, r) = (40.0, 30.0, 20.0, 2.0);
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "Box", "size": [w * k, d * k, h * k]}),
+        );
+        let mut edges = Vec::new();
+        for (a, b) in [(2, 4), (2, 5), (3, 4), (3, 5)] {
+            edges.push(json!([format!("F1:face({a})"), format!("F1:face({b})")]));
+        }
+        for cap in [0, 1] {
+            for side in 2..6 {
+                edges.push(json!([
+                    format!("F1:face({cap})"),
+                    format!("F1:face({side})")
+                ]));
+            }
+        }
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": edges, "radius": r * k, "name": "Round"}),
+        );
+        assert_solid(&mut s, "Round", rounded(w, d, h, r), None, k);
+        built(
+            &mut s,
+            "feature.shell",
+            json!({"source": "Round", "thickness": k, "open": ["F1:face(1)"],
+                   "name": "Tub"}),
+        );
+        for t in [1.0, 2.0, 3.0] {
+            if t != 1.0 {
+                built(
+                    &mut s,
+                    "feature.edit",
+                    json!({"feature": "Tub", "thickness": t * k}),
+                );
+            }
+            let m = r.max(t);
+            let hollow = rounded(w - 2.0 * t, d - 2.0 * t, h - 2.0 * t, (r - t).max(0.0))
+                + (w - 2.0 * m) * (d - 2.0 * m) * t;
+            assert_solid(&mut s, "Tub", rounded(w, d, h, r) - hollow, None, k);
+            let check = run(&mut s, "document.check", json!({"deep": true}));
+            assert_eq!(check["ok"], true, "at {t}, scale {k}: {check}");
+            let names = names_of(&body(&mut s, "Tub"));
+            let ends = names
+                .iter()
+                .filter(|n| n.as_str() == "F3:copy(1)/F1:face(1)")
+                .count();
+            assert_eq!(ends, if t < r { 4 } else { 0 }, "at {t}: {names:?}");
+            let top = names
+                .iter()
+                .filter(|n| n.as_str() == "F3:copy(0)/F1:face(1)")
+                .count();
+            assert_eq!(top, usize::from(t > r), "at {t}: {names:?}");
+        }
+    }
+}
+
 #[test]
 fn a_shell_follows_its_body_and_its_faces_carry_names_to_build_on() {
     for k in SCALES {

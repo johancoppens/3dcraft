@@ -333,10 +333,142 @@ fn a_block_rounded_all_round_shells_as_thick_as_its_rounds_and_more() {
                 assert_eq!(inner, if t < 2.0 { 26 } else { 6 }, "{what} at {t}");
             }
         }
-        // Open at the top, the top rounds run along the open face: their
-        // lip would be cut by the opening, which is not built.
+    }
+}
+
+/// The block rounded all round, open at its top (2026-10-22; refused
+/// before: the top rounds run along the open face). The top's rounds keep
+/// their walls (offset to `r − t`, or collapsed from `t = r` on), and the
+/// hollow is opened through the top by the prism on its face behind the
+/// top: the lip is the round's wall, `t` thick all along, ending square
+/// to the top where the top's rim was. Its volume in closed form: the
+/// solid less the closed hollow (a block `2t` smaller rounded `r − t`)
+/// less the slab of the hollow's ceiling, `(w − 2m)(d − 2m)` with
+/// `m = max(r, t)`, `t` high. Upright exact to 1e-9, turned off every
+/// axis to the tolerance over the area, at 1e-3, 1 and 1e6.
+#[test]
+fn a_block_rounded_all_round_and_open_at_its_top_keeps_a_lip_along_its_rounds() {
+    let turn = Transform::rotation(Vec3::new(0.4, -1.0, 0.7), 1.1).unwrap();
+    let (w, d, h, r): (f64, f64, f64, f64) = (10.0, 8.0, 6.0, 2.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let upright = rounded_all_round(k);
         let top = face_at(&upright, k, "plane", [5.0, 4.0, 6.0]);
-        assert!(shell(&upright, 2.0 * k, &[top], &tol).is_err());
+        let turned = upright.transformed(&turn).unwrap();
+        for (body, what) in [(&upright, "upright"), (&turned, "turned")] {
+            for t in [0.5, 1.0, 2.0, 2.5] {
+                let made = match shell(body, t * k, &[top], &tol) {
+                    Ok(made) => made,
+                    Err(e) => panic!("{what} at {t}, scale {k}: {e}"),
+                };
+                assert_eq!(check(&made.body, &tol), [], "{what} at {t}, scale {k}");
+                assert_eq!(made.body.shells.len(), 1, "{what} at {t}: one skin, open");
+                let m = r.max(t);
+                let expected = rounded_block_volume(w, d, h, r)
+                    - rounded_block_volume(w - 2.0 * t, d - 2.0 * t, h - 2.0 * t, (r - t).max(0.0))
+                    - (w - 2.0 * m) * (d - 2.0 * m) * t;
+                let mp = mass(&made.body);
+                let slack = if what == "upright" {
+                    1e-9 * expected * k * k * k
+                } else {
+                    tol.linear * mp.area
+                };
+                let off = mp.volume - expected * k * k * k;
+                assert!(
+                    off.abs() <= slack,
+                    "{what} at {t}, scale {k}: off by {off:e}"
+                );
+                // The top is gone up to the thickness of the rounds; past
+                // it a ring of it, `t − r` wide, is the lip's top. The
+                // lip's ends, square to the top, are the hollow behind it:
+                // four planes while the rounds keep a wall, none once the
+                // walls run straight up (they are the hollow's walls
+                // there).
+                assert_eq!(
+                    made.faces.contains(&(Skin::Outer, top)),
+                    t > r,
+                    "{what} at {t}"
+                );
+                let ends = made
+                    .faces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source)| **source == (Skin::Inner, top))
+                    .map(|(i, _)| &made.body.faces[i])
+                    .collect::<Vec<_>>();
+                assert_eq!(ends.len(), if t < r { 4 } else { 0 }, "{what} at {t}");
+                assert!(ends.iter().all(|f| f.surface.kind() == "plane"));
+            }
+        }
+    }
+}
+
+/// A slot (a stadium `2R` wide with straight sides `L` long, `H` high)
+/// left open at one of its flat sides, which its half-cylinders are
+/// tangent to (2026-10-22: refused before, since a tangent neighbour
+/// cannot follow the face outward): the half-cylinders keep their walls
+/// and the hollow is opened through the side by the prism on the hollow's
+/// face behind it, a channel. Its volume: the slot less the closed hollow
+/// (the slot `t` smaller all round) less the slab `L × (H − 2t) × t`.
+#[test]
+fn a_slot_open_at_a_side_its_ends_are_tangent_to() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::Frame;
+    let (l, radius, height) = (12.0, 3.0, 5.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (half, r) = (l / 2.0 * k, radius * k);
+        let curves = vec![
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Line {
+                    start: [-half, -r],
+                    end: [half, -r],
+                },
+            },
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Arc {
+                    center: [half, 0.0],
+                    start: [half, -r],
+                    end: [half, r],
+                },
+            },
+            SketchCurve {
+                id: 3,
+                curve: Curve2::Line {
+                    start: [half, r],
+                    end: [-half, r],
+                },
+            },
+            SketchCurve {
+                id: 4,
+                curve: Curve2::Arc {
+                    center: [-half, 0.0],
+                    start: [-half, r],
+                    end: [-half, -r],
+                },
+            },
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let slot = extrude(&profiles, &Frame::WORLD, 0.0, height * k, &tol)
+            .unwrap()
+            .body;
+        let side = face_at(&slot, k, "plane", [0.0, radius, height / 2.0]);
+        for t in [0.5, 1.0] {
+            let made = hollowed(&slot, t, &[side], k);
+            assert_eq!(made.body.shells.len(), 1);
+            let stadium = |w: f64| l * 2.0 * w + PI * w * w;
+            let expected = stadium(radius) * height
+                - stadium(radius - t) * (height - 2.0 * t)
+                - l * (height - 2.0 * t) * t;
+            let off = mass(&made.body).volume - expected * k * k * k;
+            assert!(
+                off.abs() <= 1e-9 * expected * k * k * k,
+                "at {t}, scale {k}: off by {off:e}"
+            );
+        }
     }
 }
 

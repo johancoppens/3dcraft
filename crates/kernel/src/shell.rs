@@ -22,13 +22,24 @@
 //! fits. After the boolean the result is held against what a shell is:
 //! every face that keeps a wall is there as skin and as a face of the
 //! hollow, and the hollow comes out through every open face.
+//!
+//! **An open face with a blend along it** (a box rounded all round, open
+//! at its top; 2026-10-22). A blend tangent to an open face cannot follow
+//! it outward, so such a face (it has to be flat) is moved inward like
+//! every other face, the blends along it keep their walls (offset, or
+//! collapsed where the thickness reaches their radius), and the hollow is
+//! opened through it by the prism on the hollow's face behind it, along
+//! the face's normal, as far past the face as the other open faces are
+//! moved: the lip is the blend's wall, of the thickness all along, ending
+//! square to the open face where the face's rim was.
 
 use crate::KernelError;
 use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, Operand, VertexSource, boolean_with};
 use crate::offset_blend::Fillet;
 use crate::offset_face::{Blends, FaceOffset, offset_for_known, refuse};
+use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_geom::Surface;
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId, edge_faces};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -95,8 +106,10 @@ fn tangent_across(body: &Body, a: FaceId, b: FaceId, edge: EdgeId) -> bool {
 /// opening, so its ball of radius `t` fits there too. So exactly the
 /// blends whose radius the thickness reaches are left out, every other
 /// face keeps its own (a fillet of a larger radius is rebuilt, one of
-/// the other kind grows); a blend along a face left open would need its
-/// lip cut by the opening, and stays refused.
+/// the other kind grows). `open` holds the faces moved outward only: an
+/// open face with a blend along it keeps a wall in the hollow and is
+/// opened afterwards (see the module documentation), so the blends along
+/// it may vanish like any other.
 fn vanishing(
     body: &Body,
     thickness: f64,
@@ -209,6 +222,106 @@ fn vanishing(
         }
     }
     found
+}
+
+/// Whether a face is tangent to one of its neighbours across an edge they
+/// share: a blend runs along it.
+fn blend_along(body: &Body, face: FaceId) -> bool {
+    let uses = edge_faces(body);
+    let Some(f) = body.face(face) else {
+        return false;
+    };
+    f.loops
+        .iter()
+        .filter_map(|l| body.loop_(*l))
+        .flat_map(|l| l.coedges.iter().map(|c| c.edge))
+        .any(|edge| {
+            uses.get(edge.0 as usize).is_some_and(|faces| {
+                faces
+                    .iter()
+                    .any(|o| *o != face && tangent_across(body, face, *o, edge))
+            })
+        })
+}
+
+const LIP_CURVES: &str = "an open face with a blend along it is opened by the prism on the hollow's face behind it, whose edges have to be lines and circles: this one has another curve";
+
+/// The prism on the flat face `face` of `hollow`, along its outward
+/// normal from its plane to `height` past it: what opens the hollow
+/// through an open face with a blend along it.
+fn prism(
+    hollow: &Body,
+    face: FaceId,
+    height: f64,
+    open: FaceId,
+    tolerance: &Tolerance,
+) -> Result<Body, KernelError> {
+    let refused = |reason: &'static str| refuse(OPERATION, vec![open], None, reason);
+    let Some(f) = hollow.face(face) else {
+        return Err(refused(LOST));
+    };
+    let Surface::Plane(plane) = &f.surface else {
+        return Err(refused(
+            "an open face with a blend along it has to be flat to be opened",
+        ));
+    };
+    let frame = plane.frame();
+    // Its z out of the hollow.
+    let frame: Frame = if f.reversed {
+        frame
+            .reversed_at(frame.origin())
+            .ok_or_else(|| refused(LOST))?
+    } else {
+        *frame
+    };
+    let flat = |p: Vec3| {
+        let (a, b, _) = frame.local(p);
+        [a, b]
+    };
+    let mut curves = Vec::new();
+    for l in f.loops.iter().filter_map(|l| hollow.loop_(*l)) {
+        for coedge in &l.coedges {
+            let Some(edge) = hollow.edge(coedge.edge) else {
+                return Err(refused(LOST));
+            };
+            let (Some(start), Some(end)) = (hollow.vertex(edge.start), hollow.vertex(edge.end))
+            else {
+                return Err(refused(LOST));
+            };
+            let (start, end) = (flat(start.point), flat(end.point));
+            let curve = match &edge.curve {
+                craft3d_geom::Curve3::Line(_) => Curve2::Line { start, end },
+                craft3d_geom::Curve3::Circle(c) => {
+                    let (a, b, _) = frame.local(c.frame().origin());
+                    let center = [a, b];
+                    let turns = c.frame().z().dot(frame.z());
+                    if edge.start == edge.end {
+                        Curve2::Circle {
+                            center,
+                            radius: c.radius(),
+                        }
+                    } else if turns > 0.0 {
+                        Curve2::Arc { center, start, end }
+                    } else {
+                        Curve2::Arc {
+                            center,
+                            start: end,
+                            end: start,
+                        }
+                    }
+                }
+                craft3d_geom::Curve3::Ellipse(_) | craft3d_geom::Curve3::Nurbs(_) => {
+                    return Err(refused(LIP_CURVES));
+                }
+            };
+            curves.push(SketchCurve {
+                id: u64::from(coedge.edge.0) + 1,
+                curve,
+            });
+        }
+    }
+    let profiles = detect_profiles(&curves, tolerance).map_err(|_| refused(LIP_CURVES))?;
+    Ok(crate::extrude::extrude(&profiles, &frame, 0.0, height, tolerance)?.body)
 }
 
 fn skin(operand: Operand) -> Skin {
@@ -330,6 +443,19 @@ fn shell_at(
             "every face is left open: there is nothing to leave a wall behind",
         ));
     }
+    // Open faces with a blend along them are moved inward like the faces
+    // that keep a wall and opened afterwards (see the module
+    // documentation); the others are moved outward.
+    let lipped: BTreeSet<FaceId> = open
+        .iter()
+        .copied()
+        .filter(|face| blend_along(body, *face))
+        .collect();
+    let outward: Vec<FaceId> = open
+        .iter()
+        .copied()
+        .filter(|face| !lipped.contains(face))
+        .collect();
     // Blends whose radius the thickness reaches leave no face in the
     // hollow: it is the hollow of the body with them collapsed into the
     // edges and corners they round (see `vanishing`).
@@ -347,7 +473,7 @@ fn shell_at(
     } else {
         BTreeMap::new()
     };
-    let vanish = vanishing(body, thickness, open, &fillets, tolerance);
+    let vanish = vanishing(body, thickness, &outward, &fillets, tolerance);
     let collapsed = if vanish.is_empty() {
         None
     } else {
@@ -388,7 +514,7 @@ fn shell_at(
         .filter_map(|(index, original)| {
             u32::try_from(index).ok().map(|face| FaceOffset {
                 face: FaceId(face),
-                distance: if open.contains(original) {
+                distance: if outward.contains(original) {
                     thickness
                 } else {
                     -thickness
@@ -424,6 +550,63 @@ fn shell_at(
         trust_operands: true,
         ..BooleanOptions::default()
     };
+    // The hollow opened through each open face with a blend along it, and
+    // per face, edge and vertex of it what it is of `body`: a face of the
+    // prism is the hollow behind that open face.
+    let mut hollow = hollow;
+    let mut inner_faces: Vec<FaceId> = inner_faces;
+    let mut inner_edges: Vec<Option<EdgeId>> = inner_edges;
+    let mut inner_vertices: Vec<Option<VertexId>> = inner_vertices;
+    for open_face in &lipped {
+        let Some(behind) = inner_faces
+            .iter()
+            .position(|f| f == open_face)
+            .and_then(|i| u32::try_from(i).ok())
+            .map(FaceId)
+        else {
+            return Err(refuse(OPERATION, vec![*open_face], None, LOST));
+        };
+        let opening = prism(&hollow, behind, 2.0 * thickness, *open_face, tolerance)?;
+        let opened = boolean_with(&hollow, &opening, BooleanOp::Union, tolerance, &options)
+            .map_err(|error| KernelError::FaceOpBoolean {
+                operation: OPERATION,
+                error: Box::new(error),
+            })?;
+        let mut faces = Vec::with_capacity(opened.faces.len());
+        for source in &opened.faces {
+            faces.push(match source.operand {
+                Operand::A => inner_faces
+                    .get(source.face.0 as usize)
+                    .copied()
+                    .ok_or_else(|| refuse(OPERATION, vec![*open_face], None, LOST))?,
+                Operand::B => *open_face,
+            });
+        }
+        inner_edges = opened
+            .edges
+            .iter()
+            .map(|source| match source {
+                EdgeSource::Kept {
+                    operand: Operand::A,
+                    edge,
+                } => inner_edges.get(edge.0 as usize).copied().flatten(),
+                _ => None,
+            })
+            .collect();
+        inner_vertices = opened
+            .vertices
+            .iter()
+            .map(|source| match source {
+                VertexSource::Kept {
+                    operand: Operand::A,
+                    vertex,
+                } => inner_vertices.get(vertex.0 as usize).copied().flatten(),
+                _ => None,
+            })
+            .collect();
+        inner_faces = faces;
+        hollow = opened.body;
+    }
     let cut =
         boolean_with(body, &hollow, BooleanOp::Subtract, tolerance, &options).map_err(|error| {
             KernelError::FaceOpBoolean {
