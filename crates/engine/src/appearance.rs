@@ -359,6 +359,11 @@ pub fn face_appearances(
         .collect()
 }
 
+/// How an appearance's metallic and roughness are drawn.
+pub(crate) fn finish(appearance: &craft3d_doc::Appearance) -> craft3d_render::Finish {
+    craft3d_render::Finish::from_factors(appearance.metallic, appearance.roughness)
+}
+
 /// Gives the faces of the body of `feature`, whose ids in a scene's or a
 /// picture's mesh start at `first_face_id`, their colours in `colors`.
 pub(crate) fn color_faces(
@@ -376,7 +381,7 @@ pub(crate) fn color_faces(
         if let (Some(appearance), Ok(face)) = (appearance, u32::try_from(face))
             && let Some(id) = first_face_id.checked_add(face)
         {
-            colors.set(id, Some(appearance.color));
+            colors.set_look(id, Some((appearance.color, finish(&appearance))));
         }
     }
 }

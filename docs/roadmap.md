@@ -468,10 +468,10 @@ The first version for people outside the project; it follows M9 and does not wai
 - `F2:startCap()` and `F2:endCap()` accepted wherever a face is named, resolved in one place ([`design/names.md`](design/names.md) › *The short form of a cap, everywhere*) (2026-10-22)
 - A user guide, AI-first (connect an agent over MCP, a full sample session, reading and checking its results, watching and pointing in the window, concepts, features, measuring, files, troubleshooting), and nine example models that assert their own volume, all run and the guide's commands and params checked against the registry by `crates/engine/tests/guide_examples.rs` ([`guide/`](guide/README.md), [`examples/`](examples/README.md)) (2026-10-22)
 - Import… (STEP) and Export… (STEP, STL, 3MF, OBJ, DXF, SVG; every body, or the selected flat faces or sketch, a selection the format cannot hold refused) in the window's File menu, as `file.import` and `file.export` with the person's grant ([`control-protocol.md`](control-protocol.md) › *How the window's own File menu fits in*) (2026-10-22)
+- Colours in OBJ (a `.mtl` beside it with `Kd`, `Pr` and `Pm`), metallic and roughness shaded by both renderers (a face without them bit for bit as before), and an independent reader that checks every face's colour in 3MF, STEP and OBJ exports ([`file-formats.md`](file-formats.md) › *Colours in OBJ*, [`design/rendering.md`](design/rendering.md) › *Metallic and roughness*) (2026-10-22)
 
 #### Open
 - [ ] Installers for Linux, macOS and Windows: built by `cargo xtask package` and `.github/workflows/release.yml` (2026-10-22, [`development.md`](development.md) › *Packaging*); the Linux tarball and AppImage are checked locally, the macOS `.dmg` and the Windows zip and `.msi` wait for a first run of the workflow; not signed or notarised
-- [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
 
 #### Acceptance

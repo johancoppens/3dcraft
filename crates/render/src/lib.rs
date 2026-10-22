@@ -307,6 +307,10 @@ pub const SHADE_DIFFUSE: f64 = 0.8;
 pub const SHADE_SPECULAR: f64 = 0.35;
 /// Exponent of the specular highlight.
 pub const SHADE_SHININESS: i32 = 48;
+/// How much less diffuse light an all-metal face reflects ([`Finish`]):
+/// its diffuse weight is `1 − SHADE_METAL_DIFFUSE · metallic` times the
+/// plain one. `scene.wgsl` has the same number.
+pub const SHADE_METAL_DIFFUSE: f64 = 0.3;
 /// Ambient term and diffuse weight of a highlighted face ([`Highlight`]):
 /// more ambient light than a plain face gets, so that a highlighted face
 /// in the shade still shows its colour.
@@ -470,14 +474,65 @@ impl Highlight {
 /// compared as `f32` on the GPU keeps exactly.
 pub const MAX_FACE_COLORS: usize = 1 << 24;
 
+/// Most shininess a [`Finish`] gives: a roughness of 0.
+pub const MAX_SHININESS: u32 = 256;
+
+/// How metal and how rough a face is drawn: the two numbers of a
+/// metallic-roughness material, as bytes (0 to 255 for 0 to 1), so that
+/// both renderers shade from exactly the same numbers.
+///
+/// The default (not metal, no roughness of its own) is the plain shading,
+/// bit for bit. See [`render`], *Metallic and roughness*.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Finish {
+    /// 0 is not metal (the default), 255 all metal.
+    pub metallic: u8,
+    /// `None`: the plain highlight ([`SHADE_SHININESS`],
+    /// [`SHADE_SPECULAR`]); else 0 is a mirror, 255 all rough.
+    pub roughness: Option<u8>,
+}
+
+impl Finish {
+    /// The finish of two factors from 0 to 1 (`None` for not given); a
+    /// factor outside 0 to 1 is clamped, one that is not a number counts
+    /// as not given.
+    pub fn from_factors(metallic: Option<f64>, roughness: Option<f64>) -> Self {
+        // Clamped to 0..=255 before the cast.
+        let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Self {
+            metallic: metallic.filter(|v| v.is_finite()).map_or(0, byte),
+            roughness: roughness.filter(|v| v.is_finite()).map(byte),
+        }
+    }
+
+    /// True for the plain shading.
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The exponent of the highlight a roughness gives, or `None` for the
+    /// plain one: `2 / r⁴ − 2` (the Phong exponent of a Beckmann
+    /// distribution of width `α = r²`), rounded, within 1 to
+    /// [`MAX_SHININESS`]. A roughness of about 0.45 gives the plain
+    /// exponent, 48.
+    pub fn shininess(&self) -> Option<u32> {
+        let r = f64::from(self.roughness?) / 255.0;
+        let alpha2 = (r * r) * (r * r);
+        let floor = 2.0 / f64::from(MAX_SHININESS + 2);
+        let n = (2.0 / alpha2.max(floor) - 2.0).round();
+        // Within 1..=MAX_SHININESS before the cast.
+        Some(n.clamp(1.0, f64::from(MAX_SHININESS)) as u32)
+    }
+}
+
 /// The base colour of each face that has one of its own (a body's
-/// appearance), by face id; the others are shaded from
-/// [`RenderParams::color`]. Both renderers take it from here, so a face
-/// has the same colour in both. A highlighted face ([`Highlight`]) is
-/// drawn in the highlight's colour whatever its own.
+/// appearance), by face id, with its [`Finish`]; the others are shaded
+/// from [`RenderParams::color`]. Both renderers take it from here, so a
+/// face has the same colour in both. A highlighted face ([`Highlight`]) is
+/// drawn in the highlight's colour, plainly, whatever its own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FaceColors {
-    colors: Vec<Option<[u8; 3]>>,
+    colors: Vec<Option<([u8; 3], Finish)>>,
 }
 
 impl FaceColors {
@@ -486,28 +541,46 @@ impl FaceColors {
         Self::default()
     }
 
-    /// Gives `face` its own colour, or takes it away (`None`). False, and
-    /// nothing changes, for a face id at or beyond [`MAX_FACE_COLORS`].
+    /// Gives `face` its own colour with the plain finish, or takes it away
+    /// (`None`). False, and nothing changes, for a face id at or beyond
+    /// [`MAX_FACE_COLORS`].
     pub fn set(&mut self, face: u32, color: Option<[u8; 3]>) -> bool {
+        self.set_look(face, color.map(|c| (c, Finish::default())))
+    }
+
+    /// [`Self::set`] with a finish.
+    pub fn set_look(&mut self, face: u32, look: Option<([u8; 3], Finish)>) -> bool {
         let index = face as usize;
         if index >= MAX_FACE_COLORS {
             return false;
         }
         if index >= self.colors.len() {
-            if color.is_none() {
+            if look.is_none() {
                 return true;
             }
             self.colors.resize(index + 1, None);
         }
         if let Some(slot) = self.colors.get_mut(index) {
-            *slot = color;
+            *slot = look;
         }
         true
     }
 
     /// The face's own colour, if it has one.
     pub fn get(&self, face: u32) -> Option<[u8; 3]> {
+        self.look(face).map(|(color, _)| color)
+    }
+
+    /// The face's own colour and finish, if it has a colour.
+    pub fn look(&self, face: u32) -> Option<([u8; 3], Finish)> {
         self.colors.get(face as usize).copied().flatten()
+    }
+
+    /// The face's finish: the plain one for a face without a colour.
+    pub fn finish(&self, face: u32) -> Finish {
+        self.look(face)
+            .map(|(_, finish)| finish)
+            .unwrap_or_default()
     }
 
     /// True when no face has a colour of its own.
@@ -520,7 +593,7 @@ impl FaceColors {
         self.colors
             .iter()
             .enumerate()
-            .filter_map(|(face, color)| Some((u32::try_from(face).ok()?, (*color)?)))
+            .filter_map(|(face, look)| Some((u32::try_from(face).ok()?, (*look)?.0)))
     }
 }
 
@@ -894,10 +967,13 @@ fn sample_range(lo: f64, hi: f64, len: usize) -> Option<(usize, usize)> {
     (first <= end).then_some((first, end))
 }
 
-/// `weights` is the ambient term and the diffuse weight.
+/// `weights` is the ambient term and the diffuse weight. With the plain
+/// [`Finish`] every factor it adds is exactly 1 (or 255 for the tint), so
+/// the plain picture is bit for bit what it was before finishes.
 fn shade(
     base: [u8; 3],
     weights: (f64, f64),
+    finish: Finish,
     normal: Vec3,
     to_viewer: Vec3,
     view: &View,
@@ -911,13 +987,25 @@ fn shade(
     // One light fixed to the camera, above and to the left of the viewer.
     let light = view.light.unwrap_or(to_viewer);
     let diffuse = n.dot(light).max(0.0);
+    let metallic = f64::from(finish.metallic) / 255.0;
+    // The exponent of the highlight and its strength, relative to the plain one.
+    let (shininess, strength) = match finish.shininess().and_then(|e| i32::try_from(e).ok()) {
+        Some(exponent) => (
+            exponent,
+            ((f64::from(exponent) + 2.0) / f64::from(SHADE_SHININESS + 2)).sqrt(),
+        ),
+        None => (SHADE_SHININESS, 1.0),
+    };
     let specular = (light + to_viewer)
         .normalized()
-        .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
-    let intensity = weights.0 + weights.1 * diffuse;
+        .map_or(0.0, |half| n.dot(half).max(0.0).powi(shininess));
+    // A metal reflects less diffusely.
+    let intensity = weights.0 + weights.1 * diffuse * (1.0 - SHADE_METAL_DIFFUSE * metallic);
     // Clamped to 0..=255 before the cast.
     base.map(|c| {
-        (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
+        // White on a dielectric, the base colour on a metal.
+        let tint = 255.0 * (1.0 - metallic) + f64::from(c) * metallic;
+        (f64::from(c) * intensity + tint * SHADE_SPECULAR * strength * specular)
             .round()
             .clamp(0.0, 255.0) as u8
     })
@@ -945,6 +1033,18 @@ fn shade(
 /// highlighted face in front is not seen through, so that it stands out;
 /// behind, it shows in its own colour. The id and depth buffers are the
 /// front's: a pick gives the front-most face whatever the opacity.
+///
+/// **Metallic and roughness** ([`Finish`], per face in [`FaceColors`]). A
+/// Blinn-Phong approximation of a metallic-roughness material, with the
+/// one light fixed to the camera: with `m` the metallic factor, the
+/// intensity is `ambient + diffuse · n·l · (1 − 0.3 m)` (a metal reflects
+/// less diffusely), and the highlight `tint · SHADE_SPECULAR · k ·
+/// (n·h)^e`, where the tint is white on a dielectric and the base colour
+/// on a metal (`255 (1 − m) + base · m`), the exponent `e` comes from the
+/// roughness ([`Finish::shininess`]) and `k = √((e + 2) / 50)` makes a
+/// smooth face's narrow highlight brighter and a rough face's wide one
+/// dimmer (1 at the plain exponent, 48). A face without a finish is shaded
+/// as it always was, bit for bit.
 ///
 /// **Section** ([`RenderParams::section`]). A plane cuts the picture open:
 /// what lies in the half its normal points to is not drawn. Per sample:
@@ -1142,18 +1242,19 @@ pub fn render_colored(
                 let position = pa * qa + pb * qb + pc * qc;
                 let normal = (na * qa + nb * qb + nc * qc).normalized().or(flat_normal);
                 let to_viewer = view.toward_viewer(position);
-                let (base, light) = if params.highlight.contains(face) {
+                let (base, light, finish) = if params.highlight.contains(face) {
                     (
                         params.highlight.color,
                         (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
+                        Finish::default(),
                     )
                 } else {
-                    (
-                        colors.get(face).unwrap_or(params.color),
-                        (SHADE_AMBIENT, SHADE_DIFFUSE),
-                    )
+                    let (color, finish) = colors
+                        .look(face)
+                        .unwrap_or((params.color, Finish::default()));
+                    (color, (SHADE_AMBIENT, SHADE_DIFFUSE), finish)
                 };
-                let rgb = normal.map_or(base, |n| shade(base, light, n, to_viewer, &view));
+                let rgb = normal.map_or(base, |n| shade(base, light, finish, n, to_viewer, &view));
                 if !front {
                     if let Some(slot) = behind.get_mut(i) {
                         *slot = (key, rgb);
@@ -3013,6 +3114,164 @@ mod tests {
             render_colored(&mesh, &colors, &camera, &lit).unwrap(),
             render(&mesh, &camera, &lit).unwrap()
         );
+    }
+
+    /// The shading before finishes (2026-10-22), word for word: what the
+    /// plain finish must still give, bit for bit.
+    fn shade_before_finishes(
+        base: [u8; 3],
+        weights: (f64, f64),
+        normal: Vec3,
+        to_viewer: Vec3,
+        view: &View,
+    ) -> [u8; 3] {
+        let n = if normal.dot(to_viewer) < 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        let light = view.light.unwrap_or(to_viewer);
+        let diffuse = n.dot(light).max(0.0);
+        let specular = (light + to_viewer)
+            .normalized()
+            .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
+        let intensity = weights.0 + weights.1 * diffuse;
+        base.map(|c| {
+            (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        })
+    }
+
+    #[test]
+    fn the_plain_finish_shades_bit_for_bit_as_before_finishes() {
+        let (_, camera) = teapot_mesh_and_camera(160, 120, true);
+        let view = View::new(&camera, 160, 120).unwrap();
+        let to_viewer = Vec3::new(-0.35, 1.0, -0.45).normalized().unwrap();
+        let half = (view.light.unwrap() + to_viewer).normalized().unwrap();
+        let mut compared = 0;
+        // Normals all round the sphere, and finely about the highlight.
+        for i in 0..=200 {
+            for j in 0..=200 {
+                let (theta, phi) = (
+                    std::f64::consts::PI * f64::from(i) / 200.0,
+                    std::f64::consts::TAU * f64::from(j) / 200.0,
+                );
+                let n = Vec3::new(
+                    theta.sin() * phi.cos(),
+                    theta.sin() * phi.sin(),
+                    theta.cos(),
+                );
+                let near = (half + n * 0.05).normalized().unwrap();
+                for normal in [n, near] {
+                    for (base, weights) in [
+                        ([198, 204, 214], (SHADE_AMBIENT, SHADE_DIFFUSE)),
+                        ([200, 40, 30], (SHADE_AMBIENT, SHADE_DIFFUSE)),
+                        (
+                            [255, 140, 0],
+                            (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
+                        ),
+                        ([0, 1, 255], (SHADE_AMBIENT, SHADE_DIFFUSE)),
+                    ] {
+                        assert_eq!(
+                            shade(base, weights, Finish::default(), normal, to_viewer, &view),
+                            shade_before_finishes(base, weights, normal, to_viewer, &view),
+                            "{normal:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 201 * 201 * 2 * 4);
+    }
+
+    #[test]
+    fn a_finish_turns_roughness_into_a_highlight_exponent() {
+        assert!(Finish::default().is_plain());
+        assert_eq!(Finish::default().shininess(), None);
+        let rough = |r: f64| Finish::from_factors(None, Some(r)).shininess();
+        assert_eq!(rough(1.0), Some(1));
+        assert_eq!(rough(0.0), Some(MAX_SHININESS));
+        // About 0.45 is the plain exponent.
+        assert_eq!(rough(114.0 / 255.0), Some(48));
+        // Rougher is a lower exponent, all the way.
+        let exponents: Vec<u32> = (0..=255_u8)
+            .map(|r| {
+                Finish {
+                    metallic: 0,
+                    roughness: Some(r),
+                }
+                .shininess()
+                .unwrap()
+            })
+            .collect();
+        assert!(exponents.windows(2).all(|w| w[0] >= w[1]), "{exponents:?}");
+        // Out of range is clamped, not a number is not given.
+        assert_eq!(Finish::from_factors(Some(2.0), Some(-1.0)).metallic, 255);
+        assert_eq!(
+            Finish::from_factors(Some(f64::NAN), Some(f64::INFINITY)),
+            Finish::default()
+        );
+        let mut colors = FaceColors::new();
+        let finish = Finish::from_factors(Some(1.0), Some(0.25));
+        assert!(colors.set_look(2, Some(([9, 8, 7], finish))));
+        assert_eq!(colors.look(2), Some(([9, 8, 7], finish)));
+        assert_eq!(colors.get(2), Some([9, 8, 7]));
+        assert_eq!(colors.finish(2), finish);
+        assert_eq!(colors.finish(1), Finish::default());
+    }
+
+    #[test]
+    fn metallic_and_roughness_change_only_their_face_and_a_plain_finish_nothing() {
+        let (width, height) = (160, 120);
+        let (mesh, camera) = teapot_mesh_and_camera(width, height, true);
+        let base = params(width, height, 1);
+        let plain = render(&mesh, &camera, &base).unwrap();
+        let face = plain.ids[(60 * width + 80) as usize];
+        assert_ne!(face, NO_FACE);
+        let red = [200, 40, 30];
+        let look = |finish: Finish| {
+            let mut colors = FaceColors::new();
+            assert!(colors.set_look(face, Some((red, finish))));
+            render_colored(&mesh, &colors, &camera, &base).unwrap()
+        };
+        let dielectric = look(Finish::default());
+        let mut colors = FaceColors::new();
+        colors.set(face, Some(red));
+        assert_eq!(
+            dielectric,
+            render_colored(&mesh, &colors, &camera, &base).unwrap()
+        );
+        // Given the plain exponent, the roughness changes nothing either.
+        assert_eq!(
+            look(Finish {
+                metallic: 0,
+                roughness: Some(114)
+            }),
+            dielectric
+        );
+        let metal = look(Finish::from_factors(Some(1.0), Some(0.3)));
+        let rough = look(Finish::from_factors(None, Some(1.0)));
+        let (mut metal_changed, mut rough_changed) = (0, 0);
+        // A metal's highlight is in its own colour, not white: never more
+        // blue than the red dielectric's.
+        for (i, &id) in plain.ids.iter().enumerate() {
+            let at = |frame: &Frame| -> [u8; 3] {
+                [frame.rgb[3 * i], frame.rgb[3 * i + 1], frame.rgb[3 * i + 2]]
+            };
+            if id == face {
+                metal_changed += usize::from(at(&metal) != at(&dielectric));
+                rough_changed += usize::from(at(&rough) != at(&dielectric));
+                assert!(at(&metal)[2] <= at(&dielectric)[2], "pixel {i}");
+            } else {
+                assert_eq!(at(&metal), at(&plain), "pixel {i}");
+                assert_eq!(at(&rough), at(&plain), "pixel {i}");
+            }
+        }
+        assert!(metal_changed > 50, "{metal_changed}");
+        assert!(rough_changed > 50, "{rough_changed}");
+        assert_eq!(metal.ids, plain.ids);
     }
 
     #[test]
