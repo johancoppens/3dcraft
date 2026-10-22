@@ -15,7 +15,7 @@
 mod common;
 
 use common::checked::run;
-use common::{session_in, workdir};
+use common::{error, session_in, workdir};
 use craft3d_testkit::readers::{
     read_3mf_colors, read_mtl, read_obj, read_step_colours, unit_to_byte,
 };
@@ -241,12 +241,104 @@ fn an_obj_export_writes_its_material_library_and_reads_back_with_every_colour() 
     }
     // One material per appearance: red, blue, green with its finish, grey.
     assert_eq!(library.len(), 4, "{library:?}");
-    // A name with a space: the library's name has none.
-    let out = run(&mut s, "file.export", json!({"path": "my parts.obj"}));
-    assert_eq!(out["mtl"], "my_parts.mtl");
-    let text = std::fs::read_to_string(dir.join("my parts.obj")).unwrap();
-    assert!(text.contains("\nmtllib my_parts.mtl\n"));
-    assert!(dir.join("my_parts.mtl").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The files in `dir`, by name.
+fn files(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_obj_export_never_overwrites_its_library_or_a_file_it_was_not_named_for() {
+    let dir = workdir("colour-export", "obj-names");
+    let mut s = model(&dir);
+    // The library would be the OBJ itself: refused, nothing written,
+    // whatever the case.
+    for path in ["x.mtl", "X.MTL", "y.Mtl"] {
+        let said = error(
+            &mut s,
+            "file.export",
+            json!({"path": path, "format": "obj"}),
+        );
+        assert!(said.contains("its own material library"), "{said}");
+    }
+    // A name the library cannot take (white space, `#`): refused with a
+    // name that can, rather than renamed onto another file's library.
+    std::fs::write(dir.join("a_b.mtl"), "not ours").unwrap();
+    for path in ["a b.obj", "a#b.obj", "tab\t.obj"] {
+        let said = error(&mut s, "file.export", json!({"path": path}));
+        assert!(said.contains("white space or `#`"), "{said}");
+    }
+    assert!(error(&mut s, "file.export", json!({"path": "a b.obj"})).contains("`a_b.obj`"));
+    assert_eq!(files(&dir), ["a_b.mtl"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a_b.mtl")).unwrap(),
+        "not ours"
+    );
+    // Without colours any name will do: no library is needed.
+    let mut plain = session_in(&dir);
+    run(&mut plain, "file.new", json!({"units": "mm"}));
+    run(&mut plain, "feature.block", json!({"size": [1, 1, 1]}));
+    let out = run(&mut plain, "file.export", json!({"path": "a b.obj"}));
+    assert!(out["mtl"].is_null());
+    assert_eq!(files(&dir), ["a b.obj", "a_b.mtl"]);
+    // Two OBJ files whose names differ have libraries whose names differ.
+    run(&mut s, "file.export", json!({"path": "a_b.obj"}));
+    run(&mut s, "file.export", json!({"path": "a-b.obj"}));
+    let library = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    assert!(library("a_b.obj").contains("\nmtllib a_b.mtl\n"));
+    assert!(library("a-b.obj").contains("\nmtllib a-b.mtl\n"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_failed_obj_write_leaves_its_library_as_it_was() {
+    let dir = workdir("colour-export", "obj-fails");
+    let mut s = model(&dir);
+    // The OBJ's place is a directory: refused before anything is written.
+    std::fs::create_dir(dir.join("d.obj")).unwrap();
+    let said = error(&mut s, "file.export", json!({"path": "d.obj"}));
+    assert!(said.contains("is a directory"), "{said}");
+    assert_eq!(files(&dir), ["d.obj"]);
+    // An earlier library of that name stays what it was.
+    std::fs::write(dir.join("d.mtl"), "earlier").unwrap();
+    error(&mut s, "file.export", json!({"path": "d.obj"}));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("d.mtl")).unwrap(),
+        "earlier"
+    );
+    // So does a library's place that is a directory, and no OBJ is made.
+    std::fs::create_dir(dir.join("e.mtl")).unwrap();
+    let said = error(&mut s, "file.export", json!({"path": "e.obj"}));
+    assert!(said.contains("is a directory"), "{said}");
+    assert!(!dir.join("e.obj").exists());
+    // In a directory that is not there: refused, nothing written.
+    let said = error(&mut s, "file.export", json!({"path": "nowhere/f.obj"}));
+    assert!(!said.is_empty());
+    assert_eq!(files(&dir), ["d.mtl", "d.obj", "e.mtl"]);
+    // The OBJ write fails after the library was written (its temporary
+    // file cannot be made: a directory has that name): the library is put
+    // back as it was, removed when it was not there.
+    for stem in ["g", "h"] {
+        let temp = format!(".{stem}.obj.{}.tmp", std::process::id());
+        std::fs::create_dir(dir.join(&temp)).unwrap();
+    }
+    std::fs::write(dir.join("g.mtl"), "earlier").unwrap();
+    let said = error(&mut s, "file.export", json!({"path": "g.obj"}));
+    assert!(said.contains("temporary file"), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("g.mtl")).unwrap(),
+        "earlier"
+    );
+    error(&mut s, "file.export", json!({"path": "h.obj"}));
+    assert!(!dir.join("h.mtl").exists());
+    assert!(!dir.join("g.obj").exists() && !dir.join("h.obj").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

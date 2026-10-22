@@ -56,7 +56,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
-        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour). dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -793,9 +793,10 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         }
         model.objects.push(object);
     }
-    // OBJ's colours go to a material library beside it, named after it.
-    let (bytes, library) = if format == MeshFormat::Obj {
-        let (name, at) = obj_library(path);
+    // OBJ's colours go to a material library beside it, named after it
+    // (a document without colours has no materials and needs none).
+    let (bytes, library) = if format == MeshFormat::Obj && !model.materials.is_empty() {
+        let (name, at) = obj_library(path)?;
         let (obj, mtl) = craft3d_meshio::write_obj_with_mtl(&model, &name)
             .map_err(|e| CommandError::new(format!("file.export: {e}")))?;
         (obj.into_bytes(), mtl.map(|mtl| (at, mtl)))
@@ -804,16 +805,17 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             .map_err(|e| CommandError::new(format!("file.export: {e}")))?;
         (bytes, None)
     };
-    // The library first: an OBJ is never left naming one that is not there.
     let library = match library {
         Some((at, mtl)) => {
-            let resolved = session.workspace.resolve_write(&at)?;
-            crate::workspace::write_atomic(&resolved, mtl.as_bytes())?;
+            let library = session.workspace.resolve_write(&at)?;
+            write_with_library(&resolved, &bytes, &library, mtl.as_bytes())?;
             Some(at)
         }
-        None => None,
+        None => {
+            crate::workspace::write_atomic(&resolved, &bytes)?;
+            None
+        }
     };
-    crate::workspace::write_atomic(&resolved, &bytes)?;
     let open = session.document_mut()?;
     Ok(json!({
         "path": path,
@@ -829,29 +831,97 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
 }
 
 /// The material library of the OBJ file at `path`: its name as the OBJ
-/// refers to it (the OBJ's file name with `.mtl` for its extension, white
-/// space and `#` made `_`, since `mtllib` takes a list of names) and its
-/// path beside the OBJ.
+/// refers to it (the OBJ's file name with `.mtl` for its extension) and
+/// its path beside the OBJ. Refused, rather than renamed, for a name the
+/// `mtllib` statement cannot hold (white space or `#`: it takes a list of
+/// names, and `#` starts a comment), so that two OBJ files never share a
+/// library and no file the person did not name is replaced; refused too
+/// when the library would be the OBJ itself (`x.mtl` written as OBJ,
+/// compared without case for file systems that ignore it).
 #[cfg(not(target_arch = "wasm32"))]
-fn obj_library(path: &str) -> (String, String) {
+fn obj_library(path: &str) -> Result<(String, String), CommandError> {
     let at = std::path::Path::new(path);
     let stem = at
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem: String = stem
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c == '#' {
-                '_'
+    if stem.is_empty()
+        || stem
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '#')
+    {
+        return fail(format!(
+            "file.export: `{path}` has colours, which go to a material library named after the file, and an OBJ cannot name a library with white space or `#` in its name; choose a file name without them (e.g. `{}.obj`)",
+            if stem.is_empty() {
+                "parts".to_string()
             } else {
-                c
+                stem.chars()
+                    .map(|c| {
+                        if c.is_whitespace() || c.is_control() || c == '#' {
+                            '_'
+                        } else {
+                            c
+                        }
+                    })
+                    .collect()
             }
-        })
-        .collect();
-    let name = format!("{}.mtl", if stem.is_empty() { "materials" } else { &stem });
+        ));
+    }
+    let name = format!("{stem}.mtl");
+    let own = at
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if own == name.to_lowercase() {
+        return fail(format!(
+            "file.export: `{path}` would be its own material library ({name}); give the OBJ file another extension, e.g. `.obj`"
+        ));
+    }
     let beside = at.with_file_name(&name).to_string_lossy().into_owned();
-    (name, beside)
+    Ok((name, beside))
+}
+
+/// Writes an OBJ file and its material library: the library first, so
+/// that an OBJ never names one that is not there, after checking that
+/// both places can take a file; when the OBJ still cannot be written the
+/// library is put back as it was (removed, or its former content
+/// restored), so a failed export leaves nothing behind.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_with_library(
+    obj_path: &std::path::Path,
+    obj: &[u8],
+    library_path: &std::path::Path,
+    library: &[u8],
+) -> Result<(), CommandError> {
+    for path in [obj_path, library_path] {
+        if path.is_dir() {
+            return fail(format!(
+                "file.export: cannot write `{}`: it is a directory",
+                path.display()
+            ));
+        }
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+            && !parent.is_dir()
+        {
+            return fail(format!(
+                "file.export: cannot write `{}`: there is no directory `{}`",
+                path.display(),
+                parent.display()
+            ));
+        }
+    }
+    let before = std::fs::read(library_path).ok();
+    crate::workspace::write_atomic(library_path, library)?;
+    if let Err(e) = crate::workspace::write_atomic(obj_path, obj) {
+        let _ = match before {
+            Some(bytes) => crate::workspace::write_atomic(library_path, &bytes),
+            None => {
+                std::fs::remove_file(library_path).map_err(|e| CommandError::new(e.to_string()))
+            }
+        };
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The index of the material of `appearance` in an export's `materials`,
