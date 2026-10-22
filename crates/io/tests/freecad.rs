@@ -179,10 +179,13 @@ fn freecad_reads_a_coloured_3mf_box_as_the_same_solid() {
             craft3d_meshio::Material {
                 name: "Cast iron".into(),
                 color: [80, 82, 86],
+                ..craft3d_meshio::Material::default()
             },
             craft3d_meshio::Material {
                 name: "Brass".into(),
                 color: [181, 140, 60],
+                metallic: Some(1.0),
+                roughness: Some(0.3),
             },
         ],
     };
@@ -190,6 +193,22 @@ fn freecad_reads_a_coloured_3mf_box_as_the_same_solid() {
     assert!(String::from_utf8_lossy(&bytes).contains("displaycolor=\"#B58C3C\""));
     let report = freecad_reads("coloured-box.3mf", &bytes);
     println!("coloured-box.3mf: {report:?}");
+    assert_eq!((report.facets, report.points), (12, 8));
+    assert!(report.solid);
+    assert!(close(report.volume, 24.0), "volume {}", report.volume);
+
+    // The same box as OBJ with its material library beside it (`mtllib`,
+    // `usemtl`, the PBR lines): read as the same solid. The colours are
+    // checked by an independent reader (`craft3d_testkit::readers`, in
+    // `crates/engine/tests/colour_export.rs`).
+    let (obj, mtl) = craft3d_meshio::write_obj_with_mtl(&model, "coloured-box.mtl").unwrap();
+    let mtl = mtl.unwrap();
+    assert!(mtl.contains("Pm 1.000000"), "{mtl}");
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("freecad");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("coloured-box.mtl"), mtl).unwrap();
+    let report = freecad_reads("coloured-box.obj", obj.as_bytes());
+    println!("coloured-box.obj: {report:?}");
     assert_eq!((report.facets, report.points), (12, 8));
     assert!(report.solid);
     assert!(close(report.volume, 24.0), "volume {}", report.volume);

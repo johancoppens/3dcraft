@@ -1057,6 +1057,69 @@ fn one_face_in_its_own_colour_on_a_coloured_body_matches_the_cpu_renderer() {
     assert_eq!(check_see_through(&seen), seen.len() * offscreens().len());
 }
 
+/// Metallic and roughness (`Finish`): the reference solids with their
+/// faces in finishes from a mirror to all rough, dielectric and metal,
+/// opaque and seen through; a face without a finish beside them.
+#[test]
+fn faces_with_metallic_and_roughness_match_the_cpu_renderer() {
+    use craft3d_render::Finish;
+    const FINISHES: [(Option<f64>, Option<f64>); 6] = [
+        (Some(1.0), Some(0.0)),
+        (Some(1.0), Some(0.35)),
+        (Some(0.5), Some(0.6)),
+        (None, Some(0.1)),
+        (None, Some(1.0)),
+        (None, None),
+    ];
+    let mut scenes = Vec::new();
+    for (index, mut scene) in solid_scenes().into_iter().take(8).enumerate() {
+        let faces = scene
+            .mesh
+            .face_ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |m| m + 1);
+        let mut colors = FaceColors::new();
+        for face in 0..faces {
+            let k = face as usize + index;
+            let (metallic, roughness) = FINISHES[k % FINISHES.len()];
+            let look = (
+                PALETTE[k % PALETTE.len()],
+                Finish::from_factors(metallic, roughness),
+            );
+            assert!(colors.set_look(face, Some(look)));
+        }
+        // The finishes are in the picture (a solid of one face may have
+        // drawn the plain one).
+        if (0..faces).any(|face| !colors.finish(face).is_plain()) {
+            let mut plain = FaceColors::new();
+            for face in 0..faces {
+                plain.set(face, colors.get(face));
+            }
+            let render = |colors: &FaceColors| {
+                craft3d_render::render_colored(&scene.mesh, colors, &scene.camera, &scene.params)
+                    .unwrap()
+                    .rgb
+            };
+            assert!(render(&plain) != render(&colors), "{}", scene.name);
+        }
+        scene.colors = colors;
+        scene.name = scene.name.replacen("solids-", "finish-", 1);
+        scene.evidence = index < 2;
+        if index % 2 == 1 {
+            scene.params.opacity = OPACITIES[index % 3];
+            scene.name.push_str("-seethrough");
+        }
+        scenes.push(scene);
+    }
+    let (opaque, seen): (Vec<Scene>, Vec<Scene>) = scenes
+        .into_iter()
+        .partition(|scene| scene.params.opacity >= 1.0);
+    assert_eq!(check(&opaque), opaque.len() * offscreens().len());
+    assert_eq!(check_see_through(&seen), seen.len() * offscreens().len());
+}
+
 #[test]
 fn faces_in_colours_of_their_own_match_the_cpu_renderer() {
     let scenes = colored_scenes();

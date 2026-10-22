@@ -33,8 +33,8 @@ pub(crate) const SCENE_FLOATS: usize = 72;
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
 
 /// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
-/// normal, the face id.
-pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
+/// normal, the face id, its colour and its finish.
+pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 6] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -59,6 +59,11 @@ pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
         format: wgpu::VertexFormat::Uint32,
         offset: 40,
         shader_location: 4,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 44,
+        shader_location: 5,
     },
 ];
 

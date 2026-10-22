@@ -94,7 +94,9 @@ mod native {
     /// regeneration (the order `view.render` draws them in).
     /// The bodies of one state, each with the colour of each of its faces
     /// (`appearance`), which a body keeps from one state to the next.
-    type Bodies = Vec<(FeatureId, Arc<Body>, Arc<Vec<Option<[u8; 3]>>>)>;
+    type Bodies = Vec<(FeatureId, Arc<Body>, Arc<Vec<Option<Look>>>)>;
+    /// A face's colour and finish.
+    type Look = ([u8; 3], craft3d_render::Finish);
 
     fn same(a: &Bodies, b: &Bodies) -> bool {
         a.len() == b.len()
@@ -180,9 +182,9 @@ mod native {
                 let vertex_base = u32::try_from(all.positions.len())
                     .map_err(|_| CommandError::new("view.replay: mesh too large"))?;
                 let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
-                for (face, color) in faces.iter().enumerate() {
-                    if let (Some(color), Ok(face)) = (color, u32::try_from(face)) {
-                        colors.set(face_base.saturating_add(face), Some(*color));
+                for (face, look) in faces.iter().enumerate() {
+                    if let (Some(look), Ok(face)) = (look, u32::try_from(face)) {
+                        colors.set_look(face_base.saturating_add(face), Some(*look));
                     }
                 }
                 all.positions.extend(&mesh.positions);
@@ -426,7 +428,7 @@ mod native {
                 .map(|(id, b)| {
                     let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
                         .into_iter()
-                        .map(|a| a.map(|a| a.color))
+                        .map(|a| a.map(|a| (a.color, crate::appearance::finish(&a))))
                         .collect();
                     (id, Arc::clone(b), Arc::new(colors))
                 })

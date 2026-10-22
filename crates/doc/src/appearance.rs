@@ -19,9 +19,8 @@ use crate::{DocError, Document, FeatureId, MAX_NAME_LEN, PersistentName};
 use serde::{Deserialize, Serialize};
 
 /// How a body is drawn. `color` is sRGB; `metallic` and `roughness` are
-/// the two numbers of a metallic-roughness material (0 to 1 each), kept
-/// for exporters and renderers that use them: the viewport shades from
-/// the colour alone so far.
+/// the two numbers of a metallic-roughness material (0 to 1 each), which
+/// both renderers shade with and OBJ's material library carries.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Appearance {
     pub color: [u8; 3],

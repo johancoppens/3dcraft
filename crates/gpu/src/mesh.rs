@@ -3,7 +3,7 @@
 
 use crate::GpuError;
 use craft3d_math::{Bbox3, Vec3};
-use craft3d_render::{FaceColors, RenderError};
+use craft3d_render::{FaceColors, Finish, RenderError};
 use craft3d_tess::Mesh;
 use std::sync::Arc;
 
@@ -11,10 +11,11 @@ use std::sync::Arc;
 pub const MAX_TRIANGLES: usize = 1 << 24;
 
 /// Position, normal, the triangle's own normal (3 × `f32` each), the face
-/// id (`u32`) and the face's own colour (`u32`: red, green and blue in the
+/// id (`u32`), the face's own colour (`u32`: red, green and blue in the
 /// low three bytes, and 1 in the high byte when the face has a colour of
-/// its own, 0 when it is shaded from the base colour).
-pub(crate) const VERTEX_BYTES: usize = 44;
+/// its own, 0 when it is shaded from the base colour) and its finish
+/// (`u32`, [`finish_word`]).
+pub(crate) const VERTEX_BYTES: usize = 48;
 const TRIANGLE_BYTES: usize = 3 * VERTEX_BYTES;
 /// Triangles per vertex buffer: 31 MB, well under every device's limit.
 const CHUNK_TRIANGLES: usize = 1 << 18;
@@ -115,6 +116,7 @@ pub(crate) fn pack(
             current.reserve(left.saturating_mul(TRIANGLE_BYTES));
         }
         let color = color_word(colors.get(face));
+        let finish = finish_word(colors.finish(face));
         for (position, (world, normal)) in [a, b, c].into_iter().zip(corners) {
             push(&mut current, position);
             // A normal that cannot be narrowed counts as "no normal".
@@ -122,6 +124,7 @@ pub(crate) fn pack(
             push(&mut current, flat);
             current.extend_from_slice(&face.to_le_bytes());
             current.extend_from_slice(&color.to_le_bytes());
+            current.extend_from_slice(&finish.to_le_bytes());
             packed.bounds.add(world);
         }
         packed.triangles += 1;
@@ -139,6 +142,13 @@ pub(crate) fn color_word(color: Option<[u8; 3]>) -> u32 {
         Some([r, g, b]) => u32::from_le_bytes([r, g, b, 1]),
         None => 0,
     }
+}
+
+/// A face's finish as the fragment shader takes it: the metallic byte in
+/// the low byte and the highlight's exponent ([`Finish::shininess`]) in
+/// the bits above it, 0 for the plain highlight. The plain finish is 0.
+pub(crate) fn finish_word(finish: Finish) -> u32 {
+    u32::from(finish.metallic) | (finish.shininess().unwrap_or(0) << 8)
 }
 
 pub(crate) struct Chunk {
@@ -259,9 +269,10 @@ mod tests {
         assert_eq!(first[3..6], [0.0, 0.0, 1.0]); // normal
         assert_eq!(first[6..9], [0.0, 0.0, 1.0]); // the triangle's own normal
         assert_eq!(bytes[36..40], 0xDEAD_BEEF_u32.to_le_bytes());
-        // That face has no colour of its own.
+        // That face has no colour of its own, nor a finish.
         assert_eq!(bytes[40..44], [0, 0, 0, 0]);
-        let second = floats(&bytes[44..56]);
+        assert_eq!(bytes[44..48], [0, 0, 0, 0]);
+        let second = floats(&bytes[48..60]);
         assert_eq!(second, [1.0, -2.0, 0.0]);
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
@@ -273,7 +284,27 @@ mod tests {
         for corner in 0..3 {
             let at = corner * VERTEX_BYTES + 40;
             assert_eq!(bytes[at..at + 4], [1, 2, 3, 1]);
+            assert_eq!(bytes[at + 4..at + 8], [0, 0, 0, 0]);
         }
+        // With a finish: the metallic byte and the exponent above it.
+        let finish = Finish {
+            metallic: 200,
+            roughness: Some(255),
+        };
+        assert_eq!(finish_word(finish), 200 | (1 << 8));
+        assert!(colors.set_look(7, Some(([1, 2, 3], finish))));
+        let bytes = &pack(&seven, &colors, 1000).unwrap().chunks[0];
+        for corner in 0..3 {
+            let at = corner * VERTEX_BYTES + 44;
+            assert_eq!(bytes[at..at + 4], [200, 1, 0, 0]);
+        }
+        assert_eq!(
+            finish_word(Finish {
+                metallic: 0,
+                roughness: Some(0)
+            }),
+            256 << 8
+        );
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
     }

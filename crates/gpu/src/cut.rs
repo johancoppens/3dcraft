@@ -136,7 +136,8 @@ pub(crate) fn cap_vertices(mesh: &GpuMesh, cut: &Cut) -> Option<Vec<u8>> {
         // No normals: the cap is not shaded.
         bytes.extend(float_bytes(&[0.0; 6]));
         bytes.extend_from_slice(&SECTION_FACE.to_le_bytes());
-        // Nor coloured: drawn in the section's colour.
+        // Nor coloured: drawn in the section's colour, without a finish.
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
         bytes.extend_from_slice(&0_u32.to_le_bytes());
     }
     Some(bytes)

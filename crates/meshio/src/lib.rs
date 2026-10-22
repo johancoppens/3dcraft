@@ -69,11 +69,17 @@ pub struct Object {
 
 /// A material by its name and colour (sRGB): a `<base>` of the 3MF base
 /// material group, which slicers and viewers show as the colour of what
-/// is made of it. STL and OBJ files have no colours and leave it out.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+/// is made of it, and a material of an OBJ file's material library
+/// ([`write_obj_with_mtl`]). STL files have no colours and leave it out.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Material {
     pub name: String,
     pub color: [u8; 3],
+    /// The metallic factor, 0 to 1, where one is given: only the OBJ
+    /// material library carries it (`Pm`).
+    pub metallic: Option<f64>,
+    /// The roughness, 0 to 1, where one is given (`Pr` in the library).
+    pub roughness: Option<f64>,
 }
 
 impl Material {
@@ -115,6 +121,9 @@ pub enum MeshError {
     BadMaterial {
         object: usize,
     },
+    /// The name of an OBJ file's material library is empty, or has white
+    /// space or a `#` in it.
+    BadLibraryName,
 }
 
 impl fmt::Display for MeshError {
@@ -138,6 +147,10 @@ impl fmt::Display for MeshError {
             MeshError::BadMaterial { object } => write!(
                 f,
                 "object {object}: a material that does not exist, or triangle materials that are not one per triangle"
+            ),
+            MeshError::BadLibraryName => write!(
+                f,
+                "the name of the OBJ material library must not be empty or contain white space or `#`"
             ),
         }
     }
@@ -295,6 +308,135 @@ pub fn write_obj(model: &Model) -> Result<String, MeshError> {
         offset += o.positions.len() as u64;
     }
     Ok(out)
+}
+
+/// The name of the material OBJ triangles without one get when other
+/// triangles of the file have one (OBJ has no "no material": a `usemtl`
+/// holds until the next).
+pub const OBJ_DEFAULT_MATERIAL: &str = "default";
+
+/// Wavefront OBJ with its material library (MTL): the OBJ text, which
+/// names the library with `mtllib` and switches materials with `usemtl`
+/// where the material changes, and the library's text, one `newmtl` per
+/// material with its colour as `Kd` (sRGB over 255, six decimals, so a
+/// byte reads back exactly) and, where given, the roughness as `Pr` and
+/// the metallic factor as `Pm` (the PBR extension of the format that
+/// Blender and others read). Without materials it is [`write_obj`] and no
+/// library.
+///
+/// `library` is the library's file name as the OBJ refers to it: not
+/// empty and without white space or `#` (the statement takes a list of
+/// names, and `#` starts a comment), else an error. Material names are
+/// made OBJ names: a `#` is dropped, other characters than letters,
+/// digits, `-`, `_` and `.` become `_`, and a name met twice gets `_2`,
+/// `_3`, ...
+pub fn write_obj_with_mtl(
+    model: &Model,
+    library: &str,
+) -> Result<(String, Option<String>), MeshError> {
+    model.validate()?;
+    let used = model
+        .objects
+        .iter()
+        .any(|o| o.material.is_some() || o.triangle_materials.iter().any(Option::is_some));
+    if !used {
+        return Ok((write_obj(model)?, None));
+    }
+    if library.is_empty() || library.chars().any(|c| c.is_whitespace() || c == '#') {
+        return Err(MeshError::BadLibraryName);
+    }
+    let names = obj_material_names(&model.materials);
+    let fallback = unique_name(OBJ_DEFAULT_MATERIAL, &names);
+    let mut mtl = String::from("# 3DCraft\n");
+    for (material, name) in model.materials.iter().zip(&names) {
+        let _ = writeln!(mtl, "newmtl {name}");
+        let [r, g, b] = material.color.map(|c| f64::from(c) / 255.0);
+        let _ = writeln!(mtl, "Kd {r:.6} {g:.6} {b:.6}");
+        if let Some(roughness) = material.roughness.filter(|v| v.is_finite()) {
+            let _ = writeln!(mtl, "Pr {:.6}", roughness.clamp(0.0, 1.0));
+        }
+        if let Some(metallic) = material.metallic.filter(|v| v.is_finite()) {
+            let _ = writeln!(mtl, "Pm {:.6}", metallic.clamp(0.0, 1.0));
+        }
+    }
+    let mut out = String::from("# 3DCraft\n");
+    let _ = writeln!(out, "mtllib {library}");
+    let mut offset: u64 = 1;
+    let mut current: Option<Option<u32>> = None;
+    let mut fallback_used = false;
+    for (index, o) in model.objects.iter().enumerate() {
+        let _ = writeln!(out, "o {}", single_line(&o.name));
+        for p in &o.positions {
+            let _ = writeln!(out, "v {} {} {}", p[0], p[1], p[2]);
+        }
+        for (t, tri) in o.triangles.iter().enumerate() {
+            let material = o
+                .triangle_materials
+                .get(t)
+                .copied()
+                .flatten()
+                .or(o.material);
+            if current != Some(material) {
+                let name = match material {
+                    Some(m) => names
+                        .get(m as usize)
+                        .ok_or(MeshError::BadMaterial { object: index })?,
+                    None => {
+                        fallback_used = true;
+                        &fallback
+                    }
+                };
+                let _ = writeln!(out, "usemtl {name}");
+                current = Some(material);
+            }
+            let [a, b, c] = tri.map(|k| u64::from(k) + offset);
+            let _ = writeln!(out, "f {a} {b} {c}");
+        }
+        offset += o.positions.len() as u64;
+    }
+    if fallback_used {
+        // What has no colour: a light grey.
+        let _ = writeln!(mtl, "newmtl {fallback}");
+        let _ = writeln!(mtl, "Kd 0.800000 0.800000 0.800000");
+    }
+    Ok((out, Some(mtl)))
+}
+
+/// The materials' names as OBJ names, unique (see [`write_obj_with_mtl`]).
+fn obj_material_names(materials: &[Material]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(materials.len());
+    for material in materials {
+        let mut name: String = material
+            .name
+            .chars()
+            .filter(|&c| c != '#')
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if name.is_empty() {
+            name = "material".into();
+        }
+        let name = unique_name(&name, &names);
+        names.push(name);
+    }
+    names
+}
+
+/// `name`, or `name_2`, `name_3`, ...: the first that is not in `taken`.
+fn unique_name(name: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|t| t == name) {
+        return name.to_string();
+    }
+    // At most `taken.len() + 1` candidates before one is free.
+    (2..=taken.len().saturating_add(2))
+        .map(|k| format!("{name}_{k}"))
+        .find(|candidate| !taken.iter().any(|t| t == candidate))
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn xml_escape(text: &str) -> String {
@@ -721,10 +863,13 @@ f 4 5 6
                 Material {
                     name: "Steel & co".into(),
                     color: [128, 130, 135],
+                    ..Material::default()
                 },
                 Material {
                     name: "Red".into(),
                     color: [200, 30, 4],
+                    metallic: Some(0.25),
+                    roughness: Some(0.5),
                 },
             ],
         };
@@ -809,5 +954,130 @@ f 4 5 6
         let mut short = m;
         short.objects[1].triangle_materials.pop();
         assert_eq!(write_3mf(&short), Err(MeshError::BadMaterial { object: 1 }));
+    }
+
+    /// The objects of the 3MF test above: a red one, a mixed one, one with
+    /// a material on one triangle only and a plain one.
+    fn coloured_model() -> Model {
+        let mut red = tetrahedron();
+        red.name = "red".into();
+        red.material = Some(1);
+        let mut mixed = tetrahedron();
+        mixed.name = "mixed".into();
+        mixed.material = Some(0);
+        mixed.triangle_materials = vec![None, None, Some(1), Some(0)];
+        let mut some = tetrahedron();
+        some.name = "only some".into();
+        some.triangle_materials = vec![None, Some(1), None, None];
+        Model {
+            unit: Unit::Millimeter,
+            objects: vec![red, mixed, some, tetrahedron()],
+            materials: vec![
+                Material {
+                    name: "#808287".into(),
+                    color: [128, 130, 135],
+                    ..Material::default()
+                },
+                Material {
+                    name: "Red paint".into(),
+                    color: [200, 30, 4],
+                    metallic: Some(0.25),
+                    roughness: Some(0.5),
+                },
+                // Unused, and named like the first once its `#` is gone.
+                Material {
+                    name: "808287".into(),
+                    color: [1, 2, 3],
+                    ..Material::default()
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn obj_materials_go_to_a_library_with_a_usemtl_where_the_material_changes() {
+        let m = coloured_model();
+        let (obj, mtl) = write_obj_with_mtl(&m, "parts.mtl").unwrap();
+        let mtl = mtl.unwrap();
+        assert_eq!(
+            mtl,
+            "# 3DCraft\n\
+             newmtl 808287\n\
+             Kd 0.501961 0.509804 0.529412\n\
+             newmtl Red_paint\n\
+             Kd 0.784314 0.117647 0.015686\n\
+             Pr 0.500000\n\
+             Pm 0.250000\n\
+             newmtl 808287_2\n\
+             Kd 0.003922 0.007843 0.011765\n\
+             newmtl default\n\
+             Kd 0.800000 0.800000 0.800000\n"
+        );
+        // The material of every face, in order, as a reader keeps it: the
+        // last `usemtl` before it.
+        let mut material = None;
+        let mut faces = Vec::new();
+        for line in obj.lines() {
+            if let Some(name) = line.strip_prefix("usemtl ") {
+                material = Some(name.to_string());
+            } else if line.starts_with("f ") {
+                faces.push(material.clone().unwrap());
+            }
+        }
+        let expected: Vec<&str> = [
+            ["Red_paint"; 4],
+            ["808287", "808287", "Red_paint", "808287"],
+            ["default", "Red_paint", "default", "default"],
+            ["default"; 4],
+        ]
+        .concat();
+        assert_eq!(faces, expected);
+        assert_eq!(obj.lines().nth(1), Some("mtllib parts.mtl"));
+        assert_eq!(obj.matches("usemtl ").count(), 7, "{obj}");
+        // The geometry is the plain OBJ's, line for line.
+        let geometry = |text: &str| -> Vec<String> {
+            text.lines()
+                .filter(|l| !l.starts_with("usemtl ") && !l.starts_with("mtllib "))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(geometry(&obj), geometry(&write_obj(&m).unwrap()));
+        // Deterministic.
+        assert_eq!(
+            write_obj_with_mtl(&m, "parts.mtl").unwrap(),
+            (obj.clone(), Some(mtl))
+        );
+    }
+
+    #[test]
+    fn an_obj_without_materials_has_no_library_and_bad_names_are_errors() {
+        let plain = Model {
+            objects: vec![tetrahedron()],
+            ..Model::default()
+        };
+        assert_eq!(
+            write_obj_with_mtl(&plain, "any.mtl").unwrap(),
+            (write_obj(&plain).unwrap(), None)
+        );
+        let m = coloured_model();
+        for name in ["", "two words.mtl", "a#b.mtl", "tab\t.mtl"] {
+            assert_eq!(
+                write_obj_with_mtl(&m, name),
+                Err(MeshError::BadLibraryName),
+                "{name:?}"
+            );
+        }
+        let mut bad = m;
+        bad.objects[2].triangle_materials[1] = Some(9);
+        assert_eq!(
+            write_obj_with_mtl(&bad, "x.mtl"),
+            Err(MeshError::BadMaterial { object: 2 })
+        );
+        // A material named after the fallback moves the fallback aside.
+        let mut taken = coloured_model();
+        taken.materials[0].name = "default".into();
+        let (obj, mtl) = write_obj_with_mtl(&taken, "x.mtl").unwrap();
+        assert!(obj.contains("usemtl default_2\n"), "{obj}");
+        assert!(mtl.unwrap().contains("newmtl default_2\n"));
     }
 }

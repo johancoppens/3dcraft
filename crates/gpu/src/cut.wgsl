@@ -47,6 +47,7 @@ struct CutOut {
     // are several.
     @location(5) {{SIDE_CENTROID}} side: f32,
     @location(6) @interpolate(flat) color: u32,
+    @location(7) @interpolate(flat) finish: u32,
 }
 
 // `Cut::side` at a corner.
@@ -65,6 +66,7 @@ fn vs_cut(in: VertexIn) -> CutOut {
     out.face = whole.face;
     out.dist = whole.dist;
     out.color = whole.color;
+    out.finish = whole.finish;
     out.side = side_of(in);
     return out;
 }
@@ -96,6 +98,7 @@ fn whole_of(in: CutOut) -> VertexOut {
     out.face = in.face;
     out.dist = in.dist;
     out.color = in.color;
+    out.finish = in.finish;
     return out;
 }
 

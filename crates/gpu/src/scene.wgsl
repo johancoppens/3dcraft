@@ -62,6 +62,9 @@ struct VertexIn {
     // rgb in the low three bytes; the high byte is 1 when the face has a
     // colour of its own (`craft3d_render::FaceColors`).
     @location(4) color: u32,
+    // The metallic byte in the low byte, the highlight's exponent above it
+    // (0: the plain one): `craft3d_gpu::mesh::finish_word`.
+    @location(5) finish: u32,
 }
 
 struct VertexOut {
@@ -76,6 +79,7 @@ struct VertexOut {
     // the CPU renderer's `Frame::depth`.
     @location(4) dist: f32,
     @location(5) @interpolate(flat) color: u32,
+    @location(6) @interpolate(flat) finish: u32,
 }
 
 fn vertex(in: VertexIn) -> VertexOut {
@@ -111,6 +115,7 @@ fn vertex(in: VertexIn) -> VertexOut {
     out.flat_normal = in.flat_normal;
     out.face = in.face;
     out.color = in.color;
+    out.finish = in.finish;
     return out;
 }
 
@@ -210,9 +215,22 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
         );
     }
     var weights = scene.shade.xy;
+    // The finish (`Finish`): the metallic factor, the highlight's exponent
+    // and its strength relative to the plain one.
+    var metallic = f32(in.finish & 255u) / 255.0;
+    var shininess = u32(scene.shade.w);
+    var strength = 1.0;
+    let exponent = in.finish >> 8u;
+    if exponent != 0u {
+        shininess = exponent;
+        strength = sqrt((f32(exponent) + 2.0) / (scene.shade.w + 2.0));
+    }
     if highlighted(in.face) {
         base = scene.highlight.rgb;
         weights = scene.highlight_shade.xy;
+        metallic = 0.0;
+        shininess = u32(scene.shade.w);
+        strength = 1.0;
     }
 
     // View::toward_viewer.
@@ -254,10 +272,13 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
         let half_vector = light + to_viewer;
         let len_h = length(half_vector);
         if len_h > 0.0 {
-            specular = powi(max(dot(n, half_vector / len_h), 0.0), u32(scene.shade.w));
+            specular = powi(max(dot(n, half_vector / len_h), 0.0), shininess);
         }
-        let intensity = weights.x + weights.y * diffuse;
-        rgb = base * intensity + vec3<f32>(scene.shade.z * specular);
+        // A metal reflects less diffusely (`SHADE_METAL_DIFFUSE`), and its highlight is in its own
+        // colour: white times (1 - m) plus the base colour times m.
+        let intensity = weights.x + weights.y * diffuse * (1.0 - 0.3 * metallic);
+        let tint = vec3<f32>(1.0 - metallic) + base / 255.0 * metallic;
+        rgb = base * intensity + tint * (scene.shade.z * strength * specular);
     }
     // Rounded here, so the target stores exactly this integer whatever the
     // driver's float-to-unorm conversion does with fractions.
