@@ -43,14 +43,29 @@
 //! (`(FINE · π)²`, about 2,500); below them at most [`NODES`] more are made
 //! per tree. A cover lives as long as the boolean that made it.
 //!
-//! Freeform faces get no cover (their box stands for them, as before):
-//! their patches' bounds would come from the index of their surface,
-//! which is made only for faces that need it.
+//! A freeform face (Bézier or NURBS) is covered the same way from the
+//! Bézier pieces of its surface, one first node per knot span: a piece
+//! lies in the convex hull of its control points (its weights are
+//! positive), so the box of those points, grown by what rounding may have
+//! moved them by ([`PIECE_ROUNDING`]), holds it, and a node's halves are
+//! its piece split in two by de Casteljau's algorithm. How long a node is
+//! comes from the rows of its control polygon. A node keeps only the
+//! index of its span: its piece is cut out of the span's when the node
+//! is halved, so the cover holds the surface's pieces once (a bicubic
+//! one some 512 bytes) beside its nodes. A surface of more than
+//! [`MOST_PIECES`] spans, or with a weight that is not positive, gets no
+//! cover (its box stands for it), and a front holds at most
+//! [`FIRST_NODES`] nodes. Being outside a freeform face by its
+//! cover rests on what it rests on for an analytic one: a point within
+//! the tolerance of the surface and further than the cover's margin from
+//! the face has its nearest point of the surface outside the face, which
+//! is what the outline reads too.
 
+use super::freeform::is_freeform;
 use super::hits::speed_bound;
 use super::outline::{Outline, Side, boxes_meet, nearest};
 use crate::boxtree::BoxTree;
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::OnceLock;
@@ -85,6 +100,25 @@ const NODES: usize = 1 << 13;
 /// without a cover).
 const PAIRS: usize = 4096;
 
+/// A freeform face of more Bézier pieces than this has no cover (its box
+/// stands for it).
+const MOST_PIECES: usize = 4096;
+
+/// How many first nodes a front holds at most: past that, nodes are
+/// first nodes undivided (a coarser front, never a smaller cover). An
+/// analytic face's front stays below it (about `(FINE · π)²`); a freeform
+/// face's has a node per knot span at least.
+const FIRST_NODES: usize = 1 << 12;
+
+/// How far, relative to the largest coordinate, the control points of a
+/// piece may have been moved by rounding: a NURBS surface's pieces come
+/// from knot insertions and are halved down to [`DEPTH`] times, each a
+/// few roundings per point relative to that size (some 10⁻¹⁴ in all);
+/// the cover's margins are tolerances beyond that.
+const PIECE_ROUNDING: f64 = 1e-12;
+
+const _: () = assert!(MOST_PIECES <= FIRST_NODES);
+
 /// What a face's cover is made from: its surface, its box, its outline
 /// (none: no patch is left out by it) and the tolerance.
 #[derive(Clone, Copy)]
@@ -102,6 +136,8 @@ pub(super) struct Face<'a> {
 /// what a question costs then goes into the tree of boxes, which answers
 /// it faster than going down from coarse nodes each time.
 pub(super) struct Cover {
+    /// Of a freeform face: the Bézier pieces of its surface.
+    spans: Option<Vec<(Rect, RationalBezierPatch)>>,
     coarse: Front,
     fine: OnceLock<Option<Front>>,
     asked: AtomicUsize,
@@ -127,7 +163,14 @@ struct Node {
     /// The children that are not wholly outside the face (perhaps none);
     /// `None` for a leaf.
     children: OnceLock<Option<Vec<Node>>>,
+    /// Of a freeform face: the knot span the patch lies in (its piece is
+    /// cut out of the span's piece when the node is halved).
+    span: Option<u32>,
 }
+
+/// The Bézier pieces of a freeform face's surface, one per knot span,
+/// with the parameters each covers.
+type Spans = [(Rect, RationalBezierPatch)];
 
 /// Per direction of the parameters the speed (`|S_u|`, `|S_v|`) and the
 /// bend (`|S_uu|`, `|S_vv|`) at most, over the parameters with `v` in
@@ -202,18 +245,34 @@ fn parameters(surface: &Surface, face: &Bbox3) -> Option<(f64, f64, f64, f64)> {
 /// the numbers are not finite: the face then has no cover.
 fn node(
     face: Face,
-    rect: (f64, f64, f64, f64),
+    rect: Rect,
     depth: u32,
     inside: bool,
+    piece: Option<(&RationalBezierPatch, u32)>,
 ) -> Result<Option<Node>, ()> {
     let (a, b, c, d) = rect;
-    let [_, _, bend_u, bend_v] = bounds(face.surface, (c, d)).ok_or(())?;
-    let (hu, hv) = (b - a, d - c);
-    let mut corners = Bbox3::EMPTY;
-    for (u, v) in [(a, c), (b, c), (a, d), (b, d)] {
-        corners.add(face.surface.eval(u, v));
-    }
-    let stray = (hu * hu * bend_u + hv * hv * bend_v) / 8.0;
+    let (corners, stray) = match piece {
+        // The convex hull of the piece's control points holds it (the
+        // weights are positive), grown by what rounding may have moved
+        // them by in the knot insertions and halvings that made them.
+        Some((piece, _)) => {
+            let hull = piece.control_bbox();
+            let (lo, hi) = hull.corners().ok_or(())?;
+            let size = [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]
+                .into_iter()
+                .fold(0.0, |m: f64, x| m.max(x.abs()));
+            (hull, PIECE_ROUNDING * size)
+        }
+        None => {
+            let [_, _, bend_u, bend_v] = bounds(face.surface, (c, d)).ok_or(())?;
+            let (hu, hv) = (b - a, d - c);
+            let mut corners = Bbox3::EMPTY;
+            for (u, v) in [(a, c), (b, c), (a, d), (b, d)] {
+                corners.add(face.surface.eval(u, v));
+            }
+            (corners, (hu * hu * bend_u + hv * hv * bend_v) / 8.0)
+        }
+    };
     let (lo, hi) = corners.corners().ok_or(())?;
     if !(stray.is_finite() && lo.is_finite() && hi.is_finite()) {
         return Err(());
@@ -250,36 +309,158 @@ fn node(
         inside,
         depth,
         children: OnceLock::new(),
+        span: piece.map(|(_, span)| span),
     }))
 }
 
+/// Parameters: `u` from `.0` to `.1`, `v` from `.2` to `.3`.
+type Rect = (f64, f64, f64, f64);
+
+/// A half of a node: its parameters and, of a freeform face, its piece.
+type Half = (Rect, Option<RationalBezierPatch>);
+
 /// The two halves of node `n`'s parameters, halved along the direction
 /// in which it is longer in space, or `None` when it is no longer than
-/// `widest` either way (or as deep as nodes go).
-fn halves(face: Face, n: &Node, widest: f64) -> Option<[(f64, f64, f64, f64); 2]> {
+/// `widest` either way (or as deep as nodes go). How long a node of a
+/// freeform face is comes from its piece: no curve of constant `v` (or
+/// `u`) on it is longer than the longest row (column) of its control
+/// polygon (a plane meets the curve no more often than the row, so by
+/// Crofton's formula the curve is no longer).
+fn halves(face: Face, n: &Node, widest: f64, spans: &Spans) -> Option<[Half; 2]> {
     let (a, b, c, d) = n.rect;
-    let [speed_u, speed_v, _, _] = bounds(face.surface, (c, d))?;
-    let (long_u, long_v) = ((b - a) * speed_u, (d - c) * speed_v);
+    let piece = match n.span {
+        Some(span) => Some(piece_of(spans, span, n.rect)?),
+        None => None,
+    };
+    let (long_u, long_v) = match &piece {
+        Some(piece) => polygon_lengths(piece)?,
+        None => {
+            let [speed_u, speed_v, _, _] = bounds(face.surface, (c, d))?;
+            ((b - a) * speed_u, (d - c) * speed_v)
+        }
+    };
     if n.depth >= DEPTH || !(long_u > widest || long_v > widest) {
         return None;
     }
     Some(if long_u >= long_v {
         let m = 0.5 * (a + b);
-        [(a, m, c, d), (m, b, c, d)]
+        let (low, high) = match &piece {
+            Some(piece) => {
+                let (low, high) = piece.split_u(0.5);
+                (Some(low), Some(high))
+            }
+            None => (None, None),
+        };
+        [((a, m, c, d), low), ((m, b, c, d), high)]
     } else {
         let m = 0.5 * (c + d);
-        [(a, b, c, m), (a, b, m, d)]
+        let (low, high) = match &piece {
+            Some(piece) => {
+                let (low, high) = piece.split_v(0.5);
+                (Some(low), Some(high))
+            }
+            None => (None, None),
+        };
+        [((a, b, c, m), low), ((a, b, m, d), high)]
     })
+}
+
+/// The piece of the surface over `rect`, cut out of the piece of knot
+/// span `span` (split where `rect` begins and ends; the halves of a node
+/// are then split from it in the middle).
+fn piece_of(spans: &Spans, span: u32, rect: Rect) -> Option<RationalBezierPatch> {
+    let ((u0, u1, v0, v1), whole) = spans.get(usize::try_from(span).ok()?)?;
+    let (a, b, c, d) = rect;
+    let share = |x: f64, from: f64, to: f64| ((x - from) / (to - from)).clamp(0.0, 1.0);
+    let (s0, s1) = (share(a, *u0, *u1), share(b, *u0, *u1));
+    let (t0, t1) = (share(c, *v0, *v1), share(d, *v0, *v1));
+    if !(s0 < s1 && t0 < t1) {
+        return None;
+    }
+    let mut piece = whole.clone();
+    if s1 < 1.0 {
+        piece = piece.split_u(s1).0;
+    }
+    if s0 > 0.0 {
+        piece = piece.split_u(s0 / s1).1;
+    }
+    if t1 < 1.0 {
+        piece = piece.split_v(t1).0;
+    }
+    if t0 > 0.0 {
+        piece = piece.split_v(t0 / t1).1;
+    }
+    Some(piece)
+}
+
+/// The longest row of a piece's control polygon along `u` and the
+/// longest along `v`: bounds on the lengths of its curves of constant
+/// `v` and of constant `u`.
+fn polygon_lengths(piece: &RationalBezierPatch) -> Option<(f64, f64)> {
+    let (du, dv) = piece.degrees();
+    let points = piece.control_points();
+    let at = |i: usize, j: usize| points.get(i.checked_mul(dv + 1)?.checked_add(j)?).copied();
+    let (mut long_u, mut long_v) = (0.0_f64, 0.0_f64);
+    for j in 0..=dv {
+        let mut length = 0.0;
+        for i in 0..du {
+            length += at(i + 1, j)?.distance(at(i, j)?);
+        }
+        long_u = long_u.max(length);
+    }
+    for i in 0..=du {
+        let mut length = 0.0;
+        for j in 0..dv {
+            length += at(i, j + 1)?.distance(at(i, j)?);
+        }
+        long_v = long_v.max(length);
+    }
+    (long_u.is_finite() && long_v.is_finite()).then_some((long_u, long_v))
+}
+
+/// The Bézier pieces of a freeform surface with the parameters each
+/// covers, or `None` for an analytic surface, for weights that are not
+/// all positive (no hull holds the surface then), and for more pieces
+/// than [`MOST_PIECES`].
+fn pieces(surface: &Surface) -> Option<Vec<(Rect, RationalBezierPatch)>> {
+    let spans = match surface {
+        Surface::Bezier(patch) => vec![(
+            (0.0, 1.0, 0.0, 1.0),
+            RationalBezierPatch::from_bezier(patch),
+        )],
+        Surface::Nurbs(s) => {
+            if s.weights().iter().any(|w| w.is_nan() || *w <= 0.0) {
+                return None;
+            }
+            let spans = s.bezier_spans().ok()?;
+            if spans.len() > MOST_PIECES {
+                return None;
+            }
+            spans
+                .into_iter()
+                .map(|span| ((span.u.0, span.u.1, span.v.0, span.v.1), span.patch))
+                .collect()
+        }
+        _ => return None,
+    };
+    let positive = spans.iter().all(|(_, piece)| {
+        piece.is_polynomial()
+            || piece
+                .weight_range()
+                .is_some_and(|(lightest, _)| lightest > 0.0)
+    });
+    positive.then_some(spans)
 }
 
 /// The children of node `n` no longer than `widest`: those not wholly
 /// outside the face (perhaps none), or `None` for a leaf. Where a child's
 /// numbers are not finite the node stays a leaf (nothing of the face is
 /// lost).
-fn divide(face: Face, n: &Node, widest: f64) -> Option<Vec<Node>> {
+fn divide(face: Face, n: &Node, widest: f64, spans: &Spans) -> Option<Vec<Node>> {
     let mut kids = Vec::with_capacity(2);
-    for rect in halves(face, n, widest)? {
-        match node(face, rect, n.depth + 1, n.inside) {
+    for (rect, piece) in halves(face, n, widest, spans)? {
+        let piece = piece.as_ref().zip(n.span);
+        match node(face, rect, n.depth + 1, n.inside, piece) {
             Ok(Some(kid)) => kids.push(kid),
             Ok(None) => {}
             Err(()) => return None,
@@ -291,19 +472,42 @@ fn divide(face: Face, n: &Node, widest: f64) -> Option<Vec<Node>> {
 impl Front {
     /// The first nodes of `face`'s cover no longer than its box's diagonal
     /// over `parts`, or `None` where it has none.
-    fn new(face: Face, parts: f64) -> Option<Front> {
-        let rect = parameters(face.surface, face.bbox)?;
-        let root = match node(face, rect, 0, false) {
-            Ok(Some(root)) => root,
-            // Nothing of the patch is in the face: a face has points, so
+    fn new(face: Face, parts: f64, spans: Option<&Spans>) -> Option<Front> {
+        let mut stack = Vec::new();
+        if let Some(spans) = spans {
+            // A root per Bézier piece of the surface; pieces wholly
+            // outside the face are left out.
+            for (index, (rect, piece)) in spans.iter().enumerate() {
+                let span = u32::try_from(index).ok()?;
+                match node(face, *rect, 0, false, Some((piece, span))) {
+                    Ok(Some(root)) => stack.push(root),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
+            }
+            stack.reverse();
+        } else {
+            let rect = parameters(face.surface, face.bbox)?;
+            match node(face, rect, 0, false, None) {
+                Ok(Some(root)) => stack.push(root),
+                Ok(None) | Err(()) => return None,
+            }
+        }
+        if stack.is_empty() {
+            // Nothing of the surface is in the face: a face has points, so
             // this is a face its box must stand for.
-            Ok(None) | Err(()) => return None,
-        };
+            return None;
+        }
         let front = face.bbox.diagonal() / parts;
+        let spans = spans.unwrap_or_default();
         let mut roots = Vec::new();
-        let mut stack = vec![root];
         while let Some(n) = stack.pop() {
-            match divide(face, &n, front) {
+            // (Past [`FIRST_NODES`] the rest are first nodes as they are.)
+            if roots.len() + stack.len() >= FIRST_NODES {
+                roots.push(n);
+                continue;
+            }
+            match divide(face, &n, front, spans) {
                 Some(kids) => stack.extend(kids),
                 None => roots.push(n),
             }
@@ -329,14 +533,21 @@ impl Front {
 
 impl Cover {
     /// The cover of `face`, or `None` where it has none (a freeform
-    /// surface, numbers that are not finite): its box then stands for it.
+    /// surface of too many pieces or of weights that are not positive,
+    /// numbers that are not finite): its box then stands for it.
     pub(super) fn new(face: Face) -> Option<Cover> {
         let widest = face.bbox.diagonal() / PARTS;
         if !(widest.is_finite() && face.tol.is_finite()) {
             return None;
         }
+        let spans = if is_freeform(face.surface) {
+            Some(pieces(face.surface)?)
+        } else {
+            None
+        };
         Some(Cover {
-            coarse: Front::new(face, FRONT)?,
+            coarse: Front::new(face, FRONT, spans.as_deref())?,
+            spans,
             fine: OnceLock::new(),
             asked: AtomicUsize::new(0),
             made: AtomicUsize::new(0),
@@ -351,7 +562,7 @@ impl Cover {
             return &self.coarse;
         }
         self.fine
-            .get_or_init(|| Front::new(face, FINE))
+            .get_or_init(|| Front::new(face, FINE, self.spans.as_deref()))
             .as_ref()
             .unwrap_or(&self.coarse)
     }
@@ -364,7 +575,12 @@ impl Cover {
                 if self.made.load(Ordering::Relaxed) >= NODES {
                     return None;
                 }
-                let kids = divide(face, n, self.widest);
+                let kids = divide(
+                    face,
+                    n,
+                    self.widest,
+                    self.spans.as_deref().unwrap_or_default(),
+                );
                 if let Some(kids) = &kids {
                     self.made.fetch_add(kids.len(), Ordering::Relaxed);
                 }
@@ -816,6 +1032,177 @@ mod tests {
                 // And on the wall that is there.
                 let there = turn.point(Vec3::new(k, 0.0, k));
                 assert!(cover.holds(of, there, 2.0 * tol), "at {k}");
+            }
+        }
+    }
+
+    /// A block with a freeform roof (a bicubic Bézier patch, or the same
+    /// as a NURBS surface), at scale `k` in `frame`.
+    fn domed(frame: &Frame, k: f64, nurbs: bool) -> Body {
+        craft3d_testkit::trimmed::domed_block(frame, 4.0 * k, 3.0 * k, 2.0 * k, nurbs)
+            .unwrap()
+            .body
+    }
+
+    fn freeform(body: &Body, face: usize) -> bool {
+        matches!(
+            body.faces[face].surface,
+            craft3d_geom::Surface::Bezier(_) | craft3d_geom::Surface::Nurbs(_)
+        )
+    }
+
+    /// Every point of a freeform face is in its cover: the roof of a
+    /// domed block (Bézier and NURBS), the same roof with a round hole
+    /// through it and with a ball sunk into it (trimmed faces), points
+    /// inside the faces and along their edges, at three scales and
+    /// turned; and a point of the roof's surface in the middle of the
+    /// hole, half the hole's radius from the face, is outside the cover.
+    #[test]
+    fn every_point_of_a_freeform_face_is_in_its_cover() {
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            for turn in turns() {
+                let frame = turn
+                    .frame(
+                        &Frame::new(
+                            Vec3::new(0.3, -0.2, 0.1) * k,
+                            Vec3::new(0.0, 0.0, 1.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                for nurbs in [false, true] {
+                    let roof = domed(&frame, k, nurbs);
+                    let drill = turn
+                        .frame(
+                            &Frame::new(
+                                Vec3::new(2.3, 1.2, -1.0) * k,
+                                Vec3::new(0.0, 0.0, 1.0),
+                                Vec3::new(1.0, 0.0, 0.0),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let holed = solve(
+                        &roof,
+                        &primitives::cylinder(&drill, 0.5 * k, 6.0 * k).unwrap(),
+                        BooleanOp::Subtract,
+                        k,
+                    );
+                    let ball = turn
+                        .frame(
+                            &Frame::new(
+                                Vec3::new(1.2, 1.8, 2.1) * k,
+                                Vec3::new(0.0, 0.0, 1.0),
+                                Vec3::new(1.0, 0.0, 0.0),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let sunk = solve(
+                        &roof,
+                        &primitives::sphere(&ball, 0.6 * k).unwrap(),
+                        BooleanOp::Subtract,
+                        k,
+                    );
+                    for body in [&roof, &holed, &sunk] {
+                        let solid = solid(body, k);
+                        let mut asked = 0;
+                        for face in (0..body.faces.len()).filter(|&f| freeform(body, f)) {
+                            let Some((cover, of)) = solid.cover(face, tol) else {
+                                panic!("a freeform face has a cover");
+                            };
+                            asked += 1;
+                            let outline = solid.outline(face).unwrap();
+                            let mut points = outline.interior_points(tol, 4.0 * tol, 24).unwrap();
+                            for seg in outline.loops.iter().flatten() {
+                                points.extend((0..=8).map(|i| seg.at(f64::from(i) / 8.0)));
+                            }
+                            for p in points {
+                                assert!(cover.holds(of, p, 2.0 * tol), "face {face} at {k}: {p:?}");
+                            }
+                        }
+                        assert_eq!(asked, 1);
+                    }
+                    // The roof's surface over the middle of the hole.
+                    let solid = solid(&holed, k);
+                    let face = (0..holed.faces.len())
+                        .find(|&f| freeform(&holed, f))
+                        .unwrap();
+                    let (cover, of) = solid.cover(face, tol).unwrap();
+                    // (The drill's axis is at x 2, y 1.4 of the roof's
+                    // 4 by 3: half way along u, 1.4 / 3 along v.)
+                    let surface = &holed.faces[face].surface;
+                    let ((u0, u1), (v0, v1)) = surface.domain();
+                    let on = surface.eval(u0 + 0.5 * (u1 - u0), v0 + (1.4 / 3.0) * (v1 - v0));
+                    assert!(!cover.holds(of, on, 2.0 * tol), "at {k}");
+                }
+            }
+        }
+    }
+
+    /// Freeform faces with covers and without: a domed block with a block
+    /// inside it under the roof (the roof's box holds the block's top and
+    /// sides, its cover does not come near them), with a ball sunk into
+    /// the roof, and with a second domed block moved and turned so that
+    /// the roofs cross; united, cut and intersected, Bézier and NURBS
+    /// roofs, at three scales and turned: the same results bit for bit,
+    /// and fewer pairs intersected beside the inner block.
+    #[test]
+    fn freeform_covers_change_nothing_but_the_pairs_intersected() {
+        for k in SCALES {
+            for (t, turn) in turns().iter().enumerate() {
+                let at = |origin: Vec3| {
+                    turn.frame(
+                        &Frame::new(
+                            origin * k,
+                            Vec3::new(0.0, 0.0, 1.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                };
+                for nurbs in [false, true] {
+                    let roof = domed(&at(Vec3::ZERO), k, nurbs);
+                    let inner =
+                        primitives::block(&at(Vec3::new(1.5, 1.0, 0.5)), k, k, 0.95 * k).unwrap();
+                    let ball = primitives::sphere(&at(Vec3::new(1.2, 1.8, 2.1)), 0.6 * k).unwrap();
+                    let other = domed(
+                        &turn
+                            .frame(
+                                &Frame::new(
+                                    Vec3::new(1.1, 0.7, 0.3) * k,
+                                    Vec3::new(0.05, -0.03, 1.0),
+                                    Vec3::new(1.0, 0.2, 0.0),
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap(),
+                        k,
+                        !nurbs,
+                    );
+                    for (what, b) in [("inner", &inner), ("ball", &ball), ("roofs", &other)] {
+                        for op in [BooleanOp::Union, BooleanOp::Subtract, BooleanOp::Intersect] {
+                            let ((with, pairs), (without, all)) = both(&roof, b, op, k);
+                            let name = format!("{what} {op:?} at {k}, turn {t}, nurbs {nurbs}");
+                            match (&with, &without) {
+                                (Ok(x), Ok(y)) => assert!(x == y, "{name}: the results differ"),
+                                (Err(x), Err(y)) => assert_eq!(x, y, "{name}"),
+                                _ => panic!(
+                                    "{name}: {:?} against {:?}",
+                                    with.is_ok(),
+                                    without.is_ok()
+                                ),
+                            }
+                            assert!(pairs <= all, "{name}");
+                            if what == "inner" {
+                                assert!(pairs < all, "{name}: {pairs} pairs of {all}");
+                            }
+                        }
+                    }
+                }
             }
         }
     }
