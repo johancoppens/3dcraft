@@ -68,7 +68,9 @@ struct VertexIn {
 }
 
 struct VertexOut {
-    @builtin(position) clip: vec4<f32>,
+    // Invariant: the opaque scene in two steps (`FirstWrite`) compares
+    // the depth of one pipeline with that of another for equality.
+    @builtin(position) @invariant clip: vec4<f32>,
     // From the eye to the surface point, in model axes.
     @location(0) rel: vec3<f32>,
     @location(1) normal: vec3<f32>,

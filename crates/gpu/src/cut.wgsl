@@ -36,7 +36,8 @@ const PARALLEL: f32 = 0.9999847412109375;
 const SECTION_FACE: u32 = 4294967294u;
 
 struct CutOut {
-    @builtin(position) clip: vec4<f32>,
+    // Invariant, as `scene.wgsl`'s: the two steps (`renderer::Step`).
+    @builtin(position) @invariant clip: vec4<f32>,
     @location(0) rel: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) @interpolate(flat) flat_normal: vec3<f32>,

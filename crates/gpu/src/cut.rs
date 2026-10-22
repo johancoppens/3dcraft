@@ -31,7 +31,7 @@
 
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::renderer::{
-    MESH_ATTRIBUTES, float_bytes, fragment_depth, scene_depth, scene_primitive, scene_source_for,
+    MESH_ATTRIBUTES, Step, float_bytes, fragment_depth, scene_primitive, scene_source_for,
 };
 use craft3d_math::Vec3;
 use craft3d_render::{Cut, RenderParams, SECTION_FACE, SECTION_MARGIN};
@@ -275,6 +275,29 @@ pub(crate) fn pipeline(
     samples: u32,
     depth: bool,
 ) -> wgpu::RenderPipeline {
+    pipeline_in(
+        device,
+        module,
+        entry,
+        groups,
+        targets,
+        samples,
+        depth.then_some(Step::One),
+    )
+}
+
+/// [`pipeline`] with the depth test of `step` (`renderer::Step`), or
+/// without a depth test (`None`).
+pub(crate) fn pipeline_in(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    entry: &str,
+    groups: &[Option<&wgpu::BindGroupLayout>],
+    targets: &[Option<wgpu::ColorTargetState>],
+    samples: u32,
+    step: Option<Step>,
+) -> wgpu::RenderPipeline {
+    let targets = step.map_or_else(|| targets.to_vec(), |step| step.targets(targets));
     let label = format!("craft3d cut {entry}");
     let vertex = if entry == "fs_parity" {
         "vs_parity"
@@ -300,7 +323,7 @@ pub(crate) fn pipeline(
             })],
         },
         primitive: scene_primitive(),
-        depth_stencil: depth.then(scene_depth),
+        depth_stencil: step.map(Step::depth_stencil),
         multisample: wgpu::MultisampleState {
             count: samples,
             mask: !0,
@@ -310,7 +333,7 @@ pub(crate) fn pipeline(
             module,
             entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets,
+            targets: &targets,
         }),
         multiview_mask: None,
         cache: None,

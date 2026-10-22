@@ -23,6 +23,10 @@ pub(crate) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 /// OpenGL ES) and stores both without conversion.
 pub(crate) const DATA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The depth of [`DEPTH_FORMAT`] with a stencil, for the scene drawn in two
+/// steps ([`Step`]).
+pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
+    wgpu::TextureFormat::Depth32FloatStencil8;
 
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
@@ -261,7 +265,10 @@ pub(crate) struct Targets {
     ssaa: u32,
     samples_color: wgpu::TextureView,
     samples_data: wgpu::TextureView,
+    /// The front's depth (and stencil, in two steps), as the attachment.
     samples_depth: wgpu::TextureView,
+    /// The same depth alone, for the passes that read it.
+    samples_depth_read: wgpu::TextureView,
     pub color: wgpu::Texture,
     pub data: wgpu::Texture,
     color_view: wgpu::TextureView,
@@ -288,18 +295,18 @@ struct CutPipelines {
     /// Counts what is left out.
     parity: wgpu::RenderPipeline,
     /// The scene without what is cut away.
-    scene: wgpu::RenderPipeline,
+    scene: Drawing,
     /// The cap, also as the front of a see-through picture.
-    cap: wgpu::RenderPipeline,
+    cap: Drawing,
     cap_layout: wgpu::BindGroupLayout,
     /// For a see-through picture; `None` on a device that draws none.
     peeled: Option<CutPeeled>,
 }
 
 struct CutPeeled {
-    front: wgpu::RenderPipeline,
-    behind: wgpu::RenderPipeline,
-    cap_behind: wgpu::RenderPipeline,
+    front: Drawing,
+    behind: Drawing,
+    cap_behind: Drawing,
     cap_behind_layout: wgpu::BindGroupLayout,
 }
 
@@ -308,6 +315,7 @@ impl CutPipelines {
         device: &wgpu::Device,
         scene_layout: &wgpu::BindGroupLayout,
         peel_layout: Option<&wgpu::BindGroupLayout>,
+        two: bool,
     ) -> CutPipelines {
         let module = cut::module(device, false, false);
         let cap_layout = cut::cap_layout(device, false, false);
@@ -321,53 +329,26 @@ impl CutPipelines {
             1,
             false,
         );
-        let scene = cut::pipeline(
-            device,
-            &module,
-            "fs_main_cut",
-            &[Some(scene_layout)],
-            &frame,
-            1,
-            true,
-        );
-        let cap = cut::pipeline(
-            device,
-            &module,
-            "fs_cap",
-            &[Some(scene_layout), Some(&cap_layout)],
-            &frame,
-            1,
-            true,
-        );
+        let drawing = |entry: &str, groups: &[Option<&wgpu::BindGroupLayout>], targets: &[_]| {
+            Drawing::build(two, |step| {
+                cut::pipeline_in(device, &module, entry, groups, targets, 1, Some(step))
+            })
+        };
+        let scene = drawing("fs_main_cut", &[Some(scene_layout)], &frame);
+        let cap = drawing("fs_cap", &[Some(scene_layout), Some(&cap_layout)], &frame);
         let peeled = peel_layout.map(|peel_layout| {
             let cap_behind_layout = cut::cap_layout(device, false, true);
             CutPeeled {
-                front: cut::pipeline(
-                    device,
-                    &module,
-                    "fs_front_cut",
-                    &[Some(scene_layout)],
-                    &frame,
-                    1,
-                    true,
-                ),
-                behind: cut::pipeline(
-                    device,
-                    &module,
+                front: drawing("fs_front_cut", &[Some(scene_layout)], &frame),
+                behind: drawing(
                     "fs_behind_cut",
                     &[Some(scene_layout), Some(peel_layout)],
                     &[target(COLOR_FORMAT)],
-                    1,
-                    true,
                 ),
-                cap_behind: cut::pipeline(
-                    device,
-                    &module,
+                cap_behind: drawing(
                     "fs_cap_behind",
                     &[Some(scene_layout), Some(&cap_behind_layout)],
                     &[target(COLOR_FORMAT)],
-                    1,
-                    true,
                 ),
                 cap_behind_layout,
             }
@@ -395,8 +376,8 @@ struct PeelTargets {
 /// The pipelines of a see-through picture (`peel.rs`).
 struct SeeThrough {
     /// The scene with the alpha that says what is seen through.
-    front_pipeline: wgpu::RenderPipeline,
-    behind_pipeline: wgpu::RenderPipeline,
+    front: Drawing,
+    behind: Drawing,
     blend_pipeline: wgpu::RenderPipeline,
     peel_layout: wgpu::BindGroupLayout,
     blend_layout: wgpu::BindGroupLayout,
@@ -409,7 +390,10 @@ struct SeeThrough {
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    scene_pipeline: wgpu::RenderPipeline,
+    /// Whether the passes over the triangles are drawn in two steps
+    /// ([`Step`]).
+    two: bool,
+    scene: Drawing,
     scene_uniforms: wgpu::Buffer,
     scene_layout: wgpu::BindGroupLayout,
     scene_bind: wgpu::BindGroup,
@@ -432,6 +416,172 @@ pub struct Renderer {
     drawn: bool,
     /// Identifies this renderer in the meshes it uploads.
     token: Arc<()>,
+}
+
+/// The device feature for drawing in two steps ([`Step`]).
+pub(crate) const TWO_STEPS_FEATURE: wgpu::Features = wgpu::Features::DEPTH32FLOAT_STENCIL8;
+
+/// The step a pass over the triangles is drawn in. In one step a sample is
+/// written by every fragment nearer than those before it. In two steps
+/// every sample is written once, by the first fragment drawn of those
+/// nearest to the eye, which is the same picture: first the depth alone
+/// (the colour targets masked), then the colour where the depth equals the
+/// nearest and the stencil is still 0, which the write then raises. On
+/// the AMD Radeon 8060S (Mesa 26.2, RADV and radeonsi alike) one of the
+/// several writes of a sample in one step lands out of order now and then
+/// (one frame of the teapot in about 250, more seen through) while its
+/// delta colour compression is on, and the surface behind stays
+/// (docs/design/rendering.md, *A frame that differed once*); with one
+/// write per sample there is no order to lose. Both steps run the same
+/// shaders, so a fragment's depth is the same number in both (the
+/// position is `@invariant`; on OpenGL the fragment shader writes the
+/// depth with the same arithmetic) and a fragment discarded in one is
+/// discarded in the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    One,
+    Depth,
+    Color,
+}
+
+impl Step {
+    /// The depth (and stencil) state of a pipeline of this step:
+    /// `Greater`, because the depth is reversed (`scene.wgsl`), so that on
+    /// a tie the triangle drawn first stays.
+    pub(crate) fn depth_stencil(self) -> wgpu::DepthStencilState {
+        // Where the depth is the nearest and nothing was written yet
+        // (reference 0), and then not again.
+        let once = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::Equal,
+            fail_op: wgpu::StencilOperation::Keep,
+            depth_fail_op: wgpu::StencilOperation::Keep,
+            pass_op: wgpu::StencilOperation::IncrementClamp,
+        };
+        let (format, depth_write, depth_compare, stencil) = match self {
+            Step::One => (
+                DEPTH_FORMAT,
+                true,
+                wgpu::CompareFunction::Greater,
+                wgpu::StencilState::default(),
+            ),
+            Step::Depth => (
+                DEPTH_STENCIL_FORMAT,
+                true,
+                wgpu::CompareFunction::Greater,
+                wgpu::StencilState::default(),
+            ),
+            Step::Color => (
+                DEPTH_STENCIL_FORMAT,
+                false,
+                wgpu::CompareFunction::Equal,
+                wgpu::StencilState {
+                    front: once,
+                    back: once,
+                    read_mask: 0xff,
+                    write_mask: 0xff,
+                },
+            ),
+        };
+        wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(depth_compare),
+            stencil,
+            bias: wgpu::DepthBiasState::default(),
+        }
+    }
+
+    /// `targets` as this step writes them: not at all in the depth step.
+    pub(crate) fn targets(
+        self,
+        targets: &[Option<wgpu::ColorTargetState>],
+    ) -> Vec<Option<wgpu::ColorTargetState>> {
+        targets
+            .iter()
+            .map(|t| {
+                t.clone().map(|mut t| {
+                    if self == Step::Depth {
+                        t.write_mask = wgpu::ColorWrites::empty();
+                    }
+                    t
+                })
+            })
+            .collect()
+    }
+}
+
+/// A pass over the triangles: one pipeline, or one per [`Step`].
+pub(crate) enum Drawing {
+    One(wgpu::RenderPipeline),
+    Two {
+        depth: wgpu::RenderPipeline,
+        color: wgpu::RenderPipeline,
+    },
+}
+
+impl Drawing {
+    /// The pipelines `make` makes for each step, in two steps when `two`.
+    pub(crate) fn build(two: bool, make: impl Fn(Step) -> wgpu::RenderPipeline) -> Drawing {
+        if two {
+            Drawing::Two {
+                depth: make(Step::Depth),
+                color: make(Step::Color),
+            }
+        } else {
+            Drawing::One(make(Step::One))
+        }
+    }
+}
+
+/// One draw of a pass: its drawing and what sets the rest (bind groups,
+/// vertex buffers) and draws, given the pipeline of the step.
+type Draw<'a> = (
+    &'a Drawing,
+    &'a dyn Fn(&mut wgpu::RenderPass<'_>, &wgpu::RenderPipeline),
+);
+
+/// Draws `draws` in order; those in two steps all for their depth first,
+/// then all for their colour.
+fn draw_in_steps(pass: &mut wgpu::RenderPass<'_>, draws: &[Draw<'_>]) {
+    for (drawing, draw) in draws {
+        match drawing {
+            Drawing::One(pipeline)
+            | Drawing::Two {
+                depth: pipeline, ..
+            } => draw(pass, pipeline),
+        }
+    }
+    pass.set_stencil_reference(0);
+    for (drawing, draw) in draws {
+        if let Drawing::Two { color, .. } = drawing {
+            draw(pass, color);
+        }
+    }
+}
+
+/// The depth attachment of a pass over the triangles: cleared, kept when
+/// `store`, with its stencil cleared too when it has one (`two`).
+fn depth_attachment(
+    view: &wgpu::TextureView,
+    two: bool,
+    store: bool,
+) -> wgpu::RenderPassDepthStencilAttachment<'_> {
+    let store = if store {
+        wgpu::StoreOp::Store
+    } else {
+        wgpu::StoreOp::Discard
+    };
+    wgpu::RenderPassDepthStencilAttachment {
+        view,
+        depth_ops: Some(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(0.0),
+            store,
+        }),
+        stencil_ops: two.then_some(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(0),
+            store: wgpu::StoreOp::Discard,
+        }),
+    }
 }
 
 /// Whether the scene passes on `device` write their depth in the fragment
@@ -522,18 +672,9 @@ pub(crate) fn scene_primitive() -> wgpu::PrimitiveState {
     }
 }
 
-pub(crate) fn scene_depth() -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: DEPTH_FORMAT,
-        depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::Greater),
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    }
-}
-
 /// A pipeline over the triangles of a mesh with the vertex stage of
-/// `scene.wgsl`, for the passes of a see-through picture.
+/// `scene.wgsl`, in `step`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn scene_pipeline(
     device: &wgpu::Device,
     label: &str,
@@ -542,7 +683,9 @@ pub(crate) fn scene_pipeline(
     groups: &[Option<&wgpu::BindGroupLayout>],
     targets: &[Option<wgpu::ColorTargetState>],
     samples: u32,
+    step: Step,
 ) -> wgpu::RenderPipeline {
+    let targets = step.targets(targets);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: groups,
@@ -562,7 +705,7 @@ pub(crate) fn scene_pipeline(
             })],
         },
         primitive: scene_primitive(),
-        depth_stencil: Some(scene_depth()),
+        depth_stencil: Some(step.depth_stencil()),
         multisample: wgpu::MultisampleState {
             count: samples,
             mask: !0,
@@ -572,7 +715,7 @@ pub(crate) fn scene_pipeline(
             module,
             entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets,
+            targets: &targets,
         }),
         multiview_mask: None,
         cache: None,
@@ -580,28 +723,34 @@ pub(crate) fn scene_pipeline(
 }
 
 impl SeeThrough {
-    fn build(device: &wgpu::Device, scene_layout: &wgpu::BindGroupLayout) -> SeeThrough {
+    fn build(device: &wgpu::Device, scene_layout: &wgpu::BindGroupLayout, two: bool) -> SeeThrough {
         let module = peel::scene_module(device, false);
         let peel_layout = peel::peel_layout(device, false);
         let blend_layout = peel::blend_layout(device, false, true);
-        let front_pipeline = scene_pipeline(
-            device,
-            "craft3d front",
-            &module,
-            "fs_front",
-            &[Some(scene_layout)],
-            &[target(COLOR_FORMAT), target(DATA_FORMAT)],
-            1,
-        );
-        let behind_pipeline = scene_pipeline(
-            device,
-            "craft3d behind",
-            &module,
-            "fs_behind",
-            &[Some(scene_layout), Some(&peel_layout)],
-            &[target(COLOR_FORMAT)],
-            1,
-        );
+        let front = Drawing::build(two, |step| {
+            scene_pipeline(
+                device,
+                "craft3d front",
+                &module,
+                "fs_front",
+                &[Some(scene_layout)],
+                &[target(COLOR_FORMAT), target(DATA_FORMAT)],
+                1,
+                step,
+            )
+        });
+        let behind = Drawing::build(two, |step| {
+            scene_pipeline(
+                device,
+                "craft3d behind",
+                &module,
+                "fs_behind",
+                &[Some(scene_layout), Some(&peel_layout)],
+                &[target(COLOR_FORMAT)],
+                1,
+                step,
+            )
+        });
         let blend_pipeline = peel::blend_pipeline(
             device,
             &peel::blend_module(device, false),
@@ -609,8 +758,8 @@ impl SeeThrough {
             true,
         );
         SeeThrough {
-            front_pipeline,
-            behind_pipeline,
+            front,
+            behind,
             blend_pipeline,
             peel_layout,
             blend_layout,
@@ -665,12 +814,22 @@ impl Renderer {
     /// Builds the pipelines on `device`. Nothing is drawn or allocated for
     /// an image until the first [`Renderer::draw`].
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Renderer, GpuError> {
-        let mut renderer = guarded(device, || Self::build(device, queue))?;
+        Self::with_steps(device, queue, device.features().contains(TWO_STEPS_FEATURE))
+    }
+
+    /// [`Renderer::new`], in two steps ([`Step`]) or in one.
+    fn with_steps(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        two: bool,
+    ) -> Result<Renderer, GpuError> {
+        let mut renderer = guarded(device, || Self::build(device, queue, two))?;
         // On its own: a device that cannot do this still draws opaque
         // pictures, and says why when asked for a see-through one.
-        renderer.see_through =
-            guarded(device, || SeeThrough::build(device, &renderer.scene_layout))
-                .map_err(|e| e.to_string());
+        renderer.see_through = guarded(device, || {
+            SeeThrough::build(device, &renderer.scene_layout, two)
+        })
+        .map_err(|e| e.to_string());
         Ok(renderer)
     }
 
@@ -687,7 +846,7 @@ impl Renderer {
         if self.cut.is_none() {
             let peel_layout = self.see_through.as_ref().ok().map(|s| &s.peel_layout);
             let built = guarded(&self.device, || {
-                CutPipelines::build(&self.device, &self.scene_layout, peel_layout)
+                CutPipelines::build(&self.device, &self.scene_layout, peel_layout, self.two)
             })
             .map_err(|e| e.to_string());
             self.cut = Some(built);
@@ -706,7 +865,27 @@ impl Renderer {
         self.see_through = Err("it was turned off".to_string());
     }
 
-    fn build(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
+    /// Draws every pass over the triangles in one step, as on a device
+    /// without 32-bit float depth with a stencil ([`Step`]): the renderer
+    /// is made again, and meshes uploaded before are its own still. For
+    /// the test that both ways give the same picture, and for measuring
+    /// the Radeon's lost writes.
+    #[doc(hidden)]
+    pub fn in_one_step(&mut self) -> Result<(), GpuError> {
+        let mut again = Self::with_steps(&self.device, &self.queue, false)?;
+        again.token = Arc::clone(&self.token);
+        *self = again;
+        Ok(())
+    }
+
+    /// Whether the passes over the triangles are drawn in two steps
+    /// ([`Step`]).
+    #[doc(hidden)]
+    pub fn in_two_steps(&self) -> bool {
+        self.two
+    }
+
+    fn build(device: &wgpu::Device, queue: &wgpu::Queue, two: bool) -> Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
             source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
@@ -741,51 +920,19 @@ impl Renderer {
                 resource: scene_uniforms.as_entire_binding(),
             }],
         });
-        let scene_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("craft3d scene"),
-                bind_group_layouts: &[Some(&scene_layout)],
-                immediate_size: 0,
-            });
-        let attributes = MESH_ATTRIBUTES;
-        let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("craft3d scene"),
-            layout: Some(&scene_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &scene_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_BYTES as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            // Both sides of every triangle are drawn: sheets are seen from
-            // either side, as on the CPU.
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..wgpu::PrimitiveState::default()
-            },
-            // `Greater` (reversed depth, `scene.wgsl`): on a tie the
-            // triangle drawn first stays.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &scene_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[target(COLOR_FORMAT), target(DATA_FORMAT)],
-            }),
-            multiview_mask: None,
-            cache: None,
+        // Both sides of every triangle are drawn (`scene_primitive`):
+        // sheets are seen from either side, as on the CPU.
+        let scene = Drawing::build(two, |step| {
+            scene_pipeline(
+                device,
+                "craft3d scene",
+                &scene_shader,
+                "fs_main",
+                &[Some(&scene_layout)],
+                &[target(COLOR_FORMAT), target(DATA_FORMAT)],
+                1,
+                step,
+            )
         });
 
         let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -838,7 +985,8 @@ impl Renderer {
         Renderer {
             device: device.clone(),
             queue: queue.clone(),
-            scene_pipeline,
+            two,
+            scene,
             scene_uniforms,
             scene_layout,
             scene_bind,
@@ -1059,6 +1207,8 @@ impl Renderer {
         if targets.peel.is_some() {
             return;
         }
+        let depth_format =
+            Step::depth_stencil(if self.two { Step::Depth } else { Step::One }).format;
         let device = &self.device;
         let texture = |label: &str, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -1084,7 +1234,7 @@ impl Renderer {
         ));
         let depth = view(&texture(
             "craft3d samples depth behind",
-            DEPTH_FORMAT,
+            depth_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         ));
         let peel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1092,7 +1242,7 @@ impl Renderer {
             layout: &pipelines.peel_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&targets.samples_depth),
+                resource: wgpu::BindingResource::TextureView(&targets.samples_depth_read),
             }],
         });
         let bound = |binding, view| wgpu::BindGroupEntry {
@@ -1149,7 +1299,7 @@ impl Renderer {
             cut.cap_behind_bind = Some(cut::cap_bind(
                 device,
                 &peeled.cap_behind_layout,
-                Some(&targets.samples_depth),
+                Some(&targets.samples_depth_read),
                 &cut.parity,
             ));
         }
@@ -1195,12 +1345,17 @@ impl Renderer {
         ));
         let samples_data = view(&texture("craft3d samples data", DATA_FORMAT, ssaa, sampled));
         // Read by the pass behind the front of a see-through picture.
-        let samples_depth = view(&texture(
+        let depth_texture = texture(
             "craft3d samples depth",
-            DEPTH_FORMAT,
+            Step::depth_stencil(if self.two { Step::Depth } else { Step::One }).format,
             ssaa,
             sampled,
-        ));
+        );
+        let samples_depth = view(&depth_texture);
+        let samples_depth_read = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..wgpu::TextureViewDescriptor::default()
+        });
         let color = texture("craft3d colour", COLOR_FORMAT, 1, read);
         let data = texture("craft3d data", DATA_FORMAT, 1, read);
         let (color_view, data_view) = (view(&color), view(&data));
@@ -1237,6 +1392,7 @@ impl Renderer {
             samples_color,
             samples_data,
             samples_depth,
+            samples_depth_read,
             color,
             data,
             color_view,
@@ -1337,6 +1493,11 @@ impl Renderer {
                 mesh,
             );
         }
+        let two = self.two;
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
+            pass.set_pipeline(pipeline);
+            draw_mesh(pass);
+        };
         {
             // The front. Seen through, its alpha says where (0 where
             // nothing is drawn) and its depth is kept for the next pass.
@@ -1347,18 +1508,11 @@ impl Renderer {
                     cleared(&targets.samples_color, wgpu::Color { r, g, b, a: alpha }),
                     cleared(&targets.samples_data, nothing),
                 ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.samples_depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: if peeled.is_some() {
-                            wgpu::StoreOp::Store
-                        } else {
-                            wgpu::StoreOp::Discard
-                        },
-                    }),
-                    stencil_ops: None,
-                }),
+                depth_stencil_attachment: Some(depth_attachment(
+                    &targets.samples_depth,
+                    two,
+                    peeled.is_some(),
+                )),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1369,14 +1523,21 @@ impl Renderer {
                     &peeled.front
                 }
                 (Some((cut, ..)), None) => &cut.scene,
-                (None, Some((pipelines, _))) => &pipelines.front_pipeline,
-                (None, None) => &self.scene_pipeline,
+                (None, Some((pipelines, _))) => &pipelines.front,
+                (None, None) => &self.scene,
             };
-            pass.set_pipeline(front);
             pass.set_bind_group(0, &self.scene_bind, &[]);
-            draw_mesh(&mut pass);
-            if let Some((pipelines, count, true)) = cut_open {
-                cut::draw_cap(&mut pass, &pipelines.cap, &count.cap_bind, &self.cap_buffer);
+            let cap_draw = |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
+                if let Some((_, count, true)) = cut_open {
+                    cut::draw_cap(pass, pipeline, &count.cap_bind, &self.cap_buffer);
+                }
+            };
+            match cut_open {
+                Some((pipelines, _, true)) => draw_in_steps(
+                    &mut pass,
+                    &[(front, &mesh_draw), (&pipelines.cap, &cap_draw)],
+                ),
+                _ => draw_in_steps(&mut pass, &[(front, &mesh_draw)]),
             }
         }
         if let Some((pipelines, peel)) = peeled {
@@ -1384,14 +1545,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("craft3d behind"),
                 color_attachments: &[cleared(&peel.behind, wgpu::Color { r, g, b, a: 1.0 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &peel.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
+                depth_stencil_attachment: Some(depth_attachment(&peel.depth, two, false)),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1400,16 +1554,37 @@ impl Renderer {
                 Some((cut, ..)) => Some(cut.peeled.as_ref().ok_or(GpuError::NothingDrawn)?),
                 None => None,
             };
-            pass.set_pipeline(cut_peeled.map_or(&pipelines.behind_pipeline, |cut| &cut.behind));
             pass.set_bind_group(0, &self.scene_bind, &[]);
             pass.set_bind_group(1, &peel.peel_bind, &[]);
-            draw_mesh(&mut pass);
-            if let (Some(cut_peeled), Some((_, count, true))) = (cut_peeled, cut_open) {
-                let bind = count
-                    .cap_behind_bind
-                    .as_ref()
-                    .ok_or(GpuError::NothingDrawn)?;
-                cut::draw_cap(&mut pass, &cut_peeled.cap_behind, bind, &self.cap_buffer);
+            let behind = cut_peeled.map_or(&pipelines.behind, |cut| &cut.behind);
+            match (cut_peeled, cut_open) {
+                (Some(cut_peeled), Some((_, count, true))) => {
+                    let bind = count
+                        .cap_behind_bind
+                        .as_ref()
+                        .ok_or(GpuError::NothingDrawn)?;
+                    let peel_bind = &peel.peel_bind;
+                    // The mesh with the front's depth bound, the cap with
+                    // its own group 1.
+                    let mesh_behind =
+                        |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
+                            pass.set_bind_group(1, peel_bind, &[]);
+                            pass.set_pipeline(pipeline);
+                            draw_mesh(pass);
+                        };
+                    let cap_behind =
+                        |pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline| {
+                            cut::draw_cap(pass, pipeline, bind, &self.cap_buffer);
+                        };
+                    draw_in_steps(
+                        &mut pass,
+                        &[
+                            (behind, &mesh_behind),
+                            (&cut_peeled.cap_behind, &cap_behind),
+                        ],
+                    );
+                }
+                _ => draw_in_steps(&mut pass, &[(behind, &mesh_draw)]),
             }
         }
         {
