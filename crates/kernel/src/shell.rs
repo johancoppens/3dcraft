@@ -246,6 +246,43 @@ pub fn shell_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| shell_at(body, thickness, open, blends, at),
+        |r| {
+            let outer = |skin: Skin| skin == Skin::Outer;
+            let sources = crate::loose_op::Sources {
+                faces: r
+                    .faces
+                    .iter()
+                    .map(|(skin, f)| outer(*skin).then_some(*f))
+                    .collect(),
+                edges: r
+                    .edges
+                    .iter()
+                    .map(|e| e.and_then(|(skin, e)| outer(skin).then_some(e)))
+                    .collect(),
+                vertices: r
+                    .vertices
+                    .iter()
+                    .map(|v| v.and_then(|(skin, v)| outer(skin).then_some(v)))
+                    .collect(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn shell_at(
+    body: &Body,
+    thickness: f64,
+    open: &[FaceId],
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Shelled, KernelError> {
     if !(thickness.is_finite() && thickness > 0.0) {
         return Err(KernelError::InvalidSize {
             name: "thickness",

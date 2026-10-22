@@ -26,6 +26,7 @@ mod check;
 mod inside;
 mod mass;
 mod query;
+mod sew;
 mod shells;
 mod tolerant;
 mod touch;
@@ -40,10 +41,11 @@ pub use mass::{
     shell_volumes,
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
+pub use sew::{MAX_CANDIDATES, SAMPLES, SewError, Sewn, sew};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
 pub use tolerant::{
     DEFAULT_LOOSEST, PROOF_PIECES, RECORD_MARGIN, ToleranceError, Tolerances, default_loosest,
-    measure_edge, measure_vertex, record_edge, record_vertex,
+    measure_edge, measure_vertex, record_edge, record_vertex, record_vertices,
 };
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};

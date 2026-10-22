@@ -233,6 +233,67 @@ fn what_cannot_be_imported_is_refused_and_changes_nothing() {
     assert!(bodies(&mut s).is_empty());
 }
 
+/// A block whose file puts a corner 1e-4 mm off its edges (a hundred
+/// tolerances, within the cap) is imported loose, and a fillet, a chamfer,
+/// a shell and an offset on it carry its tolerances: each is valid with
+/// them, and `document.check` lists them (tolerant modelling, slice 2).
+#[test]
+fn operations_on_a_loose_import_carry_its_tolerances() {
+    let dir = workdir("step-import", "loose-operations");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "feature.block", json!({"size": [10, 20, 30]}));
+    run(&mut s, "file.export", json!({"path": "block.step"}));
+    let text = std::fs::read_to_string(dir.join("block.step")).unwrap();
+    let moved = text.replacen(
+        "CARTESIAN_POINT('',(10.,",
+        "CARTESIAN_POINT('',(10.0001,",
+        1,
+    );
+    assert_ne!(moved, text);
+    std::fs::write(dir.join("loose.step"), moved).unwrap();
+    for (command, params) in [
+        (
+            "feature.fillet",
+            json!({"edges": [["F1:face(1)", "F1:face(3)"]], "radius": 2}),
+        ),
+        (
+            "feature.chamfer",
+            json!({"edges": [["F1:face(1)", "F1:face(4)"]], "distance": 1}),
+        ),
+        (
+            "feature.shell",
+            json!({"source": "F1", "thickness": 1, "open": ["F1:face(1)"]}),
+        ),
+        (
+            "feature.offsetFace",
+            json!({"faces": ["F1:face(4)"], "distance": 1}),
+        ),
+    ] {
+        let mut s = session_in(&dir);
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        let imported = run(&mut s, "file.import", json!({"path": "loose.step"}));
+        assert!(
+            imported["bodies"][0]["import"]["looseVertices"]
+                .as_u64()
+                .unwrap()
+                >= 1,
+            "{imported}"
+        );
+        run(&mut s, command, params);
+        let check = run(&mut s, "document.check", json!({}));
+        assert_eq!(check["ok"], true, "{command}: {check}");
+        let loose = check["loose"].as_array().unwrap();
+        assert!(
+            loose.iter().any(|l| l["feature"] == "F2"),
+            "{command}: {check}"
+        );
+        for l in loose {
+            assert!(l["largest"].as_f64().unwrap() <= 1e-3, "{command}: {check}");
+        }
+    }
+}
+
 #[test]
 fn import_needs_a_document_and_files() {
     let mut s = Session::new(Workspace {

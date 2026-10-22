@@ -402,6 +402,58 @@ pub fn record_vertex(
     })
 }
 
+/// A vertex and the tolerance recorded for it, `None` when it lies
+/// within the document's.
+pub type Recorded = (VertexId, Option<f64>);
+
+/// [`record_vertex`] for each of `vertices` (in order), with one pass
+/// over the edges rather than one per vertex: what each records, or the
+/// first refusal with the vertex it is for.
+pub fn record_vertices(
+    body: &mut Body,
+    vertices: &[VertexId],
+    tolerance: &Tolerance,
+    cap: f64,
+) -> Result<Vec<Recorded>, (VertexId, ToleranceError)> {
+    let mut worst: BTreeMap<VertexId, f64> = BTreeMap::new();
+    for v in vertices {
+        if body.vertex(*v).is_none() {
+            return Err((*v, ToleranceError::NoVertex { vertex: *v }));
+        }
+    }
+    let wanted: std::collections::BTreeSet<VertexId> = vertices.iter().copied().collect();
+    for (i, e) in body.edges.iter().enumerate() {
+        let Ok(i) = u32::try_from(i) else {
+            break;
+        };
+        let own = body.edge_tolerance(EdgeId(i)).unwrap_or(0.0);
+        for (v, t) in [(e.start, e.range.0), (e.end, e.range.1)] {
+            if !wanted.contains(&v) {
+                continue;
+            }
+            let Some(point) = body.vertex(v).map(|x| x.point) else {
+                continue;
+            };
+            let d = e.curve.eval(t).distance(point);
+            let d = if d.is_finite() { d } else { f64::INFINITY };
+            let slot = worst.entry(v).or_insert(0.0);
+            *slot = slot.max(d).max(own);
+        }
+    }
+    let mut out = Vec::with_capacity(vertices.len());
+    for v in vertices {
+        let recorded = match worst.get(v) {
+            None => None,
+            Some(&measured) => record(measured, tolerance, cap, |t| {
+                body.set_vertex_tolerance(*v, t)
+            })
+            .map_err(|e| (*v, e))?,
+        };
+        out.push((*v, recorded));
+    }
+    Ok(out)
+}
+
 fn record(
     measured: f64,
     tolerance: &Tolerance,
@@ -411,13 +463,15 @@ fn record(
     if measured <= tolerance.linear {
         return Ok(None);
     }
-    let recorded = (measured * RECORD_MARGIN).max(tolerance.linear);
-    if recorded.is_nan() || recorded > cap {
+    // The cap is on the gap: a gap within it is recorded at most at the
+    // cap, the margin never pushes it over (since slice 2, 2026-10-22).
+    if measured.is_nan() || measured > cap {
         return Err(ToleranceError::AboveCap {
-            measured: recorded,
+            measured: measured * RECORD_MARGIN,
             cap,
         });
     }
+    let recorded = (measured * RECORD_MARGIN).min(cap).max(tolerance.linear);
     set(recorded)?;
     Ok(Some(recorded))
 }

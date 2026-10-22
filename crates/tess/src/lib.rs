@@ -14,6 +14,7 @@ mod exact;
 mod face;
 mod intersections;
 mod long;
+mod on_surface;
 mod remembered;
 mod selfcheck;
 mod weld;
@@ -25,6 +26,7 @@ pub use body::{
 pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };
+pub use on_surface::{OffSurface, off_surfaces};
 pub use remembered::{forget_kept_meshes, kept_meshes};
 pub use selfcheck::{
     FaceCrossing, FaceRole, SELF_CHECK_WORK, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding,

@@ -141,6 +141,24 @@ fn drafted(
 /// angle that is not between -90 and 90 degrees or a pull direction that
 /// is none.
 pub fn draft(body: &Body, draft: &Draft, tolerance: &Tolerance) -> Result<Offset, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| draft_at(body, draft, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn draft_at(body: &Body, draft: &Draft, tolerance: &Tolerance) -> Result<Offset, KernelError> {
     usable(body, &draft.faces, OPERATION, tolerance)?;
     if !(draft.angle.is_finite() && draft.angle.abs() < FRAC_PI_2) {
         return Err(KernelError::InvalidSize {

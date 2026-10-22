@@ -99,6 +99,44 @@ pub fn thicken_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| thicken_at(body, faces, thickness, side, blends, at),
+        |r| {
+            let outer = |skin: crate::shell::Skin| skin == crate::shell::Skin::Outer;
+            let sources = crate::loose_op::Sources {
+                faces: r
+                    .faces
+                    .iter()
+                    .map(|(skin, f)| outer(*skin).then_some(*f))
+                    .collect(),
+                edges: r
+                    .edges
+                    .iter()
+                    .map(|e| e.and_then(|(skin, e)| outer(skin).then_some(e)))
+                    .collect(),
+                vertices: r
+                    .vertices
+                    .iter()
+                    .map(|v| v.and_then(|(skin, v)| outer(skin).then_some(v)))
+                    .collect(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn thicken_at(
+    body: &Body,
+    faces: &[FaceId],
+    thickness: f64,
+    side: Side,
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Shelled, KernelError> {
     if !(thickness.is_finite() && thickness > 0.0) {
         return Err(KernelError::InvalidSize {
             name: "thickness",

@@ -72,6 +72,29 @@ pub fn move_faces(
     motion: &Motion,
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| move_faces_at(body, faces, motion, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn move_faces_at(
+    body: &Body,
+    faces: &[FaceId],
+    motion: &Motion,
+    tolerance: &Tolerance,
+) -> Result<Offset, KernelError> {
     usable(body, faces, OPERATION, tolerance)?;
     let finite = motion.translate.is_finite()
         && motion.pivot.is_finite()

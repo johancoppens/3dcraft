@@ -1031,6 +1031,29 @@ pub fn offset_faces_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| offset_faces_at(body, offsets, blends, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn offset_faces_at(
+    body: &Body,
+    offsets: &[FaceOffset],
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Offset, KernelError> {
     offset_for(body, offsets, blends, OPERATION, tolerance).map(same_numbers)
 }
 

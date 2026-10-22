@@ -108,6 +108,35 @@ pub fn fillet(
     edges: &[FilletEdge],
     tolerance: &Tolerance,
 ) -> Result<FilletResult, KernelError> {
+    crate::loose_op::run(
+        "fillet",
+        body,
+        tolerance,
+        |at| fillet_at(body, edges, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r
+                    .faces
+                    .iter()
+                    .map(|f| match f {
+                        FilletFace::Kept(kept) if kept.len() == 1 => kept.first().copied(),
+                        _ => None,
+                    })
+                    .collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn fillet_at(
+    body: &Body,
+    edges: &[FilletEdge],
+    tolerance: &Tolerance,
+) -> Result<FilletResult, KernelError> {
     let requests: Vec<Request> = edges
         .iter()
         .map(|e| Request {

@@ -1061,6 +1061,28 @@ pub fn delete_faces(
     faces: &[FaceId],
     tolerance: &Tolerance,
 ) -> Result<Deleted, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        |at| delete_faces_at(body, faces, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn delete_faces_at(
+    body: &Body,
+    faces: &[FaceId],
+    tolerance: &Tolerance,
+) -> Result<Deleted, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
         return Err(KernelError::InvalidSize {
