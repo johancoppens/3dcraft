@@ -613,7 +613,23 @@ impl<'a> Resolver<'a> {
             }),
             _ => return None,
         };
-        table.get(wanted).cloned()
+        if let Some(found) = table.get(wanted) {
+            return Some(found.clone());
+        }
+        // The short form of a cap (`F2:startCap()`) names the cap of that
+        // role when the body has one (`Names::face_answers_to`); with
+        // several (a sketch of two profiles) it names none of them here.
+        let short = wanted.parse::<PersistentName>().ok()?;
+        if kind != SelectionKind::Face || !short.is_short_cap() {
+            return None;
+        }
+        // Pieces of one cap share its name: the first stands for it, as
+        // for any name. Caps of several loops are refused.
+        if craft3d_regen::ambiguous_cap(names, &short).is_some() {
+            return None;
+        }
+        let k = (0..names.faces.len()).find(|&k| names.face_answers_to(k, &short))?;
+        names.faces.get(k).map(|name| (name.to_string(), k))
     }
 
     /// What `name` means: `kind` when given (otherwise read from the name:

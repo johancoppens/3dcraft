@@ -353,6 +353,8 @@ pub(crate) enum Equation {
     Midpoint(Pt, Ln),
     /// Two rows: `p - at`.
     Fixed(Pt, [f64; 2]),
+    /// `p - value` along one axis: a signed coordinate.
+    Coordinate(Axis, Pt, f64),
     /// `|a - b| - value`, `value > 0`.
     Distance(Pt, Pt, f64),
     /// `side * signed_distance(p, line) - value`.
@@ -718,6 +720,7 @@ impl<'a> Ctx<'a> {
                 let [px, py] = self.pt(p)?;
                 (2, [px - tx, py - ty])
             }
+            Equation::Coordinate(axis, p, value) => one(self.coordinate(axis, p)? - value),
             Equation::Distance(a, b, value) => one(self.distance(a, b)? - value),
             Equation::PointLineDistance {
                 point,
@@ -1170,6 +1173,12 @@ impl Builder<'_> {
                 };
                 Equation::Fixed(p, target)
             }
+            Constraint::CoordinateX { point, value } => {
+                Equation::Coordinate(Axis::X, self.pt(at, point)?, finite(value)?)
+            }
+            Constraint::CoordinateY { point, value } => {
+                Equation::Coordinate(Axis::Y, self.pt(at, point)?, finite(value)?)
+            }
             Constraint::Distance { a, b, value } => {
                 let value = length_value(value, NEGATIVE_DISTANCE)?;
                 let a_is_line = matches!(self.entity(at, a)?, Entity::Line { .. });
@@ -1507,6 +1516,9 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
             Equation::Fixed(_, [x, y]) => {
                 magnitude = magnitude.max(x.abs()).max(y.abs());
                 place([x, y]);
+            }
+            Equation::Coordinate(_, _, value) => {
+                magnitude = magnitude.max(value.abs());
             }
             Equation::Distance(_, _, value)
             | Equation::PointLineDistance { value, .. }

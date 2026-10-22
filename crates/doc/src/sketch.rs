@@ -686,6 +686,17 @@ pub enum ConstraintKind {
     Fixed {
         point: EntityId,
     },
+    /// The point's x coordinate in the sketch, signed: where it lies from
+    /// the sketch origin along the sketch x axis.
+    X {
+        point: EntityId,
+        value: Expr,
+    },
+    /// The point's y coordinate in the sketch, signed.
+    Y {
+        point: EntityId,
+        value: Expr,
+    },
     /// The length of line `a`, or the distance from point `a` to point or
     /// line `b`.
     Distance {
@@ -746,7 +757,7 @@ use Role::{Line, Point, Round, Spline};
 
 impl ConstraintKind {
     /// Every constraint type, by the name used in files and commands.
-    pub const TYPES: [&'static str; 16] = [
+    pub const TYPES: [&'static str; 18] = [
         "coincident",
         "pointOn",
         "horizontal",
@@ -759,6 +770,8 @@ impl ConstraintKind {
         "symmetric",
         "midpoint",
         "fixed",
+        "x",
+        "y",
         "distance",
         "angle",
         "radius",
@@ -779,6 +792,8 @@ impl ConstraintKind {
             ConstraintKind::Symmetric { .. } => "symmetric",
             ConstraintKind::Midpoint { .. } => "midpoint",
             ConstraintKind::Fixed { .. } => "fixed",
+            ConstraintKind::X { .. } => "x",
+            ConstraintKind::Y { .. } => "y",
             ConstraintKind::Distance { .. } => "distance",
             ConstraintKind::Angle { .. } => "angle",
             ConstraintKind::Radius { .. } => "radius",
@@ -808,7 +823,7 @@ impl ConstraintKind {
             "concentric" => &[&[Round, Round]],
             "symmetric" => &[&[Point, Point, Line]],
             "midpoint" => &[&[Point, Line]],
-            "fixed" => &[&[Point]],
+            "fixed" | "x" | "y" => &[&[Point]],
             "distance" => &[&[Line], &[Point, Point], &[Point, Line]],
             "radius" | "diameter" => &[&[Round]],
             _ => return None,
@@ -817,7 +832,10 @@ impl ConstraintKind {
 
     /// True for the types that carry a value (a dimension).
     pub fn has_value(type_name: &str) -> bool {
-        matches!(type_name, "distance" | "angle" | "radius" | "diameter")
+        matches!(
+            type_name,
+            "x" | "y" | "distance" | "angle" | "radius" | "diameter"
+        )
     }
 
     /// Builds a constraint from its type name, its entities in order and,
@@ -882,6 +900,8 @@ impl ConstraintKind {
                 line: second()?,
             },
             "fixed" => ConstraintKind::Fixed { point: a },
+            "x" => ConstraintKind::X { point: a, value },
+            "y" => ConstraintKind::Y { point: a, value },
             "distance" => ConstraintKind::Distance {
                 a,
                 b,
@@ -916,7 +936,9 @@ impl ConstraintKind {
             | ConstraintKind::Distance { a, b, .. } => std::iter::once(a).chain(b).collect(),
             ConstraintKind::Symmetric { a, b, about } => vec![a, b, about],
             ConstraintKind::Midpoint { point, line } => vec![point, line],
-            ConstraintKind::Fixed { point } => vec![point],
+            ConstraintKind::Fixed { point }
+            | ConstraintKind::X { point, .. }
+            | ConstraintKind::Y { point, .. } => vec![point],
             ConstraintKind::Radius { curve, .. } | ConstraintKind::Diameter { curve, .. } => {
                 vec![curve]
             }
@@ -927,6 +949,8 @@ impl ConstraintKind {
     pub fn value(&self) -> Option<&Expr> {
         match self {
             ConstraintKind::Distance { value, .. }
+            | ConstraintKind::X { value, .. }
+            | ConstraintKind::Y { value, .. }
             | ConstraintKind::Angle { value, .. }
             | ConstraintKind::Radius { value, .. }
             | ConstraintKind::Diameter { value, .. } => Some(value),
@@ -937,6 +961,8 @@ impl ConstraintKind {
     pub fn value_mut(&mut self) -> Option<&mut Expr> {
         match self {
             ConstraintKind::Distance { value, .. }
+            | ConstraintKind::X { value, .. }
+            | ConstraintKind::Y { value, .. }
             | ConstraintKind::Angle { value, .. }
             | ConstraintKind::Radius { value, .. }
             | ConstraintKind::Diameter { value, .. } => Some(value),
@@ -2441,7 +2467,7 @@ mod tests {
         let arc_end = s.add_point(0.0, 2.0).unwrap();
         let arc = s.add_arc(e(1), arc_start, arc_end, false).unwrap().0;
         // (type, entities that fit, entities that do not)
-        let cases: [(&str, &[u64], &[u64]); 22] = [
+        let cases: [(&str, &[u64], &[u64]); 24] = [
             ("coincident", &[1, 2], &[1, 5]),
             ("pointOn", &[1, 6], &[5, 6]),
             ("pointOn", &[1, 10], &[10, 1]),
@@ -2458,6 +2484,8 @@ mod tests {
             ("symmetric", &[1, 2, 6], &[1, 2, 3]),
             ("midpoint", &[9, 5], &[5, 9]),
             ("fixed", &[1], &[5]),
+            ("x", &[1], &[5]),
+            ("y", &[2], &[10]),
             ("distance", &[5], &[10]),
             ("distance", &[1, 3], &[5, 6]),
             ("distance", &[1, 6], &[10, 1]),

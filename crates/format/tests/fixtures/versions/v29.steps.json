@@ -1,0 +1,14 @@
+[
+  ["variable.set", {"name": "width", "expr": "40 mm"}],
+  ["variable.set", {"name": "depth", "expr": "24 mm"}],
+  ["variable.set", {"name": "bore", "expr": "6 mm"}],
+  ["sketch.create", {"name": "Base"}],
+  ["sketch.rect", {"sketch": "Base", "from": ["-width / 2", "-depth / 2"], "to": ["width / 2", "depth / 2"]}],
+  ["sketch.circle", {"sketch": "Base", "center": ["-width / 4", 0], "radius": "bore / 2"}],
+  ["sketch.point", {"sketch": "Base", "at": [1, 1]}],
+  ["sketch.constrain", {"sketch": "Base", "type": "x", "entities": ["e11"], "value": "width / 4"}],
+  ["sketch.constrain", {"sketch": "Base", "type": "y", "entities": ["e11"], "value": "-2 mm"}],
+  ["sketch.circle", {"sketch": "Base", "center": "e11", "radius": "bore / 3"}],
+  ["feature.extrude", {"sketch": "Base", "distance": "8 mm", "name": "Plate"}],
+  ["feature.chamfer", {"edges": [["F2:endCap()", "F2:side(e5)"]], "distance": "1 mm", "name": "Edge"}]
+]

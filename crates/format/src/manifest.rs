@@ -1051,6 +1051,16 @@ pub enum SketchConstraintKind {
     Fixed {
         point: u64,
     },
+    /// The point's signed x coordinate in the sketch (format 29).
+    X {
+        point: u64,
+        value: String,
+    },
+    /// The point's signed y coordinate in the sketch (format 29).
+    Y {
+        point: u64,
+        value: String,
+    },
     /// `b` is null for the length of line `a`.
     Distance {
         a: u64,

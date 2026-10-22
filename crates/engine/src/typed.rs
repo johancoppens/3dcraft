@@ -45,7 +45,34 @@ impl Session {
     /// that does not parse, names a variable that has no value, or is of
     /// another dimension is an error that says so.
     pub fn evaluate_typed(&self, source: &str, kind: TypedKind) -> Result<f64, CommandError> {
+        self.typed().evaluate(source, kind)
+    }
+
+    /// The active document's variables evaluated once, for a command that
+    /// evaluates many expressions (the corners of a polyline).
+    pub(crate) fn typed(&self) -> Typed<'_> {
         let doc = self.document().ok().map(|open| open.history.current());
+        let evaluation = doc
+            .and_then(|doc| doc.variable_table().ok())
+            .map(|table| table.evaluate());
+        Typed {
+            doc: doc.map(|d| &**d),
+            evaluation,
+        }
+    }
+}
+
+/// Expressions evaluated against one state of the active document's
+/// variables ([`Session::typed`]).
+pub(crate) struct Typed<'a> {
+    doc: Option<&'a craft3d_doc::Document>,
+    evaluation: Option<craft3d_expr::Evaluation>,
+}
+
+impl Typed<'_> {
+    /// As [`Session::evaluate_typed`].
+    pub(crate) fn evaluate(&self, source: &str, kind: TypedKind) -> Result<f64, CommandError> {
+        let doc = self.doc;
         // The text as the message repeats it: a pasted page is cut short.
         let shown = if source.chars().count() > 40 {
             let mut cut: String = source.chars().take(39).collect();
@@ -54,11 +81,8 @@ impl Session {
         } else {
             source.to_string()
         };
-        let evaluation = doc
-            .and_then(|doc| doc.variable_table().ok())
-            .map(|table| table.evaluate());
         let quantity = craft3d_expr::evaluate(source, |name| {
-            evaluation.as_ref().and_then(|e| e.value(name))
+            self.evaluation.as_ref().and_then(|e| e.value(name))
         })
         .map_err(|e| failed(format!("`{shown}`: {e}")))?;
         let value = match kind {

@@ -137,6 +137,9 @@ pub(crate) fn pick(
                 name.feature
             ));
         }
+        if let Some(why) = crate::query::ambiguous_cap(source.names, name) {
+            return Err(format!("{role}: {why}"));
+        }
         let mut found = faces_named(source.names, name);
         if found.is_empty() {
             // A reference to a cap survives a change of its outline: the

@@ -463,10 +463,10 @@ The first version for people outside the project; it follows M9 and does not wai
 - Closing the window asks Save, Don't Save or Cancel for each document with unsaved changes before it drops their autosaves, also over the channel as `ui.quit {save: "ask" | "save" | "discard"}` ([`control-protocol.md`](control-protocol.md) › *Closing the window*) (2026-10-21)
 - The task set: 22 ordinary parts (levels 1 to 4) with descriptions in English and Dutch, closed-form expectations derived by hand, reference solutions driven by variables and a variant each, scored headless by `craft3d-cli score` ([`docs/tasks/`](tasks/), [`testing.md`](testing.md) › *The task set*) (2026-10-21)
 - The acceptance: every task of the set built by an agent over MCP from its description alone and scored by `craft3d-cli score`, 22 of 22 passing, 21 on the first try; its scripts are scored at every gate ([`testing.md`](testing.md) › *The task set*, `docs/tasks/acceptance/`) (2026-10-22)
+- Sketch points at expressions in one step: coordinates written as expressions are held by signed `x` and `y` constraints (format 29), `sketch.rect`, a circle's radius as an expression; the acceptance's six pinned sketches 179 → 75 steps ([`design/document.md`](design/document.md) › *Sketch coordinates as expressions*) (2026-10-22)
+- `F2:startCap()` and `F2:endCap()` accepted wherever a face is named, resolved in one place ([`design/names.md`](design/names.md) › *The short form of a cap, everywhere*) (2026-10-22)
 
 #### Open
-- [ ] Sketch corners at coordinates given as expressions in one step (today a fixed origin point and two distance constraints per corner, sizes only, the sign taken from where the point is drawn; `sketch.circle` takes a number, a variable needs a `diameter` constraint): the friction of every sketch in the acceptance
-- [ ] The short face names `F2:startCap()` and `F2:endCap()` (an extrusion's end plane, whatever its outline) accepted wherever a face is named (`feature.thread` start, `datum.plane`, chamfers), not only by `sketch.create`
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models

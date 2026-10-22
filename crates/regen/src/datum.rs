@@ -263,6 +263,11 @@ fn edge_line(
         ));
     }
     let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
+    for face in between {
+        if let Some(why) = crate::query::ambiguous_cap(names, face) {
+            return Err(format!("{role}: {why}"));
+        }
+    }
     let (first, second) = (faces_named(names, a), faces_named(names, b));
     for (face, found) in [(a, &first), (b, &second)] {
         if found.is_empty() {
@@ -356,6 +361,9 @@ fn face_axis(
         return Err(format!("{role}: {name} is not a face"));
     }
     let (body, names, made_by) = named_body(doc, earlier, name, role)?;
+    if let Some(why) = crate::query::ambiguous_cap(names, name) {
+        return Err(format!("{role}: {why}"));
+    }
     // The pieces a boolean cut a face into lie on one surface: the first
     // says where the axis is.
     let found = faces_named(names, name)
@@ -541,6 +549,9 @@ fn center(
     }
     let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
     for face in between {
+        if let Some(why) = crate::query::ambiguous_cap(names, face) {
+            return Err(format!("{role}: {why}"));
+        }
         if faces_named(names, face).is_empty() {
             return Err(format!(
                 "{role}: `{made_by}` no longer has a face {face}; its faces are: {}",

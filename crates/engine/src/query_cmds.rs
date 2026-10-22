@@ -95,6 +95,9 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         None => None,
         Some((a, b)) => {
             for name in [a, b] {
+                if let Some(why) = craft3d_regen::ambiguous_cap(names, name) {
+                    return fail(format!("{ID}: {why}"));
+                }
                 if craft3d_regen::faces_named(names, name).is_empty() {
                     return fail(format!(
                         "{ID}: `{made_by}` has no face {name} (document.inspect lists its faceNames)"
