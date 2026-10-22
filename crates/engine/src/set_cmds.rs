@@ -37,11 +37,14 @@ fn stored(
         query.insert("kind".into(), kind.clone());
     }
     if let Some(filter) = filter.filter(|f| !f.is_null()) {
-        query.insert("where".into(), with_ids(doc, filter));
+        query.insert("where".into(), filter.clone());
     }
-    let query = Value::Object(query);
-    Parser::for_set(doc, name).query(&query, 0)?;
-    serde_json::to_string(&query).map_err(|e| e.to_string())
+    // Checked first: what is rewritten after is bounded in depth.
+    Parser::for_set(doc, name).query(&Value::Object(query.clone()), 0)?;
+    if let Some(filter) = query.get_mut("where") {
+        *filter = with_ids(doc, filter);
+    }
+    serde_json::to_string(&Value::Object(query)).map_err(|e| e.to_string())
 }
 
 /// `filter` with the feature of every `in`, `madeBy` and `copyOf` written
