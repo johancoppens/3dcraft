@@ -628,9 +628,19 @@ fn edge_cuts(
                         hit.point.distance(*end) <= 2.0 * tol
                             && surface_distance(surface, *end) <= tol
                     });
+                    // A spline's hit at a shallow angle is taken to where
+                    // the surfaces meet (`corner`).
+                    let point = match end {
+                        Some(end) => end,
+                        None if approximated => {
+                            super::corner::refine(own, id, surface, hit.point, tol)
+                                .unwrap_or(hit.point)
+                        }
+                        None => hit.point,
+                    };
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(end.unwrap_or(hit.point), true);
+                    cut(point, true);
                 }
             }
         }
