@@ -1697,6 +1697,26 @@ mod tests {
         let result = host.export_as_user(&stl).unwrap();
         assert_eq!(result["bodies"], 2);
         assert_eq!(listing(&mine), ["part.stl"]);
+
+        // One sketch selected, to an outline: its lines. With a face
+        // beside it, or to a mesh: refused.
+        for (command, params) in [
+            ("sketch.create", json!({"name": "Outline"})),
+            (
+                "sketch.polyline",
+                json!({"sketch": "Outline", "points": [[0, 0], [8, 0], [8, 3]]}),
+            ),
+        ] {
+            host.session.execute(command, &params).unwrap();
+        }
+        select(&mut host, &["Outline"]);
+        let result = host.export_as_user(&mine.join("outline.svg")).unwrap();
+        assert_eq!(result["lines"], 2, "{result}");
+        assert!(host.export_as_user(&mine.join("outline.obj")).is_err());
+        select(&mut host, &["Outline", "F1:face(1)"]);
+        let error = host.export_as_user(&mine.join("both.dxf")).unwrap_err();
+        assert!(error.contains("select only flat faces"), "{error}");
+        assert_eq!(listing(&mine), ["outline.svg", "part.stl"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
