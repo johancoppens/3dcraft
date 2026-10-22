@@ -11,24 +11,32 @@
 //! [`SAMPLES`] places inside each lies within `distance` of the other,
 //! and when joining them keeps the boundary oriented: the two uses run
 //! against each other, as the two uses of an edge of an oriented surface
-//! do. Every pair that qualifies is a candidate; the candidates are taken
-//! closest first (the larger of the gaps measured, then the edge ids), and
-//! one is taken only while both its edges are still free and joining its
-//! ends does not make one vertex of the two ends of any edge (sewing
-//! never collapses an edge). So a narrow slot between two walls, whose
-//! edges are each other's candidates too, is not sewn shut while each
-//! wall's own partner is nearer.
+//! do, and they are used by two faces (two uses by one face are never
+//! sewn). These places only *choose* candidates; what is accepted is
+//! proven below. The candidates are taken closest first (the larger of
+//! the gaps measured, then the edge ids), and one is taken only while
+//! both its edges are still free, joining its ends does not make one
+//! vertex of the two ends of any edge (sewing never collapses an edge),
+//! and neither edge has another candidate within the *ambiguity margin*:
+//! twice the largest gap any free edge has to its nearest candidate (how
+//! far apart this body's faces lie) plus the tolerance, at most
+//! `distance`. An edge with two such partners (a slot narrower than the
+//! gaps) is left open, never sewn across.
 //!
 //! **What the result is.** The lower edge of a pair is kept with its curve
 //! and range, the other goes into it; vertices joined through pairs are
 //! one, the lowest of them with its point. Faces keep their ids; shells
 //! joined by a pair become one (the lower one's faces first). Nothing is
-//! moved. Then every edge kept from a pair is measured on the surfaces of
-//! both its faces, proven over its whole length (`record_edge`), and every
-//! vertex joined is measured against the ends of its edges
-//! (`record_vertex`): a gap beyond the document's tolerance is recorded as
-//! the entity's own tolerance; a gap beyond `cap` (the document's
-//! `loosest`) refuses. Edges left free are reported with how far the
+//! moved. Then, proven over the whole of each curve (`measure_curve`, not
+//! sampled): the kept edge against the surfaces of both its faces
+//! (`record_edge`), and the edge that went into it against the same
+//! surfaces (it bounded its own face, whose boundary is now the kept
+//! edge); the larger is the kept edge's gap. Every vertex joined is
+//! measured against the ends of the kept edges (`record_vertices`), the
+//! ends of the edges that went into others, and the points of the
+//! vertices that went into it. A gap beyond the document's tolerance is
+//! recorded as the entity's own tolerance; a gap beyond `cap` (the
+//! document's `loosest`) refuses. Edges left free are reported with how far the
 //! nearest free edge is ([`Sewn::open`]); in a solid they are the
 //! caller's to refuse.
 //!
@@ -37,7 +45,7 @@
 //! candidates tested are capped ([`MAX_CANDIDATES`]), and every order is
 //! the order of ids or of numbers, never of a hash.
 
-use crate::tolerant::{ToleranceError, record_edge, record_vertices};
+use crate::tolerant::{ToleranceError, measure_curve, record_edge, record_vertices};
 use crate::{Body, EdgeId, FaceId, VertexId};
 use craft3d_geom::Curve3;
 use craft3d_math::{Tolerance, Vec3};
@@ -177,6 +185,7 @@ impl std::error::Error for SewError {}
 #[derive(Clone, Copy)]
 struct Free {
     edge: EdgeId,
+    face: FaceId,
     /// The loop runs against the edge.
     reversed: bool,
 }
@@ -332,7 +341,7 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
     let n_vertices = body.vertices.len();
     // Uses of each edge.
     let mut uses: Vec<Vec<Free>> = vec![Vec::new(); n_edges];
-    for face in &body.faces {
+    for (f, face) in body.faces.iter().enumerate() {
         for l in &face.loops {
             let l = body.loop_(*l).ok_or(SewError::Dangling)?;
             for c in &l.coedges {
@@ -340,6 +349,7 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
                     .ok_or(SewError::Dangling)?
                     .push(Free {
                         edge: c.edge,
+                        face: FaceId(id32(f)),
                         reversed: c.reversed,
                     });
             }
@@ -456,7 +466,9 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
             } else {
                 flip
             };
-            if (fb.reversed ^ flip) == fa.reversed {
+            // Two uses by one face are not sewn: that would make a seam
+            // of what the face bounds on both sides.
+            if (fb.reversed ^ flip) == fa.reversed || fa.face == fb.face {
                 continue;
             }
             let mut gap = end_gap;
@@ -503,12 +515,41 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
             }
         }
     }
+    // Ambiguity: per edge its candidates' partners and gaps; the margin
+    // is twice the largest gap any free edge needs to its nearest partner
+    // (how far apart this body's faces are) plus the tolerance. An edge
+    // with a second partner within that margin could be sewn to either
+    // (a slot narrower than the gaps): neither is sewn, it stays open.
+    let mut partners: BTreeMap<u32, Vec<(u32, f64)>> = BTreeMap::new();
+    for c in &candidates {
+        for (x, y) in [(c.a.0, c.b.0), (c.b.0, c.a.0)] {
+            let list = partners.entry(x).or_default();
+            match list.iter_mut().find(|(other, _)| *other == y) {
+                Some(slot) => slot.1 = slot.1.min(c.gap),
+                None => list.push((y, c.gap)),
+            }
+        }
+    }
+    let nearest_most = partners
+        .values()
+        .filter_map(|list| list.iter().map(|(_, g)| *g).reduce(f64::min))
+        .fold(0.0, f64::max);
+    let margin = (2.0 * nearest_most + tolerance.linear).min(distance);
+    let ambiguous = |x: u32, y: u32| {
+        partners
+            .get(&x)
+            .is_some_and(|list| list.iter().any(|(other, g)| *other != y && *g <= margin))
+    };
     let mut taken: BTreeSet<u32> = BTreeSet::new();
     // Edge b → (edge a it goes into, against it).
     let mut into: BTreeMap<u32, (EdgeId, bool)> = BTreeMap::new();
     let mut largest_gap = 0.0_f64;
     for c in &candidates {
-        if taken.contains(&c.a.0) || taken.contains(&c.b.0) {
+        if taken.contains(&c.a.0)
+            || taken.contains(&c.b.0)
+            || ambiguous(c.a.0, c.b.0)
+            || ambiguous(c.b.0, c.a.0)
+        {
             continue;
         }
         let (Some(ea), Some(eb)) = (body.edge(c.a), body.edge(c.b)) else {
@@ -716,11 +757,94 @@ fn build(
             joined_vertices.insert(edge.end);
         }
     }
+    // The edge that went into another bounded its own face: that face's
+    // boundary is now the kept edge, so how far the dropped one is from
+    // the kept edge's faces is a gap the kept edge must hold too, proven
+    // over the whole of the dropped edge (the surfaces are those of the
+    // kept edge's faces: its own face's, which it lies on, and the other
+    // face's, which it was sewn to).
+    let faces_of_out = crate::edge_faces(&out);
+    for (&b, &(a, _)) in into {
+        let Some(&(kept, _)) = edge_map.get(a.0 as usize) else {
+            return Err(SewError::Dangling);
+        };
+        let dropped = body.edge(EdgeId(b)).ok_or(SewError::Dangling)?;
+        let mut gap = 0.0_f64;
+        for f in faces_of_out.get(kept.0 as usize).into_iter().flatten() {
+            let face = out.face(*f).ok_or(SewError::Dangling)?;
+            let d = measure_curve(&dropped.curve, dropped.range, &face.surface, tolerance, cap)
+                .map_err(|_| SewError::Gap {
+                    edge: Some(kept),
+                    vertex: None,
+                    measured: None,
+                    cap,
+                })?;
+            gap = gap.max(d);
+        }
+        if let Some(t) = raise(
+            gap,
+            tolerance,
+            cap,
+            out.edge_tolerance_at(kept, tolerance.linear),
+        )
+        .map_err(|m| SewError::Gap {
+            edge: Some(kept),
+            vertex: None,
+            measured: Some(m),
+            cap,
+        })? {
+            out.set_edge_tolerance(kept, t)
+                .map_err(|_| SewError::Dangling)?;
+            largest_tolerance = largest_tolerance.max(t);
+        }
+    }
     let joined_vertices: Vec<VertexId> = joined_vertices.into_iter().collect();
     for (_, t) in record_vertices(&mut out, &joined_vertices, tolerance, cap)
         .map_err(|(v, x)| gap_error(x, None, Some(v)))?
     {
         if let Some(t) = t {
+            largest_tolerance = largest_tolerance.max(t);
+        }
+    }
+    // A vertex holds the ends of every edge that went into a kept one
+    // (they ended where the faces' corners were) and the points of the
+    // vertices that went into it.
+    let mut held: BTreeMap<VertexId, f64> = BTreeMap::new();
+    for &b in into.keys() {
+        let dropped = body.edge(EdgeId(b)).ok_or(SewError::Dangling)?;
+        for (v, t) in [
+            (dropped.start, dropped.range.0),
+            (dropped.end, dropped.range.1),
+        ] {
+            let nv = vmap(v)?;
+            let at = out.vertex(nv).ok_or(SewError::Dangling)?.point;
+            let d = dropped.curve.eval(t).distance(at);
+            let slot = held.entry(nv).or_insert(0.0);
+            *slot = slot.max(if d.is_finite() { d } else { f64::INFINITY });
+        }
+    }
+    for (i, v) in body.vertices.iter().enumerate() {
+        let nv = vmap(VertexId(id32(i)))?;
+        let at = out.vertex(nv).ok_or(SewError::Dangling)?.point;
+        let d = v.point.distance(at);
+        let slot = held.entry(nv).or_insert(0.0);
+        *slot = slot.max(if d.is_finite() { d } else { f64::INFINITY });
+    }
+    for (v, gap) in held {
+        if let Some(t) = raise(
+            gap,
+            tolerance,
+            cap,
+            out.vertex_tolerance_at(v, tolerance.linear),
+        )
+        .map_err(|m| SewError::Gap {
+            edge: None,
+            vertex: Some(v),
+            measured: Some(m),
+            cap,
+        })? {
+            out.set_vertex_tolerance(v, t)
+                .map_err(|_| SewError::Dangling)?;
             largest_tolerance = largest_tolerance.max(t);
         }
     }
@@ -735,6 +859,19 @@ fn build(
         largest_tolerance,
         open,
     })
+}
+
+/// The tolerance an entity that holds `gap` and has `had` needs: `None`
+/// when `had` holds it already, the gap a little larger (at most the cap)
+/// otherwise; `Err` with the gap when it is above the cap.
+fn raise(gap: f64, tolerance: &Tolerance, cap: f64, had: f64) -> Result<Option<f64>, f64> {
+    if gap.is_nan() || gap > cap {
+        return Err(gap);
+    }
+    if gap <= had || gap <= tolerance.linear {
+        return Ok(None);
+    }
+    Ok(Some((gap * crate::RECORD_MARGIN).min(cap)))
 }
 
 /// The edges of `sewn` used once, each with the distance to the nearest

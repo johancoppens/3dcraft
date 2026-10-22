@@ -848,3 +848,148 @@ fn a_slot_narrower_than_the_distance_stays_open() {
         assert!(check_capped(&alone, &tol, cap).is_empty());
     }
 }
+
+/// Two unit blocks with a slot of `w` caps between them, every face moved
+/// by up to `m` caps: no edge of the result joins a face of one block to a
+/// face of the other. Where an edge could be sewn across the slot as well
+/// as to its own neighbour (the slot narrower than the gaps), it is left
+/// open and the solid is refused, never sewn shut.
+fn slot_case(w: f64, m: f64, seed: u64, scale: f64) -> (bool, usize) {
+    let tol = tolerance(scale);
+    let cap = default_loosest(tol.linear);
+    let a = primitives::block(&at(0.0, 0.0, 0.0, scale), scale, scale, scale).unwrap();
+    let b = primitives::block(
+        &Frame::WORLD
+            .at(Vec3::new(scale + w * cap, 0.0, 0.0))
+            .unwrap(),
+        scale,
+        scale,
+        scale,
+    )
+    .unwrap();
+    let both = craft3d_topo::merge(&[&a, &b]).unwrap().0;
+    let mut rng = Rng(seed);
+    let moves: Vec<Vec3> = (0..both.faces.len())
+        .map(|_| rng.direction() * (m * cap * rng.unit()))
+        .collect();
+    let loose = exploded(&both, &moves, None);
+    let half = a.faces.len() as u32;
+    match sew(&loose, &tol, cap, cap) {
+        Ok(sewn) => {
+            for faces in edge_faces(&sewn.body) {
+                let sides: std::collections::BTreeSet<bool> =
+                    faces.iter().map(|f| f.0 < half).collect();
+                assert_eq!(
+                    sides.len(),
+                    1,
+                    "slot {w} caps, moves {m}, seed {seed}, scale {scale:e}: sewn across"
+                );
+            }
+            (sewn.open.is_empty(), sewn.body.shells.len())
+        }
+        Err(_) => (false, 0),
+    }
+}
+
+#[test]
+fn a_slot_narrower_than_the_gaps_is_never_sewn_shut() {
+    let mut closed = 0;
+    for scale in [1e-3, 1.0, 1e6] {
+        for w in [0.3, 0.5, 0.9] {
+            for seed in 1..=8 {
+                let (all, shells) = slot_case(w, 0.4, seed, scale);
+                if all {
+                    assert_eq!(shells, 2);
+                    closed += 1;
+                }
+            }
+        }
+    }
+    println!("slots: {closed} of 72 sewn into their two blocks, the rest left open");
+}
+
+/// An edge of one face replaced by a polyline with the same ends that
+/// meets the line at its even points and bulges 0.2 into its face between
+/// them (two hundred caps): its seven inner places lie on the line, but
+/// sewing proves the whole of both edges and refuses.
+#[test]
+fn an_edge_that_bulges_between_its_samples_is_not_sewn_exact() {
+    use craft3d_geom::{Curve3, NurbsCurve};
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(scale);
+        let cap = default_loosest(tol.linear);
+        let block = primitives::block(
+            &at(0.0, 0.0, 0.0, scale),
+            2.0 * scale,
+            2.0 * scale,
+            2.0 * scale,
+        )
+        .unwrap();
+        let mut loose = exploded(&block, &vec![Vec3::ZERO; block.faces.len()], None);
+        // The first edge of the top face (+z, face 1), bulging towards
+        // the face's middle.
+        let top = &loose.faces[1];
+        let e = loose.loops[top.loops[0].0 as usize].coedges[0].edge;
+        let edge = loose.edges[e.0 as usize].clone();
+        let (p0, p1) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+        let middle = Vec3::new(scale, scale, 2.0 * scale);
+        let mid_edge = p0.lerp(p1, 0.5);
+        let inward = (middle - mid_edge).normalized().unwrap() * (0.2 * scale);
+        let points: Vec<Vec3> = (0..=16)
+            .map(|j| {
+                let p = p0.lerp(p1, f64::from(j) / 16.0);
+                if j % 2 == 1 { p + inward } else { p }
+            })
+            .collect();
+        let mut knots = vec![0.0, 0.0];
+        knots.extend((1..16).map(f64::from));
+        knots.extend([16.0, 16.0]);
+        loose.edges[e.0 as usize].curve =
+            Curve3::Nurbs(NurbsCurve::polynomial(1, knots, points).unwrap());
+        loose.edges[e.0 as usize].range = (0.0, 16.0);
+        match sew(&loose, &tol, cap, cap) {
+            Err(SewError::Gap { .. }) => {}
+            Ok(sewn) => panic!(
+                "scale {scale:e}: sewn with a largest tolerance of {:e}",
+                sewn.body.working_tolerance(tol.linear)
+            ),
+            Err(other) => panic!("scale {scale:e}: {other}"),
+        }
+    }
+}
+
+/// A face moved in its own plane by 0.9 caps: its edges along the motion
+/// slide along their neighbours', the others move off them. Sewn, every
+/// gap is recorded (the result is loose by at least the motion), and the
+/// body is valid with it.
+#[test]
+fn a_face_moved_in_its_own_plane_is_sewn_with_the_gap_recorded() {
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(scale);
+        let cap = default_loosest(tol.linear);
+        let block = primitives::block(
+            &at(0.0, 0.0, 0.0, scale),
+            2.0 * scale,
+            2.0 * scale,
+            2.0 * scale,
+        )
+        .unwrap();
+        for (face, along) in [(4, Vec3::Y), (4, Vec3::Z), (5, Vec3::Y), (5, Vec3::Z)] {
+            let mut moves = vec![Vec3::ZERO; block.faces.len()];
+            moves[face] = along * (0.9 * cap);
+            let loose = exploded(&block, &moves, None);
+            match sew(&loose, &tol, cap, cap) {
+                Ok(sewn) => {
+                    let w = sewn.body.working_tolerance(tol.linear);
+                    assert!(
+                        w >= 0.9 * cap,
+                        "face {face} along {along:?} at {scale:e}: largest tolerance {w:e}"
+                    );
+                    assert!(check_capped(&sewn.body, &tol, cap).is_empty());
+                }
+                Err(SewError::Gap { .. }) => {}
+                Err(other) => panic!("{other}"),
+            }
+        }
+    }
+}

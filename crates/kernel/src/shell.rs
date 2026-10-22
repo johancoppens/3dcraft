@@ -246,10 +246,25 @@ pub fn shell_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
+    shell_with_capped(body, thickness, open, blends, tolerance, None)
+}
+
+/// [`shell_with`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn shell_with_capped(
+    body: &Body,
+    thickness: f64,
+    open: &[FaceId],
+    blends: &Blends,
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<Shelled, KernelError> {
     crate::loose_op::run(
         OPERATION,
         body,
         tolerance,
+        loosest,
         |at| shell_at(body, thickness, open, blends, at),
         |r| {
             let outer = |skin: Skin| skin == Skin::Outer;

@@ -14,7 +14,7 @@ use crate::{FeatureResult, Names, angle};
 use craft3d_doc::{Document, Draft, FeatureId, PlaneRef};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::draft::{Draft as Tilt, draft};
+use craft3d_kernel::draft::{Draft as Tilt, draft_capped};
 use craft3d_topo::Body;
 
 const NOUN: &str = "a draft";
@@ -66,30 +66,32 @@ pub(crate) fn build(
         pull,
         angle: turn,
     };
-    let made = draft(source.body, &how, &source.tolerance).map_err(|error| match error {
-        KernelError::FaceOpTooFar {
-            faces,
-            edge,
-            reason,
-            value,
-            largest,
-            ..
-        } => {
-            let part = if value > 0.0 { largest / value } else { 0.0 };
-            let at = about(source.body, source.names, &faces, edge)
-                .map(|at| format!(" ({at})"))
-                .unwrap_or_default();
-            // In degrees, without the last bits of the conversion.
-            let degrees = |radians: f64| (radians.to_degrees() * 1e9).round() / 1e9;
-            format!(
-                "angle: {} deg is too far: {reason}{at}; what fits is {} {} deg",
-                degrees(turn),
-                if turn < 0.0 { "above" } else { "below" },
-                degrees(turn * part)
-            )
-        }
-        other => face_ops::explain(other, "angle", 1.0, "deg", &source),
-    })?;
+    let made = draft_capped(source.body, &how, &source.tolerance, Some(source.loosest)).map_err(
+        |error| match error {
+            KernelError::FaceOpTooFar {
+                faces,
+                edge,
+                reason,
+                value,
+                largest,
+                ..
+            } => {
+                let part = if value > 0.0 { largest / value } else { 0.0 };
+                let at = about(source.body, source.names, &faces, edge)
+                    .map(|at| format!(" ({at})"))
+                    .unwrap_or_default();
+                // In degrees, without the last bits of the conversion.
+                let degrees = |radians: f64| (radians.to_degrees() * 1e9).round() / 1e9;
+                format!(
+                    "angle: {} deg is too far: {reason}{at}; what fits is {} {} deg",
+                    degrees(turn),
+                    if turn < 0.0 { "above" } else { "below" },
+                    degrees(turn * part)
+                )
+            }
+            other => face_ops::explain(other, "angle", 1.0, "deg", &source),
+        },
+    )?;
     let names = same_entities(feature, source.names)?;
     face_ops::not_through_itself_where_changed(
         source.body,

@@ -99,10 +99,26 @@ pub fn thicken_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Shelled, KernelError> {
+    thicken_with_capped(body, faces, thickness, side, blends, tolerance, None)
+}
+
+/// [`thicken_with`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn thicken_with_capped(
+    body: &Body,
+    faces: &[FaceId],
+    thickness: f64,
+    side: Side,
+    blends: &Blends,
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<Shelled, KernelError> {
     crate::loose_op::run(
         OPERATION,
         body,
         tolerance,
+        loosest,
         |at| thicken_at(body, faces, thickness, side, blends, at),
         |r| {
             let outer = |skin: crate::shell::Skin| skin == crate::shell::Skin::Outer;

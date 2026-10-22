@@ -72,10 +72,24 @@ pub fn move_faces(
     motion: &Motion,
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
+    move_faces_capped(body, faces, motion, tolerance, None)
+}
+
+/// [`move_faces`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn move_faces_capped(
+    body: &Body,
+    faces: &[FaceId],
+    motion: &Motion,
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<Offset, KernelError> {
     crate::loose_op::run(
         OPERATION,
         body,
         tolerance,
+        loosest,
         |at| move_faces_at(body, faces, motion, at),
         |r| {
             let sources = crate::loose_op::Sources {

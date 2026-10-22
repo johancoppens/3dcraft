@@ -21,11 +21,11 @@
 //!   vertex at the end of such an edge) is measured and given what it
 //!   needs, never more than the working tolerance. What still fails is
 //!   refused.
-//! - **No growth beyond the input.** No entity of the result is looser
-//!   than the body's working tolerance, which its document's cap already
-//!   held (regeneration checks every body against it), so the cap is not
-//!   needed here: an operation never raises the largest tolerance of a
-//!   body.
+//! - **The cap.** The document's (`loosest`, passed by regeneration; the
+//!   default when none is given): a body whose working tolerance is above
+//!   it is refused ([`KernelError::ToleranceAboveCap`]), and no entity of
+//!   the result is looser than the body's working tolerance, so an
+//!   operation never raises the largest tolerance of a body.
 //!
 //! A body without loose entities never comes here: such an operation is
 //! what it was before tolerant entities existed.
@@ -64,6 +64,7 @@ pub(crate) fn run<R>(
     operation: &'static str,
     body: &Body,
     tolerance: &Tolerance,
+    loosest: Option<f64>,
     op: impl FnOnce(&Tolerance) -> Result<R, KernelError>,
     parts: impl FnOnce(&mut R) -> (&mut Body, Sources),
 ) -> Result<R, KernelError> {
@@ -72,7 +73,14 @@ pub(crate) fn run<R>(
     }
     let linear = tolerance.linear;
     let working = body.working_tolerance(linear);
-    let cap = default_loosest(linear).max(working);
+    let cap = loosest.unwrap_or_else(|| default_loosest(linear));
+    if working.is_nan() || working > cap {
+        return Err(KernelError::ToleranceAboveCap {
+            operation,
+            tolerance: working,
+            cap,
+        });
+    }
     let mut defects = craft3d_topo::check_remembered_capped(body, tolerance, cap);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);

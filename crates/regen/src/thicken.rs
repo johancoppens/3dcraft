@@ -11,7 +11,7 @@ use crate::{Contributors, FeatureResult, Kept, Names, length};
 use craft3d_doc::{Document, FeatureId, Thicken, ThickenSide};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::shell::Skin;
-use craft3d_kernel::thicken::{Side, thicken_with};
+use craft3d_kernel::thicken::{Side, thicken_with_capped};
 use craft3d_topo::Body;
 
 const NOUN: &str = "a layer";
@@ -56,13 +56,14 @@ pub(crate) fn build(
         ThickenSide::Both => Side::Both,
     };
     let blends = face_ops::blends(doc, variables, &source);
-    let made = thicken_with(
+    let made = thicken_with_capped(
         source.body,
         &picked,
         thickness,
         side,
         &blends,
         &source.tolerance,
+        Some(source.loosest),
     )
     .map_err(|error| explain(error, "thickness", 1.0, unit, &source))?;
     let contributors: Contributors = made
