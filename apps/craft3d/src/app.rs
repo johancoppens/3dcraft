@@ -56,6 +56,33 @@ pub fn window_icon() -> Option<egui::IconData> {
     })
 }
 
+/// The window as it opens: titled, with the app id and icon of the
+/// installers, of the size asked for, and decorated by the system. The
+/// title bar and borders are the platform's: the window manager's on X11,
+/// Windows and macOS, and on Wayland winit's own (sctk-adwaita), because
+/// GNOME draws none for a window (docs/development.md, Window). Nothing
+/// here makes the window transparent or undecorated.
+pub fn viewport(options: &Options, title: &str) -> egui::ViewportBuilder {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title(title)
+        // The desktop file's name (packaging/linux), so a Wayland
+        // compositor finds the entry and the icon.
+        .with_app_id(APP_ID)
+        .with_decorations(true)
+        .with_transparent(false)
+        .with_resizable(true)
+        .with_inner_size(
+            options
+                .window_size
+                .map_or([1280.0, 800.0], |[w, h]| [w as f32, h as f32]),
+        )
+        .with_min_inner_size([480.0, 320.0]);
+    match window_icon() {
+        Some(icon) => viewport.with_icon(icon),
+        None => viewport,
+    }
+}
+
 /// Turns a root flag's value into an access rule. The directory must exist,
 /// and is made absolute with its symbolic links resolved: the engine
 /// compares paths as text, so the root has to be the one true spelling.
@@ -1119,25 +1146,8 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake)),
     ));
     let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(&title)
-            // The desktop file's name (packaging/linux), so a Wayland
-            // compositor finds the entry and the icon.
-            .with_app_id(APP_ID)
-            .with_inner_size(
-                options
-                    .window_size
-                    .map_or([1280.0, 800.0], |[w, h]| [w as f32, h as f32]),
-            )
-            .with_min_inner_size([480.0, 320.0]),
+        viewport: viewport(options, &title),
         ..Default::default()
-    };
-    let native = match window_icon() {
-        Some(icon) => eframe::NativeOptions {
-            viewport: native.viewport.with_icon(icon),
-            ..native
-        },
-        None => native,
     };
     let renderer = options.renderer;
     let failure = failures();
