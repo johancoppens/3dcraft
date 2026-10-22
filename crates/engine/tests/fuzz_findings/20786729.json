@@ -1,0 +1,12 @@
+[
+  {"command":"file.new","params":{"units":"mm","tolerance":1e-06}},
+  {"command":"sketch.create","params":{"name":"S0","offset":0.0,"plane":"zx"}},
+  {"command":"sketch.circle","params":{"center":[0.0,0.0],"radius":10.0,"sketch":"S0"}},
+  {"command":"feature.extrude","params":{"distance":-15.0,"name":"N0","sketch":"S0"}},
+  {"command":"feature.shell","params":{"name":"N1","open":["F2:endCap(e2)"],"source":"N0","thickness":0.3125}},
+  {"command":"feature.sphere","params":{"name":"N2","position":[-5.0,5.0,-10.0],"radius":5.0}},
+  {"command":"feature.pattern","params":{"count":3,"name":"N3","source":"N1","step":[0.0,0.0,22.5]}},
+  {"command":"feature.boolean","params":{"keepTool":false,"name":"N4","op":"subtract","target":"N3","tool":"N2"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 5","axis":[0.0,0.0,1.0],"count":5,"name":"N5","point":[7.5,2.5,-10.0],"source":"N4"}},
+  {"command":"feature.pattern","params":{"angle":"360 deg / 5","axis":[0.0,0.0,1.0],"count":5,"name":"N8","point":[8.631595503128827,2.5631026581014957,27.5],"source":"N5"}}
+]

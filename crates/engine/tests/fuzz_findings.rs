@@ -35,6 +35,14 @@
 //!   chamfers on cones, balls and tori (20795706, 20814691, 20818576,
 //!   20832173, 20833261): refused, after a halving of a dozen tries of
 //!   seconds each, now held to `HALVING_WORK`.
+//! - The nightly run of 2026-10-21 (docs/design/booleans.md › Faces that
+//!   lie near one another): a pattern of five patterns of shelled tubes
+//!   less a ball (20786729: every pair of faces' boxes met, 168,000 pairs
+//!   of surfaces intersected in one union for 3,735 that hold a piece of
+//!   curve) and 36 shelled balls in one pattern (20757788-36: lines and
+//!   circles against balls found numerically), past the fuzzer's minute;
+//!   now the covers of faces pass over the pairs that cannot meet and the
+//!   balls are met in closed form.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -234,6 +242,14 @@ findings! {
     #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
     pattern_of_six_patterns_of_shelled_balls: "20757788" => [
         "N0": OK, "N1": OK, "N2": OK, "N5": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    pattern_of_thirty_six_shelled_balls: "20757788-36" => [
+        "N0": OK, "N1": OK, "N2": OK, "N5": OK,
+    ],
+    #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
+    pattern_of_five_patterns_of_shelled_tubes_less_a_ball: "20786729" => [
+        "S0": OK, "N0": OK, "N1": OK, "N2": OK, "N3": OK, "N4": OK, "N5": OK, "N8": OK,
     ],
     #[ignore = "a minute or two in release: cargo test --release ... -- --include-ignored"]
     pattern_of_a_mirrored_pattern_of_rings_at_scale_1e3: "20757179" => [

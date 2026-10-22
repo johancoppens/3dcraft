@@ -135,7 +135,11 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
                     }
                     continue;
                 }
-                if hit.t < 0.0 || !box_.contains(hit.point, 2.0 * tol) {
+                // (Further from the face than its cover is outside it.)
+                if hit.t < 0.0
+                    || !box_.contains(hit.point, 2.0 * tol)
+                    || !solid.may_hold(face, hit.point, tol)
+                {
                     continue;
                 }
                 match side(hit.point)? {

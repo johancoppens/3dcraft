@@ -2,6 +2,7 @@
 //! in which two surfaces meet, cut down to the stretches that are within
 //! both faces.
 
+use super::cover::{Cover, Face as CoverFace};
 use super::facetree::FaceTree;
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
@@ -68,6 +69,9 @@ pub(super) struct Solid<'a> {
     /// Per face: its edges, each once and ascending, and the tree of their
     /// boxes ([`piece_box`]), made the first time they are asked for.
     edge_trees: Vec<OnceLock<(Vec<EdgeId>, FaceTree)>>,
+    /// Per face: the boxes that cover it ([`Cover`]), made as they are
+    /// asked for; `None` for a face its box stands for.
+    covers: Vec<OnceLock<Option<Cover>>>,
 }
 
 impl Solid<'_> {
@@ -135,6 +139,36 @@ impl Solid<'_> {
             .into_iter()
             .filter_map(|i| edges.get(i).copied())
             .collect()
+    }
+
+    /// The boxes that cover a face at the linear tolerance `tol`, or
+    /// `None` when its box stands for it ([`Cover`]).
+    pub fn cover(&self, face: usize, tol: f64) -> Option<(&Cover, CoverFace<'_>)> {
+        #[cfg(test)]
+        if tests::NO_COVERS.with(std::cell::Cell::get) {
+            return None;
+        }
+        let of = CoverFace {
+            surface: &self.body.faces.get(face)?.surface,
+            bbox: self.boxes.get(face)?,
+            outline: self.outline(face).ok(),
+            tol,
+        };
+        let cover = self
+            .covers
+            .get(face)?
+            .get_or_init(|| Cover::new(of))
+            .as_ref()?;
+        Some((cover, of))
+    }
+
+    /// False only when `p` is proven further than four times the tolerance
+    /// `tol` from face `face` by its cover: then it is outside the face
+    /// (`Side::Out`, and not within the tolerance of its boundary), and
+    /// the face's outline need not be asked.
+    pub fn may_hold(&self, face: usize, p: Vec3, tol: f64) -> bool {
+        self.cover(face, tol)
+            .is_none_or(|(cover, of)| cover.holds(of, p, 4.0 * tol))
     }
 
     /// A box around an edge; empty for an edge the body does not have.
@@ -310,6 +344,7 @@ pub(super) fn prepare<'a>(
         vertices: merged,
         tree: OnceLock::new(),
         edge_trees: (0..body.faces.len()).map(|_| OnceLock::new()).collect(),
+        covers: (0..body.faces.len()).map(|_| OnceLock::new()).collect(),
     })
 }
 
@@ -489,6 +524,7 @@ fn edge_cuts(
     face: usize,
     surface: Sheet,
     near: &Bbox3,
+    other: Option<(&Cover, CoverFace)>,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
     cuts: &mut Vec<Cut>,
@@ -498,6 +534,13 @@ fn edge_cuts(
     let mut asked = crate::work::Tally::edges();
     for id in own.edges_near(face, |b| boxes_meet(b, near, reach)) {
         asked.one();
+        // An edge further from the other face than its cover meets the
+        // other surface only where no stretch can be kept: a stretch
+        // between the cuts that are left crosses no boundary of the other
+        // face, and holds a point outside it, so all of it is outside.
+        if other.is_some_and(|(cover, of)| !cover.reaches(of, &own.edge_box(id), APART * tol)) {
+            continue;
+        }
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
         let (Some(a), Some(b)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
             return Err(Stop::of(LOST));
@@ -805,6 +848,10 @@ fn clip(
         // curve that leaves a face's edge tangentially (where a fillet's
         // face meets the other side of a sharp edge) stays within the
         // tolerance of that edge for a while beyond the other face too.
+        // (Further from either face than its cover is outside it.)
+        if !(a.may_hold(fa, middle, tol) && b.may_hold(fb, middle, tol)) {
+            continue;
+        }
         let mut heres = [Side::On; 2];
         for (outline, here) in [oa, ob].into_iter().zip(heres.iter_mut()) {
             *here = outline
@@ -1055,6 +1102,12 @@ fn overlap(a: &Bbox3, b: &Bbox3, margin: f64) -> Option<Bbox3> {
     (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then(|| Bbox3::from_points([lo, hi]))
 }
 
+/// How far apart, in tolerances, two faces' covers must be for the pair
+/// to be passed over: beyond every distance a rule of the section reads
+/// (two tolerances for faces over each other or touching, the outline's
+/// margin of four for a point on a face's boundary), with room to spare.
+const APART: f64 = 16.0;
+
 pub(super) fn section(
     a: &Solid,
     b: &Solid,
@@ -1103,8 +1156,24 @@ pub(super) fn section(
             if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
                 continue;
             }
+            // Faces whose covers are further apart than this cannot meet
+            // (`Cover`), nor come near enough for any rule of the
+            // tolerance to read them together: nothing of the pair is
+            // asked for.
+            let apart = APART * tol;
+            let meet = match (a.cover(fa, tol), b.cover(fb, tol)) {
+                (Some((ca, of_a)), Some((cb, of_b))) => ca.meets(of_a, cb, of_b, apart),
+                (Some((ca, of_a)), None) => ca.reaches(of_a, box_b, apart),
+                (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, apart),
+                (None, None) => true,
+            };
+            if !meet {
+                continue;
+            }
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
+            #[cfg(test)]
+            tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let met = match meet_surfaces(&oa.surface, &ob.surface, &within, tolerance) {
                 Ok(met) => met,
                 // The room is taken from the larger face, so next to a
@@ -1201,8 +1270,9 @@ pub(super) fn section(
                     let mut found = Vec::new();
                     // (Some: the boxes meet within twice the tolerance.)
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
-                    edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
-                    edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+                    let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
+                    edge_cuts(a, fa, ob.sheet(), &near, cb, &named, tolerance, &mut found)?;
+                    edge_cuts(b, fb, oa.sheet(), &near, ca, &named, tolerance, &mut found)?;
                     sections
                         .edge_meets
                         .extend(found.iter().map(|cut| cut.point));
@@ -1616,8 +1686,26 @@ fn lying_edges(
         return Ok(());
     }
     let mut found = Vec::new();
-    edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
-    edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
+    edge_cuts(
+        a,
+        fa,
+        ob.sheet(),
+        &near,
+        None,
+        &named,
+        tolerance,
+        &mut found,
+    )?;
+    edge_cuts(
+        b,
+        fb,
+        oa.sheet(),
+        &near,
+        None,
+        &named,
+        tolerance,
+        &mut found,
+    )?;
     // A boundary edge lies on the other face's surface, and so do that
     // face's own edges: no edge meets the other's surface where the two
     // cross, so where the boundary edge enters or leaves the other face
@@ -1746,7 +1834,18 @@ fn lying_edges(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+    thread_local! {
+        /// Booleans on this thread work without covers (`cover.rs`), to
+        /// hold them to the results with covers bit for bit.
+        pub(in crate::boolean) static NO_COVERS: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+        /// The pairs of faces whose surfaces booleans on this thread
+        /// intersected.
+        pub(in crate::boolean) static PAIRS_MET: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+    }
+
     use super::*;
     use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
     use craft3d_math::Frame;

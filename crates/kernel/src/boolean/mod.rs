@@ -50,6 +50,7 @@
 mod chart;
 mod classify;
 mod contact;
+mod cover;
 mod cut;
 mod facetree;
 mod freeform;
