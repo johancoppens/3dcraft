@@ -1,9 +1,10 @@
 //! The STEP side of `file.export` (the command itself is in
-//! `commands.rs`): every body of the active document as one STEP file.
+//! `commands.rs`): every body of the active document, or those asked
+//! for, as one STEP file.
 
 use crate::commands::{Run, fail};
 use crate::{CommandError, Session};
-use craft3d_doc::{AngleUnit, LengthUnit};
+use craft3d_doc::{AngleUnit, FeatureId, LengthUnit};
 use craft3d_io::{StepBody, StepOptions};
 use serde_json::json;
 use std::path::Path;
@@ -20,9 +21,15 @@ pub(crate) fn wanted(format: Option<&str>, path: &str) -> bool {
     }
 }
 
-/// Writes every body of the active document to `resolved` as STEP.
-/// `path` is the path as the request gave it, for the result.
-pub(crate) fn export(session: &mut Session, path: &str, resolved: &Path) -> Run {
+/// Writes every body of the active document to `resolved` as STEP, or
+/// the bodies of the features of `only` when given. `path` is the path as
+/// the request gave it, for the result.
+pub(crate) fn export(
+    session: &mut Session,
+    path: &str,
+    resolved: &Path,
+    only: Option<&[FeatureId]>,
+) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -35,6 +42,7 @@ pub(crate) fn export(session: &mut Session, path: &str, resolved: &Path) -> Run 
         Vec<Option<[u8; 3]>>,
     )> = regen
         .bodies()
+        .filter(|(id, _)| only.is_none_or(|only| only.contains(id)))
         .map(|(id, body)| {
             let name = doc
                 .feature(id)

@@ -379,7 +379,7 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
 /// What an export to a file of this name holds, by its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExportKind {
-    /// Every body (STEP, STL, 3MF, OBJ).
+    /// Bodies: every body, or those selected (STEP, STL, 3MF, OBJ).
     Bodies,
     /// The flat outline of faces or of a sketch (DXF, SVG).
     Outline,
@@ -401,12 +401,14 @@ fn export_kind(path: &Path) -> Option<ExportKind> {
 ///
 /// - Nothing selected: a STEP or mesh file holds every body; a DXF or SVG
 ///   file needs faces or a sketch, so it is refused.
+/// - Bodies only, to STEP or a mesh file: those bodies (`bodies`, by the
+///   ids of their features); every body of the document is as nothing
+///   selected.
 /// - Faces only, to DXF or SVG: those faces on one sheet (`faces`; a face
 ///   that is not flat is refused by `file.export`, naming it).
 /// - One sketch only, to DXF or SVG: its outline (`sketch`).
-/// - Every body of the document, and nothing else: as nothing selected.
-/// - Anything else is refused: `file.export` writes every body to STEP
-///   and the mesh formats, or faces or one sketch to DXF and SVG.
+/// - Anything else is refused: `file.export` writes bodies to STEP and
+///   the mesh formats, and faces or one sketch to DXF and SVG.
 fn export_selection(
     session: &mut Session,
     path: &Path,
@@ -443,9 +445,17 @@ fn export_selection(
                 if field(&all, "count").as_u64() == Some(bodies as u64) {
                     return Ok(None);
                 }
+                let list: Vec<Value> = items
+                    .iter()
+                    .map(|i| match field(i, "feature").as_str() {
+                        Some(id) if !id.is_empty() => Value::String(id.to_string()),
+                        _ => field(i, "name").clone(),
+                    })
+                    .collect();
+                return Ok(Some(("bodies", Value::Array(list))));
             }
             Err(format!(
-                "{ID}: a .{extension} file holds every body of the document; it cannot hold only what is selected ({summary}). Clear the selection to export every body, or export flat faces or a sketch as .dxf or .svg"
+                "{ID}: a .{extension} file holds bodies; it cannot hold what is selected ({summary}). Select only bodies to export those, clear the selection to export every body, or export flat faces or a sketch as .dxf or .svg"
             ))
         }
         ExportKind::Outline => {
@@ -478,7 +488,8 @@ fn export_selection(
 
 /// Exports to the file the person chose, in the format its extension
 /// names, with the person's own access to its folder (`file.export`):
-/// every body, or what is selected as far as `file.export` can take it
+/// every body, or the bodies or faces or sketch selected as far as
+/// `file.export` can take them
 /// ([`export_selection`]).
 pub fn export_as_user(session: &mut Session, path: &Path) -> Result<Value, String> {
     let extra = export_selection(session, path)?;
@@ -1652,15 +1663,16 @@ mod tests {
         two_bodies(&mut host);
         let stl = mine.join("part.stl");
 
-        // A face, or one body of two, to a mesh or STEP file: refused,
+        // A face, or a body and a face, to a mesh or STEP file: refused,
         // naming what is selected, and nothing is written.
-        for names in [&["F1:face(1)"][..], &["F1"], &["F1", "F2:face(1)"]] {
+        for names in [&["F1:face(1)"][..], &["F1", "F2:face(1)"]] {
             select(&mut host, names);
             for path in [stl.clone(), mine.join("part.step")] {
                 let error = host.export_as_user(&path).unwrap_err();
                 assert!(
-                    error.contains("cannot hold only what is selected")
-                        && error.contains("Clear the selection"),
+                    error.contains("cannot hold what is selected")
+                        && error.contains("Select only bodies")
+                        && error.contains("clear the selection"),
                     "{names:?}: {error}"
                 );
                 let (label, ok, said) = last(&host);
@@ -1697,6 +1709,36 @@ mod tests {
         let result = host.export_as_user(&stl).unwrap();
         assert_eq!(result["bodies"], 2);
         assert_eq!(listing(&mine), ["part.stl"]);
+
+        // One body of two: that body alone, to every body format, by its
+        // name; the STEP file reads back to the cylinder's volume.
+        select(&mut host, &["F2"]);
+        let pins = ["pin.step", "pin.stl", "pin.3mf", "pin.obj"];
+        for name in pins {
+            let result = host.export_as_user(&mine.join(name)).unwrap();
+            assert_eq!(result["bodies"], 1, "{name}: {result}");
+            let (label, ok, _) = last(&host);
+            assert_eq!((label.as_str(), ok), ("file.export", true));
+        }
+        let mut reader = Session::new(Workspace::unrestricted());
+        reader.execute("file.new", &json!({})).unwrap();
+        reader
+            .execute(
+                "file.import",
+                &json!({"path": text(&mine.join("pin.step"))}),
+            )
+            .unwrap();
+        let back = reader.execute("document.measure", &json!({})).unwrap();
+        let back = back["volume"].as_f64().unwrap();
+        let pin = 20.0 * std::f64::consts::PI;
+        assert!((back - pin).abs() < 1e-6 * pin, "{back} {pin}");
+        let obj = lossy(&mine.join("pin.obj"));
+        let objects: Vec<&str> = obj.lines().filter(|l| l.starts_with("o ")).collect();
+        assert_eq!(objects.len(), 1, "{obj}");
+        assert_eq!(*host.session.workspace(), Workspace::none());
+        for name in pins {
+            std::fs::remove_file(mine.join(name)).unwrap();
+        }
 
         // One sketch selected, to an outline: its lines. With a face
         // beside it, or to a mesh: refused.

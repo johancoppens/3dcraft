@@ -36,6 +36,11 @@ keeps the file's bytes inside the document so it regenerates without the file. A
 feature like any other: cut it, fillet it, measure it. Its faces are named by their order in the file
 (`F5:face(0)`). What cannot be read is refused naming the STEP entity.
 
+To export some of the bodies, name them: `"bodies": ["Bracket", "F4"]`, each by the name or id of the
+feature that made it (as `document.inspect` and `select.get` name it), in STEP, STL, 3MF and OBJ alike.
+A name that is not a body now (unknown, failed, suppressed, or taken by a later feature such as a boolean)
+is refused with the list of bodies there are. In the window, Export… with bodies selected writes those.
+
 ## Meshes
 
 ```json
