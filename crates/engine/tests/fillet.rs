@@ -416,7 +416,11 @@ fn the_rim_of_a_rod_and_the_base_of_a_cone_become_tori() {
             "feature.edit",
             json!({"feature": "Round", "radius": 0.5 * k}),
         );
-        assert!(reason.contains("half the rim's"), "{reason}");
+        // Said with the sizes (2026-10-22; their values are checked in
+        // the kernel's tests and in agent_results.rs).
+        for words in ["reaches its own axis", "every radius from", "exactly"] {
+            assert!(reason.contains(words), "{reason}");
+        }
         // The base of a cone: the faces meet at atan(h / r).
         let mut s = session();
         new_document(&mut s, k);

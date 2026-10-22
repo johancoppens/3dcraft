@@ -371,6 +371,27 @@ fn read_resource(
 
 // ------------------------------------------------------------------ tools
 
+/// The tool a server that belongs to a window offers besides
+/// [`tool_names`]: that window's own methods (`ui.get`, `ui.pick`,
+/// `ui.screenshot`, ...). `craft3d-cli mcp --bridge` passes on to such a
+/// server.
+pub const WINDOW_TOOL: &str = "control_call";
+
+/// The names of the tools every server offers, in the order `tools/list`
+/// gives them; one that belongs to a window offers [`WINDOW_TOOL`]
+/// besides. From the same definitions as `tools/list`, so that what a
+/// help text lists cannot drift from what is served.
+pub fn tool_names() -> Vec<String> {
+    match tools() {
+        Value::Array(list) => list
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The tool definitions `tools/list` returns. Every schema refuses unknown
 /// arguments, and `call_tool` enforces the same before running anything.
 fn tools() -> Value {
@@ -520,7 +541,7 @@ fn control_call_tool(extension: &Extension<'_>) -> Value {
         ));
     }
     json!({
-        "name": "control_call",
+        "name": WINDOW_TOOL,
         "description": description,
         "inputSchema": {
             "type": "object",

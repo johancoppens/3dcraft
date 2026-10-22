@@ -74,7 +74,8 @@ fn sized(error: &BlendError) -> bool {
     match error {
         BlendError::Boolean { .. } => true,
         BlendError::Kernel(KernelError::InvalidBody { .. } | KernelError::InvalidSize { .. })
-        | BlendError::TooLarge { .. } => false,
+        | BlendError::TooLarge { .. }
+        | BlendError::Spindle { .. } => false,
         BlendError::Kernel(_) => true,
         BlendError::Refused { reason, .. } => matches!(
             reason,
@@ -115,6 +116,7 @@ fn no_room(error: &BlendError) -> bool {
 fn same_way(a: &BlendError, b: &BlendError) -> bool {
     match (a, b) {
         (BlendError::Refused { reason: x, .. }, BlendError::Refused { reason: y, .. }) => x == y,
+        (BlendError::Spindle { .. }, BlendError::Spindle { .. }) => true,
         (
             BlendError::Boolean {
                 edge: x, error: e, ..

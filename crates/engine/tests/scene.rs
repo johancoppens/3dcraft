@@ -553,7 +553,11 @@ fn feature_rows_carry_status_error_and_degrees_of_freedom() {
     );
     run(&mut s, "feature.suppress", json!({"feature": "Off"}));
     // Good and Bad both use w; without it they fail, and say why.
-    run(&mut s, "variable.delete", json!({"name": "w"}));
+    run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "w", "force": true}),
+    );
     run(
         &mut s,
         "feature.edit",

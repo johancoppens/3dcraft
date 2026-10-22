@@ -214,11 +214,20 @@ fn other_radii_along_the_round_are_refused_with_the_reason_or_built() {
     let k = 1.0;
     let tol = tolerance(k);
     let first = rounded_upright(k, 2.0);
-    let error = fillet(&first, &top_rim(&first, k, 1.5), &tol).unwrap_err();
-    assert!(
-        error.to_string().contains("less than the rim's"),
-        "1.5: {error}"
-    );
+    // The rim is a circle of the round's radius 2 between the flat top
+    // and the upright round: the ball's centre is 2 - r from the axis,
+    // as far as the radius at r = 1, on the axis at r = 2 (closed form;
+    // until 2026-10-22 a text without the numbers).
+    match fillet(&first, &top_rim(&first, k, 1.5), &tol) {
+        Err(KernelError::FilletSpindle {
+            radius, below, own, ..
+        }) => {
+            assert_close(radius, 1.5 * k, "radius");
+            assert_close(below, k, "what fits below");
+            assert_close(own, 2.0 * k, "the round's own radius");
+        }
+        other => panic!("1.5: expected the spindle refusal, got {other:?}"),
+    }
     // Past the rounds' radius the ball would reach past their axes: too
     // large, and the largest that fits is the rounds' own radius, which
     // builds.
@@ -288,8 +297,14 @@ fn radii_within_the_tolerance_of_the_rounds_build_or_say_what_fits() {
                     );
                     builds(largest);
                 }
-                Err(error) if error.to_string().contains("less than the rim's") => {
-                    assert!(asked < r * k, "{d:e} at scale {k}: {error}");
+                // The spindle refusal names the round's own radius as
+                // one that builds (until 2026-10-22 in words only).
+                Err(KernelError::FilletSpindle { own, .. }) => {
+                    assert!(asked < r * k, "{d:e} at scale {k}: {asked}");
+                    assert!(
+                        (own - r * k).abs() <= tol.linear,
+                        "{d:e} at scale {k}: names {own}"
+                    );
                     builds(r * k);
                 }
                 Err(error) => panic!("{d:e} at scale {k}: {error}"),

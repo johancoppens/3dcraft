@@ -63,7 +63,8 @@ true size; lines, arcs, circles and splines stay what they are.
 ```
 
 A face is drawn as seen from outside the body, never mirrored. `faces` lays several faces out on one
-sheet, each on its own layer. `feature.offsetProfile` grows a sketch by half the kerf before exporting it.
+sheet, each on its own layer, `gap` apart (a length like any other: `5`, `"5 mm"` or `"kerf * 4"`).
+`feature.offsetProfile` grows a sketch by half the kerf before exporting it.
 
 ## From the command line
 

@@ -456,7 +456,15 @@ impl Session {
             Ok(result) => {
                 self.recovery_sync(false);
                 self.release_unused_trees();
-                result
+                // Every error names the command, also one said by a part
+                // that does not know it (a path outside the write root).
+                result.map_err(|e| {
+                    if e.message().starts_with(id) {
+                        e
+                    } else {
+                        CommandError::new(format!("{id}: {e}"))
+                    }
+                })
             }
             Err(payload) => {
                 self.recovery_sync(true);

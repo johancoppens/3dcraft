@@ -404,7 +404,7 @@ fn a_sketch_that_cannot_be_extruded_says_why() {
         ),
         (
             "variable.delete",
-            json!({"name": "depth"}),
+            json!({"name": "depth", "force": true}),
             &["distance", "depth"],
         ),
         // An open profile: one side of the L is gone, and its neighbours

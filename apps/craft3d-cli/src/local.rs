@@ -493,6 +493,16 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
                 .to_string(),
         ));
     }
+    let drawing = Path::new(output)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("dxf") || e.eq_ignore_ascii_case("svg"));
+    if drawing && !outline.contains_key("sketch") && !outline.contains_key("face") {
+        return Err(CliError::Usage(
+            "a .dxf or .svg file is the flat outline of a sketch or of a flat face: give `--sketch S` (a sketch's id or name) or `--face F` (a face name; with `--feature B` when several bodies have it); `craft3d-cli info IN` lists the features"
+                .to_string(),
+        ));
+    }
     let mut session = Session::new(Workspace::unrestricted());
     open(&mut session, input)?;
     let result = if native {

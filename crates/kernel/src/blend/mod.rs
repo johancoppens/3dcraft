@@ -334,7 +334,7 @@ impl Reason {
                 "a freeform edge is not built yet (the fillet face would be a canal surface that is neither a cylinder nor a torus)"
             }
             Reason::Spindle => {
-                "the radius is half the rim's or more and less than the rim's: the ball's centre would come nearer to the axis than its own radius, and the fillet face would be a torus that reaches its own axis, which is not built yet; the rim's own radius is (along an earlier round of that radius the fillet is a piece of the ball), and so is less than half of it"
+                "the radius is too large for this rim but too small to reach its axis: the ball's centre would come nearer to the rim's axis than the radius, and the fillet face would be a torus that reaches its own axis, which is not built yet; a smaller radius fits, and so does the one that puts the ball's centre on the axis"
             }
             Reason::EndsBadly => {
                 "the fillet does not end cleanly: at one end of the edge it would stop in a face of its own, because the faces there are neither all convex or all concave like the edge, nor square to it, nor does the edge go on in another filleted edge; fillet the edges it continues in as well, or leave this one out"
@@ -427,6 +427,17 @@ pub(crate) enum BlendError {
         edge: Option<EdgeId>,
         face: Option<FaceId>,
         reason: Reason,
+    },
+    /// A fillet of `radius` along a rim whose ball's centre would come
+    /// nearer to the rim's axis than the radius: the fillet face would be
+    /// a torus that reaches its own axis, which is not built yet. Radii
+    /// below `below` fit, and so does `own`, which puts the centre on the
+    /// axis (the fillet a piece of the ball).
+    Spindle {
+        edge: EdgeId,
+        radius: f64,
+        below: f64,
+        own: f64,
     },
     /// The boolean refused the tool of an edge.
     Boolean {
@@ -1011,7 +1022,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         // fillet face is a piece of the ball about that centre: the rim
         // of an earlier round of the same radius (2026-10-21).
         if from_axis > tol && from_axis - radius <= 2.0 * tol {
-            return Err(refused(edge, Reason::Spindle));
+            return Err(spindle(edge, radius, *rim, rim - from_axis));
         }
         // Past the axis no ball of this size touches the face across
         // the rim; the radius that puts its centre on the axis may fit
@@ -2319,6 +2330,24 @@ fn named_before(
             face: face.and_then(face_was),
             reason,
         },
+        BlendError::Spindle {
+            edge,
+            radius,
+            below,
+            own,
+        } => match edge_was(edge) {
+            Some(edge) => BlendError::Spindle {
+                edge,
+                radius,
+                below,
+                own,
+            },
+            None => BlendError::Refused {
+                edge: None,
+                face: None,
+                reason: Reason::Spindle,
+            },
+        },
         BlendError::Boolean {
             edge,
             error,
@@ -2668,8 +2697,40 @@ fn on_axis(
             largest: past.own,
         }
     } else {
-        refused(plan.edge, Reason::Spindle)
+        match &plan.path {
+            // The centre reaches the axis at `own`: it comes `rim / own`
+            // nearer for every unit of radius.
+            Path::Circle { radius: rim, .. } => {
+                spindle(plan.edge, asked, *rim, asked * rim / past.own)
+            }
+            _ => refused(plan.edge, Reason::Spindle),
+        }
     })
+}
+
+/// The refusal of a fillet of `radius` along a rim of radius `rim` whose
+/// ball's centre lies `reach` nearer to the axis than the rim: the centre
+/// comes nearer by `reach / radius` for every unit of radius, so it is
+/// as far from the axis as the radius at `rim / (1 + reach / radius)`
+/// (half the rim's radius where the faces are square) and on the axis
+/// at `rim / (reach / radius)`. Without a reach the numbers are not known
+/// and the refusal says so in words only.
+fn spindle(edge: EdgeId, radius: f64, rim: f64, reach: f64) -> BlendError {
+    let below = rim * radius / (radius + reach);
+    let own = radius * rim / reach;
+    if [radius, below, own]
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0)
+    {
+        BlendError::Spindle {
+            edge,
+            radius,
+            below,
+            own,
+        }
+    } else {
+        refused(edge, Reason::Spindle)
+    }
 }
 
 /// A build that failed, with the edge it failed at when that is known.
@@ -2682,7 +2743,9 @@ impl From<BlendError> for Failure {
     fn from(error: BlendError) -> Self {
         let edge = match &error {
             BlendError::Refused { edge, .. } => *edge,
-            BlendError::Boolean { edge, .. } | BlendError::TooLarge { edge, .. } => Some(*edge),
+            BlendError::Boolean { edge, .. }
+            | BlendError::TooLarge { edge, .. }
+            | BlendError::Spindle { edge, .. } => Some(*edge),
             BlendError::Kernel(_) => None,
         };
         Failure { edge, error }

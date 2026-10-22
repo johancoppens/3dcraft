@@ -112,7 +112,7 @@ fails; `command_run` does not report an error, so the agent reads `status`:
 ```text
 command_run {"id": "feature.fillet", "params": {"edges": [["F1:face(0)", "F1:face(2)"]], "radius": "20 mm", "name": "Round"}}
 -> {"id": "F7", "name": "Round", "status": "failed",
-    "error": "edges.0 (between F6:copy(0)/F1:face(0) and F6:copy(0)/F1:face(2)): the radius is half the rim's or more ..."}
+    "error": "radius: not built for edges.0 (between F6:copy(0)/F1:face(0) and F6:copy(0)/F1:face(2)): with a radius of 20 mm the fillet face would be a torus that reaches its own axis ..., which is not built yet; so it is for every radius from 20 mm up to 40 mm ..."}
 
 command_run {"id": "edit.undo", "params": {}}
 -> {"undone": "Add fillet"}
@@ -146,6 +146,10 @@ Every command answers with JSON. The parts worth knowing:
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
   26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4.
+- **`failed`** in the result of `variable.set` and of the edits that can break other features
+  (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`): the features
+  the change made fail, each `{feature, id, error}` (and `causedBy`), left out when there are none. "Make
+  the plate 2 mm thick" that breaks a fillet says so in its own result.
 - **`assertions`** in the result of every feature command and `variable.set`: how many passed and which
   broke. A broken assertion never stops a feature from being built; it tells you the design no longer
   meets what was asked.

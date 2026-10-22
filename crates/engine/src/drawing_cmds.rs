@@ -658,13 +658,24 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         ));
     }
     let unit = session.document()?.history.current().units.length;
-    let gap = match p.number("gap")? {
+    // Lengths as every other: an expression ("3 mm", "wall * 2") or a
+    // number in the document's unit.
+    let length = |key: &str| -> Result<Option<f64>, CommandError> {
+        match p.expr(key)? {
+            None => Ok(None),
+            Some(source) => session
+                .evaluate_typed(&source, crate::typed::TypedKind::Length)
+                .map(Some)
+                .map_err(|e| CommandError::new(format!("{ID}: `{key}`: {e}"))),
+        }
+    };
+    let gap = match length("gap")? {
         Some(gap) if gap >= 0.0 => gap,
         Some(_) => return fail(format!("{ID}: `gap` must not be negative")),
         // 5 mm in the document's unit.
         None => 5.0 / drawing_unit(unit).millimetres(),
     };
-    let width = match p.number("width")? {
+    let width = match length("width")? {
         Some(width) if width > 0.0 => Some(width),
         Some(_) => return fail(format!("{ID}: `width` must be positive")),
         None => None,
