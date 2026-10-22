@@ -33,6 +33,7 @@
 
 use crate::{Body, EdgeId, VertexId};
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
+use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bits, Tolerance};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -292,54 +293,60 @@ pub fn measure_edge(
     cap: f64,
 ) -> Result<Option<f64>, ToleranceError> {
     let e = body.edge(edge).ok_or(ToleranceError::NoEdge { edge })?;
-    let curve = CurveBound::new(&e.curve);
-    let (t0, t1) = e.range;
     let mut worst: Option<f64> = None;
     for face in faces_of(body, edge) {
-        let sampled = (0..=4)
-            .map(|k| {
-                let p = e.curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0);
-                face.surface
-                    .project(p)
-                    .ok()
-                    .map(|(u, v)| face.surface.eval(u, v).distance(p))
-                    .filter(|d| d.is_finite())
-                    .unwrap_or(f64::INFINITY)
-            })
-            .fold(0.0, f64::max);
-        let mut target = (2.0 * sampled).max(tolerance.linear);
-        let mut stopped = 0.5 * (t0 + t1);
-        let mut bound = None;
-        while target.is_finite() && target <= 2.0 * cap {
-            match curve_on_surface(
-                &curve,
-                e.range,
-                &face.surface,
-                None,
-                &[],
-                Within {
-                    target,
-                    most: PROOF_PIECES,
-                },
-            ) {
-                Ok(proven) => {
-                    bound = Some(proven.bound.max(sampled));
-                    break;
-                }
-                Err(not) => stopped = not.at,
-            }
-            target *= 2.0;
-        }
-        let Some(bound) = bound else {
-            return Err(ToleranceError::EdgeNotMeasured {
-                edge,
-                at: stopped,
-                cap,
-            });
-        };
+        let bound = measure_curve(&e.curve, e.range, &face.surface, tolerance, cap)
+            .map_err(|at| ToleranceError::EdgeNotMeasured { edge, at, cap })?;
         worst = Some(worst.map_or(bound, |w: f64| w.max(bound)));
     }
     Ok(worst)
+}
+
+/// How far `curve` over `range` is from `surface`, proven over the whole
+/// range: the least bound proven, in steps of two from twice the farthest
+/// of five places along it (at least the document's tolerance), up to
+/// `cap`; `Err` with the parameter where the last proof stopped when none
+/// within the cap is found.
+pub fn measure_curve(
+    curve: &Curve3,
+    range: (f64, f64),
+    surface: &Surface,
+    tolerance: &Tolerance,
+    cap: f64,
+) -> Result<f64, f64> {
+    let bounded = CurveBound::new(curve);
+    let (t0, t1) = range;
+    let sampled = (0..=4)
+        .map(|k| {
+            let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / 4.0);
+            surface
+                .project(p)
+                .ok()
+                .map(|(u, v)| surface.eval(u, v).distance(p))
+                .filter(|d| d.is_finite())
+                .unwrap_or(f64::INFINITY)
+        })
+        .fold(0.0, f64::max);
+    let mut target = (2.0 * sampled).max(tolerance.linear);
+    let mut stopped = 0.5 * (t0 + t1);
+    while target.is_finite() && target <= 2.0 * cap {
+        match curve_on_surface(
+            &bounded,
+            range,
+            surface,
+            None,
+            &[],
+            Within {
+                target,
+                most: PROOF_PIECES,
+            },
+        ) {
+            Ok(proven) => return Ok(proven.bound.max(sampled)),
+            Err(not) => stopped = not.at,
+        }
+        target *= 2.0;
+    }
+    Err(stopped)
 }
 
 /// How far the ends of the edges at the vertex are from it, and at least
@@ -402,6 +409,58 @@ pub fn record_vertex(
     })
 }
 
+/// A vertex and the tolerance recorded for it, `None` when it lies
+/// within the document's.
+pub type Recorded = (VertexId, Option<f64>);
+
+/// [`record_vertex`] for each of `vertices` (in order), with one pass
+/// over the edges rather than one per vertex: what each records, or the
+/// first refusal with the vertex it is for.
+pub fn record_vertices(
+    body: &mut Body,
+    vertices: &[VertexId],
+    tolerance: &Tolerance,
+    cap: f64,
+) -> Result<Vec<Recorded>, (VertexId, ToleranceError)> {
+    let mut worst: BTreeMap<VertexId, f64> = BTreeMap::new();
+    for v in vertices {
+        if body.vertex(*v).is_none() {
+            return Err((*v, ToleranceError::NoVertex { vertex: *v }));
+        }
+    }
+    let wanted: std::collections::BTreeSet<VertexId> = vertices.iter().copied().collect();
+    for (i, e) in body.edges.iter().enumerate() {
+        let Ok(i) = u32::try_from(i) else {
+            break;
+        };
+        let own = body.edge_tolerance(EdgeId(i)).unwrap_or(0.0);
+        for (v, t) in [(e.start, e.range.0), (e.end, e.range.1)] {
+            if !wanted.contains(&v) {
+                continue;
+            }
+            let Some(point) = body.vertex(v).map(|x| x.point) else {
+                continue;
+            };
+            let d = e.curve.eval(t).distance(point);
+            let d = if d.is_finite() { d } else { f64::INFINITY };
+            let slot = worst.entry(v).or_insert(0.0);
+            *slot = slot.max(d).max(own);
+        }
+    }
+    let mut out = Vec::with_capacity(vertices.len());
+    for v in vertices {
+        let recorded = match worst.get(v) {
+            None => None,
+            Some(&measured) => record(measured, tolerance, cap, |t| {
+                body.set_vertex_tolerance(*v, t)
+            })
+            .map_err(|e| (*v, e))?,
+        };
+        out.push((*v, recorded));
+    }
+    Ok(out)
+}
+
 fn record(
     measured: f64,
     tolerance: &Tolerance,
@@ -411,13 +470,15 @@ fn record(
     if measured <= tolerance.linear {
         return Ok(None);
     }
-    let recorded = (measured * RECORD_MARGIN).max(tolerance.linear);
-    if recorded.is_nan() || recorded > cap {
+    // The cap is on the gap: a gap within it is recorded at most at the
+    // cap, the margin never pushes it over (since slice 2, 2026-10-22).
+    if measured.is_nan() || measured > cap {
         return Err(ToleranceError::AboveCap {
-            measured: recorded,
+            measured: measured * RECORD_MARGIN,
             cap,
         });
     }
+    let recorded = (measured * RECORD_MARGIN).min(cap).max(tolerance.linear);
     set(recorded)?;
     Ok(Some(recorded))
 }

@@ -16,6 +16,8 @@ B-rep → triangle meshes and edge polylines (`craft3d-tess`), the qualities a s
 
 **Self-intersections of a mesh** (`self_intersections`): triangles that cross or overlap without being neighbours, decided exactly by orientation predicates with an exact fallback, measured in depth, found through a bounding-volume hierarchy on several threads and merged in order; the body checks built on it are in [`topology.md`](topology.md).
 
+**On its surface, within whose tolerance** (`tess::off_surfaces`, since 2026-10-22). A point of a face's mesh inside the face lies on the face's surface to rounding; a point on its boundary is a point of an edge's curve or a vertex, and on a loose body ([`topology.md`](topology.md) › *Tolerant entities*) that lies up to the entity's own tolerance off the surface. `off_surfaces(body, mesh, linear, rounding)` reports every mesh point further from its face's surface than rounding, unless it lies within rounding of an edge of the face (or a vertex of one), and then further than that entity's tolerance plus rounding. The tessellator itself needs nothing new: edge points are shared by the faces and projected into each face's parameters. Held by `crates/tess/tests/loose.rs`: 30 loose bodies (the reference solids and a block with a NURBS roof, every other face's surface moved by 30 or 300 tolerances off its edges, the gaps recorded, at three scales) mesh closed and pass; the same meshes against the same bodies without their tables fail, and exact bodies pass at rounding.
+
 ## Findings and history
 
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.

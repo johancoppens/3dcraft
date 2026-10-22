@@ -13,7 +13,7 @@
 use crate::face_ops::{self, explain};
 use crate::{Contributors, FeatureResult, Kept, Names};
 use craft3d_doc::{DeleteFace, Document, FeatureId, NameRole};
-use craft3d_kernel::delete_face::delete_faces;
+use craft3d_kernel::delete_face::delete_faces_capped;
 use craft3d_topo::Body;
 
 const NOUN: &str = "a deletion";
@@ -38,7 +38,7 @@ pub(crate) fn build(
     )?;
     let picked = face_ops::pick(&deletion.faces, "faces", NOUN, source_id, &source)?;
     let unit = doc.units.length.symbol();
-    let made = delete_faces(source.body, &picked, &source.tolerance).map_err(|error| {
+    let made = delete_faces_capped(source.body, &picked, &source.tolerance, Some(source.loosest)).map_err(|error| {
         // The corner where blends meet goes only with the blends round
         // it (since 2026-10-21): said by its name.
         let corner = deletion.faces.iter().enumerate().find(|(_, name)| {

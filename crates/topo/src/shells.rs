@@ -87,6 +87,20 @@ pub fn shells_alone(body: &Body, shells: &[ShellId]) -> Option<(Body, Taken)> {
         }
         out.add_shell(faces);
     }
+    // Loose entities keep their tolerance (edges first: an edge raises
+    // its vertices, which then get their own, at least as loose).
+    for (new, old) in taken.edges.iter().enumerate() {
+        if let Some(t) = body.edge_tolerance(*old) {
+            out.set_edge_tolerance(EdgeId(u32::try_from(new).ok()?), t)
+                .ok()?;
+        }
+    }
+    for (new, old) in taken.vertices.iter().enumerate() {
+        if let Some(t) = body.vertex_tolerance(*old) {
+            out.set_vertex_tolerance(VertexId(u32::try_from(new).ok()?), t)
+                .ok()?;
+        }
+    }
     Some((out, taken))
 }
 

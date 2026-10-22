@@ -562,6 +562,95 @@ impl Builder<'_, '_> {
         }
     }
 
+    /// Sews the edges still used once to free edges that run within the
+    /// cap of them (`topo::sew`: faces the file does not join, or joins
+    /// only within a gap): the file's own sharing first (`sew_edges`),
+    /// then this, at the document's cap on an entity's tolerance. Nothing
+    /// is moved; what it joins is measured and recorded. A solid left
+    /// with an edge used once is refused naming it and how far the
+    /// nearest free edge is.
+    fn sew_loose(
+        &mut self,
+        name: &str,
+        tolerance: &craft3d_math::Tolerance,
+        cap: f64,
+    ) -> Result<(), ImportError> {
+        let step_id = |ids: &[u64], k: u32| ids.get(k as usize).copied().unwrap_or(0);
+        let sewn = match craft3d_topo::sew(&self.body, tolerance, cap, cap) {
+            Ok(sewn) => sewn,
+            Err(craft3d_topo::SewError::Gap {
+                edge,
+                vertex,
+                measured,
+                cap,
+            }) => {
+                let what = match (edge, vertex) {
+                    (Some(e), _) => format!("a sewn edge (from edge {})", e.0),
+                    (None, Some(v)) => format!("a sewn vertex (from vertex {})", v.0),
+                    (None, None) => "an entity".to_string(),
+                };
+                let how = measured.map_or_else(
+                    || "could not be proven within".to_string(),
+                    |m| format!("lies {m:e} off what it joins, more than"),
+                );
+                return err(format!(
+                    "`{name}`: {what} {how} the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved"
+                ));
+            }
+            Err(e) => return err(format!("`{name}`: the faces could not be sewn: {e}")),
+        };
+        if sewn.joined > 0 {
+            // The file's ids of the entities kept: the first that became
+            // each (the lowest, kept with its curve or point).
+            let mut edge_ids = vec![0u64; sewn.body.edges.len()];
+            let mut seen = vec![false; sewn.body.edges.len()];
+            for (old, (new, _)) in sewn.edges.iter().enumerate() {
+                let k = new.0 as usize;
+                if let Some(slot) = seen.get_mut(k)
+                    && !*slot
+                {
+                    *slot = true;
+                    if let Some(id) = edge_ids.get_mut(k) {
+                        *id = step_id(&self.edge_ids, u32::try_from(old).unwrap_or(u32::MAX));
+                    }
+                }
+            }
+            let mut vertex_ids = vec![0u64; sewn.body.vertices.len()];
+            let mut seen = vec![false; sewn.body.vertices.len()];
+            for (old, new) in sewn.vertices.iter().enumerate() {
+                let k = new.0 as usize;
+                if let Some(slot) = seen.get_mut(k)
+                    && !*slot
+                {
+                    *slot = true;
+                    if let Some(id) = vertex_ids.get_mut(k) {
+                        *id = step_id(&self.vertex_ids, u32::try_from(old).unwrap_or(u32::MAX));
+                    }
+                }
+            }
+            self.edge_ids = edge_ids;
+            self.vertex_ids = vertex_ids;
+            self.report.sewn_edges += sewn.joined;
+            self.report.sewn_vertices += sewn.merged_vertices;
+            self.report.sewn_gap = self.report.sewn_gap.max(sewn.largest_gap);
+        }
+        let open = sewn.worst_open();
+        self.body = sewn.body;
+        if self.body.kind == BodyKind::Solid
+            && let Some((edge, nearest)) = open
+        {
+            let id = step_id(&self.edge_ids, edge.0);
+            let nearest = nearest.map_or_else(
+                || "no other free edge".to_string(),
+                |d| format!("the nearest free edge is {d:e} away"),
+            );
+            return err(format!(
+                "`{name}`: edge #{id} bounds only one face and no free edge runs within the cap {cap:e} of it ({nearest}; the document's `loosest`): the solid is not closed and is refused rather than moved"
+            ));
+        }
+        Ok(())
+    }
+
     /// Turns a shell over: every face's normal and every loop.
     fn turn_shell(&mut self, shell: usize) {
         let faces = self
@@ -754,6 +843,7 @@ pub(crate) fn build(
     } else {
         item.name.clone()
     };
+    builder.sew_loose(&name, &options.tolerance, cap)?;
     // A solid's outside encloses a positive volume and a cavity a
     // negative one; a shell the other way round is turned over (a cavity
     // the file gives as a plain closed shell).
@@ -813,29 +903,31 @@ pub(crate) fn build(
             }
         }
     }
-    for k in 0..builder.body.vertices.len() {
-        let vertex = VertexId(u32::try_from(k).unwrap_or(u32::MAX));
-        match craft3d_topo::record_vertex(&mut builder.body, vertex, &options.tolerance, cap) {
-            Ok(Some(t)) => {
+    // Every vertex, with one pass over the edges.
+    let every: Vec<VertexId> = (0..builder.body.vertices.len())
+        .map(|k| VertexId(u32::try_from(k).unwrap_or(u32::MAX)))
+        .collect();
+    match craft3d_topo::record_vertices(&mut builder.body, &every, &options.tolerance, cap) {
+        Ok(recorded) => {
+            for t in recorded.into_iter().filter_map(|(_, t)| t) {
                 builder.report.loose_vertices += 1;
                 builder.report.largest_tolerance = builder.report.largest_tolerance.max(t);
             }
-            Ok(None) => {}
-            Err(e) => {
-                let what = match e {
-                    craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
-                        format!(
-                            "lies {:e} from the ends of its edges",
-                            measured / craft3d_topo::RECORD_MARGIN
-                        )
-                    }
-                    other => other.to_string(),
-                };
-                return err(format!(
-                    "`{name}`: vertex #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
-                    step_id(&builder.vertex_ids, vertex.0)
-                ));
-            }
+        }
+        Err((vertex, e)) => {
+            let what = match e {
+                craft3d_topo::ToleranceError::AboveCap { measured, .. } => {
+                    format!(
+                        "lies {:e} from the ends of its edges",
+                        measured / craft3d_topo::RECORD_MARGIN
+                    )
+                }
+                other => other.to_string(),
+            };
+            return err(format!(
+                "`{name}`: vertex #{} {what}, more than the cap {cap:e} on an entity's own tolerance (the document's `loosest`); the body is refused rather than moved",
+                step_id(&builder.vertex_ids, vertex.0)
+            ));
         }
     }
     let defects = craft3d_topo::check_capped(&builder.body, &options.tolerance, cap);

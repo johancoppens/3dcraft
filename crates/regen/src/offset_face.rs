@@ -6,7 +6,7 @@ use crate::face_ops::{self, explain};
 use crate::{FeatureResult, Names, length};
 use craft3d_doc::{Document, FeatureId, OffsetFace};
 use craft3d_expr::Evaluation;
-use craft3d_kernel::offset_face::{FaceOffset, offset_faces_with};
+use craft3d_kernel::offset_face::{FaceOffset, offset_faces_with_capped};
 use craft3d_topo::Body;
 use std::sync::Arc;
 
@@ -57,8 +57,14 @@ pub(crate) fn build(
         })
         .collect();
     let blends = face_ops::blends(doc, variables, &source);
-    let made = offset_faces_with(source.body, &offsets, &blends, &source.tolerance)
-        .map_err(|error| explain(error, "distance", distance.signum(), unit, &source))?;
+    let made = offset_faces_with_capped(
+        source.body,
+        &offsets,
+        &blends,
+        &source.tolerance,
+        Some(source.loosest),
+    )
+    .map_err(|error| explain(error, "distance", distance.signum(), unit, &source))?;
     let names = same_entities(feature, source.names)?;
     face_ops::not_through_itself(
         &made.body,

@@ -61,11 +61,13 @@ fn error(text: &str) -> String {
 #[test]
 fn a_closed_circle_reads_and_stays_a_circle() {
     // A plane face bounded by a whole circle: a sheet in a solid's place,
-    // which the check refuses (an edge used once) with the body's name.
+    // which sewing refuses (an edge used once, no free edge to sew it to)
+    // with the body's name and the edge's (the check refused it with
+    // "used 1 times" before sewing ran on every import, 2026-10-22).
     let text = file("#30=CIRCLE('',#21,1.);\n", true);
     let e = error(&text);
     assert!(e.contains("`solid`"), "{e}");
-    assert!(e.contains("used 1 times"), "{e}");
+    assert!(e.contains("edge #16 bounds only one face"), "{e}");
 }
 
 #[test]

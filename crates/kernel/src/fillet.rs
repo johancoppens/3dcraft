@@ -108,6 +108,48 @@ pub fn fillet(
     edges: &[FilletEdge],
     tolerance: &Tolerance,
 ) -> Result<FilletResult, KernelError> {
+    fillet_capped(body, edges, tolerance, None)
+}
+
+/// [`fillet`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn fillet_capped(
+    body: &Body,
+    edges: &[FilletEdge],
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<FilletResult, KernelError> {
+    crate::loose_op::run(
+        "fillet",
+        body,
+        tolerance,
+        loosest,
+        |at| fillet_at(body, edges, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r
+                    .faces
+                    .iter()
+                    .map(|f| match f {
+                        FilletFace::Kept(kept) if kept.len() == 1 => kept.first().copied(),
+                        _ => None,
+                    })
+                    .collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn fillet_at(
+    body: &Body,
+    edges: &[FilletEdge],
+    tolerance: &Tolerance,
+) -> Result<FilletResult, KernelError> {
     let requests: Vec<Request> = edges
         .iter()
         .map(|e| Request {
