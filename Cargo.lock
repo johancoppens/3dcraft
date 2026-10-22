@@ -659,6 +659,25 @@ dependencies = [
  "pollster 1.0.1",
  "serde",
  "serde_json",
+ "web-time",
+]
+
+[[package]]
+name = "craft3d-web"
+version = "0.0.1"
+dependencies = [
+ "craft3d-engine",
+ "craft3d-ui-egui",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "js-sys",
+ "log",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -3665,6 +3684,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.0.1"
 dependencies = [
+ "craft3d-doc",
  "serde_json",
 ]
 

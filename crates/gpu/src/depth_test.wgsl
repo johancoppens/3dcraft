@@ -54,32 +54,34 @@ fn surface_hides(at: vec2<f32>, depth: f32) -> bool {
     let u = at - vec2<f32>(0.5, 0.5);
     let cell = vec2<i32>(floor(u));
     let f = u - vec2<f32>(cell);
-    var z: array<array<Surface, 4>, 4>;
+    // The 4 by 4 samples, row r and column k at r * 4 + k: one array, as
+    // GLSL ES 3.0 (WebGL2) has no arrays of arrays.
+    var z: array<Surface, 16>;
     for (var r = 0; r < 4; r = r + 1) {
         for (var k = 0; k < 4; k = k + 1) {
             let q = clamp(cell + vec2<i32>(k - 1, r - 1), vec2<i32>(0), size - vec2<i32>(1));
-            z[r][k] = surface_at(q);
+            z[r * 4 + k] = surface_at(q);
         }
     }
-    if !(z[1][1].drawn && z[1][2].drawn && z[2][1].drawn && z[2][2].drawn) {
+    if !(z[5].drawn && z[6].drawn && z[9].drawn && z[10].drawn) {
         return false;
     }
-    let a = z[1][1].distance;
-    let b = z[1][2].distance;
-    let c = z[2][1].distance;
-    let d = z[2][2].distance;
+    let a = z[5].distance;
+    let b = z[6].distance;
+    let c = z[9].distance;
+    let d = z[10].distance;
     let surface = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     var kink = 0.0;
     for (var n = 1; n < 3; n = n + 1) {
         // Row n of the cell at its two samples, and column n at its two.
-        let row_first = beyond(z[n][0], z[n][1], z[n][2]);
-        let row_second = beyond(z[n][1], z[n][2], z[n][3]);
+        let row_first = beyond(z[n * 4], z[n * 4 + 1], z[n * 4 + 2]);
+        let row_second = beyond(z[n * 4 + 1], z[n * 4 + 2], z[n * 4 + 3]);
         // Both by more than the slack: rounding makes no hollow.
         if row_first > lines.size.z && row_second > lines.size.z {
             kink = max(kink, max(row_first, row_second));
         }
-        let column_first = beyond(z[0][n], z[1][n], z[2][n]);
-        let column_second = beyond(z[1][n], z[2][n], z[3][n]);
+        let column_first = beyond(z[n], z[4 + n], z[8 + n]);
+        let column_second = beyond(z[4 + n], z[8 + n], z[12 + n]);
         if column_first > lines.size.z && column_second > lines.size.z {
             kink = max(kink, max(column_first, column_second));
         }

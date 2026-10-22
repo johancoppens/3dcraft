@@ -10,3 +10,5 @@ workspace = true
 
 [dependencies]
 serde_json.workspace = true
+# SHA-256 for the web build's file names and SHA256SUMS.txt (`web.rs`).
+craft3d-doc.workspace = true

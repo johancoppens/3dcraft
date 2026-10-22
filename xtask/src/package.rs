@@ -4,7 +4,9 @@
 //!
 //! - Linux: a tarball (with `install.sh`) and an AppImage;
 //! - macOS: `3DCraft.app` in a `.dmg`;
-//! - Windows: a zip and an `.msi`.
+//! - Windows: a zip and an `.msi`;
+//! - everywhere: `--formats web`, the browser build as a static site in
+//!   `3dcraft-web-<version>.zip` with `SHA256SUMS.txt` (`crate::web`).
 //!
 //! The files they carry (desktop entry, MIME type, Info.plist, WiX source,
 //! icons) live in `packaging/`. The external tools are the platform's own
@@ -36,6 +38,8 @@ struct Options {
     build: bool,
     appimagetool: Option<PathBuf>,
     appimage_runtime: Option<PathBuf>,
+    wasm_bindgen: Option<PathBuf>,
+    wasm_opt: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -66,11 +70,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--no-build" => o.build = false,
             "--appimagetool" => o.appimagetool = Some(PathBuf::from(value()?)),
             "--appimage-runtime" => o.appimage_runtime = Some(PathBuf::from(value()?)),
+            "--wasm-bindgen" => o.wasm_bindgen = Some(PathBuf::from(value()?)),
+            "--wasm-opt" => o.wasm_opt = Some(PathBuf::from(value()?)),
             other => {
                 return Err(format!(
                     "package: unknown argument `{other}`; usage: cargo xtask package \
                      [--target TRIPLE] [--out DIR] [--formats LIST] [-j N] [--no-build] \
-                     [--appimagetool PATH] [--appimage-runtime PATH]"
+                     [--appimagetool PATH] [--appimage-runtime PATH] \
+                     [--wasm-bindgen PATH] [--wasm-opt PATH]"
                 ));
             }
         }
@@ -90,13 +97,14 @@ fn default_formats() -> Vec<String> {
     names.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// The formats made on this platform: its own, and the browser build.
 fn known_formats() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
-        &["app", "dmg"]
+        &["app", "dmg", "web"]
     } else if cfg!(windows) {
-        &["zip", "msi"]
+        &["zip", "msi", "web"]
     } else {
-        &["tar", "appimage"]
+        &["tar", "appimage", "web"]
     }
 }
 
@@ -155,7 +163,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     let repo = repo_root();
-    if options.build {
+    let desktop = formats.iter().any(|f| f != "web");
+    if options.build && desktop {
         let mut cargo = vec!["build", "--release", "--locked"];
         if let Some(t) = &options.target {
             cargo.extend(["--target", t.as_str()]);
@@ -205,6 +214,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "dmg" => p.dmg()?,
             "zip" => p.zip()?,
             "msi" => p.msi()?,
+            "web" => {
+                let jobs: Vec<&str> = match &options.jobs {
+                    Some(j) => vec!["-j", j.as_str()],
+                    None => Vec::new(),
+                };
+                crate::web::package(
+                    &p.repo,
+                    &target,
+                    &p.stage.join("web"),
+                    &p.out,
+                    &p.version,
+                    &crate::web::Tools {
+                        wasm_bindgen: options.wasm_bindgen.clone(),
+                        wasm_opt: options.wasm_opt.clone(),
+                    },
+                    options.build.then_some(jobs.as_slice()),
+                )?
+            }
             other => return Err(format!("package: unknown format `{other}`")),
         };
         made.push(file);
@@ -252,14 +279,14 @@ fn set_mode(_path: &Path, _executable: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn write(to: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write(to: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = to.parent() {
         mkdir(dir)?;
     }
     std::fs::write(to, bytes).map_err(|e| format!("cannot write {}: {e}", to.display()))
 }
 
-fn read(from: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read(from: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(from).map_err(|e| format!("cannot read {}: {e}", from.display()))
 }
 
@@ -270,7 +297,7 @@ const FAILURE_LINES: usize = 20;
 /// or does not succeed. Its output is captured and passed on, and a failure
 /// repeats the end of it, so the error says why even when the output
 /// scrolled away (a CI log shows the error last).
-fn tool(command: &mut Command, what: &str) -> Result<(), String> {
+pub(crate) fn tool(command: &mut Command, what: &str) -> Result<(), String> {
     eprintln!("$ {command:?}");
     let output = command
         .output()
@@ -292,7 +319,7 @@ fn tool(command: &mut Command, what: &str) -> Result<(), String> {
 
 /// The error of a failed tool: its name, its exit status and the last
 /// lines it wrote (standard output, then standard error).
-fn failure(what: &str, status: &str, stdout: &str, stderr: &str) -> String {
+pub(crate) fn failure(what: &str, status: &str, stdout: &str, stderr: &str) -> String {
     let lines: Vec<&str> = stdout
         .lines()
         .chain(stderr.lines())
@@ -762,6 +789,27 @@ mod tests {
             Some(PathBuf::from("target/tools/runtime"))
         );
         assert!(parse(&["--appimage-runtime".to_string()]).is_err());
+    }
+
+    #[test]
+    fn the_web_build_is_known_everywhere_and_takes_its_tools() {
+        assert!(known_formats().contains(&"web"));
+        assert!(!default_formats().contains(&"web".to_string()));
+        let args: Vec<String> = [
+            "--formats",
+            "web",
+            "--wasm-bindgen",
+            "wb",
+            "--wasm-opt",
+            "wo",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let o = parse(&args).unwrap();
+        assert_eq!(o.formats, Some(vec!["web".to_string()]));
+        assert_eq!(o.wasm_bindgen, Some(PathBuf::from("wb")));
+        assert_eq!(o.wasm_opt, Some(PathBuf::from("wo")));
     }
 
     #[test]

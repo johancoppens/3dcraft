@@ -18,6 +18,8 @@
 //!   into the texture egui shows, multisampled, with the lines over it
 //!   drawn and depth-tested on the GPU: what the window uses.
 //! - [`viewport`]: the rendered image and the lines drawn over it.
+//! - [`files`]: what the hosts' file actions share (proposed names, what
+//!   `file.export` is given for the selection), on disk or in memory.
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
 //! - [`view_cube`]: the view cube's geometry.
@@ -30,8 +32,8 @@
 pub mod backend;
 pub mod camera;
 pub mod control;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod direct;
+pub mod files;
 pub mod frames;
 pub mod shell;
 pub mod state;

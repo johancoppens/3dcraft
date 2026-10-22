@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>3DCraft</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="256x256" href="./icon-256.png">
+  <link rel="apple-touch-icon" href="./icon-256.png">
+  <meta name="theme-color" content="@THEME_COLOR@">
+  <link rel="modulepreload" href="./@JS@">
+  <link rel="preload" href="./@WASM@" as="fetch" type="application/wasm" crossorigin="anonymous">
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: @BACKGROUND@; }
+    #craft3d_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #craft3d_loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      padding: 2em; text-align: center; color: #5c5850; font: 14px system-ui, sans-serif; }
+  </style>
+  <script type="module">
+    import init from './@JS@';
+    try {
+      await init({ module_or_path: './@WASM@' });
+    } catch (error) {
+      const message = document.getElementById('craft3d_loading');
+      if (message) message.textContent = '3DCraft could not be loaded: ' + error;
+    }
+  </script>
+</head>
+<body>
+  <canvas id="craft3d_canvas"></canvas>
+  <div id="craft3d_loading">Loading 3DCraft&hellip;</div>
+  <noscript>3DCraft needs JavaScript and WebAssembly.</noscript>
+</body>
+</html>

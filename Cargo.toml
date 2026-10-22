@@ -55,6 +55,15 @@ pollster = "1.0.1"
 rfd = "0.17"
 # The control token only (docs/control-protocol.md, Authentication).
 getrandom = "0.4"
+# The browser build only (apps/craft3d-web, and the page's clock in
+# craft3d-ui-egui on wasm32): the bindings to the page, MIT/Apache-2.0,
+# pure Rust. wasm-bindgen's version is the one the wasm-bindgen CLI of the
+# web build must have (docs/development.md, Web build).
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
+web-sys = "0.3.106"
+web-time = "1.1.0"
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: a number read back from a file is the number that was
 # written, bit for bit; the default parser may be one unit in the last place

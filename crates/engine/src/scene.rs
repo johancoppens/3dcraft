@@ -2237,6 +2237,11 @@ impl Session {
     /// shell's own output files (a screenshot), which are not a command's.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn write_output(&self, path: &str, bytes: &[u8]) -> Result<(), CommandError> {
+        if self.writes_to_memory() {
+            return Err(CommandError::new(
+                "this session keeps its files in memory; leave `path` out to get the data in the reply",
+            ));
+        }
         let resolved = self.workspace.resolve_write(path)?;
         crate::workspace::write_atomic(&resolved, bytes)
     }

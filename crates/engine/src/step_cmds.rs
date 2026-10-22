@@ -95,12 +95,14 @@ pub(crate) fn export(
     };
     let (bytes, summary) = craft3d_io::export_step(&bodies, &options)
         .map_err(|e| CommandError::new(format!("file.export: {e}")))?;
-    crate::workspace::write_atomic(resolved, &bytes)?;
+    let size = bytes.len();
+    let unit = doc.units.length.symbol();
+    session.write_resolved(resolved, bytes)?;
     Ok(json!({
         "path": path,
         "format": "step",
         "schema": craft3d_io::step::SCHEMA,
-        "bytes": bytes.len(),
+        "bytes": size,
         "bodies": summary.bodies,
         // Lumps: a body in several pieces is several solids.
         "solids": summary.solids,
@@ -110,7 +112,7 @@ pub(crate) fn export(
         "edges": summary.edges,
         "vertices": summary.vertices,
         "entities": summary.instances,
-        "unit": doc.units.length.symbol(),
+        "unit": unit,
         // The document's tolerance, written as the file's uncertainty.
         "uncertainty": tolerance.linear,
     }))

@@ -18,7 +18,6 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Reads a STEP file (.step, .stp; AP203, AP214 or AP242 B-rep) from the read root into the active document: one import feature per placed solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS with its cavities) or sheet (SHELL_BASED_SURFACE_MODEL) of the file, as one undo step: an assembly (NEXT_ASSEMBLY_USAGE_OCCURRENCE with its transformations, MAPPED_ITEM) gives one feature per placement, moved where the assembly puts it, named after its place (bracket/bolt#2, also in the result's `instance`); the solids' colours (STYLED_ITEM) become the bodies' appearances, and a face styled in another colour than its solid keeps it as a face colour (face.appearance, by its name F5:face(i)). The document keeps the file's bytes (saved once in the .3dcraft file), so it regenerates without the file. Lengths are converted from the file's unit to the document's; the file's uncertainty is reported and used to join vertices the file repeats (topology only: geometry is never moved, the largest gap joined is reported). Faces, edges and vertices are named by their order in the file (F5:face(0), F5:edge(3)), so importing the same file again gives the same names. Read: planes, cylinders, cones, spheres, tori, B-spline surfaces (rational, uniform, quasi-uniform and Bézier too), surfaces of revolution and linear extrusion of any of the curves read (exact B-spline surfaces where no elementary kind is), offsets of the elementary surfaces, lines, circles, ellipses, polylines, B-spline curves. Refused, naming the entity: other kinds, placements that scale or mirror, assemblies that contain themselves, files without a length unit, and a solid whose edges or vertices lie off their faces by more than the document's cap on an entity's tolerance. The features take the names the file gives its solids where the document can, or names gives them, one per solid.", doc: true, file_import),
 ];
 
-#[cfg(not(target_arch = "wasm32"))]
 fn file_import(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "file.import";
     let p = crate::params::Params::new(ID, params, &["path", "names"])?;
@@ -38,32 +37,18 @@ fn file_import(session: &mut Session, params: &Value) -> Run {
         Some(_) => return fail(format!("{ID}: `names` must be a list of strings")),
     };
     let resolved = session.workspace.resolve_read(path)?;
-    let size = std::fs::metadata(&resolved)
-        .map_err(|e| CommandError::new(format!("{ID}: cannot read `{path}`: {e}")))?
-        .len();
-    if size > craft3d_stepread::MAX_IMPORT_BYTES as u64 {
-        return fail(format!(
-            "{ID}: `{path}` is {size} bytes; at most {} are imported",
-            craft3d_stepread::MAX_IMPORT_BYTES
-        ));
-    }
-    let bytes = std::fs::read(&resolved)
-        .map_err(|e| CommandError::new(format!("{ID}: cannot read `{path}`: {e}")))?;
+    let limit = u64::try_from(craft3d_stepread::MAX_IMPORT_BYTES).unwrap_or(u64::MAX);
+    let bytes = session
+        .read_input(path, &resolved, limit)
+        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let file_name = resolved
         .file_name()
         .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
     import_bytes(session, ID, bytes, &file_name, given)
 }
 
-#[cfg(target_arch = "wasm32")]
-fn file_import(_: &mut Session, _: &Value) -> Run {
-    fail("file.import: files are not available in this build")
-}
-
 /// Adds the import features of a file's bytes, after reading every solid
-/// of it with the document's units and tolerance. (In the browser build
-/// there are no files to read yet.)
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// of it with the document's units and tolerance.
 pub(crate) fn import_bytes(
     session: &mut Session,
     id: &'static str,
@@ -242,7 +227,6 @@ pub(crate) fn import_bytes(
 /// else the solid's own name; the same leaf met again (`bolt#1` in each of
 /// two sub-assemblies) numbered on in file order, `bolt#1-2`, so every
 /// placement keeps a name of its own. `leaves` counts what was met.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn placement_name(
     leaves: &mut std::collections::BTreeMap<String, usize>,
     path: &str,

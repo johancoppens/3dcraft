@@ -91,3 +91,12 @@ Display is the one place with two implementations.
 In PhotoCraft the CPU compositor defines what the image *is*. Here the model's truth is the B-rep and its mass properties, not the picture. The CPU renderer is the oracle for **display** only: it lets agents and the developer see a model without a GPU, and it catches GPU regressions. Geometric correctness is tested geometrically ([`testing.md`](../testing.md)).
 
 ---
+
+### The browser: WebGPU and WebGL2 (2026-10-22)
+
+The browser build (`apps/craft3d-web`) draws the viewport with the same `Onscreen` renderer and shaders on the page's device; checked in headless Chrome (SwiftShader) on WebGPU (4 samples) and WebGL2 (1 sample) against the CPU renderer's picture of the same flange. Two things WebGL2 (wgpu's GL backend on OpenGL ES 3.0) does not take that desktop OpenGL does:
+
+- **Arrays of arrays.** GLSL ES 3.0 has none, and naga refuses `array<array<…>>` there; `depth_test.wgsl` held its 4 × 4 samples that way, so every line pipeline failed validation. One array indexed by `row * 4 + column` now; `crates/gpu/tests/webgl_shaders.rs` keeps arrays of arrays out of every shader.
+- **A depth texture without a nearest filter is incomplete.** OpenGL ES 3.0 (§3.8.13) takes a depth texture whose magnification filter is not `NEAREST` for incomplete, and `texelFetch` from it reads 0; wgpu-hal's GL backend binds no sampler to a texture that is only loaded from, so the default linear filter stays. Every surface read as nothing and no line was hidden. The distance pass now reads a single-sampled depth buffer with `textureSampleLevel` through a nearest sampler at the texel's centre (the texel itself; the multisampled path is unchanged; the parity tests on Vulkan and OpenGL pass unchanged). The see-through (peel) and section (cut) passes still load depth textures; on WebGL2 the page hands those pictures to the CPU renderer (`Shell::without_gpu_see_through`, `without_gpu_section`) until they read them the same way.
+
+Errors WebGPU reports later go to the page's `on_uncaptured_error` handler (wgpu's default panics, which ends a WebAssembly page); the page then drops the direct path for the CPU renderer (`Shell::leave_gpu`).

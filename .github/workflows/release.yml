@@ -5,6 +5,9 @@ name: Release
 #   Linux    3dcraft-<version>-x86_64-linux.tar.gz, 3DCraft-<version>-x86_64.AppImage
 #   macOS    3DCraft-<version>-aarch64.dmg (3DCraft.app, ad-hoc signed, not notarised)
 #   Windows  3dcraft-<version>-x86_64-windows.zip, 3DCraft-<version>-x86_64.msi
+#   Web      3dcraft-web-<version>.zip (a static site, packaging/web/HOSTING.md)
+# and SHA256SUMS.txt over all of them (what an updater of the web build
+# checks before it unpacks it).
 # Started by hand (the packages are kept as run artifacts):
 #   gh workflow run Release && gh run watch
 # or by pushing a tag `v<version>` matching the workspace version, which
@@ -124,11 +127,73 @@ jobs:
             dist/*.zip
             dist/*.msi
 
+  # The browser build: wasm-bindgen's CLI of the version in Cargo.lock and
+  # binaryen's wasm-opt, both release downloads pinned and checked against
+  # their sha256 (docs/development.md, Web build).
+  web:
+    name: package (web)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+
+      - name: tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          mkdir -p target/tools
+          curl -fsSL -o target/tools/wasm-bindgen.tar.gz \
+            https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSL -o target/tools/binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+          sha256sum -c - <<'SUMS'
+          82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  target/tools/wasm-bindgen.tar.gz
+          2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489  target/tools/binaryen.tar.gz
+          SUMS
+          tar -xzf target/tools/wasm-bindgen.tar.gz -C target/tools
+          tar -xzf target/tools/binaryen.tar.gz -C target/tools
+          echo "WASM_BINDGEN=$PWD/target/tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen" >> "$GITHUB_ENV"
+          echo "WASM_OPT=$PWD/target/tools/binaryen-version_133/bin/wasm-opt" >> "$GITHUB_ENV"
+
+      - name: package
+        run: cargo xtask package --formats web --out dist
+
+      # The site is one folder with one page, whose module and glue have
+      # the 16-digit hashed names a server caches forever.
+      - name: smoke test
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+          mkdir -p ../target/smoke && unzip -q 3dcraft-web-*.zip -d ../target/smoke
+          site=$(ls -d ../target/smoke/3dcraft-web-*)
+          test "$(find ../target/smoke -name index.html | wc -l)" = 1
+          ls "$site"/craft3d-web-*_bg.wasm | grep -Eq -- '-[0-9a-f]{16}_bg\.wasm$'
+          ls "$site"/craft3d-web-*.js | grep -Eq -- '-[0-9a-f]{16}\.js$'
+          grep -q 'rel="manifest"' "$site/index.html"
+          grep -q '?webgl' "$site/HOSTING.md"
+          test -s "$site/.htaccess" && test -s "$site/_headers" && test -s "$site/icon-512.png"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dcraft-web
+          if-no-files-found: error
+          path: |
+            dist/3dcraft-web-*.zip
+            dist/SHA256SUMS.txt
+
   # Only for a tag: a draft release with every package; publishing it is
   # the developer's step.
   release:
     name: draft release
-    needs: package
+    needs: [package, web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -138,6 +203,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: checksums
+        run: |
+          cd dist
+          rm -f SHA256SUMS.txt
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          cat SHA256SUMS.txt
       - name: draft release
         env:
           GH_TOKEN: ${{ github.token }}

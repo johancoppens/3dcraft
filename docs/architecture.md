@@ -43,7 +43,7 @@ These are the invariants. Every part is built so that they hold by construction,
  L0  foundation    math, geom (curves, surfaces, intersections); step, meshio, drawing, zipstore (standalone formats)
 ```
 
-`cargo xtask layers` enforces this from `xtask/src/layers.rs`: a crate depends only on lower layers, except the same-layer pairs listed there (`geom` → `math`; `gpu` → `render`, whose camera and frame it shares so the two compare pixel by pixel; `kernel`'s tests mesh with `tess`); the standalone format crates depend on no workspace crate (except `meshio` → `zipstore`, for 3MF); nothing below L7 uses egui, eframe, winit or rfd; `testkit` is a dev-dependency only; every crate opts into the workspace lints. L0 to L7 build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
+`cargo xtask layers` enforces this from `xtask/src/layers.rs`: a crate depends only on lower layers, except the same-layer pairs listed there (`geom` → `math`; `gpu` → `render`, whose camera and frame it shares so the two compare pixel by pixel; `kernel`'s tests mesh with `tess`); the standalone format crates depend on no workspace crate (except `meshio` → `zipstore`, for 3MF); nothing below L7 uses egui, eframe, winit or rfd; `testkit` is a dev-dependency only; every crate opts into the workspace lints. L0 to L7 and the web app `apps/craft3d-web` build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
 
 | Crate | Layer | Owns | Never |
 |---|---|---|---|
@@ -72,6 +72,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `apps/craft3d` | L8 | the window: eframe, the engine thread, the control listener, file dialogs | holds modelling logic |
 | `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `commands`, `serve`, `mcp` | holds modelling logic |
 | `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
+| `apps/craft3d-web` | L8 | the page: eframe's web runner, the session's files in memory, the file chooser and downloads, preferences in `localStorage` | holds modelling logic; starts a thread |
 | `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz` | is shipped |
 
 ## 3. The data
@@ -118,6 +119,7 @@ Edges first: each edge becomes points once, and both faces that share it use the
 - **Session** (`engine`): open documents, the command registry (72 commands in eleven families: `file`, `recovery`, `edit`, `variable`, `sketch`, `datum`, `feature`, `body`, `history`, `document`, `view`), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
 - **Commands**: an id, a parameter string, a summary and a `run` function, in the `SPECS` of `commands.rs` or of an `<area>_cmds.rs` module; the UI, CLI, control channel and MCP all dispatch the same ones. A failed command changes nothing; a panic inside one is caught and reported. `panic_hunt` runs every command with hostile parameters.
 - **The window** (`apps/craft3d`, `ui-egui`): a thin shell. Commands, regeneration and meshing run on the engine thread; the viewport draws on the GPU (`gpu::Onscreen`), with the CPU renderer as the fallback and as the oracle for screenshots. The control channel (loopback TCP, a token) lets an agent drive the window the developer watches, also over MCP (`craft3d-cli mcp --bridge`). Details: [`design/engine.md`](design/engine.md), [`design/rendering.md`](design/rendering.md), [`control-protocol.md`](control-protocol.md).
+- **The page** (`apps/craft3d-web`, `ui-egui`): the same shell in the browser, on one thread: commands run between frames, the viewport draws on the page's own device (WebGPU, else WebGL2) with the CPU renderer standing by, and the session keeps its files in memory (`Access::Memory`), so open, save, import and export are the same commands; no control channel. Details: [`development.md`](development.md) › Web build.
 
 ## 8. Files
 

@@ -149,12 +149,13 @@ pub(crate) fn export(
     };
     let (bytes, report) = craft3d_io::encode_drawing(&drawing, format, tolerance)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
-    crate::workspace::write_atomic(resolved, &bytes)?;
+    let size = bytes.len();
+    session.write_resolved(resolved, bytes)?;
     let counts = drawing.counts();
     let mut result = json!({
         "path": path,
         "format": format.name(),
-        "bytes": bytes.len(),
+        "bytes": size,
         "unit": unit.symbol(),
         "paths": counts.paths,
         // Paths that come back to their start: what a laser cuts out.

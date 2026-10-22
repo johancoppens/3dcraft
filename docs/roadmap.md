@@ -33,7 +33,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
 | R1 | First release | 🟡 2026-10-15 | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
 | V1 | Design verification | 🟡 2026-10-22 | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
-| M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
+| M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document and a public STEP corpus; the browser build moved to R1 (2026-10-22). | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
 | M12+ | Later candidates | ⬜ | Ideas that are not planned yet. | [Ideas](#ideas-m12) |
 
@@ -473,8 +473,11 @@ The first version for people outside the project; it follows M9 and does not wai
 - The second field test, over MCP as the testers will work: history commands, conflicting sketches, every constraint kind, negative values, other units, a change request on an example and the guide taken literally; 28 frictions, 15 fixed (one in part: messages, a terse batch's failed features, `madeBy` on edges, a sketch's frame and normal, a variable defined from itself refused, the guide), the rest below or left with a reason ([`field-test/2026-10-22`](field-test/2026-10-22/README.md)) (2026-10-22)
 
 - Installers for Linux (tarball, AppImage), macOS (`.dmg`, Apple Silicon) and Windows (zip, `.msi`), built by `cargo xtask package` and `.github/workflows/release.yml` on GitHub's runners, each started once with `--version` and `commands` (run 39835637182); not signed or notarised ([`development.md`](development.md) › *Packaging*) (2026-10-22)
+- `craft3d-web`, 3DCraft in the browser (the developer's request: in R1, packaged as the other Craft apps): the viewer, Open, Save, Export and Import as the same commands on files in the session's memory, WebGPU or WebGL2 with the same shaders, one thread, `cargo xtask package --formats web` making `3dcraft-web-<version>.zip` with `SHA256SUMS.txt`, built by the Release workflow ([`development.md`](development.md) › *Web build*) (2026-10-22)
 
 #### Open
+- [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
+- [ ] On WebGL2 see-through bodies and the section are drawn by the CPU renderer: their passes (peel, cut) load the depth buffer without a sampler, which OpenGL ES 3.0 reads as 0; read it through a nearest sampler as the lines' distance pass does
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
 - [ ] Suppressing a boolean, fillet or chamfer fails everything after it; pass the body through, as other modellers do
 - [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
@@ -528,11 +531,11 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - [ ] A period for spline surfaces in `craft3d-geom`, so that knots that are not clamped are covered (`geom::closure` reads clamped knots only)
 - [ ] The STEP reader, next slices: faces' own colours and names, mirrored placements, the kinds still refused, one read per part placed many times ([`design/step-import.md`](design/step-import.md) › *Second slice*)
 - [ ] A pinned public STEP corpus
-- [ ] `craft3d-web`
+- [x] `craft3d-web`: moved to R1 at the developer's request (2026-10-22)
 - [ ] Performance budgets and a generated scorecard
 
 #### Acceptance
-A corpus import floor set and enforced; the web build loads and views a model.
+A corpus import floor set and enforced (the web build's acceptance moved to R1).
 
 ### M11+: Interactive UI
 
@@ -583,6 +586,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | `craft3d-web` moved from M10 to R1 (the developer's request): 3DCraft in the browser on one thread, packaged as `3dcraft-web-<version>.zip` like the other Craft apps |
 | 2026-10-22 | minor | R1: the second field test (history, conflicts, constraints, negative values, units, a change request, the guide); its open findings added under R1 › Open |
 | 2026-10-22 | minor | R1: installers (`cargo xtask package`, `release.yml`), the Linux ones checked; macOS and Windows wait for a first run of the workflow |
 | 2026-10-22 | minor | R1: the user guide and nine example models, checked by a test |

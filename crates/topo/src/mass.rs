@@ -3998,6 +3998,8 @@ fn in_order<T: Send>(count: usize, each: usize, work: impl Fn(usize) -> T + Sync
                 .collect();
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = each;
     (0..count).map(work).collect()
 }
 

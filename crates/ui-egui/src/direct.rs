@@ -7,9 +7,10 @@
 //!
 //! The window hands the shell its [`egui_wgpu::RenderState`] (device,
 //! queue, adapter and egui's renderer, where the texture is registered)
-//! once, at creation. A host without one (tests, the `snapshot` example,
-//! the browser) never gets here: the shell then renders as before, with a
-//! renderer of its own that reads back, or on the CPU.
+//! once, at creation (the browser's page too: WebGPU, or WebGL2). A host
+//! without one (tests, the `snapshot` example) never gets here: the shell
+//! then renders as before, with a renderer of its own that reads back, or
+//! on the CPU.
 
 use crate::backend::{Backend, RendererReport};
 use crate::state::CameraState;
@@ -27,6 +28,12 @@ use craft3d_math::Vec3;
 use craft3d_render::{Highlight, RenderParams};
 use egui_wgpu::wgpu;
 use std::sync::Arc;
+// The browser has no clock in `std` (`std::time::Instant::now` panics
+// there).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// A picture read back from the device, for tests: width, height and 3
 /// bytes per pixel.
@@ -353,6 +360,7 @@ pub fn fills(marks: &Marks, tokens: &Tokens) -> Vec<Fill> {
 /// wgpu's debug names are left off: with them the Vulkan loader walks its
 /// device list without a lock, and another thread making a device at
 /// that moment crashes the process (see `craft3d_gpu`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn headless_render_state() -> Result<egui_wgpu::RenderState, String> {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     setup
@@ -517,7 +525,7 @@ impl Direct {
         if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
             return Ok(None);
         }
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.draw(scene, &wanted)));
         match outcome {
@@ -698,6 +706,7 @@ impl Direct {
 
     /// The picture as shown, read back: for tests. The window never
     /// calls it.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_rgb(&self) -> Result<ReadBack, String> {
         let (width, height) = self.onscreen.size().ok_or("nothing was drawn")?;
         let rgb = self.onscreen.read_rgb().map_err(|e| e.to_string())?;
