@@ -240,3 +240,60 @@ fn other_radii_along_the_round_are_refused_with_the_reason_or_built() {
         .count();
     assert_eq!(tori, 4);
 }
+
+/// Radii within the tolerance of the rounds' radius (the review of
+/// 2026-10-22): each either builds, as the round's own radius does, or is
+/// refused with something true. Above it "too large" names the round's
+/// radius as what fits, and that builds (before: a search's 0.9977, below
+/// half of it, while 2 builds); below it the spindle refusal, which names
+/// the rim's own radius, and that builds. At three scales, with offsets
+/// from a few ulps to past the tolerance on both sides.
+#[test]
+fn radii_within_the_tolerance_of_the_rounds_build_or_say_what_fits() {
+    let r = 2.0;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let first = rounded_upright(k, r);
+        let builds = |radius: f64| {
+            let made = fillet(&first, &top_rim(&first, k, radius / k), &tol)
+                .unwrap_or_else(|e| panic!("{radius} at scale {k} should build: {e}"));
+            assert_eq!(check(&made.body, &tol), [], "{radius} at scale {k}");
+            let m = mass(&made.body);
+            let off = m.volume - closed_form(SIZE, r) * k * k * k;
+            assert!(
+                off.abs() <= tol.linear * m.area,
+                "{radius} at scale {k}: off by {off:e}"
+            );
+        };
+        // Offsets as fractions of the tolerance at scale 1 (1e-6).
+        for d in [
+            1e-12, 1e-9, 1e-7, 4e-7, 5e-7, 9e-7, 1.1e-6, -1e-12, -1e-9, -5e-7, -9e-7, -1.1e-6,
+        ] {
+            let asked = (r + d) * k;
+            match fillet(&first, &top_rim(&first, k, r + d), &tol) {
+                Ok(made) => {
+                    assert_eq!(check(&made.body, &tol), [], "{d:e} at scale {k}");
+                    let m = mass(&made.body);
+                    let off = m.volume - closed_form(SIZE, r) * k * k * k;
+                    assert!(
+                        off.abs() <= tol.linear * m.area,
+                        "{d:e} at scale {k}: off by {off:e}"
+                    );
+                }
+                Err(KernelError::FilletTooLarge { largest, .. }) => {
+                    assert!(largest < asked, "{d:e} at scale {k}: {largest} of {asked}");
+                    assert!(
+                        (largest - r * k).abs() <= tol.linear,
+                        "{d:e} at scale {k}: what fits is {largest}"
+                    );
+                    builds(largest);
+                }
+                Err(error) if error.to_string().contains("less than the rim's") => {
+                    assert!(asked < r * k, "{d:e} at scale {k}: {error}");
+                    builds(r * k);
+                }
+                Err(error) => panic!("{d:e} at scale {k}: {error}"),
+            }
+        }
+    }
+}
