@@ -62,6 +62,7 @@ pub mod probe;
 mod regions;
 mod section;
 mod sew;
+mod two_sheets;
 mod verify;
 
 pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, interference};
@@ -267,6 +268,9 @@ enum Mode {
     Trim,
     /// A solid (A) cut by a sheet (B): the result is a solid.
     Cut,
+    /// Two sheets: A cut by B (subtract, intersect) or the two sewn
+    /// (union); the result is a sheet.
+    Sheets,
 }
 
 /// Why something is refused, as a fixed text: tests count refusals by it.
@@ -288,9 +292,6 @@ pub(crate) const SHEET_UNION: Reason = "the union of a sheet with a body: a shee
 /// A question about inside and outside, asked of a sheet.
 pub(crate) const NOT_SOLID: Reason =
     "a body that is a sheet, which has no inside: points and interference are told against solids";
-/// Two sheets.
-const TWO_SHEETS: Reason =
-    "a boolean of two sheets: a sheet is trimmed by a solid or cuts one, not another sheet (yet)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
 pub(crate) const LOST: Reason = "the boolean lost track of an entity; this is a bug";
 /// Two faces pass through each other along a curve, and the curve does not
@@ -591,10 +592,11 @@ fn run(
         }));
     }
     // What the operands are: two solids, a sheet trimmed by a solid
-    // (the result a sheet), or a solid cut by a sheet (a solid).
+    // (the result a sheet), a solid cut by a sheet (a solid), or two
+    // sheets (a sheet).
     let mode = match (a.kind, b.kind) {
         (BodyKind::Solid, BodyKind::Solid) => Mode::Solids,
-        (BodyKind::Sheet, BodyKind::Sheet) => return Err(Stop::of(TWO_SHEETS)),
+        (BodyKind::Sheet, BodyKind::Sheet) => Mode::Sheets,
         _ if op == BooleanOp::Union => return Err(Stop::of(SHEET_UNION)),
         (BodyKind::Sheet, BodyKind::Solid) => Mode::Trim,
         (BodyKind::Solid, BodyKind::Sheet) => Mode::Cut,
@@ -642,7 +644,10 @@ fn run(
     // it, strictly inside both: each of them must divide the face.
     let mut crossing_a: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut crossing_b: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for stretch in &sections.stretches {
+    // Per arc, the stretches it was made from (where a sheet cuts a
+    // sheet, the faces of the tool the arc lies on).
+    let mut met: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (index, stretch) in sections.stretches.iter().enumerate() {
         let named = [a.name(stretch.fa), b.name(stretch.fb)];
         let (arc, _) = arcs.find_or_add(
             Arc {
@@ -657,6 +662,9 @@ fn run(
             },
             tol,
         );
+        if mode == Mode::Sheets {
+            met.entry(arc).or_default().push(index);
+        }
         for (face, inside, rims, interior) in [
             (stretch.fa, stretch.inside_a, &rims_a, &mut interior_a),
             (stretch.fb, stretch.inside_b, &rims_b, &mut interior_b),
@@ -678,12 +686,41 @@ fn run(
     let mut kept = Vec::new();
     let table = match mode {
         Mode::Solids => classify::solids,
-        Mode::Trim | Mode::Cut => classify::sheet,
+        Mode::Trim | Mode::Cut | Mode::Sheets => classify::sheet,
     };
     // The regions of the sheet of a cut, kept apart to tell the solid's
     // sides by.
     let mut cap = Vec::new();
-    if mode != Mode::Cut {
+    if mode == Mode::Sheets {
+        if op == BooleanOp::Union {
+            two_sheets::union(
+                &a,
+                &b,
+                &pieces_a,
+                &pieces_b,
+                &sections.coincident_a,
+                &sections.stretches,
+                tolerance,
+                &mut kept,
+            )?;
+        } else {
+            two_sheets::cut(
+                &a,
+                &b,
+                &pieces_a,
+                &interior_a,
+                &sections.coincident_a,
+                &sections.stretches,
+                &met,
+                &arcs,
+                &vertices,
+                op,
+                tolerance,
+                &mut kept,
+            )?;
+        }
+    }
+    if mode == Mode::Solids || mode == Mode::Trim {
         classify::select(
             &a,
             &b,
@@ -699,7 +736,7 @@ fn run(
             &mut kept,
         )?;
     }
-    if mode != Mode::Trim {
+    if mode == Mode::Solids || mode == Mode::Cut {
         classify::select(
             &b,
             &a,
@@ -744,12 +781,15 @@ fn run(
     if options.merge {
         merge::merge(&mut work, &sections.coincident_a, a.body, b.body, tol)?;
     }
-    let kind = if mode == Mode::Trim {
+    let kind = if mode == Mode::Trim || mode == Mode::Sheets {
         BodyKind::Sheet
     } else {
         BodyKind::Solid
     };
     let mut result = sew::finish(work, kind)?;
+    if mode == Mode::Sheets && op == BooleanOp::Union {
+        two_sheets::closed_union(&mut result.body)?;
+    }
     pieces_of_splines(&mut result.body);
     let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
