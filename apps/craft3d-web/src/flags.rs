@@ -39,13 +39,22 @@ pub fn parse(search: &str) -> Flags {
 
 /// True for an address on the page's own site: relative, or a path from
 /// its root; no scheme, no other host.
+///
+/// A first, textual check of the decoded address: no scheme (`:`), no
+/// backslash anywhere (a browser reads `\` as `/`, so `/\host` is
+/// `//host`), no control characters (URL parsing drops tabs and
+/// newlines, which could join `/` and `/`) and no white space at either
+/// end (which it trims), and not starting
+/// with `//`. The page then also resolves it against its own address and
+/// requires the same origin (`page.rs`).
 pub fn same_site(url: &str) -> bool {
     !url.is_empty()
         && url.len() <= MAX_OPEN
         && !url.contains(':')
+        && !url.contains('\\')
         && !url.starts_with("//")
-        && !url.starts_with("\\\\")
         && !url.chars().any(char::is_control)
+        && url.trim() == url
 }
 
 /// Percent-decoding of a query value (`+` is a space); `None` when it is
@@ -109,6 +118,17 @@ mod tests {
             "?open=%zz",
             "?open=%ff",
             "?open=",
+            // A browser reads a backslash as a slash: `/\evil.example/`.
+            "?open=/%5Cevil.example/x.3dcraft",
+            "?open=%5C/evil.example/x.3dcraft",
+            "?open=%5C%5Cevil.example/x.3dcraft",
+            "?open=/%2F/evil.example/x.3dcraft",
+            "?open=%2F%2Fevil.example/x.3dcraft",
+            // URL parsing drops tabs and newlines, and trims spaces.
+            "?open=/%09/evil.example/x.3dcraft",
+            "?open=/%0A/evil.example/x.3dcraft",
+            "?open=%20//evil.example/x.3dcraft",
+            "?open=https%3A//evil.example/x.3dcraft",
         ] {
             assert_eq!(parse(bad).open, None, "{bad}");
         }

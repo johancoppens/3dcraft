@@ -8,7 +8,7 @@
 //! WebAssembly ends the page).
 
 use crate::flags::{self, Flags};
-use crate::host::{Ask, Download, WebHost};
+use crate::host::{Ask, Download, WebHost, received_kind};
 use crate::prefs::{self, Prefs};
 use craft3d_ui_egui::{RendererChoice, Shell, window_title};
 use egui_wgpu::wgpu;
@@ -159,9 +159,27 @@ fn fetch_into(url: String, inbox: Inbox) {
     });
 }
 
+/// The address `url` names, resolved against the page's own, when it is
+/// on the page's own origin; an error otherwise. On top of the textual
+/// check of `flags::same_site`: the browser's own parser decides.
+fn same_origin(url: &str) -> Result<String, String> {
+    let location = window().ok_or("no window")?.location();
+    let page = location.href().map_err(|e| text_of(&e))?;
+    let origin = location.origin().map_err(|e| text_of(&e))?;
+    let resolved = web_sys::Url::new_with_base(url, &page)
+        .map_err(|_| format!("`{url}` is not an address"))?;
+    if resolved.origin() != origin {
+        return Err(format!(
+            "`{url}` is not on this site; only files of {origin} are opened"
+        ));
+    }
+    Ok(resolved.href())
+}
+
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let window = window().ok_or("no window")?;
-    let response = JsFuture::from(window.fetch_with_str(url))
+    let resolved = same_origin(url)?;
+    let response = JsFuture::from(window.fetch_with_str(&resolved))
         .await
         .map_err(|e| format!("cannot fetch `{url}`: {}", text_of(&e)))?;
     let response: web_sys::Response = response
@@ -174,17 +192,47 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
             response.status_text()
         ));
     }
-    let buffer = response
-        .array_buffer()
-        .map_err(|e| format!("cannot read `{url}`: {}", text_of(&e)))?;
-    let buffer = JsFuture::from(buffer)
-        .await
-        .map_err(|e| format!("cannot read `{url}`: {}", text_of(&e)))?;
-    let array = js_sys::Uint8Array::new(&buffer);
-    if f64::from(array.length()) > MAX_FILE {
-        return Err(format!("`{url}` is larger than {MAX_FILE} bytes"));
+    let too_large = || format!("`{url}` is larger than {MAX_FILE} bytes");
+    // What the server says first; then what arrives, chunk by chunk, so
+    // a file that is larger than it said is cut off at the limit.
+    if let Ok(Some(length)) = response.headers().get("content-length")
+        && length.trim().parse::<f64>().is_ok_and(|n| n > MAX_FILE)
+    {
+        return Err(too_large());
     }
-    Ok(array.to_vec())
+    let cannot = |e: JsValue| format!("cannot read `{url}`: {}", text_of(&e));
+    let body = response
+        .body()
+        .ok_or_else(|| format!("`{url}` has no body"))?;
+    let reader: web_sys::ReadableStreamDefaultReader = body
+        .get_reader()
+        .dyn_into()
+        .map_err(|_| format!("cannot read `{url}`"))?;
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = JsFuture::from(reader.read()).await.map_err(cannot)?;
+        let done = js_sys::Reflect::get(&chunk, &JsValue::from_str("done"))
+            .map_err(cannot)?
+            .as_bool()
+            .unwrap_or(true);
+        if done {
+            return Ok(bytes);
+        }
+        let value = js_sys::Reflect::get(&chunk, &JsValue::from_str("value")).map_err(cannot)?;
+        let array: js_sys::Uint8Array = value
+            .dyn_into()
+            .map_err(|_| format!("cannot read `{url}`"))?;
+        let total = bytes.len().saturating_add(array.length() as usize);
+        if total as f64 > MAX_FILE {
+            let _ = reader.cancel();
+            return Err(too_large());
+        }
+        let start = bytes.len();
+        bytes.resize(total, 0);
+        if let Some(slot) = bytes.get_mut(start..) {
+            array.copy_to(slot);
+        }
+    }
 }
 
 /// Reads a file the person chose or dropped.
@@ -311,7 +359,13 @@ impl Page {
         if let Some(state) = state {
             // WebGPU reports a device's errors later, here; wgpu's own
             // handler would panic, which ends the page. The viewport then
-            // goes over to the CPU renderer.
+            // goes over to the CPU renderer. This is the first moment the
+            // page has the device: eframe makes it in `WebRunner::start`
+            // (egui-wgpu offers no hook between making the device and
+            // handing it over, and making it ourselves for
+            // `WgpuSetup::Existing` would have to repeat its WebGPU and
+            // WebGL2 adapter choice). In that window only eframe's own
+            // painter is set up; none of our pipelines exist yet.
             let seen = Arc::clone(&gpu_error);
             state
                 .device
@@ -368,8 +422,31 @@ impl eframe::App for Page {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
             let (inbox, ctx) = (Rc::clone(&self.inbox), ctx.clone());
+            let name = file.path().to_string_lossy().into_owned();
+            // Kind and size first: a file is read whole into memory, and
+            // running out of it ends the page.
+            let refused = if received_kind(&name).is_none() {
+                Some(format!(
+                    "`{name}` is not a 3DCraft document (.3dcraft) or a STEP file (.step, .stp)"
+                ))
+            } else {
+                match file.web_file().map(|f| f.size()) {
+                    Some(size) if size <= MAX_FILE => None,
+                    Some(size) => Some(format!(
+                        "`{name}` is {size} bytes; at most {MAX_FILE} are read"
+                    )),
+                    None => Some(format!("`{name}` cannot be read here")),
+                }
+            };
+            if let Some(why) = refused {
+                self.inbox.borrow_mut().push(Arrived {
+                    name,
+                    bytes: Err(why),
+                    wanted: None,
+                });
+                continue;
+            }
             wasm_bindgen_futures::spawn_local(async move {
-                let name = file.path().to_string_lossy().into_owned();
                 let bytes = file.bytes_async().await;
                 inbox.borrow_mut().push(Arrived {
                     name,

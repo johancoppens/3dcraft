@@ -77,9 +77,12 @@ pub fn memory_name(name: &str) -> Option<String> {
     (!clean.is_empty() && !clean.chars().all(|c| c == '.')).then_some(clean)
 }
 
-/// `name` with the extension `extension` when it has none.
+/// `name` ending in `.extension`: as it is when it has that extension
+/// (in any case), else with it appended, so a document saved as `x.stl`
+/// is `x.stl.3dcraft` and never a `.3dcraft` file under another format's
+/// name.
 fn with_extension(name: &str, extension: &str) -> String {
-    if extension_of(name).is_some() {
+    if extension_of(name).as_deref() == Some(extension) {
         name.to_string()
     } else {
         format!("{name}.{extension}")
@@ -551,6 +554,9 @@ mod tests {
         assert_eq!(received_kind("a.STP"), Some(Received::Step));
         assert_eq!(received_kind("a.stl"), None);
         assert_eq!(renamed("a.step", "stl"), "a.stl");
+        assert_eq!(with_extension("a", EXTENSION), "a.3dcraft");
+        assert_eq!(with_extension("a.3DCRAFT", EXTENSION), "a.3DCRAFT");
+        assert_eq!(with_extension("x.stl", EXTENSION), "x.stl.3dcraft");
         assert_eq!(renamed("", "obj"), "untitled.obj");
     }
 
@@ -571,6 +577,11 @@ mod tests {
         assert_eq!(downloads.len(), 1);
         assert_eq!(downloads[0].name, "plate.3dcraft");
         assert!(!first.has_unsaved());
+        // Saved under another format's name, it stays a .3dcraft file.
+        let renamed = first.save_as("plate.stl", None);
+        assert_eq!(renamed[0].name, "plate.stl.3dcraft");
+        assert!(renamed[0].bytes.starts_with(b"PK"));
+        first.save_as("plate.3dcraft", None);
         // Saved once, Save goes to the same name without asking.
         let again = first.file_action(FileAction::Save).downloads;
         assert_eq!(again, downloads);
