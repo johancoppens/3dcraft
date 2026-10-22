@@ -12,7 +12,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the speed of a cusp's axis on a block edge, the meshes of rational faces with weights a thousand apart).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
-3. **R1, the first release:** the pinned set of modelling tasks, installers, material and colour per body, a user guide ([R1](#r1-first-release)).
+3. **R1, the first release:** installers, a user guide and example models, then a field test by people outside the project, before new breadth (the developer, 2026-10-22; [R1](#r1-first-release)).
 
 ## Milestones
 
