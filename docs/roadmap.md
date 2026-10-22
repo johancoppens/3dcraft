@@ -472,8 +472,9 @@ The first version for people outside the project; it follows M9 and does not wai
 - Colours in OBJ (a `.mtl` beside it with `Kd`, `Pr` and `Pm`), metallic and roughness shaded by both renderers (a face without them bit for bit as before), and an independent reader that checks every face's colour in 3MF, STEP and OBJ exports ([`file-formats.md`](file-formats.md) › *Colours in OBJ*, [`design/rendering.md`](design/rendering.md) › *Metallic and roughness*) (2026-10-22)
 - The second field test, over MCP as the testers will work: history commands, conflicting sketches, every constraint kind, negative values, other units, a change request on an example and the guide taken literally; 28 frictions, 15 fixed (one in part: messages, a terse batch's failed features, `madeBy` on edges, a sketch's frame and normal, a variable defined from itself refused, the guide), the rest below or left with a reason ([`field-test/2026-10-22`](field-test/2026-10-22/README.md)) (2026-10-22)
 
+- Installers for Linux (tarball, AppImage), macOS (`.dmg`, Apple Silicon) and Windows (zip, `.msi`), built by `cargo xtask package` and `.github/workflows/release.yml` on GitHub's runners, each started once with `--version` and `commands` (run 39835637182); not signed or notarised ([`development.md`](development.md) › *Packaging*) (2026-10-22)
+
 #### Open
-- [ ] Installers for Linux, macOS and Windows: built by `cargo xtask package` and `.github/workflows/release.yml` (2026-10-22, [`development.md`](development.md) › *Packaging*); the Linux tarball and AppImage are checked locally, the macOS `.dmg` and the Windows zip and `.msi` wait for a first run of the workflow; not signed or notarised
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
 - [ ] Suppressing a boolean, fillet or chamfer fails everything after it; pass the body through, as other modellers do
 - [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
