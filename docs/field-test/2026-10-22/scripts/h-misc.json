@@ -1,0 +1,229 @@
+[
+ [
+"@include",
+"docs/examples/case.json"
+],
+ [
+"#",
+"H1: guide ch7 notProven example"
+],
+ [
+"assert.edit",
+{
+"name": "walls",
+"min": "wall - 0.01 mm"
+}
+],
+ [
+"assert.list",
+{}
+],
+ [
+"#",
+"H2: batch that fails halfway"
+],
+ [
+"@batch",
+{
+"terse": true,
+"steps": [
+{
+"id": "variable.set",
+"params": {
+"name": "wall",
+"expr": "2.5 mm"
+}
+},
+{
+"id": "feature.fillet",
+"params": {
+"edges": [
+ [
+"F1:face(9)",
+"F1:face(4)"
+]
+],
+"radius": "1 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "height",
+"expr": "30 mm"
+}
+}
+]
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+],
+ [
+"#",
+"H3: save outside the root, save, reopen"
+],
+ [
+"file.save",
+{
+"path": "/tmp/ft2_x.3dcraft"
+}
+],
+ [
+"file.save",
+{
+"path": "case.3dcraft"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"file.open",
+{
+"path": "case.3dcraft"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"file.list",
+{}
+],
+ [
+"#",
+"H4: sketch delete of a point with lines on it"
+],
+ [
+"sketch.create",
+{
+"name": "D",
+"plane": "xy",
+"offset": "40 mm"
+}
+],
+ [
+"sketch.polyline",
+{
+"sketch": "D",
+"closed": true,
+"points": [
+ [
+0,
+0
+],
+ [
+10,
+0
+],
+ [
+10,
+10
+]
+]
+}
+],
+ [
+"sketch.delete",
+{
+"sketch": "D",
+"entity": "e1"
+}
+],
+ [
+"sketch.delete",
+{
+"sketch": "D",
+"entity": "e4"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "D"
+}
+],
+ [
+"#",
+"H5: inch doc, sketch coordinates in mixed units"
+],
+ [
+"file.new",
+{
+"units": "in"
+}
+],
+ [
+"sketch.create",
+{
+"name": "P",
+"plane": "xy"
+}
+],
+ [
+"sketch.rect",
+{
+"sketch": "P",
+"from": [
+"0 in",
+"0 mm"
+],
+"to": [
+"2",
+"25.4 mm"
+]
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "P",
+"distance": "1/4 in",
+"name": "Q"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "P",
+"distance": "0.25",
+"name": "Plate"
+}
+],
+ [
+"assert.add",
+{
+"name": "v",
+"measure": "volume",
+"of": "Plate",
+"eq": "2 * 1 * 0.25",
+"tol": "0.001"
+}
+],
+ [
+"assert.add",
+{
+"name": "w",
+"measure": "extent",
+"of": "Plate",
+"axis": "x",
+"eq": "50.8 mm"
+}
+],
+ [
+"measure.thickness",
+{
+"of": "Plate"
+}
+],
+ [
+"document.check",
+{}
+]
+]

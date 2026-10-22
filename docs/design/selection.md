@@ -33,7 +33,7 @@ A face that a boolean cut into pieces that keep its name is **one item**: the na
 | `name` | a glob (`*`, `?`) on the name; a feature-like item also on its id |
 | `type` | a glob on the feature's type (`extrude`, `boolean`, …), of the body's feature for an entity |
 | `in` | an entity of that body, or that body |
-| `madeBy` | an entity whose persistent name has that feature anywhere along its way (`F6:copy(0)/F5:copy(1)/F3:copy(0)/F2:face(0)` is made by F6, F5, F3 and F2); a body or feature made from it, all the way through the features' sources |
+| `madeBy` | an entity whose persistent name has that feature anywhere along its way (`F6:copy(0)/F5:copy(1)/F3:copy(0)/F2:face(0)` is made by F6, F5, F3 and F2), and an edge or a vertex named by its faces is made by what made any of them (the edges of a fillet's face; since 2026-10-22, from the second field test); a body or feature made from it, all the way through the features' sources |
 | `copyOf` (`instance`) | an entity that is a copy made by that pattern or mirror (of that instance): its name's way is walked feature by feature through the instances (names.md, the role copy), as the appearance of a face is; that feature's body |
 | `color` (`within`) | the colour of the face (as the viewport shades it, `face_appearances`) or of the body, within that distance in RGB; `null`: no colour of its own |
 | `material` | a glob on the body's material; `null`: none |

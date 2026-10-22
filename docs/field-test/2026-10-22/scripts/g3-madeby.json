@@ -1,0 +1,51 @@
+[
+ [
+"@include",
+"docs/examples/bracket.json"
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"madeBy": "Rounded"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "edge",
+"where": {
+"madeBy": "Rounded"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "edge",
+"where": {
+"madeBy": "Bracket"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "edge",
+"where": {
+"madeBy": "Part"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "edge",
+"where": {
+"name": "*fillet*"
+}
+}
+]
+]

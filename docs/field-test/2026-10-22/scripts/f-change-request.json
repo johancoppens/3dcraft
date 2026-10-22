@@ -1,0 +1,213 @@
+[
+ [
+"@include",
+"docs/examples/case.json"
+],
+ [
+"#",
+"CR1: make the wall 1 mm thicker"
+],
+ [
+"variable.set",
+{
+"name": "wall",
+"expr": "wall + 1 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "wall",
+"expr": "3 mm"
+}
+],
+ [
+"assert.list",
+{}
+],
+ [
+"#",
+"CR2: add a pattern of 4 x 3 vent holes (3 mm) in the bottom"
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"normal": {
+"along": "z"
+}
+},
+"context": true
+}
+],
+ [
+"variable.set",
+{
+"name": "vent_d",
+"expr": "3 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "vent_pitch",
+"expr": "8 mm"
+}
+],
+ [
+"sketch.create",
+{
+"name": "Vents",
+"face": "F1:face(0)"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "Vents"
+}
+],
+ [
+"sketch.circle",
+{
+"sketch": "Vents",
+"center": [
+"length / 2 - 1.5 * vent_pitch",
+"width / 2 - vent_pitch"
+],
+"radius": "vent_d / 2"
+}
+],
+ [
+"sketch.pattern",
+{
+"sketch": "Vents",
+"entities": [
+"e2"
+],
+"count": 4,
+"step": [
+"vent_pitch",
+0
+],
+"count2": 3,
+"step2": [
+0,
+"vent_pitch"
+]
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "Vents",
+"throughAll": true,
+"cut": "Case",
+"name": "Vented"
+}
+],
+ [
+"feature.edit",
+{
+"feature": "Extrude1",
+"reversed": true
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"assert.add",
+{
+"name": "vents",
+"measure": "count",
+"of": {
+"kind": "face",
+"where": {
+"hole": true,
+"radius": "vent_d / 2"
+}
+},
+"eq": 12
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"sketch.edit",
+{
+"sketch": "Vents",
+"constraint": "c1",
+"value": "length / 2 - 1.5 * vent_pitch"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "Vents"
+}
+],
+ [
+"sketch.pattern",
+{
+"sketch": "Vents",
+"replace": "p1",
+"entities": [
+"e2"
+],
+"count": "vents_x",
+"step": [
+"vent_pitch",
+0
+],
+"count2": 3,
+"step2": [
+0,
+"vent_pitch"
+]
+}
+],
+ [
+"variable.set",
+{
+"name": "vents_x",
+"expr": "4"
+}
+],
+ [
+"sketch.pattern",
+{
+"sketch": "Vents",
+"replace": "p1",
+"entities": [
+"e2"
+],
+"count": "vents_x",
+"step": [
+"vent_pitch",
+0
+],
+"count2": 3,
+"step2": [
+0,
+"vent_pitch"
+]
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"@preview",
+{
+"view": "bottom",
+"projection": "orthographic",
+"out": "ft2_case_bottom.png"
+}
+]
+]

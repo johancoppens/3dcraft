@@ -1,0 +1,338 @@
+[
+ [
+"#",
+"D1: inch document"
+],
+ [
+"file.new",
+{
+"units": "in"
+}
+],
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "2"
+}
+],
+ [
+"variable.set",
+{
+"name": "h",
+"expr": "25.4 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "d",
+"expr": "1 in + 3 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "c",
+"expr": "2.54 cm + 0.01 m"
+}
+],
+ [
+"variable.set",
+{
+"name": "ang",
+"expr": "pi / 4 rad"
+}
+],
+ [
+"variable.set",
+{
+"name": "ang2",
+"expr": "45 deg + 0.1 rad"
+}
+],
+ [
+"variable.set",
+{
+"name": "bad",
+"expr": "w + 3 deg"
+}
+],
+ [
+"variable.set",
+{
+"name": "ratio",
+"expr": "w / h"
+}
+],
+ [
+"variable.set",
+{
+"name": "area",
+"expr": "w * h"
+}
+],
+ [
+"variable.set",
+{
+"name": "n",
+"expr": "4"
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"w",
+"h",
+"0.25"
+],
+"name": "Plate"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"area",
+"h",
+"0.25"
+],
+"name": "Bad1"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"ratio",
+"h",
+"0.25"
+],
+"name": "Bad2"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"n",
+"h",
+"0.25"
+],
+"name": "Bad3"
+}
+],
+ [
+"document.inspect",
+{}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"assert.add",
+{
+"name": "vol",
+"measure": "volume",
+"of": "Plate",
+"eq": "w * h * 0.25 in"
+}
+],
+ [
+"assert.add",
+{
+"name": "vol2",
+"measure": "volume",
+"of": "Plate",
+"eq": "0.5"
+}
+],
+ [
+"assert.add",
+{
+"name": "vol3",
+"measure": "volume",
+"of": "Plate",
+"eq": "8193.532 * (1 mm)^3"
+}
+],
+ [
+"assert.list",
+{}
+],
+ [
+"feature.cylinder",
+{
+"radius": "0.25",
+"height": "1",
+"position": [
+"1",
+"0.5",
+"-0.25"
+],
+"name": "Hole"
+}
+],
+ [
+"feature.boolean",
+{
+"op": "subtract",
+"target": "Plate",
+"tool": "Hole",
+"name": "P2"
+}
+],
+ [
+"feature.revolve",
+{
+"sketch": "nope",
+"angle": "90"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Hole",
+"count": "n",
+"angle": "1.5708"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Hole",
+"count": "n",
+"angle": "90 deg"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Hole",
+"count": "2.5",
+"step": [
+1,
+0,
+0
+]
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Hole",
+"count": "0",
+"step": [
+1,
+0,
+0
+]
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Hole",
+"count": "-2",
+"step": [
+1,
+0,
+0
+]
+}
+],
+ [
+"#",
+"D2: cm and m documents, file.new units list"
+],
+ [
+"file.new",
+{
+"units": "cm"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+1,
+1,
+1
+],
+"name": "B"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"file.new",
+{
+"units": "m"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"10 mm",
+"10 mm",
+"10 mm"
+],
+"name": "B"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"file.new",
+{
+"units": "inch"
+}
+],
+ [
+"file.new",
+{
+"units": "ft"
+}
+],
+ [
+"file.new",
+{
+"units": "um"
+}
+],
+ [
+"file.new",
+{
+"units": "furlong"
+}
+],
+ [
+"file.new",
+{}
+],
+ [
+"document.units",
+{
+"units": "mm"
+}
+],
+ [
+"@list",
+{
+"filter": "unit"
+}
+]
+]

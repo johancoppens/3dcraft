@@ -13,13 +13,23 @@ variable, a sketch or a feature's parameters, and the history is replayed.
 Commands that change the history (`feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`,
 `feature.rename`, `history.rollback`):
 
-- `feature.edit {"feature": "Holes", "count": 8}` changes some parameters of a feature, keeping its place
+- `feature.edit {"feature": "Holes", "count": "n"}` changes some parameters of a feature, keeping its place
   and its name; it also repairs a feature that lost what it was made from (give the new sketch, target or
-  edges).
+  edges). A parameter given as a plain number (`"count": 8`) replaces the expression that was there: the
+  feature no longer follows the variable.
 - `feature.suppress` switches a feature off without deleting it; what is made from it fails until it is
-  switched on again.
+  switched on again. That includes a suppressed boolean, fillet or chamfer: it does not hand the body it
+  changes on to the features after it, so they fail too (other modellers pass the body through).
+- `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
+  list of features (sketches and datums count); one moved before what it is made from fails and says so.
+- `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
+  everywhere it is used, assertions included.
 - `history.rollback {"feature": "Bored"}` rebuilds only up to that feature, and new features go in right
-  after it: a way to insert something early in the history. `{"feature": null}` removes the marker.
+  after it: a way to insert something early in the history. `{"feature": null}` removes the marker. A
+  feature inserted there that takes a body (a fillet, a chamfer, a boolean) takes it from the features
+  after the marker that were made from that body: when the marker is removed they fail with *the body of
+  `Bored` already went into `Bevel`*, and the message gives the `feature.edit` that points them at the new
+  feature (`{"feature": "Drilled", "target": "Bevel"}`).
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units
@@ -34,11 +44,22 @@ Every length, angle and count may be an **expression** in the document's variabl
 ]
 ```
 
-- Units: `um`, `mm`, `cm`, `m`, `in`, `ft` for lengths, `deg` and `rad` for angles; a number without a
-  unit is in the document's length unit (`file.new {"units": "mm"}`) where a length is expected. Units mix
-  freely (`1 in + 3 mm` is 28.4 mm). An expression that cannot be worked out (`width + 3 deg`, an unknown
-  name) is kept, but the variable *fails*: its result and `document.check` carry the error, and what uses
-  it fails too until it is fixed.
+- Units: `um`, `mm`, `cm`, `m`, `in`, `ft` for lengths, `deg` and `rad` for angles, in lower case; a
+  number without a unit is in the document's length unit (`file.new {"units": "mm"}`) where a length is
+  expected. Units mix freely (`1 in + 3 mm` is 28.4 mm). An expression that cannot be worked out
+  (`width + 3 deg`, an unknown name) is kept, but the variable *fails*: its result and `document.check`
+  carry the error, and what uses it fails too until it is fixed. A variable cannot be defined from itself:
+  "make the wall 1 mm thicker" is `{"name": "wall", "expr": "3 mm"}`, not `wall + 1 mm` (refused).
+- **A unit belongs to the number just before it.** `1/16 in` is 1 / (16 in), an inverse length, and
+  `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit after a parenthesis or a
+  name is refused (`(pi / 4) rad`); multiply by one instead (`(pi / 4) * 1 rad`). The result of
+  `variable.set` warns of an inverse length or angle.
+- **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's) is
+  in degrees. `pi` is a plain number, so `2 * pi / n` there is a few degrees, not a turn: write
+  `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`. An angle
+  variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
+- The variables and their values are listed by `document.inspect` (`variables`); there is no separate
+  list command.
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
   `ceil`, `round`, `trunc`, `mod`, the constant `pi`, and `^` for powers.
 - `variable.set` on an existing name changes it, and every feature that uses it is rebuilt.
@@ -51,7 +72,11 @@ Every length, angle and count may be an **expression** in the document's variabl
 A sketch is a flat drawing on a plane: `xy`, `yz` or `zx` (each with an optional `offset`), a datum plane
 (`datum.plane`), or a flat face of a body (`"face": "F2:endCap()"`). In the sketch, coordinates are the
 plane's own `[x, y]`: on `xy` they are X and Y, on `yz` Y and Z, on `zx` Z and X; the sketch's normal is
-the third axis (+Z, +X, +Y).
+the third axis (+Z, +X, +Y). On a face the axes follow the face, not the world: on the bottom of a block
+the sketch's x is world Y, its y world X, and its normal points down, out of the body. `sketch.create`
+answers with the `frame` (origin, x and y in world coordinates) and the `normal`; read them before
+placing anything on a face. To cut through a part from below, a sketch on the `xy` plane is often
+simpler.
 
 Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,
 `sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline` and `sketch.pattern`. Each gets an
@@ -64,7 +89,15 @@ id, `e1`, `e2`, …, returned by the command. Then constraints (`sketch.constrai
 point that has an expression among its coordinates is held where the expressions put it (by `x` and `y`
 constraints, which follow the variables); a point given only as plain numbers, `[0, 0]`, is a starting
 place the solver may move. `sketch.inspect` reports `dof`, the degrees of freedom left: 0 means fully
-constrained, which is what you want for a part that must follow its variables.
+constrained, which is what you want for a part that must follow its variables. A sketch with freedom
+left builds without a warning, so check `dof` yourself.
+
+A constraint that repeats what others already say is `redundant` (listed, harmless while they agree); one
+that contradicts them is `conflicting`: the sketch fails, and so does what is made from it. Its result
+names it (`"conflicting": ["c10"]`); change its value with `sketch.edit {"sketch": "R", "constraint":
+"c10", "value": "40 mm"}` or remove it with `sketch.delete {"sketch": "R", "constraint": "c10"}`. A
+redundant constraint becomes a conflicting one when a variable changes (a length written as `40 mm` next
+to a rectangle drawn to `w`), so prefer one constraint per measure.
 
 ## Features
 

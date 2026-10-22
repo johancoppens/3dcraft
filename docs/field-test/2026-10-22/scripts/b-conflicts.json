@@ -1,0 +1,426 @@
+[
+ [
+"#",
+"B1: over-constrained (redundant, consistent): a fully held rect then an extra length"
+],
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "40 mm"
+}
+],
+ [
+"sketch.create",
+{
+"name": "R",
+"plane": "xy"
+}
+],
+ [
+"sketch.rect",
+{
+"sketch": "R",
+"from": [
+"0 mm",
+"0 mm"
+],
+"to": [
+"w",
+"20 mm"
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "R"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "40 mm"
+}
+],
+ [
+"#",
+"B2: conflicting: the same length with another value"
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "50 mm"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "R"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "R",
+"distance": "5 mm",
+"name": "Plate"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"B3: recover: delete the conflicting constraint"
+],
+ [
+"sketch.delete",
+{
+"sketch": "R",
+"constraint": "c9"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "R"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"B4: impossible: horizontal + vertical on the same line"
+],
+ [
+"sketch.create",
+{
+"name": "T",
+"plane": "xy",
+"offset": "20 mm"
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "T",
+"from": [
+0,
+0
+],
+"to": [
+10,
+3
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "T",
+"type": "horizontal",
+"entities": [
+"e3"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "T",
+"type": "vertical",
+"entities": [
+"e3"
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "T"
+}
+],
+ [
+"#",
+"B5: impossible triangle (sides 10, 10, 30)"
+],
+ [
+"sketch.create",
+{
+"name": "Tri",
+"plane": "xy",
+"offset": "40 mm"
+}
+],
+ [
+"sketch.polyline",
+{
+"sketch": "Tri",
+"closed": true,
+"points": [
+ [
+0,
+0
+],
+ [
+10,
+0
+],
+ [
+5,
+8
+]
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "Tri",
+"type": "distance",
+"entities": [
+"e4"
+],
+"value": "10 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "Tri",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "10 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "Tri",
+"type": "distance",
+"entities": [
+"e6"
+],
+"value": "30 mm"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "Tri"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "Tri",
+"distance": "2 mm",
+"name": "TriBody"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"sketch.edit",
+{
+"sketch": "Tri",
+"constraint": "c3",
+"value": "15 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"B6: under-constrained: does anything say the sketch is not fully constrained?"
+],
+ [
+"sketch.create",
+{
+"name": "U",
+"plane": "xy",
+"offset": "60 mm"
+}
+],
+ [
+"sketch.polyline",
+{
+"sketch": "U",
+"closed": true,
+"points": [
+ [
+0,
+0
+],
+ [
+10,
+0
+],
+ [
+10,
+10
+],
+ [
+0,
+10
+]
+]
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "U",
+"distance": "2 mm",
+"name": "UBody"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"B7: variable drives conflict: rect width from w; then x of a held corner"
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "x",
+"entities": [
+"e2"
+],
+"value": "30 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"#",
+"B8: bad entity kinds"
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "radius",
+"entities": [
+"e5"
+],
+"value": "3 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "parallel",
+"entities": [
+"e1",
+"e2"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "distance",
+"entities": [
+"e5"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "tangent",
+"entities": [
+"e5",
+"e6"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "concentric",
+"entities": [
+"e5",
+"e6"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "-10 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "radius",
+"entities": [
+"e99"
+],
+"value": "3 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "Horizontal",
+"entities": [
+"e5"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "R",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "10 deg"
+}
+]
+]

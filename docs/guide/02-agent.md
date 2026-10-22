@@ -145,7 +145,9 @@ Every command answers with JSON. The parts worth knowing:
 - **A feature that fails** is different: the command succeeded (the feature is in the history) but the
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
-  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4.
+  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4. A
+  `command_batch` with `terse` lists such features under `featuresFailed` (each with its step); they are
+  not counted in its `failed`, which counts commands that were refused.
 - **`failed`** in the result of `variable.set` and of the edits that can break other features
   (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`): the features
   the change made fail, each `{feature, id, error}` (and `causedBy`), left out when there are none. "Make
@@ -156,7 +158,7 @@ Every command answers with JSON. The parts worth knowing:
 - **`doc_inspect`** (the command `document.inspect`) is the whole state: variables with values, every
   feature with its status and parameters, every body with `volume`, `area`, `centroid`, `bbox`, its faces
   by name (`faceNames`), and the assertions. `document.inspect {"measures": false}` is the quick version
-  for a large model.
+  for a large model (through `command_run`: the tool `doc_inspect` takes no arguments).
 - **`document.check`** lists every problem in one place: failed variables and features, invalid bodies,
   broken assertions (`ok` is false), and assertions not proven (warnings). `{"deep": true}` checks more
   (self-intersections, every boolean against its operands) and takes longer.

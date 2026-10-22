@@ -1,0 +1,359 @@
+[
+ [
+"#",
+"C0: a small part: plate, boss, hole, fillet"
+],
+ [
+"variable.set",
+{
+"name": "t",
+"expr": "8 mm"
+}
+],
+ [
+"feature.block",
+{
+"size": [
+"60 mm",
+"40 mm",
+"t"
+],
+"name": "Plate"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "8 mm",
+"height": "10 mm",
+"position": [
+"30 mm",
+"20 mm",
+"t"
+],
+"name": "Boss"
+}
+],
+ [
+"feature.boolean",
+{
+"op": "union",
+"target": "Plate",
+"tool": "Boss",
+"name": "Bossed"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "3 mm",
+"height": "t + 12 mm",
+"position": [
+"30 mm",
+"20 mm",
+"-1 mm"
+],
+"name": "HoleTool"
+}
+],
+ [
+"feature.boolean",
+{
+"op": "subtract",
+"target": "Bossed",
+"tool": "HoleTool",
+"name": "Drilled"
+}
+],
+ [
+"feature.fillet",
+{
+"edges": [
+ [
+"F1:face(2)",
+"F1:face(4)"
+]
+],
+"radius": "3 mm",
+"name": "Round"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"C1: undo / redo"
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"edit.redo",
+{}
+],
+ [
+"edit.redo",
+{}
+],
+ [
+"edit.redo",
+{}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"C2: suppress the boss (union) and see what fails"
+],
+ [
+"feature.suppress",
+{
+"feature": "Boss"
+}
+],
+ [
+"feature.suppress",
+{
+"feature": "Bossed"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"feature.suppress",
+{
+"feature": "Bossed",
+"suppressed": false
+}
+],
+ [
+"feature.suppress",
+{
+"feature": "Boss",
+"suppressed": false
+}
+],
+ [
+"#",
+"C3: rollback to before the hole; add a chamfer there; remove marker"
+],
+ [
+"history.rollback",
+{
+"feature": "Bossed"
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+],
+ [
+"feature.chamfer",
+{
+"edges": [
+ [
+"F1:face(1)",
+"F1:face(3)"
+]
+],
+"distance": "1 mm",
+"name": "Bevel"
+}
+],
+ [
+"history.rollback",
+{
+"feature": null
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"C4: move"
+],
+ [
+"feature.move",
+{
+"feature": "Round",
+"before": "Drilled"
+}
+],
+ [
+"feature.move",
+{
+"feature": "Round",
+"after": "Plate"
+}
+],
+ [
+"feature.move",
+{
+"feature": "Drilled",
+"before": "Plate"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"#",
+"C5: rename"
+],
+ [
+"feature.rename",
+{
+"feature": "Round",
+"name": "CornerRound"
+}
+],
+ [
+"feature.rename",
+{
+"feature": "CornerRound",
+"name": "Plate"
+}
+],
+ [
+"variable.rename",
+{
+"name": "t",
+"to": "thickness"
+}
+],
+ [
+"variable.rename",
+{
+"from": "t",
+"to": "thickness"
+}
+],
+ [
+"sketch.rename",
+{
+"sketch": "x",
+"name": "y"
+}
+],
+ [
+"#",
+"C6: feature.edit"
+],
+ [
+"feature.edit",
+{
+"feature": "Boss",
+"radius": "10 mm"
+}
+],
+ [
+"feature.edit",
+{
+"feature": "Boss",
+"radius": "50 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"feature.edit",
+{
+"feature": "Boss",
+"radius": "10 mm"
+}
+],
+ [
+"feature.edit",
+{
+"feature": "Boss",
+"colour": "red"
+}
+],
+ [
+"feature.edit",
+{
+"feature": "HoleTool",
+"position": [
+"40 mm",
+"20 mm",
+"-1 mm"
+]
+}
+],
+ [
+"feature.edit",
+{
+"feature": "Drilled",
+"op": "union"
+}
+],
+ [
+"feature.edit",
+{
+"feature": "Drilled",
+"op": "subtract"
+}
+],
+ [
+"#",
+"C7: delete"
+],
+ [
+"feature.delete",
+{
+"feature": "Boss"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"feature.delete",
+{
+"feature": "HoleTool"
+}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+],
+ [
+"edit.undo",
+{
+"steps": 3
+}
+],
+ [
+"edit.history",
+{}
+]
+]

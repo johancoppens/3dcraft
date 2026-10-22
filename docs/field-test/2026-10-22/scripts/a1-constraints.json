@@ -1,0 +1,229 @@
+[
+ [
+"#",
+"A1: every constraint kind on a free sketch"
+],
+ [
+"sketch.create",
+{
+"name": "S",
+"plane": "xy"
+}
+],
+ [
+"sketch.polyline",
+{
+"sketch": "S",
+"closed": true,
+"points": [
+ [
+0,
+0
+],
+ [
+50,
+1
+],
+ [
+52,
+30
+],
+ [
+1,
+29
+]
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "S"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "fixed",
+"entities": [
+"e1"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "horizontal",
+"entities": [
+"e5"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "parallel",
+"entities": [
+"e5",
+"e7"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "perpendicular",
+"entities": [
+"e5",
+"e6"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "vertical",
+"entities": [
+"e8"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "distance",
+"entities": [
+"e5"
+],
+"value": "60 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "distance",
+"entities": [
+"e6"
+],
+"value": "40 mm"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "S"
+}
+],
+ [
+"#",
+"A2: circle: concentric, radius, diameter, equal, tangent, pointOn, midpoint, symmetric, angle, x, y"
+],
+ [
+"sketch.circle",
+{
+"sketch": "S",
+"center": [
+20,
+20
+],
+"radius": 5
+}
+],
+ [
+"sketch.circle",
+{
+"sketch": "S",
+"center": [
+21,
+21
+],
+"radius": 3
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "S"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "concentric",
+"entities": [
+"e10",
+"e12"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "diameter",
+"entities": [
+"e10"
+],
+"value": "12 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "radius",
+"entities": [
+"e12"
+],
+"value": "3 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "x",
+"entities": [
+"e9"
+],
+"value": "30 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "S",
+"type": "y",
+"entities": [
+"e9"
+],
+"value": "20 mm"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "S"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "5 mm",
+"name": "Plate"
+}
+],
+ [
+"document.inspect",
+{}
+]
+]

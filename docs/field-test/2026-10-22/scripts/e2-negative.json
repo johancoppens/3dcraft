@@ -1,0 +1,101 @@
+[
+ [
+"feature.block",
+{
+"size": [
+"20 mm",
+"20 mm",
+"20 mm"
+],
+"name": "Cube"
+}
+],
+ [
+"feature.fillet",
+{
+"edges": [
+ [
+"F1:face(2)",
+"F1:face(4)"
+]
+],
+"radius": "-2 mm"
+}
+],
+ [
+"feature.chamfer",
+{
+"edges": [
+ [
+"F1:face(2)",
+"F1:face(4)"
+]
+],
+"distance": "-2 mm"
+}
+],
+ [
+"feature.offsetFace",
+{
+"faces": [
+"F1:face(1)"
+],
+"distance": "-3 mm",
+"name": "Lower"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"feature.shell",
+{
+"source": "Lower",
+"thickness": "-2 mm",
+"open": [
+"F1:face(1)"
+]
+}
+],
+ [
+"feature.thicken",
+{
+"faces": [
+"F1:face(1)"
+],
+"thickness": "-2 mm"
+}
+],
+ [
+"feature.draft",
+{
+"faces": [
+"F1:face(2)"
+],
+"neutral": "F1:face(0)",
+"angle": "-5 deg"
+}
+],
+ [
+"feature.moveFace",
+{
+"faces": [
+"F1:face(1)"
+],
+"translate": [
+0,
+0,
+"-1 mm"
+]
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"document.measure",
+{}
+]
+]
