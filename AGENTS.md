@@ -29,7 +29,7 @@ Read this file first, then `docs/`.
 
 ## 2. Workspace map
 
-Every crate below exists. `apps/craft3d-web` is *(planned)*.
+Every crate below exists.
 
 ```text
 crates/
@@ -49,10 +49,10 @@ apps/
   craft3d                    desktop app (eframe/wgpu): viewer in phase 1, TCP control server
   craft3d-cli                headless CLI (convert/info/run/commands/serve/mcp)
   craft3d-fuzz               random multi-step designs, one seed per process (cargo xtask fuzz)
-  craft3d-web                the same app in the browser (later milestone)
+  craft3d-web                the same app in the browser (WebAssembly, one thread; `cargo xtask package --formats web`)
 xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | fuzz | package
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source
-```
+packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source, the web page and its hosting notes
 
 **Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio` and `drawing` depend on nothing in the workspace. Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
 

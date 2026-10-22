@@ -8,6 +8,7 @@ mod health;
 mod layers;
 mod package;
 mod stats;
+mod web;
 
 use std::process::{Command, ExitCode};
 
