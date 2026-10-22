@@ -615,8 +615,8 @@ impl<'a> Parser<'a> {
                     Some(quantity.value / factor.powi(power))
                 } else {
                     return Err(format!(
-                        "`{key}` is a {}, but a length{} is needed",
-                        quantity.dimension,
+                        "`{key}` is {}, but a length{} is needed",
+                        quantity.dimension.described(),
                         match power {
                             2 => " squared (an area)",
                             3 => " cubed (a volume)",
@@ -1023,7 +1023,17 @@ impl<'a> Context<'a> {
                 (c.kind.is_entity() || c.kind == SelectionKind::Body) && c.feature == *body
             }
             Filter::MadeBy(maker) => match &c.persistent {
-                Some(name) => chain(name).any(|link| link.feature == *maker),
+                // An edge or a vertex named by its faces is made by what
+                // made any of them: the edges of a fillet are those of its
+                // face.
+                Some(name) => chain(name).any(|link| {
+                    link.feature == *maker
+                        || link.by.as_ref().is_some_and(|by| {
+                            by.on
+                                .iter()
+                                .any(|face| chain(face).any(|l| l.feature == *maker))
+                        })
+                }),
                 None => self.made_from(c.feature).contains(maker),
             },
             Filter::CopyOf { feature, instance } => match &c.persistent {

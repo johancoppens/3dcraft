@@ -97,14 +97,16 @@ impl Typed<'_> {
             _ if quantity.dimension.is_dimensionless() => quantity.value,
             TypedKind::Length => {
                 return Err(failed(format!(
-                    "`{shown}` is a {}, but a length is needed",
-                    quantity.dimension
+                    "`{shown}` is {}, but a length is needed{}",
+                    quantity.dimension.described(),
+                    quantity.dimension.unit_hint()
                 )));
             }
             TypedKind::Number => {
                 return Err(failed(format!(
-                    "`{shown}` is a {}, but a plain number is needed",
-                    quantity.dimension
+                    "`{shown}` is {}, but a plain number is needed{}",
+                    quantity.dimension.described(),
+                    quantity.dimension.unit_hint()
                 )));
             }
         };

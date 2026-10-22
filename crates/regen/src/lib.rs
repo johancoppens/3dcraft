@@ -960,9 +960,10 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
         Ok(quantity.value)
     } else {
         Err(format!(
-            "{name}: `{}` is a {}, but a length is needed",
+            "{name}: `{}` is {}, but a length is needed{}",
             expr.source(),
-            quantity.dimension
+            quantity.dimension.described(),
+            quantity.dimension.unit_hint()
         ))
     }
 }
@@ -1028,9 +1029,10 @@ fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String
         Ok(quantity.value)
     } else {
         Err(format!(
-            "{name}: `{}` is a {}, but a plain number is needed",
+            "{name}: `{}` is {}, but a plain number is needed{}",
             expr.source(),
-            quantity.dimension
+            quantity.dimension.described(),
+            quantity.dimension.unit_hint()
         ))
     }
 }
@@ -1049,9 +1051,10 @@ fn angle(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Res
         })
     } else {
         Err(format!(
-            "{name}: `{}` is a {}, but an angle is needed",
+            "{name}: `{}` is {}, but an angle is needed{}",
             expr.source(),
-            quantity.dimension
+            quantity.dimension.described(),
+            quantity.dimension.unit_hint()
         ))
     }
 }

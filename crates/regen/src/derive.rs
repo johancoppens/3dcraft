@@ -77,14 +77,40 @@ pub(crate) fn source_body_shared<'a>(
     if let Some(taker) = outcome.consumed_by
         && !shares(taker)
     {
-        let taker = doc
-            .feature(taker)
-            .map_or_else(|| taker.to_string(), |f| f.name.clone());
-        return Err(format!(
-            "{role}: the body of `{name}` already went into `{taker}`; use that feature as the source, or give `{taker}` keep"
-        ));
+        return Err(went_into(doc, id, role, taker));
     }
     Ok(outcome)
+}
+
+/// Why the body of `id` cannot be read as `role`: `taker`, earlier in the
+/// history, took it. Says how to go on: build on `taker` (with the
+/// parameter to change, when `role` is one), or let `taker` keep the body,
+/// for the kinds of feature that can (a transform or a mirror with `keep`,
+/// a boolean's tool with `keepTool`). A feature inserted at the rollback
+/// marker that takes a body leaves the features after it here.
+fn went_into(doc: &Document, id: FeatureId, role: &str, taker: FeatureId) -> String {
+    let name = doc
+        .feature(id)
+        .map_or_else(|| id.to_string(), |f| f.name.clone());
+    let taker_feature = doc.feature(taker);
+    let taker_name = taker_feature.map_or_else(|| taker.to_string(), |f| f.name.clone());
+    let mut text = format!(
+        "{role}: the body of `{name}` already went into `{taker_name}` ({taker}); build on `{taker_name}` instead"
+    );
+    if matches!(role, "target" | "tool" | "source") {
+        text.push_str(&format!(
+            " (feature.edit with \"{role}\": \"{taker_name}\")"
+        ));
+    }
+    let keep = match taker_feature.map(|f| &f.kind) {
+        Some(FeatureKind::Transform(_) | FeatureKind::Mirror(_)) => Some("keep"),
+        Some(FeatureKind::Boolean(b)) if b.tool == id => Some("keepTool"),
+        _ => None,
+    };
+    if let Some(keep) = keep {
+        text.push_str(&format!(", or give `{taker_name}` {keep}: true"));
+    }
+    text
 }
 
 pub(crate) fn lengths(

@@ -29,6 +29,11 @@ pub(crate) fn build(
     let source = face_ops::source(doc, earlier, feature, hollowed.source, None, "source", NOUN)?;
     let thickness = length(doc, variables, "thickness", &hollowed.thickness)?;
     let unit = doc.units.length.symbol();
+    if thickness.is_finite() && thickness <= 0.0 {
+        return Err(format!(
+            "thickness: has to be more than zero, got {thickness} {unit}; the walls are always left inside the faces"
+        ));
+    }
     if !(thickness.is_finite() && thickness > source.tolerance.linear) {
         return Err(format!(
             "thickness: has to be more than this document's tolerance, got {thickness} {unit}"

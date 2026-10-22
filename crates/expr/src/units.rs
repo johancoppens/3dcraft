@@ -62,6 +62,36 @@ impl Dimension {
     }
 }
 
+impl Dimension {
+    /// The dimension with its article, for messages: "a length",
+    /// "an angle", "a length^-1"; "a plain number" for none.
+    pub fn described(self) -> String {
+        if self.is_dimensionless() {
+            return "a plain number".to_string();
+        }
+        let name = self.to_string();
+        let article = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "an"
+        } else {
+            "a"
+        };
+        format!("{article} {name}")
+    }
+
+    /// For a dimension with a negative exponent, which is nearly always a
+    /// unit read as belonging to a divisor (`1/16 in` is 1 / (16 in)): a
+    /// sentence that says so and how to write what was meant, starting with
+    /// "; ". Empty for every other dimension.
+    pub fn unit_hint(self) -> &'static str {
+        if self.length < 0 || self.angle < 0 {
+            "; a unit belongs to the number just before it, so `1/16 in` is 1 / (16 in) and \
+             `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`"
+        } else {
+            ""
+        }
+    }
+}
+
 impl fmt::Display for Dimension {
     /// `dimensionless`, `length`, `length^2`, `length * angle^-1`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -272,6 +302,26 @@ mod tests {
         assert_eq!(Unit::from_symbol("MM"), None);
         assert_eq!(Unit::from_symbol(""), None);
         assert_eq!(Unit::from_symbol("mmm"), None);
+    }
+
+    #[test]
+    fn dimensions_are_described_with_their_article_and_an_inverse_says_why() {
+        assert_eq!(Dimension::LENGTH.described(), "a length");
+        assert_eq!(Dimension::ANGLE.described(), "an angle");
+        assert_eq!(Dimension::NONE.described(), "a plain number");
+        assert_eq!(Dimension::new(-1, 0).described(), "a length^-1");
+        assert_eq!(Dimension::new(0, -1).described(), "an angle^-1");
+        // `1/16 in` and `pi / 4 rad` are inverses: the hint says how to
+        // write what was meant. Nothing for the others.
+        assert!(Dimension::new(-1, 0).unit_hint().contains("`1 in / 16`"));
+        assert!(
+            Dimension::new(0, -1)
+                .unit_hint()
+                .contains("`pi / 4 * 1 rad`")
+        );
+        for d in [Dimension::NONE, Dimension::LENGTH, Dimension::new(2, 0)] {
+            assert_eq!(d.unit_hint(), "");
+        }
     }
 
     #[test]
