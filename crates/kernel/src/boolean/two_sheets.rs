@@ -27,7 +27,7 @@
 //! holds both), and one that three faces would use.
 
 use super::classify::{FaceRegions, Kept, boundary, face_regions, on_coincident};
-use super::outline::outward_normal;
+use super::outline::{locate, outward_normal};
 use super::regions::Half;
 use super::section::{Solid, Stretch};
 use super::sew::{root, unite};
@@ -38,8 +38,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The tool sheet ends inside the target.
 pub(super) const TOOL_ENDS_INSIDE: Reason = "the tool sheet ends inside the target sheet: to cut a sheet the tool must reach across it, its boundary outside the target or on the target's boundary";
+/// The tool stands on the target: its boundary lies across it.
+pub(super) const STANDS_ON: Reason = "the tool sheet stands on the target sheet: its boundary lies across the target, so it does not reach through it; to cut a sheet the tool must pass through it, its boundary beyond the target";
 /// The tool divides no face of the target.
-pub(super) const NOT_CUT: Reason = "the tool sheet does not pass through the target sheet: it meets the target at most along the target's boundary, so it cuts nothing";
+pub(super) const NOT_CUT: Reason = "the tool sheet does not pass through the target sheet: it misses it, or meets it only where the whole target is on one side of it, so it cuts nothing";
 /// A region of the target is reached from both sides of the tool.
 pub(super) const BOTH_SIDES: Reason = "the tool sheet does not divide the target sheet: a part of the target lies on both sides of the tool";
 /// A part of the target the tool does not cross.
@@ -54,6 +56,12 @@ pub(super) const UNION_CROSS: Reason = "a union of two sheets sews them along bo
 pub(super) const UNION_OVERLAP: Reason = "a union of two sheets sews them along boundary edges they share; here they overlap on one surface";
 /// Two sheets of a union face opposite ways along an edge they share.
 pub(super) const UNION_OPPOSED: Reason = "the two sheets face opposite ways across an edge they share: a sewn sheet has one side, so make one of them face the other way first";
+/// A union that closes some shells and leaves others open.
+pub(super) const UNION_PART_CLOSED: Reason = "the union closes some of the sheets into a closed shell and leaves others open: a body is a solid of closed shells or a sheet of open ones, not both";
+/// A union that closes into a shell facing inward.
+pub(super) const UNION_INWARD: Reason = "the sewn sheets close into a shell that faces inward (it encloses no positive volume): a solid's faces look out of it, so make the sheets face the other way first";
+/// A union that closes into a shell whose volume cannot be measured.
+pub(super) const UNION_UNMEASURED: Reason = "the sewn sheets close into a shell whose volume could not be measured, so whether it faces out (a solid) is not told";
 /// An edge of a union that three or more faces would use.
 pub(super) const UNION_BRANCH: Reason = "more than two faces of the two sheets meet along an edge: a sheet's edge is used by one face or by two";
 
@@ -99,6 +107,8 @@ pub(super) fn cut(
     let b_box = b.bbox();
     let none = BTreeMap::new();
     let mut regions: Vec<(usize, Vec<Vec<Half>>)> = Vec::new();
+    // Curves the tool crosses a face in that divide nothing, with the face.
+    let mut dropped: Vec<(usize, usize)> = Vec::new();
     for face in 0..a.faces() {
         let FaceRegions { regions: found, .. } = face_regions(
             a,
@@ -113,40 +123,15 @@ pub(super) fn cut(
             tol,
         )?;
         // A curve the tool crosses this face in that no region runs along
-        // divides nothing. Where it ends at a point no other curve of the
-        // face reaches, the tool's boundary passes through the face there:
-        // the tool does not reach across the target. Otherwise it runs
-        // from boundary to boundary without dividing (a ring cut once):
-        // the target is on both sides of the tool.
+        // divides nothing (told below, once every face is divided).
         if let Some(across) = interior.get(&face) {
             let used: BTreeSet<usize> = found.iter().flatten().flatten().map(|h| h.0).collect();
-            if let Some(&loose) = across.iter().find(|arc| !used.contains(arc)) {
-                let at = met
-                    .get(&loose)
-                    .and_then(|s| s.first())
-                    .and_then(|&s| stretches.get(s))
-                    .map_or_else(|| vec![a.name(face)], |s| named(a, b, s).to_vec());
-                // How many arcs of the face end at each vertex.
-                let mut ends: BTreeMap<usize, usize> = BTreeMap::new();
-                let rim = boundary(a, face, pieces)?;
-                let all = rim
+            dropped.extend(
+                across
                     .iter()
-                    .flatten()
-                    .map(|h| h.0)
-                    .chain(across.iter().copied());
-                for arc in all.collect::<BTreeSet<usize>>() {
-                    let arc = arcs.arcs.get(arc).ok_or(Stop::of(LOST))?;
-                    *ends.entry(arc.start).or_default() += 1;
-                    *ends.entry(arc.end).or_default() += 1;
-                }
-                let arc = arcs.arcs.get(loose).ok_or(Stop::of(LOST))?;
-                let free = arc.start != arc.end
-                    && [arc.start, arc.end]
-                        .iter()
-                        .any(|v| ends.get(v).is_some_and(|&n| n < 2));
-                let reason = if free { TOOL_ENDS_INSIDE } else { BOTH_SIDES };
-                return Err(Stop::of(reason).at(&at));
-            }
+                    .filter(|arc| !used.contains(arc))
+                    .map(|&arc| (arc, face)),
+            );
         }
         regions.extend(found.into_iter().map(|loops| (face, loops)));
     }
@@ -157,11 +142,62 @@ pub(super) fn cut(
             by_region.entry(arc).or_default().push((r, reversed));
         }
     }
+    // Where the tool meets the target with its own boundary alone (one
+    // face of the tool, every stretch along that face's boundary): across
+    // the target (inside a face, or along an edge two faces of it share)
+    // the tool stands on the target and does not reach through it; along
+    // the target's boundary it only touches it there, which tells nothing.
+    let mut touching: BTreeSet<usize> = BTreeSet::new();
+    for (&arc, from) in met {
+        let of: Vec<&Stretch> = from.iter().filter_map(|&s| stretches.get(s)).collect();
+        let tool_faces: BTreeSet<usize> = of.iter().map(|s| s.fb).collect();
+        if tool_faces.len() != 1 || of.iter().any(|s| s.inside_b) {
+            continue;
+        }
+        let across = interior.values().any(|set| set.contains(&arc))
+            || by_region.get(&arc).is_some_and(|uses| uses.len() >= 2);
+        if across {
+            let at = of
+                .first()
+                .map_or_else(Vec::new, |s| named(a, b, s).to_vec());
+            return Err(Stop::of(STANDS_ON).at(&at));
+        }
+        touching.insert(arc);
+    }
+    // A curve that divides nothing: where one of its ends lies on the
+    // tool's boundary and not on the target's, the tool's boundary passes
+    // through the target there and the tool does not reach across it;
+    // otherwise it runs from boundary to boundary without dividing (a
+    // ring cut once): a part of the target is on both sides of the tool.
+    if let Some(&(loose, face)) = dropped.first() {
+        let at = met
+            .get(&loose)
+            .and_then(|s| s.first())
+            .and_then(|&s| stretches.get(s))
+            .map_or_else(|| vec![a.name(face)], |s| named(a, b, s).to_vec());
+        let (rim_a, rim_b) = (rim_edges(a), rim_edges(b));
+        let mut ends_inside = false;
+        for &(arc, _) in &dropped {
+            let arc = arcs.arcs.get(arc).ok_or(Stop::of(LOST))?;
+            for v in [arc.start, arc.end] {
+                let p = *vertices.points.get(v).ok_or(Stop::of(LOST))?;
+                if on_rim(b, &rim_b, p, tol) && !on_rim(a, &rim_a, p, tol) {
+                    ends_inside = true;
+                }
+            }
+        }
+        let reason = if ends_inside {
+            TOOL_ENDS_INSIDE
+        } else {
+            BOTH_SIDES
+        };
+        return Err(Stop::of(reason).at(&at));
+    }
     // The tool divides the target somewhere: an arc it meets the target
     // along with two regions beside it.
-    let divides = met
-        .keys()
-        .any(|arc| by_region.get(arc).is_some_and(|uses| uses.len() >= 2));
+    let divides = met.keys().any(|arc| {
+        !touching.contains(arc) && by_region.get(arc).is_some_and(|uses| uses.len() >= 2)
+    });
     if !divides {
         return Err(Stop::of(NOT_CUT));
     }
@@ -180,10 +216,17 @@ pub(super) fn cut(
     // The side of each group, from every arc the tool meets the target
     // along: +1 in front of the tool, −1 behind.
     let mut side: BTreeMap<usize, i8> = BTreeMap::new();
+    // Whether the tool passes through the target anywhere: an arc with
+    // the target on both sides of it.
+    let mut crossed = false;
     for (arc_index, from) in met {
+        if touching.contains(arc_index) {
+            continue;
+        }
         let Some(uses) = by_region.get(arc_index) else {
             continue;
         };
+        let mut read = [false; 2];
         let arc = arcs.arcs.get(*arc_index).ok_or(Stop::of(LOST))?;
         let middle = 0.5 * (arc.range.0 + arc.range.1);
         let (point, tangent) = arc.curve.derivatives(middle);
@@ -224,6 +267,9 @@ pub(super) fn cut(
                     return Err(Stop::of(TANGENT).at(&both));
                 }
                 let here = if along > 0.0 { 1 } else { -1 };
+                if let Some(seen) = read.get_mut(usize::from(here > 0)) {
+                    *seen = true;
+                }
                 let group = root(&mut parents, r);
                 match side.get(&group) {
                     None => {
@@ -234,6 +280,13 @@ pub(super) fn cut(
                 }
             }
         }
+        crossed |= read == [true, true];
+    }
+    // The tool meets the target only where the whole target is on one
+    // side of it (through a fold of the target, beside it): it cuts
+    // nothing.
+    if !crossed {
+        return Err(Stop::of(NOT_CUT));
     }
     for (r, (face, loops)) in regions.into_iter().enumerate() {
         let group = root(&mut parents, r);
@@ -255,6 +308,36 @@ pub(super) fn cut(
         });
     }
     Ok(())
+}
+
+/// The edges of a body that one face uses (a sheet's boundary).
+fn rim_edges(solid: &Solid) -> BTreeSet<usize> {
+    let mut uses: BTreeMap<usize, usize> = BTreeMap::new();
+    for face in &solid.body.faces {
+        for loop_ in face.loops.iter().filter_map(|&l| solid.body.loop_(l)) {
+            for coedge in &loop_.coedges {
+                *uses.entry(coedge.edge.0 as usize).or_default() += 1;
+            }
+        }
+    }
+    uses.into_iter()
+        .filter(|&(_, n)| n == 1)
+        .map(|(edge, _)| edge)
+        .collect()
+}
+
+/// Whether `p` lies within the tolerance of an edge in `rim`.
+fn on_rim(solid: &Solid, rim: &BTreeSet<usize>, p: craft3d_math::Vec3, tol: f64) -> bool {
+    rim.iter().any(|&index| {
+        let id = craft3d_topo::EdgeId(u32::try_from(index).unwrap_or(u32::MAX));
+        solid.edge_box(id).contains(p, tol)
+            && solid
+                .body
+                .edges
+                .get(index)
+                .and_then(|edge| locate(&edge.curve, edge.range, p, tol))
+                .is_some()
+    })
 }
 
 /// Every face of both sheets, whole, to be sewn along the boundary edges
@@ -325,5 +408,38 @@ pub(super) fn union(
             _ => return Err(Stop::of(UNION_BRANCH).at(&at)),
         }
     }
+    Ok(())
+}
+
+/// A union of two sheets whose result has no boundary left (six faces of
+/// a box sewn one by one): a closed shell that faces out encloses a
+/// volume and is a solid's shell, so the body becomes a solid, its faces,
+/// edges and vertices (and their names) as sewn. Refused when some shells
+/// close and others do not, or when a closed shell faces inward (its
+/// volume not more than the integrator's bound).
+pub(super) fn closed_union(body: &mut craft3d_topo::Body) -> Result<(), Stop> {
+    let closed: Vec<bool> = (0..body.shells.len())
+        .map(|s| {
+            let id = craft3d_topo::ShellId(u32::try_from(s).unwrap_or(u32::MAX));
+            craft3d_topo::boundary_loops(body, id) == Some(0)
+        })
+        .collect();
+    if !closed.iter().any(|&c| c) {
+        return Ok(());
+    }
+    if !closed.iter().all(|&c| c) {
+        return Err(Stop::of(UNION_PART_CLOSED));
+    }
+    for shell in craft3d_topo::shell_volumes(body) {
+        let Ok(shell) = shell else {
+            return Err(Stop::of(UNION_UNMEASURED));
+        };
+        // (A NaN volume is no positive volume either.)
+        let outward = shell.volume > shell.bound.max(0.0);
+        if !outward {
+            return Err(Stop::of(UNION_INWARD));
+        }
+    }
+    body.kind = craft3d_topo::BodyKind::Solid;
     Ok(())
 }

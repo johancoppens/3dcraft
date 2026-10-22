@@ -643,3 +643,252 @@ fn a_cut_of_two_sheets_is_the_same_every_time() {
     let two = solve(&halves.0, &halves.1, BooleanOp::Union, k);
     assert_eq!(format!("{:?}", one.body), format!("{:?}", two.body));
 }
+
+/// The square `[0, 1]²` (times `k`) of the plane through `origin` (times
+/// `k`) facing `normal`, its sketch x along `u` (and y along normal × u).
+fn square(origin: Vec3, normal: Vec3, u: Vec3, k: f64) -> Body {
+    rectangle(
+        [0.0, 0.0],
+        [1.0, 1.0],
+        &Frame::new(origin * k, normal, u).unwrap(),
+        k,
+    )
+}
+
+/// The six faces of the unit cube (times `k`), facing out, or in.
+fn cube_faces(k: f64, out: bool) -> Vec<Body> {
+    // (corner, outward normal, u) with normal × u the face's other side.
+    let faces = [
+        (Vec3::new(0.0, 1.0, 0.0), -Vec3::Z, Vec3::X),
+        (Vec3::new(0.0, 0.0, 1.0), Vec3::Z, Vec3::X),
+        (Vec3::new(0.0, 0.0, 1.0), -Vec3::X, Vec3::Y),
+        (Vec3::new(1.0, 0.0, 0.0), Vec3::X, Vec3::Y),
+        (Vec3::new(1.0, 0.0, 0.0), -Vec3::Y, Vec3::Z),
+        (Vec3::new(0.0, 1.0, 0.0), Vec3::Y, Vec3::Z),
+    ];
+    faces
+        .iter()
+        .map(|&(corner, normal, u)| {
+            if out {
+                square(corner, normal, u, k)
+            } else {
+                // Facing in, its axes swapped: (−n) × (n × u) = u.
+                square(corner, -normal, normal.cross(u), k)
+            }
+        })
+        .collect()
+}
+
+/// A union of sheets that closes (six squares sewn one at a time into a
+/// cube): facing out it is a solid, the unit cube (volume 1, area 6,
+/// one closed shell, the names of its faces those of the six sheets);
+/// facing in it is refused at the last step, as is a union that closes
+/// one shell and leaves another open.
+#[test]
+fn a_union_that_closes_the_sheet_is_a_solid() {
+    for k in SCALES {
+        for turn in turns() {
+            let what = format!("cube at {k}, turned {}", turn.is_some());
+            let faces: Vec<Body> = cube_faces(k, true)
+                .into_iter()
+                .map(|f| turned(f, &turn))
+                .collect();
+            let mut sewn = faces[0].clone();
+            for (i, face) in faces.iter().enumerate().skip(1) {
+                let result = solve(&sewn, face, BooleanOp::Union, k);
+                let kind = if i == 5 {
+                    BodyKind::Solid
+                } else {
+                    BodyKind::Sheet
+                };
+                assert_eq!(result.body.kind, kind, "{what}: step {i}");
+                sewn = result.body;
+            }
+            assert_eq!(check(&sewn, &tolerance(k)), [], "{what}");
+            let m = mass(&sewn);
+            assert_close(m.volume, k * k * k, &format!("{what}: volume"));
+            assert_close(m.area, 6.0 * k * k, &format!("{what}: area"));
+            assert_eq!(sewn.shells.len(), 1, "{what}");
+            assert_eq!(sewn.faces.len(), 6, "{what}");
+            let mesh = tessellate_body(
+                &sewn,
+                &TessParams {
+                    chordal_tolerance: 1e-3 * k,
+                    ..TessParams::default()
+                },
+            )
+            .unwrap()
+            .weld()
+            .unwrap();
+            assert!(mesh.is_closed(), "{what}: the mesh is closed");
+            // The cube is a solid like any other: a block through it.
+            let block = turned(boxed(k, [0.5, 0.5, 0.5], [2.0, 2.0, 2.0]), &turn);
+            let less = solve(&sewn, &block, BooleanOp::Subtract, k);
+            assert_close(mass(&less.body).volume, 0.875 * k * k * k, &what);
+            // Facing in: the last union is refused.
+            let inward: Vec<Body> = cube_faces(k, false)
+                .into_iter()
+                .map(|f| turned(f, &turn))
+                .collect();
+            let mut open = inward[0].clone();
+            for face in &inward[1..5] {
+                open = solve(&open, face, BooleanOp::Union, k).body;
+            }
+            refused_unnamed(
+                boolean(&open, &inward[5], BooleanOp::Union, &tolerance(k)),
+                "faces inward",
+                &what,
+            );
+            // A closed shell and an open one: refused.
+            let mut five = faces[0].clone();
+            for face in &faces[1..5] {
+                five = solve(&five, face, BooleanOp::Union, k).body;
+            }
+            let away = turned(rectangle([5.0, 5.0], [6.0, 6.0], &ground(), k), &turn);
+            let apart = solve(&five, &away, BooleanOp::Union, k).body;
+            refused_unnamed(
+                boolean(&apart, &faces[5], BooleanOp::Union, &tolerance(k)),
+                "closes some of the sheets",
+                &what,
+            );
+        }
+    }
+}
+
+/// A tool must reach through the target (decided 2026-10-22): a wall
+/// standing on the plate (its bottom edge lying across it, or across a
+/// part of it) is refused as standing on it; a tool that only touches the
+/// target's boundary edge with its own (a sheet hanging from the plate's
+/// edge, beside a wall that crosses the plate) is told nothing there and
+/// the plate is cut by the wall alone; a tool folded so that one of its
+/// faces ends inside the plate is refused as ending inside; and a tool
+/// through the fold of a folded target with the whole target on one side
+/// cuts nothing.
+#[test]
+fn a_tool_that_does_not_reach_through_the_target() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let what = format!("at {k}");
+        let plate = rectangle([-2.0, -1.5], [2.0, 1.5], &ground(), k);
+        let cuts = [BooleanOp::Subtract, BooleanOp::Intersect];
+        let standing = rectangle([-5.0, 0.0], [5.0, 5.0], &wall(0.5, k, false), k);
+        let partly = rectangle([-1.0, 0.0], [1.0, 5.0], &wall(0.5, k, false), k);
+        for op in cuts {
+            refused(boolean(&plate, &standing, op, &tol), "stands on", &what);
+            refused(boolean(&plate, &partly, op, &tol), "stands on", &what);
+        }
+        // Hanging from the plate's edge at x = 2, beside a wall at ½.
+        let crossing = rectangle([-5.0, -5.0], [5.0, 5.0], &wall(0.5, k, false), k);
+        let hanging = rectangle([-5.0, -5.0], [5.0, 0.0], &wall(2.0, k, false), k);
+        let tool = solve(&crossing, &hanging, BooleanOp::Union, k).body;
+        assert_eq!(tool.shells.len(), 2);
+        cut_both(&plate, &tool, k, 4.5, &format!("{what}: hanging"));
+        // A folded tool whose second face stops inside the plate.
+        let first = rectangle([-5.0, -5.0], [0.0, 5.0], &wall(0.5, k, false), k);
+        let across = Frame::new(Vec3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+        let second = rectangle([0.5, -5.0], [1.0, 5.0], &across, k);
+        let folded = solve(&first, &second, BooleanOp::Union, k).body;
+        for op in cuts {
+            refused(boolean(&plate, &folded, op, &tol), "ends inside", &what);
+        }
+        // Through the fold of an L, the whole L on one side.
+        let l = folded_target(k);
+        let beside = rectangle(
+            [-5.0, -5.0],
+            [5.0, 5.0],
+            &Frame::new(Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0), Vec3::Y).unwrap(),
+            k,
+        );
+        for op in cuts {
+            refused_unnamed(
+                boolean(&l, &beside, op, &tol),
+                "does not pass through",
+                &what,
+            );
+        }
+    }
+}
+
+/// An L of two plates of 2 × 3 (times `k`) sharing the edge x = z = 0: a
+/// floor facing up and a wall facing +x.
+fn folded_target(k: f64) -> Body {
+    let floor = rectangle([0.0, -1.5], [2.0, 1.5], &ground(), k);
+    let wall_ = rectangle([-1.5, 0.0], [1.5, 2.0], &wall(0.0, k, false), k);
+    let l = solve(&floor, &wall_, BooleanOp::Union, k).body;
+    assert_eq!(l.faces.len(), 2);
+    l
+}
+
+/// A plate of 4 × 4 with a round hole of radius 1 cut across the hole by
+/// a wall through its middle: halves of (16 − π) / 2. An L cut through
+/// its fold by the plane x = z (the floor in front, 6; the wall behind,
+/// 6) and crossed by x + z = ½ (in front 4.5 of the floor and 4.5 of
+/// the wall). At three scales, as built and turned.
+#[test]
+fn a_holed_plate_and_a_folded_target_cut_by_a_sheet() {
+    for k in SCALES {
+        for turn in turns() {
+            let what = format!("at {k}, turned {}", turn.is_some());
+            let tol = tolerance(k);
+            let curves = vec![
+                line(1, [-2.0 * k, -2.0 * k], [2.0 * k, -2.0 * k]),
+                line(2, [2.0 * k, -2.0 * k], [2.0 * k, 2.0 * k]),
+                line(3, [2.0 * k, 2.0 * k], [-2.0 * k, 2.0 * k]),
+                line(4, [-2.0 * k, 2.0 * k], [-2.0 * k, -2.0 * k]),
+                SketchCurve {
+                    id: 5,
+                    curve: Curve2::Circle {
+                        center: [0.0, 0.0],
+                        radius: k,
+                    },
+                },
+            ];
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            let holed = turned(fill(&profiles, &ground(), &tol).unwrap().body, &turn);
+            let middle = turned(
+                rectangle([-5.0, -5.0], [5.0, 5.0], &wall(0.0, k, false), k),
+                &turn,
+            );
+            let [ahead, behind] = cut_both(
+                &holed,
+                &middle,
+                k,
+                (16.0 - PI) / 2.0,
+                &format!("holed {what}"),
+            );
+            assert_eq!(loops_of(&ahead.body), [1], "holed {what}");
+            assert_eq!(loops_of(&behind.body), [1], "holed {what}");
+            let l = turned(folded_target(k), &turn);
+            let through = turned(
+                rectangle(
+                    [-5.0, -5.0],
+                    [5.0, 5.0],
+                    &Frame::new(Vec3::ZERO, Vec3::new(1.0, 0.0, -1.0), Vec3::Y).unwrap(),
+                    k,
+                ),
+                &turn,
+            );
+            let [floor, wall_] = cut_both(&l, &through, k, 6.0, &format!("fold {what}"));
+            assert_eq!(floor.body.faces.len(), 1, "fold {what}");
+            assert_eq!(wall_.body.faces.len(), 1, "fold {what}");
+            let slant = turned(
+                rectangle(
+                    [-5.0, -5.0],
+                    [5.0, 5.0],
+                    &Frame::new(
+                        Vec3::new(0.25 * k, 0.0, 0.25 * k),
+                        Vec3::new(1.0, 0.0, 1.0),
+                        Vec3::Y,
+                    )
+                    .unwrap(),
+                    k,
+                ),
+                &turn,
+            );
+            let [ahead, behind] = cut_both(&l, &slant, k, 9.0, &format!("slant {what}"));
+            // In front: a strip of the floor and one of the wall, apart.
+            assert_eq!(loops_of(&ahead.body), [1, 1], "slant {what}");
+            assert_eq!(loops_of(&behind.body), [1], "slant {what}");
+        }
+    }
+}

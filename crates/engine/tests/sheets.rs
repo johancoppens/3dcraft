@@ -505,3 +505,99 @@ fn a_sheet_cuts_a_sheet_and_two_halves_are_sewn() {
         }
     }
 }
+
+/// The six faces of the cube [−1, 1]³ (times `k`) as fills of squares of
+/// side 2 on datum planes through the faces' centres, facing out (or in),
+/// sewn by unions one at a time: facing out the last union closes the
+/// sheet into a solid, the cube (volume 8, area 24), checked deep and
+/// cut by a block like any solid; facing in the last union fails with
+/// the reason. At three scales.
+#[test]
+fn six_sheets_sewn_into_a_cube_are_a_solid() {
+    let x = [1.0, 0.0, 0.0];
+    let y = [0.0, 1.0, 0.0];
+    let z = [0.0, 0.0, 1.0];
+    let neg = |v: [f64; 3]| v.map(|c| -c);
+    // (centre, u, v) with u × v the outward normal.
+    let faces = [
+        (z, x, y),
+        (neg(z), y, x),
+        (x, y, z),
+        (neg(x), z, y),
+        (y, z, x),
+        (neg(y), x, z),
+    ];
+    for k in SCALES {
+        for out in [true, false] {
+            let dir = workdir("sheets", &format!("cube-{k}-{out}"));
+            let mut s = session_in(&dir);
+            new_document(&mut s, k);
+            for (i, &(c, u, v)) in faces.iter().enumerate() {
+                let (u, v) = if out { (u, v) } else { (v, u) };
+                let point = |d: [f64; 3]| [0, 1, 2].map(|j| mm((c[j] + d[j]) * k));
+                let plane = format!("Plane {i}");
+                built(
+                    &mut s,
+                    "datum.plane",
+                    json!({"through": [point([0.0; 3]), point(u), point(v)], "name": plane}),
+                );
+                let sketch = format!("Face {i} sketch");
+                built(
+                    &mut s,
+                    "sketch.create",
+                    json!({"plane": plane, "name": sketch}),
+                );
+                run(
+                    &mut s,
+                    "sketch.polyline",
+                    json!({"sketch": sketch, "points": [[-k, -k], [k, -k], [k, k], [-k, k]], "closed": true}),
+                );
+                built(
+                    &mut s,
+                    "feature.fill",
+                    json!({"sketch": sketch, "name": format!("Face {i}")}),
+                );
+            }
+            let mut sewn = "Face 0".to_string();
+            for i in 1..6 {
+                let name = format!("Sewn {i}");
+                let op = json!({"op": "union", "target": sewn, "tool": format!("Face {i}"), "name": name});
+                if i < 5 || out {
+                    built(&mut s, "feature.boolean", op);
+                    sewn = name;
+                } else {
+                    let reason = failed(&mut s, "feature.boolean", op);
+                    assert!(reason.contains("faces inward"), "{reason}");
+                    run(&mut s, "feature.delete", json!({"feature": name}));
+                }
+            }
+            let found = body(&mut s, &sewn);
+            if out {
+                assert_eq!(found["kind"], "solid", "{found}");
+                assert_eq!(found["valid"], true, "{found}");
+                assert_close(&found["volume"], 8.0 * k * k * k, "the sewn cube");
+                assert_close(&found["area"], 24.0 * k * k, "the sewn cube");
+                assert_eq!(found["faces"], 6, "{found}");
+                // Cut by a block like any solid: an eighth taken away.
+                built(
+                    &mut s,
+                    "feature.block",
+                    json!({"size": [2.0 * k, 2.0 * k, 2.0 * k], "name": "Corner"}),
+                );
+                built(
+                    &mut s,
+                    "feature.boolean",
+                    json!({"op": "subtract", "target": sewn, "tool": "Corner", "name": "Less"}),
+                );
+                assert_close(
+                    &body(&mut s, "Less")["volume"],
+                    7.0 * k * k * k,
+                    "less a corner",
+                );
+            } else {
+                assert_eq!(found["kind"], "sheet", "{found}");
+            }
+            deep(&mut s);
+        }
+    }
+}

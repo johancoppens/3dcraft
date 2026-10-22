@@ -787,6 +787,9 @@ fn run(
         BodyKind::Solid
     };
     let mut result = sew::finish(work, kind)?;
+    if mode == Mode::Sheets && op == BooleanOp::Union {
+        two_sheets::closed_union(&mut result.body)?;
+    }
     pieces_of_splines(&mut result.body);
     let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
