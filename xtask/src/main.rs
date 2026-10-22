@@ -1,4 +1,4 @@
-//! Build tasks: `cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions`.
+//! Build tasks: `cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions | package`.
 
 mod actions;
 mod boolean_corpus;
@@ -6,6 +6,7 @@ mod ci;
 mod fuzz;
 mod health;
 mod layers;
+mod package;
 mod stats;
 
 use std::process::{Command, ExitCode};
@@ -102,8 +103,12 @@ fn main() -> ExitCode {
             let args: Vec<String> = std::env::args().skip(2).collect();
             actions::run(&args)
         }
+        "package" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            package::run(&args)
+        }
         other => Err(format!(
-            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, boolean-corpus, fuzz, actions"
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, boolean-corpus, fuzz, actions, package"
         )),
     };
     match result {

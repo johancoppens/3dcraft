@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The 3DCraft icon: an isometric block with a bored hole. Original work,
+     MIT (ATTRIBUTION.md). The PNGs beside it are rendered from this file
+     (docs/development.md, Packaging). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#1d2733"/>
+  <g stroke="#0f1720" stroke-width="5" stroke-linejoin="round">
+    <path d="M128 40 L204 84 L128 128 L52 84 Z" fill="#9ad6ff"/>
+    <path d="M52 84 L128 128 L128 216 L52 172 Z" fill="#3f8fd8"/>
+    <path d="M204 84 L128 128 L128 216 L204 172 Z" fill="#245e9e"/>
+  </g>
+  <ellipse cx="128" cy="84" rx="34" ry="19.6" fill="#16314f"/>
+  <path d="M94 84 A34 19.6 0 0 1 162 84 A34 13 0 0 0 94 84 Z" fill="#0d1e31"/>
+</svg>

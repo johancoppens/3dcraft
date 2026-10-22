@@ -1,10 +1,18 @@
 # Decisions
 
-> **Last updated:** 2026-10-20
+> **Last updated:** 2026-10-22
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-22: Identifiers and installers (decided by an agent; the developer may overturn)
+
+Following the 2026-10-22 decision that 3DCraft is independent of the `*Craft` family, it has identifiers of its own, derived from where it lives (`github.com/johancoppens/3dcraft`):
+
+- **Application id `io.github.johancoppens.craft3d`:** the Linux desktop file and AppStream id, the window's app id (Wayland), the macOS bundle id (`CFBundleIdentifier`). The macOS document type is `io.github.johancoppens.craft3d.document`, the Windows ProgId `Craft3D.Document.1`, the MIME type `application/x-craft3d` (a subclass of `application/zip`, recognised by `*.3dcraft`). Changing them later orphans installed file associations, so overturn before the first release if at all.
+- **Packages:** Linux a tarball (with `install.sh` into `~/.local`) and an AppImage; macOS `3DCraft.app` in a `.dmg`, Apple Silicon only, ad-hoc signed and not notarised (a Developer ID and notarisation need a paid Apple account: the developer's call); Windows a zip and an `.msi` made with the WiX Toolset v5 (MS-RL, a build tool only), not code-signed. All built by `cargo xtask package` from `packaging/`, on GitHub-hosted runners by `.github/workflows/release.yml`.
+- **The icon** is an original drawing in `packaging/icons/craft3d.svg` (MIT), a placeholder until the developer wants a designed one.
 
 ### 2026-10-22: Two sheets, faces at the edge of tolerance, and the *Craft family (decided by the developer)
 

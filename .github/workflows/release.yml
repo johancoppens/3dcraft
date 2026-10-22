@@ -1,0 +1,137 @@
+name: Release
+
+# The installers of 3DCraft (docs/development.md, Packaging), built on
+# GitHub-hosted runners by `cargo xtask package`:
+#   Linux    3dcraft-<version>-x86_64-linux.tar.gz, 3DCraft-<version>-x86_64.AppImage
+#   macOS    3DCraft-<version>-aarch64.dmg (3DCraft.app, ad-hoc signed, not notarised)
+#   Windows  3dcraft-<version>-x86_64-windows.zip, 3DCraft-<version>-x86_64.msi
+# Started by hand (the packages are kept as run artifacts):
+#   gh workflow run Release && gh run watch
+# or by pushing a tag `v<version>` matching the workspace version, which
+# also makes a draft GitHub release with the packages for the developer to
+# publish. macOS minutes count tenfold in a private repository.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu: the binaries need the glibc they
+          # were linked against or newer.
+          - name: linux
+            os: ubuntu-22.04
+          - name: macos
+            os: macos-14
+          - name: windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+
+      - name: appimagetool
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p target/tools
+          curl -fsSL -o target/tools/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x target/tools/appimagetool
+          echo "APPIMAGETOOL=$PWD/target/tools/appimagetool" >> "$GITHUB_ENV"
+
+      - name: WiX Toolset
+        if: runner.os == 'Windows'
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          echo "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: package
+        run: cargo xtask package --out dist
+
+      # The packaged programs start and answer without a window.
+      - name: smoke test (linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p target/smoke
+          tar -xzf dist/*.tar.gz -C target/smoke
+          target/smoke/*/bin/craft3d --version
+          target/smoke/*/bin/craft3d-cli --version
+          target/smoke/*/bin/craft3d-cli commands > target/smoke/commands.txt
+          test -s target/smoke/commands.txt
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/*.AppImage --version
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/*.AppImage cli --version
+      - name: smoke test (macos)
+        if: runner.os == 'macOS'
+        run: |
+          app=dist/stage/dmg/3DCraft.app
+          "$app/Contents/MacOS/craft3d" --version
+          "$app/Contents/MacOS/craft3d-cli" --version
+          "$app/Contents/MacOS/craft3d-cli" commands > /dev/null
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep "$app"
+          hdiutil verify dist/*.dmg
+      - name: smoke test (windows)
+        if: runner.os == 'Windows'
+        run: |
+          dir=$(ls -d dist/stage/3dcraft-*-windows)
+          "$dir/craft3d.exe" --version
+          "$dir/craft3d-cli.exe" --version
+          "$dir/craft3d-cli.exe" commands > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dcraft-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*.dmg
+            dist/*.zip
+            dist/*.msi
+
+  # Only for a tag: a draft release with every package; publishing it is
+  # the developer's step.
+  release:
+    name: draft release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "3DCraft ${GITHUB_REF_NAME#v}" \
+            --generate-notes

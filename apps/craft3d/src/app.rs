@@ -33,6 +33,29 @@ const SETTLE: Duration = Duration::from_secs(3);
 /// The window's title: the product name, as users read it.
 pub const TITLE: &str = "3DCraft";
 
+/// The reverse-DNS identifier of 3DCraft (docs/decisions.md, 2026-10-22):
+/// the window's app id, the desktop file's name, the macOS bundle id.
+pub const APP_ID: &str = "io.github.johancoppens.craft3d";
+
+/// The window's icon (X11 and Windows show it; Wayland and macOS take the
+/// installed one), decoded from the PNG the installers carry. `None` when
+/// it cannot be read: the window then has the toolkit's icon.
+pub fn window_icon() -> Option<egui::IconData> {
+    let bytes: &[u8] = include_bytes!("../../../packaging/icons/craft3d-64.png");
+    let mut reader = png::Decoder::new(bytes).read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut rgba).ok()?;
+    if frame.color_type != png::ColorType::Rgba || frame.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(frame.buffer_size());
+    Some(egui::IconData {
+        rgba,
+        width: frame.width,
+        height: frame.height,
+    })
+}
+
 /// Turns a root flag's value into an access rule. The directory must exist,
 /// and is made absolute with its symbolic links resolved: the engine
 /// compares paths as text, so the root has to be the one true spelling.
@@ -1083,7 +1106,9 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
-            .with_app_id("craft3d")
+            // The desktop file's name (packaging/linux), so a Wayland
+            // compositor finds the entry and the icon.
+            .with_app_id(APP_ID)
             .with_inner_size(
                 options
                     .window_size
@@ -1091,6 +1116,13 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             )
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
+    };
+    let native = match window_icon() {
+        Some(icon) => eframe::NativeOptions {
+            viewport: native.viewport.with_icon(icon),
+            ..native
+        },
+        None => native,
     };
     let renderer = options.renderer;
     let failure = failures();

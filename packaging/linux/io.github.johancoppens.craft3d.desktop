@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=3DCraft
+GenericName=Parametric 3D CAD
+Comment=Parametric 3D CAD modeller built for AI
+Exec=craft3d %f
+Icon=io.github.johancoppens.craft3d
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+Keywords=CAD;3D;parametric;modelling;STEP;STL;
+MimeType=application/x-craft3d;
+StartupWMClass=io.github.johancoppens.craft3d

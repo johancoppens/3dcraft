@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.johancoppens.craft3d</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>3DCraft</name>
+  <summary>Parametric 3D CAD modeller built for AI</summary>
+  <description>
+    <p>
+      3DCraft is a native, parametric 3D CAD modeller with its own kernel,
+      sketch constraint solver and tessellator. Every action is a command,
+      so the same engine is driven from the window, the command line, a
+      JSON control channel or an MCP server.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.johancoppens.craft3d.desktop</launchable>
+  <url type="homepage">https://github.com/johancoppens/3dcraft</url>
+  <provides>
+    <binary>craft3d</binary>
+    <binary>craft3d-cli</binary>
+    <mediatype>application/x-craft3d</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>
