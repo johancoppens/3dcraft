@@ -67,6 +67,14 @@ pub(crate) struct Selecting {
     pub(crate) boxing: Option<Boxing>,
     /// Why the last request from the mouse was refused.
     pub(crate) problem: Option<String>,
+    /// Whether the highlight (`state.highlight*`) is what the last click
+    /// lit as it selected it: it then goes when the selection changes
+    /// otherwise (an agent's `select.set`, Esc), so a face no longer
+    /// selected is not left lit in the selection's colour.
+    lit: bool,
+    /// The selection's serial after the window's own requests last ran:
+    /// a change to it is the click's own, not one to take the light off.
+    own: Option<u64>,
 }
 
 /// A click in the viewport, remembered for the next one.
@@ -253,6 +261,9 @@ impl Shell {
                 Err(e) => self.select.problem = Some(e.message().to_string()),
             }
         }
+        if !pending.is_empty() {
+            self.select.own = Some(session.selection_serial());
+        }
         !pending.is_empty()
     }
 
@@ -262,7 +273,13 @@ impl Shell {
     /// follows its first body, feature, sketch or datum.
     pub(crate) fn sync_selection(&mut self, session: &mut Session, scene: &Scene) {
         // Copied only when it changed: it may hold thousands of names.
-        if session.selection_serial() != self.select.view.serial {
+        let serial = session.selection_serial();
+        if serial != self.select.view.serial {
+            // Changed by something else than the last click: what that
+            // click lit is no longer what is selected.
+            if self.select.lit && self.select.own != Some(serial) {
+                self.clear_click_light();
+            }
             let view = session.selection();
             self.state.selected_feature = view
                 .items
@@ -282,6 +299,20 @@ impl Shell {
             self.select.menu = None;
             self.select.hover = None;
         }
+    }
+
+    /// Takes off the light the last click put on what it selected.
+    fn clear_click_light(&mut self) {
+        self.state.highlight = None;
+        self.state.highlight_edge = None;
+        self.state.highlight_vertex = None;
+        self.select.lit = false;
+    }
+
+    /// The highlight is now set by something else than a click (an
+    /// agent's `ui.highlight`): it stays when the selection changes.
+    pub(crate) fn highlight_set_elsewhere(&mut self) {
+        self.select.lit = false;
     }
 
     /// Without a document there is nothing to draw.
@@ -305,6 +336,8 @@ impl Shell {
     ) {
         self.select.menu = None;
         self.select.hover = None;
+        // A click lights what it selects; a toggle lights nothing.
+        self.select.lit = !shift;
         let mode = if shift { "toggle" } else { "replace" };
         let Some(scene) = scene else {
             return;
@@ -519,6 +552,9 @@ impl Shell {
             self.select.hover = None;
         } else if !self.select.view.items.is_empty() {
             self.queue_select(json!({"mode": "clear"}));
+            if self.select.lit {
+                self.clear_click_light();
+            }
         }
     }
 

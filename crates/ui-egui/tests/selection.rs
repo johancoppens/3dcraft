@@ -495,3 +495,50 @@ fn the_mouse_and_the_keys_select_in_the_window() {
     let kinds: Vec<&str> = boxed.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(kinds, ["body", "body", "body"], "{boxed:?}");
 }
+
+/// An agent's `select.set {mode: "clear"}` takes off the light of the
+/// click that selected the face (2026-10-21: the clicked top face stayed
+/// lit in the selection's copper after the selection was cleared). What
+/// an agent lit with `ui.highlight` stays when the selection changes.
+#[test]
+fn clearing_the_selection_takes_the_light_off_the_clicked_face() {
+    let mut session = blocks();
+    let mut shell = framed(&mut session);
+    let (x, y) = spot_of(&mut shell, &mut session, "Side");
+    call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": x, "y": y, "select": true, "radius": 0}),
+    );
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["selection"]["count"], 1, "{}", got["selection"]);
+    let face = got["state"]["highlight"]["face"].clone();
+    assert!(face.is_string(), "{}", got["state"]);
+    assert_eq!(got["selection"]["items"][0]["name"], face);
+    // The click's own selection keeps its light through a sync.
+    let again = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(again["state"]["highlight"]["face"], face);
+
+    // An agent clears the selection (any transport runs the command on
+    // the window's session).
+    session
+        .execute("select.set", &json!({"mode": "clear"}))
+        .unwrap();
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["selection"]["count"], 0);
+    assert_eq!(got["state"]["highlight"], json!(null), "{}", got["state"]);
+
+    // Lit by an agent: stays when the selection changes.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"face": face, "feature": "Side"}),
+    );
+    session
+        .execute("select.set", &json!({"names": ["Front"]}))
+        .unwrap();
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["state"]["highlight"]["face"], face, "{}", got["state"]);
+}

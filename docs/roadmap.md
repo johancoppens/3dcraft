@@ -516,11 +516,12 @@ Sketching and feature editing with the mouse, menus, selection, shortcuts and me
 
 #### Done
 - The selection shared with agents (slice 1 of the AI-selection plan, decisions B1 and B4): click, Shift+click, double click, box, Esc and the feature list in the window; picking through (same spot again, Alt+click, a right-click list); `select.get`, `select.set`, `ui.select`, the MCP resource `craft3d://selection`; `select.query` with JSON filters ([`design/selection.md`](design/selection.md)) (2026-10-21)
+- Selection slice 2: named sets kept in the document as queries (`set.define`/`edit`/`remove`/`list`, `{set}`, `select.set {set}`; format 27, B2), a selection that follows its faces, edges and bodies into later features and keeps what a suppressed or rolled-back feature hides, the context an agent acts on (measure, drivers with their edit, pattern instance), and the live bugs of 2026-10-21 (a spline-edged face missed by `inside`, the clicked face left lit after `clear`, `file.close {document}`) ([`design/selection.md`](design/selection.md)) (2026-10-22)
 
 The camera, the tabs, pointing and the section plane are M4 and M8.5.
 
 #### Open
-- [ ] Named sets: a query kept in the document and computed again at every regeneration (B2)
+- [ ] Following a vertex into later features; a set made from the current selection
 - [ ] More of the query: relations (neighbours, the same size as, coaxial, symmetric), extremes, countersinks as holes
 - [ ] Preview and confirmation of large AI actions (B6)
 - [ ] The rest defined when phase 1 is done

@@ -41,6 +41,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         next_feature_id,
         bodies,
         faces,
+        sets,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -83,6 +84,13 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         next_feature_id: *next_feature_id,
         bodies: bodies.iter().map(body_to_manifest).collect(),
         faces: faces.iter().map(face_to_manifest).collect(),
+        sets: sets
+            .iter()
+            .map(|doc::NamedSet { name, query }| manifest::NamedSet {
+                name: name.clone(),
+                query: query.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1349,6 +1357,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         next_feature_id,
         bodies,
         faces,
+        sets,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1390,6 +1399,10 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         next_feature_id,
         bodies: bodies.into_iter().map(body_to_doc).collect(),
         faces: faces.into_iter().map(face_to_doc).collect(),
+        sets: sets
+            .into_iter()
+            .map(|manifest::NamedSet { name, query }| doc::NamedSet { name, query })
+            .collect(),
     }
 }
 
