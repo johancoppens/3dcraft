@@ -4422,17 +4422,105 @@ pub struct MassBound {
 /// estimate, not a guarantee: two sums can agree and both be off, which
 /// the closed-form tests (`reference_solids.rs`) hold in check. Of a sheet the volume is zero
 /// and so is its bound.
+///
+/// A body with loose entities (tolerant modelling, a sewn import) adds a
+/// term for its gaps ([`gap_bound`]): its faces are measured to the
+/// boundaries their edges give them, and where an edge lies up to its own
+/// tolerance off its faces those boundaries are up to that far from
+/// where the faces meet. An exact body's bound is what it was, bit for
+/// bit.
 pub fn mass_bound(body: &Body) -> Result<(MassProperties, MassBound), MassError> {
     let (all, _, middle, held) = integrate(body, Wanted::First);
     let mass = mass_from(body, all?, middle);
     let solid = body.kind == BodyKind::Solid;
+    let (area, volume) = if body.is_tolerant() {
+        let gaps = gap_bound(body, middle);
+        (held[0] + gaps.area, held[1] + gaps.volume)
+    } else {
+        (held[0], held[1])
+    };
     Ok((
         mass,
         MassBound {
-            area: held[0],
-            volume: if solid { held[1] } else { 0.0 },
+            area,
+            volume: if solid { volume } else { 0.0 },
         },
     ))
+}
+
+/// Places along an edge at which its length and its reach from the
+/// middle are taken for [`gap_bound`].
+const GAP_SAMPLES: u32 = 128;
+
+/// How far the area and the volume of a body with loose entities can be
+/// off for its gaps (tolerant modelling, slice 3, 2026-10-22): zero for a
+/// body without any.
+///
+/// Each face is measured to its boundary, the curves of its edges as they
+/// lie on its surface. An edge whose own tolerance is `t` lies up to `t`
+/// off the surface of each of its faces, so each face's boundary there is
+/// up to `t` from the edge, and two faces' boundaries up to `2t` apart:
+/// each face's area is off by at most a strip `t` wide along the edge,
+/// and the faces leave between them a ribbon at most `2t` wide that the
+/// volume, summed from the middle the moments are taken about, counts as
+/// a cone over it, at most `⅓ (R + t) · 2t · L` for an edge of length `L`
+/// whose farthest point is `R` from that middle. A loose vertex adds the
+/// same for a disc of its tolerance per edge that ends at it. The length
+/// and the reach are taken at [`GAP_SAMPLES`] places along the edge (the
+/// reach widened by the longest step between them): an estimate, as the
+/// rest of the bound is.
+pub fn gap_bound(body: &Body, middle: Vec3) -> MassBound {
+    let mut area = 0.0_f64;
+    let mut volume = 0.0_f64;
+    let uses = crate::edge_uses(body);
+    let mut ends: BTreeMap<crate::VertexId, usize> = BTreeMap::new();
+    for e in &body.edges {
+        for v in [e.start, e.end] {
+            *ends.entry(v).or_default() += 1;
+        }
+    }
+    for (edge, t) in body.tolerances.edges() {
+        let Some(e) = body.edge(edge) else {
+            continue;
+        };
+        let (t0, t1) = e.range;
+        let points: Vec<Vec3> = (0..=GAP_SAMPLES)
+            .map(|k| {
+                e.curve
+                    .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(GAP_SAMPLES))
+            })
+            .collect();
+        let (mut length, mut step, mut reach) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for (p, q) in points.iter().zip(points.iter().skip(1)) {
+            let d = p.distance(*q);
+            length += d;
+            step = step.max(d);
+        }
+        for p in &points {
+            reach = reach.max(p.distance(middle));
+        }
+        let faces = uses.get(edge.0 as usize).map_or(0, Vec::len) as f64;
+        let ribbon = 2.0 * t * length;
+        let a = faces * t * length;
+        let v = (reach + step + t) * ribbon / 3.0;
+        area += if a.is_finite() { a } else { f64::INFINITY };
+        volume += if v.is_finite() { v } else { f64::INFINITY };
+    }
+    for (vertex, t) in body.tolerances.vertices() {
+        let Some(p) = body.vertex(vertex).map(|v| v.point) else {
+            continue;
+        };
+        let n = ends.get(&vertex).copied().unwrap_or(0) as f64;
+        let disc = PI * t * t * n;
+        let v = (p.distance(middle) + t) * disc / 3.0;
+        area += if disc.is_finite() {
+            disc
+        } else {
+            f64::INFINITY
+        };
+        volume += if v.is_finite() { v } else { f64::INFINITY };
+    }
+    MassBound { area, volume }
 }
 
 /// [`MassProperties`] from the sums of the faces.

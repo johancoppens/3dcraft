@@ -1318,3 +1318,91 @@ fn a_side_whose_pieces_do_not_reach_along_it_is_left_whole() {
         assert!(!check_capped(&sewn.body, &tol, cap).is_empty());
     }
 }
+
+// ---------------------------------------------- the mass bound's gap term
+
+/// Bodies exploded with each plane face moved within its own plane by up
+/// to k tolerances (the surfaces stay where they were, so the solid they
+/// bound is the original's; only the boundaries the edges give the faces
+/// are off) and sewn: the measured volume and area lie within the bound
+/// `mass_bound` gives them, which for a loose body includes its gaps
+/// (`topo::gap_bound`), plus the original's own bound; and so they do
+/// within the gap term alone (what the bound gains over the same body
+/// with its table cleared) plus the original's own bound, without the
+/// integrator's allowance for the sewn body's sums.
+#[test]
+fn the_mass_bound_covers_the_gaps_of_a_sewn_body() {
+    use craft3d_geom::Surface;
+    use craft3d_topo::mass_bound;
+    let mut cases = 0;
+    let (mut worst_volume, mut worst_area) = (0.0_f64, 0.0_f64);
+    for kind in [0, 3, 4, 7] {
+        for scale in [1e-3, 1.0, 1e6] {
+            let tol = tolerance(scale);
+            let cap = default_loosest(tol.linear);
+            let (name, original) = body(kind, scale);
+            let (reference, own) = mass_bound(&original).unwrap();
+            for k in [30.0_f64, 300.0] {
+                for seed in [1u64, 2, 3] {
+                    let mut rng = Rng(seed ^ (kind as u64) << 24 ^ k.to_bits());
+                    let moves: Vec<Vec3> = original
+                        .faces
+                        .iter()
+                        .map(|f| {
+                            let d = rng.direction() * (k * tol.linear * rng.unit());
+                            match &f.surface {
+                                Surface::Plane(_) => {
+                                    let (_, su, sv) = f.surface.derivatives(0.0, 0.0);
+                                    let n = su.cross(sv).normalized().unwrap();
+                                    d - n * n.dot(d)
+                                }
+                                _ => Vec3::ZERO,
+                            }
+                        })
+                        .collect();
+                    let loose = exploded(&original, &moves, None);
+                    let what = format!("{name} at {scale:e}, k = {k}, seed {seed}");
+                    let sewn = sew(&loose, &tol, cap, cap).unwrap();
+                    assert!(sewn.open.is_empty(), "{what}: open");
+                    let b = &sewn.body;
+                    let (m, bound) = mass_bound(b).unwrap();
+                    let (_, plain) = {
+                        let mut exact = b.clone();
+                        exact.tolerances = Default::default();
+                        mass_bound(&exact).unwrap()
+                    };
+                    let dv = (m.volume - reference.volume).abs();
+                    let da = (m.area - reference.area).abs();
+                    let allowed_v = bound.volume + own.volume;
+                    let allowed_a = bound.area + own.area;
+                    assert!(
+                        dv <= allowed_v,
+                        "{what}: volume off by {dv:e}, bound {allowed_v:e}"
+                    );
+                    assert!(
+                        da <= allowed_a,
+                        "{what}: area off by {da:e}, bound {allowed_a:e}"
+                    );
+                    // The table only adds the gap term: the sums are the
+                    // same.
+                    let (gap_v, gap_a) = (bound.volume - plain.volume, bound.area - plain.area);
+                    assert!(
+                        dv <= gap_v + own.volume,
+                        "{what}: volume off by {dv:e}, gap term {gap_v:e}"
+                    );
+                    assert!(
+                        da <= gap_a + own.area,
+                        "{what}: area off by {da:e}, gap term {gap_a:e}"
+                    );
+                    assert!(b.is_tolerant() && gap_v > 0.0, "{what}: no gap term");
+                    worst_volume = worst_volume.max(dv / (gap_v + own.volume));
+                    worst_area = worst_area.max(da / (gap_a + own.area));
+                    cases += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "mass bound with gaps: {cases} sewn bodies, worst volume {worst_volume:.3} and area {worst_area:.3} of the gap term"
+    );
+}
