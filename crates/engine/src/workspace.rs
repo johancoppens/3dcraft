@@ -14,6 +14,11 @@ pub enum Access {
     Root(PathBuf),
     /// Any path: for a trusted local user at the command line.
     Unrestricted,
+    /// The session's own files in memory ([`crate::Session::put_file`],
+    /// [`crate::Session::take_file`]), where there is no file system to
+    /// reach (the browser). A path is a relative name with the rules of a
+    /// path beneath a root: no `..`, nothing absolute.
+    Memory,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -42,6 +47,15 @@ impl Workspace {
 
     pub fn resolve_write(&self, path: &str) -> Result<PathBuf, CommandError> {
         resolve(&self.write, path, "write")
+    }
+
+    /// Both directions in the session's own memory: the browser's
+    /// workspace.
+    pub fn memory() -> Self {
+        Self {
+            read: Access::Memory,
+            write: Access::Memory,
+        }
     }
 }
 
@@ -75,6 +89,8 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
     if path.is_empty() || path.contains('\0') {
         return Err(CommandError::new("a file path must not be empty"));
     }
+    // Names in memory resolve beneath nothing: the name itself.
+    let in_memory = PathBuf::new();
     let root = match access {
         Access::Unrestricted => return Ok(PathBuf::from(path)),
         Access::None => {
@@ -83,6 +99,14 @@ fn resolve(access: &Access, path: &str, direction: &str) -> Result<PathBuf, Comm
             )));
         }
         Access::Root(root) => root,
+        Access::Memory => {
+            if Path::new(path).has_root() {
+                return Err(CommandError::new(format!(
+                    "`{path}` is an absolute path; a file in memory has a relative name"
+                )));
+            }
+            &in_memory
+        }
     };
     let requested = Path::new(path);
     let relative = if requested.is_absolute() {
@@ -207,6 +231,23 @@ mod tests {
         for bad in fixed.iter().chain(&computed) {
             let error = w.resolve_read(bad).unwrap_err();
             assert!(!error.to_string().is_empty(), "`{bad}`");
+        }
+    }
+
+    #[test]
+    fn memory_names_are_relative_and_stay_inside() {
+        let w = Workspace::memory();
+        assert_eq!(
+            w.resolve_read("a.3dcraft").unwrap(),
+            PathBuf::from("a.3dcraft")
+        );
+        assert_eq!(
+            w.resolve_write("./parts/b.stl").unwrap(),
+            Path::new("parts").join("b.stl")
+        );
+        for bad in ["../x", "a/../../x", "/etc/passwd", "", ".", "a\0b"] {
+            assert!(w.resolve_read(bad).is_err(), "`{bad}`");
+            assert!(w.resolve_write(bad).is_err(), "`{bad}`");
         }
     }
 

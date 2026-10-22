@@ -377,6 +377,11 @@ mod native {
                 return fail("view.replay: `orbit` must be a number of degrees within ±3600");
             }
         };
+        if session.writes_to_memory() {
+            return fail(
+                "view.replay: the frames go to a folder on disk, and this session keeps its files in memory",
+            );
+        }
         let dir = session.workspace.resolve_write(dir_param)?;
         let given = match p.number("tolerance")? {
             Some(t) if t > 0.0 => Some(t),

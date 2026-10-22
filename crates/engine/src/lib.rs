@@ -21,9 +21,7 @@ mod blend_cmds;
 mod body_cmds;
 mod commands;
 mod datum_cmds;
-#[cfg(not(target_arch = "wasm32"))]
 mod drawing_cmds;
-#[cfg(not(target_arch = "wasm32"))]
 mod export_bodies;
 mod face_cmds;
 mod file_cmds;
@@ -32,6 +30,7 @@ mod import_cmds;
 mod interference_cmds;
 mod loft_cmds;
 mod mass;
+mod memory_files;
 mod meshes;
 mod offset_cmds;
 mod params;
@@ -53,7 +52,6 @@ mod sketch_path_cmds;
 mod sketch_pattern_cmds;
 mod sketch_spline_cmds;
 mod split_cmds;
-#[cfg(not(target_arch = "wasm32"))]
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
@@ -64,6 +62,7 @@ mod verify_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
+pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
@@ -279,6 +278,8 @@ pub struct Session {
     trees_held_for: Vec<(u64, Option<u64>)>,
     /// [`Session::set_body_budget`], for documents opened later.
     body_budget: Option<usize>,
+    /// The files of a session without a file system (`memory_files.rs`).
+    pub(crate) memory: memory_files::MemoryFiles,
 }
 
 /// Most documents open at once.
@@ -294,6 +295,7 @@ impl Session {
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
             body_budget: None,
+            memory: memory_files::MemoryFiles::default(),
         }
     }
 

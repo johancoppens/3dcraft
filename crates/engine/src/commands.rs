@@ -13,7 +13,6 @@ use craft3d_doc::{
     Feature, FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, PersistentName,
     PlaneBy, Sphere, Tolerance, Torus, Units,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
 use craft3d_math::Vec3;
 use craft3d_regen::{Regen, Status};
@@ -488,17 +487,75 @@ fn file_new(session: &mut Session, params: &Value) -> Run {
     Ok(json!({ "document": index, "units": length.symbol() }))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// What a file on disk looks like now; nothing for a file in memory, or
+/// where there is no file system.
+fn file_stamp(in_memory: bool, resolved: &std::path::Path) -> Option<crate::recovery::FileStamp> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if in_memory {
+            None
+        } else {
+            crate::recovery::FileStamp::of(resolved)
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (in_memory, resolved);
+        None
+    }
+}
+
+/// Reads a `.3dcraft` file from disk; where there is no file system,
+/// says so.
+fn load_from_disk(
+    resolved: &std::path::Path,
+) -> Result<(craft3d_doc::Document, Vec<String>), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        craft3d_format::load_noted(resolved).map_err(|e| e.to_string())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = resolved;
+        Err("there is no file system here, only files in memory".to_string())
+    }
+}
+
+/// Writes a `.3dcraft` file to disk; where there is no file system, says
+/// so.
+fn save_to_disk(
+    resolved: &std::path::Path,
+    document: &craft3d_doc::Document,
+) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        craft3d_format::save(resolved, document).map_err(|e| e.to_string())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (resolved, document);
+        Err("there is no file system here, only files in memory".to_string())
+    }
+}
+
 fn file_open(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.open", params, &["path"])?;
     let path = p.required_str("path")?;
     let resolved = session.workspace.resolve_read(path)?;
-    let (document, read) = craft3d_format::load_noted(&resolved)
-        .map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
+    let in_memory = session.reads_from_memory();
+    let loaded = if in_memory {
+        session
+            .read_input(path, &resolved, craft3d_format::MAX_FILE_BYTES)
+            .and_then(|bytes| craft3d_format::from_bytes_noted(&bytes).map_err(|e| e.to_string()))
+    } else {
+        load_from_disk(&resolved)
+    };
+    let (document, read) =
+        loaded.map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     let features = document.features.len();
     let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
-    open.disk = crate::recovery::FileStamp::of(&resolved);
+    open.disk = file_stamp(in_memory, &resolved);
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
     // What reading the file changed (a tolerance outside the range a
@@ -509,7 +566,6 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     Ok(result)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn file_save(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.save", params, &["path", "overwrite"])?;
     let overwrite = p.bool("overwrite")?.unwrap_or(false);
@@ -520,6 +576,7 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let resolved = session.workspace.resolve_write(&path)?;
     let access = session.workspace.write.clone();
+    let in_memory = session.writes_to_memory();
     let open = session.document_mut()?;
     // A recovered document is older than its original file when that
     // file was written after the recovery was taken (by another 3DCraft,
@@ -528,31 +585,31 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         && !overwrite
         && (open.path.as_deref() == Some(path.as_str())
             || open.path == Some(crate::workspace::kept_path(&access, &path, &resolved)))
-        && let Some(now) = crate::recovery::FileStamp::of(&resolved)
+        && let Some(now) = file_stamp(in_memory, &resolved)
         && recovered.original != Some(now)
     {
         return fail(format!(
             "file.save: `{path}` changed on disk since this recovered document was autosaved, so saving would replace a file that may be newer; save under another `path`, or pass {{\"overwrite\": true}} to replace it (at the window: File, Save As, and choose the file again)"
         ));
     }
-    craft3d_format::save(&resolved, open.history.current())
-        .map_err(|e| CommandError::new(format!("file.save: cannot save `{path}`: {e}")))?;
-    open.saved_revision = Some(open.history.revision());
+    let cannot = |e: String| CommandError::new(format!("file.save: cannot save `{path}`: {e}"));
+    let revision = open.history.revision();
+    if in_memory {
+        let bytes =
+            craft3d_format::to_bytes(open.history.current()).map_err(|e| cannot(e.to_string()))?;
+        session
+            .write_resolved(&resolved, bytes)
+            .map_err(|e| cannot(e.message().to_string()))?;
+    } else {
+        save_to_disk(&resolved, open.history.current()).map_err(cannot)?;
+    }
+    let open = session.document_mut()?;
+    open.saved_revision = Some(revision);
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
-    open.disk = crate::recovery::FileStamp::of(&resolved);
+    open.disk = file_stamp(in_memory, &resolved);
     open.recovered = None;
     Ok(json!({ "path": kept }))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn file_open(_: &mut Session, _: &Value) -> Run {
-    fail("file.open: files are not available in this build")
-}
-
-#[cfg(target_arch = "wasm32")]
-fn file_save(_: &mut Session, _: &Value) -> Run {
-    fail("file.save: files are not available in this build")
 }
 
 fn file_close(session: &mut Session, params: &Value) -> Run {
@@ -633,7 +690,6 @@ struct BodyMesh {
     name: String,
     mesh: Mesh,
     /// The body's own (for an export's object; a picture colours faces).
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     appearance: Option<craft3d_doc::Appearance>,
     faces: Vec<Option<craft3d_doc::Appearance>>,
 }
@@ -673,7 +729,6 @@ fn meshes(
     Ok(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn file_export(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "file.export",
@@ -823,14 +878,15 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             .map_err(|e| CommandError::new(format!("file.export: {e}")))?;
         (bytes, None)
     };
+    let written = bytes.len();
     let library = match library {
         Some((at, mtl)) => {
             let library = session.workspace.resolve_write(&at)?;
-            write_with_library(&resolved, &bytes, &library, mtl.as_bytes())?;
+            write_with_library(session, &resolved, bytes, &library, mtl.into_bytes())?;
             Some(at)
         }
         None => {
-            crate::workspace::write_atomic(&resolved, &bytes)?;
+            session.write_resolved(&resolved, bytes)?;
             None
         }
     };
@@ -838,7 +894,7 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     Ok(json!({
         "path": path,
         "mtl": library,
-        "bytes": bytes.len(),
+        "bytes": written,
         "bodies": model.objects.len(),
         // How many of the meshes are closed and consistently oriented.
         "closed": closed,
@@ -856,7 +912,6 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
 /// library and no file the person did not name is replaced; refused too
 /// when the library would be the OBJ itself (`x.mtl` written as OBJ,
 /// compared without case for file systems that ignore it).
-#[cfg(not(target_arch = "wasm32"))]
 fn obj_library(path: &str) -> Result<(String, String), CommandError> {
     let at = std::path::Path::new(path);
     let stem = at
@@ -903,9 +958,44 @@ fn obj_library(path: &str) -> Result<(String, String), CommandError> {
 /// that an OBJ never names one that is not there, after checking that
 /// both places can take a file; when the OBJ still cannot be written the
 /// library is put back as it was (removed, or its former content
-/// restored), so a failed export leaves nothing behind.
-#[cfg(not(target_arch = "wasm32"))]
+/// restored), so a failed export leaves nothing behind. In memory the two
+/// files are put side by side, and the library taken out again when the
+/// OBJ does not fit.
 fn write_with_library(
+    session: &mut Session,
+    obj_path: &std::path::Path,
+    obj: Vec<u8>,
+    library_path: &std::path::Path,
+    library: Vec<u8>,
+) -> Result<(), CommandError> {
+    if session.writes_to_memory() {
+        let before = session.memory_file(library_path).cloned();
+        session.write_resolved(library_path, library)?;
+        if let Err(e) = session.write_resolved(obj_path, obj) {
+            let _ = session.forget_output(library_path);
+            if let Some(bytes) = before {
+                let _ = session.write_resolved(library_path, bytes);
+            }
+            return Err(e);
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        write_with_library_on_disk(obj_path, &obj, library_path, &library)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (obj, library);
+        fail(format!(
+            "file.export: cannot write `{}`: there is no file system here, only files in memory",
+            obj_path.display()
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_with_library_on_disk(
     obj_path: &std::path::Path,
     obj: &[u8],
     library_path: &std::path::Path,
@@ -945,7 +1035,6 @@ fn write_with_library(
 /// The index of the material of `appearance` in an export's `materials`,
 /// added when it is not there yet: one material per appearance, named by
 /// its colour (with its metallic and roughness when it has them).
-#[cfg(not(target_arch = "wasm32"))]
 fn export_material(
     materials: &mut Vec<craft3d_meshio::Material>,
     appearance: &craft3d_doc::Appearance,
@@ -973,11 +1062,6 @@ fn export_material(
     };
     materials.push(material);
     u32::try_from(materials.len().saturating_sub(1)).unwrap_or(u32::MAX)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn file_export(_: &mut Session, _: &Value) -> Run {
-    fail("file.export: files are not available in this build")
 }
 
 // ------------------------------------------------------------------- edit
@@ -3245,9 +3329,8 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         );
     }
     match (path, resolved) {
-        #[cfg(not(target_arch = "wasm32"))]
         (Some(path), Some(resolved)) => {
-            crate::workspace::write_atomic(&resolved, &png)?;
+            session.write_resolved(&resolved, png)?;
             map.insert("path".into(), path.into());
         }
         _ => {
