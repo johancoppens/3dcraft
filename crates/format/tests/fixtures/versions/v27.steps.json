@@ -1,13 +1,9 @@
 [
-  ["variable.set", {"name": "t", "expr": "8 mm"}],
-  ["feature.block", {"size": ["60 mm", "40 mm", "t"], "name": "Plate"}],
-  ["feature.cylinder", {"radius": "3 mm", "height": "20 mm", "position": ["10 mm", "20 mm", "-5 mm"], "name": "Drill"}],
-  ["feature.pattern", {"source": "Drill", "count": 2, "step": ["40 mm", 0, 0], "name": "Row"}],
-  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Row", "name": "Drilled"}],
-  ["assert.add", {"name": "the holes go through", "measure": "through", "of": {"hole": true, "madeBy": "Drill"}}],
-  ["assert.add", {"name": "volume", "measure": "volume", "of": "Drilled", "eq": "(60 mm * 40 mm - 2 * pi * (3 mm)^2) * t", "tol": 1e-6}],
-  ["assert.add", {"name": "plate thickness", "measure": "thickness", "of": {"in": "Drilled", "normal": {"along": "z"}}, "min": "t", "max": "t"}],
-  ["assert.add", {"name": "two holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": 2}],
-  ["assert.add", {"name": "symmetric", "measure": "symmetric", "of": "Drilled", "plane": {"point": ["30 mm", 0, 0], "normal": [1, 0, 0]}}],
-  ["assert.add", {"name": "thin enough", "measure": "extent", "of": "Drilled", "axis": "z", "max": "5 mm"}]
+  ["feature.block", {"size": ["80 mm", "50 mm", "8 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"name": "Drill", "radius": "3 mm", "height": "20 mm", "position": ["10 mm", "10 mm", "-5 mm"]}],
+  ["feature.pattern", {"name": "Drills", "source": "Drill", "count": 4, "step": ["20 mm", "0 mm", "0 mm"]}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Drills", "name": "Drilled"}],
+  ["set.define", {"name": "boltholes", "kind": "face", "where": {"hole": true, "radius": "3 mm"}}],
+  ["set.define", {"name": "first two", "where": {"set": "boltholes", "copyOf": "Drills", "below": {"x": "35 mm"}}}],
+  ["set.define", {"name": "tops", "kind": ["face"], "where": {"normal": {"along": "z"}}}]
 ]

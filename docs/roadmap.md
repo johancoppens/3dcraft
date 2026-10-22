@@ -476,7 +476,7 @@ An agent checks a design by asking it questions, not by looking at a picture: th
 #### Done
 - Interference between bodies (`document.interference`): clear, touch (on a face, an edge or a point) or overlap with its volume, read-only, boxes first ([`design/booleans.md`](design/booleans.md) › *Interference*) (2026-10-16)
 - Queries on the exact geometry: `measure.distance`, `measure.clearance`, `measure.thickness` (the thinnest wall and where), `measure.ray`, `measure.through` (a hole cut through along its axis) and `measure.symmetry`, their subjects named as `select.query` names things ([`design/verification.md`](design/verification.md)) (2026-10-22)
-- Assertions kept in the document (`assert.add`, `assert.edit`, `assert.delete`, `assert.list`; format 27): volume, area, mass, count, extent, distance, clearance, thickness, through, no interference and symmetry against a value with a tolerance or bounds in the document's variables, a least searched for (thickness, distance) passing only on a proven bound and otherwise failed or not proven, measured off the caller's thread and only when its subjects changed, never blocking regeneration; a broken one shows in the edit's result, `document.check`, `document.inspect`, the tree and `ui.get`; the housing's bolt holes made blind by a thicker plate are flagged ([`design/verification.md`](design/verification.md)) (2026-10-22)
+- Assertions kept in the document (`assert.add`, `assert.edit`, `assert.delete`, `assert.list`; format 28): volume, area, mass, count, extent, distance, clearance, thickness, through, no interference and symmetry against a value with a tolerance or bounds in the document's variables, a least searched for (thickness, distance) passing only on a proven bound and otherwise failed or not proven, measured off the caller's thread and only when its subjects changed, never blocking regeneration; a broken one shows in the edit's result, `document.check`, `document.inspect`, the tree and `ui.get`; the housing's bolt holes made blind by a thicker plate are flagged ([`design/verification.md`](design/verification.md)) (2026-10-22)
 
 #### Open
 - [ ] Queries: a section as geometry with its measures (area, outline, the widths across it); the least inside radius; thickness by the sphere method and a map of thin places
@@ -518,11 +518,12 @@ Sketching and feature editing with the mouse, menus, selection, shortcuts and me
 
 #### Done
 - The selection shared with agents (slice 1 of the AI-selection plan, decisions B1 and B4): click, Shift+click, double click, box, Esc and the feature list in the window; picking through (same spot again, Alt+click, a right-click list); `select.get`, `select.set`, `ui.select`, the MCP resource `craft3d://selection`; `select.query` with JSON filters ([`design/selection.md`](design/selection.md)) (2026-10-21)
+- Selection slice 2: named sets kept in the document as queries (`set.define`/`edit`/`remove`/`list`, `{set}`, `select.set {set}`; format 27, B2), a selection that follows its faces, edges and bodies into later features and keeps what a suppressed or rolled-back feature hides, the context an agent acts on (measure, drivers with their edit, pattern instance), and the live bugs of 2026-10-21 (a spline-edged face missed by `inside`, the clicked face left lit after `clear`, `file.close {document}`) ([`design/selection.md`](design/selection.md)) (2026-10-22)
 
 The camera, the tabs, pointing and the section plane are M4 and M8.5.
 
 #### Open
-- [ ] Named sets: a query kept in the document and computed again at every regeneration (B2)
+- [ ] Following a vertex into later features; a set made from the current selection
 - [ ] More of the query: relations (neighbours, the same size as, coaxial, symmetric), extremes, countersinks as holes
 - [ ] Preview and confirmation of large AI actions (B6)
 - [ ] The rest defined when phase 1 is done

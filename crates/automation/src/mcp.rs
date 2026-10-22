@@ -326,7 +326,7 @@ fn selection_resource() -> Value {
         "uri": SELECTION_URI,
         "name": "selection",
         "title": "What is selected",
-        "description": "What is selected in the active document (in the window when this server is bridged to one): items {kind, name, feature}, count, summary and what dropped out, as the command select.get gives it. The tool selection_get gives the same.",
+        "description": "What is selected in the active document (in the window when this server is bridged to one): items {kind, name, feature} with their context (surface and measure, the drivers that set it and the edit to make, the pattern instance), count, summary, what dropped out and what is hidden for now, as the command select.get gives it. The tool selection_get gives the same.",
         "mimeType": "application/json",
     })
 }
@@ -455,7 +455,7 @@ fn tools() -> Value {
         },
         {
             "name": "selection_get",
-            "description": "Returns what is selected in the active document: what the developer clicked in the window (when this server is bridged to one) and what agents selected (select.set, select.query with then), as items {kind, name, feature}, count, summary (\"3 bodies, 2 faces\") and dropped (what no longer exists). Returns {\"document\": null} when no document is open. The same as the resource craft3d://selection.",
+            "description": "Returns what is selected in the active document: what the developer clicked in the window (when this server is bridged to one) and what agents selected (select.set, select.query with then), as items {kind, name, feature} with their context (body, origin, surface or curve with its measure, drivers: the parameter or sketch constraint that sets it with the edit to make, copyOf: the pattern instance), count, summary (\"3 bodies, 2 faces\"), dropped (what no longer exists) and hidden (what a suppressed or rolled-back feature hides for now). Returns {\"document\": null} when no document is open. The same as the resource craft3d://selection.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},

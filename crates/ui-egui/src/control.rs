@@ -571,6 +571,8 @@ impl Shell {
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.highlight";
+        // What an agent points at stays lit when the selection changes.
+        self.highlight_set_elsewhere();
         let map = fields(
             method,
             params,

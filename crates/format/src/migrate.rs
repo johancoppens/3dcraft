@@ -33,7 +33,7 @@ const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
-    v26_to_v27,
+    v26_to_v27, v27_to_v28,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -365,12 +365,22 @@ fn v25_to_v26(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// Version 27 adds `assertions` to the document: the design intent
-/// written down as checks (`assert.add`). A file of version 26 has none,
+/// Version 27 adds `sets` to the document: named sets, a query of
+/// `select.query` kept under a name and computed again at every
+/// regeneration (`set.define`). A file of version 26 has none, which is
+/// what a missing `sets` reads as, so nothing changes; the version was
+/// raised so that an older build says a newer 3DCraft is needed instead of
+/// refusing an unknown field.
+fn v26_to_v27(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 28 adds `assertions` to the document: the design intent
+/// written down as checks (`assert.add`). A file of version 27 has none,
 /// which is what a missing `assertions` reads as, so nothing changes; the
 /// version was raised so that an older build says a newer 3DCraft is
 /// needed instead of refusing an unknown field.
-fn v26_to_v27(manifest: Value) -> Result<Value, String> {
+fn v27_to_v28(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
