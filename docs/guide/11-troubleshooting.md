@@ -12,8 +12,8 @@ The document is unchanged. The message starts with the command and usually the p
 | *there is no feature named 'Sheet'; features: Block* | A name is wrong or the feature is not made yet; the message lists what there is |
 | *unknown plane 'CutPlane'; use xy, yz or zx, or the name of a datum plane* | Same, for planes |
 | *give either distance … or about and angle …, not both* | Two ways of placing something were mixed; use two datums |
-| *'gap' must be a finite number, got a string* | This parameter takes a plain number in the document's unit, not an expression |
-| *'/tmp/x.3dcraft' is outside the write root …* | Save or export beneath the directory the server or window was given |
+| *variable.delete: \`t\` is still used by the feature \`Plate\` (F1: size.z), …* | Change those first, or give `"force": true` to delete it anyway |
+| *file.save: '/tmp/x.3dcraft' is outside the write root …* | Save or export beneath the directory the server or window was given |
 
 `command_list` (or `craft3d-cli commands --filter …`) shows what parameters a command takes.
 
@@ -34,7 +34,9 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
   size, another order of features), and report it: every refusal is work owed.
 
 Over MCP a failed feature is **not** a tool error (the command did what was asked: it added the feature),
-so an agent must read `status` in each result, or run `document.check` after a batch.
+so an agent must read `status` in each result, or run `document.check` after a batch. A change that makes
+*other* features fail (`variable.set`, `feature.edit`, `feature.suppress`, `feature.delete`, …) lists them
+in its result under `failed`, each with its `error`.
 
 ## A broken assertion
 

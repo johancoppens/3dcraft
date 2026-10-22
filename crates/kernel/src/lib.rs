@@ -255,6 +255,16 @@ pub enum KernelError {
         radius: f64,
         largest: f64,
     },
+    /// A fillet `radius` along a rim for which the fillet face would be a
+    /// torus that reaches its own axis (not built yet): radii below
+    /// `below` fit, and so does `own`, which puts the ball's centre on
+    /// the rim's axis.
+    FilletSpindle {
+        edge: craft3d_topo::EdgeId,
+        radius: f64,
+        below: f64,
+        own: f64,
+    },
     /// An edge that cannot be filleted, or is not built yet, or a fillet
     /// that did not come out as one: the edge and the face it is about,
     /// when there is one.
@@ -582,6 +592,17 @@ impl fmt::Display for KernelError {
                  {largest}",
                 edge.0, face.0
             ),
+            KernelError::FilletSpindle {
+                edge,
+                radius,
+                below,
+                own,
+            } => write!(
+                f,
+                "fillet of edge {}: {}",
+                edge.0,
+                spindle_text(*radius, *below, *own, "")
+            ),
             KernelError::Fillet { edge, face, reason } => {
                 write!(f, "fillet")?;
                 if let Some(edge) = edge {
@@ -639,6 +660,40 @@ impl fmt::Display for KernelError {
 }
 
 impl std::error::Error for KernelError {}
+
+/// A number as a refusal says it: at most nine significant digits, so
+/// that a size worked out from others (20.000000000000004) reads as the
+/// size it is.
+fn short(value: f64) -> String {
+    if !value.is_finite() || value == 0.0 {
+        return value.to_string();
+    }
+    let magnitude = value.abs().log10().floor();
+    // Bounded by the clamp: 0 to 15 decimals.
+    let decimals = (8.0 - magnitude).clamp(0.0, 15.0) as usize;
+    let text = format!("{value:.decimals$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    }
+}
+
+/// What [`KernelError::FilletSpindle`] says, its sizes followed by
+/// `unit` (" mm"; empty for numbers alone).
+pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
+    format!(
+        "with a radius of {}{unit} the fillet face would be a torus that reaches its own axis \
+         (the ball's centre would come nearer to the rim's axis than the radius), which is not \
+         built yet; so it is for every radius from {below}{unit} up to {own}{unit}: below \
+         {below}{unit} the ball's centre stays far enough from the axis, and exactly \
+         {own}{unit} puts it on the axis (the fillet is then a piece of a ball, as along an \
+         earlier round of that radius)",
+        short(radius),
+        below = short(below),
+        own = short(own)
+    )
+}
 
 impl From<GeomError> for KernelError {
     fn from(e: GeomError) -> Self {

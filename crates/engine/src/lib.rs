@@ -227,6 +227,16 @@ impl OpenDocument {
         self.regen_needing(Need::Bodies)
     }
 
+    /// The last regeneration of the document, of whichever revision it
+    /// was, without regenerating; the current one when there has been
+    /// none yet.
+    pub(crate) fn last_regen(&mut self) -> Arc<Regen> {
+        match &self.regen {
+            Some((_, regen)) => Arc::clone(regen),
+            None => self.regen(),
+        }
+    }
+
     /// [`OpenDocument::regen`] with the bodies `need` asks for present:
     /// bodies the cache had let go of are derived again, the same bits.
     pub(crate) fn regen_needing(&mut self, need: Need) -> Arc<Regen> {
@@ -456,7 +466,15 @@ impl Session {
             Ok(result) => {
                 self.recovery_sync(false);
                 self.release_unused_trees();
-                result
+                // Every error names the command, also one said by a part
+                // that does not know it (a path outside the write root).
+                result.map_err(|e| {
+                    if e.message().starts_with(id) {
+                        e
+                    } else {
+                        CommandError::new(format!("{id}: {e}"))
+                    }
+                })
             }
             Err(payload) => {
                 self.recovery_sync(true);

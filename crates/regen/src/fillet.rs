@@ -54,6 +54,16 @@ fn explain(
             role(edge),
             face_name(face)
         ),
+        KernelError::FilletSpindle {
+            edge,
+            radius,
+            below,
+            own,
+        } => format!(
+            "radius: not built for {}: {}",
+            role(edge),
+            craft3d_kernel::spindle_text(radius, below, own, &format!(" {unit}"))
+        ),
         KernelError::Fillet { edge, face, reason } => {
             let at = edge.map_or_else(|| "edges".to_string(), role);
             match face {

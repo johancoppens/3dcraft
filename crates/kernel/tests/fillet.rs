@@ -1077,8 +1077,15 @@ fn the_mouth_of_a_hole_loses_material_and_the_foot_of_a_boss_gains_it() {
             &[round(&blind, k, [2.0 - rh, 1.5, 1.0], 0.26)],
             &tolerance(k),
         ) {
-            Err(KernelError::Fillet { reason, .. }) => {
-                assert!(reason.contains("half the rim's"), "{reason}");
+            // The ball's centre is rh - r from the axis: as far as the
+            // radius at r = rh / 2, on the axis at r = rh (closed form;
+            // until 2026-10-22 a text without the numbers).
+            Err(KernelError::FilletSpindle {
+                radius, below, own, ..
+            }) => {
+                assert_close(radius, 0.26 * k, "radius");
+                assert_close(below, rh / 2.0 * k, "below");
+                assert_close(own, rh * k, "own");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1306,8 +1313,19 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
             &[round(&part, k, [-1.0, 0.0, 3.0], 0.6)],
             &tolerance(k),
         ) {
-            Err(KernelError::Fillet { reason, .. }) => {
-                assert!(reason.contains("half the rim's"), "{reason}");
+            // The ball's centre is 1 - r from the axis: as far as the
+            // radius at r = 1 / 2, on it at r = 1 (closed form; until
+            // 2026-10-22 a text without the numbers).
+            Err(
+                error @ KernelError::FilletSpindle {
+                    radius, below, own, ..
+                },
+            ) => {
+                assert_close(radius, 0.6 * k, "radius");
+                assert_close(below, 0.5 * k, "below");
+                assert_close(own, k, "own");
+                let text = error.to_string();
+                assert!(text.contains("reaches its own axis"), "{text}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

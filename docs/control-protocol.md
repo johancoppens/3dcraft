@@ -211,9 +211,11 @@ Two short forms save an agent a round trip (2026-10-22, from the R1 acceptance):
 | `jobs_list`, `jobs_cancel` | Background jobs |
 | bridge only: `ui_inspect`, `ui_screenshot`, `ui_set`, `control_call` | Need a running desktop app |
 
+**A failed feature is not a tool error** (by design: the command did what was asked, the feature is in the history). The result of a feature command carries the feature's own `status`, `error` and `causedBy`; the result of an edit that can make *other* features fail (`variable.set`, `variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`; 2026-10-22) carries `failed: [{feature, id, error, causedBy?}]`, the features that fail after the change and did not before it (other than the feature the result is about), left out when there are none. `variable.delete` refuses a variable still in use, naming every user (variables, features and sketches with the parameters, assertions, named sets); `force: true` deletes it anyway and the result lists them under `usedBy`.
+
 Resources `craft3d://document` and `craft3d://commands` return the same JSON as `doc_inspect` and `command_list`. Built today (2026-10-21): the resource `craft3d://selection` and the tool `selection_get`, the selection as `select.get` gives it.
 
-Conventions (from PhotoCraft's MCP server): unknown tool arguments return JSON-RPC `-32602` naming the key, before execution; tool failures return `isError: true`; a worker panic becomes a tool error and the session keeps serving; invalid JSON lines get `-32700` with `id: null` and the next line is still processed. Before experiments, duplicate the document (`file.duplicate`) and work on the copy. Recover from a failed batch by inspecting, then `edit.undo` once per applied step.
+Conventions (from PhotoCraft's MCP server): unknown tool arguments return JSON-RPC `-32602` naming the key, before execution; tool failures return `isError: true`, with a message that starts with the command's id (`file.save: `/x.3dcraft` is outside the write root …`, also for what the file roots refuse; 2026-10-22); a worker panic becomes a tool error and the session keeps serving; invalid JSON lines get `-32700` with `id: null` and the next line is still processed. Before experiments, duplicate the document (`file.duplicate`) and work on the copy. Recover from a failed batch by inspecting, then `edit.undo` once per applied step.
 
 ## Limits
 

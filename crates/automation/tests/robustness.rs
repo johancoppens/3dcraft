@@ -224,7 +224,9 @@ fn command_params(rng: &mut Rng, command: &str) -> Value {
         "file.close" => json!({"discard": rng.chance(80)}),
         "file.open" | "file.save" | "file.export" => json!({"path": string(rng)}),
         "variable.set" => json!({"name": rng.pick(&["width", "w", "t"]), "expr": expr(rng)}),
-        "variable.delete" => json!({"name": rng.pick(&["width", "w", "t"])}),
+        "variable.delete" => {
+            json!({"name": rng.pick(&["width", "w", "t"]), "force": rng.chance(50)})
+        }
         "variable.rename" => {
             json!({"name": rng.pick(&["width", "w"]), "to": rng.pick(&["w", "t", "width"])})
         }

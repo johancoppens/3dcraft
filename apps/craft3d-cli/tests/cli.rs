@@ -284,6 +284,9 @@ fn other_usage_errors_exit_with_2() {
             "`--out` was given twice",
         ),
         (vec!["convert", &part], "IN OUT"),
+        // A drawing says which flags name what it is the outline of.
+        (vec!["convert", &part, "a.dxf"], "give `--sketch S`"),
+        (vec!["convert", &part, "a.svg"], "or `--face F`"),
         (
             vec!["convert", &part, "a.stl", "b.stl"],
             "unexpected argument `b.stl`",
@@ -322,7 +325,33 @@ fn other_usage_errors_exit_with_2() {
         !dir.join("x.png").exists()
             && !dir.join("a.stl").exists()
             && !dir.join("a.3dcraft").exists()
+            && !dir.join("a.dxf").exists()
     );
+}
+
+/// `mcp --help` names every tool the server lists, and the one a window
+/// adds, from the same list (it named five of six until 2026-10-22).
+#[test]
+fn mcp_help_lists_every_tool_the_server_serves() {
+    let dir = workdir("mcp-help");
+    let input = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
+    let ran = cli_in(&dir, &["mcp"], Some(&input)).ok();
+    let tools = ran.json_lines()[0]["result"]["tools"].clone();
+    let names: Vec<String> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"selection_get".to_string()), "{names:?}");
+    let help = cli(&["mcp", "--help"]).ok().stdout;
+    for name in names.iter().map(String::as_str).chain(["control_call"]) {
+        assert!(
+            help.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == name),
+            "{name} in:\n{help}"
+        );
+    }
 }
 
 // --------------------------------------------------------------- commands
@@ -527,10 +556,12 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
     let text = std::fs::read_to_string(&svg).unwrap();
     assert!(text.contains("width=\"8mm\" height=\"8mm\""), "{text}");
     // Without a sketch or a face there is nothing to draw, and the other
-    // formats do not take one.
-    let ran = cli(&["convert", &part, &path(&dir, "none.dxf")]).failed(1);
+    // formats do not take one. Missing, it is a usage error that names
+    // the CLI's flags (until 2026-10-22 the engine's error, exit 1, which
+    // named the parameters `sketch` and `face`; wording only, no oracle).
+    let ran = cli(&["convert", &part, &path(&dir, "none.dxf")]).failed(2);
     assert!(
-        ran.stderr.contains("`sketch`") && ran.stderr.contains("`face`"),
+        ran.stderr.contains("`--sketch S`") && ran.stderr.contains("`--face F`"),
         "{}",
         ran.stderr
     );

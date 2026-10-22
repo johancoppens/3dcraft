@@ -240,8 +240,8 @@ Usage: craft3d-cli mcp [--automation-read-root DIR]
        craft3d-cli mcp --bridge PORT --control-token-file FILE
 
 Serves the Model Context Protocol on stdin and stdout (JSON-RPC 2.0, one
-message per line), for agent clients. Tools: command_list, command_run,
-command_batch, doc_inspect, doc_render_preview.
+message per line), for agent clients. Tools:
+{tools}
 
 The session reads files only beneath the read root and writes only beneath
 the write root. Each is optional and independent: without one, that
@@ -277,11 +277,44 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ("mcp", HELP_MCP),
 ];
 
-fn subcommand_help(name: &str) -> Option<&'static str> {
+fn subcommand_help(name: &str) -> Option<String> {
     SUBCOMMANDS
         .iter()
         .find(|(known, _)| *known == name)
-        .map(|(_, help)| *help)
+        .map(|(known, help)| match *known {
+            "mcp" => help.replace("{tools}", &mcp_tools()),
+            _ => (*help).to_string(),
+        })
+}
+
+/// The tools the MCP server offers, from the server's own list, as the
+/// help of `mcp` says them: wrapped, indented by two.
+fn mcp_tools() -> String {
+    let mut names = craft3d_automation::mcp::tool_names();
+    names.push(format!(
+        "and, with --bridge, {} (the window's view: ui.get, ui.pick, ui.select, ui.screenshot, ...)",
+        craft3d_automation::mcp::WINDOW_TOOL
+    ));
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::from(" ");
+    let count = names.len();
+    for (index, name) in names.into_iter().enumerate() {
+        let item = if index + 1 < count {
+            format!("{name},")
+        } else {
+            format!("{name}.")
+        };
+        for word in item.split(' ') {
+            if line.len() + 1 + word.len() > 74 && !line.trim().is_empty() {
+                lines.push(line);
+                line = String::from(" ");
+            }
+            line.push(' ');
+            line.push_str(word);
+        }
+    }
+    lines.push(line);
+    lines.join("\n")
 }
 
 fn unknown_subcommand(name: &str) -> CliError {
@@ -329,7 +362,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
         return match args.next() {
             None => print(HELP),
             Some(Arg::Positional(topic)) => {
-                print(subcommand_help(&topic).ok_or_else(|| unknown_subcommand(&topic))?)
+                print(&subcommand_help(&topic).ok_or_else(|| unknown_subcommand(&topic))?)
             }
             Some(Arg::Flag { name, .. }) => Err(CliError::Usage(format!("unknown flag `{name}`"))),
         };
@@ -349,7 +382,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
     };
     match ran {
         Ok(Parsed::Run(())) => Ok(()),
-        Ok(Parsed::Help) => print(help),
+        Ok(Parsed::Help) => print(&help),
         // Say where the usage is, once, for whichever subcommand it was.
         Err(CliError::Usage(message)) => Err(CliError::Usage(format!(
             "{name}: {message}\nTry `craft3d-cli {name} --help`."

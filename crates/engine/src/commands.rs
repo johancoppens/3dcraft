@@ -55,14 +55,14 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
-    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": number = 5 mm, "width": number = no limit, "construction": boolean = false}"#,
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
         "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
         "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}. An expression has numbers with units (um mm cm m in ft, deg rad), variables, pi, + - * / ^ and the functions sin, cos, tan, asin, acos, atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc and mod. floor, ceil, round and trunc take a plain number (floor(span / fingerW)) or a value and a positive step of its dimension (round(width, 0.5 mm)); a length alone is refused, as its whole number would depend on the unit. round takes ties to the even whole number (2.5 to 2, 3.5 to 4); mod(a, b) is a - b * floor(a / b), with the sign of b, and b = 0 is an error.", doc: true, variable_set),
-    spec!("variable.delete", "Delete Variable", r#"{"name": string}"#,
-        "Deletes a variable. Expressions that still use it fail at regeneration.", doc: true, variable_delete),
+    spec!("variable.delete", "Delete Variable", r#"{"name": string, "force": boolean = false}"#,
+        "Deletes a variable. A variable still in use is refused, with every user named (variables, features and sketches with the parameter, assertions, named sets); with force it is deleted anyway, and what used it fails until the variable is defined again (edit.undo brings it back).", doc: true, variable_delete),
     spec!("variable.rename", "Rename Variable", r#"{"name": string, "to": string}"#,
         "Renames a variable and every reference to it in variables and features.", doc: true, variable_rename),
     spec!("feature.block", "Block", r#"{"size": [expr, expr, expr], "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
@@ -369,6 +369,69 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
         Status::RolledBack => ("rolledBack", None),
         Status::Failed(reason) => ("failed", Some(reason)),
     }
+}
+
+/// The features of the active document that failed at its last
+/// regeneration (which, for a document not regenerated since it was
+/// opened or undone, may be one of an earlier revision: what was last
+/// shown), by id, in history order: what an edit is compared with to
+/// say which features it made fail ([`add_failed`]).
+pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandError> {
+    let open = session.document_mut()?;
+    if open.history.current().features.is_empty() {
+        return Ok(Vec::new());
+    }
+    let regen = open.last_regen();
+    Ok(regen
+        .features
+        .iter()
+        .filter(|f| matches!(f.status, Status::Failed(_)))
+        .map(|f| f.id)
+        .collect())
+}
+
+/// Adds `failed` to the result of an edit: the features that fail now
+/// and did not `before` it, other than `except` (the feature the result
+/// is about, which carries its own status), each as `{feature, id,
+/// error}` and, when it failed because something it is made from did,
+/// `causedBy`. Left out when there are none. A failed feature is not an
+/// error of the command (it did what was asked), so this is how the
+/// caller learns what its change broke.
+pub(crate) fn add_failed(
+    session: &mut Session,
+    before: &[FeatureId],
+    except: Option<FeatureId>,
+    result: &mut Value,
+) -> Result<(), CommandError> {
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let mut failed = Vec::new();
+    for outcome in &regen.features {
+        let Status::Failed(reason) = &outcome.status else {
+            continue;
+        };
+        if before.contains(&outcome.id) || except == Some(outcome.id) {
+            continue;
+        }
+        let name = doc.feature(outcome.id).map_or("", |f| f.name.as_str());
+        let mut entry = json!({
+            "feature": name,
+            "id": outcome.id.to_string(),
+            "error": reason,
+        });
+        if let (Some(map), Some(root)) = (
+            entry.as_object_mut(),
+            craft3d_regen::root_cause(doc, &regen.features, outcome.id),
+        ) {
+            map.insert("causedBy".into(), root.to_string().into());
+        }
+        failed.push(entry);
+    }
+    if let (false, Some(map)) = (failed.is_empty(), result.as_object_mut()) {
+        map.insert("failed".into(), Value::Array(failed));
+    }
+    Ok(())
 }
 
 pub(crate) fn vec3(v: Vec3) -> Value {
@@ -793,26 +856,148 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("variable.set", params, &["name", "expr"])?;
     let name = p.required_str("name")?;
     let expr = p.expr("expr")?.ok_or_else(|| p.missing("expr"))?;
+    let before = failing(session)?;
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)
     })?;
     let open = session.document_mut()?;
     let regen = open.regen();
     let mut result = variable_json(&regen, name, length_unit(open.history.current()));
+    add_failed(session, &before, None, &mut result)?;
     crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)
 }
 
 fn variable_delete(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("variable.delete", params, &["name"])?;
+    let p = Params::new("variable.delete", params, &["name", "force"])?;
     let name = p.required_str("name")?;
+    let force = p.bool("force")?.unwrap_or(false);
+    let users = variable_users(session.document()?.history.current(), name);
+    if !force && !users.is_empty() {
+        return fail(format!(
+            "variable.delete: `{name}` is still used by {}; change those first, or give force: true to delete it anyway (they then fail until it is defined again)",
+            users.join(", ")
+        ));
+    }
+    let before = if users.is_empty() {
+        Vec::new()
+    } else {
+        failing(session)?
+    };
     edit(
         session,
         "variable.delete",
         &format!("Delete {name}"),
         |doc| doc.remove_variable(name),
     )?;
-    Ok(json!({ "deleted": name }))
+    let mut result = json!({ "deleted": name });
+    if !users.is_empty() {
+        if let Some(map) = result.as_object_mut() {
+            map.insert("usedBy".into(), users.into());
+        }
+        add_failed(session, &before, None, &mut result)?;
+    }
+    Ok(result)
+}
+
+/// Whether the expression text `source` refers to the variable `name`.
+fn mentions(source: &str, name: &str) -> bool {
+    craft3d_expr::names_in(source).contains(&name)
+}
+
+/// Whether a string inside the JSON `value` (a stored query or what an
+/// assertion measures) mentions the variable `name`, leaving out the keys
+/// whose strings are names and not expressions. The JSON was read from a
+/// stored text, so its nesting is bounded; `depth` caps it anyway.
+fn json_mentions(value: &Value, name: &str, depth: usize) -> bool {
+    const NAMES: &[&str] = &[
+        "name",
+        "type",
+        "material",
+        "color",
+        "set",
+        "in",
+        "madeBy",
+        "copyOf",
+        "kind",
+        "surface",
+        "along",
+        "perpendicular",
+        "of",
+        "from",
+        "to",
+        "measure",
+        "face",
+        "edge",
+        "feature",
+    ];
+    if depth > 16 {
+        return false;
+    }
+    match value {
+        Value::String(text) => mentions(text, name),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| json_mentions(item, name, depth + 1)),
+        Value::Object(map) => map.iter().any(|(key, inner)| {
+            !NAMES.contains(&key.as_str()) && json_mentions(inner, name, depth + 1)
+        }),
+        _ => false,
+    }
+}
+
+/// Everything in `doc` that uses the variable `name`, one short phrase
+/// each, in document order: other variables, features and sketches (with
+/// the parameters), assertions and named sets.
+pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
+    let mut users = Vec::new();
+    for variable in &doc.variables {
+        if variable.name != name && mentions(variable.expr.source(), name) {
+            users.push(format!("the variable `{}`", variable.name));
+        }
+    }
+    for feature in &doc.features {
+        let params: Vec<String> = feature
+            .kind
+            .exprs()
+            .into_iter()
+            .filter(|(_, expr)| mentions(expr.source(), name))
+            .map(|(param, _)| param)
+            .collect();
+        if !params.is_empty() {
+            let what = if matches!(feature.kind, FeatureKind::Sketch(_)) {
+                "sketch"
+            } else {
+                "feature"
+            };
+            users.push(format!(
+                "the {what} `{}` ({}: {})",
+                feature.name,
+                feature.id,
+                params.join(", ")
+            ));
+        }
+    }
+    for assertion in &doc.assertions {
+        let in_bound = assertion
+            .expect
+            .exprs()
+            .iter()
+            .any(|expr| mentions(expr.source(), name));
+        let in_measure = serde_json::from_str::<Value>(&assertion.measure)
+            .is_ok_and(|measure| json_mentions(&measure, name, 0));
+        if in_bound || in_measure {
+            users.push(format!("the assertion `{}`", assertion.name));
+        }
+    }
+    for set in &doc.sets {
+        if serde_json::from_str::<Value>(&set.query)
+            .is_ok_and(|query| json_mentions(&query, name, 0))
+        {
+            users.push(format!("the set `{}`", set.name));
+        }
+    }
+    users
 }
 
 fn variable_rename(session: &mut Session, params: &Value) -> Run {
@@ -1745,11 +1930,14 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     if let FeatureKind::Extrude(extrusion) = &kind {
         symmetric_fits(&extrusion.end, extrusion.symmetric, "feature.edit")?;
     }
+    let before = failing(session)?;
     edit(session, "feature.edit", "Edit feature", |doc| {
         doc.feature_mut(id)?.kind = kind;
         Ok(())
     })?;
-    feature_result(session, id)
+    let mut result = feature_result(session, id)?;
+    add_failed(session, &before, Some(id), &mut result)?;
+    Ok(result)
 }
 
 /// Where a parameter of a feature lives.
@@ -1795,11 +1983,14 @@ fn feature_suppress(session: &mut Session, params: &Value) -> Run {
     } else {
         "Unsuppress feature"
     };
+    let before = failing(session)?;
     edit(session, "feature.suppress", label, |doc| {
         doc.feature_mut(id)?.suppressed = suppressed;
         Ok(())
     })?;
-    feature_result(session, id)
+    let mut result = feature_result(session, id)?;
+    add_failed(session, &before, Some(id), &mut result)?;
+    Ok(result)
 }
 
 fn feature_move(session: &mut Session, params: &Value) -> Run {
@@ -1814,10 +2005,13 @@ fn feature_move(session: &mut Session, params: &Value) -> Run {
         .integer("position", 0, u64::from(u32::MAX))?
         .ok_or_else(|| p.missing("position"))?;
     // Bounded by the check above.
+    let before = failing(session)?;
     edit(session, "feature.move", "Reorder feature", |doc| {
         doc.move_feature(id, position as usize)
     })?;
-    feature_result(session, id)
+    let mut result = feature_result(session, id)?;
+    add_failed(session, &before, Some(id), &mut result)?;
+    Ok(result)
 }
 
 fn feature_delete(session: &mut Session, params: &Value) -> Run {
@@ -1828,10 +2022,13 @@ fn feature_delete(session: &mut Session, params: &Value) -> Run {
         "feature.delete",
         "feature",
     )?;
+    let before = failing(session)?;
     let removed = edit(session, "feature.delete", "Delete feature", |doc| {
         doc.remove_feature(id)
     })?;
-    Ok(json!({ "deleted": feature_json(&removed) }))
+    let mut result = json!({ "deleted": feature_json(&removed) });
+    add_failed(session, &before, None, &mut result)?;
+    Ok(result)
 }
 
 fn history_rollback(session: &mut Session, params: &Value) -> Run {
@@ -1848,10 +2045,13 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
             "feature",
         )?),
     };
+    let before = failing(session)?;
     edit(session, "history.rollback", "Roll back", |doc| {
         doc.set_rollback(target)
     })?;
-    Ok(json!({ "rollback": target.map(|id| id.to_string()) }))
+    let mut result = json!({ "rollback": target.map(|id| id.to_string()) });
+    add_failed(session, &before, None, &mut result)?;
+    Ok(result)
 }
 
 // --------------------------------------------------------------- document

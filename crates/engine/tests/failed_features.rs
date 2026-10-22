@@ -1148,7 +1148,11 @@ fn apply(s: &mut Session, way: Break, upstream: &str) {
                 json!({"feature": upstream, "position": last}),
             )
         }
-        Break::Fail => run(s, "variable.delete", json!({"name": variable_of(upstream)})),
+        Break::Fail => run(
+            s,
+            "variable.delete",
+            json!({"name": variable_of(upstream), "force": true}),
+        ),
     };
 }
 
@@ -1778,7 +1782,11 @@ fn a_lost_variable_fails_the_features_that_use_it_with_the_parameter() {
     let intact = state(&mut s);
     assert_eq!(intact["ok"], true, "{intact}");
     for (variable, expr) in [("v", "3 mm"), ("a", "30 deg"), ("n", "3")] {
-        run(&mut s, "variable.delete", json!({"name": variable}));
+        run(
+            &mut s,
+            "variable.delete",
+            json!({"name": variable, "force": true}),
+        );
         let broken = state(&mut s);
         for (name, used, parameter) in &uses {
             let (now, reason) = status(&broken, name);
@@ -2302,7 +2310,11 @@ fn failed_suppressed_and_rolled_back_features_survive_saving_and_opening() {
     let mut s = workshop_in(on_disk(&dir));
     run(&mut s, "feature.suppress", json!({"feature": "Peg"}));
     run(&mut s, "feature.delete", json!({"feature": "Rod"}));
-    run(&mut s, "variable.delete", json!({"name": "lift"}));
+    run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "lift", "force": true}),
+    );
     run(&mut s, "history.rollback", json!({"feature": "Ring"}));
     let saved = state(&mut s);
     let states: Vec<(String, String)> = names_in_order(&saved)
@@ -2485,7 +2497,8 @@ fn random_edit(rng: &mut Rng) -> (&'static str, Value) {
         ),
         10 => (
             "variable.delete",
-            json!({"name": if rng.below(3) == 0 { rng.pick(&["h", "lift", "n"]) } else { "gone" }}),
+            json!({"name": if rng.below(3) == 0 { rng.pick(&["h", "lift", "n"]) } else { "gone" },
+                   "force": rng.below(2) == 0}),
         ),
         11 => (
             "sketch.edit",

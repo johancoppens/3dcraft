@@ -85,6 +85,12 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             face,
             reason: reason.text(Kind::Chamfer),
         },
+        // A chamfer has no ball; said as the edge it does not take.
+        BlendError::Spindle { edge, .. } => KernelError::Chamfer {
+            edge: Some(edge),
+            face: None,
+            reason: crate::blend::Reason::Spindle.text(Kind::Chamfer),
+        },
         BlendError::Boolean {
             edge,
             error,

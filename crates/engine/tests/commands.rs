@@ -232,7 +232,10 @@ fn every_edit_is_one_undo_step_that_restores_the_document_exactly() {
         ),
         ("variable.set", json!({"name": "width", "expr": "1 m"})),
         ("variable.rename", json!({"name": "width", "to": "w"})),
-        ("variable.delete", json!({"name": "thickness"})),
+        (
+            "variable.delete",
+            json!({"name": "thickness", "force": true}),
+        ),
         ("feature.block", json!({"size": [1, 2, 3]})),
         ("feature.cylinder", json!({"radius": 1, "height": "width"})),
         (

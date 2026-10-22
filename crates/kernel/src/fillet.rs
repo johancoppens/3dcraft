@@ -77,6 +77,17 @@ fn said(error: BlendError) -> KernelError {
             face,
             reason: reason.text(Kind::Fillet),
         },
+        BlendError::Spindle {
+            edge,
+            radius,
+            below,
+            own,
+        } => KernelError::FilletSpindle {
+            edge,
+            radius,
+            below,
+            own,
+        },
         BlendError::Boolean {
             edge,
             error,

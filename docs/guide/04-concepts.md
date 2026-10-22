@@ -42,8 +42,9 @@ Every length, angle and count may be an **expression** in the document's variabl
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
   `ceil`, `round`, `trunc`, `mod`, the constant `pi`, and `^` for powers.
 - `variable.set` on an existing name changes it, and every feature that uses it is rebuilt.
-  `variable.rename` renames it everywhere it is used. `variable.delete` deletes it even while it is used:
-  what used it then fails (undo brings it back).
+  `variable.rename` renames it everywhere it is used. `variable.delete` refuses a variable that is still
+  used and names what uses it; with `"force": true` it deletes it anyway, and what used it then fails
+  (undo brings it back).
 
 ## Sketches and constraints
 
