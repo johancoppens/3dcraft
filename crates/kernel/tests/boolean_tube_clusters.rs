@@ -476,3 +476,62 @@ fn the_reference_volume_holds_to_closed_forms() {
         );
     }
 }
+
+/// The tube beside the first ever closer to touching it inside: at an
+/// offset of 0.3125 the outer wall of the one (radius 10) touches the
+/// bore of the other (radius 9.6875), and just past that they cross at a
+/// few hundred-thousandths of a radian. Each placement unites, checked in
+/// full, or is refused as faces at the edge of tolerance (they go through
+/// each other by between half and twice the tolerance: the walls at 0.312501
+/// were refused as a bug of the regions before, their crossing taken for a
+/// touch), never anything else.
+#[test]
+fn a_tube_ever_closer_to_touching_inside_unites_or_is_refused_at_the_edge_of_tolerance() {
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    let y = Vec3::new(0.0, 1.0, 0.0);
+    let tol = tolerance(1.0);
+    let mut refused = 0;
+    for x_at in [5.0, 6.4] {
+        let first = unite(
+            &[vec![
+                Tube {
+                    start: Vec3::ZERO,
+                    axis: x,
+                },
+                Tube {
+                    start: Vec3::new(x_at, -20.0, 0.0),
+                    axis: y,
+                },
+            ]],
+            1.0,
+        );
+        for dy in [
+            0.3124999, 0.3125, 0.3125001, 0.3125005, 0.312501, 0.312502, 0.312505, 0.31251,
+            0.31255, 0.3126,
+        ] {
+            let what = format!("x {x_at}, offset {dy}");
+            let b = Tube {
+                start: Vec3::new(0.0, dy, 0.0),
+                axis: x,
+            }
+            .body(1.0);
+            match boolean(&first, &b, BooleanOp::Union, &tol) {
+                Ok(r) => {
+                    assert_eq!(craft3d_topo::check(&r.body, &tol), [], "{what}");
+                    verified(&first, &b, BooleanOp::Union, &r.body, &tol, &what);
+                }
+                Err(e) => {
+                    let said = e.to_string();
+                    assert!(
+                        said.contains("between half and twice the tolerance")
+                            || said.contains("so shallow"),
+                        "{what}: {said}"
+                    );
+                    refused += 1;
+                }
+            }
+        }
+    }
+    // The walls at 0.312501 and 0.312502 at least.
+    assert!(refused >= 2, "{refused} refused");
+}
