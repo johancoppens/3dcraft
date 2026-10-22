@@ -592,6 +592,12 @@ fn edge_cuts(
                 return Err(Stop::of(AMBIGUOUS).at(named));
             }
             CurveIntersection::Hits(hits) => {
+                // Where along the edge each hit is (`corner` keeps a hit
+                // between its neighbours).
+                let ats: Vec<f64> = hits
+                    .iter()
+                    .filter_map(|hit| locate(&edge.curve, edge.range, hit.point, tol))
+                    .collect();
                 for hit in hits {
                     let Some(at) = locate(&edge.curve, edge.range, hit.point, tol) else {
                         continue;
@@ -634,9 +640,41 @@ fn edge_cuts(
                         hit.point.distance(*end) <= 2.0 * tol
                             && surface_distance(surface, *end) <= tol
                     });
+                    // A spline's hit at a shallow angle is taken to where
+                    // the surfaces meet (`corner`).
+                    let point = match end {
+                        Some(end) => end,
+                        None if approximated => {
+                            // Halfway to the hits on either side, so that
+                            // no two hits become one place or swap.
+                            let before = ats
+                                .iter()
+                                .copied()
+                                .filter(|&t| t < at)
+                                .reduce(f64::max)
+                                .map_or(t0, |t| 0.5 * (t + at));
+                            let after = ats
+                                .iter()
+                                .copied()
+                                .filter(|&t| t > at)
+                                .reduce(f64::min)
+                                .map_or(t1, |t| 0.5 * (t + at));
+                            super::corner::refine(
+                                own,
+                                id,
+                                surface,
+                                (hit.point, at, hit.tangent),
+                                (before, after),
+                                tol,
+                            )
+                            .map_err(|r| Stop::of(r).at(named))?
+                            .unwrap_or(hit.point)
+                        }
+                        None => hit.point,
+                    };
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(end.unwrap_or(hit.point), true);
+                    cut(point, true);
                 }
             }
         }
@@ -950,6 +988,18 @@ fn clip(
                 if thickest <= 0.5 * tol {
                     continue;
                 }
+                return Err(Stop::of(NEARLY_TOUCHING).at(&named));
+            }
+        } else {
+            // A curve geometry calls a touch may be two crossings closer
+            // together than it tells apart (two cylinders on parallel
+            // axes, one inside the other, whose walls cross a
+            // hundred-thousandth of a radian apart): the same rule.
+            let reach = box_a.diagonal().max(box_b.diagonal());
+            let (p, tangent) = curve.derivatives(t0 + (t1 - t0) * 0.5);
+            if let Passage::Lens(depth) = passage(oa.sheet(), ob.sheet(), p, tangent, reach, tol)
+                && depth > 0.5 * tol
+            {
                 return Err(Stop::of(NEARLY_TOUCHING).at(&named));
             }
         }
