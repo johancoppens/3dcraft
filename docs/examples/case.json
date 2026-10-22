@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "length", "expr": "70 mm"}],
+ ["variable.set", {"name": "width", "expr": "50 mm"}],
+ ["variable.set", {"name": "height", "expr": "25 mm"}],
+ ["variable.set", {"name": "corner_r", "expr": "6 mm"}],
+ ["variable.set", {"name": "wall", "expr": "2 mm"}],
+ ["feature.block", {"size": ["length", "width", "height"], "name": "Box"}],
+ ["feature.fillet", {"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "corner_r", "name": "Rounded"}],
+ ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F1:face(1)"], "name": "Case"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Case", "eq": "(length * width - (4 - pi) * corner_r^2) * height - ((length - 2 * wall) * (width - 2 * wall) - (4 - pi) * (corner_r - wall)^2) * (height - wall)"}],
+ ["assert.add", {"name": "walls", "measure": "thickness", "of": "Case", "min": "wall - 0.1 mm"}],
+ ["document.check", {}]
+]

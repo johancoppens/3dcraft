@@ -1,0 +1,21 @@
+[
+ ["variable.set", {"name": "flange_d", "expr": "80 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "10 mm"}],
+ ["variable.set", {"name": "bore_d", "expr": "30 mm"}],
+ ["variable.set", {"name": "pcd", "expr": "60 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "8 mm"}],
+ ["variable.set", {"name": "n", "expr": "6"}],
+ ["variable.set", {"name": "chamfer", "expr": "1.5 mm"}],
+ ["feature.cylinder", {"radius": "flange_d / 2", "height": "thickness", "name": "Disc"}],
+ ["feature.cylinder", {"radius": "bore_d / 2", "height": "thickness + 2 mm", "position": [0, 0, "-1 mm"], "name": "Bore"}],
+ ["feature.boolean", {"op": "subtract", "target": "Disc", "tool": "Bore", "name": "Bored"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["pcd / 2", 0, "-1 mm"], "name": "BoltHole"}],
+ ["feature.pattern", {"source": "BoltHole", "count": "n", "angle": "360 deg / n", "axis": [0, 0, 1], "name": "BoltHoles"}],
+ ["feature.boolean", {"op": "subtract", "target": "Bored", "tool": "BoltHoles", "name": "Drilled"}],
+ ["feature.chamfer", {"edges": [["F1:face(0)", "F1:face(2)"]], "distance": "chamfer", "name": "Flange"}],
+ ["set.define", {"name": "bolt holes", "kind": "face", "where": {"hole": true, "radius": "hole_d / 2"}}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Flange", "eq": "pi * ((flange_d / 2)^2 - (bore_d / 2)^2 - n * (hole_d / 2)^2) * thickness - pi * (flange_d / 2 - chamfer / 3) * chamfer^2"}],
+ ["assert.add", {"name": "one bolt hole each", "measure": "count", "of": {"set": "bolt holes"}, "eq": "n"}],
+ ["assert.add", {"name": "holes go through", "measure": "through", "of": {"set": "bolt holes"}}],
+ ["document.check", {}]
+]

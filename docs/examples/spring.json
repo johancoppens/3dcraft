@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "coil_r", "expr": "10 mm"}],
+ ["variable.set", {"name": "wire_r", "expr": "1.5 mm"}],
+ ["variable.set", {"name": "pitch", "expr": "5 mm"}],
+ ["variable.set", {"name": "turns", "expr": "6"}],
+ ["datum.helix", {"axis": "z", "radius": "coil_r", "pitch": "pitch", "turns": "turns", "name": "Coil"}],
+ ["sketch.create", {"name": "Wire", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "Wire", "center": ["0 mm", "coil_r"], "radius": "wire_r"}],
+ ["feature.sweep", {"sketch": "Wire", "path": "Coil", "name": "Spring"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Spring", "eq": "pi * wire_r^2 * 2 * pi * coil_r * turns"}],
+ ["document.check", {}]
+]

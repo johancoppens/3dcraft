@@ -1,0 +1,15 @@
+[
+ ["variable.set", {"name": "length", "expr": "40 mm"}],
+ ["variable.set", {"name": "flange_len", "expr": "6 mm"}],
+ ["variable.set", {"name": "flange_d", "expr": "32 mm"}],
+ ["variable.set", {"name": "shank_d", "expr": "12 mm"}],
+ ["variable.set", {"name": "bore_d", "expr": "6 mm"}],
+ ["variable.set", {"name": "thread_len", "expr": "20 mm"}],
+ ["sketch.create", {"name": "Section", "plane": "xy"}],
+ ["sketch.polyline", {"sketch": "Section", "closed": true, "points": [["0 mm", "bore_d / 2"], ["length", "bore_d / 2"], ["length", "shank_d / 2"], ["flange_len", "shank_d / 2"], ["flange_len", "flange_d / 2"], ["0 mm", "flange_d / 2"]]}],
+ ["feature.revolve", {"sketch": "Section", "axis": "x", "name": "Bushing"}],
+ ["feature.thread", {"face": "F2:side(e9)", "start": "F2:side(e8)", "length": "thread_len", "name": "Thread"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Thread", "eq": "pi * (((flange_d / 2)^2 - (bore_d / 2)^2) * flange_len + ((shank_d / 2)^2 - (bore_d / 2)^2) * (length - flange_len))"}],
+ ["assert.add", {"name": "bore goes through", "measure": "through", "of": {"hole": true}}],
+ ["document.check", {}]
+]

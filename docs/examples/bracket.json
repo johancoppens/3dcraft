@@ -1,0 +1,22 @@
+[
+ ["variable.set", {"name": "leg_x", "expr": "40 mm"}],
+ ["variable.set", {"name": "leg_z", "expr": "30 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "4 mm"}],
+ ["variable.set", {"name": "width", "expr": "25 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "5 mm"}],
+ ["variable.set", {"name": "inner_r", "expr": "3 mm"}],
+ ["sketch.create", {"name": "Profile", "plane": "zx"}],
+ ["sketch.polyline", {"sketch": "Profile", "closed": true, "points": [["0 mm", "0 mm"], [0, "leg_x"], ["thickness", "leg_x"], ["thickness", "thickness"], ["leg_z", "thickness"], ["leg_z", 0]]}],
+ ["feature.extrude", {"sketch": "Profile", "distance": "width", "name": "Bracket"}],
+ ["feature.fillet", {"edges": [["F2:side(e9)", "F2:side(e10)"]], "radius": "inner_r", "name": "Rounded"}],
+ ["sketch.create", {"name": "FlatHole", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "FlatHole", "center": ["(leg_x + thickness) / 2", "width / 2"], "radius": "hole_d / 2"}],
+ ["feature.extrude", {"sketch": "FlatHole", "throughAll": true, "cut": "Rounded", "name": "Drilled"}],
+ ["sketch.create", {"name": "UprightHole", "plane": "yz"}],
+ ["sketch.circle", {"sketch": "UprightHole", "center": ["width / 2", "(leg_z + thickness) / 2"], "radius": "hole_d / 2"}],
+ ["feature.extrude", {"sketch": "UprightHole", "throughAll": true, "cut": "Drilled", "name": "Part"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Part", "eq": "(leg_x * thickness + (leg_z - thickness) * thickness) * width + (1 - pi / 4) * inner_r^2 * width - 2 * pi * (hole_d / 2)^2 * thickness"}],
+ ["assert.add", {"name": "two holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": 2}],
+ ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
+ ["document.check", {}]
+]

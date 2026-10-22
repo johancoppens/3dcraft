@@ -1,0 +1,17 @@
+[
+ ["variable.set", {"name": "length", "expr": "120 mm"}],
+ ["variable.set", {"name": "width", "expr": "80 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+ ["variable.set", {"name": "hole_r", "expr": "4 mm"}],
+ ["variable.set", {"name": "pitch", "expr": "20 mm"}],
+ ["variable.set", {"name": "columns", "expr": "5"}],
+ ["variable.set", {"name": "rows", "expr": "3"}],
+ ["sketch.create", {"name": "Outline", "plane": "xy"}],
+ ["sketch.rect", {"sketch": "Outline", "from": ["0 mm", "0 mm"], "to": ["length", "width"]}],
+ ["sketch.circle", {"sketch": "Outline", "center": ["pitch", "pitch"], "radius": "hole_r"}],
+ ["sketch.pattern", {"sketch": "Outline", "entities": ["e10"], "count": "columns", "step": ["pitch", 0], "count2": "rows", "step2": [0, "pitch"]}],
+ ["feature.extrude", {"sketch": "Outline", "distance": "thickness", "name": "Panel"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Panel", "eq": "(length * width - columns * rows * pi * hole_r^2) * thickness"}],
+ ["assert.add", {"name": "holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": "columns * rows"}],
+ ["document.check", {}]
+]

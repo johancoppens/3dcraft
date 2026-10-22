@@ -1,0 +1,20 @@
+[
+ ["variable.set", {"name": "outer_r", "expr": "5 mm"}],
+ ["variable.set", {"name": "inner_r", "expr": "4 mm"}],
+ ["variable.set", {"name": "run", "expr": "40 mm"}],
+ ["variable.set", {"name": "bend_r", "expr": "20 mm"}],
+ ["variable.set", {"name": "flange_r", "expr": "12 mm"}],
+ ["variable.set", {"name": "flange_t", "expr": "3 mm"}],
+ ["sketch.create", {"name": "Section", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "Section", "center": ["0 mm", "0 mm"], "radius": "outer_r"}],
+ ["sketch.circle", {"sketch": "Section", "center": ["0 mm", "0 mm"], "radius": "inner_r"}],
+ ["sketch.create", {"name": "Route", "plane": "xy"}],
+ ["sketch.path", {"sketch": "Route", "start": ["0 mm", "0 mm"], "segments": [{"line": [0, "run"]}, {"arc": ["-bend_r", "run + bend_r"], "center": ["-bend_r", "run"]}, {"line": ["-bend_r - run", "run + bend_r"]}]}],
+ ["feature.sweep", {"sketch": "Section", "path": "Route", "name": "Tube"}],
+ ["sketch.create", {"name": "FlangeSketch", "plane": "zx"}],
+ ["sketch.circle", {"sketch": "FlangeSketch", "center": ["0 mm", "0 mm"], "radius": "flange_r"}],
+ ["sketch.circle", {"sketch": "FlangeSketch", "center": ["0 mm", "0 mm"], "radius": "inner_r"}],
+ ["feature.extrude", {"sketch": "FlangeSketch", "distance": "flange_t", "join": "Tube", "name": "Pipe"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Pipe", "eq": "pi * (outer_r^2 - inner_r^2) * (2 * run + pi / 2 * bend_r) + pi * (flange_r^2 - outer_r^2) * flange_t"}],
+ ["document.check", {}]
+]
