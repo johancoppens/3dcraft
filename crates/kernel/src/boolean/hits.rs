@@ -574,15 +574,16 @@ pub(super) fn curve_hits(
     }
     if let Some(turns) = turning_points(curve, surface) {
         let level = levels(curve, surface);
-        let found = monotone(
+        if let Some(found) = monotone(
             curve,
             range,
             sheet,
             &turns,
             level.as_ref().map(|l| l.as_ref()),
             tolerance.linear,
-        );
-        return Ok(found);
+        ) {
+            return Ok(found);
+        }
     }
     if is_freeform(surface) {
         // The index gives the distance to the nearest point, and a bound
@@ -643,20 +644,28 @@ fn turning_points(curve: &Curve3, surface: &Surface) -> Option<Vec<f64>> {
             let d = line.direction();
             let (dx, dy, dz) = (d.dot(frame.x()), d.dot(frame.y()), d.dot(frame.z()));
             let a = dx * dx + dy * dy;
-            let b = x0 * dx + y0 * dy;
-            let c = x0 * x0 + y0 * y0;
             if a.is_nan() || a <= 0.0 {
                 // Along the axis: the distance is linear.
                 return Some(Vec::new());
             }
+            // Measured from the line's point nearest the axis (`near`),
+            // where `ρ² = A s² + C` with `C` the squared distance there,
+            // worked out from that point (not as a difference of large
+            // squares when the line's origin is far away).
+            let near = -(x0 * dx + y0 * dy) / a;
+            let (px, py) = (x0 + near * dx, y0 + near * dy);
+            let c = px * px + py * py;
             let (sine, cosine) = cone.half_angle().sin_cos();
             let (k, m) = (cosine * cosine, sine * sine * dz * dz);
-            let mut turns = vec![-b / a];
-            turns.extend(quadratic_roots(
-                k * a * a - m * a,
-                2.0 * (k * a * b - m * b),
-                k * b * b - m * c,
-            ));
+            // `cos² α (A s)² = sin² α z'² (A s² + C)`: `s² A (k A − m) = m C`.
+            let mut turns = vec![near];
+            let (top, bottom) = (m * c, a * (k * a - m));
+            if bottom > 0.0 && top >= 0.0 {
+                let s = (top / bottom).sqrt();
+                if s.is_finite() {
+                    turns.extend([near - s, near + s]);
+                }
+            }
             Some(turns)
         }
         _ => None,
@@ -677,12 +686,22 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
     let inside = |t: f64, lo: f64, hi: f64| (t >= lo && t <= hi).then_some(t);
     match (curve, surface) {
         (Curve3::Line(line), Surface::Sphere(sphere)) => {
+            // Measured from the line's point nearest the centre, at `near`:
+            // the squared distance is `s² + C`, `C` worked out from that
+            // point (not as a difference of large squares when the line's
+            // origin is far from the ball).
             let w = line.origin() - sphere.frame().origin();
-            let (half, c) = (w.dot(line.direction()), w.length_squared());
+            let near = -w.dot(line.direction());
+            let c = (w + line.direction() * near).length_squared();
             let radius = sphere.radius();
             Some(Box::new(move |level: f64, lo: f64, hi: f64| {
                 let reach = radius + level;
-                quadratic_roots(1.0, 2.0 * half, c - reach * reach)
+                let room = reach * reach - c;
+                if room.is_nan() || room < 0.0 {
+                    return None;
+                }
+                let s = room.sqrt();
+                [near - s, near + s]
                     .into_iter()
                     .find_map(|t| inside(t, lo, hi))
             }))
@@ -719,6 +738,27 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
     }
 }
 
+/// How many units in the last place of the largest number involved the
+/// signed distance from a ball or a cone along a line or a circle can be
+/// off by rounding. Derived from its evaluation: the point of the curve
+/// (`o + t d`, or `c + r (x cos t + y sin t)`: two roundings of numbers up
+/// to the size per coordinate), its offset from the centre (one), its
+/// length or, for a cone, its coordinates in the cone's frame (three
+/// products and two sums per coordinate) and `hypot` (two), then the
+/// radius or the cone's `cos α ρ − sin α z − r cos α` (three): about 13
+/// for a ball and 20 for a cone, each relative to the size, and 64 leaves
+/// room for the size being the larger of several numbers. The root
+/// isolation of the other pairs has no such rule: it calls a stretch clear
+/// only beyond the tolerance plus a bound on how far the distance strays
+/// over the stretch (never a bare comparison of one value with the
+/// tolerance), and halves no stretch below a quarter of the tolerance;
+/// that this always covers rounding near a turning point is not proven.
+const ROUNDING: f64 = 64.0;
+
+/// More whole turns of a circle than this in one piece are left to the
+/// root isolation by [`monotone`] (pieces of booleans are at most a turn).
+const MOST_TURNS: f64 = 64.0;
+
 /// How large the numbers of `surface` are: its frame's distance from the
 /// origin and its size (radius), for the rounding of a distance from it.
 fn surface_size(surface: &Surface) -> f64 {
@@ -730,25 +770,6 @@ fn surface_size(surface: &Surface) -> f64 {
         Surface::Plane(p) => p.frame().origin().length(),
         Surface::Bezier(_) | Surface::Nurbs(_) => 0.0,
     }
-}
-
-/// The real roots of `a t² + b t + c` (one where `a` is zero), without
-/// cancellation; none when there are none or the numbers are not finite.
-fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
-    if a == 0.0 {
-        return if b != 0.0 { vec![-c / b] } else { Vec::new() };
-    }
-    let disc = b * b - 4.0 * a * c;
-    if disc.is_nan() || disc < 0.0 {
-        return Vec::new();
-    }
-    let q = -0.5 * (b + b.signum() * disc.sqrt());
-    let mut roots = vec![q / a];
-    if q != 0.0 {
-        roots.push(c / q);
-    }
-    roots.retain(|t| t.is_finite());
-    roots
 }
 
 /// The hits of the piece of `curve` over `range` with the surface, when
@@ -767,25 +788,25 @@ fn monotone(
     turns: &[f64],
     solve: Option<&Level<'_>>,
     tol: f64,
-) -> CurveIntersection {
+) -> Option<CurveIntersection> {
     let (start, end) = range;
     let f = |t: f64| signed_distance(sheet, curve.eval(t)).unwrap_or(f64::NAN);
     let mut cuts: Vec<f64> = Vec::new();
     for &t in turns {
         match curve.period() {
             Some(period) if period > 0.0 => {
-                // Every turn of the curve the piece reaches.
+                // Every turn of the curve the piece reaches; a piece of
+                // more turns than [`MOST_TURNS`] is left to the root
+                // isolation.
                 let first = ((start - t) / period).ceil();
-                if !first.is_finite() {
-                    continue;
+                let last = ((end - t) / period).floor();
+                if !(first.is_finite() && last.is_finite()) || last - first > MOST_TURNS {
+                    return None;
                 }
                 let mut k = first;
-                loop {
+                while k <= last {
                     let at = t + k * period;
-                    if at.is_nan() || at >= end || k - first > 4.0 {
-                        break;
-                    }
-                    if at > start {
+                    if at > start && at < end {
                         cuts.push(at);
                     }
                     k += 1.0;
@@ -803,17 +824,25 @@ fn monotone(
     ends.extend(cuts);
     ends.push(end);
     // No run is called clear by a margin over the tolerance that could be
-    // rounding: the distance is a difference of numbers as large as the
-    // coordinates of the curve's points and the surface's centre and
-    // radius, rounded to a few units in their last place. (The root
-    // isolation, which halves stretches no shorter than a quarter of the
-    // tolerance, does not see such a margin either: a ball and a circle
-    // that dips one tolerance into it, built so, are within it there.)
+    // rounding ([`ROUNDING`]): a ball and a circle built to dip one
+    // tolerance into it are within it there.
     let size = ends
         .iter()
         .map(|&t| curve.eval(t).length())
         .fold(surface_size(sheet.surface), f64::max);
-    let reach = tol + 64.0 * f64::EPSILON * size;
+    let rounding = ROUNDING * f64::EPSILON * size;
+    let reach = tol + rounding;
+    // A root in closed form is taken only where the distance there is the
+    // level to within that rounding (twice it: the root's own and the
+    // distance's); else, or without a closed form, bisection finds it.
+    // So a closed form that cancels (a line whose origin is far from the
+    // ball) costs time, never a crossing.
+    let checked = |level: f64, lo: f64, hi: f64| {
+        solve
+            .and_then(|solve| solve(level, lo, hi))
+            .filter(|&t| (f(t) - level).abs() <= 2.0 * rounding)
+    };
+    let checked_ref: &Level<'_> = &checked;
     let kind = |v: f64| {
         if v > reach {
             Kind::Clear { positive: true }
@@ -852,18 +881,24 @@ fn monotone(
         }
         let mut from = a;
         for level in levels {
-            let at = solve
-                .and_then(|solve| solve(level, from, b))
-                .unwrap_or_else(|| root(&|t| f(t) - level, from, b));
+            let at =
+                checked_ref(level, from, b).unwrap_or_else(|| root(&|t| f(t) - level, from, b));
             push(from, at, kind(f(0.5 * (from + at))));
             from = at;
         }
         push(from, b, kind(f(0.5 * (from + b))));
     }
     if let [(_, _, Kind::Near)] = runs.as_slice() {
-        return CurveIntersection::OnSurface;
+        return Some(CurveIntersection::OnSurface);
     }
-    CurveIntersection::Hits(hits_of_runs(curve, &runs, &f, false, tol, solve))
+    Some(CurveIntersection::Hits(hits_of_runs(
+        curve,
+        &runs,
+        &f,
+        false,
+        tol,
+        Some(checked_ref),
+    )))
 }
 
 /// A circle about the axis of a cone, a sphere or a torus is at one
@@ -1488,6 +1523,7 @@ mod tests {
             level.as_deref(),
             tol,
         )
+        .unwrap()
     }
 
     /// SplitMix64, as a number in `[-1, 1)`.
@@ -1649,6 +1685,62 @@ mod tests {
             assert_eq!((w.len(), g.len()), (1, 1));
             assert_eq!(w[0].tangent, g[0].tangent);
             assert!(w[0].point.distance(g[0].point) <= tol);
+        }
+    }
+
+    /// A line that dips three tolerances into a ball (or a cone) and whose
+    /// origin is far from it, up to ten million times the ball's radius
+    /// away along the line: the squared distance from the line's origin
+    /// would cancel against the radius (review of 2026-10-22: the root of
+    /// "a tolerance inside" was found where the line is outside, and the
+    /// two crossings were lost). Both crossings are found, as the numeric
+    /// isolation finds them, at three scales and turned.
+    #[test]
+    fn a_line_from_far_away_crosses_a_ball_or_a_cone_it_dips_into() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-6 * k;
+            let f = tilted(k);
+            let radius = 3.0 * k;
+            let ball = Surface::Sphere(Sphere::new(f, radius).unwrap());
+            let cone = Surface::Cone(Cone::new(f, radius, 0.4).unwrap());
+            for far in [1e3, 1e5, 1e7] {
+                // Along the frame's x, `radius - 3 tol` from the centre:
+                // through the ball, and through the cone's wall where it is
+                // `radius` wide.
+                let depth = radius - 3.0 * tol;
+                let start = f.point(-far * k, depth, 0.0);
+                let line = Curve3::Line(Line::new(start, f.x()).unwrap());
+                let range = (0.0, 2.0 * far * k);
+                for surface in [&ball, &cone] {
+                    let found = curve_hits(
+                        &line,
+                        range,
+                        Sheet::bare(surface),
+                        &Tolerance::new(tol, 1e-9).unwrap(),
+                    )
+                    .unwrap();
+                    let CurveIntersection::Hits(hits) = &found else {
+                        panic!("{} from {far}: {found:?}", surface.kind());
+                    };
+                    let crossings = hits.iter().filter(|h| !h.tangent).count();
+                    assert_eq!(
+                        crossings,
+                        2,
+                        "{} from {far} at {k}: {hits:?}",
+                        surface.kind()
+                    );
+                    for hit in hits {
+                        let d = signed_distance(Sheet::bare(surface), hit.point).unwrap();
+                        // (Within the tolerance, and the rounding of a
+                        // point that far out.)
+                        assert!(d.abs() <= tol + 1e-13 * far * k, "{d}");
+                    }
+                    let CurveIntersection::Hits(want) = isolated(&line, range, surface, tol) else {
+                        panic!("the root isolation finds hits");
+                    };
+                    assert_eq!(want.iter().filter(|h| !h.tangent).count(), 2);
+                }
+            }
         }
     }
 }

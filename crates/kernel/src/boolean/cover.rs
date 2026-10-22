@@ -27,10 +27,21 @@
 //! The tree is made as it is asked: a node's children the first time a
 //! question needs them, so the work goes where the questions are (a face
 //! asked once costs a few patches, not a whole cover). Every node is a
-//! function of the face alone, so when it is made changes nothing, and a
-//! cover is only ever used to pass over what could not have met, or to
-//! answer "outside" where the outline would: what remains is worked on
-//! exactly as before.
+//! function of the face alone. How far a question goes down does depend
+//! on what was asked before (a face asked often starts from finer first
+//! nodes, a question gives up after [`PAIRS`] pairs of nodes, a tree stops
+//! dividing after [`NODES`] nodes), but only ever towards the answer "may
+//! meet" or "may hold", which is what the boolean assumed without a
+//! cover: a cover is only used to pass over what is proven not to meet, or
+//! to answer "outside" where the outline would, so what remains is worked
+//! on exactly as before and the results are the same bit for bit, in any
+//! order of questions and on any thread.
+//!
+//! Memory: a tree's first nodes are made at once, no shorter than a
+//! quarter (a sixteenth, for the finer ones) of the face box's diagonal:
+//! for an analytic face at most `(FRONT · π)²` of them, a few hundred
+//! (`(FINE · π)²`, about 2,500); below them at most [`NODES`] more are made
+//! per tree. A cover lives as long as the boolean that made it.
 //!
 //! Freeform faces get no cover (their box stands for them, as before):
 //! their patches' bounds would come from the index of their surface,
@@ -65,6 +76,10 @@ const SMALL: usize = 16;
 /// Nodes deeper than this are not divided (a leaf stays longer).
 const DEPTH: u32 = 16;
 
+/// How many nodes a tree makes below its first nodes, at most; past that
+/// its nodes are leaves (a coarser cover, never a smaller one).
+const NODES: usize = 1 << 13;
+
 /// How many pairs of nodes one question of whether two covers meet looks
 /// at, at most, before it answers that they may (the answer it would give
 /// without a cover).
@@ -90,6 +105,8 @@ pub(super) struct Cover {
     coarse: Front,
     fine: OnceLock<Option<Front>>,
     asked: AtomicUsize,
+    /// Nodes made below the first ones, for [`NODES`].
+    made: AtomicUsize,
     /// How long a leaf is at most, along either direction.
     widest: f64,
 }
@@ -322,6 +339,7 @@ impl Cover {
             coarse: Front::new(face, FRONT)?,
             fine: OnceLock::new(),
             asked: AtomicUsize::new(0),
+            made: AtomicUsize::new(0),
             widest,
         })
     }
@@ -342,7 +360,16 @@ impl Cover {
     /// for a leaf.
     fn children<'n>(&self, n: &'n Node, face: Face) -> Option<&'n [Node]> {
         n.children
-            .get_or_init(|| divide(face, n, self.widest))
+            .get_or_init(|| {
+                if self.made.load(Ordering::Relaxed) >= NODES {
+                    return None;
+                }
+                let kids = divide(face, n, self.widest);
+                if let Some(kids) = &kids {
+                    self.made.fetch_add(kids.len(), Ordering::Relaxed);
+                }
+                kids
+            })
             .as_deref()
     }
 
