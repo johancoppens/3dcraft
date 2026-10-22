@@ -641,6 +641,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-web"
+version = "0.0.1"
+dependencies = [
+ "craft3d-engine",
+ "craft3d-ui-egui",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "js-sys",
+ "log",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "craft3d-zipstore"
 version = "0.0.1"
 

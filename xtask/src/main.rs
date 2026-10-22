@@ -30,12 +30,13 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Every library crate must build for the web (AGENTS.md rule 11).
+/// Every library crate must build for the web (AGENTS.md rule 11), and
+/// so must the web app itself.
 fn wasm() -> Result<(), String> {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
     let packages: Vec<String> = layers::LAYERS
         .iter()
-        .filter(|(_, layer)| *layer != layers::APP_LAYER)
+        .filter(|(name, layer)| *layer != layers::APP_LAYER || *name == "web")
         .map(|(name, _)| format!("craft3d-{name}"))
         .collect();
     for p in &packages {
