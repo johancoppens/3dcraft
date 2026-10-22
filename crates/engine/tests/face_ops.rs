@@ -1140,6 +1140,39 @@ fn a_box_rounded_all_round_shells_open_at_its_top_with_a_lip() {
     }
 }
 
+/// A block whose top-front edge is rounded, shelled open at the top, the
+/// round and the front (the review of 2026-10-22: built at b133a34,
+/// refused by the first form of the lip): open faces tangent to each other
+/// go outward together, as before. Closed form, checked deep, three scales.
+#[test]
+fn a_round_left_open_with_its_faces_shells_as_before() {
+    let corner = 4.0 * (1.0 - PI / 4.0);
+    let expected = 10.0 * (48.0 - corner) - 8.0 * (35.0 - corner);
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "Box", "size": [10.0 * k, 8.0 * k, 6.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F1:face(1)", "F1:face(2)"]], "radius": 2.0 * k, "name": "Round"}),
+        );
+        built(
+            &mut s,
+            "feature.shell",
+            json!({"source": "Round", "thickness": k,
+                   "open": ["F1:face(1)", "F2:fillet(0)", "F1:face(2)"], "name": "Shelled"}),
+        );
+        assert_solid(&mut s, "Shelled", expected, None, k);
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "at scale {k}: {check}");
+    }
+}
+
 #[test]
 fn a_shell_follows_its_body_and_its_faces_carry_names_to_build_on() {
     for k in SCALES {

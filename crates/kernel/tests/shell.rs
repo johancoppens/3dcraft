@@ -472,6 +472,102 @@ fn a_slot_open_at_a_side_its_ends_are_tangent_to() {
     }
 }
 
+/// A block whose top-front edge is rounded, shelled open at the top, the
+/// round and the front together (the review of 2026-10-22: built before
+/// the lip, then refused because the round counted as a blend along the
+/// top although it is open too). Open faces tangent to each other all go
+/// outward, as before: the cross-section is the block's less the part of
+/// it the hollow takes, `y ≤ 7, z ≥ 1` with the corner rounded, along the
+/// 8 between the side walls.
+#[test]
+fn a_round_left_open_with_the_faces_it_joins_goes_outward_with_them() {
+    let corner = 4.0 * (1.0 - PI / 4.0);
+    let expected = 10.0 * (48.0 - corner) - 8.0 * (35.0 - corner);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = boxed(k, [0.0, 0.0, 0.0], [10.0, 8.0, 6.0]);
+        let edge = edge_at(&block, k, [5.0, 0.0, 6.0]);
+        let rounded = fillet(
+            &block,
+            &[FilletEdge {
+                edge,
+                radius: 2.0 * k,
+            }],
+            &tol,
+        )
+        .unwrap()
+        .body;
+        let top = face_at(&rounded, k, "plane", [5.0, 5.0, 6.0]);
+        let front = face_at(&rounded, k, "plane", [5.0, 0.0, 2.0]);
+        let round = face_at(&rounded, k, "cylinder", [5.0, 0.6, 5.4]);
+        let made = hollowed(&rounded, 1.0, &[top, round, front], k);
+        let off = mass(&made.body).volume - expected * k * k * k;
+        assert!(
+            off.abs() <= 1e-9 * expected * k * k * k,
+            "at scale {k}: off by {off:e}"
+        );
+        assert!(
+            (expected - 198.283).abs() < 1e-3,
+            "the volume before the lip"
+        );
+    }
+}
+
+/// A prism whose cross-section is a trapezoid (its sides slanting in or
+/// out, 4 over 10), its top-front edge rounded, shelled open at the top:
+/// the opening square to the top would cut the slanted walls thinner over
+/// the top `t` (0.63 for 1 when built so), so it is refused, naming the
+/// top and the slanted side, at three scales.
+#[test]
+fn an_open_face_with_a_blend_along_it_and_a_slanted_neighbour_is_refused() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::Frame;
+    for k in SCALES {
+        let tol = tolerance(k);
+        for top_half in [6.0, 14.0] {
+            let points = [
+                [-10.0 * k, 0.0],
+                [10.0 * k, 0.0],
+                [top_half * k, 10.0 * k],
+                [-top_half * k, 10.0 * k],
+            ];
+            let curves: Vec<SketchCurve> = (0..4)
+                .map(|i| SketchCurve {
+                    id: i as u64 + 1,
+                    curve: Curve2::Line {
+                        start: points[i],
+                        end: points[(i + 1) % 4],
+                    },
+                })
+                .collect();
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            // Sketch x along x, y along z; extruded along −y, 8 deep.
+            let frame = Frame::new(Vec3::new(0.0, 0.0, 0.0), -Vec3::Y, Vec3::X).unwrap();
+            let prism = extrude(&profiles, &frame, 0.0, 8.0 * k, &tol).unwrap().body;
+            let edge = edge_at(&prism, k, [0.0, 0.0, 10.0]);
+            let rounded = fillet(
+                &prism,
+                &[FilletEdge {
+                    edge,
+                    radius: 2.0 * k,
+                }],
+                &tol,
+            )
+            .unwrap_or_else(|e| panic!("{top_half} at {k}: {e}"))
+            .body;
+            let top = face_at(&rounded, k, "plane", [0.0, -5.0, 10.0]);
+            match shell(&rounded, k, &[top], &tol) {
+                Err(KernelError::FaceOp { faces, reason, .. }) => {
+                    assert!(reason.contains("neither tangent"), "{reason}");
+                    assert!(faces.contains(&top), "{faces:?}");
+                }
+                other => panic!("{top_half} at {k}: expected a refusal, got {other:?}"),
+            }
+        }
+    }
+}
+
 /// A rod whose top rim is rounded (a torus), shelled open at its bottom
 /// as thick as the round and more: the hollow is a plain rod.
 #[test]
