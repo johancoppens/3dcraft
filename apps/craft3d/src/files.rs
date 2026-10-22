@@ -445,11 +445,20 @@ fn export_selection(
                 if field(&all, "count").as_u64() == Some(bodies as u64) {
                     return Ok(None);
                 }
+                // By the number of the feature's id: `file.export` reads a
+                // string as a name first, and an old file may have a
+                // feature named like another's id.
                 let list: Vec<Value> = items
                     .iter()
-                    .map(|i| match field(i, "feature").as_str() {
-                        Some(id) if !id.is_empty() => Value::String(id.to_string()),
-                        _ => field(i, "name").clone(),
+                    .map(|i| {
+                        match field(i, "feature")
+                            .as_str()
+                            .and_then(|id| id.strip_prefix('F'))
+                            .and_then(|digits| digits.parse::<u64>().ok())
+                        {
+                            Some(n) => Value::from(n),
+                            None => field(i, "name").clone(),
+                        }
                     })
                     .collect();
                 return Ok(Some(("bodies", Value::Array(list))));
@@ -1710,9 +1719,15 @@ mod tests {
         assert_eq!(result["bodies"], 2);
         assert_eq!(listing(&mine), ["part.stl"]);
 
-        // One body of two: that body alone, to every body format, by its
-        // name; the STEP file reads back to the cylinder's volume.
+        // One body of two: that body alone, to every body format, by the
+        // number of its feature's id (a string is read as a name first,
+        // and an old file may name a feature like another's id); the STEP
+        // file reads back to the cylinder's volume.
         select(&mut host, &["F2"]);
+        assert_eq!(
+            export_selection(&mut host.session, &stl),
+            Ok(Some(("bodies", json!([2]))))
+        );
         let pins = ["pin.step", "pin.stl", "pin.3mf", "pin.obj"];
         for name in pins {
             let result = host.export_as_user(&mine.join(name)).unwrap();

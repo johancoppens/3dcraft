@@ -248,3 +248,73 @@ fn bodies_that_are_not_there_are_refused_saying_which_there_are() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A body split into one body per lump is taken by all its splits: the
+/// refusal names every one of them, and they export together.
+#[test]
+fn a_split_body_is_refused_naming_every_split() {
+    let dir = common::workdir("export-bodies", "split");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "A"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [12, 12, 2], "position": [-1, -1, 4], "name": "Slab"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "A", "tool": "Slab", "name": "Row"}),
+    );
+    run(&mut s, "body.split", json!({"source": "Row"}));
+    let refused = error(
+        &mut s,
+        "file.export",
+        json!({"path": "row.stl", "bodies": ["Row"]}),
+    );
+    assert!(
+        refused.contains(
+            "F3 (Row) has no body now: it was split into F4 (Split1), F5 (Split2); export those bodies"
+        ),
+        "{refused}"
+    );
+    let result = run(
+        &mut s,
+        "file.export",
+        json!({"path": "row.stl", "bodies": ["Split1", "Split2"]}),
+    );
+    assert_eq!(result["bodies"], 2, "{result}");
+    close(
+        stl_volume(&std::fs::read(dir.join("row.stl")).unwrap()).1,
+        800.0,
+        1e-6,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `bodies: null` is no `bodies`, for every format alike: every body to
+/// STEP and the meshes, and an outline as without it.
+#[test]
+fn null_bodies_is_no_bodies_in_every_format() {
+    let dir = common::workdir("export-bodies", "null");
+    let mut s = session_in(&dir);
+    parts(&mut s);
+    for path in ["all.step", "all.stl", "all.3mf", "all.obj"] {
+        let result = run(&mut s, "file.export", json!({"path": path, "bodies": null}));
+        assert_eq!(result["bodies"], 3, "{path}: {result}");
+    }
+    for path in ["top.dxf", "top.svg"] {
+        let result = run(
+            &mut s,
+            "file.export",
+            json!({"path": path, "face": "F1:face(1)", "bodies": null}),
+        );
+        assert_eq!(result["lines"], 4, "{path}: {result}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

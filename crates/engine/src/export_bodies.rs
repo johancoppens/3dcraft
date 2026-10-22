@@ -17,7 +17,7 @@ const ID: &str = "file.export";
 const MAX_BODIES: usize = 10_000;
 
 /// The features whose bodies to export, from `bodies`: `None` when it is
-/// not given (every body). Each must name a feature that has a body of
+/// not given or null (every body). Each must name a feature that has a body of
 /// its own now; an empty list, an unknown name and a feature without a
 /// body are errors that say which, and what there is.
 pub(crate) fn chosen(
@@ -102,8 +102,27 @@ fn feature(
         (Some(Status::Suppressed), _) => "it is suppressed".to_string(),
         (Some(Status::RolledBack), _) => "it is after the rollback marker".to_string(),
         (_, Some(later)) => {
-            let later_name = doc.feature(later).map_or("", |f| f.name.as_str());
-            format!("{later} ({later_name}) took it; export that body")
+            // The splits of a body took it together: all of them.
+            let takers = if craft3d_regen::taken_by_its_splits(doc, id, later) {
+                craft3d_regen::splits_of(doc, &regen.features, id)
+            } else {
+                vec![later]
+            };
+            let named: Vec<String> = takers
+                .iter()
+                .map(|t| {
+                    let name = doc.feature(*t).map_or("", |f| f.name.as_str());
+                    format!("{t} ({name})")
+                })
+                .collect();
+            if named.len() > 1 {
+                format!(
+                    "it was split into {}; export those bodies",
+                    named.join(", ")
+                )
+            } else {
+                format!("{} took it; export that body", named.join(", "))
+            }
         }
         _ => "it makes no body".to_string(),
     };

@@ -696,7 +696,8 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     )?;
     let path = p.required_str("path")?;
     if let Some(format) = crate::drawing_cmds::wanted(p.str("format")?, path) {
-        if p.has("bodies") {
+        // An explicit null is no `bodies`, as for STEP and the meshes.
+        if p.get("bodies").is_some() {
             return fail(
                 "file.export: `bodies` is for STEP and mesh files; an outline (.dxf, .svg) takes `sketch`, `face` or `faces`",
             );
