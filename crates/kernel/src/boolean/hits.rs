@@ -719,6 +719,19 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
     }
 }
 
+/// How large the numbers of `surface` are: its frame's distance from the
+/// origin and its size (radius), for the rounding of a distance from it.
+fn surface_size(surface: &Surface) -> f64 {
+    match surface {
+        Surface::Sphere(s) => s.frame().origin().length() + s.radius().abs(),
+        Surface::Cone(c) => c.frame().origin().length() + c.radius().abs(),
+        Surface::Cylinder(c) => c.frame().origin().length() + c.radius().abs(),
+        Surface::Torus(t) => t.frame().origin().length() + t.radii().0.abs() + t.radii().1.abs(),
+        Surface::Plane(p) => p.frame().origin().length(),
+        Surface::Bezier(_) | Surface::Nurbs(_) => 0.0,
+    }
+}
+
 /// The real roots of `a t² + b t + c` (one where `a` is zero), without
 /// cancellation; none when there are none or the numbers are not finite.
 fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
@@ -789,10 +802,22 @@ fn monotone(
     let mut ends = vec![start];
     ends.extend(cuts);
     ends.push(end);
+    // No run is called clear by a margin over the tolerance that could be
+    // rounding: the distance is a difference of numbers as large as the
+    // coordinates of the curve's points and the surface's centre and
+    // radius, rounded to a few units in their last place. (The root
+    // isolation, which halves stretches no shorter than a quarter of the
+    // tolerance, does not see such a margin either: a ball and a circle
+    // that dips one tolerance into it, built so, are within it there.)
+    let size = ends
+        .iter()
+        .map(|&t| curve.eval(t).length())
+        .fold(surface_size(sheet.surface), f64::max);
+    let reach = tol + 64.0 * f64::EPSILON * size;
     let kind = |v: f64| {
-        if v > tol {
+        if v > reach {
             Kind::Clear { positive: true }
-        } else if v < -tol {
+        } else if v < -reach {
             Kind::Clear { positive: false }
         } else {
             Kind::Near
@@ -818,7 +843,7 @@ fn monotone(
         }
         // The levels the distance passes on the way from `fa` to `fb`,
         // in the order it passes them.
-        let mut levels: Vec<f64> = [-tol, tol]
+        let mut levels: Vec<f64> = [-reach, reach]
             .into_iter()
             .filter(|&level| (fa - level) * (fb - level) < 0.0)
             .collect();
