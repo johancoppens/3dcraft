@@ -707,6 +707,7 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
             0.0
         },
     };
+    let before = crate::commands::failing(session)?;
     let built = change(session, COMMAND, "Add path", id, |s| build(s, &path))?;
     let centers: Vec<Value> = built
         .centers
@@ -740,7 +741,7 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
             .collect();
         map.insert("snapped".into(), snapped.into());
     }
-    sketch_result(session, id, own)
+    sketch_result(session, id, Some(&before), own)
 }
 
 #[cfg(test)]

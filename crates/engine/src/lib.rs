@@ -23,6 +23,8 @@ mod commands;
 mod datum_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod drawing_cmds;
+#[cfg(not(target_arch = "wasm32"))]
+mod export_bodies;
 mod face_cmds;
 mod file_cmds;
 mod helix_cmds;

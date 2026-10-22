@@ -353,6 +353,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
     }
     let tolerance = session.document()?.history.current().tolerance.linear;
 
+    let before = crate::commands::failing(session)?;
     let (spline, points) = change(session, COMMAND, "Add spline", id, |s| {
         // Two points in a row at one place make a corner (or, for a point
         // to pass through, ask the impossible).
@@ -414,6 +415,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({
             "entity": spline.to_string(),
             "degree": degree,

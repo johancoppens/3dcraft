@@ -294,6 +294,7 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
         .map(|v| pattern_id(COMMAND, "replace", v))
         .transpose()?;
 
+    let before = crate::commands::failing(session)?;
     let (pattern, removal) = match replace {
         None => {
             let seed = match (seed, &inner) {
@@ -377,7 +378,7 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
             }
         }
     }
-    sketch_result(session, id, own)
+    sketch_result(session, id, Some(&before), own)
 }
 
 fn state_name(state: ConstraintState) -> &'static str {

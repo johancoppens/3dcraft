@@ -55,8 +55,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
-    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
-        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; a name that is not a body now (unknown, failed, suppressed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -638,15 +638,21 @@ struct BodyMesh {
     faces: Vec<Option<craft3d_doc::Appearance>>,
 }
 
+/// Of the bodies of `only` when given (in history order), else of every
+/// body.
 fn meshes(
     open: &mut OpenDocument,
     command: &str,
     tess: &TessParams,
+    only: Option<&[FeatureId]>,
 ) -> Result<Vec<BodyMesh>, CommandError> {
     let regen = open.regen();
     let doc = open.history.current();
     let mut out = Vec::new();
     for (id, body) in regen.bodies() {
+        if only.is_some_and(|only| !only.contains(&id)) {
+            continue;
+        }
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
@@ -685,14 +691,21 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             "origin",
             "gap",
             "width",
+            "bodies",
         ],
     )?;
     let path = p.required_str("path")?;
     if let Some(format) = crate::drawing_cmds::wanted(p.str("format")?, path) {
+        // An explicit null is no `bodies`, as for STEP and the meshes.
+        if p.get("bodies").is_some() {
+            return fail(
+                "file.export: `bodies` is for STEP and mesh files; an outline (.dxf, .svg) takes `sketch`, `face` or `faces`",
+            );
+        }
         let resolved = session.workspace.resolve_write(path)?;
         return crate::drawing_cmds::export(session, &p, path, &resolved, format);
     }
-    // The other formats hold every body.
+    // The other formats hold every body, or those named in `bodies`.
     let outline_only = || match [
         "sketch",
         "face",
@@ -720,7 +733,10 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             );
         }
         let resolved = session.workspace.resolve_write(path)?;
-        return crate::step_cmds::export(session, path, &resolved);
+        let open = session.document_mut()?;
+        let regen = open.regen();
+        let only = crate::export_bodies::chosen(&p, open.history.current(), &regen)?;
+        return crate::step_cmds::export(session, path, &resolved, only.as_deref());
     }
     let format = match p.str("format")? {
         Some("stl") => MeshFormat::StlBinary,
@@ -741,8 +757,10 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     outline_only()?;
     let resolved = session.workspace.resolve_write(path)?;
     let open = session.document_mut()?;
-    let tess = tolerance_param(&p, "file.export", &open.regen())?;
-    let meshes = meshes(open, "file.export", &tess)?;
+    let regen = open.regen();
+    let only = crate::export_bodies::chosen(&p, open.history.current(), &regen)?;
+    let tess = tolerance_param(&p, "file.export", &regen)?;
+    let meshes = meshes(open, "file.export", &tess, only.as_deref())?;
     let unit = match open.history.current().units.length {
         LengthUnit::Micrometre => craft3d_meshio::Unit::Micron,
         LengthUnit::Millimetre => craft3d_meshio::Unit::Millimeter,
