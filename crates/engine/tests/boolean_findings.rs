@@ -418,12 +418,10 @@ fn a_row_of_blades_with_rounds_of_a_tenth_on_its_disc() {
 }
 
 /// The union of `a` and `b` as a feature, which must build and pass the
-/// deep check, or (`unmeshed`) may instead be refused by the self-check
-/// as touching itself (no longer for a mesh it cannot make); then the
-/// identities of the three booleans of their bodies, in place and
+/// deep check; then the identities of the three booleans of their bodies, in place and
 /// turned, to the tolerance over the area (the difference made without
 /// the refusal of zero thickness: the parts it leaves may touch).
-fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
+fn united_and_identities(file: &str, a: &str, b: &str) {
     use craft3d_kernel::boolean::{BooleanOptions, boolean_with};
     let mut s = steps(file);
     let united = run(
@@ -431,14 +429,8 @@ fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
         "feature.boolean",
         &json!({"op": "union", "target": a, "tool": b, "keepTool": true, "name": "U"}),
     );
-    let refused_unmeshed = united["status"] == "failed"
-        && united["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("the result touches itself"));
-    if !(unmeshed && refused_unmeshed) {
-        assert_ne!(united["status"], "failed", "{united}");
-        assert_ok(&mut s, "U");
-    }
+    assert_ne!(united["status"], "failed", "{united}");
+    assert_ok(&mut s, "U");
     let (bodies, tol) = bodies(&mut s, file);
     let (first, second) = (body(&bodies, a), body(&bodies, b));
     let slack = slack(&tol, &[first, second]);
@@ -482,12 +474,18 @@ fn united_and_identities(file: &str, a: &str, b: &str, unmeshed: bool) {
 /// it refused it next (the crescents between the base circle and the
 /// curves, 3.9e-4 and 7.8e-4 mm across with tips at 2.6e-5 rad, needed
 /// more rounds of halved chords than the tessellator gave); meshed since
-/// 2026-10-21 (`docs/design/tessellator.md`), the self-check now finds a
-/// vertex at a crescent's tip 5.6e-9 from an edge that is not its own
-/// and refuses it as touching itself (owed, docs/roadmap.md).
+/// 2026-10-21 (`docs/design/tessellator.md`), the self-check found the
+/// seam's vertex 5.6e-9 from a crescent's side that is not its own and
+/// refused it as touching itself. Measured (2026-10-22): the seam vertex
+/// is 1.94e-4 along the base circle from the crossing, whose edges leave
+/// it 1.3e-5 and 2.9e-5 rad apart, and 1.94e-4 times those is the 2.5e-9
+/// and 5.6e-9 found: a corner sharper than the tolerance resolves, not
+/// the shell meeting itself, which the touch rule reads as such since
+/// the Garabit crack (`craft3d_topo::touches`, 2026-10-21). The feature
+/// builds and passes the deep check.
 #[test]
 fn the_rover_drill_tip_on_a_tilted_drill() {
-    united_and_identities("rover_drill_tip.steps.json", "Drill", "Tip", true);
+    united_and_identities("rover_drill_tip.steps.json", "Drill", "Tip");
 }
 
 /// The Garabit pier's stair (2026-10-21, union 127 of 307): a tread
@@ -497,5 +495,5 @@ fn the_rover_drill_tip_on_a_tilted_drill() {
 /// bottom faces, where the stringer's curve leaves the end edge along it.
 #[test]
 fn the_pier_stair_tread_on_its_stringer() {
-    united_and_identities("pier_stair_tread.steps.json", "Stringer0", "Tr0_0", false);
+    united_and_identities("pier_stair_tread.steps.json", "Stringer0", "Tr0_0");
 }

@@ -22,7 +22,7 @@ use craft3d_kernel::boolean::{BooleanOp, BooleanResult, boolean};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
-use craft3d_topo::Body;
+use craft3d_topo::{Body, TouchScope, touches};
 use std::f64::consts::PI;
 
 use BooleanOp::{Intersect, Subtract, Union};
@@ -167,6 +167,21 @@ fn a_cone_whose_base_circle_lies_off_a_cylinder_wall() {
                 let chord = e * k;
                 assert_meshed(&union.body, chord, &format!("{what}: union"));
                 assert_meshed(&common.body, chord, &format!("{what}: common"));
+                // Neither touches itself: the seam's vertex lies within
+                // the tolerance of the crescent's sides only because they
+                // leave the crossing at an angle of about 1e-5 (the far
+                // end of the short piece of the base circle), the
+                // regeneration's rule (`craft3d_topo::touches`, the
+                // corner) the rover's drill tip was refused by until it
+                // read that corner (2026-10-21; measured 2026-10-22).
+                for (body, which) in [(&union.body, "union"), (&common.body, "common")] {
+                    let near = 2.0 * tolerance(k).linear;
+                    let found = touches(body, near, 8, TouchScope::All).unwrap();
+                    assert!(
+                        found.is_empty(),
+                        "{what}: the {which} touches itself: {found:?}"
+                    );
+                }
                 // The cylinder less the cone keeps a ring that stands on
                 // the rest along a strip at most `e` across, which ends
                 // where the curves cross: where a refusal as zero
