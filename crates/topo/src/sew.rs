@@ -45,7 +45,8 @@
 //! end, is split at the places their ends meet it (`sew_split`: the chain
 //! proven, nothing moved, the new vertices go into the shorter edges'
 //! ends); the split stays only when every piece is then sewn, and is
-//! listed in [`Sewn::split`].
+//! listed in [`Sewn::split`]; a split attempt that is refused, or leaves
+//! more edges open than sewing the body as it is, is dropped.
 //!
 //! **Bounded and deterministic.** Free edges are found through a grid of
 //! their end vertices (cells `2 distance` wide, ordered maps), the
@@ -351,20 +352,30 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
         return Err(SewError::Distance { value: distance });
     }
     // T-junctions first (`sew_split`): an edge split only when every one
-    // of its pieces is then sewn; at most two tries with splits, then the
-    // body as it is.
+    // of its pieces is then sewn (at most two tries with splits), and the
+    // split kept only when it was not refused and leaves no more edges
+    // open than sewing the body as it is; otherwise the body as it is.
     let free_of: BTreeMap<u32, Free> = free_uses(body)?
         .into_iter()
         .map(|f| (f.edge.0, f))
         .collect();
-    let mut probes = 0usize;
-    let mut at = crate::sew_split::stations(body, &free_of, distance, &mut probes)?;
+    let mut at = crate::sew_split::stations(body, &free_of, distance)?;
+    if at.is_empty() {
+        return pairs(body, tolerance, distance, cap);
+    }
+    let whole = pairs(body, tolerance, distance, cap);
     for _ in 0..2 {
         if at.is_empty() {
             break;
         }
-        let (split, pieces) = crate::sew_split::split(body, &at)?;
-        let sewn = pairs(&split, tolerance, distance, cap)?;
+        let Ok((split, pieces)) = crate::sew_split::split(body, &at) else {
+            break;
+        };
+        // A split attempt refused (a gap above the cap where the pieces
+        // joined) is no split: the body is sewn as it is.
+        let Ok(sewn) = pairs(&split, tolerance, distance, cap) else {
+            break;
+        };
         let open: BTreeSet<EdgeId> = sewn.open.iter().map(|(e, _)| *e).collect();
         let failed: Vec<u32> = pieces
             .iter()
@@ -378,13 +389,16 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
             .map(|(a, _)| *a)
             .collect();
         if failed.is_empty() {
+            if whole.as_ref().is_ok_and(|w| sewn.open.len() > w.open.len()) {
+                break;
+            }
             return Ok(unsplit_maps(sewn, body, &pieces));
         }
         for a in failed {
             at.remove(&a);
         }
     }
-    pairs(body, tolerance, distance, cap)
+    whole
 }
 
 /// The uses of the free edges of `body` (those one loop uses once), in

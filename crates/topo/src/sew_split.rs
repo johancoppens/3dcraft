@@ -15,8 +15,11 @@
 //! face, its ends within the distance of the stations' points, its
 //! places inside within the distance of `A`'s curve over that stretch and
 //! the stretch's within the distance of it, its use running against
-//! `A`'s; and no free edge runs along the whole of `A` (then it is a
-//! pair, not a T-junction). An edge without such a chain is left whole.
+//! `A`'s; the ends of the two partners that meet at a station lie within
+//! the distance of each other (so that the vertex sewing makes of them
+//! does not span twice the distance); and no free edge runs along the
+//! whole of `A` (then it is a pair, not a T-junction). An edge without
+//! such a chain is left whole.
 //!
 //! **Nothing moved.** A piece keeps `A`'s curve over a part of its range;
 //! the vertex at a station is the point of `A`'s curve there, and sewing
@@ -24,16 +27,19 @@
 //! point is kept, which is one of the file's, never the new one); every
 //! gap is measured and recorded as sewing measures any other.
 //!
-//! **Only when every piece is sewn.** The pieces are sewn with every
-//! other free edge (`sew::pairs`); an edge one of whose pieces is left
-//! open is left whole and the body sewn again without its split (at most
-//! twice, then without any split), so a split never adds an open edge
-//! that sewing alone would not have left.
+//! **Only when it sews more.** The pieces are sewn with every other free
+//! edge (`sew::pairs`); an edge one of whose pieces is left open is left
+//! whole and the body sewn again without its split (at most twice). A
+//! split attempt that is refused (a gap above the cap), or that leaves
+//! more edges open than sewing the body without any split, is dropped
+//! for that sewing (`sew::sew`).
 //!
-//! Bounded: the free edges' ends are kept sorted along x and looked up
-//! by range, every end looked at counts against [`crate::sew`]'s probe
-//! budget, and an edge with more than [`MAX_STATIONS`] stations is left
-//! whole.
+//! **Bounded, never a refusal of its own.** The free edges' ends are kept
+//! in a grid of cells (ordered maps) at least twice the distance wide and
+//! a sixty-fourth of the ends' box, looked up by box; every cell and end
+//! looked at counts against [`MAX_STATION_LOOKS`], and when that runs out
+//! nothing is split at all (sewing goes on as without T-junctions). An
+//! edge with more than [`MAX_STATIONS`] stations is left whole.
 
 use crate::sew::{Free, SewError, inside, to_curve};
 use crate::{Body, Coedge, EdgeId, VertexId};
@@ -45,13 +51,20 @@ use std::collections::BTreeMap;
 /// against a thousand facets is not what a file from a modeller has).
 pub const MAX_STATIONS: usize = 1024;
 
+/// The most grid cells and free-edge ends the search for T-junctions
+/// looks at, over the whole body: past it nothing is split (the body is
+/// sewn as without T-junctions), never refused.
+pub const MAX_STATION_LOOKS: usize = 1 << 24;
+
 /// Places along an edge from which the box it is looked for in is taken.
 const BOX_SAMPLES: u32 = 32;
 
-/// A free edge's end, sorted by `x`.
+/// Cells of the grid along the longest side of the ends' box, at most.
+const GRID_CELLS: f64 = 64.0;
+
+/// A free edge's end.
 #[derive(Clone, Copy)]
 struct End {
-    x: f64,
     point: Vec3,
     edge: u32,
     /// Whether it is the edge's end (not its start).
@@ -62,17 +75,73 @@ struct End {
 /// split, increasing.
 pub(crate) type Stations = BTreeMap<u32, Vec<f64>>;
 
-/// The free edges' ends, sorted along x.
+type Cell = (i64, i64, i64);
+
+/// The free edges' ends in cells, and the looks left.
 struct Ends {
-    sorted: Vec<End>,
+    size: f64,
+    cells: BTreeMap<Cell, Vec<End>>,
+    looks: usize,
 }
 
+/// The budget of looks ran out.
+struct OutOfLooks;
+
 impl Ends {
-    /// The indices of the ends whose x lies within `[lo, hi]`.
-    fn within_x(&self, lo: f64, hi: f64) -> std::ops::Range<usize> {
-        let from = self.sorted.partition_point(|e| e.x < lo);
-        let to = self.sorted.partition_point(|e| e.x <= hi);
-        from..to.max(from)
+    fn index(&self, x: f64) -> i64 {
+        let k = (x / self.size).floor();
+        // Clamped well inside what an i64 holds; a NaN goes to 0.
+        if k.is_nan() {
+            0
+        } else {
+            k.clamp(-1e15, 1e15) as i64
+        }
+    }
+
+    /// The ends inside the box `[lo, hi]`, in the order of the cells.
+    fn within(&mut self, lo: Vec3, hi: Vec3) -> Result<Vec<End>, OutOfLooks> {
+        let (x0, y0, z0) = (self.index(lo.x), self.index(lo.y), self.index(lo.z));
+        let (x1, y1, z1) = (self.index(hi.x), self.index(hi.y), self.index(hi.z));
+        let mut out = Vec::new();
+        if x0 > x1 {
+            return Ok(out);
+        }
+        let mut looks = 0usize;
+        for (&(_, y, z), ends) in self
+            .cells
+            .range((x0, i64::MIN, i64::MIN)..=(x1, i64::MAX, i64::MAX))
+        {
+            looks = looks.saturating_add(1);
+            if y < y0 || y > y1 || z < z0 || z > z1 {
+                continue;
+            }
+            looks = looks.saturating_add(ends.len());
+            out.extend(ends.iter().copied().filter(|e| {
+                let p = e.point;
+                p.x >= lo.x
+                    && p.x <= hi.x
+                    && p.y >= lo.y
+                    && p.y <= hi.y
+                    && p.z >= lo.z
+                    && p.z <= hi.z
+            }));
+        }
+        if looks > self.looks {
+            self.looks = 0;
+            return Err(OutOfLooks);
+        }
+        self.looks -= looks;
+        Ok(out)
+    }
+
+    /// The ends within `distance` of `p`.
+    fn near(&mut self, p: Vec3, distance: f64) -> Result<Vec<End>, OutOfLooks> {
+        let d = Vec3::new(distance, distance, distance);
+        Ok(self
+            .within(p - d, p + d)?
+            .into_iter()
+            .filter(|e| e.point.distance(p) <= distance)
+            .collect())
     }
 }
 
@@ -107,27 +176,40 @@ fn alongside(a: &Curve3, ra: (f64, f64), b: &Curve3, rb: (f64, f64), distance: f
             .all(|p| to_curve(a, ra, p) <= distance)
 }
 
+/// A partner of a stretch: the edge, and its ends at the stretch's start
+/// and end.
+type Partner = (u32, Vec3, Vec3);
+
 /// The stations of every free edge that is one side of a T-junction (see
-/// the module documentation).
+/// the module documentation); none at all when the looks run out.
 pub(crate) fn stations(
     body: &Body,
     free: &BTreeMap<u32, Free>,
     distance: f64,
-    probes: &mut usize,
 ) -> Result<Stations, SewError> {
+    match search(body, free, distance)? {
+        Ok(found) => Ok(found),
+        Err(OutOfLooks) => Ok(Stations::new()),
+    }
+}
+
+fn search(
+    body: &Body,
+    free: &BTreeMap<u32, Free>,
+    distance: f64,
+) -> Result<Result<Stations, OutOfLooks>, SewError> {
     let mut out = Stations::new();
     if free.len() < 3 {
-        return Ok(out);
+        return Ok(Ok(out));
     }
     let point = |v: VertexId| body.vertex(v).map(|v| v.point).ok_or(SewError::Dangling);
-    let mut sorted = Vec::with_capacity(2 * free.len());
+    let mut all = Vec::with_capacity(2 * free.len());
     for &e in free.keys() {
         let edge = body.edge(EdgeId(e)).ok_or(SewError::Dangling)?;
         for (v, at_end) in [(edge.start, false), (edge.end, true)] {
             let p = point(v)?;
             if p.x.is_finite() && p.y.is_finite() && p.z.is_finite() {
-                sorted.push(End {
-                    x: p.x,
+                all.push(End {
                     point: p,
                     edge: e,
                     at_end,
@@ -135,36 +217,31 @@ pub(crate) fn stations(
             }
         }
     }
-    sorted.sort_by(|a, b| {
-        a.x.total_cmp(&b.x)
-            .then(a.edge.cmp(&b.edge))
-            .then(a.at_end.cmp(&b.at_end))
-    });
-    let ends = Ends { sorted };
-    let mut count = |n: usize| -> Result<(), SewError> {
-        *probes = probes.saturating_add(n);
-        if *probes > crate::sew::MAX_PROBES {
-            return Err(SewError::TooMany {
-                candidates: crate::sew::MAX_PROBES,
-            });
-        }
-        Ok(())
+    let (lo, hi) = all.iter().fold(
+        (
+            Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), e| (lo.min(e.point), hi.max(e.point)),
+    );
+    let side = (hi.x - lo.x).max(hi.y - lo.y).max(hi.z - lo.z);
+    let size = (2.0 * distance).max(side / GRID_CELLS);
+    if !(size.is_finite() && size > 0.0) {
+        return Ok(Ok(out));
+    }
+    let mut ends = Ends {
+        size,
+        cells: BTreeMap::new(),
+        looks: MAX_STATION_LOOKS,
     };
-    // The free edges whose ends lie within `distance` of `p`: (edge,
-    // whether that end is its end).
-    let near = |p: Vec3, count: &mut dyn FnMut(usize) -> Result<(), SewError>| {
-        let range = ends.within_x(p.x - distance, p.x + distance);
-        count(range.len())?;
-        Ok::<Vec<(u32, bool)>, SewError>(
-            ends.sorted
-                .get(range)
-                .unwrap_or(&[])
-                .iter()
-                .filter(|e| e.point.distance(p) <= distance)
-                .map(|e| (e.edge, e.at_end))
-                .collect(),
-        )
-    };
+    for end in all {
+        let key = (
+            ends.index(end.point.x),
+            ends.index(end.point.y),
+            ends.index(end.point.z),
+        );
+        ends.cells.entry(key).or_default().push(end);
+    }
     for (&a, fa) in free {
         let edge = body.edge(EdgeId(a)).ok_or(SewError::Dangling)?;
         let (t0, t1) = edge.range;
@@ -192,24 +269,22 @@ pub(crate) fn stations(
             .map(|(p, q)| p.distance(*q))
             .fold(0.0, f64::max);
         let reach = distance + step;
-        let lo = samples.iter().fold(
-            Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
-            |m, p| m.min(*p),
+        let (lo, hi) = samples.iter().fold(
+            (
+                Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+                Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ),
+            |(lo, hi), p| (lo.min(*p), hi.max(*p)),
         );
-        let hi = samples.iter().fold(
-            Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
-            |m, p| m.max(*p),
-        );
-        let range = ends.within_x(lo.x - reach, hi.x + reach);
-        count(range.len())?;
+        let r = Vec3::new(reach, reach, reach);
+        let candidates = match ends.within(lo - r, hi + r) {
+            Ok(c) => c,
+            Err(out_of_looks) => return Ok(Err(out_of_looks)),
+        };
         let mut found: Vec<(f64, u32)> = Vec::new();
-        for end in ends.sorted.get(range).unwrap_or(&[]) {
+        for end in candidates {
             let p = end.point;
             if end.edge == a
-                || p.y < lo.y - reach
-                || p.y > hi.y + reach
-                || p.z < lo.z - reach
-                || p.z > hi.z + reach
                 || p.distance(a_start) <= distance
                 || p.distance(a_end) <= distance
                 || free.get(&end.edge).is_none_or(|f| f.face == fa.face)
@@ -254,11 +329,16 @@ pub(crate) fn stations(
         let partner = |p: Vec3,
                        q: Vec3,
                        r: (f64, f64),
-                       count: &mut dyn FnMut(usize) -> Result<(), SewError>|
-         -> Result<Option<u32>, SewError> {
-            let mut best: Option<u32> = None;
-            for (b, at_end) in near(p, count)? {
-                if b == a || best.is_some_and(|x| x <= b) {
+                       ends: &mut Ends|
+         -> Result<Result<Option<Partner>, OutOfLooks>, SewError> {
+            let near = match ends.near(p, distance) {
+                Ok(n) => n,
+                Err(o) => return Ok(Err(o)),
+            };
+            let mut best: Option<Partner> = None;
+            for end in near {
+                let (b, at_end) = (end.edge, end.at_end);
+                if b == a || best.is_some_and(|x| x.0 <= b) {
                     continue;
                 }
                 let Some(fb) = free.get(&b) else {
@@ -270,8 +350,8 @@ pub(crate) fn stations(
                 let eb = body.edge(EdgeId(b)).ok_or(SewError::Dangling)?;
                 // b's other end at q; b runs from p to q against its own
                 // direction when its end is at p.
-                let other = if at_end { eb.start } else { eb.end };
-                if point(other)?.distance(q) > distance {
+                let other = point(if at_end { eb.start } else { eb.end })?;
+                if other.distance(q) > distance {
                     continue;
                 }
                 let flip = at_end;
@@ -279,17 +359,19 @@ pub(crate) fn stations(
                     continue;
                 }
                 if alongside(&edge.curve, r, &eb.curve, eb.range, distance) {
-                    best = Some(b);
+                    best = Some((b, end.point, other));
                 }
             }
-            Ok(best)
+            Ok(Ok(best))
         };
         // A partner along the whole edge: a pair, not a T-junction.
-        if partner(a_start, a_end, edge.range, &mut count)?.is_some() {
-            continue;
+        match partner(a_start, a_end, edge.range, &mut ends)? {
+            Err(o) => return Ok(Err(o)),
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
         }
         let mut chain = true;
-        let mut used: Vec<u32> = Vec::with_capacity(cuts.len() + 1);
+        let mut used: Vec<Partner> = Vec::with_capacity(cuts.len() + 1);
         for i in 0..params.len().saturating_sub(1) {
             let (Some(&p), Some(&q), Some(&r0), Some(&r1)) = (
                 points.get(i),
@@ -300,8 +382,21 @@ pub(crate) fn stations(
                 chain = false;
                 break;
             };
-            match partner(p, q, (r0, r1), &mut count)? {
-                Some(b) if !used.contains(&b) => used.push(b),
+            let found = match partner(p, q, (r0, r1), &mut ends)? {
+                Err(o) => return Ok(Err(o)),
+                Ok(found) => found,
+            };
+            match found {
+                // The partners meeting at the station meet each other
+                // within the distance.
+                Some(this)
+                    if !used.iter().any(|u| u.0 == this.0)
+                        && used
+                            .last()
+                            .is_none_or(|before| before.2.distance(this.1) <= distance) =>
+                {
+                    used.push(this);
+                }
                 _ => {
                     chain = false;
                     break;
@@ -312,7 +407,7 @@ pub(crate) fn stations(
             out.insert(a, cuts);
         }
     }
-    Ok(out)
+    Ok(Ok(out))
 }
 
 /// `body` with each edge of `at` split at its stations (see the module

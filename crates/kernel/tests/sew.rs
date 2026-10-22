@@ -1328,8 +1328,8 @@ fn a_side_whose_pieces_do_not_reach_along_it_is_left_whole() {
 
 // ---------------------------------------------- the mass bound's gap term
 
-/// Bodies exploded with each plane face moved within its own plane by up
-/// to k tolerances (the surfaces stay where they were, so the solid they
+/// Bodies exploded with each plane face moved within its own plane, and a
+/// cylinder's side along its axis, by up to k tolerances (the surfaces stay where they were, so the solid they
 /// bound is the original's; only the boundaries the edges give the faces
 /// are off) and sewn: the measured volume and area lie within the bound
 /// `mass_bound` gives them, which for a loose body includes its gaps
@@ -1343,7 +1343,7 @@ fn the_mass_bound_covers_the_gaps_of_a_sewn_body() {
     use craft3d_topo::mass_bound;
     let mut cases = 0;
     let (mut worst_volume, mut worst_area) = (0.0_f64, 0.0_f64);
-    for kind in [0, 3, 4, 7] {
+    for kind in [0, 1, 3, 4, 7] {
         for scale in [1e-3, 1.0, 1e6] {
             let tol = tolerance(scale);
             let cap = default_loosest(tol.linear);
@@ -1363,6 +1363,9 @@ fn the_mass_bound_covers_the_gaps_of_a_sewn_body() {
                                     let n = su.cross(sv).normalized().unwrap();
                                     d - n * n.dot(d)
                                 }
+                                // The cylinder's side along its own axis
+                                // (z): a curved face moved along itself.
+                                Surface::Cylinder(_) if kind == 1 => Vec3::Z * d.z,
                                 _ => Vec3::ZERO,
                             }
                         })
@@ -1411,5 +1414,211 @@ fn the_mass_bound_covers_the_gaps_of_a_sewn_body() {
     }
     println!(
         "mass bound with gaps: {cases} sewn bodies, worst volume {worst_volume:.3} and area {worst_area:.3} of the gap term"
+    );
+}
+
+// ------------------------------------- T-junctions: what must not happen
+
+/// A sheet of planar polygons in z = 0 (each counter-clockwise seen from
+/// +z), each its own vertices and edges and its own shell: loose faces.
+fn planar_sheet(polys: &[Vec<Vec3>]) -> Body {
+    use craft3d_geom::{Curve3, Line, Plane, Surface};
+    let mut body = Body::new(craft3d_topo::BodyKind::Sheet);
+    for poly in polys {
+        let v: Vec<VertexId> = poly.iter().map(|p| body.add_vertex(*p)).collect();
+        let mut coedges = Vec::new();
+        for k in 0..poly.len() {
+            let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);
+            let e = body.add_edge(
+                Curve3::Line(Line::through(a, b).unwrap()),
+                (0.0, a.distance(b)),
+                v[k],
+                v[(k + 1) % poly.len()],
+            );
+            coedges.push(Coedge {
+                edge: e,
+                reversed: false,
+            });
+        }
+        let l = body.add_loop(coedges);
+        let f = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![l]);
+        body.add_shell(vec![f]);
+    }
+    body
+}
+
+/// Three thousand loose strips side by side, each a hundred long (every
+/// long edge's box holds every strip's ends along x): sewn in pairs as
+/// before T-junctions were looked for, within a time bound, the search
+/// for them bounded by its own budget and never a refusal.
+#[test]
+fn many_long_strips_side_by_side_are_sewn_within_bounds() {
+    let tol = tolerance(1.0);
+    let cap = 1e-3;
+    let strips: Vec<Vec<Vec3>> = (0..3000)
+        .map(|i| {
+            let y = f64::from(i);
+            vec![
+                Vec3::new(0.0, y, 0.0),
+                Vec3::new(100.0, y, 0.0),
+                Vec3::new(100.0, y + 1.0, 0.0),
+                Vec3::new(0.0, y + 1.0, 0.0),
+            ]
+        })
+        .collect();
+    let body = planar_sheet(&strips);
+    let started = std::time::Instant::now();
+    let sewn = sew(&body, &tol, cap, cap).unwrap();
+    let took = started.elapsed();
+    println!("3000 strips: sewn in {took:?}");
+    assert_eq!(sewn.joined, 2999);
+    assert!(sewn.split.is_empty());
+    assert!(took.as_secs_f64() < 20.0, "{took:?}");
+}
+
+/// A side whose two shorter partners end on either side of the place
+/// where they meet it, 1.8 caps apart across it (each within the cap of
+/// the side): joined, their ends would be one vertex spanning twice the
+/// cap. Not split (the chain asks the partners to meet each other within
+/// the distance) and never a refusal: sewn as without the split, the
+/// edges left open.
+#[test]
+fn partners_ending_either_side_of_a_station_do_not_split_it() {
+    let tol = tolerance(1.0);
+    let cap = 1e-3;
+    let e = 0.9 * cap;
+    let body = planar_sheet(&[
+        // A below, its top edge along y = 0.
+        vec![
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(10.0, -1.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+        ],
+        // F1, its bottom edge from (0, 0) to (5, +0.9 cap).
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(5.0, e, 0.0),
+            Vec3::new(5.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ],
+        // F2, its bottom edge from (5, -0.9 cap) to (10, 0).
+        vec![
+            Vec3::new(5.0, -e, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 1.0, 0.0),
+            Vec3::new(5.0, 1.0, 0.0),
+        ],
+    ]);
+    let sewn = sew(&body, &tol, cap, cap).unwrap();
+    assert!(sewn.split.is_empty(), "{:?}", sewn.split);
+    assert!(!sewn.open.is_empty());
+}
+
+/// A face whose corner touches the middle of an edge that another face's
+/// edge runs along whole: a pair, not a T-junction; the edge is not
+/// split, the pair is sewn, the touching face stays open.
+#[test]
+fn an_end_touching_an_edge_that_has_a_partner_does_not_split_it() {
+    use craft3d_geom::{Curve3, Line, Plane, Surface};
+    let tol = tolerance(1.0);
+    let cap = 1e-3;
+    let mut body = planar_sheet(&[
+        vec![
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(10.0, -1.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+        ],
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ],
+    ]);
+    // A triangle upright in x = 5, its corner on the middle of the pair.
+    let pts = [
+        Vec3::new(5.0, 0.0, 0.0),
+        Vec3::new(5.0, 0.5, 1.0),
+        Vec3::new(5.0, -0.5, 1.0),
+    ];
+    let v: Vec<VertexId> = pts.iter().map(|p| body.add_vertex(*p)).collect();
+    let mut coedges = Vec::new();
+    for k in 0..3 {
+        let (a, b) = (pts[k], pts[(k + 1) % 3]);
+        let e = body.add_edge(
+            Curve3::Line(Line::through(a, b).unwrap()),
+            (0.0, a.distance(b)),
+            v[k],
+            v[(k + 1) % 3],
+        );
+        coedges.push(Coedge {
+            edge: e,
+            reversed: false,
+        });
+    }
+    let l = body.add_loop(coedges);
+    let frame = Frame::new(Vec3::new(5.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+    let f = body.add_face(Surface::Plane(Plane::new(frame)), false, vec![l]);
+    body.add_shell(vec![f]);
+    let sewn = sew(&body, &tol, cap, cap).unwrap();
+    assert!(sewn.split.is_empty(), "{:?}", sewn.split);
+    assert_eq!(sewn.joined, 1);
+}
+
+/// Two split-top blocks with a slot of `w` caps between them, the front
+/// and back of each whole (T-junctions on both), every face moved by up
+/// to 0.4 caps: no edge of the result joins the two blocks, split or not.
+#[test]
+fn t_junctions_beside_a_narrow_slot_are_never_sewn_across() {
+    let mut closed = 0;
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(scale);
+        let cap = default_loosest(tol.linear);
+        for w in [0.3, 0.5, 0.9] {
+            for seed in 1..=4u64 {
+                let expected = split_top_block(scale, true);
+                let whole = split_top_block(scale, false);
+                // The second block beyond the first's right side (x =
+                // 2.3 scale), a slot of w caps between them.
+                let shift = craft3d_math::Transform::translation(Vec3::X * (2.0 * scale + w * cap));
+                let both_expected =
+                    craft3d_topo::merge(&[&expected, &expected.transformed(&shift).unwrap()])
+                        .unwrap()
+                        .0;
+                let both_whole =
+                    craft3d_topo::merge(&[&whole, &whole.transformed(&shift).unwrap()])
+                        .unwrap()
+                        .0;
+                let mut rng = Rng(seed ^ w.to_bits());
+                let moves: Vec<Vec3> = (0..both_expected.faces.len())
+                    .map(|_| rng.direction() * (0.4 * cap * rng.unit()))
+                    .collect();
+                let loose = exploded_from(
+                    [&both_expected, &both_whole],
+                    |f| [3, 4, 10, 11].contains(&f),
+                    &moves,
+                    None,
+                );
+                let sewn = sew(&loose, &tol, cap, cap).unwrap();
+                for faces in edge_faces(&sewn.body) {
+                    let sides: std::collections::BTreeSet<bool> =
+                        faces.iter().map(|f| f.0 < 7).collect();
+                    assert_eq!(
+                        sides.len(),
+                        1,
+                        "slot {w} caps, seed {seed}, scale {scale:e}"
+                    );
+                }
+                if sewn.open.is_empty() {
+                    assert_eq!(sewn.body.shells.len(), 2);
+                    closed += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "T-junctions by a slot: {closed} of 36 sewn into their two blocks, the rest left open"
     );
 }

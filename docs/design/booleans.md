@@ -479,6 +479,8 @@ T-junctions in sewing and the mass bound's gap term ([`topology.md`](topology.md
 
 **Method** (`loose_op::for_tool`). That boolean runs at four times the working tolerance (`TOOL_WIDENING`), for a body with loose entities only (an exact body's tolerance is passed through, bit for bit): thicken's subtraction of its two bodies and each step of a blend (fillet, chamfer). What it builds is measured afterwards and held to `W` all the same (`loose_op`'s settle step), so no entity comes out looser than the body was; one that needs more is refused. This is no per-entity rule: it is the working tolerance a pair of loose bodies needs, `2 (t_a + t_b)`, with both at `W`.
 
+*Review (2026-10-22):* the wider band also refuses what lies between `2W` and `8W` apart, which at `W` was told apart; so a refusal at `4W` is tried again at `W` (`loose_op::boolean_for_tool`), whose refusal is then the one given. *Measured*: thickening each of the 8 faces of a sewn block with a step of 40 to 320 tolerances on its top (1.0 to 8.3 times `W`), three seeds: 54 booleans were refused at `4W`, and every one of them at `W` too; no case was found where the retry changes the outcome. It stays as the safeguard the reasoning asks for.
+
 **Held to** (`sew.rs` › `operations_on_sewn_bodies_carry_their_tolerances_or_refuse`, now asserting no refusal of fillet, chamfer or thicken): chamfer 15 → **18 of 18**, thicken 6 → **18 of 18** right, valid with their tables, none looser than the body given, the volume within the bound; the other operations as before (fillet, offset, move, draft, shell 18 of 18, delete 9 of 9).
 
 ### A plane beside a rippled surface (2026-10-21, the Garabit valley's finding 5)

@@ -41,6 +41,27 @@ use std::collections::BTreeSet;
 /// Checks of the result before giving up (as the boolean's).
 const ROUNDS: usize = 3;
 
+/// The boolean of `a` and `b` (one of them `loose`, the body given to the
+/// operation, the other a tool made from it) at [`for_tool`]'s tolerance;
+/// when that is refused and is wider than `at`, again at `at`, whose
+/// refusal (the operation's as it was before the widening) is then the
+/// one returned.
+pub(crate) fn boolean_for_tool(
+    a: &Body,
+    b: &Body,
+    op: crate::boolean::BooleanOp,
+    loose: &Body,
+    at: &Tolerance,
+    options: &crate::boolean::BooleanOptions,
+) -> Result<crate::boolean::BooleanResult, KernelError> {
+    let wide = for_tool(loose, at);
+    match crate::boolean::boolean_with(a, b, op, &wide, options) {
+        Ok(result) => Ok(result),
+        Err(_) if wide.linear != at.linear => crate::boolean::boolean_with(a, b, op, at, options),
+        Err(error) => Err(error),
+    }
+}
+
 /// How much wider than the working tolerance the boolean between a loose
 /// body and a tool made from it runs ([`for_tool`]).
 pub(crate) const TOOL_WIDENING: f64 = 4.0;
@@ -61,6 +82,10 @@ pub(crate) const TOOL_WIDENING: f64 = 4.0;
 /// `4W` it is one. What the boolean builds is measured afterwards and
 /// held to `W` all the same ([`run`]'s settle step): an entity that
 /// needs more is refused, never recorded looser than the body was.
+///
+/// The wider band also refuses what lies between `2W` and `8W` apart (a
+/// step or a slot of the body that small), which at `W` alone was told
+/// apart: [`boolean_for_tool`] then tries `W`.
 pub(crate) fn for_tool(body: &Body, at: &Tolerance) -> Tolerance {
     if body.is_tolerant() {
         Tolerance {

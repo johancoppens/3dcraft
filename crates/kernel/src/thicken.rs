@@ -28,7 +28,7 @@
 //! sides of the layer, or the layer is refused with that face.
 
 use crate::KernelError;
-use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, VertexSource, boolean_with};
+use crate::boolean::{BooleanOp, BooleanOptions, EdgeSource, VertexSource};
 use crate::offset_face::{Blends, FaceOffset, offset_for, refuse, usable};
 use crate::shell::{Shelled, Skin};
 use craft3d_math::Tolerance;
@@ -204,14 +204,18 @@ fn thicken_at(
     };
     // The two bodies are made from a loose one: their entities may meet
     // as far off as two of its gaps (`loose_op::for_tool`).
-    let wide = crate::loose_op::for_tool(body, tolerance);
-    let cut =
-        boolean_with(&outer, &inner, BooleanOp::Subtract, &wide, &options).map_err(|error| {
-            KernelError::FaceOpBoolean {
-                operation: OPERATION,
-                error: Box::new(error),
-            }
-        })?;
+    let cut = crate::loose_op::boolean_for_tool(
+        &outer,
+        &inner,
+        BooleanOp::Subtract,
+        body,
+        tolerance,
+        &options,
+    )
+    .map_err(|error| KernelError::FaceOpBoolean {
+        operation: OPERATION,
+        error: Box::new(error),
+    })?;
     let skins: Vec<(Skin, FaceId)> = cut
         .faces
         .iter()

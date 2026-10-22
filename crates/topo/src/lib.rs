@@ -43,7 +43,7 @@ pub use mass::{
 };
 pub use query::{EdgeUse, Outward, edge_faces, edge_uses};
 pub use sew::{MAX_CANDIDATES, SAMPLES, SewError, Sewn, sew};
-pub use sew_split::MAX_STATIONS;
+pub use sew_split::{MAX_STATION_LOOKS, MAX_STATIONS};
 pub use shells::{Taken, boundary_loops, face_groups, shell_alone, shell_genera, shells_alone};
 pub use tolerant::{
     DEFAULT_LOOSEST, PROOF_PIECES, RECORD_MARGIN, ToleranceError, Tolerances, default_loosest,
