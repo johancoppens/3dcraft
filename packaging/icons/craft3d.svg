@@ -1,14 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The 3DCraft icon: an isometric block with a bored hole. Original work,
-     MIT (ATTRIBUTION.md). The PNGs beside it are rendered from this file
-     (docs/development.md, Packaging). -->
+<!-- The 3DCraft icon, "Prompt Prism": the terminal prompt >_ extruded into a
+     gold solid on a black tile, in the Mission palette of the UI theme.
+     Original work, MIT (ATTRIBUTION.md). The PNGs beside it are rendered
+     from this file, except craft3d-16.png, which is rendered from
+     craft3d-small.svg (docs/development.md, Packaging). -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="#1d2733"/>
-  <g stroke="#0f1720" stroke-width="5" stroke-linejoin="round">
-    <path d="M128 40 L204 84 L128 128 L52 84 Z" fill="#9ad6ff"/>
-    <path d="M52 84 L128 128 L128 216 L52 172 Z" fill="#3f8fd8"/>
-    <path d="M204 84 L128 128 L128 216 L204 172 Z" fill="#245e9e"/>
-  </g>
-  <ellipse cx="128" cy="84" rx="34" ry="19.6" fill="#16314f"/>
-  <path d="M94 84 A34 19.6 0 0 1 162 84 A34 13 0 0 0 94 84 Z" fill="#0d1e31"/>
+  <title>3DCraft</title>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#151413"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+  <path d="M89.9,174 L134.6,135.5 L154.2,122.8 L109.5,161.2 Z" fill="#3A1F03" stroke="#3A1F03" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M89.9,74.3 L57,65.9 L76.6,53.2 L109.5,61.5 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M134.6,135.5 L89.9,74.3 L109.5,61.5 L154.2,122.8 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M57,165.6 L89.9,174 L134.6,135.5 L89.9,74.3 L57,65.9 L101.8,127.2 Z" fill="#E0A93E"/>
+  <path d="M180.9,175.4 L130.2,162.5 L149.8,149.8 L200.5,162.6 Z" fill="#F3CF7E" stroke="#F3CF7E" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M180.9,197.1 L180.9,175.4 L200.5,162.6 L200.5,184.4 Z" fill="#9F6018" stroke="#9F6018" stroke-width="0.6" stroke-linejoin="round"/>
+  <path d="M130.2,184.2 L180.9,197.1 L180.9,175.4 L130.2,162.5 Z" fill="#E0A93E"/>
 </svg>
