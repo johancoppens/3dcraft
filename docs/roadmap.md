@@ -457,16 +457,18 @@ The first version for people outside the project; it follows M9 and does not wai
 - The format promise: every `.3dcraft` file a released version wrote opens in every later one, held by a frozen fixture per format version written by that version's own build and regenerated to what it made ([`file-formats.md`](file-formats.md) › *The promise*) (2026-10-21)
 - Closing the window asks Save, Don't Save or Cancel for each document with unsaved changes before it drops their autosaves, also over the channel as `ui.quit {save: "ask" | "save" | "discard"}` ([`control-protocol.md`](control-protocol.md) › *Closing the window*) (2026-10-21)
 - The task set: 22 ordinary parts (levels 1 to 4) with descriptions in English and Dutch, closed-form expectations derived by hand, reference solutions driven by variables and a variant each, scored headless by `craft3d-cli score` ([`docs/tasks/`](tasks/), [`testing.md`](testing.md) › *The task set*) (2026-10-21)
+- The acceptance: every task of the set built by an agent over MCP from its description alone and scored by `craft3d-cli score`, 22 of 22 passing, 21 on the first try; its scripts are scored at every gate ([`testing.md`](testing.md) › *The task set*, `docs/tasks/acceptance/`) (2026-10-22)
 
 #### Open
-- [ ] Every task of the set built by an agent over MCP from its description alone, scored by `craft3d-cli score` (the acceptance); every task of the set builds since 2026-10-22
+- [ ] Sketch corners at coordinates given as expressions in one step (today a fixed origin point and two distance constraints per corner, sizes only, the sign taken from where the point is drawn; `sketch.circle` takes a number, a variable needs a `diameter` constraint): the friction of every sketch in the acceptance
+- [ ] The short face names `F2:startCap()` and `F2:endCap()` (an extrusion's end plane, whatever its outline) accepted wherever a face is named (`feature.thread` start, `datum.plane`, chamfers), not only by `sketch.create`
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
 
 #### Acceptance
-Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume; a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.
+Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.
 
 ### V1: Design verification
 
@@ -560,6 +562,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | R1: the acceptance, every task of the set built by an agent over MCP from its description alone (22 of 22), scored at every gate; two sketch and naming frictions added to Open |
 | 2026-10-21 | minor | R1: the format promise, a frozen fixture per format version (1 to 24) written by its own build and regenerated to what it made |
 | 2026-10-18 | minor | Boolean checklist item 5: sheet bodies (`feature.fill`, trim and cut by subtract and intersect); format version 22 |
 | 2026-10-16 | minor | M1: `floor`, `ceil`, `round`, `trunc` and `mod` in expressions; format version 17 renames old variables with those names |

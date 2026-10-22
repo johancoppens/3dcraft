@@ -1023,11 +1023,11 @@ impl Builder<'_> {
                 Err(SolveError::NonFinite { at })
             }
         };
-        let length_value = |v: f64| {
+        let length_value = |v: f64, reason: &'static str| {
             if finite(v)? < 0.0 {
                 Err(SolveError::InvalidValue {
                     constraint: index,
-                    reason: "a distance or radius cannot be negative",
+                    reason,
                 })
             } else {
                 Ok(v)
@@ -1171,7 +1171,7 @@ impl Builder<'_> {
                 Equation::Fixed(p, target)
             }
             Constraint::Distance { a, b, value } => {
-                let value = length_value(value)?;
+                let value = length_value(value, NEGATIVE_DISTANCE)?;
                 let a_is_line = matches!(self.entity(at, a)?, Entity::Line { .. });
                 let b_is_line = matches!(self.entity(at, b)?, Entity::Line { .. });
                 match (a_is_line, b_is_line) {
@@ -1207,7 +1207,7 @@ impl Builder<'_> {
                 } else {
                     Axis::Y
                 };
-                let value = length_value(value)?;
+                let value = length_value(value, NEGATIVE_DISTANCE)?;
                 let (a, b) = (self.pt(at, a)?, self.pt(at, b)?);
                 let side = side_of(Equation::SameCoordinate(axis, b, a))?;
                 Equation::Offset {
@@ -1224,16 +1224,23 @@ impl Builder<'_> {
             Constraint::Radius { circle, value } => Equation::Radius {
                 round: self.round(at, circle)?,
                 factor: 1.0,
-                value: length_value(value)?,
+                value: length_value(value, NEGATIVE_RADIUS_VALUE)?,
             },
             Constraint::Diameter { circle, value } => Equation::Radius {
                 round: self.round(at, circle)?,
                 factor: 2.0,
-                value: length_value(value)?,
+                value: length_value(value, NEGATIVE_RADIUS_VALUE)?,
             },
         })
     }
 }
+
+/// Why a negative distance is refused, and what to give instead: a
+/// distance is a size, and the side it lies on is the side the sketch is
+/// drawn on (found from the starting guess).
+const NEGATIVE_DISTANCE: &str = "a distance cannot be negative: give its size, and draw the point on the side it is to lie on (the side is kept from the sketch as drawn)";
+/// Why a negative radius or diameter is refused.
+const NEGATIVE_RADIUS_VALUE: &str = "a radius or diameter cannot be negative";
 
 /// An equation that cannot be evaluated at the starting guess, as an error.
 pub(crate) fn start_failure(at: Site, fail: Fail) -> SolveError {

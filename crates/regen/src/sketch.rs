@@ -627,7 +627,7 @@ fn explain(error: &solve::SolveError, problem: &Problem) -> String {
             constraint: i,
             reason,
         } => {
-            format!("{} has a value that cannot be: {reason}", constraint(*i))
+            format!("{} has a value it cannot take: {reason}", constraint(*i))
         }
         E::Degenerate {
             constraint: i,

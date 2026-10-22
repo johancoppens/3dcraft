@@ -1,0 +1,9 @@
+[
+ ["variable.set", {"name": "leg_x", "expr": "40 mm"}],
+ ["variable.set", {"name": "leg_z", "expr": "30 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "4 mm"}],
+ ["variable.set", {"name": "width", "expr": "25 mm"}],
+ ["feature.block", {"size": ["leg_x", "width", "thickness"], "name": "Flat"}],
+ ["feature.block", {"size": ["thickness", "width", "leg_z"], "name": "Upright"}],
+ ["feature.boolean", {"op": "union", "target": "Flat", "tool": "Upright", "name": "Bracket"}]
+]

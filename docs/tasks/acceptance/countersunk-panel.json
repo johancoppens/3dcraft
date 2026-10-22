@@ -1,0 +1,15 @@
+[
+ ["variable.set", {"name": "length", "expr": "120 mm"}],
+ ["variable.set", {"name": "width", "expr": "80 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "3.4 mm"}],
+ ["variable.set", {"name": "csk_d", "expr": "6.4 mm"}],
+ ["variable.set", {"name": "edge", "expr": "10 mm"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Panel"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["edge", "edge", "-1 mm"], "name": "Drill"}],
+ ["feature.cone", {"radius": "csk_d / 2 + 1 mm", "height": "csk_d / 2 + 1 mm", "position": ["edge", "edge", "thickness + 1 mm"], "axis": [0, 0, -1], "name": "Sink"}],
+ ["feature.boolean", {"op": "union", "target": "Drill", "tool": "Sink", "name": "CskTool"}],
+ ["feature.pattern", {"source": "CskTool", "count": 2, "step": ["length - 2 * edge", 0, 0], "name": "CskRow"}],
+ ["feature.pattern", {"source": "CskRow", "count": 2, "step": [0, "width - 2 * edge", 0], "name": "CskTools"}],
+ ["feature.boolean", {"op": "subtract", "target": "Panel", "tool": "CskTools", "name": "CountersunkPanel"}]
+]

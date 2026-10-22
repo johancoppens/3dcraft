@@ -1,0 +1,16 @@
+[
+ ["variable.set", {"name": "length", "expr": "100 mm"}],
+ ["variable.set", {"name": "width", "expr": "40 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "5 mm"}],
+ ["variable.set", {"name": "slot_len", "expr": "20 mm"}],
+ ["variable.set", {"name": "slot_w", "expr": "6 mm"}],
+ ["variable.set", {"name": "slot_at", "expr": "30 mm"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Plate"}],
+ ["feature.block", {"size": ["slot_len - slot_w", "slot_w", "thickness + 2 mm"], "position": ["slot_at - (slot_len - slot_w) / 2", "width / 2 - slot_w / 2", "-1 mm"], "name": "SlotMid"}],
+ ["feature.cylinder", {"radius": "slot_w / 2", "height": "thickness + 2 mm", "position": ["slot_at - (slot_len - slot_w) / 2", "width / 2", "-1 mm"], "name": "SlotEndA"}],
+ ["feature.cylinder", {"radius": "slot_w / 2", "height": "thickness + 2 mm", "position": ["slot_at + (slot_len - slot_w) / 2", "width / 2", "-1 mm"], "name": "SlotEndB"}],
+ ["feature.boolean", {"op": "union", "target": "SlotMid", "tool": "SlotEndA", "name": "SlotHalf"}],
+ ["feature.boolean", {"op": "union", "target": "SlotHalf", "tool": "SlotEndB", "name": "Slot"}],
+ ["feature.pattern", {"source": "Slot", "count": 2, "step": ["length - 2 * slot_at", 0, 0], "name": "Slots"}],
+ ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Slots", "name": "SlottedPlate"}]
+]

@@ -1,0 +1,18 @@
+[
+ ["variable.set", {"name": "base_w", "expr": "30 mm"}],
+ ["variable.set", {"name": "base_t", "expr": "3 mm"}],
+ ["variable.set", {"name": "body_w", "expr": "16 mm"}],
+ ["variable.set", {"name": "body_h", "expr": "12 mm"}],
+ ["variable.set", {"name": "length", "expr": "10 mm"}],
+ ["variable.set", {"name": "channel_d", "expr": "8 mm"}],
+ ["variable.set", {"name": "channel_z", "expr": "10 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "3.5 mm"}],
+ ["feature.block", {"size": ["base_w", "length", "base_t"], "name": "Base"}],
+ ["feature.block", {"size": ["body_w", "length", "body_h"], "position": ["(base_w - body_w) / 2", 0, 0], "name": "Body"}],
+ ["feature.boolean", {"op": "union", "target": "Base", "tool": "Body", "name": "Clip"}],
+ ["feature.cylinder", {"radius": "channel_d / 2", "height": "length + 2 mm", "position": ["base_w / 2", "-1 mm", "channel_z"], "axis": [0, 1, 0], "name": "Channel"}],
+ ["feature.boolean", {"op": "subtract", "target": "Clip", "tool": "Channel", "name": "Channelled"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "base_t + 2 mm", "position": ["(base_w - body_w) / 4", "length / 2", "-1 mm"], "name": "ScrewHole"}],
+ ["feature.pattern", {"source": "ScrewHole", "count": 2, "step": ["base_w - (base_w - body_w) / 2", 0, 0], "name": "ScrewHoles"}],
+ ["feature.boolean", {"op": "subtract", "target": "Channelled", "tool": "ScrewHoles", "name": "CableClip"}]
+]

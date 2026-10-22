@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-21 · **Status:** the loop is in use; the R1 task set and its scorer (*The task set*) are in place. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) oracle 11 (random multi-step designs) and oracle 12 (the action matrix). The rest is design
+> **Last updated:** 2026-10-22 · **Status:** the loop is in use; the R1 task set and its scorer (*The task set*) are in place. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) oracle 11 (random multi-step designs) and oracle 12 (the action matrix). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -379,7 +379,26 @@ How expectations are made: by hand, as closed forms (Pappus for revolutions, len
 
 `steps` counts the script's commands; `failedSteps` are commands that returned an error, `failedFeatures` features left failed in the final history (a feature command returns Ok even when the kernel refuses its feature), and `refusals` both together. `valid` is `document.check {deep: true}` clean with at least one body. Each state (the base and every variant) scores one point for validity and one per expectation; `passed` and `total` add them up, `score` is their ratio, and `pass` means every point. A variant whose variable the candidate never defined lists it under `missingVariables` and scores nothing. `craft3d-cli score` exits 0 whenever it prints a scorecard, 1 when the task or the script cannot be read, 2 on a usage error. Without `--script` it scores the task's own `solution`. Expected values are in millimetres (mm², mm³), whatever units the candidate chose.
 
-To add a task: write the file (start from one of the same kind), derive the expectations by hand, run `craft3d-cli score docs/tasks/<id>.json`, add it to `TASKS` and `task_tests!` in `crates/engine/tests/task_set.rs`. A refusal met on the way goes into the findings with a minimal script; work around it in the solution only when the workaround is what a user would do anyway, otherwise mark the task `refused`.
+**The acceptance** (2026-10-22, R1): an agent built every task over MCP (`craft3d-cli mcp`, `command_run` step by step, `doc_inspect` and `doc_render_preview` to look) from its description and the `command_list` registry alone, without reading the reference solutions or the expectations (except `spacer`, whose file it had opened before the attempt). Its scripts are in [`docs/tasks/acceptance/`](tasks/acceptance/); `crates/engine/tests/task_acceptance.rs` scores them at every gate, so a change that breaks what an agent built from a description turns red. A task added to the set needs its candidate there too.
+
+| Task | Result | Steps (reference) | Task | Result | Steps (reference) |
+|---|---|---|---|---|---|
+| `spacer` | first try | 6 (11) | `standoff` | after 2 corrections | 27 (27) |
+| `plate-holes` | first try | 10 (29) | `stepped-shaft` | first try | 18 (18) |
+| `l-bracket` | first try | 7 (21) | `rounded-cover` | first try | 8 (8) |
+| `u-channel` | first try | 7 (25) | `knurled-knob` | first try | 15 (20) |
+| `slotted-plate` | first try | 14 (13) | `pipe-tee` | first try | 11 (11) |
+| `flanged-bushing` | first try | 22 (22) | `phone-stand` | first try | 32 (32) |
+| `pulley-blank` | first try | 27 (27) | `bent-bracket` | first try | 42 (48) |
+| `bolt-flange` | first try | 12 (12) | `shelled-case` | first try | 8 (10) |
+| `hole-strip` | first try | 11 (11) | `enclosure` | first try | 33 (32) |
+| `cable-clip` | first try | 16 (34) | `hinge-leaf` | first try | 20 (20) |
+| `countersunk-panel` | first try | 13 (15) | | | |
+| `gusset-bracket` | first try | 29 (43) | | | |
+
+Every candidate scores every point, for the task's values and every variant's. The two corrections of `standoff`: a negative horizontal distance to pin a corner left of the origin (a distance is a size; the sign comes from where the point is drawn, which the error now says), and threads aimed at the boolean's id instead of the cylinder's (the error listed the body's faces, which was enough). Friction that remains is in the roadmap (R1 › Open). One description was ambiguous: `hinge-leaf` gave its screw holes as X = 10 and X = 30 without saying that they follow `leaf_w` (its variant expects them at a quarter and three quarters of the width); it says so now.
+
+To add a task: write the file (start from one of the same kind), derive the expectations by hand, run `craft3d-cli score docs/tasks/<id>.json`, add it to `TASKS` and `task_tests!` in `crates/engine/tests/task_set.rs`, and put a candidate built from the description alone (by an agent that has not seen the solution) in `docs/tasks/acceptance/<id>.json`. A refusal met on the way goes into the findings with a minimal script; work around it in the solution only when the workaround is what a user would do anyway, otherwise mark the task `refused`.
 
 ## Corpora
 

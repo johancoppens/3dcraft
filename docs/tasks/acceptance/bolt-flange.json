@@ -1,0 +1,14 @@
+[
+ ["variable.set", {"name": "flange_d", "expr": "80 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "10 mm"}],
+ ["variable.set", {"name": "bore_d", "expr": "30 mm"}],
+ ["variable.set", {"name": "pcd", "expr": "60 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "9 mm"}],
+ ["variable.set", {"name": "n", "expr": "6"}],
+ ["feature.cylinder", {"radius": "flange_d / 2", "height": "thickness", "name": "Disc"}],
+ ["feature.cylinder", {"radius": "bore_d / 2", "height": "thickness + 2 mm", "position": [0, 0, "-1 mm"], "name": "Bore"}],
+ ["feature.boolean", {"op": "subtract", "target": "Disc", "tool": "Bore", "name": "Bored"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["pcd / 2", 0, "-1 mm"], "name": "BoltHole"}],
+ ["feature.pattern", {"source": "BoltHole", "count": "n", "angle": "360 deg / n", "axis": [0, 0, 1], "name": "BoltHoles"}],
+ ["feature.boolean", {"op": "subtract", "target": "Bored", "tool": "BoltHoles", "name": "Flange"}]
+]
