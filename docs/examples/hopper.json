@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "base", "expr": "40 mm"}],
+ ["variable.set", {"name": "top", "expr": "20 mm"}],
+ ["variable.set", {"name": "height", "expr": "30 mm"}],
+ ["sketch.create", {"name": "Bottom", "plane": "xy"}],
+ ["sketch.rect", {"sketch": "Bottom", "from": ["-base / 2", "-base / 2"], "to": ["base / 2", "base / 2"]}],
+ ["sketch.create", {"name": "Top", "plane": "xy", "offset": "height"}],
+ ["sketch.rect", {"sketch": "Top", "from": ["-top / 2", "-top / 2"], "to": ["top / 2", "top / 2"]}],
+ ["feature.loft", {"sections": ["Bottom", "Top"], "ruled": true, "name": "Hopper"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Hopper", "eq": "height / 3 * (base^2 + top^2 + base * top)"}],
+ ["document.check", {}]
+]

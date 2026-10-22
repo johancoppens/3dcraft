@@ -465,11 +465,11 @@ The first version for people outside the project; it follows M9 and does not wai
 - The acceptance: every task of the set built by an agent over MCP from its description alone and scored by `craft3d-cli score`, 22 of 22 passing, 21 on the first try; its scripts are scored at every gate ([`testing.md`](testing.md) › *The task set*, `docs/tasks/acceptance/`) (2026-10-22)
 - Sketch points at expressions in one step: coordinates written as expressions are held by signed `x` and `y` constraints (format 29), `sketch.rect`, a circle's radius as an expression; the acceptance's six pinned sketches 179 → 75 steps ([`design/document.md`](design/document.md) › *Sketch coordinates as expressions*) (2026-10-22)
 - `F2:startCap()` and `F2:endCap()` accepted wherever a face is named, resolved in one place ([`design/names.md`](design/names.md) › *The short form of a cap, everywhere*) (2026-10-22)
+- A user guide, AI-first (connect an agent over MCP, a full sample session, reading and checking its results, watching and pointing in the window, concepts, features, measuring, files, troubleshooting), and nine example models that assert their own volume, all run and the guide's commands and params checked against the registry by `crates/engine/tests/guide_examples.rs` ([`guide/`](guide/README.md), [`examples/`](examples/README.md)) (2026-10-22)
 
 #### Open
 - [ ] Installers for Linux, macOS and Windows
 - [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
-- [ ] A user guide and example models
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
 
 #### Acceptance
@@ -567,6 +567,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | R1: the user guide and nine example models, checked by a test |
 | 2026-10-22 | minor | R1: the acceptance, every task of the set built by an agent over MCP from its description alone (22 of 22), scored at every gate; two sketch and naming frictions added to Open |
 | 2026-10-22 | minor | M9: the m9-r1 review's follow-ups (fillet within the tolerance of a round's radius, open-loft frames turned round a bend, the re-ask's synthetic test) and shell open at a face with a blend along it |
 | 2026-10-21 | minor | R1: the format promise, a frozen fixture per format version (1 to 24) written by its own build and regenerated to what it made |

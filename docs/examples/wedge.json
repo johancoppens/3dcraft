@@ -1,0 +1,16 @@
+[
+ ["variable.set", {"name": "length", "expr": "40 mm"}],
+ ["variable.set", {"name": "width", "expr": "30 mm"}],
+ ["variable.set", {"name": "height", "expr": "20 mm"}],
+ ["variable.set", {"name": "cut_at", "expr": "10 mm"}],
+ ["variable.set", {"name": "tilt", "expr": "15 deg"}],
+ ["feature.block", {"size": ["length", "width", "height"], "name": "Block"}],
+ ["datum.axis", {"through": [[0, 0, "cut_at"], ["length", 0, "cut_at"]], "name": "Hinge"}],
+ ["datum.plane", {"from": "xy", "angle": "tilt", "about": "Hinge", "name": "CutPlane"}],
+ ["sketch.create", {"name": "CutSketch", "plane": "CutPlane"}],
+ ["sketch.rect", {"sketch": "CutSketch", "from": ["-10 mm", "-10 mm"], "to": ["length + 10 mm", "width + 10 mm"]}],
+ ["feature.fill", {"sketch": "CutSketch", "name": "Sheet"}],
+ ["feature.boolean", {"op": "intersect", "target": "Block", "tool": "Sheet", "name": "Wedge"}],
+ ["assert.add", {"name": "volume", "measure": "volume", "of": "Wedge", "eq": "length * (width * cut_at + width^2 * tan(tilt) / 2)"}],
+ ["document.check", {}]
+]

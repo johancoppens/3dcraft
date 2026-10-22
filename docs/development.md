@@ -102,7 +102,7 @@ craft3d-cli convert bracket.3dcraft bracket.step              # native -> STEP
 craft3d-cli convert bracket.3dcraft bracket.3mf --tolerance 0.01
 craft3d-cli info bracket.3dcraft                              # JSON: units, variables, feature tree with status, bodies, mass properties
 craft3d-cli run --new '{"units":"mm"}' \
-    --cmd feature.primitive.box --params '{"size":["40 mm","20 mm","10 mm"]}' \
+    --cmd feature.block --params '{"size":["40 mm","20 mm","10 mm"]}' \
     --cmd document.measure \
     --out box.3dcraft
 craft3d-cli run bracket.3dcraft --cmd variable.set --params '{"name":"width","expr":"55 mm"}' --out wider.3dcraft
@@ -232,12 +232,12 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
 
 A typical agent loop:
 
-1. `doc_new {units:"mm"}`
+1. `command_run {id:"file.new", params:{units:"mm"}}`
 2. `command_list {filter:"sketch"}`
 3. `command_run {id:"sketch.create", params:{plane:"xy"}}`, then entities and constraints
 4. `command_run {id:"feature.extrude", params:{sketch:"Sketch1", distance:"25 mm"}}`
 5. `doc_inspect` to verify feature status, volume and face count; `doc_render_preview` to look
-6. `doc_save {path:"bracket.3dcraft"}`, `doc_export {path:"bracket.step"}`
+6. `command_run` with `file.save {path:"bracket.3dcraft"}` and `file.export {path:"bracket.step"}` (there are no `doc_new`, `doc_save` or `doc_export` tools). The [user guide](guide/02-agent.md) has a full session
 
 ## Native format (.3dcraft)
 

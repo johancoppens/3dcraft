@@ -2,10 +2,12 @@
 
 > **Last updated:** 2026-10-15 · **Status:** see [`roadmap.md`](roadmap.md) › *Current focus* and *Milestones* for what is done and open, and [`architecture.md`](architecture.md) for how it is built (the map; the details per part in [`design/`](design/README.md))
 
-Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
+**Using 3DCraft?** Read the [user guide](guide/README.md) and the [example models](examples/README.md). To work on 3DCraft, start with [`AGENTS.md`](../AGENTS.md), then read in this order.
 
 | Doc | What it holds |
 |---|---|
+| [`guide/`](guide/README.md) | The user guide: install, working with an agent over MCP, the window, concepts, features, measuring, files, troubleshooting |
+| [`examples/`](examples/README.md) | Nine example models as command scripts, each with a picture and its volume asserted |
 | [`architecture.md`](architecture.md) | The map: the rules that always hold, crates and layers, data, pipelines, the kernel's methods, known structural debt |
 | [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, names, document, regeneration, tessellator, rendering, engine, files): how it works now, then its dated findings |
 | [`development.md`](development.md) | Prerequisites, build and run, CLI, driving the app, watching along, environment variables |

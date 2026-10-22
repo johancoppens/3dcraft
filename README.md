@@ -7,6 +7,8 @@ MCP server, and an agent can build a model in the window you are watching.
 
 ![The 3DCraft window: tabs of five open documents, the feature tree of a socket head cap screw with a cut M10 thread, the view cube, and the controls for sketches, datums, the section plane and see-through](docs/img/viewer.png)
 
+**New here?** The [user guide](docs/guide/README.md) explains how to set up an AI agent with 3DCraft, watch it work and check what it built; the [example models](docs/examples/README.md) are small parts that check their own volume.
+
 ## What it does today
 
 - **Parametric modelling.** Variables and formulas drive everything; sketches of lines, arcs, circles and
@@ -38,7 +40,7 @@ target/release/craft3d-cli run --new '{}' \
     --cmd document.measure --out part.3dcraft
 target/release/craft3d-cli render part.3dcraft --out part.png
 target/release/craft3d-cli convert part.3dcraft part.step
-target/release/craft3d-cli commands          # all 72 commands, with their parameters
+target/release/craft3d-cli commands          # every command, with its parameters
 ```
 
 The window, and an agent driving it over MCP:
