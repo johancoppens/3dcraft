@@ -505,6 +505,9 @@ pub struct Shell {
     /// changes ([`Self::request_window_close`]).
     quitting: Option<tabs::Quitting>,
     rows: Vec<TreeRow>,
+    /// The document's assertions as checked at the last [`Self::sync`],
+    /// listed under the features.
+    assertion_rows: Vec<craft3d_engine::AssertionState>,
     /// What the File menu or a shortcut asked for, until the host takes it.
     file_action: Option<FileAction>,
     /// Why the scene could not be made.
@@ -746,6 +749,7 @@ impl Shell {
             quit_discards: false,
             quitting: None,
             rows: Vec::new(),
+            assertion_rows: Vec::new(),
             file_action: None,
             problem: None,
             render_problem: None,
@@ -1004,6 +1008,12 @@ impl Shell {
     /// The rows of the feature tree as of the last [`Self::sync`].
     pub fn tree_rows(&self) -> &[TreeRow] {
         &self.rows
+    }
+
+    /// The document's assertions as of the last [`Self::sync`], each with
+    /// how it stands: shown under the features of the tree.
+    pub fn assertion_rows(&self) -> &[craft3d_engine::AssertionState] {
+        &self.assertion_rows
     }
 
     /// What is drawn over the viewport's texture, in the pixels of the
@@ -1366,6 +1376,7 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         let scene = self.sync_scene(session);
+        self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
@@ -2031,6 +2042,46 @@ impl Shell {
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(error)
+                                    .color(color(tokens.failed))
+                                    .small(),
+                            )
+                            .wrap(),
+                        );
+                    });
+                }
+            }
+            if !self.assertion_rows.is_empty() {
+                ui.add_space(tokens.inset * 0.5);
+                ui.label(egui::RichText::new("Assertions").strong());
+                ui.separator();
+            }
+            for row in &self.assertion_rows {
+                let passed = row.status == craft3d_engine::AssertionStatus::Passed;
+                let state = if passed {
+                    FeatureState::Ok
+                } else {
+                    FeatureState::Failed
+                };
+                let tint = if passed { tokens.ok } else { tokens.failed };
+                let mut name = egui::RichText::new(&row.name);
+                if !passed {
+                    name = name.color(color(tokens.failed));
+                }
+                let status = match &row.measured {
+                    Some(measured) => format!("{} · {}", row.measure, measured),
+                    None => format!("{} · {}", row.measure, row.status.name()),
+                };
+                ui.horizontal(|ui| {
+                    ui.colored_label(color(tint), tree_mark(state))
+                        .on_hover_text(&row.message);
+                    ui.label(name).on_hover_text(&row.message);
+                    ui.colored_label(dim, status);
+                });
+                if !passed {
+                    ui.indent(("craft3d-assertion", &row.name), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&row.message)
                                     .color(color(tokens.failed))
                                     .small(),
                             )

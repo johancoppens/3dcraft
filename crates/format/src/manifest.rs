@@ -55,6 +55,38 @@ pub struct Document {
     /// version 26).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faces: Vec<FaceProperties>,
+    /// The assertions the design is checked against, in the order they
+    /// were added. Absent when there are none (and in files before
+    /// version 27).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assertions: Vec<Assertion>,
+}
+
+/// One assertion: what is measured (the JSON object `assert.add` was
+/// given, as an object) and what it is expected to be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assertion {
+    pub name: String,
+    pub measure: serde_json::Value,
+    pub expect: Expect,
+}
+
+/// What an assertion expects: `is` for a yes-or-no measure, else `eq`
+/// with an optional `tol`, else `min` and/or `max` (expressions).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expect {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<String>,
 }
 
 /// What one face of the body of a feature looks like.

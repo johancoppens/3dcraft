@@ -57,6 +57,7 @@ mod hits;
 mod loose;
 mod merge;
 mod outline;
+pub mod probe;
 mod regions;
 mod section;
 mod sew;

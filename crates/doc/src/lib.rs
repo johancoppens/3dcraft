@@ -12,12 +12,14 @@
 //! here without being saved (AGENTS.md §8).
 
 pub mod appearance;
+pub mod assertion;
 pub mod blob;
 pub mod datum;
 pub mod name;
 pub mod sketch;
 
 pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
+pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
 pub use blob::{Blob, sha256};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
@@ -1461,6 +1463,11 @@ pub struct Document {
     /// order of the two ([`appearance`]). Not part of the history either.
     #[serde(default)]
     pub faces: Vec<FaceProperties>,
+    /// The assertions the design is checked against after regeneration
+    /// ([`assertion`]), in the order they were added. Not part of the
+    /// history: regeneration does not read them.
+    #[serde(default)]
+    pub assertions: Vec<Assertion>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1664,6 +1671,7 @@ impl Document {
         }
         self.validate_bodies()?;
         self.validate_faces()?;
+        self.validate_assertions()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1735,9 +1743,16 @@ impl Document {
                 expr: Expr::new(v.source()),
             })
             .collect();
+        let mut renamed_assertions = self.assertions.clone();
+        for assertion in &mut renamed_assertions {
+            for expr in assertion.expect.exprs_mut() {
+                *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
+            }
+        }
         for (feature, kind) in self.features.iter_mut().zip(renamed_features) {
             feature.kind = kind;
         }
+        self.assertions = renamed_assertions;
         Ok(())
     }
 

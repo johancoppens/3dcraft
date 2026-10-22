@@ -1418,3 +1418,65 @@ fn select_query(session: &mut Session, params: &Value) -> Run {
     }
     Ok(result)
 }
+
+// ------------------------------------------- for the verification commands
+
+/// One thing a query found, for the commands that measure what a query
+/// names (`verify.rs`).
+pub(crate) struct Found {
+    pub kind: SelectionKind,
+    /// The feature itself, or the feature whose body has the entity.
+    pub feature: FeatureId,
+    /// A face's pieces (every face of the body with its name), an edge's
+    /// or a vertex's index in its body; empty for a feature-like item.
+    pub indices: Vec<usize>,
+    pub name: String,
+}
+
+/// Runs a query against a document and its regeneration: `kind` and
+/// `filter` as `select.query` takes them under `kind` and `where`. In
+/// document order; more than `limit` items is an error.
+pub(crate) fn query(
+    doc: &Document,
+    regen: &Regen,
+    kind: Option<&Value>,
+    filter: Option<&Value>,
+    limit: usize,
+) -> Result<Vec<Found>, String> {
+    let kinds: BTreeSet<SelectionKind> = match kind {
+        None | Some(Value::Null) => SelectionKind::ALL.into_iter().collect(),
+        Some(value) => kinds(value)?,
+    };
+    let filter = match filter {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(Parser { doc, count: 0 }.parse(value, 0)?),
+    };
+    let all = candidates(doc, regen, &kinds)?;
+    let mut context = Context {
+        doc,
+        regen,
+        areas: BTreeMap::new(),
+        colors: BTreeMap::new(),
+        made_from: BTreeMap::new(),
+    };
+    let mut found = Vec::new();
+    for c in &all {
+        if filter.as_ref().is_some_and(|f| !context.eval(f, c)) {
+            continue;
+        }
+        if found.len() >= limit {
+            return Err(format!("more than {limit} items fit the query; narrow it"));
+        }
+        found.push(Found {
+            kind: c.kind,
+            feature: c.feature,
+            indices: if c.kind.is_entity() {
+                c.pieces.clone()
+            } else {
+                Vec::new()
+            },
+            name: c.name.clone(),
+        });
+    }
+    Ok(found)
+}

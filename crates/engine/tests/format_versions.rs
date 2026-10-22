@@ -111,6 +111,24 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
             found.push(format!("{tag}: lostFaces {lost}"));
         }
     }
+    // The assertions (format 27), each as it stood: its name, measure,
+    // status and what it must be; what was measured within the measure's
+    // own rounding (it is said in words).
+    if let Some(assertions) = want.get("assertions") {
+        let keys = |list: &Value| -> Vec<Value> {
+            list.as_array()
+                .map(|l| {
+                    l.iter()
+                        .map(|a| json!([a["name"], a["measure"], a["status"], a["expected"]]))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let got = inspect.get("assertions").cloned().unwrap_or(Value::Null);
+        if keys(&got) != keys(assertions) {
+            found.push(format!("{tag}: assertions {got} (were {assertions})"));
+        }
+    }
     let bodies = inspect["bodies"].as_array().unwrap();
     let wanted = want["bodies"].as_array().unwrap();
     let ids =

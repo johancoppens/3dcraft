@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 26,
+  "format_version": 27,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 27"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 28"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 27,
+            file: 28,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 27")
+        text.contains("version 28")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1656,7 +1656,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 26);
+    assert_eq!(value["format_version"], 27);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1842,7 +1842,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 26);
+    assert_eq!(value["format_version"], 27);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2858,7 +2858,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 26);
+    assert_eq!(value["format_version"], 27);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3704,7 +3704,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 26);
+    assert_eq!(value["format_version"], 27);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3817,7 +3817,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 26);
+    assert_eq!(FORMAT_VERSION, 27);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -3863,7 +3863,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 26);
+    assert_eq!(FORMAT_VERSION, 27);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -3921,7 +3921,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 26);
+    assert_eq!(FORMAT_VERSION, 27);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -3976,7 +3976,7 @@ fn an_import_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 26);
+    assert_eq!(FORMAT_VERSION, 27);
     assert_eq!(
         value["document"]["features"][2]["kind"],
         serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
@@ -4103,4 +4103,80 @@ fn a_blob_no_feature_names_is_not_read() {
     ])
     .unwrap();
     assert_eq!(from_bytes(&bytes).unwrap(), small());
+}
+
+/// Assertions (format 27): the measure as a JSON object, what it must be
+/// as expressions; they round trip, and one without a bound is refused.
+#[test]
+fn assertions_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{Assertion, Expect};
+    let mut doc = small();
+    let entries = [
+        (
+            "holes go through",
+            r#"{"measure":"through","of":{"hole":true,"madeBy":"F1"}}"#,
+            Expect::Is(true),
+        ),
+        (
+            "volume",
+            r#"{"measure":"volume","of":"F1"}"#,
+            Expect::Equal {
+                value: Expr::new("width * width / 2 * 10 mm"),
+                tol: Some(Expr::new("1e-6")),
+            },
+        ),
+        (
+            "wall",
+            r#"{"measure":"thickness","of":"F1"}"#,
+            Expect::Within {
+                min: Some(Expr::new("2 mm")),
+                max: None,
+            },
+        ),
+    ];
+    for (name, measure, expect) in entries {
+        doc.add_assertion(Assertion {
+            name: name.into(),
+            measure: measure.into(),
+            expect,
+        })
+        .unwrap();
+    }
+    let back = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(back, doc);
+    let json: serde_json::Value = serde_json::from_str(&to_manifest_json(&doc).unwrap()).unwrap();
+    assert_eq!(
+        json["document"]["assertions"],
+        serde_json::json!([
+            {"name": "holes go through", "measure": {"measure": "through", "of": {"hole": true, "madeBy": "F1"}}, "expect": {"is": true}},
+            {"name": "volume", "measure": {"measure": "volume", "of": "F1"}, "expect": {"eq": "width * width / 2 * 10 mm", "tol": "1e-6"}},
+            {"name": "wall", "measure": {"measure": "thickness", "of": "F1"}, "expect": {"min": "2 mm"}},
+        ])
+    );
+    // Without assertions the field is not written at all.
+    assert!(!to_manifest_json(&small()).unwrap().contains("assertions"));
+    // An expectation without a bound, two of one name, unknown fields.
+    let with = |assertions: &str| {
+        let text = to_manifest_json(&small()).unwrap();
+        let at = text.find("\"next_feature_id\"").unwrap();
+        let (head, tail) = text.split_at(at);
+        format!("{head}\"assertions\": {assertions},\n    {tail}")
+    };
+    for bad in [
+        r#"[{"name": "a", "measure": {"measure": "volume"}, "expect": {}}]"#,
+        r#"[{"name": "a", "measure": {"measure": "volume"}, "expect": {"is": true}}, {"name": "a", "measure": {"measure": "area"}, "expect": {"is": true}}]"#,
+        r#"[{"name": "a", "measure": {"measure": "volume"}, "expect": {"at": "1"}}]"#,
+        r#"[{"name": "a", "measure": {"measure": "volume"}, "expect": {"is": true}, "extra": 1}]"#,
+    ] {
+        load_error(&with(bad));
+    }
+    // The same with a sound assertion loads.
+    let good = with(r#"[{"name": "a", "measure": {"measure": "volume"}, "expect": {"max": "1"}}]"#);
+    assert_eq!(
+        from_manifest_json(good.as_bytes())
+            .unwrap()
+            .assertions
+            .len(),
+        1
+    );
 }
