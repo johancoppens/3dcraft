@@ -23,6 +23,10 @@ pub(crate) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 /// OpenGL ES) and stores both without conversion.
 pub(crate) const DATA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The depth of [`DEPTH_FORMAT`] with a stencil, for the opaque scene drawn
+/// in two steps ([`FirstWrite`]).
+pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
+    wgpu::TextureFormat::Depth32FloatStencil8;
 
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
@@ -262,6 +266,9 @@ pub(crate) struct Targets {
     samples_color: wgpu::TextureView,
     samples_data: wgpu::TextureView,
     samples_depth: wgpu::TextureView,
+    /// The depth and stencil of the opaque scene in two steps, when the
+    /// renderer draws it so ([`FirstWrite`]).
+    samples_depth_stencil: Option<wgpu::TextureView>,
     pub color: wgpu::Texture,
     pub data: wgpu::Texture,
     color_view: wgpu::TextureView,
@@ -410,6 +417,9 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     scene_pipeline: wgpu::RenderPipeline,
+    /// The opaque scene in two steps, on a device with a depth-stencil
+    /// format of 32-bit float depth; `None` elsewhere.
+    first_write: Option<FirstWrite>,
     scene_uniforms: wgpu::Buffer,
     scene_layout: wgpu::BindGroupLayout,
     scene_bind: wgpu::BindGroup,
@@ -432,6 +442,109 @@ pub struct Renderer {
     drawn: bool,
     /// Identifies this renderer in the meshes it uploads.
     token: Arc<()>,
+}
+
+/// The opaque scene drawn so that every sample is written once, by the
+/// first fragment drawn of those nearest to the eye: first the depth alone
+/// (the colour targets masked), then the colour where the depth equals
+/// the nearest one and the stencil is still 0, which the write then
+/// raises. Drawn in one step, a sample is written by every fragment
+/// nearer than those before it, and on the AMD Radeon 8060S (Mesa 26.2,
+/// RADV and radeonsi alike) one of those writes, about one sample per
+/// 250 frames, lands out of order with its delta colour compression on:
+/// the surface behind stays (docs/design/rendering.md, *A frame that
+/// differed once*). Nothing in the API orders it differently; with one
+/// write per sample there is no order to lose.
+struct FirstWrite {
+    depth: wgpu::RenderPipeline,
+    color: wgpu::RenderPipeline,
+}
+
+impl FirstWrite {
+    /// The device feature the two steps need.
+    const FEATURE: wgpu::Features = wgpu::Features::DEPTH32FLOAT_STENCIL8;
+
+    fn build(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        module: &wgpu::ShaderModule,
+    ) -> Option<FirstWrite> {
+        if !device.features().contains(Self::FEATURE) {
+            return None;
+        }
+        // The same shader in both steps, so that the depth of a fragment
+        // is the same number in both (the position is `@invariant`, and on
+        // OpenGL the fragment shader writes it).
+        let make = |label, mask, depth_write, depth_compare, stencil| {
+            let target = |format| {
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: mask,
+                })
+            };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX_BYTES as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &MESH_ATTRIBUTES,
+                    })],
+                },
+                primitive: scene_primitive(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_STENCIL_FORMAT,
+                    depth_write_enabled: Some(depth_write),
+                    depth_compare: Some(depth_compare),
+                    stencil,
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[target(COLOR_FORMAT), target(DATA_FORMAT)],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // The colour step: where the depth is the nearest and nothing was
+        // written yet (reference 0), and then not again.
+        let once = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::Equal,
+            fail_op: wgpu::StencilOperation::Keep,
+            depth_fail_op: wgpu::StencilOperation::Keep,
+            pass_op: wgpu::StencilOperation::IncrementClamp,
+        };
+        Some(FirstWrite {
+            depth: make(
+                "craft3d scene depth",
+                wgpu::ColorWrites::empty(),
+                true,
+                wgpu::CompareFunction::Greater,
+                wgpu::StencilState::default(),
+            ),
+            color: make(
+                "craft3d scene colour",
+                wgpu::ColorWrites::ALL,
+                false,
+                wgpu::CompareFunction::Equal,
+                wgpu::StencilState {
+                    front: once,
+                    back: once,
+                    read_mask: 0xff,
+                    write_mask: 0xff,
+                },
+            ),
+        })
+    }
 }
 
 /// Whether the scene passes on `device` write their depth in the fragment
@@ -706,6 +819,23 @@ impl Renderer {
         self.see_through = Err("it was turned off".to_string());
     }
 
+    /// Draws the opaque scene in one step, as on a device without
+    /// [`FirstWrite::FEATURE`]. For the test that both ways give the same
+    /// picture.
+    #[doc(hidden)]
+    pub fn in_one_step(&mut self) {
+        self.first_write = None;
+        if let Some(targets) = &mut self.targets {
+            targets.samples_depth_stencil = None;
+        }
+    }
+
+    /// Whether the opaque scene is drawn in two steps ([`FirstWrite`]).
+    #[doc(hidden)]
+    pub fn in_two_steps(&self) -> bool {
+        self.first_write.is_some()
+    }
+
     fn build(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
@@ -788,6 +918,8 @@ impl Renderer {
             cache: None,
         });
 
+        let first_write = FirstWrite::build(device, &scene_pipeline_layout, &scene_shader);
+
         let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d resolve"),
             entries: &[
@@ -839,6 +971,7 @@ impl Renderer {
             device: device.clone(),
             queue: queue.clone(),
             scene_pipeline,
+            first_write,
             scene_uniforms,
             scene_layout,
             scene_bind,
@@ -1201,6 +1334,14 @@ impl Renderer {
             ssaa,
             sampled,
         ));
+        let samples_depth_stencil = self.first_write.as_ref().map(|_| {
+            view(&texture(
+                "craft3d samples depth and stencil",
+                DEPTH_STENCIL_FORMAT,
+                ssaa,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ))
+        });
         let color = texture("craft3d colour", COLOR_FORMAT, 1, read);
         let data = texture("craft3d data", DATA_FORMAT, 1, read);
         let (color_view, data_view) = (view(&color), view(&data));
@@ -1237,6 +1378,7 @@ impl Renderer {
             samples_color,
             samples_data,
             samples_depth,
+            samples_depth_stencil,
             color,
             data,
             color_view,
@@ -1341,13 +1483,27 @@ impl Renderer {
             // The front. Seen through, its alpha says where (0 where
             // nothing is drawn) and its depth is kept for the next pass.
             let alpha = if peeled.is_some() { 0.0 } else { 1.0 };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("craft3d scene"),
-                color_attachments: &[
-                    cleared(&targets.samples_color, wgpu::Color { r, g, b, a: alpha }),
-                    cleared(&targets.samples_data, nothing),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            // An opaque picture without a section in two steps, when the
+            // renderer draws it so (`FirstWrite`).
+            let two_steps = match (&self.first_write, &targets.samples_depth_stencil) {
+                (Some(steps), Some(view)) if cut_open.is_none() && peeled.is_none() => {
+                    Some((steps, view))
+                }
+                _ => None,
+            };
+            let depth_stencil_attachment = match two_steps {
+                Some((_, view)) => wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                },
+                None => wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.samples_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
@@ -1358,7 +1514,15 @@ impl Renderer {
                         },
                     }),
                     stencil_ops: None,
-                }),
+                },
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d scene"),
+                color_attachments: &[
+                    cleared(&targets.samples_color, wgpu::Color { r, g, b, a: alpha }),
+                    cleared(&targets.samples_data, nothing),
+                ],
+                depth_stencil_attachment: Some(depth_stencil_attachment),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1372,9 +1536,20 @@ impl Renderer {
                 (None, Some((pipelines, _))) => &pipelines.front_pipeline,
                 (None, None) => &self.scene_pipeline,
             };
-            pass.set_pipeline(front);
             pass.set_bind_group(0, &self.scene_bind, &[]);
-            draw_mesh(&mut pass);
+            match two_steps {
+                Some((steps, _)) => {
+                    pass.set_pipeline(&steps.depth);
+                    draw_mesh(&mut pass);
+                    pass.set_pipeline(&steps.color);
+                    pass.set_stencil_reference(0);
+                    draw_mesh(&mut pass);
+                }
+                None => {
+                    pass.set_pipeline(front);
+                    draw_mesh(&mut pass);
+                }
+            }
             if let Some((pipelines, count, true)) = cut_open {
                 cut::draw_cap(&mut pass, &pipelines.cap, &count.cap_bind, &self.cap_buffer);
             }
