@@ -762,12 +762,19 @@ fn by_quartic(
     }
     let f = |t: f64| signed_distance(sheet, curve.eval(t)).unwrap_or(f64::NAN);
     // Clear, stretch by stretch, halving at most [`CLEAR_LOOKS`] times.
+    // (Beyond two tolerances and what rounding could be, as `monotone`
+    // reads the distance.)
     let speed = speed_bound(curve);
+    let size = [range.0, range.1]
+        .into_iter()
+        .map(|t| curve.eval(t).length())
+        .fold(surface_size(sheet.surface), f64::max);
+    let margin = 2.0 * tol + ROUNDING * f64::EPSILON * size;
     let mut stretches = vec![range];
     let (mut clear, mut looks) = (true, 0);
     while let Some((a, b)) = stretches.pop() {
         let half = 0.5 * (b - a) * speed;
-        if f(0.5 * (a + b)).abs() > half + 2.0 * tol && half.is_finite() {
+        if f(0.5 * (a + b)).abs() > half + margin && half.is_finite() {
             continue;
         }
         looks += 1;
@@ -824,9 +831,10 @@ fn quartic_turns(curve: &Curve3, surface: &Surface, range: (f64, f64)) -> Option
             let w = f.origin() - sphere.frame().origin();
             let (a, b) = ellipse.semi_axes();
             let (p, q) = (w.dot(f.x()), w.dot(f.y()));
-            // (The products with `p` and `q` are as uncertain as `|w|`
-            // makes them, whatever their size.)
-            let reach = w.length();
+            // (The products with `p` and `q` are as uncertain as the
+            // numbers `w` was worked out from make them, whatever their
+            // size: the centres far from the origin.)
+            let reach = w.length() + f.origin().length() + sphere.frame().origin().length();
             let (big_a, size_a) = (b * b - a * a, b * b + a * a);
             let (size_b, size_c) = (a * reach, b * reach);
             let mut turns = Vec::new();
@@ -1175,6 +1183,38 @@ fn monotone(
     }
     if let [(_, _, Kind::Near)] = runs.as_slice() {
         return Some(CurveIntersection::OnSurface);
+    }
+    // A run near the surface that is no plain crossing (clear on the same
+    // side before and after it, or at an end of the piece) and in which
+    // the distance changes sign is a touch whose place is either of its
+    // zeros, whichever a search happens on (`deepest`): at the edge of
+    // tolerance (a dip of half to one tolerance) what is built next
+    // depends on which. The quartic path leaves such pieces to the root
+    // isolation, so that they are placed as they were before it.
+    if verify
+        && runs.iter().enumerate().any(|(index, &(lo, hi, run))| {
+            let side = |i: Option<usize>| match i.and_then(|i| runs.get(i)) {
+                Some(&(_, _, Kind::Clear { positive })) => Some(positive),
+                _ => None,
+            };
+            let crossing = matches!(
+                (side(index.checked_sub(1)), side(Some(index + 1))),
+                (Some(x), Some(y)) if x != y
+            );
+            if run != Kind::Near || crossing {
+                return false;
+            }
+            let values: Vec<f64> = ends
+                .iter()
+                .copied()
+                .filter(|&t| t > lo && t < hi)
+                .chain([lo, hi, 0.5 * (lo + hi)])
+                .map(f)
+                .collect();
+            values.iter().any(|&v| v > 0.0) && values.iter().any(|&v| v < 0.0)
+        })
+    {
+        return None;
     }
     Some(CurveIntersection::Hits(hits_of_runs(
         curve,
@@ -2172,22 +2212,27 @@ mod tests {
                     (&top, (0.0, 10.0 * k), &torus),
                     (&hole, (0.0, 10.0 * k), &torus),
                 ] {
-                    for found in [
-                        quartic(curve, range, surface, tol).unwrap_or_else(|| {
-                            panic!(
-                                "{} at {delta}, {k}: sent back, turns {:?}",
-                                curve.kind(),
-                                quartic_turns(curve, surface, range)
-                            )
-                        }),
-                        curve_hits(
-                            curve,
-                            range,
-                            Sheet::bare(surface),
-                            &Tolerance::new(tol, 1e-9).unwrap(),
-                        )
-                        .unwrap(),
-                    ] {
+                    // A dip through the surface within the tolerance is a
+                    // touch at either zero: sent back to the root isolation.
+                    let quartic = quartic(curve, range, surface, tol);
+                    // (Exactly tangent, rounding decides.)
+                    let through = delta < 0.0 && delta > -1.0;
+                    if delta != 0.0 {
+                        assert_eq!(
+                            quartic.is_none(),
+                            through,
+                            "{} at {delta}, {k}",
+                            curve.kind()
+                        );
+                    }
+                    for found in quartic.into_iter().chain([curve_hits(
+                        curve,
+                        range,
+                        Sheet::bare(surface),
+                        &Tolerance::new(tol, 1e-9).unwrap(),
+                    )
+                    .unwrap()])
+                    {
                         let CurveIntersection::Hits(hits) = found else {
                             panic!("{delta}: on the surface");
                         };
@@ -2253,5 +2298,88 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Pieces that graze: lines tangent to a torus (at random points of
+    /// its tube, outside and in the hole) and ellipses tangent to a ball,
+    /// moved off the surface by −3 to 3 tolerances, some ending within a
+    /// few tolerances of the place they graze, at three scales and turned.
+    /// What `curve_hits` answers (the quartic path, or the root isolation
+    /// where it sends a piece back) is what the root isolation answers:
+    /// the same count and kinds, at the same places to the tolerance.
+    #[test]
+    fn grazing_pieces_are_found_as_the_root_isolation_finds_them() {
+        let mut state = 99_u64;
+        let (mut compared, mut by_quartic_path) = (0, 0);
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-6 * k;
+            let f = tilted(k);
+            let (major, minor) = (4.0 * k, k);
+            let torus = Surface::Torus(Torus::new(f, major, minor).unwrap());
+            let radius = 3.0 * k;
+            let ball = Surface::Sphere(Sphere::new(f, radius).unwrap());
+            for case in 0..1200 {
+                let mut r = || next(&mut state);
+                let off = 3.0 * tol * r();
+                let (curve, range, surface) = if case % 2 == 0 {
+                    // A point of the tube, its outward normal, and a
+                    // direction square to it.
+                    let (u, v) = (TAU * r(), TAU * r());
+                    let ring = f.x() * u.cos() + f.y() * u.sin();
+                    let normal = ring * v.cos() + f.z() * v.sin();
+                    let at = f.origin() + ring * major + normal * (minor + off);
+                    let across = normal.cross(Vec3::new(r(), r(), r())).normalized().unwrap();
+                    let start = if r() > 0.0 { -5.0 * k } else { 8.0 * tol * r() };
+                    (
+                        Curve3::Line(Line::new(at, across).unwrap()),
+                        (start, 5.0 * k * (1.0 + r().abs())),
+                        &torus,
+                    )
+                } else {
+                    // An ellipse in a plane tangent to the ball, its vertex
+                    // at `t = π` over the point of tangency.
+                    let normal = Vec3::new(r(), r(), r()).normalized().unwrap();
+                    let side = normal.cross(Vec3::new(r(), r(), r())).normalized().unwrap();
+                    let touch = f.origin() + normal * (radius + off);
+                    let a = (1.0 + r().abs()) * k;
+                    let plane = Frame::new(touch + side * a, normal, side).unwrap();
+                    let ellipse = craft3d_geom::Ellipse::new(plane, a, (0.5 + 0.4 * r()) * k);
+                    let pi = std::f64::consts::PI;
+                    let from = if r() > 0.0 { pi - 1.0 } else { pi + 8e-6 * r() };
+                    (Curve3::Ellipse(ellipse.unwrap()), (from, pi + 1.0), &ball)
+                };
+                let want = isolated(&curve, range, surface, tol);
+                let got = curve_hits(
+                    &curve,
+                    range,
+                    Sheet::bare(surface),
+                    &Tolerance::new(tol, 1e-9).unwrap(),
+                )
+                .unwrap();
+                if quartic(&curve, range, surface, tol).is_some() {
+                    by_quartic_path += 1;
+                }
+                match (&want, &got) {
+                    (CurveIntersection::Hits(w), CurveIntersection::Hits(g)) => {
+                        assert_eq!(
+                            w.len(),
+                            g.len(),
+                            "{} at {k}: {w:?} against {g:?}",
+                            curve.kind()
+                        );
+                        for (x, y) in w.iter().zip(g) {
+                            assert_eq!(x.tangent, y.tangent, "{} at {k}", curve.kind());
+                            assert!(x.point.distance(y.point) <= tol, "{x:?} against {y:?}");
+                        }
+                        compared += w.len();
+                    }
+                    _ => assert_eq!(want, got),
+                }
+            }
+        }
+        assert!(
+            compared > 2000 && by_quartic_path > 1000,
+            "{compared}, {by_quartic_path}"
+        );
     }
 }

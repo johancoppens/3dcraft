@@ -2,7 +2,7 @@
 //! in which two surfaces meet, cut down to the stretches that are within
 //! both faces.
 
-use super::cover::{Cover, Face as CoverFace};
+use super::cover::{Cover, Face as CoverFace, clear_of_surface};
 use super::facetree::FaceTree;
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
@@ -538,11 +538,13 @@ fn edge_cuts(
         // other surface only where no stretch can be kept: a stretch
         // between the cuts that are left crosses no boundary of the other
         // face, and holds a point outside it, so all of it is outside.
-        // (Nor does an edge further than that from the other surface,
-        // which it then does not meet.)
-        if other.is_some_and(|(cover, of)| {
-            !cover.reaches(of, &own.edge_box(id), Some(surface.surface), APART * tol)
-        }) {
+        if other.is_some_and(|(cover, of)| !cover.reaches(of, &own.edge_box(id), None, APART * tol))
+        {
+            continue;
+        }
+        // Nor does an edge whose box is further than that from the other
+        // surface (then it does not meet it at all).
+        if clear_of_surface(surface.surface, &own.edge_box(id), APART * tol) {
             continue;
         }
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;

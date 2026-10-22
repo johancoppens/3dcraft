@@ -131,10 +131,18 @@ const MOST_PIECES: usize = 4096;
 const FIRST_NODES: usize = 1 << 12;
 
 /// How far, relative to the largest coordinate, the control points of a
-/// piece may have been moved by rounding: a NURBS surface's pieces come
-/// from knot insertions and are halved down to [`DEPTH`] times, each a
-/// few roundings per point relative to that size (some 10⁻¹⁴ in all);
-/// the cover's margins are tolerances beyond that.
+/// piece may have been moved by rounding, per unit of the spread of its
+/// weights: a NURBS surface's pieces come from knot insertions and are
+/// halved down to [`DEPTH`] times (with the cut-outs, some sixty
+/// de Casteljau steps of a few roundings each, in homogeneous
+/// coordinates, where every step is a convex combination); a control
+/// point is then a homogeneous point over its weight, whose rounding
+/// relative to the largest coordinate grows with the heaviest weight over
+/// the lightest. Some 10⁻¹⁴ times that spread in all, and 10⁻¹² leaves
+/// room. The box only grows by it, so a larger spread costs a looser
+/// cover, never a point of the face; it is no margin of the boolean's
+/// (those are tolerances), and with weights a million apart and
+/// coordinates 10⁴ tolerances large it is still below a tolerance.
 const PIECE_ROUNDING: f64 = 1e-12;
 
 const _: () = assert!(MOST_PIECES <= FIRST_NODES);
@@ -281,7 +289,12 @@ fn node(
             let size = [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]
                 .into_iter()
                 .fold(0.0, |m: f64, x| m.max(x.abs()));
-            (hull, PIECE_ROUNDING * size)
+            let spread = match piece.weight_range() {
+                Some((lightest, heaviest)) if lightest > 0.0 => (heaviest / lightest).max(1.0),
+                _ if piece.is_polynomial() => 1.0,
+                _ => return Err(()),
+            };
+            (hull, PIECE_ROUNDING * size * spread)
         }
         None => {
             let [_, _, bend_u, bend_v] = bounds(face.surface, (c, d)).ok_or(())?;
@@ -1397,5 +1410,90 @@ mod tests {
             }
         }
         assert!(cleared > 10_000, "{cleared}");
+    }
+
+    /// A box called clear of a surface holds no point of the surface
+    /// within the margin: points sampled on the surface itself (a grid of
+    /// 192 × 192 parameters over the part of it near the boxes), for cones
+    /// that widen either way, a cone of radius 0 at `v = 0` with boxes
+    /// about its apex, tori with a thick tube (major 1, minor 0.99) and
+    /// boxes on and about their axis, balls and cylinders, at three
+    /// scales.
+    #[test]
+    fn a_box_clear_of_a_surface_holds_no_point_of_it() {
+        use super::clear_of_surface;
+        use craft3d_geom::{Cone, Cylinder, Sphere, Surface, Torus};
+        use craft3d_math::Bbox3;
+        let mut state = 7_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let mut cleared = 0;
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            let margin = 16.0 * tol;
+            let f = Frame::new(
+                Vec3::new(1.0, -2.0, 0.5) * k,
+                Vec3::new(0.3, -0.4, 1.0),
+                Vec3::new(1.0, 0.2, 0.0),
+            )
+            .unwrap();
+            let surfaces = [
+                Surface::Cone(Cone::new(f, 1.5 * k, 0.4).unwrap()),
+                Surface::Cone(Cone::new(f, 1.5 * k, -0.7).unwrap()),
+                Surface::Cone(Cone::new(f, 0.0, 0.5).unwrap()),
+                Surface::Cone(Cone::new(f, 0.0, -0.3).unwrap()),
+                Surface::Torus(Torus::new(f, k, 0.99 * k).unwrap()),
+                Surface::Torus(Torus::new(f, 4.0 * k, k).unwrap()),
+                Surface::Sphere(Sphere::new(f, 3.0 * k).unwrap()),
+                Surface::Cylinder(Cylinder::new(f, 2.0 * k).unwrap()),
+            ];
+            for surface in &surfaces {
+                // The surface's points: around, and along it within 6 of
+                // the frame's origin (all of a torus or a ball).
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let (v0, v1) = match surface {
+                    Surface::Cone(_) | Surface::Cylinder(_) => (v0.max(-6.0 * k), v1.min(6.0 * k)),
+                    _ => (v0, v1),
+                };
+                let n = 192;
+                let points: Vec<Vec3> = (0..=n)
+                    .flat_map(|i| {
+                        (0..=n).map(move |j| {
+                            let s = |a: f64, b: f64, x: i32| a + (b - a) * f64::from(x) / 192.0;
+                            surface.eval(s(u0, u1, i), s(v0, v1, j))
+                        })
+                    })
+                    .collect();
+                for b in 0..400 {
+                    // Half the boxes about the frame's axis (a cone's apex
+                    // where its radius is 0, a torus's hole), the others
+                    // anywhere near.
+                    let middle = if b % 2 == 0 {
+                        f.point(0.2 * k * next(), 0.2 * k * next(), 3.0 * k * next())
+                    } else {
+                        f.point(6.0 * k * next(), 6.0 * k * next(), 6.0 * k * next())
+                    };
+                    let size = k * 10f64.powf(-2.0 * next().abs());
+                    let half = Vec3::new(next().abs(), next().abs(), next().abs()) * size;
+                    let bbox = Bbox3::from_points([middle - half, middle + half]);
+                    if !clear_of_surface(surface, &bbox, margin) {
+                        continue;
+                    }
+                    cleared += 1;
+                    for p in &points {
+                        assert!(
+                            !bbox.contains(*p, margin),
+                            "{} at {k}: {p:?}",
+                            surface.kind()
+                        );
+                    }
+                }
+            }
+        }
+        assert!(cleared > 2000, "{cleared}");
     }
 }
