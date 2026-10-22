@@ -270,6 +270,12 @@ mod tests {
         fn save(&self, _: &str) -> Option<PathBuf> {
             self.0.lock().unwrap().pop().flatten()
         }
+        fn import(&self) -> Option<PathBuf> {
+            None
+        }
+        fn export(&self, _: &str) -> Option<PathBuf> {
+            None
+        }
     }
 
     fn workdir(name: &str) -> PathBuf {

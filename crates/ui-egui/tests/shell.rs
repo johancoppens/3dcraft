@@ -1049,6 +1049,8 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
             FileAction::SaveAs,
         ),
         (egui::Key::N, ctrl, FileAction::New),
+        (egui::Key::I, ctrl, FileAction::Import),
+        (egui::Key::E, ctrl, FileAction::Export),
     ] {
         let _ = window.frame(&mut shell, &mut session, key(pressed, modifiers));
         assert_eq!(shell.take_file_action(), Some(action), "{action:?}");
@@ -1080,13 +1082,31 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
         (egui::Key::S, ctrl | egui::Modifiers::SHIFT, None),
         (egui::Key::O, ctrl, Some(FileAction::Open)),
         (egui::Key::N, ctrl, Some(FileAction::New)),
+        (egui::Key::E, ctrl, None),
+        (egui::Key::I, ctrl, Some(FileAction::Import)),
     ] {
         let _ = window.frame(&mut shell, &mut empty, key(pressed, modifiers));
         assert_eq!(shell.take_file_action(), action, "{pressed:?}");
     }
     // What the menu shows.
     let labels: Vec<&str> = FileAction::ALL.iter().map(|a| a.label()).collect();
-    assert_eq!(labels, ["New", "Open…", "Save", "Save As…"]);
+    assert_eq!(
+        labels,
+        ["New", "Open…", "Save", "Save As…", "Import…", "Export…"]
+    );
+    // No two entries share a shortcut, and none is Close's (Ctrl+W).
+    let mut shortcuts: Vec<String> = FileAction::ALL
+        .iter()
+        .map(|a| format!("{:?}", a.shortcut()))
+        .collect();
+    shortcuts.push(format!(
+        "{:?}",
+        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)
+    ));
+    let count = shortcuts.len();
+    shortcuts.sort();
+    shortcuts.dedup();
+    assert_eq!(shortcuts.len(), count, "{shortcuts:?}");
     shell.request_file_action(FileAction::SaveAs);
     assert_eq!(shell.take_file_action(), Some(FileAction::SaveAs));
 }
@@ -1106,17 +1126,29 @@ fn clicking_file_then_an_entry_asks_for_that_action() {
     // "File" is the first thing in the bar at the top.
     click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
     assert_eq!(shell.take_file_action(), None, "the menu is only open");
-    // Its entries are below it, a row each: find the one that asks for
-    // Save by trying the rows down the menu.
+    let escape = |window: &mut Window, shell: &mut Shell, session: &mut Session| {
+        let _ = window.frame(
+            shell,
+            session,
+            key(egui::Key::Escape, egui::Modifiers::NONE),
+        );
+        window.idle(shell, session, 2);
+    };
+    escape(&mut window, &mut shell, &mut session);
+    // Its entries are below it, a row each: find what each asks for by
+    // opening the menu and clicking the rows down it, one at a time (a
+    // click anywhere in the menu, a separator too, closes it).
     let mut found = Vec::new();
-    for row in 0..12 {
+    for row in 0..18 {
+        click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
         let at = pos2(40.0, 30.0 + 10.0 * row as f32);
         click(&mut window, &mut shell, &mut session, at);
         if let Some(action) = shell.take_file_action() {
             found.push(action);
-            // The menu closed with the click: open it again.
-            click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
         }
+        // Close, below the file actions, asks for a tab's action.
+        let _ = shell.take_doc_action();
+        escape(&mut window, &mut shell, &mut session);
     }
     found.dedup();
     assert_eq!(found, FileAction::ALL, "the entries, from the top down");

@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -26,7 +26,9 @@
 //! right), as it is drawn under the pointer; `--point NAME` puts it on the
 //! middle of that control (`see-through`, `offset`, `fit`, ...: the names
 //! of `ControlsLayout::controls`), and `--type NAME=TEXT` double-clicks
-//! that number field and types TEXT into it, without Enter. Then,
+//! that number field and types TEXT into it, without Enter; `--click X,Y`
+//! clicks the window at that point (in points), and leaves the pointer
+//! there: `--click 20,10` opens the File menu. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -39,7 +41,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -53,6 +55,7 @@ fn main() -> Result<(), String> {
     let mut scale = 1.0_f32;
     let mut point: Option<String> = None;
     let mut typed: Option<(String, String)> = None;
+    let mut click: Option<Pos2> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -107,6 +110,15 @@ fn main() -> Result<(), String> {
                     .split_once('=')
                     .ok_or(format!("--type takes NAME=TEXT; {USAGE}"))?;
                 typed = Some((name.to_string(), value.to_string()));
+            }
+            "--click" => {
+                let text = args.next().ok_or(format!("--click takes X,Y; {USAGE}"))?;
+                let (x, y) = text
+                    .split_once(',')
+                    .ok_or(format!("--click takes X,Y; {USAGE}"))?;
+                let x: f32 = x.trim().parse().map_err(|_| format!("--click: {x}"))?;
+                let y: f32 = y.trim().parse().map_err(|_| format!("--click: {y}"))?;
+                click = Some(Pos2::new(x, y));
             }
             "--hover" => {
                 let text = args.next().ok_or(format!("--hover takes X,Y,Z; {USAGE}"))?;
@@ -185,7 +197,11 @@ fn main() -> Result<(), String> {
     };
     // The window as it shows the document, then as it is while work runs.
     let mut jobs = Vec::new();
-    let frames: usize = if typed.is_some() { 9 } else { 4 };
+    let frames: usize = if typed.is_some() || click.is_some() {
+        9
+    } else {
+        4
+    };
     let control = |shell: &Shell, name: &str| {
         shell.controls_layout().and_then(|layout| {
             layout
@@ -251,6 +267,19 @@ fn main() -> Result<(), String> {
                 2 | 3 => events.extend([button(true), button(false)]),
                 5 => events.push(egui::Event::Text(text.clone())),
                 _ => {}
+            }
+        }
+        if let Some(at) = click
+            && frame >= 1
+        {
+            events.push(egui::Event::PointerMoved(at));
+            if frame == 2 {
+                events.extend([true, false].map(|pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }));
             }
         }
         let output = ctx.run_ui(input(time, events), |ui| {

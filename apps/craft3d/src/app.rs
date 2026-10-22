@@ -609,6 +609,21 @@ impl Desk {
                         }),
                     );
                 }
+                Ok(Choice::Import(path)) => self.start(
+                    Waiting::File("file.import"),
+                    "file.import".to_string(),
+                    Box::new(move |session| Outcome::Ran(files::import_as_user(session, &path))),
+                ),
+                Ok(Choice::Export(path)) => {
+                    self.host.note_export(&path);
+                    self.start(
+                        Waiting::File("file.export"),
+                        "file.export".to_string(),
+                        Box::new(move |session| {
+                            Outcome::Ran(files::export_as_user(session, &path))
+                        }),
+                    );
+                }
                 other => self.host.file_choice(other),
             }
             return true;

@@ -75,7 +75,8 @@ pub const PRODUCT: &str = "3DCraft";
 
 /// What the File menu and its shortcuts ask for. The shell only asks: the
 /// host runs the command, after showing its file dialog where one is
-/// needed (`file.new`, `file.open`, `file.save`).
+/// needed (`file.new`, `file.open`, `file.save`, `file.import`,
+/// `file.export`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileAction {
     New,
@@ -83,15 +84,22 @@ pub enum FileAction {
     /// To the document's own file; like `SaveAs` when it has none.
     Save,
     SaveAs,
+    /// A STEP file read into the active document (`file.import`).
+    Import,
+    /// The document's bodies, or what is selected, to a file of the
+    /// format its extension names (`file.export`).
+    Export,
 }
 
 impl FileAction {
     /// In menu order.
-    pub const ALL: [FileAction; 4] = [
+    pub const ALL: [FileAction; 6] = [
         FileAction::New,
         FileAction::Open,
         FileAction::Save,
         FileAction::SaveAs,
+        FileAction::Import,
+        FileAction::Export,
     ];
 
     pub fn label(self) -> &'static str {
@@ -100,10 +108,12 @@ impl FileAction {
             FileAction::Open => "Open…",
             FileAction::Save => "Save",
             FileAction::SaveAs => "Save As…",
+            FileAction::Import => "Import…",
+            FileAction::Export => "Export…",
         }
     }
 
-    /// Ctrl (⌘ on a Mac) with N, O, S, and Shift+S.
+    /// Ctrl (⌘ on a Mac) with N, O, S, Shift+S, I and E.
     pub fn shortcut(self) -> egui::KeyboardShortcut {
         let command = egui::Modifiers::COMMAND;
         let (modifiers, key) = match self {
@@ -111,13 +121,24 @@ impl FileAction {
             FileAction::Open => (command, egui::Key::O),
             FileAction::Save => (command, egui::Key::S),
             FileAction::SaveAs => (command | egui::Modifiers::SHIFT, egui::Key::S),
+            FileAction::Import => (command, egui::Key::I),
+            FileAction::Export => (command, egui::Key::E),
         };
         egui::KeyboardShortcut::new(modifiers, key)
     }
 
-    /// Saving needs a document to save.
+    /// Saving and exporting need a document. Importing does not: without
+    /// one the host makes a new document to import into.
     pub fn needs_document(self) -> bool {
-        matches!(self, FileAction::Save | FileAction::SaveAs)
+        matches!(
+            self,
+            FileAction::Save | FileAction::SaveAs | FileAction::Export
+        )
+    }
+
+    /// The menu draws a line above it.
+    fn starts_group(self) -> bool {
+        self == FileAction::Import
     }
 }
 
@@ -1638,6 +1659,8 @@ impl Shell {
             FileAction::Save,
             FileAction::Open,
             FileAction::New,
+            FileAction::Import,
+            FileAction::Export,
         ] {
             let pressed = ui.input_mut(|i| i.consume_shortcut(&action.shortcut()));
             if pressed && (has_document || !action.needs_document()) {
@@ -1650,6 +1673,9 @@ impl Shell {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 for action in FileAction::ALL {
+                    if action.starts_group() {
+                        ui.separator();
+                    }
                     let shortcut = ui.ctx().format_shortcut(&action.shortcut());
                     let button = egui::Button::new(action.label()).shortcut_text(shortcut);
                     let enabled = has_document || !action.needs_document();
@@ -1658,6 +1684,7 @@ impl Shell {
                         ui.close();
                     }
                 }
+                ui.separator();
                 self.menu_documents(ui);
             });
         });

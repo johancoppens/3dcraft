@@ -1,16 +1,18 @@
-//! New, Open, Save and Save As for the person at the window.
+//! New, Open, Save, Save As, Import and Export for the person at the
+//! window.
 //!
 //! The engine's file commands run under the session's [`Workspace`]: the
 //! automation roots, which keep a script or an agent on the control
 //! channel inside the directories it was given. A person who picks a file
-//! in the system's dialog has chosen that file themselves, and may open or
-//! save it wherever they can: so the same commands (`file.open`,
-//! `file.save`; everything is a command) are run for them with a grant
-//! for that one choice.
+//! in the system's dialog has chosen that file themselves, and may open,
+//! save, import or export it wherever they can: so the same commands
+//! (`file.open`, `file.save`, `file.import`, `file.export`; everything is
+//! a command) are run for them with a grant for that one choice.
 //!
 //! The grant is as narrow and as short as the engine can express:
 //!
-//! - one direction (reading to open, writing to save), the other denied;
+//! - one direction (reading to open or import, writing to save or
+//!   export), the other denied;
 //! - one directory, the one the chosen file is in;
 //! - one command: the automation workspace is put back before this
 //!   module returns, whether the command worked, failed or panicked.
@@ -23,7 +25,9 @@
 //! dialog lead here. What a request can do afterwards is what it could do
 //! before: a document that was opened from outside the roots can be
 //! edited by an agent (it is the document in the window), but saved by one
-//! only to a path beneath the write root.
+//! only to a path beneath the write root. An imported file's bytes are
+//! kept in the document (`file.import`), so an agent works with the
+//! imported bodies without any access to the file itself.
 //!
 //! The dialog itself runs on its own thread, so the window keeps drawing
 //! and answering requests while it is open ([`Picker`]). It is behind a
@@ -41,6 +45,22 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 /// The extension of the native format.
 pub const EXTENSION: &str = "3dcraft";
 
+/// The extensions `file.import` reads (STEP), in both cases for the
+/// dialogs that filter by case.
+pub const IMPORT_EXTENSIONS: [&str; 4] = ["step", "stp", "STEP", "STP"];
+
+/// The formats `file.export` writes, as the export dialog offers them: a
+/// name and its extensions. The format follows the extension of the file
+/// the person names.
+pub const EXPORT_FORMATS: [(&str, &[&str]); 6] = [
+    ("STEP", &["step", "stp"]),
+    ("STL", &["stl"]),
+    ("3MF", &["3mf"]),
+    ("OBJ", &["obj"]),
+    ("DXF", &["dxf"]),
+    ("SVG", &["svg"]),
+];
+
 /// The system's file dialogs. Each call blocks until the person chose or
 /// cancelled (`None`).
 pub trait Dialogs: Send + Sync {
@@ -48,6 +68,11 @@ pub trait Dialogs: Send + Sync {
     fn open(&self) -> Option<PathBuf>;
     /// Asks where to save, proposing `suggested` as the file's name.
     fn save(&self, suggested: &str) -> Option<PathBuf>;
+    /// Asks for a file to import ([`IMPORT_EXTENSIONS`]).
+    fn import(&self) -> Option<PathBuf>;
+    /// Asks where to export, proposing `suggested` as the file's name
+    /// ([`EXPORT_FORMATS`]).
+    fn export(&self, suggested: &str) -> Option<PathBuf>;
 }
 
 /// The dialogs of the desktop (the portal's on Linux).
@@ -69,6 +94,30 @@ impl Dialogs for SystemDialogs {
             .set_file_name(suggested)
             .save_file()
     }
+
+    fn import(&self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Import")
+            .add_filter("STEP", &IMPORT_EXTENSIONS)
+            .add_filter("All files", &["*"])
+            .pick_file()
+    }
+
+    fn export(&self, suggested: &str) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title("Export");
+        // The proposed name's format first, as the dialog's default.
+        let proposed = Path::new(suggested)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        let (first, rest): (Vec<_>, Vec<_>) = EXPORT_FORMATS.iter().partition(|(_, extensions)| {
+            proposed.as_deref().is_some_and(|p| extensions.contains(&p))
+        });
+        for (name, extensions) in first.into_iter().chain(rest) {
+            dialog = dialog.add_filter(name.to_string(), extensions);
+        }
+        dialog.set_file_name(suggested).save_file()
+    }
 }
 
 /// What came out of a dialog.
@@ -76,6 +125,8 @@ impl Dialogs for SystemDialogs {
 pub enum Choice {
     Open(PathBuf),
     Save(PathBuf),
+    Import(PathBuf),
+    Export(PathBuf),
     /// The dialog was closed without a choice.
     Cancelled(&'static str),
 }
@@ -145,6 +196,26 @@ impl Picker {
                 .map_or(Choice::Cancelled("file.save"), |path| {
                     Choice::Save(with_extension(path))
                 })
+        })
+    }
+
+    /// Opens the dialog for a file to import.
+    pub fn ask_import(&mut self) -> Result<(), String> {
+        self.ask("import", |dialogs| {
+            dialogs
+                .import()
+                .map_or(Choice::Cancelled("file.import"), Choice::Import)
+        })
+    }
+
+    /// Opens the dialog for where to export. The name is kept as the
+    /// person gave it: its extension says the format, and a name without
+    /// one is refused by `file.export` with the formats it knows.
+    pub fn ask_export(&mut self, suggested: String) -> Result<(), String> {
+        self.ask("export", move |dialogs| {
+            dialogs
+                .export(&suggested)
+                .map_or(Choice::Cancelled("file.export"), Choice::Export)
         })
     }
 
@@ -268,6 +339,163 @@ pub fn run_as_user(
     }
 }
 
+/// Runs a command with the session's own (automation) access, a panic
+/// turned into an error.
+fn guarded(session: &mut Session, command: &str, params: &Value) -> Result<Value, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.execute(command, params)
+    }))
+    .unwrap_or_else(|_| {
+        Err(CommandError::new(
+            "internal error (a bug in 3DCraft, please report it); the document was kept",
+        ))
+    })
+    .map_err(|e| e.message().to_string())
+}
+
+/// Imports the STEP file the person chose into the active document
+/// (`file.import`: one undo step, an import feature per solid), with the
+/// person's own access to that one file. Without a document a new one is
+/// made for it, and closed again when the file cannot be imported.
+pub fn import_as_user(session: &mut Session, path: &Path) -> Result<Value, String> {
+    let made = if session.document_status().is_none() {
+        guarded(session, "file.new", &json!({})).map_err(|e| format!("file.new: {e}"))?;
+        true
+    } else {
+        false
+    };
+    let outcome = run_as_user(session, "file.import", path, false, None);
+    if outcome.is_err() && made {
+        let _ = guarded(session, "file.close", &json!({ "discard": true }));
+    }
+    outcome
+}
+
+/// A field of a command's result; null when it is not there.
+fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    value.get(key).unwrap_or(&Value::Null)
+}
+
+/// What an export to a file of this name holds, by its extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportKind {
+    /// Every body (STEP, STL, 3MF, OBJ).
+    Bodies,
+    /// The flat outline of faces or of a sketch (DXF, SVG).
+    Outline,
+}
+
+fn export_kind(path: &Path) -> Option<ExportKind> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "step" | "stp" | "stl" | "3mf" | "obj" => Some(ExportKind::Bodies),
+        "dxf" | "svg" => Some(ExportKind::Outline),
+        _ => None,
+    }
+}
+
+/// The parameter `file.export` is given for the window's selection, if
+/// any: `None` exports every body. An error, saying why, when
+/// `file.export` cannot write what is selected: never something else in
+/// its place.
+///
+/// - Nothing selected: a STEP or mesh file holds every body; a DXF or SVG
+///   file needs faces or a sketch, so it is refused.
+/// - Faces only, to DXF or SVG: those faces on one sheet (`faces`; a face
+///   that is not flat is refused by `file.export`, naming it).
+/// - One sketch only, to DXF or SVG: its outline (`sketch`).
+/// - Every body of the document, and nothing else: as nothing selected.
+/// - Anything else is refused: `file.export` writes every body to STEP
+///   and the mesh formats, or faces or one sketch to DXF and SVG.
+fn export_selection(
+    session: &mut Session,
+    path: &Path,
+) -> Result<Option<(&'static str, Value)>, String> {
+    const ID: &str = "file.export";
+    let Some(kind) = export_kind(path) else {
+        // `file.export` says which names it knows.
+        return Ok(None);
+    };
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let selection = guarded(session, "select.get", &json!({ "context": false }))
+        .map_err(|e| format!("{ID}: {e}"))?;
+    let items: &[Value] = field(&selection, "items")
+        .as_array()
+        .map_or(&[], Vec::as_slice);
+    let summary = field(&selection, "summary")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let of_kind = |kind: &str| items.iter().filter(|i| field(i, "kind") == kind).count();
+    let (faces, bodies, sketches) = (of_kind("face"), of_kind("body"), of_kind("sketch"));
+    match kind {
+        ExportKind::Bodies => {
+            if items.is_empty() {
+                return Ok(None);
+            }
+            if bodies == items.len() {
+                let all = guarded(session, "select.query", &json!({ "kind": "body" }))
+                    .map_err(|e| format!("{ID}: {e}"))?;
+                if field(&all, "count").as_u64() == Some(bodies as u64) {
+                    return Ok(None);
+                }
+            }
+            Err(format!(
+                "{ID}: a .{extension} file holds every body of the document; it cannot hold only what is selected ({summary}). Clear the selection to export every body, or export flat faces or a sketch as .dxf or .svg"
+            ))
+        }
+        ExportKind::Outline => {
+            if items.is_empty() {
+                return Err(format!(
+                    "{ID}: a .{extension} file is the outline of flat faces or of a sketch; select the faces or the sketch to export first"
+                ));
+            }
+            if faces == items.len() {
+                let list: Vec<Value> = items
+                    .iter()
+                    .map(|i| json!({ "face": field(i, "name"), "feature": field(i, "feature") }))
+                    .collect();
+                return Ok(Some(("faces", Value::Array(list))));
+            }
+            if sketches == 1 && items.len() == 1 {
+                let item = items.first().unwrap_or(&Value::Null);
+                let id = match field(item, "feature").as_str() {
+                    Some(id) if !id.is_empty() => id,
+                    _ => field(item, "name").as_str().unwrap_or_default(),
+                };
+                return Ok(Some(("sketch", Value::String(id.to_string()))));
+            }
+            Err(format!(
+                "{ID}: a .{extension} file is the outline of flat faces or of one sketch, and the selection is {summary}; select only flat faces, or one sketch"
+            ))
+        }
+    }
+}
+
+/// Exports to the file the person chose, in the format its extension
+/// names, with the person's own access to its folder (`file.export`):
+/// every body, or what is selected as far as `file.export` can take it
+/// ([`export_selection`]).
+pub fn export_as_user(session: &mut Session, path: &Path) -> Result<Value, String> {
+    let extra = export_selection(session, path)?;
+    run_as_user(session, "file.export", path, true, extra)
+}
+
+/// The name the export dialog proposes: the document's file's, with the
+/// extension of the last export (STEP the first time).
+pub fn suggested_export_name(path: Option<&str>, extension: Option<&str>) -> String {
+    let stem = path
+        .and_then(|path| Path::new(path).file_stem())
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("untitled");
+    format!("{stem}.{}", extension.unwrap_or("step"))
+}
+
 /// What Save As does with the file named in the dialog: the dialog asked
 /// before replacing one ([`Host::save_chosen_as_user`]).
 pub const CONFIRMED: (&str, bool) = ("overwrite", true);
@@ -347,6 +575,34 @@ impl Host {
         outcome
     }
 
+    /// Imports the STEP file the person chose into the active document
+    /// (a new one when there is none): [`import_as_user`].
+    pub fn import_as_user(&mut self, path: &Path) -> Result<Value, String> {
+        let outcome = import_as_user(&mut self.session, path);
+        self.report("file.import", &outcome);
+        self.shell.sync(&mut self.session);
+        outcome
+    }
+
+    /// Exports to the file the person chose: [`export_as_user`].
+    pub fn export_as_user(&mut self, path: &Path) -> Result<Value, String> {
+        self.note_export(path);
+        let outcome = export_as_user(&mut self.session, path);
+        self.report("file.export", &outcome);
+        self.shell.sync(&mut self.session);
+        outcome
+    }
+
+    /// Keeps the extension of a file chosen to export to, for the next
+    /// export's proposed name.
+    pub(crate) fn note_export(&mut self, path: &Path) {
+        if export_kind(path).is_some()
+            && let Some(extension) = path.extension().and_then(|e| e.to_str())
+        {
+            self.export_extension = Some(extension.to_ascii_lowercase());
+        }
+    }
+
     /// Does what the File menu asked for, as far as that goes without a
     /// dialog; opens the dialog otherwise, whose answer goes to
     /// [`Self::file_choice`].
@@ -359,6 +615,19 @@ impl Host {
                 return;
             }
             FileAction::Open => picker.ask_open().map_err(|e| ("file.open", e)),
+            FileAction::Import => picker.ask_import().map_err(|e| ("file.import", e)),
+            FileAction::Export => {
+                let Some(status) = self.session.document_status() else {
+                    self.report(
+                        "file.export",
+                        &Err("there is no document to export".to_string()),
+                    );
+                    return;
+                };
+                let suggested =
+                    suggested_export_name(status.path.as_deref(), self.export_extension.as_deref());
+                picker.ask_export(suggested).map_err(|e| ("file.export", e))
+            }
             FileAction::Save | FileAction::SaveAs => {
                 let Some(status) = self.session.document_status() else {
                     self.report(
@@ -406,6 +675,12 @@ impl Host {
         match choice {
             Ok(Choice::Open(path)) => {
                 let _ = self.open_as_user(&path);
+            }
+            Ok(Choice::Import(path)) => {
+                let _ = self.import_as_user(&path);
+            }
+            Ok(Choice::Export(path)) => {
+                let _ = self.export_as_user(&path);
             }
             Ok(Choice::Save(path)) => {
                 let saved = self.save_chosen_as_user(&path);
@@ -583,6 +858,14 @@ mod tests {
 
         fn save(&self, suggested: &str) -> Option<PathBuf> {
             self.answer(format!("save {suggested}"))
+        }
+
+        fn import(&self) -> Option<PathBuf> {
+            self.answer("import".to_string())
+        }
+
+        fn export(&self, suggested: &str) -> Option<PathBuf> {
+            self.answer(format!("export {suggested}"))
         }
     }
 
@@ -1001,6 +1284,12 @@ mod tests {
             fn save(&self, _: &str) -> Option<PathBuf> {
                 panic!("the save dialog fell over")
             }
+            fn import(&self) -> Option<PathBuf> {
+                self.open()
+            }
+            fn export(&self, suggested: &str) -> Option<PathBuf> {
+                self.save(suggested)
+            }
         }
         let (close, closing) = mpsc::channel();
         let woken = Arc::new(AtomicUsize::new(0));
@@ -1116,5 +1405,359 @@ mod tests {
         // Another extension is the person's business.
         assert_eq!(ext("/a/gear.bak"), PathBuf::from("/a/gear.bak"));
         assert_eq!(ext("/a.b/gear"), PathBuf::from("/a.b/gear.3dcraft"));
+        // The export dialog: the document's name, the last format.
+        assert_eq!(suggested_export_name(None, None), "untitled.step");
+        assert_eq!(
+            suggested_export_name(Some("/home/me/gear.3dcraft"), Some("stl")),
+            "gear.stl"
+        );
+        assert_eq!(suggested_export_name(Some(""), Some("dxf")), "untitled.dxf");
+        let kind = |p: &str| export_kind(Path::new(p));
+        assert_eq!(kind("a.STEP"), Some(ExportKind::Bodies));
+        assert_eq!(kind("a.3mf"), Some(ExportKind::Bodies));
+        assert_eq!(kind("a.Svg"), Some(ExportKind::Outline));
+        assert_eq!(kind("a.dwg"), None);
+        assert_eq!(kind("a"), None);
+    }
+
+    /// Writes a STEP file of one block of the given height, as a person
+    /// with a file from another modeller would have it.
+    fn write_step(path: &Path, height: f64) {
+        let mut s = Session::new(Workspace::unrestricted());
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("feature.block", &json!({"size": [10, 10, height]}))
+            .unwrap();
+        s.execute("file.export", &json!({"path": text(path)}))
+            .unwrap();
+    }
+
+    #[test]
+    fn import_reads_the_chosen_step_file_into_the_document_as_one_step() {
+        let dir = workdir("import");
+        let (mine, shared) = (subdir(&dir, "mine"), subdir(&dir, "shared"));
+        let part = mine.join("part.step");
+        write_step(&part, 5.0);
+        let on_disk = std::fs::read(&part).unwrap();
+        let automation = rooted(Some(&shared), Some(&shared));
+        let mut host = Host::new(Session::new(automation.clone()));
+        let person = Person::who_answers(&[None, Some(&part), Some(&part)]);
+        let mut dialogs = picker(&person);
+
+        // Cancelled: nothing happens, not even a new document.
+        act(&mut host, &mut dialogs, FileAction::Import);
+        assert_eq!(
+            last(&host),
+            ("file.import".to_string(), false, "cancelled".to_string())
+        );
+        assert!(host.session.document_status().is_none());
+
+        // Without a document: a new one, with the file's solid in it, as
+        // one undo step.
+        host.shell.request_file_action(FileAction::Import);
+        assert!(host.pump_files(&mut dialogs));
+        let choice = dialogs.wait().unwrap();
+        assert_eq!(choice, Ok(Choice::Import(part.clone())));
+        host.file_choice(choice);
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.import", true), "{said}");
+        assert_eq!(volume(&mut host), 500.0);
+        assert_eq!(host.shell.tree_rows().len(), 1, "the tree shows it already");
+        assert_eq!(person.asked(), ["import", "import"]);
+
+        // The agent works with the imported body, but was given no access
+        // to the file: the automation roots are as they were.
+        assert_eq!(*host.session.workspace(), automation);
+        let measured = agent(&mut host, "document.measure", json!({})).unwrap();
+        assert_eq!(whole(&measured), 500.0);
+        let refused = agent(&mut host, "file.import", json!({"path": text(&part)})).unwrap_err();
+        assert!(refused.contains("outside the read root"), "{refused}");
+
+        // Into the document that is open: a second import feature.
+        act(&mut host, &mut dialogs, FileAction::Import);
+        assert!(last(&host).1, "{:?}", last(&host));
+        assert_eq!(volume(&mut host), 1000.0);
+        // Each import is one undo step.
+        agent(&mut host, "edit.undo", json!({})).unwrap();
+        assert_eq!(volume(&mut host), 500.0);
+        agent(&mut host, "edit.undo", json!({})).unwrap();
+        assert!(agent(&mut host, "edit.undo", json!({})).is_err());
+        agent(&mut host, "edit.redo", json!({})).unwrap();
+        assert_eq!(volume(&mut host), 500.0);
+        assert_eq!(
+            std::fs::read(&part).unwrap(),
+            on_disk,
+            "the file is untouched"
+        );
+
+        // A file that cannot be imported: an error for the status bar, the
+        // document as it was, the roots back in place.
+        let junk = mine.join("junk.step");
+        std::fs::write(&junk, b"not a STEP file").unwrap();
+        for bad in [junk.clone(), mine.join("missing.step")] {
+            let error = host.import_as_user(&bad).unwrap_err();
+            assert!(error.contains("file.import"), "{error}");
+            assert_eq!(*host.session.workspace(), automation);
+            let (label, ok, _) = last(&host);
+            assert_eq!((label.as_str(), ok), ("file.import", false));
+            assert_eq!(volume(&mut host), 500.0);
+        }
+        // Without a document, the new one made for it is closed again.
+        let mut empty = Host::new(Session::new(Workspace::none()));
+        assert!(empty.import_as_user(&junk).is_err());
+        assert!(empty.session.document_status().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A block (F1, 10 × 10 × 5) and a cylinder beside it (F2).
+    fn two_bodies(host: &mut Host) -> f64 {
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.session
+            .execute("feature.block", &json!({"size": [10, 10, 5]}))
+            .unwrap();
+        host.session
+            .execute(
+                "feature.cylinder",
+                &json!({"radius": 2, "height": 5, "position": [20, 0, 0]}),
+            )
+            .unwrap();
+        let measured = host
+            .session
+            .execute("document.measure", &json!({}))
+            .unwrap();
+        measured["volume"].as_f64().unwrap()
+    }
+
+    fn select(host: &mut Host, names: &[&str]) {
+        host.session
+            .execute("select.set", &json!({ "names": names }))
+            .unwrap();
+    }
+
+    /// The bytes of a file as text, for the text formats and for what a
+    /// stored ZIP (3MF) holds uncompressed.
+    fn lossy(path: &Path) -> String {
+        String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned()
+    }
+
+    #[test]
+    fn export_writes_every_format_to_the_chosen_file_and_reads_back() {
+        let dir = workdir("export");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let total = two_bodies(&mut host);
+
+        // STEP: the exact bodies, read back by the importer.
+        let step = mine.join("part.step");
+        let result = host.export_as_user(&step).unwrap();
+        assert_eq!(result["bodies"], 2);
+        let mut reader = Session::new(Workspace::unrestricted());
+        reader.execute("file.new", &json!({})).unwrap();
+        let imported = reader
+            .execute("file.import", &json!({"path": text(&step)}))
+            .unwrap();
+        assert!(imported.to_string().contains("import"), "{imported}");
+        let back = reader.execute("document.measure", &json!({})).unwrap();
+        let back = back["volume"].as_f64().unwrap();
+        assert!((back - total).abs() < 1e-6 * total, "{back} {total}");
+
+        // The meshes: every body, as many triangles as the export says.
+        for name in ["part.stl", "part.3mf", "part.obj", "PART.STL"] {
+            let path = mine.join(name);
+            let result = host.export_as_user(&path).unwrap();
+            assert_eq!(
+                (result["bodies"].clone(), result["closed"].clone()),
+                (json!(2), json!(2))
+            );
+            let triangles = result["triangles"].as_u64().unwrap() as usize;
+            assert!(triangles > 12, "{result}");
+            let bytes = std::fs::read(&path).unwrap();
+            match name.to_ascii_lowercase().rsplit('.').next().unwrap() {
+                "stl" => {
+                    let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
+                    assert_eq!(count, triangles);
+                    assert_eq!(bytes.len(), 84 + 50 * count);
+                }
+                "3mf" => {
+                    assert_eq!(&bytes[..2], b"PK");
+                    let text = lossy(&path);
+                    assert!(text.contains("3D/3dmodel.model"));
+                    assert_eq!(text.matches("<triangle ").count(), triangles);
+                    assert_eq!(text.matches("<object ").count(), 2);
+                }
+                _ => {
+                    let text = lossy(&path);
+                    assert_eq!(
+                        text.lines().filter(|l| l.starts_with("f ")).count(),
+                        triangles
+                    );
+                    assert_eq!(text.lines().filter(|l| l.starts_with("o ")).count(), 2);
+                }
+            }
+            let (label, ok, _) = last(&host);
+            assert_eq!((label.as_str(), ok), ("file.export", true));
+        }
+
+        // An outline needs flat faces or a sketch: nothing selected, so it
+        // is refused, and nothing is written.
+        for name in ["top.dxf", "top.svg"] {
+            let error = host.export_as_user(&mine.join(name)).unwrap_err();
+            assert!(error.contains("select the faces or the sketch"), "{error}");
+            assert!(!mine.join(name).exists());
+        }
+        // The block's top face selected: its outline, 10 × 10.
+        select(&mut host, &["F1:face(1)"]);
+        let result = host.export_as_user(&mine.join("top.dxf")).unwrap();
+        assert_eq!(result["lines"], 4, "{result}");
+        let dxf = lossy(&mine.join("top.dxf"));
+        assert!(
+            dxf.contains("ENTITIES") && dxf.trim_end().ends_with("EOF"),
+            "{dxf}"
+        );
+        let result = host.export_as_user(&mine.join("top.svg")).unwrap();
+        assert_eq!(result["lines"], 4, "{result}");
+        let svg = lossy(&mine.join("top.svg"));
+        assert!(
+            svg.contains("<svg") && svg.contains("width=\"10mm\""),
+            "{svg}"
+        );
+        // Flat faces of two bodies (the block's top, the cylinder's base):
+        // one sheet, a square and a circle.
+        select(&mut host, &["F1:face(1)", "F2:face(1)"]);
+        let result = host.export_as_user(&mine.join("two.dxf")).unwrap();
+        assert_eq!(
+            (result["lines"].clone(), result["circles"].clone()),
+            (json!(4), json!(1)),
+            "{result}"
+        );
+
+        // The cylinder's wall is not flat: file.export says so.
+        select(&mut host, &["F2:face(0)"]);
+        let error = host.export_as_user(&mine.join("side.dxf")).unwrap_err();
+        assert!(error.contains("file.export"), "{error}");
+        assert!(!mine.join("side.dxf").exists());
+
+        // Nobody's access was widened.
+        assert_eq!(*host.session.workspace(), Workspace::none());
+        for command in ["file.export", "file.import"] {
+            assert!(agent(&mut host, command, json!({"path": text(&step)})).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_refuses_a_selection_the_format_cannot_hold_and_says_why() {
+        let dir = workdir("export-selection");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        two_bodies(&mut host);
+        let stl = mine.join("part.stl");
+
+        // A face, or one body of two, to a mesh or STEP file: refused,
+        // naming what is selected, and nothing is written.
+        for names in [&["F1:face(1)"][..], &["F1"], &["F1", "F2:face(1)"]] {
+            select(&mut host, names);
+            for path in [stl.clone(), mine.join("part.step")] {
+                let error = host.export_as_user(&path).unwrap_err();
+                assert!(
+                    error.contains("cannot hold only what is selected")
+                        && error.contains("Clear the selection"),
+                    "{names:?}: {error}"
+                );
+                let (label, ok, said) = last(&host);
+                assert_eq!((label.as_str(), ok), ("file.export", false));
+                assert_eq!(said, error.chars().take(160).collect::<String>());
+            }
+            assert!(listing(&mine).is_empty(), "{names:?}");
+        }
+        let error = host.export_as_user(&stl).unwrap_err();
+        assert!(error.contains("1 body, 1 face"), "{error}");
+        // Bodies, or an edge, to an outline: refused.
+        for names in [&["F1"][..], &["F1:face(1)", "F2"]] {
+            select(&mut host, names);
+            let error = host.export_as_user(&mine.join("a.dxf")).unwrap_err();
+            assert!(
+                error.contains("select only flat faces"),
+                "{names:?}: {error}"
+            );
+        }
+        let edges = host
+            .session
+            .execute(
+                "select.query",
+                &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+            )
+            .unwrap();
+        assert_eq!(edges["count"].as_u64().map(|c| c > 0), Some(true));
+        let error = host.export_as_user(&mine.join("a.svg")).unwrap_err();
+        assert!(error.contains("select only flat faces"), "{error}");
+        assert!(listing(&mine).is_empty());
+
+        // Every body selected is the whole document: written.
+        select(&mut host, &["F1", "F2"]);
+        let result = host.export_as_user(&stl).unwrap();
+        assert_eq!(result["bodies"], 2);
+        assert_eq!(listing(&mine), ["part.stl"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_asks_where_proposing_the_last_format_and_cancel_does_nothing() {
+        let dir = workdir("export-dialog");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+
+        // Nothing to export: no dialog.
+        let nobody = Person::who_answers(&[]);
+        let mut dialogs = picker(&nobody);
+        act(&mut host, &mut dialogs, FileAction::Export);
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.export", false));
+        assert!(said.contains("no document"), "{said}");
+
+        two_bodies(&mut host);
+        let person = Person::who_answers(&[
+            None,
+            Some(&mine.join("part.stl")),
+            Some(&mine.join("again.stl")),
+            Some(&mine.join("noextension")),
+        ]);
+        let mut dialogs = picker(&person);
+        // Cancelled: nothing written, the document as it was.
+        act(&mut host, &mut dialogs, FileAction::Export);
+        assert_eq!(
+            last(&host),
+            ("file.export".to_string(), false, "cancelled".to_string())
+        );
+        assert!(listing(&mine).is_empty());
+        assert!(host.session.document_status().unwrap().dirty);
+        // Chosen, through the shell's own request as the menu makes it.
+        host.shell.request_file_action(FileAction::Export);
+        assert!(host.pump_files(&mut dialogs));
+        let choice = dialogs.wait().unwrap();
+        assert_eq!(choice, Ok(Choice::Export(mine.join("part.stl"))));
+        host.file_choice(choice);
+        assert!(last(&host).1, "{:?}", last(&host));
+        assert_eq!(listing(&mine), ["part.stl"]);
+        // Exporting is not saving: the document still has changes.
+        assert!(host.session.document_status().unwrap().dirty);
+        // The next export proposes the format of the last one.
+        act(&mut host, &mut dialogs, FileAction::Export);
+        // A name without an extension: file.export says which it knows.
+        act(&mut host, &mut dialogs, FileAction::Export);
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.export", false));
+        assert!(said.contains("cannot tell the format"), "{said}");
+        assert_eq!(
+            person.asked(),
+            [
+                "export untitled.step",
+                "export untitled.step",
+                "export untitled.stl",
+                "export untitled.stl"
+            ]
+        );
+        assert_eq!(listing(&mine), ["again.stl", "part.stl"]);
+        assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

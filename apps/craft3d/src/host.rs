@@ -35,6 +35,9 @@ pub struct Host {
     /// before closing a document without a file: the document is closed
     /// once it is saved there.
     pub(crate) close_after_save: bool,
+    /// The extension of the file last exported from the dialog: the next
+    /// export proposes it again.
+    pub(crate) export_extension: Option<String>,
 }
 
 fn methods() -> &'static [Method] {
@@ -340,6 +343,7 @@ impl Host {
             session,
             shell: Shell::new(),
             close_after_save: false,
+            export_extension: None,
         }
     }
 
