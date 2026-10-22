@@ -37,6 +37,18 @@
 //! on exactly as before and the results are the same bit for bit, in any
 //! order of questions and on any thread.
 //!
+//! Where two covers are asked whether they meet, the other face's
+//! surface is known exactly where its box is not: a node further than the
+//! margin from the other face's surface (by its signed distance, which
+//! changes by no more than the distance moved, so at the box's middle it
+//! must exceed half the box's diagonal) is that far from the other face,
+//! which lies on it, and is passed over, for analytic surfaces. Two
+//! leaves that come within the margin of each other are each looked at in
+//! [`PARTS_OF_LEAF`]² parts, worked out and let go (the first [`PARTED`]
+//! pairs of leaves of a question), each part passed over the same way.
+//! These only prove more pairs further apart than the margin, which is
+//! what passing a pair over rests on.
+//!
 //! Memory: a tree's first nodes are made at once, no shorter than a
 //! quarter (a sixteenth, for the finer ones) of the face box's diagonal:
 //! for an analytic face at most `(FRONT · π)²` of them, a few hundred
@@ -62,8 +74,8 @@
 //! is what the outline reads too.
 
 use super::freeform::is_freeform;
-use super::hits::speed_bound;
-use super::outline::{Outline, Side, boxes_meet, nearest};
+use super::hits::{ROUNDING, signed_distance, speed_bound, surface_size};
+use super::outline::{Outline, Sheet, Side, boxes_meet, nearest};
 use crate::boxtree::BoxTree;
 use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
@@ -99,6 +111,14 @@ const NODES: usize = 1 << 13;
 /// at, at most, before it answers that they may (the answer it would give
 /// without a cover).
 const PAIRS: usize = 4096;
+
+/// How many parts along each parameter a leaf is cut into when two
+/// leaves come within the margin of each other ([`Cover::meets`]).
+const PARTS_OF_LEAF: usize = 4;
+
+/// How many pairs of leaves one question looks at in parts, at most;
+/// past that a pair of leaves that meet answers that the faces may.
+const PARTED: usize = 8;
 
 /// A freeform face of more Bézier pieces than this has no cover (its box
 /// stands for it).
@@ -609,11 +629,72 @@ impl Cover {
         false
     }
 
-    /// True when a leaf comes within `margin` of the box `b`.
-    pub(super) fn reaches(&self, face: Face, b: &Bbox3, margin: f64) -> bool {
+    /// True when node `n`'s patch, cut [`PARTS_OF_LEAF`] ways along each
+    /// parameter, has every part proven further than `margin` from the box
+    /// `b` or from the surface `beside` (of the face `b` is a box of):
+    /// then so is the patch. The parts are worked out and let go (a
+    /// leaf's box is as fine as a cover keeps; its parts are finer where
+    /// a pair of leaves needs it).
+    fn clear_in_parts(
+        &self,
+        face: Face,
+        n: &Node,
+        b: &Bbox3,
+        beside: &Surface,
+        margin: f64,
+    ) -> bool {
+        let spans = self.spans.as_deref().unwrap_or_default();
+        let (a0, a1, c0, c1) = n.rect;
+        let k = PARTS_OF_LEAF as f64;
+        for i in 0..PARTS_OF_LEAF {
+            for j in 0..PARTS_OF_LEAF {
+                let at = |from: f64, to: f64, x: usize| from + (to - from) * x as f64 / k;
+                let rect = (
+                    at(a0, a1, i),
+                    at(a0, a1, i + 1),
+                    at(c0, c1, j),
+                    at(c0, c1, j + 1),
+                );
+                let piece = match n.span {
+                    Some(span) => match piece_of(spans, span, rect) {
+                        Some(piece) => Some(piece),
+                        None => return false,
+                    },
+                    None => None,
+                };
+                // (Taken as inside: the outline is not asked about parts.)
+                match node(face, rect, n.depth + 1, true, piece.as_ref().zip(n.span)) {
+                    Ok(None) => {}
+                    Ok(Some(part)) => {
+                        if boxes_meet(&part.bbox, b, margin)
+                            && !clear_of_surface(beside, &part.bbox, margin)
+                        {
+                            return false;
+                        }
+                    }
+                    Err(()) => return false,
+                }
+            }
+        }
+        true
+    }
+
+    /// True when a leaf comes within `margin` of the box `b` and, when
+    /// `beside` is given, of that surface (the surface of what `b` is the
+    /// box of).
+    pub(super) fn reaches(
+        &self,
+        face: Face,
+        b: &Bbox3,
+        beside: Option<&Surface>,
+        margin: f64,
+    ) -> bool {
         let mut stack = self.front(face).first(|n| boxes_meet(n, b, margin));
         while let Some(n) = stack.pop() {
             if !boxes_meet(&n.bbox, b, margin) {
+                continue;
+            }
+            if beside.is_some_and(|surface| clear_of_surface(surface, &n.bbox, margin)) {
                 continue;
             }
             match self.children(n, face) {
@@ -635,7 +716,7 @@ impl Cover {
                 stack.push((m, n));
             }
         }
-        let mut looked = 0_usize;
+        let (mut looked, mut parted) = (0_usize, 0_usize);
         while let Some((m, n)) = stack.pop() {
             if !boxes_meet(&m.bbox, &n.bbox, margin) {
                 continue;
@@ -644,9 +725,28 @@ impl Cover {
             if looked > PAIRS {
                 return true;
             }
+            // A node further than the margin from the other face's
+            // surface is that far from the other face, which lies on it:
+            // the surface is known exactly where the other's box is not.
+            if clear_of_surface(other_face.surface, &m.bbox, margin)
+                || clear_of_surface(face.surface, &n.bbox, margin)
+            {
+                continue;
+            }
             // The larger of the two is divided (the other if it is a leaf).
             match (self.children(m, face), other.children(n, other_face)) {
-                (None, None) => return true,
+                (None, None) => {
+                    // Two leaves: each looked at in parts, not kept (for
+                    // the first few pairs of leaves of a question).
+                    parted += 1;
+                    if parted <= PARTED
+                        && (self.clear_in_parts(face, m, &n.bbox, other_face.surface, margin)
+                            || other.clear_in_parts(other_face, n, &m.bbox, face.surface, margin))
+                    {
+                        continue;
+                    }
+                    return true;
+                }
                 (Some(mk), None) => stack.extend(mk.iter().map(|k| (k, n))),
                 (None, Some(nk)) => stack.extend(nk.iter().map(|k| (m, k))),
                 (Some(mk), Some(nk)) => {
@@ -660,6 +760,29 @@ impl Cover {
         }
         false
     }
+}
+
+/// True when every point of the box `b` is proven further than `margin`
+/// from the analytic surface: its signed distance changes by at most the
+/// distance moved and is, in size, no more than the distance to the
+/// surface (for a cone, to the cone continued past its apex), so it is
+/// more than half the box's diagonal and the margin at its middle, with
+/// room for rounding ([`ROUNDING`] units in the last place of the largest
+/// number, as for the closed forms of `hits.rs`). False for a freeform
+/// surface (its distance is only as near as a search gets).
+pub(super) fn clear_of_surface(surface: &Surface, b: &Bbox3, margin: f64) -> bool {
+    if is_freeform(surface) {
+        return false;
+    }
+    let Some((lo, hi)) = b.corners() else {
+        return false;
+    };
+    let middle = lo.lerp(hi, 0.5);
+    let Some(d) = signed_distance(Sheet::bare(surface), middle) else {
+        return false;
+    };
+    let rounding = ROUNDING * f64::EPSILON * (middle.length() + surface_size(surface));
+    d.abs() > 0.5 * lo.distance(hi) + margin + rounding
 }
 
 /// How many stretches [`may_come_within`] halves before it gives up and
@@ -1205,5 +1328,74 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A box called clear of a surface by its signed distance at the middle
+    /// has every point (corners, middles of faces, random points) further
+    /// than the margin from the surface, for every analytic kind, boxes of
+    /// many sizes about a turned frame, at three scales.
+    #[test]
+    fn a_box_clear_of_a_surface_is_clear_everywhere() {
+        use super::{Sheet, clear_of_surface, signed_distance};
+        use craft3d_geom::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
+        use craft3d_math::Bbox3;
+        let mut state = 41_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let mut cleared = 0;
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            let f = Frame::new(
+                Vec3::new(1.0, -2.0, 0.5) * k,
+                Vec3::new(0.3, -0.4, 1.0),
+                Vec3::new(1.0, 0.2, 0.0),
+            )
+            .unwrap();
+            let surfaces = [
+                Surface::Plane(Plane::new(f)),
+                Surface::Cylinder(Cylinder::new(f, 2.0 * k).unwrap()),
+                Surface::Cone(Cone::new(f, 1.5 * k, 0.4).unwrap()),
+                Surface::Sphere(Sphere::new(f, 3.0 * k).unwrap()),
+                Surface::Torus(Torus::new(f, 4.0 * k, k).unwrap()),
+            ];
+            for surface in &surfaces {
+                for _ in 0..2000 {
+                    let middle = f.point(6.0 * k * next(), 6.0 * k * next(), 6.0 * k * next());
+                    // Half the time a box about as large as its middle is
+                    // far from the surface (where a bound too tight fails).
+                    let size = if next() > 0.0 {
+                        let far = signed_distance(Sheet::bare(surface), middle).unwrap().abs();
+                        far * (1.0 + 0.6 * next())
+                    } else {
+                        k * 10f64.powf(-3.0 * next().abs()) * 2.0
+                    };
+                    let way = Vec3::new(next().abs(), next().abs(), next().abs());
+                    let half = way * (size / way.length().max(1e-3));
+                    let b = Bbox3::from_points([middle - half, middle + half]);
+                    let margin = 16.0 * tol;
+                    if !clear_of_surface(surface, &b, margin) {
+                        continue;
+                    }
+                    cleared += 1;
+                    let corners = (0..8).map(|c| {
+                        let side = |bit: i32| if c & bit == 0 { -1.0 } else { 1.0 };
+                        Vec3::new(side(1), side(2), side(4))
+                    });
+                    let inside: Vec<Vec3> =
+                        (0..16).map(|_| Vec3::new(next(), next(), next())).collect();
+                    for shares in corners.chain(inside) {
+                        let p = middle
+                            + Vec3::new(half.x * shares.x, half.y * shares.y, half.z * shares.z);
+                        let d = signed_distance(Sheet::bare(surface), p).unwrap();
+                        assert!(d.abs() > margin, "{} at {k}: {d}", surface.kind());
+                    }
+                }
+            }
+        }
+        assert!(cleared > 10_000, "{cleared}");
     }
 }

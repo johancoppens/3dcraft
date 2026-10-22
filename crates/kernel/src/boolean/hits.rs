@@ -1004,7 +1004,7 @@ fn levels<'a>(curve: &'a Curve3, surface: &'a Surface) -> Option<Box<Level<'a>>>
 /// over the stretch (never a bare comparison of one value with the
 /// tolerance), and halves no stretch below a quarter of the tolerance;
 /// that this always covers rounding near a turning point is not proven.
-const ROUNDING: f64 = 64.0;
+pub(super) const ROUNDING: f64 = 64.0;
 
 /// More whole turns of a circle than this in one piece are left to the
 /// root isolation by [`monotone`] (pieces of booleans are at most a turn).
@@ -1012,7 +1012,7 @@ const MOST_TURNS: f64 = 64.0;
 
 /// How large the numbers of `surface` are: its frame's distance from the
 /// origin and its size (radius), for the rounding of a distance from it.
-fn surface_size(surface: &Surface) -> f64 {
+pub(super) fn surface_size(surface: &Surface) -> f64 {
     match surface {
         Surface::Sphere(s) => s.frame().origin().length() + s.radius().abs(),
         Surface::Cone(c) => c.frame().origin().length() + c.radius().abs(),

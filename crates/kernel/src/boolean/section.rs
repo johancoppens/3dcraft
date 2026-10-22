@@ -538,7 +538,11 @@ fn edge_cuts(
         // other surface only where no stretch can be kept: a stretch
         // between the cuts that are left crosses no boundary of the other
         // face, and holds a point outside it, so all of it is outside.
-        if other.is_some_and(|(cover, of)| !cover.reaches(of, &own.edge_box(id), APART * tol)) {
+        // (Nor does an edge further than that from the other surface,
+        // which it then does not meet.)
+        if other.is_some_and(|(cover, of)| {
+            !cover.reaches(of, &own.edge_box(id), Some(surface.surface), APART * tol)
+        }) {
             continue;
         }
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
@@ -1163,8 +1167,8 @@ pub(super) fn section(
             let apart = APART * tol;
             let meet = match (a.cover(fa, tol), b.cover(fb, tol)) {
                 (Some((ca, of_a)), Some((cb, of_b))) => ca.meets(of_a, cb, of_b, apart),
-                (Some((ca, of_a)), None) => ca.reaches(of_a, box_b, apart),
-                (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, apart),
+                (Some((ca, of_a)), None) => ca.reaches(of_a, box_b, Some(&ob.surface), apart),
+                (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, Some(&oa.surface), apart),
                 (None, None) => true,
             };
             if !meet {
