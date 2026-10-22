@@ -5,9 +5,13 @@
 //!
 //! It belongs to the open document as the window holds it, not to the
 //! document itself: it is not saved, not part of the history and not
-//! undone. A name stays valid through regeneration as long as what it
-//! names exists; an item whose entity is gone drops out at the next look
-//! ([`Session::selection`]), and the dropped names are said
+//! undone. Each item is kept as it was selected and found again from
+//! there at every change of the document: an entity whose body a later
+//! feature took is followed to its image in the newest body, an item of a
+//! feature that is suppressed, rolled back or failed is kept hidden
+//! ([`SelectionView::hidden`]) until the feature has a body again, and an
+//! item whose entity is gone drops out at the next look
+//! ([`Session::selection`]), the dropped names said
 //! ([`SelectionView::dropped`]).
 
 use crate::Session;
