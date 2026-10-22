@@ -751,6 +751,9 @@ pub struct Onscreen {
     /// Turns the depth buffer into the distances the lines read.
     distance_pipeline: wgpu::RenderPipeline,
     distance_layout: wgpu::BindGroupLayout,
+    /// The nearest texel of a single-sampled depth buffer, for the
+    /// distance pass ([`SAMPLED_DEPTH`]).
+    depth_sampler: wgpu::Sampler,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
     /// What draws a cut-open picture, or why this device does not; made
@@ -916,26 +919,47 @@ pub(crate) struct OverlaySources {
     pub(crate) depth_read: String,
 }
 
+/// How the distance pass reads a single-sampled depth buffer: through a
+/// sampler that takes the nearest texel ([`DEPTH_SAMPLER_BINDING`]), at the
+/// texel's centre, which gives the texel itself. OpenGL ES 3.0 (WebGL2)
+/// takes a depth texture whose filter is not the nearest texel for
+/// incomplete and reads 0 from it (`texelFetch` too), and a texture only
+/// loaded from gets no sampler there (wgpu-hal's GL backend), so its
+/// default linear filter stays.
+const SAMPLED_DEPTH: &str = "textureSampleLevel(depth_texture, depth_sampler, \
+     (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(textureDimensions(depth_texture)), 0.0).r";
+
+/// The binding of that sampler in the distance pass's group.
+const DEPTH_SAMPLER_BINDING: u32 = 3;
+
 pub(crate) fn overlay_sources(samples: u32) -> OverlaySources {
-    let (depth_type, load) = if samples > 1 {
+    let (depth_type, load, distance_load, sampler) = if samples > 1 {
         (
             "texture_multisampled_2d<f32>",
             "textureLoad(depth_texture, p, s).r",
+            "textureLoad(depth_texture, p, s).r",
+            String::new(),
         )
     } else {
-        ("texture_2d<f32>", "textureLoad(depth_texture, p, 0).r")
+        (
+            "texture_2d<f32>",
+            "textureLoad(depth_texture, p, 0).r",
+            SAMPLED_DEPTH,
+            format!("@group(0) @binding({DEPTH_SAMPLER_BINDING}) var depth_sampler: sampler;"),
+        )
     };
-    let fill = |template: &str| {
+    let fill = |template: &str, load: &str| {
         template
             .replace("{{DEPTH_TEST}}", include_str!("depth_test.wgsl"))
             .replace("{{DEPTH}}", depth_type)
             .replace("{{LOAD}}", load)
+            .replace("{{SAMPLER}}", &sampler)
     };
     OverlaySources {
-        lines: fill(include_str!("lines.wgsl")),
-        fills: fill(include_str!("fills.wgsl")),
-        distance: fill(include_str!("distance.wgsl")),
-        depth_read: fill(include_str!("depth_read.wgsl")),
+        lines: fill(include_str!("lines.wgsl"), load),
+        fills: fill(include_str!("fills.wgsl"), load),
+        distance: fill(include_str!("distance.wgsl"), distance_load),
+        depth_read: fill(include_str!("depth_read.wgsl"), load),
     }
 }
 
@@ -1176,22 +1200,35 @@ impl Onscreen {
         });
         // The pass that makes the distances: the scene's numbers, the
         // lines' and the depth buffer, as the lines' group had them.
+        let mut distance_entries = vec![
+            uniform_entry(0, both),
+            uniform_entry(1, both),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: samples > 1,
+                },
+                count: None,
+            },
+        ];
+        if samples == 1 {
+            distance_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: DEPTH_SAMPLER_BINDING,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            });
+        }
         let distance_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d distances"),
-            entries: &[
-                uniform_entry(0, both),
-                uniform_entry(1, both),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: samples > 1,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &distance_entries,
+        });
+        let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("craft3d depth"),
+            ..wgpu::SamplerDescriptor::default()
         });
         let distance_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d distances"),
@@ -1439,6 +1476,7 @@ impl Onscreen {
             density,
             distance_pipeline,
             distance_layout,
+            depth_sampler,
             see_through: Err("it was not set up".to_string()),
             cut: None,
             cap_buffer: cut::cap_buffer(device),
@@ -2066,23 +2104,30 @@ impl Onscreen {
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         ));
+        let mut distance_entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.scene_uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.lines_uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&depth),
+            },
+        ];
+        if self.samples == 1 {
+            distance_entries.push(wgpu::BindGroupEntry {
+                binding: DEPTH_SAMPLER_BINDING,
+                resource: wgpu::BindingResource::Sampler(&self.depth_sampler),
+            });
+        }
         let distance_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d distances"),
             layout: &self.distance_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.scene_uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.lines_uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&depth),
-                },
-            ],
+            entries: &distance_entries,
         });
         let lines_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d lines"),

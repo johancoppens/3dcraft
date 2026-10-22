@@ -7,7 +7,11 @@
 // every sample of the pixel: the same numbers, a quarter of the reads with
 // four samples, and the outline test of an edge reads as many again. The
 // source is a template like lines.wgsl: `{{DEPTH}}` and `{{LOAD}}` are
-// filled in for a multisampled or a single-sampled depth texture.
+// filled in for a multisampled or a single-sampled depth texture; the
+// single-sampled one is read through a nearest sampler (`{{SAMPLER}}`) at
+// the texel's centre, which gives the texel itself: OpenGL ES 3.0 (WebGL2)
+// takes a depth texture without a sampler that filters by the nearest
+// texel for incomplete, and reads 0 from it.
 
 struct Scene {
     right: vec4<f32>,
@@ -31,6 +35,7 @@ struct Lines {
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<uniform> lines: Lines;
 @group(0) @binding(2) var depth_texture: {{DEPTH}};
+{{SAMPLER}}
 
 // The bits of positive infinity: nothing drawn.
 const NOTHING: u32 = 0x7f800000u;

@@ -26,5 +26,9 @@ fn no_shader_declares_an_array_of_arrays() {
         );
         checked += 1;
     }
-    assert!(checked > 10, "only {checked} shaders found in {}", dir.display());
+    assert!(
+        checked > 10,
+        "only {checked} shaders found in {}",
+        dir.display()
+    );
 }
