@@ -14,6 +14,9 @@ The document is unchanged. The message starts with the command and usually the p
 | *give either distance … or about and angle …, not both* | Two ways of placing something were mixed; use two datums |
 | *variable.delete: \`t\` is still used by the feature \`Plate\` (F1: size.z), …* | Change those first, or give `"force": true` to delete it anyway |
 | *file.save: '/tmp/x.3dcraft' is outside the write root …* | Save or export beneath the directory the server or window was given |
+| *variable.set: \`wall + 1 mm\` uses \`wall\` itself …* | Give the new value (`3 mm`); the message says what it is now |
+| *the unit \`rad\` must follow a number directly …*, *\`inch\` is not a unit: write \`in\`* | Units are `um mm cm m in ft deg rad`, in lower case, right after a number |
+| *an angle constraint takes a line and a line, but 1 entity was given* | Give the entities the message lists, in that order |
 
 `command_list` (or `craft3d-cli commands --filter …`) shows what parameters a command takes.
 
@@ -28,6 +31,10 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
   message names the name it lost and the feature that made it. Point the feature at the right entity
   with `feature.edit` (`edges`, `faces`, `sketch`, `target`), or undo the upstream edit.
 - **Something made from a suppressed feature**: switch it on (`feature.suppress {"suppressed": false}`).
+- ***The body of `Bossed` already went into `Bevel`***: another feature took that body first, most often
+  one inserted at the rollback marker. Build on the newer feature: the message gives the `feature.edit`
+  (`{"feature": "Drilled", "target": "Bevel"}` for a boolean; for a fillet, a chamfer or a face operation
+  its `edges` or `faces` named by faces of the newer body).
 - **Not built yet**: some cases are refused as *not supported* (a fillet of a radius that would make a
   torus reach its own axis, a shell at a vertex where four faces meet, a boolean the kernel cannot settle
   within the tolerance). The message says which faces; change the design around it (a slightly different
@@ -54,8 +61,12 @@ brings back a deleted feature or variable. The selection is not part of the hist
 
 `sketch.inspect` shows every entity with its solved coordinates, every constraint with its residual and
 state, and `dof`, the freedom left. A point drawn with plain numbers may be moved by the solver; write its
-coordinates as expressions (`"0 mm"`) to hold it there. A conflicting or impossible constraint fails the
-sketch with the constraints involved.
+coordinates as expressions (`"0 mm"`) to hold it there. A constraint that contradicts the ones before it
+fails the sketch and is named (`"conflicting": ["c10"]`, state `conflicting`); the ones it contradicts are
+not, so look at the constraints on the same entities. Change it (`sketch.edit` with `constraint` and
+`value`) or delete it (`sketch.delete` with `constraint`). A contradiction the solver can meet by
+shrinking a line to nothing (a line both `horizontal` and `vertical`) is not reported until something is
+made from the sketch (*e5: the line has no length*).
 
 ## Pictures
 

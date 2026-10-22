@@ -1,0 +1,223 @@
+[
+ [
+"@list",
+{
+"filter": "pattern"
+}
+],
+ [
+"@batch",
+{
+"terse": true,
+"steps": [
+{
+"id": "variable.set",
+"params": {
+"name": "flange_d",
+"expr": "80 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "thickness",
+"expr": "10 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "bore_d",
+"expr": "30 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "pcd",
+"expr": "60 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "hole_d",
+"expr": "8 mm"
+}
+},
+{
+"id": "variable.set",
+"params": {
+"name": "n",
+"expr": "6"
+}
+},
+{
+"id": "assert.add",
+"params": {
+"name": "volume",
+"measure": "volume",
+"of": "Flange",
+"eq": "pi * ((flange_d / 2)^2 - (bore_d / 2)^2 - n * (hole_d / 2)^2) * thickness"
+}
+},
+{
+"id": "feature.cylinder",
+"params": {
+"radius": "flange_d / 2",
+"height": "thickness",
+"name": "Disc"
+}
+},
+{
+"id": "feature.cylinder",
+"params": {
+"radius": "bore_d / 2",
+"height": "thickness + 2 mm",
+"position": [
+0,
+0,
+"-1 mm"
+],
+"name": "Bore"
+}
+},
+{
+"id": "feature.boolean",
+"params": {
+"op": "subtract",
+"target": "Disc",
+"tool": "Bore",
+"name": "Bored"
+}
+},
+{
+"id": "feature.cylinder",
+"params": {
+"radius": "hole_d / 2",
+"height": "thickness + 2 mm",
+"position": [
+"pcd / 2",
+0,
+"-1 mm"
+],
+"name": "BoltHole"
+}
+},
+{
+"id": "feature.pattern",
+"params": {
+"source": "BoltHole",
+"count": "n",
+"angle": "360 deg / n",
+"name": "BoltHoles"
+}
+},
+{
+"id": "feature.boolean",
+"params": {
+"op": "subtract",
+"target": "Bored",
+"tool": "BoltHoles",
+"name": "Flange"
+}
+}
+]
+}
+],
+ [
+"assert.list",
+{}
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"hole": true
+},
+"context": true
+}
+],
+ [
+"variable.set",
+{
+"name": "n",
+"expr": "8"
+}
+],
+ [
+"measure.thickness",
+{
+"of": "Flange"
+}
+],
+ [
+"feature.fillet",
+{
+"edges": [
+ [
+"F1:face(0)",
+"F1:face(2)"
+]
+],
+"radius": "20 mm",
+"name": "Round"
+}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"document.check",
+{}
+],
+ [
+"@preview",
+{
+"view": "iso"
+}
+],
+ [
+"file.save",
+{
+"path": "flange.3dcraft"
+}
+],
+ [
+"file.export",
+{
+"path": "flange.step"
+}
+],
+ [
+"#",
+"chapter 4: history commands as the guide writes them"
+],
+ [
+"feature.edit",
+{
+"feature": "BoltHoles",
+"count": 8
+}
+],
+ [
+"history.rollback",
+{
+"feature": "Bored"
+}
+],
+ [
+"history.rollback",
+{
+"feature": null
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+]
+]

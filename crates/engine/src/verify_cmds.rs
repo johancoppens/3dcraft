@@ -82,7 +82,10 @@ impl<'a> Ctx<'a> {
         outcome.own_body().ok_or_else(|| {
             let name = self.feature_name(id);
             match outcome.consumed_by {
-                Some(taker) => format!("the body of `{name}` went into {taker}; name that feature"),
+                Some(taker) => format!(
+                    "the body of `{name}` went into {taker}, `{}`; name that feature",
+                    self.feature_name(taker)
+                ),
                 None => format!("`{name}` has no body"),
             }
         })
@@ -119,8 +122,8 @@ impl<'a> Ctx<'a> {
                     Some(quantity.value / factor.powi(power))
                 } else {
                     return Err(format!(
-                        "`{key}` is a {}, but {} is needed",
-                        quantity.dimension,
+                        "`{key}` is {}, but {} is needed",
+                        quantity.dimension.described(),
                         match power {
                             0 => "a number",
                             1 => "a length",

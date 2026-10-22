@@ -980,7 +980,13 @@ impl<'a> Resolver<'a> {
         let kind = match kind {
             Some(SelectionKind::Body) if !has_body => {
                 return Err(match outcome.and_then(|o| o.consumed_by) {
-                    Some(taker) => format!("the body of `{}` went into {taker}", feature.name),
+                    Some(taker) => format!(
+                        "the body of `{}` went into {taker}, `{}`",
+                        feature.name,
+                        self.doc
+                            .feature(taker)
+                            .map_or_else(|| taker.to_string(), |f| f.name.clone())
+                    ),
                     None => format!("`{}` has no body", feature.name),
                 });
             }

@@ -45,6 +45,11 @@ is below, beside the value found at a real place. On the flange of chapter 2: `"
   case's volume is right for any `wall`.
 - An assertion may be written before the model meets it, even before its subject exists (it is in
   *error* until then).
+- An assertion names a feature's body as it is at that feature. A feature added on top of it later (a
+  hole cut into `Case`, giving `Vented`) takes that body, and the assertion turns to *error*: *the body
+  of `Case` went into F6, `Vented`; name that feature*. Point it at the new end of the chain, with the
+  bound changed if the change was meant: `assert.edit {"name": "volume", "of": "Vented", "eq": "…"}`.
+  Queries (`{"hole": true}`, a named set) look at whatever bodies there are and need no edit.
 
 Each assertion has a status: **passed**; **failed** (with what was measured and expected);
 **notProven** (a thickness or distance whose found value is within the bound but whose proven bound is

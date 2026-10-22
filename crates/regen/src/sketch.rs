@@ -1331,14 +1331,14 @@ pub(crate) fn solve_sketch(
         [] => Status::Ok,
         [one] => Status::Failed(match undefined(one) {
             Some(reason) => format!(
-                "constraint {one} has no meaning where the constraints before it put the sketch: {reason}; change or delete it"
+                "constraint {one} has no meaning where the constraints before it put the sketch: {reason}; change or delete it (sketch.edit with a new value, or sketch.delete)"
             ),
             None => format!(
-                "constraint {one} conflicts with the constraints before it; change or delete it"
+                "constraint {one} conflicts with the constraints before it; change or delete it (sketch.edit with a new value, or sketch.delete)"
             ),
         }),
         many => Status::Failed(format!(
-            "constraints {} conflict with the constraints before them; change or delete them",
+            "constraints {} conflict with the constraints before them; change or delete them (sketch.edit with a new value, or sketch.delete)",
             list(many)
         )),
     };

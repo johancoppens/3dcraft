@@ -1,0 +1,339 @@
+[
+ [
+"variable.set",
+{
+"name": "a1",
+"expr": "45 deg"
+}
+],
+ [
+"variable.set",
+{
+"name": "a2",
+"expr": "(pi / 4) rad"
+}
+],
+ [
+"variable.set",
+{
+"name": "a3",
+"expr": "pi / 4 * 1 rad"
+}
+],
+ [
+"variable.set",
+{
+"name": "a4",
+"expr": "pi rad / 4"
+}
+],
+ [
+"variable.set",
+{
+"name": "a5",
+"expr": "atan2(1, 1)"
+}
+],
+ [
+"variable.set",
+{
+"name": "a6",
+"expr": "sin(30)"
+}
+],
+ [
+"variable.set",
+{
+"name": "a7",
+"expr": "sin(30 deg)"
+}
+],
+ [
+"variable.set",
+{
+"name": "a8",
+"expr": "asin(0.5)"
+}
+],
+ [
+"variable.set",
+{
+"name": "a9",
+"expr": "2 * pi"
+}
+],
+ [
+"variable.set",
+{
+"name": "a10",
+"expr": "1.5708"
+}
+],
+ [
+"variable.set",
+{
+"name": "L1",
+"expr": "2 in"
+}
+],
+ [
+"variable.set",
+{
+"name": "L2",
+"expr": "1/16 in"
+}
+],
+ [
+"variable.set",
+{
+"name": "L3",
+"expr": "1 ft - 1 in"
+}
+],
+ [
+"variable.set",
+{
+"name": "L4",
+"expr": "3mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "L5",
+"expr": "3 MM"
+}
+],
+ [
+"variable.set",
+{
+"name": "L6",
+"expr": "3 \"in\""
+}
+],
+ [
+"variable.set",
+{
+"name": "L7",
+"expr": "-2 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "L8",
+"expr": "2 * -3 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "L9",
+"expr": "sqrt(L1 * L1)"
+}
+],
+ [
+"variable.set",
+{
+"name": "L10",
+"expr": "sqrt(L1)"
+}
+],
+ [
+"variable.set",
+{
+"name": "L11",
+"expr": "L1^2 / L1"
+}
+],
+ [
+"variable.set",
+{
+"name": "L12",
+"expr": "1e-3 m"
+}
+],
+ [
+"variable.set",
+{
+"name": "L13",
+"expr": "1,5 mm"
+}
+],
+ [
+"variable.set",
+{
+"name": "L14",
+"expr": "25.4mm+1in"
+}
+],
+ [
+"variable.set",
+{
+"name": "L15",
+"expr": "5 \u00b5m"
+}
+],
+ [
+"variable.set",
+{
+"name": "L16",
+"expr": "2 inch"
+}
+],
+ [
+"variable.set",
+{
+"name": "L17",
+"expr": "5 degrees"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "2 mm",
+"height": "10 mm",
+"position": [
+"20 mm",
+0,
+0
+],
+"name": "Pin"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Pin",
+"count": 4,
+"angle": "1.5708",
+"keep": true,
+"name": "PlainAngle"
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "2 mm",
+"height": "10 mm",
+"position": [
+"20 mm",
+0,
+0
+],
+"name": "Pin2"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Pin2",
+"count": "a1 / 1 deg",
+"angle": "a1",
+"name": "P2"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "2 mm",
+"height": "10 mm",
+"position": [
+"20 mm",
+0,
+0
+],
+"name": "Pin3"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Pin3",
+"count": "2.5",
+"step": [
+5,
+0,
+0
+],
+"name": "P3"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "2 mm",
+"height": "10 mm",
+"position": [
+"20 mm",
+0,
+0
+],
+"name": "Pin4"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Pin4",
+"count": "0",
+"step": [
+5,
+0,
+0
+],
+"name": "P4"
+}
+],
+ [
+"feature.cylinder",
+{
+"radius": "2 mm",
+"height": "10 mm",
+"position": [
+"20 mm",
+0,
+0
+],
+"name": "Pin5"
+}
+],
+ [
+"feature.pattern",
+{
+"source": "Pin5",
+"count": "4 mm",
+"step": [
+5,
+0,
+0
+],
+"name": "P5"
+}
+],
+ [
+"feature.transform",
+{
+"source": "Pin5",
+"angle": "90",
+"axis": [
+0,
+0,
+1
+],
+"name": "T1"
+}
+],
+ [
+"document.inspect",
+{
+"measures": false
+}
+]
+]

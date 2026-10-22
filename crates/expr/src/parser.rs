@@ -234,11 +234,32 @@ pub(crate) fn parse_with_limits(
     parser.expression()?;
     let rest = parser.peek();
     if rest.kind != TokenKind::End {
-        return Err(parser.expected("an operator or the end of the expression", rest));
+        return Err(parser.after_operand("an operator or the end of the expression", rest));
     }
     Ok(Expr {
         nodes: parser.nodes,
     })
+}
+
+/// The unit a word that is not one most likely means: a symbol in
+/// another case (`MM`, `Deg`) or a unit spelled out (`inch`, `degrees`).
+fn spelled_unit(word: &str) -> Option<Unit> {
+    let lower = word.to_ascii_lowercase();
+    if let Some(unit) = Unit::from_symbol(&lower) {
+        return Some(unit);
+    }
+    let unit = match lower.trim_end_matches('s') {
+        "micron" | "micrometre" | "micrometer" => Unit::Micrometre,
+        "millimetre" | "millimeter" => Unit::Millimetre,
+        "centimetre" | "centimeter" => Unit::Centimetre,
+        "metre" | "meter" => Unit::Metre,
+        "inch" | "inche" => Unit::Inch,
+        "foot" | "feet" => Unit::Foot,
+        "degree" => Unit::Degree,
+        "radian" => Unit::Radian,
+        _ => return None,
+    };
+    Some(unit)
 }
 
 struct Parser<'a> {
@@ -288,6 +309,42 @@ impl Parser<'_> {
                 found: found_text,
             },
         )
+    }
+
+    /// [`Parser::expected`] for a token met where an operator could follow
+    /// an operand: a word there is most often a unit in the wrong place
+    /// (`(pi / 4) rad`) or a unit that does not exist (`2 inch`), and the
+    /// error says so.
+    fn after_operand(&self, expected: &'static str, found: Token) -> ExprError {
+        if found.kind == TokenKind::Ident {
+            let word = self.text(found);
+            let before = self
+                .at
+                .checked_sub(1)
+                .and_then(|before| self.tokens.get(before))
+                .map(|before| (before.kind, self.text(*before)));
+            // `(pi / 4) rad`, `width mm`; not `2 mm mm`, which is only one
+            // unit too many.
+            let after_operand = match before {
+                Some((TokenKind::RParen, _)) => true,
+                Some((TokenKind::Ident, text)) => Unit::from_symbol(text).is_none(),
+                _ => false,
+            };
+            if let (true, Some(unit)) = (after_operand, Unit::from_symbol(word)) {
+                return ExprError::new(found.pos, ErrorKind::UnitAfterExpression { unit });
+            }
+            // `2 inch`, `3 MM`, `5 degrees`: a unit spelled otherwise.
+            if let (Some((TokenKind::Number(_), _)), Some(meant)) = (before, spelled_unit(word)) {
+                return ExprError::new(
+                    found.pos,
+                    ErrorKind::UnknownUnit {
+                        name: word.to_string(),
+                        meant,
+                    },
+                );
+            }
+        }
+        self.expected(expected, found)
     }
 
     /// One more level of parentheses or call. `pos` is the opening token.
@@ -430,7 +487,7 @@ impl Parser<'_> {
                 let inner = self.expression()?;
                 let close = self.peek();
                 if close.kind != TokenKind::RParen {
-                    return Err(self.expected("an operator or `)`", close));
+                    return Err(self.after_operand("an operator or `)`", close));
                 }
                 self.advance();
                 self.leave();
@@ -680,7 +737,15 @@ mod tests {
                 }
             )
         );
-        assert!(matches!(err("(1 + 2) mm").kind, ErrorKind::Expected { .. }));
+        // A unit after a parenthesis is still refused, now with its own
+        // error that says how to give an expression a unit (the second
+        // field test; this pins wording, not mathematics).
+        assert_eq!(
+            err("(1 + 2) mm").kind,
+            ErrorKind::UnitAfterExpression {
+                unit: Unit::Millimetre
+            }
+        );
         for unit in Unit::ALL {
             assert_eq!(
                 err(unit.symbol()),
@@ -756,6 +821,50 @@ mod tests {
         ));
         let siblings = "(1) + ".repeat(MAX_DEPTH * 2) + "1";
         assert!(Expr::parse(&siblings).is_ok());
+    }
+
+    #[test]
+    fn a_unit_in_the_wrong_place_or_a_unit_that_does_not_exist_is_named() {
+        // A unit after a parenthesis or a name: the error says a unit
+        // belongs to a number, and how to give an expression a unit.
+        for source in ["(pi / 4) rad", "pi rad / 4", "(a + b) mm", "width mm"] {
+            let e = err(source);
+            assert!(
+                matches!(e.kind, ErrorKind::UnitAfterExpression { .. }),
+                "{source}: {e}"
+            );
+            assert!(e.to_string().contains("* 1 "), "{source}: {e}");
+        }
+        // A word after a number that is not a unit (upper case, spelled
+        // out): the error lists the units.
+        for (source, word, meant) in [
+            ("2 inch", "inch", Unit::Inch),
+            ("3 MM", "MM", Unit::Millimetre),
+            ("5 degrees", "degrees", Unit::Degree),
+            ("1 feet", "feet", Unit::Foot),
+        ] {
+            let e = err(source);
+            assert_eq!(
+                e.kind,
+                ErrorKind::UnknownUnit {
+                    name: word.to_string(),
+                    meant
+                },
+                "{source}"
+            );
+            assert!(e.to_string().contains("um, mm, cm, m, in, ft, deg and rad"));
+        }
+        // A name after a name, or after a number, is still only a missing
+        // operator (see `missing_operator`).
+        for source in ["a b", "2 width", "2 mm mm"] {
+            assert!(
+                matches!(err(source).kind, ErrorKind::Expected { .. }),
+                "{source}"
+            );
+        }
+        // What was right stays right.
+        assert!(Expr::parse("pi / 4 * 1 rad").is_ok());
+        assert!(Expr::parse("(pi / 4) * 1 rad").is_ok());
     }
 
     #[test]

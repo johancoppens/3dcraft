@@ -470,10 +470,22 @@ The first version for people outside the project; it follows M9 and does not wai
 - Import… (STEP) and Export… (STEP, STL, 3MF, OBJ, DXF, SVG; every body, or the selected flat faces or sketch, a selection the format cannot hold refused) in the window's File menu, as `file.import` and `file.export` with the person's grant ([`control-protocol.md`](control-protocol.md) › *How the window's own File menu fits in*) (2026-10-22)
 - `file.export {bodies}` writes only the bodies named to STEP, STL, 3MF and OBJ, and Export… with bodies selected writes those; every `sketch.*` edit reports the features it made fail (`failed`), as `variable.set` does (2026-10-22)
 - Colours in OBJ (a `.mtl` beside it with `Kd`, `Pr` and `Pm`), metallic and roughness shaded by both renderers (a face without them bit for bit as before), and an independent reader that checks every face's colour in 3MF, STEP and OBJ exports ([`file-formats.md`](file-formats.md) › *Colours in OBJ*, [`design/rendering.md`](design/rendering.md) › *Metallic and roughness*) (2026-10-22)
+- The second field test, over MCP as the testers will work: history commands, conflicting sketches, every constraint kind, negative values, other units, a change request on an example and the guide taken literally; 28 frictions, 15 fixed (one in part: messages, a terse batch's failed features, `madeBy` on edges, a sketch's frame and normal, a variable defined from itself refused, the guide), the rest below or left with a reason ([`field-test/2026-10-22`](field-test/2026-10-22/README.md)) (2026-10-22)
 
 #### Open
 - [ ] Installers for Linux, macOS and Windows: built by `cargo xtask package` and `.github/workflows/release.yml` (2026-10-22, [`development.md`](development.md) › *Packaging*); the Linux tarball and AppImage are checked locally, the macOS `.dmg` and the Windows zip and `.msi` wait for a first run of the workflow; not signed or notarised
-- [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units
+- [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
+- [ ] Suppressing a boolean, fillet or chamfer fails everything after it; pass the body through, as other modellers do
+- [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
+- [ ] A conflicting constraint is named, the constraints it contradicts are not
+- [ ] A contradiction the solver meets by shrinking a line to a point (`horizontal` and `vertical` on one line) is reported as solved
+- [ ] An under-constrained sketch is built without a word: a warning in `document.check` (or a deliberate decision not to)
+- [ ] A constraint with a literal value it can never take (a negative length, an angle for a length) is added and fails the sketch instead of being refused
+- [ ] A sketch on a face takes the face's axes (the bottom of a block has x along world Y); a way to choose them (`xAxis`, or world-aligned where it can be)
+- [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees; a unit after a parenthesis is refused
+- [ ] No command changes a document's length unit after `file.new`
+- [ ] A feature's name is not accepted in a face name (`Cube:face(2)`), and ids shift when features are inserted
+- [ ] `document.inspect` shows parameters in the document's words (`keep_tool`, `"target": 1`), not the commands' (`keepTool`, a name), and assertions' `measured` as text where `assert.list` gives numbers
 
 #### Acceptance
 Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.
@@ -570,6 +582,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | R1: the second field test (history, conflicts, constraints, negative values, units, a change request, the guide); its open findings added under R1 › Open |
 | 2026-10-22 | minor | R1: installers (`cargo xtask package`, `release.yml`), the Linux ones checked; macOS and Windows wait for a first run of the workflow |
 | 2026-10-22 | minor | R1: the user guide and nine example models, checked by a test |
 | 2026-10-22 | minor | R1: Import… and Export… in the window's File menu |

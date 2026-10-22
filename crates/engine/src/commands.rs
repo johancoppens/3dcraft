@@ -82,13 +82,13 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
-        "Switches a feature off (or back on) without deleting it.", doc: true, feature_suppress),
+        "Switches a feature off (or back on) without deleting it. What is made from its body fails until it is switched on again: a suppressed boolean, fillet or chamfer does not pass the body it changes on to the features after it. The result lists the features that fail under failed.", doc: true, feature_suppress),
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
-        "Moves a feature to a position in the history; 0 is first.", doc: true, feature_move),
+        "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
-        "Deletes a feature.", doc: true, feature_delete),
+        "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
-        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
+        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a boolean) takes it from the features after the marker that were made from that body by naming it (a boolean's target or tool, the source of a transform, mirror, pattern or shell): those fail with \"already went into\" until they are pointed at the new feature (feature.edit with that target, tool or source). A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
@@ -1005,10 +1005,31 @@ fn variable_json(regen: &Regen, name: &str, unit: &str) -> Value {
     match regen.variables.iter().find(|v| v.name == name) {
         None => json!({ "name": name }),
         Some(v) => match &v.value {
-            Ok(value) => json!({
-                "name": v.name, "expr": v.expr, "value": value.value,
-                "dimension": value.dimension.to_string(), "lengthUnit": unit,
-            }),
+            Ok(value) => {
+                let mut out = json!({
+                    "name": v.name, "expr": v.expr, "value": value.value,
+                    "dimension": value.dimension.to_string(), "lengthUnit": unit,
+                });
+                if let Some(map) = out.as_object_mut() {
+                    // An angle's value is in radians, whatever the
+                    // document's angle unit: say so, and give degrees.
+                    if value.dimension.angle != 0 {
+                        map.insert("angleUnit".into(), "rad".into());
+                    }
+                    if value.dimension == craft3d_expr::Dimension::ANGLE {
+                        map.insert("degrees".into(), value.value.to_degrees().into());
+                    }
+                    // `1/16 in` is 1 / (16 in): almost never what was meant.
+                    let hint = value.dimension.unit_hint(&v.expr);
+                    if !hint.is_empty() {
+                        map.insert(
+                            "warning".into(),
+                            format!("`{}` is {}{hint}", v.expr, value.dimension.described()).into(),
+                        );
+                    }
+                }
+                out
+            }
             Err(error) => json!({ "name": v.name, "expr": v.expr, "error": error }),
         },
     }
@@ -1018,6 +1039,22 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("variable.set", params, &["name", "expr"])?;
     let name = p.required_str("name")?;
     let expr = p.expr("expr")?.ok_or_else(|| p.missing("expr"))?;
+    // "Make the wall 1 mm thicker" written as `wall + 1 mm` can never be
+    // worked out, and kept it would fail everything the variable drives:
+    // refused, with the value to write instead.
+    if craft3d_expr::Expr::parse(&expr).is_ok_and(|parsed| parsed.variables().contains(&name)) {
+        let open = session.document_mut()?;
+        let regen = open.regen();
+        let now = regen
+            .variables
+            .iter()
+            .find(|v| v.name == name)
+            .map_or_else(String::new, |v| format!(" (it is `{}` now)", v.expr));
+        return fail(format!(
+            "variable.set: `{expr}` uses `{name}` itself, so it could never be worked out; give \
+             its new value instead{now}"
+        ));
+    }
     let before = failing(session)?;
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)

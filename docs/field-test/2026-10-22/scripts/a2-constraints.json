@@ -1,0 +1,465 @@
+[
+ [
+"#",
+"A3: the rest: coincident, pointOn, midpoint, symmetric, equal, tangent, angle"
+],
+ [
+"sketch.create",
+{
+"name": "K",
+"plane": "xy"
+}
+],
+ [
+"sketch.point",
+{
+"sketch": "K",
+"at": [
+"0 mm",
+"0 mm"
+]
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "K",
+"from": [
+1,
+1
+],
+"to": [
+40,
+2
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "coincident",
+"entities": [
+"e1",
+"e2"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "horizontal",
+"entities": [
+"e4"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "distance",
+"entities": [
+"e4"
+],
+"value": "40 mm"
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "K",
+"from": [
+40,
+0
+],
+"to": [
+30,
+20
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "coincident",
+"entities": [
+"e3",
+"e5"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "angle",
+"entities": [
+"e4",
+"e7"
+],
+"value": "120 deg"
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "K",
+"from": [
+30,
+20
+],
+"to": [
+1,
+1
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "coincident",
+"entities": [
+"e6",
+"e8"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "coincident",
+"entities": [
+"e9",
+"e1"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "equal",
+"entities": [
+"e7",
+"e10"
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "K"
+}
+],
+ [
+"sketch.point",
+{
+"sketch": "K",
+"at": [
+20,
+1
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "midpoint",
+"entities": [
+"e11",
+"e4"
+]
+}
+],
+ [
+"sketch.point",
+{
+"sketch": "K",
+"at": [
+10,
+5
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "pointOn",
+"entities": [
+"e12",
+"e10"
+]
+}
+],
+ [
+"sketch.point",
+{
+"sketch": "K",
+"at": [
+28,
+5
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "pointOn",
+"entities": [
+"e13",
+"e7"
+]
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "K",
+"from": [
+20,
+0
+],
+"to": [
+20,
+30
+],
+"construction": true
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "vertical",
+"entities": [
+"e16"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "coincident",
+"entities": [
+"e14",
+"e11"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "symmetric",
+"entities": [
+"e12",
+"e13",
+"e16"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "distance",
+"entities": [
+"e12",
+"e13"
+],
+"value": "16 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "K",
+"type": "distance",
+"entities": [
+"e14",
+"e15"
+],
+"value": "30 mm"
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "K"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "K",
+"distance": "3 mm",
+"name": "Tri"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"#",
+"A4: tangent line to circle, arc"
+],
+ [
+"sketch.create",
+{
+"name": "G",
+"plane": "xy",
+"offset": "10 mm"
+}
+],
+ [
+"sketch.circle",
+{
+"sketch": "G",
+"center": [
+"0 mm",
+"0 mm"
+],
+"radius": "10 mm"
+}
+],
+ [
+"sketch.line",
+{
+"sketch": "G",
+"from": [
+-20,
+12
+],
+"to": [
+20,
+11
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "tangent",
+"entities": [
+"e5",
+"e2"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "horizontal",
+"entities": [
+"e5"
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "G"
+}
+],
+ [
+"sketch.arc",
+{
+"sketch": "G",
+"center": [
+30,
+0
+],
+"start": [
+35,
+0
+],
+"end": [
+30,
+5
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "radius",
+"entities": [
+"e9"
+],
+"value": "4 mm"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "equal",
+"entities": [
+"e9",
+"e2"
+]
+}
+],
+ [
+"sketch.inspect",
+{
+"sketch": "G"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "fixed",
+"entities": [
+"e5"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "angle",
+"entities": [
+"e5"
+],
+"value": "10 deg"
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "symmetric",
+"entities": [
+"e3",
+"e4"
+]
+}
+],
+ [
+"sketch.constrain",
+{
+"sketch": "G",
+"type": "midpoint",
+"entities": [
+"e5",
+"e3"
+]
+}
+]
+]

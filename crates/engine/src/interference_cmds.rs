@@ -318,7 +318,12 @@ fn part_of(doc: &Document, regen: &Regen, id: FeatureId) -> Result<Part, Command
     let Some(body) = outcome.own_body() else {
         return fail(match outcome.consumed_by {
             Some(taker) => {
-                format!("{ID}: the body of `{name}` went into {taker}; name that feature")
+                let taken = doc
+                    .feature(taker)
+                    .map_or_else(|| taker.to_string(), |f| f.name.clone());
+                format!(
+                    "{ID}: the body of `{name}` went into {taker}, `{taken}`; name that feature"
+                )
             }
             None => format!("{ID}: `{name}` has no body"),
         });

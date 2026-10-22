@@ -62,6 +62,60 @@ impl Dimension {
     }
 }
 
+impl Dimension {
+    /// The dimension with its article, for messages: "a length",
+    /// "an angle", "a length^-1"; "a plain number" for none.
+    pub fn described(self) -> String {
+        if self.is_dimensionless() {
+            return "a plain number".to_string();
+        }
+        let name = self.to_string();
+        let article = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "an"
+        } else {
+            "a"
+        };
+        format!("{article} {name}")
+    }
+
+    /// For the value of `source` with this dimension, when it fell into
+    /// the trap of a unit read as belonging to a divisor: a negative
+    /// exponent, and `source` divides by a number written with a unit right
+    /// after the `/`, without parentheses (`1/16 in` is 1 / (16 in)). A
+    /// sentence that says so and how to write what was meant, starting
+    /// with "; ". Empty otherwise: `10 mm / (360 deg)` and `1 / (2 mm)`
+    /// mean what they say.
+    pub fn unit_hint(self, source: &str) -> &'static str {
+        if (self.length < 0 || self.angle < 0) && divides_by_a_unit(source) {
+            "; a unit belongs to the number just before it, so `1/16 in` is 1 / (16 in) and \
+             `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`"
+        } else {
+            ""
+        }
+    }
+}
+
+/// Whether `source` has a `/` followed directly by a number and a unit
+/// (`1/16 in`, `pi / 4 rad`), the divisor not in parentheses.
+fn divides_by_a_unit(source: &str) -> bool {
+    use crate::lexer::{TokenKind, tokenize};
+    let Ok(tokens) = tokenize(source) else {
+        return false;
+    };
+    tokens.windows(3).any(|three| match three {
+        [slash, number, unit] => {
+            slash.kind == TokenKind::Slash
+                && matches!(number.kind, TokenKind::Number(_))
+                && unit.kind == TokenKind::Ident
+                && source
+                    .get(unit.pos..unit.end)
+                    .and_then(Unit::from_symbol)
+                    .is_some()
+        }
+        _ => false,
+    })
+}
+
 impl fmt::Display for Dimension {
     /// `dimensionless`, `length`, `length^2`, `length * angle^-1`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -272,6 +326,43 @@ mod tests {
         assert_eq!(Unit::from_symbol("MM"), None);
         assert_eq!(Unit::from_symbol(""), None);
         assert_eq!(Unit::from_symbol("mmm"), None);
+    }
+
+    #[test]
+    fn dimensions_are_described_with_their_article_and_an_inverse_says_why() {
+        assert_eq!(Dimension::LENGTH.described(), "a length");
+        assert_eq!(Dimension::ANGLE.described(), "an angle");
+        assert_eq!(Dimension::NONE.described(), "a plain number");
+        assert_eq!(Dimension::new(-1, 0).described(), "a length^-1");
+        assert_eq!(Dimension::new(0, -1).described(), "an angle^-1");
+        // `1/16 in` and `pi / 4 rad` fell into the trap: the hint says how
+        // to write what was meant.
+        let inverse_length = Dimension::new(-1, 0);
+        let inverse_angle = Dimension::new(0, -1);
+        assert!(inverse_length.unit_hint("1/16 in").contains("`1 in / 16`"));
+        assert!(
+            inverse_length
+                .unit_hint("w * 2 / 3 mm")
+                .contains("`1 in / 16`")
+        );
+        assert!(
+            inverse_angle
+                .unit_hint("pi / 4 rad")
+                .contains("`pi / 4 * 1 rad`")
+        );
+        // Inverses written as meant: nothing.
+        for (d, source) in [
+            (inverse_length, "1 / (2 mm)"),
+            (inverse_length, "n / width"),
+            (Dimension::new(1, -1), "10 mm / (360 deg)"),
+            (inverse_angle, "1 / (4 rad)"),
+        ] {
+            assert_eq!(d.unit_hint(source), "", "{source}");
+        }
+        // Not an inverse, whatever the text: nothing.
+        for d in [Dimension::NONE, Dimension::LENGTH, Dimension::new(2, 0)] {
+            assert_eq!(d.unit_hint("1/16 in"), "");
+        }
     }
 
     #[test]

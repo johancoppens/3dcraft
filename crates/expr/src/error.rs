@@ -56,6 +56,16 @@ pub enum ErrorKind {
     UnitWithoutNumber {
         unit: Unit,
     },
+    /// A unit after something that is not a number: `(pi / 4) rad`,
+    /// `width mm`. A unit belongs to the number just before it.
+    UnitAfterExpression {
+        unit: Unit,
+    },
+    /// A word right after a number that is not a unit: `2 inch`, `3 MM`.
+    UnknownUnit {
+        name: String,
+        meant: Unit,
+    },
     /// A function called with the wrong number of arguments. `expected` is
     /// prose: "1", "2", "at least 1".
     ArgumentCount {
@@ -164,6 +174,16 @@ impl fmt::Display for ErrorKind {
                 f,
                 "the unit `{unit}` must follow a number, as in `1 {unit}`; it cannot be \
                  used as a name"
+            ),
+            ErrorKind::UnitAfterExpression { unit } => write!(
+                f,
+                "the unit `{unit}` must follow a number directly, as in `45 {unit}`; to give \
+                 a whole expression a unit, multiply by one: `(pi / 4) * 1 {unit}`"
+            ),
+            ErrorKind::UnknownUnit { name, meant } => write!(
+                f,
+                "`{name}` is not a unit: write `{meant}`; the units are um, mm, cm, m, in, \
+                 ft, deg and rad, in lower case after a number"
             ),
             ErrorKind::ArgumentCount {
                 function,

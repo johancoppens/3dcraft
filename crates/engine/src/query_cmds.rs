@@ -82,7 +82,9 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
     let Some(body) = outcome.own_body() else {
         return fail(match outcome.consumed_by {
             Some(taker) => format!(
-                "{ID}: the body of `{made_by}` went into {taker}; ask for the edges of that feature"
+                "{ID}: the body of `{made_by}` went into {taker}, `{}`; ask for the edges of that feature",
+                doc.feature(taker)
+                    .map_or_else(|| taker.to_string(), |f| f.name.clone())
             ),
             None => format!("{ID}: `{made_by}` has no body"),
         });

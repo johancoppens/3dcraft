@@ -567,7 +567,31 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
     let id = edit(session, COMMAND, "Add sketch", |doc| {
         insert_feature(doc, name, FeatureKind::Sketch(Sketch::new(plane)))
     })?;
-    sketch_result(session, id, None, Value::Null)
+    // Where the sketch lies, in world coordinates: on a face its axes may
+    // be any of the world's, turned or swapped (the bottom of a block has
+    // x along world Y), so an agent reads them before placing anything.
+    let frame = session
+        .document_mut()?
+        .regen()
+        .feature(id)
+        .and_then(|f| f.sketch.as_deref())
+        .map(frame_json);
+    sketch_result(session, id, None, frame.unwrap_or(Value::Null))
+}
+
+/// A solved sketch's place in world coordinates, as keys of a result:
+/// `frame` (its origin, x and y axes) and `normal` (x × y, the side an
+/// extrusion goes to).
+fn frame_json(solved: &SketchResult) -> Value {
+    let normal = solved.x_axis.cross(solved.y_axis);
+    json!({
+        "frame": {
+            "origin": [solved.origin.x, solved.origin.y, solved.origin.z],
+            "x": [solved.x_axis.x, solved.x_axis.y, solved.x_axis.z],
+            "y": [solved.y_axis.x, solved.y_axis.y, solved.y_axis.z],
+        },
+        "normal": [normal.x, normal.y, normal.z],
+    })
 }
 
 fn sketch_point(session: &mut Session, params: &Value) -> Run {
@@ -1221,14 +1245,9 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
     if let Some(map) = result.as_object_mut() {
         if let Some(solved) = solved {
             solve_summary(map, solved);
-            map.insert(
-                "frame".into(),
-                json!({
-                    "origin": [solved.origin.x, solved.origin.y, solved.origin.z],
-                    "x": [solved.x_axis.x, solved.x_axis.y, solved.x_axis.z],
-                    "y": [solved.y_axis.x, solved.y_axis.y, solved.y_axis.z],
-                }),
-            );
+            if let Value::Object(place) = frame_json(solved) {
+                map.extend(place);
+            }
         }
         map.insert(
             "plane".into(),

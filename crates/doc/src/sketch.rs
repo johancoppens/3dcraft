@@ -857,21 +857,30 @@ impl ConstraintKind {
         };
         if !roles.iter().any(|r| r.len() == entities.len()) {
             return Err(format!(
-                "a {type_name} constraint takes {}, but {} were given",
+                "{} constraint takes {}, but {}",
+                a_type(type_name),
                 describe_roles(roles),
-                entities.len()
+                match entities.len() {
+                    1 => "1 entity was given".to_string(),
+                    n => format!("{n} entities were given"),
+                }
             ));
         }
         let value = match (Self::has_value(type_name), value) {
             (true, Some(value)) => value,
-            (true, None) => return Err(format!("a {type_name} constraint needs a `value`")),
+            (true, None) => {
+                return Err(format!("{} constraint needs a `value`", a_type(type_name)));
+            }
             (false, Some(_)) => {
-                return Err(format!("a {type_name} constraint takes no `value`"));
+                return Err(format!("{} constraint takes no `value`", a_type(type_name)));
             }
             (false, None) => Expr::default(),
         };
         if direction != DistanceDirection::Direct && type_name != "distance" {
-            return Err(format!("a {type_name} constraint takes no `direction`"));
+            return Err(format!(
+                "{} constraint takes no `direction`",
+                a_type(type_name)
+            ));
         }
         let at = |i: usize| entities.get(i).copied();
         let need = |i: usize| at(i).ok_or_else(|| format!("entity {i} is missing"));
@@ -969,6 +978,17 @@ impl ConstraintKind {
             _ => None,
         }
     }
+}
+
+/// A constraint type with its article, for messages: "an angle",
+/// "a distance", "an x".
+fn a_type(type_name: &str) -> String {
+    let article = if type_name.starts_with(['a', 'e', 'i', 'o', 'u', 'x']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} {type_name}")
 }
 
 fn describe_roles(roles: &[&[Role]]) -> String {
@@ -1290,7 +1310,8 @@ impl Sketch {
         let mut seen = BTreeSet::new();
         if let Some(twice) = entities.iter().find(|id| !seen.insert(**id)) {
             return invalid(format!(
-                "a {type_name} constraint needs different entities, got {twice} twice"
+                "{} constraint needs different entities, got {twice} twice",
+                a_type(type_name)
             ));
         }
         let roles = ConstraintKind::roles(type_name).unwrap_or(&[]);
@@ -1306,7 +1327,8 @@ impl Sketch {
                 ""
             };
             return invalid(format!(
-                "a {type_name} constraint takes {}, got {}{unsupported}",
+                "{} constraint takes {}, got {}{unsupported}",
+                a_type(type_name),
                 describe_roles(roles),
                 got.join(" and ")
             ));
@@ -1329,11 +1351,13 @@ impl Sketch {
         {
             return invalid(if self.inner_patterns(*root).is_empty() {
                 format!(
-                    "a {type_name} constraint between images of one pattern ({root}) only is not supported yet: the pattern ties them already; constrain the seed instead"
+                    "{} constraint between images of one pattern ({root}) only is not supported yet: the pattern ties them already; constrain the seed instead",
+                    a_type(type_name)
                 )
             } else {
                 format!(
-                    "a {type_name} constraint between images of one tree of patterns ({root} and the patterns in it) only is not supported yet: the patterns tie them already; constrain the seed instead"
+                    "{} constraint between images of one tree of patterns ({root} and the patterns in it) only is not supported yet: the patterns tie them already; constrain the seed instead",
+                    a_type(type_name)
                 )
             });
         }
@@ -2708,8 +2732,8 @@ mod tests {
     fn a_constraint_is_built_from_parts_or_refused_with_a_reason() {
         let message = |r: Result<ConstraintKind, String>| r.unwrap_err();
         assert!(message(kind("paralel", &[1, 2], None)).contains("unknown constraint type"));
-        assert!(message(kind("parallel", &[1], None)).contains("but 1 were given"));
-        assert!(message(kind("symmetric", &[1, 2], None)).contains("but 2 were given"));
+        assert!(message(kind("parallel", &[1], None)).contains("but 1 entity was given"));
+        assert!(message(kind("symmetric", &[1, 2], None)).contains("but 2 entities were given"));
         assert!(message(kind("distance", &[1, 2], None)).contains("needs a `value`"));
         assert!(message(kind("parallel", &[5, 6], Some("3"))).contains("takes no `value`"));
         assert!(

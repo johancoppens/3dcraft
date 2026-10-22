@@ -837,6 +837,84 @@ fn the_preview_takes_the_options_of_the_render_command() {
 }
 
 #[test]
+fn a_terse_batch_lists_the_features_that_were_added_but_failed() {
+    // Field test 2026-10-22: a fillet in the middle of a terse batch that
+    // could not be built was seen nowhere, as the command succeeded and
+    // was not the last step.
+    let mut s = session();
+    let steps = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Huge"}},
+        {"id": "document.measure"},
+    ]);
+    let report = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": steps, "terse": true}),
+    );
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(4), &json!(0))
+    );
+    let failed = report["featuresFailed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{report}");
+    assert_eq!(failed[0]["step"], 2);
+    assert_eq!(failed[0]["feature"], "Huge");
+    assert_eq!(failed[0]["id"], "F2");
+    assert!(
+        failed[0]["error"].as_str().unwrap().contains("radius"),
+        "{report}"
+    );
+    // A batch without such features has no such key.
+    let clean = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "document.measure"}], "terse": true}),
+    );
+    assert!(clean.get("featuresFailed").is_none(), "{clean}");
+
+    // The list is the state at the end of the batch: a failure a later
+    // step repaired is gone, features an edit broke are there with the
+    // step of that edit (the cause too), and a failed assertion, which is
+    // no feature, is not.
+    let mut s = session();
+    let steps = json!([
+        {"id": "file.new"},
+        {"id": "variable.set", "params": {"name": "h", "expr": "10 mm"}},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Round"}},
+        {"id": "feature.edit", "params": {"feature": "Round", "radius": "h / 2"}},
+        {"id": "feature.transform", "params": {"source": "Round", "translate": [20, 0, 0], "name": "Moved"}},
+        {"id": "assert.add", "params": {"name": "wrong", "measure": "volume", "of": "Moved", "eq": 1}},
+    ]);
+    let repaired = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": steps, "terse": true}),
+    );
+    assert!(repaired.get("featuresFailed").is_none(), "{repaired}");
+    assert_eq!(repaired["last"]["result"]["status"], "failed", "{repaired}");
+    // A 15 mm round does not fit on a 10 mm block: the variable breaks
+    // the round and the transform made from it.
+    let broken = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"terse": true, "steps": [
+            {"id": "variable.set", "params": {"name": "h", "expr": "30 mm"}},
+            {"id": "document.measure"},
+        ]}),
+    );
+    let failed = broken["featuresFailed"].as_array().unwrap();
+    let listed: Vec<(&str, u64)> = failed
+        .iter()
+        .map(|f| (f["feature"].as_str().unwrap(), f["step"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(listed, [("Round", 0), ("Moved", 0)], "{broken}");
+    assert_eq!(failed[1]["causedBy"], "F2", "{broken}");
+}
+
+#[test]
 fn a_terse_batch_reports_the_failures_and_the_last_result() {
     // Field test 2026-10-12, finding 8: every step's result is a lot to
     // send back for a batch of hundreds of sketch entities.

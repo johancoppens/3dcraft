@@ -1,0 +1,246 @@
+[
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "40 mm"
+}
+],
+ [
+"sketch.create",
+{
+"name": "S",
+"plane": "xy"
+}
+],
+ [
+"sketch.rect",
+{
+"sketch": "S",
+"from": [
+"-w / 2",
+"-10 mm"
+],
+"to": [
+"w / 2",
+"10 mm"
+]
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "-5 mm",
+"name": "Down"
+}
+],
+ [
+"document.inspect",
+{}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "5 mm",
+"symmetric": true,
+"name": "Sym"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "-5 mm",
+"symmetric": true,
+"name": "SymNeg"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "0 mm",
+"name": "Zero"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "5 mm",
+"reversed": true,
+"name": "Rev"
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "S",
+"distance": "-5 mm",
+"reversed": true,
+"name": "RevNeg"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"#",
+"E1b: a rect drawn backwards (to left of from)"
+],
+ [
+"sketch.create",
+{
+"name": "B",
+"plane": "xy",
+"offset": "30 mm"
+}
+],
+ [
+"sketch.rect",
+{
+"sketch": "B",
+"from": [
+"w",
+"0 mm"
+],
+"to": [
+"0 mm",
+"-20 mm"
+]
+}
+],
+ [
+"feature.extrude",
+{
+"sketch": "B",
+"distance": "5 mm",
+"name": "Back"
+}
+],
+ [
+"document.measure",
+{
+"feature": "Back"
+}
+],
+ [
+"#",
+"E1c: variable goes negative under a held rect"
+],
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "-40 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "0 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"variable.set",
+{
+"name": "w",
+"expr": "40 mm"
+}
+],
+ [
+"#",
+"E3: negative fillet / chamfer / offset"
+],
+ [
+"feature.block",
+{
+"size": [
+"20 mm",
+"20 mm",
+"20 mm"
+],
+"position": [
+"100 mm",
+0,
+0
+],
+"name": "Cube"
+}
+],
+ [
+"feature.fillet",
+{
+"edges": [
+ [
+"F12:face(2)",
+"F12:face(4)"
+]
+],
+"radius": "-2 mm",
+"name": "NegFillet"
+}
+],
+ [
+"feature.chamfer",
+{
+"edges": [
+ [
+"F12:face(2)",
+"F12:face(4)"
+]
+],
+"distance": "-2 mm",
+"name": "NegCh"
+}
+],
+ [
+"feature.offsetFace",
+{
+"faces": [
+"F12:face(1)"
+],
+"distance": "-3 mm",
+"name": "Lower"
+}
+],
+ [
+"document.measure",
+{
+"feature": "Lower"
+}
+],
+ [
+"feature.transform",
+{
+"source": "Lower",
+"translate": [
+"-100 mm",
+"-50 mm",
+0
+],
+"angle": "-90 deg",
+"name": "Moved"
+}
+],
+ [
+"document.inspect",
+{}
+]
+]

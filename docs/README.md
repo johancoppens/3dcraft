@@ -12,6 +12,7 @@
 | [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, names, document, regeneration, tessellator, rendering, engine, files): how it works now, then its dated findings |
 | [`development.md`](development.md) | Prerequisites, build and run, CLI, driving the app, watching along, environment variables |
 | [`field-test/2026-10-12/`](field-test/2026-10-12/README.md) | What an agent that only used 3DCraft over MCP built, and what it ran into |
+| [`field-test/2026-10-22/`](field-test/2026-10-22/README.md) | The second field test: history, conflicting sketches, every constraint kind, negative values, units, a change request and the guide taken literally; what was fixed and what is open |
 | [`testing.md`](testing.md) | The AI test loop, the oracles, test kinds per crate, evidence |
 | [`contributing.md`](contributing.md) | Rules and the "add a command" / "add a feature type" checklists |
 | [`control-protocol.md`](control-protocol.md) | JSON control channel, headless server, MCP tools |

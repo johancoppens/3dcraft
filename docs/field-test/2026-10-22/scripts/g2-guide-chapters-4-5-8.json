@@ -1,0 +1,149 @@
+[
+ [
+"@include",
+"docs/examples/bracket.json"
+],
+ [
+"sketch.inspect",
+{
+"sketch": "Profile"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"variable.set",
+{
+"name": "leg_x",
+"expr": "60 mm"
+}
+],
+ [
+"document.measure",
+{}
+],
+ [
+"variable.set",
+{
+"name": "inner_r",
+"expr": "30 mm"
+}
+],
+ [
+"document.check",
+{}
+],
+ [
+"edit.undo",
+{}
+],
+ [
+"document.check",
+{}
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"normal": {
+"along": "z"
+}
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"hole": true,
+"radius": "hole_d / 2"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "face",
+"where": {
+"normal": {
+"along": "z"
+},
+"above": {
+"z": "10 mm"
+}
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "edge",
+"where": {
+"madeBy": "Rounded"
+}
+}
+],
+ [
+"select.query",
+{
+"kind": "body",
+"where": {
+"volume": {
+"min": 1000
+}
+}
+}
+],
+ [
+"set.define",
+{
+"name": "holes",
+"kind": "face",
+"where": {
+"hole": true,
+"radius": "hole_d / 2"
+}
+}
+],
+ [
+"select.set",
+{
+"set": "holes"
+}
+],
+ [
+"select.get",
+{}
+],
+ [
+"measure.through",
+{
+"of": {
+"hole": true
+}
+}
+],
+ [
+"measure.distance",
+{
+"from": {
+"set": "holes"
+},
+"to": "Part"
+}
+],
+ [
+"document.edges",
+{
+"feature": "Part"
+}
+],
+ [
+"document.edges",
+{}
+]
+]
