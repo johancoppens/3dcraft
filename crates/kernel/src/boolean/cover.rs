@@ -37,20 +37,47 @@
 //! on exactly as before and the results are the same bit for bit, in any
 //! order of questions and on any thread.
 //!
+//! Where two covers are asked whether they meet, the other face's
+//! surface is known exactly where its box is not: a node further than the
+//! margin from the other face's surface (by its signed distance, which
+//! changes by no more than the distance moved, so at the box's middle it
+//! must exceed half the box's diagonal) is that far from the other face,
+//! which lies on it, and is passed over, for analytic surfaces. Two
+//! leaves that come within the margin of each other are each looked at in
+//! [`PARTS_OF_LEAF`]² parts, worked out and let go (the first [`PARTED`]
+//! pairs of leaves of a question), each part passed over the same way.
+//! These only prove more pairs further apart than the margin, which is
+//! what passing a pair over rests on.
+//!
 //! Memory: a tree's first nodes are made at once, no shorter than a
 //! quarter (a sixteenth, for the finer ones) of the face box's diagonal:
 //! for an analytic face at most `(FRONT · π)²` of them, a few hundred
 //! (`(FINE · π)²`, about 2,500); below them at most [`NODES`] more are made
 //! per tree. A cover lives as long as the boolean that made it.
 //!
-//! Freeform faces get no cover (their box stands for them, as before):
-//! their patches' bounds would come from the index of their surface,
-//! which is made only for faces that need it.
+//! A freeform face (Bézier or NURBS) is covered the same way from the
+//! Bézier pieces of its surface, one first node per knot span: a piece
+//! lies in the convex hull of its control points (its weights are
+//! positive), so the box of those points, grown by what rounding may have
+//! moved them by ([`PIECE_ROUNDING`]), holds it, and a node's halves are
+//! its piece split in two by de Casteljau's algorithm. How long a node is
+//! comes from the rows of its control polygon. A node keeps only the
+//! index of its span: its piece is cut out of the span's when the node
+//! is halved, so the cover holds the surface's pieces once (a bicubic
+//! one some 512 bytes) beside its nodes. A surface of more than
+//! [`MOST_PIECES`] spans, or with a weight that is not positive, gets no
+//! cover (its box stands for it), and a front holds at most
+//! [`FIRST_NODES`] nodes. Being outside a freeform face by its
+//! cover rests on what it rests on for an analytic one: a point within
+//! the tolerance of the surface and further than the cover's margin from
+//! the face has its nearest point of the surface outside the face, which
+//! is what the outline reads too.
 
-use super::hits::speed_bound;
-use super::outline::{Outline, Side, boxes_meet, nearest};
+use super::freeform::is_freeform;
+use super::hits::{ROUNDING, signed_distance, speed_bound, surface_size};
+use super::outline::{Outline, Sheet, Side, boxes_meet, nearest};
 use crate::boxtree::BoxTree;
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::OnceLock;
@@ -85,6 +112,41 @@ const NODES: usize = 1 << 13;
 /// without a cover).
 const PAIRS: usize = 4096;
 
+/// How many parts along each parameter a leaf is cut into when two
+/// leaves come within the margin of each other ([`Cover::meets`]).
+const PARTS_OF_LEAF: usize = 4;
+
+/// How many pairs of leaves one question looks at in parts, at most;
+/// past that a pair of leaves that meet answers that the faces may.
+const PARTED: usize = 8;
+
+/// A freeform face of more Bézier pieces than this has no cover (its box
+/// stands for it).
+const MOST_PIECES: usize = 4096;
+
+/// How many first nodes a front holds at most: past that, nodes are
+/// first nodes undivided (a coarser front, never a smaller cover). An
+/// analytic face's front stays below it (about `(FINE · π)²`); a freeform
+/// face's has a node per knot span at least.
+const FIRST_NODES: usize = 1 << 12;
+
+/// How far, relative to the largest coordinate, the control points of a
+/// piece may have been moved by rounding, per unit of the spread of its
+/// weights: a NURBS surface's pieces come from knot insertions and are
+/// halved down to [`DEPTH`] times (with the cut-outs, some sixty
+/// de Casteljau steps of a few roundings each, in homogeneous
+/// coordinates, where every step is a convex combination); a control
+/// point is then a homogeneous point over its weight, whose rounding
+/// relative to the largest coordinate grows with the heaviest weight over
+/// the lightest. Some 10⁻¹⁴ times that spread in all, and 10⁻¹² leaves
+/// room. The box only grows by it, so a larger spread costs a looser
+/// cover, never a point of the face; it is no margin of the boolean's
+/// (those are tolerances), and with weights a million apart and
+/// coordinates 10⁴ tolerances large it is still below a tolerance.
+const PIECE_ROUNDING: f64 = 1e-12;
+
+const _: () = assert!(MOST_PIECES <= FIRST_NODES);
+
 /// What a face's cover is made from: its surface, its box, its outline
 /// (none: no patch is left out by it) and the tolerance.
 #[derive(Clone, Copy)]
@@ -102,6 +164,8 @@ pub(super) struct Face<'a> {
 /// what a question costs then goes into the tree of boxes, which answers
 /// it faster than going down from coarse nodes each time.
 pub(super) struct Cover {
+    /// Of a freeform face: the Bézier pieces of its surface.
+    spans: Option<Vec<(Rect, RationalBezierPatch)>>,
     coarse: Front,
     fine: OnceLock<Option<Front>>,
     asked: AtomicUsize,
@@ -127,7 +191,14 @@ struct Node {
     /// The children that are not wholly outside the face (perhaps none);
     /// `None` for a leaf.
     children: OnceLock<Option<Vec<Node>>>,
+    /// Of a freeform face: the knot span the patch lies in (its piece is
+    /// cut out of the span's piece when the node is halved).
+    span: Option<u32>,
 }
+
+/// The Bézier pieces of a freeform face's surface, one per knot span,
+/// with the parameters each covers.
+type Spans = [(Rect, RationalBezierPatch)];
 
 /// Per direction of the parameters the speed (`|S_u|`, `|S_v|`) and the
 /// bend (`|S_uu|`, `|S_vv|`) at most, over the parameters with `v` in
@@ -202,18 +273,39 @@ fn parameters(surface: &Surface, face: &Bbox3) -> Option<(f64, f64, f64, f64)> {
 /// the numbers are not finite: the face then has no cover.
 fn node(
     face: Face,
-    rect: (f64, f64, f64, f64),
+    rect: Rect,
     depth: u32,
     inside: bool,
+    piece: Option<(&RationalBezierPatch, u32)>,
 ) -> Result<Option<Node>, ()> {
     let (a, b, c, d) = rect;
-    let [_, _, bend_u, bend_v] = bounds(face.surface, (c, d)).ok_or(())?;
-    let (hu, hv) = (b - a, d - c);
-    let mut corners = Bbox3::EMPTY;
-    for (u, v) in [(a, c), (b, c), (a, d), (b, d)] {
-        corners.add(face.surface.eval(u, v));
-    }
-    let stray = (hu * hu * bend_u + hv * hv * bend_v) / 8.0;
+    let (corners, stray) = match piece {
+        // The convex hull of the piece's control points holds it (the
+        // weights are positive), grown by what rounding may have moved
+        // them by in the knot insertions and halvings that made them.
+        Some((piece, _)) => {
+            let hull = piece.control_bbox();
+            let (lo, hi) = hull.corners().ok_or(())?;
+            let size = [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]
+                .into_iter()
+                .fold(0.0, |m: f64, x| m.max(x.abs()));
+            let spread = match piece.weight_range() {
+                Some((lightest, heaviest)) if lightest > 0.0 => (heaviest / lightest).max(1.0),
+                _ if piece.is_polynomial() => 1.0,
+                _ => return Err(()),
+            };
+            (hull, PIECE_ROUNDING * size * spread)
+        }
+        None => {
+            let [_, _, bend_u, bend_v] = bounds(face.surface, (c, d)).ok_or(())?;
+            let (hu, hv) = (b - a, d - c);
+            let mut corners = Bbox3::EMPTY;
+            for (u, v) in [(a, c), (b, c), (a, d), (b, d)] {
+                corners.add(face.surface.eval(u, v));
+            }
+            (corners, (hu * hu * bend_u + hv * hv * bend_v) / 8.0)
+        }
+    };
     let (lo, hi) = corners.corners().ok_or(())?;
     if !(stray.is_finite() && lo.is_finite() && hi.is_finite()) {
         return Err(());
@@ -250,36 +342,158 @@ fn node(
         inside,
         depth,
         children: OnceLock::new(),
+        span: piece.map(|(_, span)| span),
     }))
 }
 
+/// Parameters: `u` from `.0` to `.1`, `v` from `.2` to `.3`.
+type Rect = (f64, f64, f64, f64);
+
+/// A half of a node: its parameters and, of a freeform face, its piece.
+type Half = (Rect, Option<RationalBezierPatch>);
+
 /// The two halves of node `n`'s parameters, halved along the direction
 /// in which it is longer in space, or `None` when it is no longer than
-/// `widest` either way (or as deep as nodes go).
-fn halves(face: Face, n: &Node, widest: f64) -> Option<[(f64, f64, f64, f64); 2]> {
+/// `widest` either way (or as deep as nodes go). How long a node of a
+/// freeform face is comes from its piece: no curve of constant `v` (or
+/// `u`) on it is longer than the longest row (column) of its control
+/// polygon (a plane meets the curve no more often than the row, so by
+/// Crofton's formula the curve is no longer).
+fn halves(face: Face, n: &Node, widest: f64, spans: &Spans) -> Option<[Half; 2]> {
     let (a, b, c, d) = n.rect;
-    let [speed_u, speed_v, _, _] = bounds(face.surface, (c, d))?;
-    let (long_u, long_v) = ((b - a) * speed_u, (d - c) * speed_v);
+    let piece = match n.span {
+        Some(span) => Some(piece_of(spans, span, n.rect)?),
+        None => None,
+    };
+    let (long_u, long_v) = match &piece {
+        Some(piece) => polygon_lengths(piece)?,
+        None => {
+            let [speed_u, speed_v, _, _] = bounds(face.surface, (c, d))?;
+            ((b - a) * speed_u, (d - c) * speed_v)
+        }
+    };
     if n.depth >= DEPTH || !(long_u > widest || long_v > widest) {
         return None;
     }
     Some(if long_u >= long_v {
         let m = 0.5 * (a + b);
-        [(a, m, c, d), (m, b, c, d)]
+        let (low, high) = match &piece {
+            Some(piece) => {
+                let (low, high) = piece.split_u(0.5);
+                (Some(low), Some(high))
+            }
+            None => (None, None),
+        };
+        [((a, m, c, d), low), ((m, b, c, d), high)]
     } else {
         let m = 0.5 * (c + d);
-        [(a, b, c, m), (a, b, m, d)]
+        let (low, high) = match &piece {
+            Some(piece) => {
+                let (low, high) = piece.split_v(0.5);
+                (Some(low), Some(high))
+            }
+            None => (None, None),
+        };
+        [((a, b, c, m), low), ((a, b, m, d), high)]
     })
+}
+
+/// The piece of the surface over `rect`, cut out of the piece of knot
+/// span `span` (split where `rect` begins and ends; the halves of a node
+/// are then split from it in the middle).
+fn piece_of(spans: &Spans, span: u32, rect: Rect) -> Option<RationalBezierPatch> {
+    let ((u0, u1, v0, v1), whole) = spans.get(usize::try_from(span).ok()?)?;
+    let (a, b, c, d) = rect;
+    let share = |x: f64, from: f64, to: f64| ((x - from) / (to - from)).clamp(0.0, 1.0);
+    let (s0, s1) = (share(a, *u0, *u1), share(b, *u0, *u1));
+    let (t0, t1) = (share(c, *v0, *v1), share(d, *v0, *v1));
+    if !(s0 < s1 && t0 < t1) {
+        return None;
+    }
+    let mut piece = whole.clone();
+    if s1 < 1.0 {
+        piece = piece.split_u(s1).0;
+    }
+    if s0 > 0.0 {
+        piece = piece.split_u(s0 / s1).1;
+    }
+    if t1 < 1.0 {
+        piece = piece.split_v(t1).0;
+    }
+    if t0 > 0.0 {
+        piece = piece.split_v(t0 / t1).1;
+    }
+    Some(piece)
+}
+
+/// The longest row of a piece's control polygon along `u` and the
+/// longest along `v`: bounds on the lengths of its curves of constant
+/// `v` and of constant `u`.
+fn polygon_lengths(piece: &RationalBezierPatch) -> Option<(f64, f64)> {
+    let (du, dv) = piece.degrees();
+    let points = piece.control_points();
+    let at = |i: usize, j: usize| points.get(i.checked_mul(dv + 1)?.checked_add(j)?).copied();
+    let (mut long_u, mut long_v) = (0.0_f64, 0.0_f64);
+    for j in 0..=dv {
+        let mut length = 0.0;
+        for i in 0..du {
+            length += at(i + 1, j)?.distance(at(i, j)?);
+        }
+        long_u = long_u.max(length);
+    }
+    for i in 0..=du {
+        let mut length = 0.0;
+        for j in 0..dv {
+            length += at(i, j + 1)?.distance(at(i, j)?);
+        }
+        long_v = long_v.max(length);
+    }
+    (long_u.is_finite() && long_v.is_finite()).then_some((long_u, long_v))
+}
+
+/// The Bézier pieces of a freeform surface with the parameters each
+/// covers, or `None` for an analytic surface, for weights that are not
+/// all positive (no hull holds the surface then), and for more pieces
+/// than [`MOST_PIECES`].
+fn pieces(surface: &Surface) -> Option<Vec<(Rect, RationalBezierPatch)>> {
+    let spans = match surface {
+        Surface::Bezier(patch) => vec![(
+            (0.0, 1.0, 0.0, 1.0),
+            RationalBezierPatch::from_bezier(patch),
+        )],
+        Surface::Nurbs(s) => {
+            if s.weights().iter().any(|w| w.is_nan() || *w <= 0.0) {
+                return None;
+            }
+            let spans = s.bezier_spans().ok()?;
+            if spans.len() > MOST_PIECES {
+                return None;
+            }
+            spans
+                .into_iter()
+                .map(|span| ((span.u.0, span.u.1, span.v.0, span.v.1), span.patch))
+                .collect()
+        }
+        _ => return None,
+    };
+    let positive = spans.iter().all(|(_, piece)| {
+        piece.is_polynomial()
+            || piece
+                .weight_range()
+                .is_some_and(|(lightest, _)| lightest > 0.0)
+    });
+    positive.then_some(spans)
 }
 
 /// The children of node `n` no longer than `widest`: those not wholly
 /// outside the face (perhaps none), or `None` for a leaf. Where a child's
 /// numbers are not finite the node stays a leaf (nothing of the face is
 /// lost).
-fn divide(face: Face, n: &Node, widest: f64) -> Option<Vec<Node>> {
+fn divide(face: Face, n: &Node, widest: f64, spans: &Spans) -> Option<Vec<Node>> {
     let mut kids = Vec::with_capacity(2);
-    for rect in halves(face, n, widest)? {
-        match node(face, rect, n.depth + 1, n.inside) {
+    for (rect, piece) in halves(face, n, widest, spans)? {
+        let piece = piece.as_ref().zip(n.span);
+        match node(face, rect, n.depth + 1, n.inside, piece) {
             Ok(Some(kid)) => kids.push(kid),
             Ok(None) => {}
             Err(()) => return None,
@@ -291,19 +505,42 @@ fn divide(face: Face, n: &Node, widest: f64) -> Option<Vec<Node>> {
 impl Front {
     /// The first nodes of `face`'s cover no longer than its box's diagonal
     /// over `parts`, or `None` where it has none.
-    fn new(face: Face, parts: f64) -> Option<Front> {
-        let rect = parameters(face.surface, face.bbox)?;
-        let root = match node(face, rect, 0, false) {
-            Ok(Some(root)) => root,
-            // Nothing of the patch is in the face: a face has points, so
+    fn new(face: Face, parts: f64, spans: Option<&Spans>) -> Option<Front> {
+        let mut stack = Vec::new();
+        if let Some(spans) = spans {
+            // A root per Bézier piece of the surface; pieces wholly
+            // outside the face are left out.
+            for (index, (rect, piece)) in spans.iter().enumerate() {
+                let span = u32::try_from(index).ok()?;
+                match node(face, *rect, 0, false, Some((piece, span))) {
+                    Ok(Some(root)) => stack.push(root),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
+            }
+            stack.reverse();
+        } else {
+            let rect = parameters(face.surface, face.bbox)?;
+            match node(face, rect, 0, false, None) {
+                Ok(Some(root)) => stack.push(root),
+                Ok(None) | Err(()) => return None,
+            }
+        }
+        if stack.is_empty() {
+            // Nothing of the surface is in the face: a face has points, so
             // this is a face its box must stand for.
-            Ok(None) | Err(()) => return None,
-        };
+            return None;
+        }
         let front = face.bbox.diagonal() / parts;
+        let spans = spans.unwrap_or_default();
         let mut roots = Vec::new();
-        let mut stack = vec![root];
         while let Some(n) = stack.pop() {
-            match divide(face, &n, front) {
+            // (Past [`FIRST_NODES`] the rest are first nodes as they are.)
+            if roots.len() + stack.len() >= FIRST_NODES {
+                roots.push(n);
+                continue;
+            }
+            match divide(face, &n, front, spans) {
                 Some(kids) => stack.extend(kids),
                 None => roots.push(n),
             }
@@ -329,14 +566,21 @@ impl Front {
 
 impl Cover {
     /// The cover of `face`, or `None` where it has none (a freeform
-    /// surface, numbers that are not finite): its box then stands for it.
+    /// surface of too many pieces or of weights that are not positive,
+    /// numbers that are not finite): its box then stands for it.
     pub(super) fn new(face: Face) -> Option<Cover> {
         let widest = face.bbox.diagonal() / PARTS;
         if !(widest.is_finite() && face.tol.is_finite()) {
             return None;
         }
+        let spans = if is_freeform(face.surface) {
+            Some(pieces(face.surface)?)
+        } else {
+            None
+        };
         Some(Cover {
-            coarse: Front::new(face, FRONT)?,
+            coarse: Front::new(face, FRONT, spans.as_deref())?,
+            spans,
             fine: OnceLock::new(),
             asked: AtomicUsize::new(0),
             made: AtomicUsize::new(0),
@@ -351,7 +595,7 @@ impl Cover {
             return &self.coarse;
         }
         self.fine
-            .get_or_init(|| Front::new(face, FINE))
+            .get_or_init(|| Front::new(face, FINE, self.spans.as_deref()))
             .as_ref()
             .unwrap_or(&self.coarse)
     }
@@ -364,7 +608,12 @@ impl Cover {
                 if self.made.load(Ordering::Relaxed) >= NODES {
                     return None;
                 }
-                let kids = divide(face, n, self.widest);
+                let kids = divide(
+                    face,
+                    n,
+                    self.widest,
+                    self.spans.as_deref().unwrap_or_default(),
+                );
                 if let Some(kids) = &kids {
                     self.made.fetch_add(kids.len(), Ordering::Relaxed);
                 }
@@ -393,11 +642,72 @@ impl Cover {
         false
     }
 
-    /// True when a leaf comes within `margin` of the box `b`.
-    pub(super) fn reaches(&self, face: Face, b: &Bbox3, margin: f64) -> bool {
+    /// True when node `n`'s patch, cut [`PARTS_OF_LEAF`] ways along each
+    /// parameter, has every part proven further than `margin` from the box
+    /// `b` or from the surface `beside` (of the face `b` is a box of):
+    /// then so is the patch. The parts are worked out and let go (a
+    /// leaf's box is as fine as a cover keeps; its parts are finer where
+    /// a pair of leaves needs it).
+    fn clear_in_parts(
+        &self,
+        face: Face,
+        n: &Node,
+        b: &Bbox3,
+        beside: &Surface,
+        margin: f64,
+    ) -> bool {
+        let spans = self.spans.as_deref().unwrap_or_default();
+        let (a0, a1, c0, c1) = n.rect;
+        let k = PARTS_OF_LEAF as f64;
+        for i in 0..PARTS_OF_LEAF {
+            for j in 0..PARTS_OF_LEAF {
+                let at = |from: f64, to: f64, x: usize| from + (to - from) * x as f64 / k;
+                let rect = (
+                    at(a0, a1, i),
+                    at(a0, a1, i + 1),
+                    at(c0, c1, j),
+                    at(c0, c1, j + 1),
+                );
+                let piece = match n.span {
+                    Some(span) => match piece_of(spans, span, rect) {
+                        Some(piece) => Some(piece),
+                        None => return false,
+                    },
+                    None => None,
+                };
+                // (Taken as inside: the outline is not asked about parts.)
+                match node(face, rect, n.depth + 1, true, piece.as_ref().zip(n.span)) {
+                    Ok(None) => {}
+                    Ok(Some(part)) => {
+                        if boxes_meet(&part.bbox, b, margin)
+                            && !clear_of_surface(beside, &part.bbox, margin)
+                        {
+                            return false;
+                        }
+                    }
+                    Err(()) => return false,
+                }
+            }
+        }
+        true
+    }
+
+    /// True when a leaf comes within `margin` of the box `b` and, when
+    /// `beside` is given, of that surface (the surface of what `b` is the
+    /// box of).
+    pub(super) fn reaches(
+        &self,
+        face: Face,
+        b: &Bbox3,
+        beside: Option<&Surface>,
+        margin: f64,
+    ) -> bool {
         let mut stack = self.front(face).first(|n| boxes_meet(n, b, margin));
         while let Some(n) = stack.pop() {
             if !boxes_meet(&n.bbox, b, margin) {
+                continue;
+            }
+            if beside.is_some_and(|surface| clear_of_surface(surface, &n.bbox, margin)) {
                 continue;
             }
             match self.children(n, face) {
@@ -419,7 +729,7 @@ impl Cover {
                 stack.push((m, n));
             }
         }
-        let mut looked = 0_usize;
+        let (mut looked, mut parted) = (0_usize, 0_usize);
         while let Some((m, n)) = stack.pop() {
             if !boxes_meet(&m.bbox, &n.bbox, margin) {
                 continue;
@@ -428,9 +738,28 @@ impl Cover {
             if looked > PAIRS {
                 return true;
             }
+            // A node further than the margin from the other face's
+            // surface is that far from the other face, which lies on it:
+            // the surface is known exactly where the other's box is not.
+            if clear_of_surface(other_face.surface, &m.bbox, margin)
+                || clear_of_surface(face.surface, &n.bbox, margin)
+            {
+                continue;
+            }
             // The larger of the two is divided (the other if it is a leaf).
             match (self.children(m, face), other.children(n, other_face)) {
-                (None, None) => return true,
+                (None, None) => {
+                    // Two leaves: each looked at in parts, not kept (for
+                    // the first few pairs of leaves of a question).
+                    parted += 1;
+                    if parted <= PARTED
+                        && (self.clear_in_parts(face, m, &n.bbox, other_face.surface, margin)
+                            || other.clear_in_parts(other_face, n, &m.bbox, face.surface, margin))
+                    {
+                        continue;
+                    }
+                    return true;
+                }
                 (Some(mk), None) => stack.extend(mk.iter().map(|k| (k, n))),
                 (None, Some(nk)) => stack.extend(nk.iter().map(|k| (m, k))),
                 (Some(mk), Some(nk)) => {
@@ -444,6 +773,29 @@ impl Cover {
         }
         false
     }
+}
+
+/// True when every point of the box `b` is proven further than `margin`
+/// from the analytic surface: its signed distance changes by at most the
+/// distance moved and is, in size, no more than the distance to the
+/// surface (for a cone, to the cone continued past its apex), so it is
+/// more than half the box's diagonal and the margin at its middle, with
+/// room for rounding ([`ROUNDING`] units in the last place of the largest
+/// number, as for the closed forms of `hits.rs`). False for a freeform
+/// surface (its distance is only as near as a search gets).
+pub(super) fn clear_of_surface(surface: &Surface, b: &Bbox3, margin: f64) -> bool {
+    if is_freeform(surface) {
+        return false;
+    }
+    let Some((lo, hi)) = b.corners() else {
+        return false;
+    };
+    let middle = lo.lerp(hi, 0.5);
+    let Some(d) = signed_distance(Sheet::bare(surface), middle) else {
+        return false;
+    };
+    let rounding = ROUNDING * f64::EPSILON * (middle.length() + surface_size(surface));
+    d.abs() > 0.5 * lo.distance(hi) + margin + rounding
 }
 
 /// How many stretches [`may_come_within`] halves before it gives up and
@@ -818,5 +1170,330 @@ mod tests {
                 assert!(cover.holds(of, there, 2.0 * tol), "at {k}");
             }
         }
+    }
+
+    /// A block with a freeform roof (a bicubic Bézier patch, or the same
+    /// as a NURBS surface), at scale `k` in `frame`.
+    fn domed(frame: &Frame, k: f64, nurbs: bool) -> Body {
+        craft3d_testkit::trimmed::domed_block(frame, 4.0 * k, 3.0 * k, 2.0 * k, nurbs)
+            .unwrap()
+            .body
+    }
+
+    fn freeform(body: &Body, face: usize) -> bool {
+        matches!(
+            body.faces[face].surface,
+            craft3d_geom::Surface::Bezier(_) | craft3d_geom::Surface::Nurbs(_)
+        )
+    }
+
+    /// Every point of a freeform face is in its cover: the roof of a
+    /// domed block (Bézier and NURBS), the same roof with a round hole
+    /// through it and with a ball sunk into it (trimmed faces), points
+    /// inside the faces and along their edges, at three scales and
+    /// turned; and a point of the roof's surface in the middle of the
+    /// hole, half the hole's radius from the face, is outside the cover.
+    #[test]
+    fn every_point_of_a_freeform_face_is_in_its_cover() {
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            for turn in turns() {
+                let frame = turn
+                    .frame(
+                        &Frame::new(
+                            Vec3::new(0.3, -0.2, 0.1) * k,
+                            Vec3::new(0.0, 0.0, 1.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                for nurbs in [false, true] {
+                    let roof = domed(&frame, k, nurbs);
+                    let drill = turn
+                        .frame(
+                            &Frame::new(
+                                Vec3::new(2.3, 1.2, -1.0) * k,
+                                Vec3::new(0.0, 0.0, 1.0),
+                                Vec3::new(1.0, 0.0, 0.0),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let holed = solve(
+                        &roof,
+                        &primitives::cylinder(&drill, 0.5 * k, 6.0 * k).unwrap(),
+                        BooleanOp::Subtract,
+                        k,
+                    );
+                    let ball = turn
+                        .frame(
+                            &Frame::new(
+                                Vec3::new(1.2, 1.8, 2.1) * k,
+                                Vec3::new(0.0, 0.0, 1.0),
+                                Vec3::new(1.0, 0.0, 0.0),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let sunk = solve(
+                        &roof,
+                        &primitives::sphere(&ball, 0.6 * k).unwrap(),
+                        BooleanOp::Subtract,
+                        k,
+                    );
+                    for body in [&roof, &holed, &sunk] {
+                        let solid = solid(body, k);
+                        let mut asked = 0;
+                        for face in (0..body.faces.len()).filter(|&f| freeform(body, f)) {
+                            let Some((cover, of)) = solid.cover(face, tol) else {
+                                panic!("a freeform face has a cover");
+                            };
+                            asked += 1;
+                            let outline = solid.outline(face).unwrap();
+                            let mut points = outline.interior_points(tol, 4.0 * tol, 24).unwrap();
+                            for seg in outline.loops.iter().flatten() {
+                                points.extend((0..=8).map(|i| seg.at(f64::from(i) / 8.0)));
+                            }
+                            for p in points {
+                                assert!(cover.holds(of, p, 2.0 * tol), "face {face} at {k}: {p:?}");
+                            }
+                        }
+                        assert_eq!(asked, 1);
+                    }
+                    // The roof's surface over the middle of the hole.
+                    let solid = solid(&holed, k);
+                    let face = (0..holed.faces.len())
+                        .find(|&f| freeform(&holed, f))
+                        .unwrap();
+                    let (cover, of) = solid.cover(face, tol).unwrap();
+                    // (The drill's axis is at x 2, y 1.4 of the roof's
+                    // 4 by 3: half way along u, 1.4 / 3 along v.)
+                    let surface = &holed.faces[face].surface;
+                    let ((u0, u1), (v0, v1)) = surface.domain();
+                    let on = surface.eval(u0 + 0.5 * (u1 - u0), v0 + (1.4 / 3.0) * (v1 - v0));
+                    assert!(!cover.holds(of, on, 2.0 * tol), "at {k}");
+                }
+            }
+        }
+    }
+
+    /// Freeform faces with covers and without: a domed block with a block
+    /// inside it under the roof (the roof's box holds the block's top and
+    /// sides, its cover does not come near them), with a ball sunk into
+    /// the roof, and with a second domed block moved and turned so that
+    /// the roofs cross; united, cut and intersected, Bézier and NURBS
+    /// roofs, at three scales and turned: the same results bit for bit,
+    /// and fewer pairs intersected beside the inner block.
+    #[test]
+    fn freeform_covers_change_nothing_but_the_pairs_intersected() {
+        for k in SCALES {
+            for (t, turn) in turns().iter().enumerate() {
+                let at = |origin: Vec3| {
+                    turn.frame(
+                        &Frame::new(
+                            origin * k,
+                            Vec3::new(0.0, 0.0, 1.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                };
+                for nurbs in [false, true] {
+                    let roof = domed(&at(Vec3::ZERO), k, nurbs);
+                    let inner =
+                        primitives::block(&at(Vec3::new(1.5, 1.0, 0.5)), k, k, 0.95 * k).unwrap();
+                    let ball = primitives::sphere(&at(Vec3::new(1.2, 1.8, 2.1)), 0.6 * k).unwrap();
+                    let other = domed(
+                        &turn
+                            .frame(
+                                &Frame::new(
+                                    Vec3::new(1.1, 0.7, 0.3) * k,
+                                    Vec3::new(0.05, -0.03, 1.0),
+                                    Vec3::new(1.0, 0.2, 0.0),
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap(),
+                        k,
+                        !nurbs,
+                    );
+                    for (what, b) in [("inner", &inner), ("ball", &ball), ("roofs", &other)] {
+                        for op in [BooleanOp::Union, BooleanOp::Subtract, BooleanOp::Intersect] {
+                            let ((with, pairs), (without, all)) = both(&roof, b, op, k);
+                            let name = format!("{what} {op:?} at {k}, turn {t}, nurbs {nurbs}");
+                            match (&with, &without) {
+                                (Ok(x), Ok(y)) => assert!(x == y, "{name}: the results differ"),
+                                (Err(x), Err(y)) => assert_eq!(x, y, "{name}"),
+                                _ => panic!(
+                                    "{name}: {:?} against {:?}",
+                                    with.is_ok(),
+                                    without.is_ok()
+                                ),
+                            }
+                            assert!(pairs <= all, "{name}");
+                            if what == "inner" {
+                                assert!(pairs < all, "{name}: {pairs} pairs of {all}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A box called clear of a surface by its signed distance at the middle
+    /// has every point (corners, middles of faces, random points) further
+    /// than the margin from the surface, for every analytic kind, boxes of
+    /// many sizes about a turned frame, at three scales.
+    #[test]
+    fn a_box_clear_of_a_surface_is_clear_everywhere() {
+        use super::{Sheet, clear_of_surface, signed_distance};
+        use craft3d_geom::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
+        use craft3d_math::Bbox3;
+        let mut state = 41_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let mut cleared = 0;
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            let f = Frame::new(
+                Vec3::new(1.0, -2.0, 0.5) * k,
+                Vec3::new(0.3, -0.4, 1.0),
+                Vec3::new(1.0, 0.2, 0.0),
+            )
+            .unwrap();
+            let surfaces = [
+                Surface::Plane(Plane::new(f)),
+                Surface::Cylinder(Cylinder::new(f, 2.0 * k).unwrap()),
+                Surface::Cone(Cone::new(f, 1.5 * k, 0.4).unwrap()),
+                Surface::Sphere(Sphere::new(f, 3.0 * k).unwrap()),
+                Surface::Torus(Torus::new(f, 4.0 * k, k).unwrap()),
+            ];
+            for surface in &surfaces {
+                for _ in 0..2000 {
+                    let middle = f.point(6.0 * k * next(), 6.0 * k * next(), 6.0 * k * next());
+                    // Half the time a box about as large as its middle is
+                    // far from the surface (where a bound too tight fails).
+                    let size = if next() > 0.0 {
+                        let far = signed_distance(Sheet::bare(surface), middle).unwrap().abs();
+                        far * (1.0 + 0.6 * next())
+                    } else {
+                        k * 10f64.powf(-3.0 * next().abs()) * 2.0
+                    };
+                    let way = Vec3::new(next().abs(), next().abs(), next().abs());
+                    let half = way * (size / way.length().max(1e-3));
+                    let b = Bbox3::from_points([middle - half, middle + half]);
+                    let margin = 16.0 * tol;
+                    if !clear_of_surface(surface, &b, margin) {
+                        continue;
+                    }
+                    cleared += 1;
+                    let corners = (0..8).map(|c| {
+                        let side = |bit: i32| if c & bit == 0 { -1.0 } else { 1.0 };
+                        Vec3::new(side(1), side(2), side(4))
+                    });
+                    let inside: Vec<Vec3> =
+                        (0..16).map(|_| Vec3::new(next(), next(), next())).collect();
+                    for shares in corners.chain(inside) {
+                        let p = middle
+                            + Vec3::new(half.x * shares.x, half.y * shares.y, half.z * shares.z);
+                        let d = signed_distance(Sheet::bare(surface), p).unwrap();
+                        assert!(d.abs() > margin, "{} at {k}: {d}", surface.kind());
+                    }
+                }
+            }
+        }
+        assert!(cleared > 10_000, "{cleared}");
+    }
+
+    /// A box called clear of a surface holds no point of the surface
+    /// within the margin: points sampled on the surface itself (a grid of
+    /// 192 × 192 parameters over the part of it near the boxes), for cones
+    /// that widen either way, a cone of radius 0 at `v = 0` with boxes
+    /// about its apex, tori with a thick tube (major 1, minor 0.99) and
+    /// boxes on and about their axis, balls and cylinders, at three
+    /// scales.
+    #[test]
+    fn a_box_clear_of_a_surface_holds_no_point_of_it() {
+        use super::clear_of_surface;
+        use craft3d_geom::{Cone, Cylinder, Sphere, Surface, Torus};
+        use craft3d_math::Bbox3;
+        let mut state = 7_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let mut cleared = 0;
+        for k in SCALES {
+            let tol = 1e-6 * k;
+            let margin = 16.0 * tol;
+            let f = Frame::new(
+                Vec3::new(1.0, -2.0, 0.5) * k,
+                Vec3::new(0.3, -0.4, 1.0),
+                Vec3::new(1.0, 0.2, 0.0),
+            )
+            .unwrap();
+            let surfaces = [
+                Surface::Cone(Cone::new(f, 1.5 * k, 0.4).unwrap()),
+                Surface::Cone(Cone::new(f, 1.5 * k, -0.7).unwrap()),
+                Surface::Cone(Cone::new(f, 0.0, 0.5).unwrap()),
+                Surface::Cone(Cone::new(f, 0.0, -0.3).unwrap()),
+                Surface::Torus(Torus::new(f, k, 0.99 * k).unwrap()),
+                Surface::Torus(Torus::new(f, 4.0 * k, k).unwrap()),
+                Surface::Sphere(Sphere::new(f, 3.0 * k).unwrap()),
+                Surface::Cylinder(Cylinder::new(f, 2.0 * k).unwrap()),
+            ];
+            for surface in &surfaces {
+                // The surface's points: around, and along it within 6 of
+                // the frame's origin (all of a torus or a ball).
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let (v0, v1) = match surface {
+                    Surface::Cone(_) | Surface::Cylinder(_) => (v0.max(-6.0 * k), v1.min(6.0 * k)),
+                    _ => (v0, v1),
+                };
+                let n = 192;
+                let points: Vec<Vec3> = (0..=n)
+                    .flat_map(|i| {
+                        (0..=n).map(move |j| {
+                            let s = |a: f64, b: f64, x: i32| a + (b - a) * f64::from(x) / 192.0;
+                            surface.eval(s(u0, u1, i), s(v0, v1, j))
+                        })
+                    })
+                    .collect();
+                for b in 0..400 {
+                    // Half the boxes about the frame's axis (a cone's apex
+                    // where its radius is 0, a torus's hole), the others
+                    // anywhere near.
+                    let middle = if b % 2 == 0 {
+                        f.point(0.2 * k * next(), 0.2 * k * next(), 3.0 * k * next())
+                    } else {
+                        f.point(6.0 * k * next(), 6.0 * k * next(), 6.0 * k * next())
+                    };
+                    let size = k * 10f64.powf(-2.0 * next().abs());
+                    let half = Vec3::new(next().abs(), next().abs(), next().abs()) * size;
+                    let bbox = Bbox3::from_points([middle - half, middle + half]);
+                    if !clear_of_surface(surface, &bbox, margin) {
+                        continue;
+                    }
+                    cleared += 1;
+                    for p in &points {
+                        assert!(
+                            !bbox.contains(*p, margin),
+                            "{} at {k}: {p:?}",
+                            surface.kind()
+                        );
+                    }
+                }
+            }
+        }
+        assert!(cleared > 2000, "{cleared}");
     }
 }
