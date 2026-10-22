@@ -58,6 +58,7 @@ mod hits;
 mod loose;
 mod merge;
 mod outline;
+mod poly;
 pub mod probe;
 mod regions;
 mod section;
