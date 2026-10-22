@@ -174,8 +174,10 @@ struct Entry {
     /// change of the document, so that it follows its entity into later
     /// features and comes back to it when they go.
     seed: SelectionItem,
-    /// What it is now; `None` while it is hidden.
-    now: Option<SelectionItem>,
+    /// What it is now, each with how many copies the features that took
+    /// it made of it (it is the first of them): one item, or every piece
+    /// of a body split in pieces; none while it is hidden.
+    now: Vec<(SelectionItem, u64)>,
     /// Why it is hidden: its feature is suppressed, rolled back or failed,
     /// so it has no body now but will again.
     hidden: Option<String>,
@@ -185,7 +187,7 @@ impl Entry {
     fn new(item: SelectionItem) -> Self {
         Self {
             seed: item.clone(),
-            now: Some(item),
+            now: vec![(item, 1)],
             hidden: None,
         }
     }
@@ -193,7 +195,7 @@ impl Entry {
     /// Whether `item` means this entry: what it is now, or what it was
     /// selected as.
     fn means(&self, item: &SelectionItem) -> bool {
-        self.now.as_ref().is_some_and(|now| now.same(item)) || self.seed.same(item)
+        self.now.iter().any(|(now, _)| now.same(item)) || self.seed.same(item)
     }
 }
 
@@ -217,6 +219,23 @@ pub struct HiddenItem {
     pub why: String,
 }
 
+/// An item that was followed from what was selected into a later feature
+/// ([`SelectionView::followed`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowedItem {
+    /// What it is now.
+    pub item: SelectionItem,
+    /// What was selected.
+    pub from: SelectionItem,
+    /// How many copies the features it went through made of what was
+    /// selected (a pattern: its instances); the item is the first. 1 when
+    /// it was not copied.
+    pub copies: u64,
+    /// How many items it is now: more than 1 when a split cut its body in
+    /// pieces that each kept some of it.
+    pub pieces: usize,
+}
+
 /// The selection as it is now ([`Session::selection`]).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct SelectionView {
@@ -230,6 +249,11 @@ pub struct SelectionView {
     /// suppressed, rolled back or failed): it comes back, in its place,
     /// when the feature does.
     pub hidden: Vec<HiddenItem>,
+    /// The items that are not what was selected but what it became in a
+    /// later feature, with what was selected: so a selection that went
+    /// into a pattern (the first instance of several) or into the pieces
+    /// of a split is said, never narrowed silently.
+    pub followed: Vec<FollowedItem>,
 }
 
 impl SelectionView {
@@ -244,6 +268,15 @@ impl SelectionView {
                 let mut entry = h.item.json();
                 if let Some(map) = entry.as_object_mut() {
                     map.insert("why".into(), h.why.clone().into());
+                }
+                entry
+            }).collect::<Vec<_>>(),
+            "followed": self.followed.iter().map(|f| {
+                let mut entry = f.item.json();
+                if let Some(map) = entry.as_object_mut() {
+                    map.insert("from".into(), f.from.json());
+                    map.insert("copies".into(), f.copies.into());
+                    map.insert("pieces".into(), f.pieces.into());
                 }
                 entry
             }).collect::<Vec<_>>(),
@@ -368,16 +401,16 @@ impl Selection {
                 match resolver.follow(&entry.seed) {
                     Fate::Found(now) => kept.push(Entry {
                         seed: entry.seed.clone(),
-                        now: Some(now),
+                        now,
                         hidden: None,
                     }),
                     Fate::Hidden(why) => kept.push(Entry {
                         seed: entry.seed.clone(),
-                        now: None,
+                        now: Vec::new(),
                         hidden: Some(why),
                     }),
                     Fate::Gone(why) => {
-                        let shown = entry.now.as_ref().unwrap_or(&entry.seed);
+                        let shown = entry.now.first().map_or(&entry.seed, |(now, _)| now);
                         dropped.push(format!("{} {}: {why}", shown.kind.name(), shown.name));
                     }
                 }
@@ -394,18 +427,28 @@ impl Selection {
     pub(crate) fn view(&self) -> SelectionView {
         let mut items: Vec<SelectionItem> = Vec::with_capacity(self.entries.len());
         let mut hidden = Vec::new();
+        let mut followed = Vec::new();
         for entry in &self.entries {
-            match (&entry.now, &entry.hidden) {
-                // Two seeds followed into one entity are one item.
-                (Some(now), _) => {
-                    if !items.iter().any(|i| i.same(now)) {
-                        items.push(now.clone());
-                    }
-                }
-                (None, why) => hidden.push(HiddenItem {
+            if entry.now.is_empty() {
+                hidden.push(HiddenItem {
                     item: entry.seed.clone(),
-                    why: why.clone().unwrap_or_default(),
-                }),
+                    why: entry.hidden.clone().unwrap_or_default(),
+                });
+                continue;
+            }
+            for (now, copies) in &entry.now {
+                if *now != entry.seed {
+                    followed.push(FollowedItem {
+                        item: now.clone(),
+                        from: entry.seed.clone(),
+                        copies: *copies,
+                        pieces: entry.now.len(),
+                    });
+                }
+                // Two seeds followed into one entity are one item.
+                if !items.iter().any(|i| i.same(now)) {
+                    items.push(now.clone());
+                }
             }
         }
         SelectionView {
@@ -413,6 +456,7 @@ impl Selection {
             serial: self.serial,
             dropped: self.dropped.clone(),
             hidden,
+            followed,
         }
     }
 
@@ -421,10 +465,15 @@ impl Selection {
     }
 }
 
+/// Entities followed into later features: per image, its body's feature,
+/// its canonical name and how many copies were made on the way.
+type FollowedNames = Result<Vec<(FeatureId, String, u64)>, String>;
+
 /// What became of a kept item at a check ([`Resolver::follow`]).
 pub(crate) enum Fate {
-    /// What it is now.
-    Found(SelectionItem),
+    /// What it is now: one item, or the pieces of a split, each with how
+    /// many copies were made of it on the way.
+    Found(Vec<(SelectionItem, u64)>),
     /// It has no body for now, and why.
     Hidden(String),
     /// It no longer exists, and why.
@@ -684,7 +733,7 @@ impl<'a> Resolver<'a> {
             SelectionKind::Body => self.follow_body(id),
             kind if kind.is_entity() => self.follow_entity(kind, id, &seed.name),
             kind => match self.feature_item(Some(kind), id) {
-                Ok(found) => Fate::Found(found.item),
+                Ok(found) => Fate::Found(vec![(found.item, 1)]),
                 Err(why) => Fate::Gone(why),
             },
         }
@@ -698,6 +747,39 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The features whose bodies the body of `id` is now: the end of its
+    /// chain of takers, or every piece of a split (each a body of its
+    /// own), in history order. Bounded by the history.
+    fn newest_bodies(&self, id: FeatureId) -> Vec<FeatureId> {
+        let mut out = Vec::new();
+        let mut todo = vec![id];
+        let mut seen = std::collections::BTreeSet::from([id]);
+        while let Some(at) = todo.pop() {
+            let Some(taker) = self.regen.feature(at).and_then(|o| o.consumed_by) else {
+                out.push(at);
+                continue;
+            };
+            let group = if craft3d_regen::taken_by_its_splits(self.doc, at, taker) {
+                craft3d_regen::splits_of(self.doc, &self.regen.features, at)
+            } else {
+                vec![taker]
+            };
+            for next in group {
+                if seen.insert(next) {
+                    todo.push(next);
+                }
+            }
+        }
+        out.sort_by_key(|id| {
+            self.doc
+                .features
+                .iter()
+                .position(|f| f.id == *id)
+                .unwrap_or(usize::MAX)
+        });
+        out
+    }
+
     fn follow_body(&mut self, id: FeatureId) -> Fate {
         if self
             .regen
@@ -707,24 +789,28 @@ impl<'a> Resolver<'a> {
         {
             return self.without_body(id);
         }
-        let newest = craft3d_regen::newest_body(&self.regen.features, id);
-        if self
-            .regen
-            .feature(newest)
-            .and_then(|o| o.own_body())
-            .is_none()
-        {
+        let found: Vec<(SelectionItem, u64)> = self
+            .newest_bodies(id)
+            .into_iter()
+            .filter(|at| self.regen.feature(*at).and_then(|o| o.own_body()).is_some())
+            .map(|at| {
+                (
+                    SelectionItem {
+                        kind: SelectionKind::Body,
+                        name: self.called(at),
+                        feature: at.to_string(),
+                    },
+                    1,
+                )
+            })
+            .collect();
+        if found.is_empty() {
             return Fate::Gone(format!(
-                "the body of `{}` went into `{}`, which has none",
-                self.called(id),
-                self.called(newest)
+                "the body of `{}` went into later features, which have none",
+                self.called(id)
             ));
         }
-        Fate::Found(SelectionItem {
-            kind: SelectionKind::Body,
-            name: self.called(newest),
-            feature: newest.to_string(),
-        })
+        Fate::Found(found)
     }
 
     fn follow_entity(&mut self, kind: SelectionKind, id: FeatureId, name: &str) -> Fate {
@@ -746,11 +832,14 @@ impl<'a> Resolver<'a> {
             ));
         };
         if own {
-            return Fate::Found(SelectionItem {
-                kind,
-                name: canonical,
-                feature: id.to_string(),
-            });
+            return Fate::Found(vec![(
+                SelectionItem {
+                    kind,
+                    name: canonical,
+                    feature: id.to_string(),
+                },
+                1,
+            )]);
         }
         let followed = match kind {
             SelectionKind::Face => canonical
@@ -765,31 +854,48 @@ impl<'a> Resolver<'a> {
             )),
         };
         match followed {
-            Ok((feature, name)) => Fate::Found(SelectionItem {
-                kind,
-                name,
-                feature: feature.to_string(),
-            }),
+            Ok(found) => Fate::Found(
+                found
+                    .into_iter()
+                    .map(|(feature, name, copies)| {
+                        (
+                            SelectionItem {
+                                kind,
+                                name,
+                                feature: feature.to_string(),
+                            },
+                            copies,
+                        )
+                    })
+                    .collect(),
+            ),
             Err(why) => Fate::Gone(why),
         }
     }
 
-    /// The face `name` of a body taken by later features, in the newest
-    /// body: that body's feature and the face's canonical name there.
-    fn follow_face(&mut self, name: &PersistentName) -> Result<(FeatureId, String), String> {
-        let followed =
-            craft3d_regen::follow_face_to_first(self.doc, &self.regen.features, name, "face")?
-                .unwrap_or_else(|| name.clone());
-        let newest = followed.feature;
-        self.lookup(newest, SelectionKind::Face, &followed.to_string())
-            .map(|(canonical, _)| (newest, canonical))
-            .ok_or_else(|| format!("{followed} is not a face of `{}`", self.called(newest)))
+    /// The images of face `name` (of a body taken by later features) in
+    /// the newest bodies: each body's feature, the face's canonical name
+    /// there and how many copies were made of it on the way
+    /// (`craft3d_regen::follow_face_pieces`).
+    fn follow_face(&mut self, name: &PersistentName) -> FollowedNames {
+        let images = craft3d_regen::follow_face_pieces(self.doc, &self.regen.features, name)?
+            .unwrap_or_else(|| vec![(name.clone(), 1)]);
+        let mut out = Vec::new();
+        for (image, copies) in images {
+            let newest = image.feature;
+            let (canonical, _) = self
+                .lookup(newest, SelectionKind::Face, &image.to_string())
+                .ok_or_else(|| format!("{image} is not a face of `{}`", self.called(newest)))?;
+            out.push((newest, canonical, copies));
+        }
+        Ok(out)
     }
 
     /// The edge at `index` of the body of `id`, taken by later features,
-    /// in the newest body: the edge there between the images of the faces
-    /// it lies between (the first, when there are several).
-    fn follow_edge(&mut self, id: FeatureId, index: usize) -> Result<(FeatureId, String), String> {
+    /// in the newest bodies: every edge there between the images of the
+    /// two faces it lies between (an edge a boolean cut in two is both
+    /// pieces; a body split in pieces gives the edge in each).
+    fn follow_edge(&mut self, id: FeatureId, index: usize) -> FollowedNames {
         let (_, body, names, _) = self
             .bodies
             .iter()
@@ -810,25 +916,41 @@ impl<'a> Resolver<'a> {
             [a] => (a.clone(), a.clone()),
             _ => return Err("the edge does not lie between faces".to_string()),
         };
-        let follow = |name: &PersistentName| -> Result<PersistentName, String> {
+        let follow = |name: &PersistentName| -> Result<Vec<(PersistentName, u64)>, String> {
             Ok(
-                craft3d_regen::follow_face_to_first(self.doc, &self.regen.features, name, "edge")?
-                    .unwrap_or_else(|| name.clone()),
+                craft3d_regen::follow_face_pieces(self.doc, &self.regen.features, name)?
+                    .unwrap_or_else(|| vec![(name.clone(), 1)]),
             )
         };
-        let (a, b) = (follow(&a)?, follow(&b)?);
-        let newest = a.feature;
-        let taker = self.called(newest);
-        let Some((_, body, Some(names), _)) = self.bodies.iter().find(|(f, ..)| *f == newest)
-        else {
-            return Err(format!("`{taker}` names no edges"));
-        };
-        let edge = craft3d_regen::edges_between(body, names, &a, &b)
-            .first()
-            .and_then(|edge| usize::try_from(edge.0).ok())
-            .and_then(|edge| names.edge_name(edge))
-            .ok_or_else(|| format!("the edge between {a} and {b} is gone in `{taker}`"))?;
-        Ok((newest, edge.to_string()))
+        let (left, right) = (follow(&a)?, follow(&b)?);
+        let mut out = Vec::new();
+        for (a, copies) in &left {
+            for (b, _) in right.iter().filter(|(b, _)| b.feature == a.feature) {
+                let Some((_, body, Some(names), _)) =
+                    self.bodies.iter().find(|(f, ..)| *f == a.feature)
+                else {
+                    continue;
+                };
+                for edge in craft3d_regen::edges_between(body, names, a, b) {
+                    if let Some(name) = usize::try_from(edge.0)
+                        .ok()
+                        .and_then(|edge| names.edge_name(edge))
+                    {
+                        let entry = (a.feature, name.to_string(), *copies);
+                        if !out.contains(&entry) {
+                            out.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            let into = left
+                .first()
+                .map_or_else(|| id.to_string(), |(a, _)| self.called(a.feature));
+            return Err(format!("the edge between {a} and {b} is gone in `{into}`"));
+        }
+        Ok(out)
     }
 
     fn feature_item(&self, kind: Option<SelectionKind>, id: FeatureId) -> Result<Found, String> {

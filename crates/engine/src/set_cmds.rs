@@ -150,17 +150,96 @@ fn set_edit(session: &mut Session, params: &Value) -> Run {
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let label = format!("Edit set {}", cut(&name));
     let to = rename.clone().unwrap_or_else(|| name.clone());
+    // The sets that use it follow the new name, as formulas follow a
+    // renamed variable: a set defined later under the old name does not
+    // change what they hold.
+    let users: Vec<(String, String)> = if to == name {
+        Vec::new()
+    } else {
+        doc.sets
+            .iter()
+            .filter(|other| other.name != name)
+            .filter_map(|other| {
+                let value: Value = serde_json::from_str(&other.query).ok()?;
+                uses(&value, &name).then(|| {
+                    let renamed = renamed(&value, &name, &to);
+                    serde_json::to_string(&renamed)
+                        .ok()
+                        .map(|text| (other.name.clone(), text))
+                })?
+            })
+            .collect()
+    };
     edit(session, ID, &label, |doc| {
         doc.define_set(&name, query)?;
-        doc.rename_set(&name, &to)
+        doc.rename_set(&name, &to)?;
+        for (other, text) in users {
+            doc.define_set(&other, text)?;
+        }
+        Ok(())
     })?;
     set_json(session, &to)
+}
+
+/// Whether the filter `value` uses the set `name` (`{set: name}`
+/// anywhere). Stored queries were read from JSON text, so their nesting
+/// is bounded.
+fn uses(value: &Value, name: &str) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(|item| uses(item, name)),
+        Value::Object(map) => map.iter().any(|(key, inner)| {
+            (key == "set" && inner.as_str() == Some(name)) || uses(inner, name)
+        }),
+        _ => false,
+    }
+}
+
+/// `value` with every `{set: from}` made `{set: to}`.
+fn renamed(value: &Value, from: &str, to: &str) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| renamed(item, from, to)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, inner)| {
+                    let inner = if key == "set" && inner.as_str() == Some(from) {
+                        Value::String(to.to_string())
+                    } else {
+                        renamed(inner, from, to)
+                    };
+                    (key.clone(), inner)
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn set_remove(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "set.remove";
     let p = Params::new(ID, params, &["set"])?;
     let name = p.str("set")?.ok_or_else(|| p.missing("set"))?.to_string();
+    // A set another one uses is not taken away from under it.
+    let users: Vec<String> = session
+        .document()?
+        .history
+        .current()
+        .sets
+        .iter()
+        .filter(|other| other.name != name)
+        .filter(|other| {
+            serde_json::from_str::<Value>(&other.query).is_ok_and(|value| uses(&value, &name))
+        })
+        .map(|other| format!("`{}`", cut(&other.name)))
+        .collect();
+    if !users.is_empty() {
+        return fail(format!(
+            "{ID}: the set `{}` is used by {}; edit or remove those first",
+            cut(&name),
+            users.join(", ")
+        ));
+    }
     let label = format!("Remove set {}", cut(&name));
     let removed = edit(session, ID, &label, |doc| doc.remove_set(&name))?;
     let query: Value = serde_json::from_str(&removed.query).unwrap_or(Value::Null);

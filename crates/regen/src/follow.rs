@@ -190,19 +190,6 @@ pub(crate) fn face(
     name: &PersistentName,
     role: &str,
 ) -> Result<Option<PersistentName>, String> {
-    face_with(doc, earlier, name, role, false)
-}
-
-/// [`face`]; where a taker made several copies of the face (the
-/// instances of a pattern), the first of them (the lowest instance of the
-/// first split) when `first`, an error otherwise.
-fn face_with(
-    doc: &Document,
-    earlier: &[FeatureResult],
-    name: &PersistentName,
-    role: &str,
-    first: bool,
-) -> Result<Option<PersistentName>, String> {
     let takers = chain(earlier, name.feature);
     if takers.is_empty() || !name.is_face() {
         return Ok(None);
@@ -284,10 +271,6 @@ fn face_with(
                 from = called(doc, *member);
                 current = PersistentName::copy(*member, *k, current);
             }
-            [(member, k), ..] if first => {
-                from = called(doc, *member);
-                current = PersistentName::copy(*member, *k, current);
-            }
             _ => {
                 let all: Vec<String> = found
                     .iter()
@@ -306,6 +289,100 @@ fn face_with(
     Ok(Some(current))
 }
 
+/// Most images [`follow_face_pieces`] gives one face.
+const MAX_PIECES: usize = 4096;
+
+/// The face `name` of an earlier body followed for what points at it
+/// rather than what is built on it (the selection), at the end of
+/// `results`: every image it has in the newest bodies of its chain, each
+/// with how many copies its takers made of it on the way. A body split
+/// in pieces (`body.split`) has the face in every piece that kept some of
+/// it, and all of them are given; a taker that made several copies of
+/// the face (the instances of a pattern) goes on with the first, the
+/// lowest instance (instance 0 is the body where it was), and the count
+/// says how many there were. `None` when the body of `name` is its own
+/// still; an error when no image is left anywhere, saying why.
+pub fn follow_face_pieces(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+) -> Result<Option<Vec<(PersistentName, u64)>>, String> {
+    if chain(results, name.feature).is_empty() || !name.is_face() {
+        return Ok(None);
+    }
+    let mut done: Vec<(PersistentName, u64)> = Vec::new();
+    let mut todo: Vec<(PersistentName, u64)> = vec![(name.clone(), 1)];
+    let mut gone: Option<String> = None;
+    // Each step goes to a later feature: no longer than the history per
+    // way; the number of ways is capped.
+    for _ in 0..=results.len() {
+        if todo.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for (current, copies) in todo {
+            let Some(taker) = results
+                .iter()
+                .find(|r| r.id == current.feature)
+                .and_then(|r| r.consumed_by)
+            else {
+                done.push((current, copies));
+                continue;
+            };
+            let group = if crate::split::shared_by_splits(doc, current.feature, taker) {
+                crate::split::siblings(doc, results, current.feature)
+            } else {
+                vec![taker]
+            };
+            let mut found = false;
+            for member in group {
+                let Some(names) = results
+                    .iter()
+                    .find(|r| r.id == member)
+                    .and_then(|r| r.names.as_ref())
+                else {
+                    gone = Some(format!(
+                        "the body went into `{}`, which does not name its faces",
+                        called(doc, member)
+                    ));
+                    continue;
+                };
+                let made = copies_of(names, member, &current);
+                if let Some(&k) = made.first() {
+                    found = true;
+                    let n = u64::try_from(made.len()).unwrap_or(u64::MAX);
+                    next.push((
+                        PersistentName::copy(member, k, current.clone()),
+                        copies.saturating_mul(n),
+                    ));
+                }
+            }
+            if !found {
+                gone = Some(format!(
+                    "the face {current} is gone: its body went into `{}`, a {}, which left no face of it",
+                    called(doc, taker),
+                    doc.feature(taker).map_or("feature", |f| f.kind.type_name())
+                ));
+            }
+        }
+        if next.len().saturating_add(done.len()) > MAX_PIECES {
+            return Err(format!(
+                "{name} is followed into more than {MAX_PIECES} faces"
+            ));
+        }
+        todo = next;
+    }
+    if done.is_empty() {
+        return Err(gone.unwrap_or_else(|| format!("the face {name} cannot be followed")));
+    }
+    Ok(Some(done))
+}
+
+/// [`copies`] in ascending order of instance.
+fn copies_of(names: &Names, taker: FeatureId, name: &PersistentName) -> Vec<u64> {
+    copies(names, taker, name).into_iter().collect()
+}
+
 /// [`face`] for a reader of the finished regeneration (an export, a
 /// query): the full name, in the newest body of its chain at the end of
 /// `results`, of the face `name` of an earlier body, by exactly the rule
@@ -319,21 +396,6 @@ pub fn follow_face(
     role: &str,
 ) -> Result<Option<PersistentName>, String> {
     face(doc, results, name, role)
-}
-
-/// [`follow_face`] for what is pointed at rather than built on (the
-/// selection): where a taker made several copies of the face (the
-/// instances of a pattern), the way goes on with the first of them, the
-/// lowest instance (instance 0 is the body as it was, where it was), as
-/// the face that stayed where it was; [`follow_face`] refuses then, since
-/// a feature must not choose for its author.
-pub fn follow_face_to_first(
-    doc: &Document,
-    results: &[FeatureResult],
-    name: &PersistentName,
-    role: &str,
-) -> Result<Option<PersistentName>, String> {
-    face_with(doc, results, name, role, true)
 }
 
 /// Follows every name in `list`, each as `{param}.{i}`; `true` when one

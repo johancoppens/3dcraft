@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("select.get", "Selection", r#"{"context": boolean = true}"#,
-        "Returns what is selected in the active document: items (each {kind, name, feature}: kind body, face, edge, vertex, feature, sketch or datum; name the feature's name, or the persistent name of a face, edge or vertex; feature the feature's id, or the feature whose body has the face, edge or vertex), count, summary (\"3 bodies, 2 faces\") and dropped: what dropped out since it was last set because it no longer exists, one line each. The selection is shared by the window (click, Shift+click, a box, the feature list) and agents; it is not saved and not undone. Items are checked against the document as it is now: a name stays selected as long as what it names exists; a face, an edge or a body a later feature took (a boolean, a fillet, a pattern) is followed to its image there (of a pattern's copies, the first); what a suppressed, rolled-back or failed feature hides is listed under hidden ({kind, name, feature, why}) and comes back when the feature does. With context (the default) each item also has body and origin {feature, name, type}, for a face surface (type and its measure: a plane's outward normal, a cylinder's radius, axis, center and hole, ...), for an edge curve, for a vertex point, drivers (the parameters that set the measure: a primitive's radius or size, a fillet's radius, the diameter constraint of the sketch circle an extrusion swept, also through equal constraints as via; each with edit: {command, params}, the edit to make with the new value) and copyOf ([{feature, name, type, instance}]: the patterns and mirrors it is a copy made by).", doc: true, select_get),
+        "Returns what is selected in the active document: items (each {kind, name, feature}: kind body, face, edge, vertex, feature, sketch or datum; name the feature's name, or the persistent name of a face, edge or vertex; feature the feature's id, or the feature whose body has the face, edge or vertex), count, summary (\"3 bodies, 2 faces\") and dropped: what dropped out since it was last set because it no longer exists, one line each. The selection is shared by the window (click, Shift+click, a box, the feature list) and agents; it is not saved and not undone. Items are checked against the document as it is now: a name stays selected as long as what it names exists; a face, an edge or a body a later feature took (a boolean, a fillet, a pattern) is followed to its image there (into every piece of a split; of a pattern's copies, the first), listed under followed ({kind, name, feature, from, copies, pieces}); what a suppressed, rolled-back or failed feature hides is listed under hidden ({kind, name, feature, why}) and comes back when the feature does. With context (the default) each item also has body and origin {feature, name, type}, for a face surface (type and its measure: a plane's outward normal, a cylinder's radius, axis, center and hole, ...), for an edge curve, for a vertex point, drivers (the parameters that set the measure: a primitive's radius or size, a fillet's radius, the diameter constraint of the sketch circle an extrusion swept, also through equal constraints as via; each with edit: {command, params}, the edit to make with the new value) and copyOf ([{feature, name, type, instance}]: the patterns and mirrors it is a copy made by).", doc: true, select_get),
     spec!("select.set", "Select", r#"{"items": [{kind, name, feature}], "names": [string], "set": string, "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
         "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). set is a named set (set.define): what it holds now, after the items and names. A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, select_set),
     spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000, "context": boolean = false}"#,
@@ -848,6 +848,9 @@ struct Context<'a> {
     colors: BTreeMap<FeatureId, Vec<Option<[u8; 3]>>>,
     /// Per feature, the features its body is made from, all the way.
     made_from: BTreeMap<FeatureId, BTreeSet<FeatureId>>,
+    /// The origins of the faces of the current bodies, once
+    /// ([`Context::face_origins`]).
+    origins: Option<Vec<PersistentName>>,
 }
 
 impl<'a> Context<'a> {
@@ -858,6 +861,7 @@ impl<'a> Context<'a> {
             areas: BTreeMap::new(),
             colors: BTreeMap::new(),
             made_from: BTreeMap::new(),
+            origins: None,
         }
     }
 
@@ -1227,8 +1231,10 @@ fn edge_box(body: &Body, k: usize) -> Option<(Vec3, Vec3)> {
         all.add(body.vertex(vertex)?.point);
     }
     let (a, b) = edge.range;
-    let (t0, t1) = if a <= b { (a, b) } else { (b, a) };
-    if !(t0.is_finite() && t1.is_finite()) {
+    let (t0, t1) = (a, b);
+    // A range that runs backwards (the wrap of a periodic curve past its
+    // seam) is not the part between the two numbers: boxed as a whole.
+    if !(t0.is_finite() && t1.is_finite()) || t0 > t1 {
         return exact();
     }
     for ((lo, hi), points) in curve.bezier_pieces() {
@@ -1871,15 +1877,18 @@ impl Context<'_> {
                 }
             }
         }
-        let mut drivers = c
-            .persistent
-            .as_ref()
-            .and_then(|name| chain(name).last())
-            .map(|origin| self.drivers_of(origin))
-            .unwrap_or_default();
-        if drivers.is_empty() && c.kind == SelectionKind::Edge {
-            drivers = self.edge_drivers(c);
-        }
+        // A vertex is placed by everything that meets there: no one
+        // parameter sets it.
+        let drivers = match c.kind {
+            SelectionKind::Face => c
+                .persistent
+                .as_ref()
+                .and_then(|name| chain(name).last())
+                .map(|origin| self.drivers_of(origin))
+                .unwrap_or_default(),
+            SelectionKind::Edge => self.edge_drivers(c),
+            _ => Vec::new(),
+        };
         map.insert("drivers".into(), drivers.into());
         let copies = c
             .persistent
@@ -1922,73 +1931,50 @@ impl Context<'_> {
         })
     }
 
-    /// The parameters that set what the feature of `origin` (the last
-    /// link of an entity's name) made: one entry per parameter.
-    fn drivers_of(&self, origin: &PersistentName) -> Vec<Value> {
-        let Some(feature) = self.doc.feature(origin.feature) else {
+    /// The parameters that set the measure of a face (from `origin`, the
+    /// last link of its name). One entry per parameter.
+    fn drivers_of(&mut self, origin: &PersistentName) -> Vec<Value> {
+        let doc = self.doc;
+        let Some(feature) = doc.feature(origin.feature) else {
             return Vec::new();
         };
-        let id = feature.id.to_string();
         let first = origin.sources.first().copied();
-        let param = |param: &str, expr: &craft3d_doc::Expr| {
-            json!({
-                "feature": id, "name": feature.name, "type": feature.kind.type_name(),
-                "param": param, "expr": expr.0,
-                "edit": {"command": "feature.edit", "params": {"feature": id, param: expr.0}},
-            })
-        };
         let role = origin.role;
         match &feature.kind {
-            FeatureKind::Block(block) => {
-                let axis = match first {
-                    Some(0 | 1) => 2,
-                    Some(2 | 3) => 1,
-                    Some(_) => 0,
-                    None => return Vec::new(),
-                };
-                let size: Vec<&str> = block.size.iter().map(|e| e.0.as_str()).collect();
-                let Some(expr) = block.size.get(axis) else {
-                    return Vec::new();
-                };
-                vec![json!({
-                    "feature": id, "name": feature.name, "type": "block",
-                    "param": "size", "index": axis, "expr": expr.0,
-                    "edit": {"command": "feature.edit", "params": {"feature": id, "size": size}},
-                })]
-            }
-            FeatureKind::Cylinder(cylinder) => match (role, first) {
-                (NameRole::Face, Some(0)) | (NameRole::Edge, _) => {
-                    vec![param("radius", &cylinder.radius)]
-                }
-                _ => vec![param("height", &cylinder.height)],
+            FeatureKind::Block(_) => match first {
+                Some(0 | 1) => self.block_driver(origin, 2),
+                Some(2 | 3) => self.block_driver(origin, 1),
+                Some(4 | 5) => self.block_driver(origin, 0),
+                _ => Vec::new(),
             },
-            FeatureKind::Cone(cone) => match (role, first) {
-                (NameRole::Face, Some(0)) => {
-                    vec![param("radius", &cone.radius), param("height", &cone.height)]
-                }
-                (NameRole::Edge, _) => vec![param("radius", &cone.radius)],
-                _ => vec![param("height", &cone.height)],
+            FeatureKind::Cylinder(cylinder) => match first {
+                Some(0) => vec![self.param(origin, "radius", &cylinder.radius)],
+                _ => vec![self.param(origin, "height", &cylinder.height)],
             },
-            FeatureKind::Sphere(sphere) => vec![param("radius", &sphere.radius)],
-            FeatureKind::Torus(torus) => {
-                vec![param("minor", &torus.minor), param("major", &torus.major)]
-            }
-            FeatureKind::Fillet(fillet) => vec![param("radius", &fillet.radius)],
+            FeatureKind::Cone(cone) => match first {
+                Some(0) => vec![
+                    self.param(origin, "radius", &cone.radius),
+                    self.param(origin, "height", &cone.height),
+                ],
+                _ => vec![self.param(origin, "height", &cone.height)],
+            },
+            FeatureKind::Sphere(sphere) => vec![self.param(origin, "radius", &sphere.radius)],
+            FeatureKind::Torus(torus) => vec![
+                self.param(origin, "minor", &torus.minor),
+                self.param(origin, "major", &torus.major),
+            ],
+            FeatureKind::Fillet(fillet) => vec![self.param(origin, "radius", &fillet.radius)],
             FeatureKind::Chamfer(chamfer) => {
                 let distance = match &chamfer.size {
                     craft3d_doc::ChamferSize::Equal { distance }
                     | craft3d_doc::ChamferSize::TwoDistances { distance, .. }
                     | craft3d_doc::ChamferSize::DistanceAngle { distance, .. } => distance,
                 };
-                vec![param("distance", distance)]
+                vec![self.param(origin, "distance", distance)]
             }
             FeatureKind::Extrude(extrude) => match role {
-                NameRole::EndCap => vec![param("distance", &extrude.distance)],
-                NameRole::Side
-                | NameRole::StartEdge
-                | NameRole::EndEdge
-                | NameRole::StartVertex
-                | NameRole::EndVertex => first
+                NameRole::EndCap => vec![self.param(origin, "distance", &extrude.distance)],
+                NameRole::Side | NameRole::StartEdge | NameRole::EndEdge => first
                     .map(|curve| self.curve_drivers(extrude.sketch, curve))
                     .unwrap_or_default(),
                 _ => Vec::new(),
@@ -2003,12 +1989,221 @@ impl Context<'_> {
         }
     }
 
+    /// The origins of every face of the current bodies (the last link of
+    /// each name, a face cut in pieces once): what `affects` counts.
+    fn face_origins(&mut self) -> &[PersistentName] {
+        let regen = self.regen;
+        self.origins.get_or_insert_with(|| {
+            let mut out = Vec::new();
+            for (feature, _) in regen.bodies() {
+                let Some(names) = regen.feature(feature).and_then(|o| o.names.as_ref()) else {
+                    continue;
+                };
+                let mut seen: BTreeSet<&PersistentName> = BTreeSet::new();
+                for name in &names.faces {
+                    if seen.insert(name)
+                        && let Some(origin) = chain(name).last()
+                    {
+                        out.push(origin.clone());
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// How a driver of feature `origin.feature` changes the model: how many
+    /// faces of the current bodies that feature made (`affects`: what its
+    /// `edit` moves or resizes), and how many of them are the same face as
+    /// `origin`, copies made by patterns and mirrors that the edit changes
+    /// alike (`alike`, with `shared` when more than one).
+    fn reach(&mut self, origin: &PersistentName) -> (usize, usize) {
+        let origins = self.face_origins();
+        let affects = origins
+            .iter()
+            .filter(|o| o.feature == origin.feature)
+            .count();
+        let alike = origins.iter().filter(|o| *o == origin).count();
+        (affects, alike)
+    }
+
+    /// An expression as a driver gives it: the text, and when it is a
+    /// formula of variables, `formula: true` and, when it is one variable,
+    /// `variable` and the edit of that variable (so an agent changes the
+    /// variable rather than writing a number over the formula).
+    fn expression(&self, expr: &craft3d_doc::Expr, edit: Value) -> Map<String, Value> {
+        let mut map = Map::new();
+        map.insert("expr".into(), expr.0.clone().into());
+        let text = expr.0.trim();
+        let plain = craft3d_expr::evaluate(text, |_| None).is_ok();
+        if let Some(variable) = self.doc.variables.iter().find(|v| v.name == text) {
+            map.insert("formula".into(), true.into());
+            map.insert("variable".into(), variable.name.clone().into());
+            map.insert(
+                "edit".into(),
+                json!({"command": "variable.set", "params": {"name": variable.name, "expr": variable.expr.0}}),
+            );
+        } else {
+            if !plain {
+                map.insert("formula".into(), true.into());
+            }
+            map.insert("edit".into(), edit);
+        }
+        map
+    }
+
+    /// A driver that is a parameter of the feature of `origin`.
+    fn param(&mut self, origin: &PersistentName, param: &str, expr: &craft3d_doc::Expr) -> Value {
+        let doc = self.doc;
+        let Some(feature) = doc.feature(origin.feature) else {
+            return Value::Null;
+        };
+        let id = feature.id.to_string();
+        let mut map = Map::new();
+        map.insert("feature".into(), id.clone().into());
+        map.insert("name".into(), feature.name.clone().into());
+        map.insert("type".into(), feature.kind.type_name().into());
+        map.insert("param".into(), param.into());
+        map.extend(self.expression(
+            expr,
+            json!({"command": "feature.edit", "params": {"feature": id, param: expr.0}}),
+        ));
+        let (affects, alike) = self.reach(origin);
+        map.insert("affects".into(), affects.into());
+        map.insert("alike".into(), alike.into());
+        map.insert("shared".into(), (alike > 1).into());
+        Value::Object(map)
+    }
+
+    /// The size of a block along its own axis `axis` (0 x, 1 y, 2 z).
+    fn block_driver(&mut self, origin: &PersistentName, axis: usize) -> Vec<Value> {
+        let doc = self.doc;
+        let Some(feature) = doc.feature(origin.feature) else {
+            return Vec::new();
+        };
+        let FeatureKind::Block(block) = &feature.kind else {
+            return Vec::new();
+        };
+        let Some(expr) = block.size.get(axis) else {
+            return Vec::new();
+        };
+        let size: Vec<&str> = block.size.iter().map(|e| e.0.as_str()).collect();
+        let id = feature.id.to_string();
+        let mut map = Map::new();
+        map.insert("feature".into(), id.clone().into());
+        map.insert("name".into(), feature.name.clone().into());
+        map.insert("type".into(), "block".into());
+        map.insert("param".into(), "size".into());
+        map.insert("index".into(), axis.into());
+        map.extend(self.expression(
+            expr,
+            json!({"command": "feature.edit", "params": {"feature": id, "size": size}}),
+        ));
+        let (affects, alike) = self.reach(origin);
+        map.insert("affects".into(), affects.into());
+        map.insert("alike".into(), alike.into());
+        map.insert("shared".into(), (alike > 1).into());
+        vec![Value::Object(map)]
+    }
+
+    /// The drivers of an edge: an edge an extrusion swept from a sketch
+    /// curve, that curve's; an edge of a block, the size along the axis it
+    /// runs (the axis neither of its two faces is square to: right for a
+    /// block turned any way); a circular edge of a cylinder or a cone its
+    /// radius, a straight one its height; any other edge, the drivers of
+    /// the first curved face it lies on (the wall whose rim it is).
+    fn edge_drivers(&mut self, c: &Candidate<'_>) -> Vec<Value> {
+        let (Some(body), Some(origin)) =
+            (c.body, c.persistent.as_ref().and_then(|n| chain(n).last()))
+        else {
+            return Vec::new();
+        };
+        let doc = self.doc;
+        let Some(feature) = doc.feature(origin.feature) else {
+            return Vec::new();
+        };
+        let Some(names) = self.regen.feature(c.feature).and_then(|o| o.names.as_ref()) else {
+            return Vec::new();
+        };
+        let faces: Vec<usize> = craft3d_regen::faces_of_edges(body)
+            .into_iter()
+            .nth(c.index)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| usize::try_from(f.0).ok())
+            .collect();
+        match (&feature.kind, origin.role) {
+            (
+                FeatureKind::Extrude(_) | FeatureKind::Revolve(_),
+                NameRole::StartEdge | NameRole::EndEdge,
+            ) => {
+                return self.drivers_of(origin);
+            }
+            (FeatureKind::Block(_), _) => {
+                // The block's own face numbers of the two faces.
+                let axes: BTreeSet<usize> = faces
+                    .iter()
+                    .filter_map(|&k| names.faces.get(k))
+                    .filter_map(|name| chain(name).last())
+                    .filter(|o| o.feature == origin.feature && o.role == NameRole::Face)
+                    .filter_map(|o| o.sources.first().copied())
+                    .map(|k| match k {
+                        0 | 1 => 2,
+                        2 | 3 => 1,
+                        _ => 0,
+                    })
+                    .collect();
+                if axes.len() == 2 {
+                    let along = 3 - axes.iter().sum::<usize>();
+                    let origin = origin.clone();
+                    return self.block_driver(&origin, along);
+                }
+                return Vec::new();
+            }
+            (FeatureKind::Cylinder(_) | FeatureKind::Cone(_), _) => {
+                let origin = origin.clone();
+                let (radius, height) = match &feature.kind {
+                    FeatureKind::Cylinder(s) => (s.radius.clone(), s.height.clone()),
+                    FeatureKind::Cone(s) => (s.radius.clone(), s.height.clone()),
+                    _ => return Vec::new(),
+                };
+                return match edge_of(c).map(|e| &e.curve) {
+                    Some(Curve3::Circle(_)) => vec![self.param(&origin, "radius", &radius)],
+                    Some(Curve3::Line(_)) => vec![self.param(&origin, "height", &height)],
+                    _ => Vec::new(),
+                };
+            }
+            _ => {}
+        }
+        for k in faces {
+            let curved = body
+                .faces
+                .get(k)
+                .is_some_and(|f| !matches!(f.surface, Surface::Plane(_)));
+            let Some(name) = names.faces.get(k) else {
+                continue;
+            };
+            if curved && let Some(origin) = chain(name).last() {
+                let origin = origin.clone();
+                let drivers = self.drivers_of(&origin);
+                if !drivers.is_empty() {
+                    return drivers;
+                }
+            }
+        }
+        Vec::new()
+    }
+
     /// What sizes curve `curve` (an entity id, the first number of a
     /// side's name) of the sketch `sketch`: a radius or diameter
     /// constraint on it or, through equal constraints, on a curve equal to
     /// it; the length of a line; or the curve alone when nothing sizes it.
-    fn curve_drivers(&self, sketch: FeatureId, curve: u64) -> Vec<Value> {
-        let Some(feature) = self.doc.feature(sketch) else {
+    /// `curves` are the curves the constraint sizes (all those equal to
+    /// the one it is on), `affects` how many faces of the current bodies
+    /// extrusions and revolutions swept from them.
+    fn curve_drivers(&mut self, sketch: FeatureId, curve: u64) -> Vec<Value> {
+        let doc = self.doc;
+        let Some(feature) = doc.feature(sketch) else {
             return Vec::new();
         };
         let FeatureKind::Sketch(drawn) = &feature.kind else {
@@ -2025,13 +2220,31 @@ impl Context<'_> {
             _ => "point",
         };
         let sid = sketch.to_string();
-        // The curve, then the curves equal to it, nearest first: each
-        // looked at once, so a ring of equal constraints ends.
-        let mut todo = std::collections::VecDeque::from([entity.id]);
-        let mut seen = BTreeSet::from([entity.id]);
-        while let Some(at) = todo.pop_front() {
+        // The curves equal to it, nearest first: each looked at once, so
+        // a ring of equal constraints ends.
+        let equal = |from: craft3d_doc::EntityId| -> Vec<craft3d_doc::EntityId> {
+            let mut order = vec![from];
+            let mut seen = BTreeSet::from([from]);
+            let mut k = 0;
+            while let Some(&at) = order.get(k) {
+                k += 1;
+                for constraint in &drawn.constraints {
+                    if let ConstraintKind::Equal { a, b } = &constraint.kind {
+                        for (x, y) in [(a, b), (b, a)] {
+                            if *x == at && seen.insert(*y) {
+                                order.push(*y);
+                            }
+                        }
+                    }
+                }
+            }
+            order
+        };
+        let group = equal(entity.id);
+        let mut sized = None;
+        'search: for &at in &group {
             for constraint in &drawn.constraints {
-                let sized = match &constraint.kind {
+                let found = match &constraint.kind {
                     ConstraintKind::Radius { curve, value } if *curve == at => {
                         Some(("radius", value))
                     }
@@ -2043,71 +2256,60 @@ impl Context<'_> {
                     } if *a == at => Some(("distance", value)),
                     _ => None,
                 };
-                if let Some((kind, value)) = sized {
-                    let mut entry = json!({
-                        "sketch": sid, "sketchName": feature.name, "entity": entity.id.to_string(),
-                        "curve": shape, "constraint": constraint.id.to_string(), "kind": kind,
-                        "expr": value.0,
-                        "edit": {"command": "sketch.edit", "params": {
-                            "sketch": sid, "constraint": constraint.id.to_string(), "value": value.0,
-                        }},
-                    });
-                    if at != entity.id
-                        && let Some(map) = entry.as_object_mut()
-                    {
-                        map.insert("via".into(), at.to_string().into());
-                    }
-                    return vec![entry];
-                }
-            }
-            for constraint in &drawn.constraints {
-                if let ConstraintKind::Equal { a, b } = &constraint.kind {
-                    for (from, to) in [(a, b), (b, a)] {
-                        if *from == at && seen.insert(*to) {
-                            todo.push_back(*to);
-                        }
-                    }
+                if let Some((kind, value)) = found {
+                    sized = Some((at, constraint.id, kind, value));
+                    break 'search;
                 }
             }
         }
-        vec![json!({
-            "sketch": sid, "sketchName": feature.name, "entity": entity.id.to_string(),
-            "curve": shape, "constraint": null,
-        })]
-    }
-
-    /// The drivers of an edge named by the faces it lies between: those
-    /// of the first of its faces that is curved (the wall whose rim it is).
-    fn edge_drivers(&mut self, c: &Candidate<'_>) -> Vec<Value> {
-        let Some(body) = c.body else {
-            return Vec::new();
-        };
-        let Some(names) = self.regen.feature(c.feature).and_then(|o| o.names.as_ref()) else {
-            return Vec::new();
-        };
-        let faces = craft3d_regen::faces_of_edges(body)
-            .into_iter()
-            .nth(c.index)
-            .unwrap_or_default();
-        for face in faces {
-            let Ok(k) = usize::try_from(face.0) else {
-                continue;
-            };
-            let curved = body
-                .faces
-                .get(k)
-                .is_some_and(|f| !matches!(f.surface, Surface::Plane(_)));
-            let Some(name) = names.faces.get(k) else {
-                continue;
-            };
-            if curved && let Some(origin) = chain(name).last() {
-                let drivers = self.drivers_of(origin);
-                if !drivers.is_empty() {
-                    return drivers;
+        let curves: BTreeSet<u64> = group.iter().map(|e| e.0).collect();
+        let affects = self
+            .face_origins()
+            .iter()
+            .filter(|o| {
+                o.role == NameRole::Side
+                    && o.sources.first().is_some_and(|c| curves.contains(c))
+                    && match doc.feature(o.feature).map(|f| &f.kind) {
+                        Some(FeatureKind::Extrude(e)) => e.sketch == sketch,
+                        Some(FeatureKind::Revolve(r)) => r.sketch == sketch,
+                        _ => false,
+                    }
+            })
+            .count();
+        let mut map = Map::new();
+        map.insert("sketch".into(), sid.clone().into());
+        map.insert("sketchName".into(), feature.name.clone().into());
+        map.insert("entity".into(), entity.id.to_string().into());
+        map.insert("curve".into(), shape.into());
+        map.insert(
+            "curves".into(),
+            group
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        map.insert("affects".into(), affects.into());
+        map.insert("shared".into(), (affects > 1).into());
+        match sized {
+            Some((at, id, kind, value)) => {
+                map.insert("constraint".into(), id.to_string().into());
+                map.insert("kind".into(), kind.into());
+                if at != entity.id {
+                    map.insert("via".into(), at.to_string().into());
                 }
+                map.extend(self.expression(
+                    value,
+                    json!({"command": "sketch.edit", "params": {
+                        "sketch": sid, "constraint": id.to_string(), "value": value.0,
+                    }}),
+                ));
+            }
+            None => {
+                map.insert("constraint".into(), Value::Null);
             }
         }
-        Vec::new()
+        vec![Value::Object(map)]
     }
 
     /// The patterns and mirrors an entity is a copy made by, outermost
