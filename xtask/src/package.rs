@@ -31,6 +31,7 @@ struct Options {
     jobs: Option<String>,
     build: bool,
     appimagetool: Option<PathBuf>,
+    appimage_runtime: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -60,11 +61,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "-j" | "--jobs" => o.jobs = Some(value()?),
             "--no-build" => o.build = false,
             "--appimagetool" => o.appimagetool = Some(PathBuf::from(value()?)),
+            "--appimage-runtime" => o.appimage_runtime = Some(PathBuf::from(value()?)),
             other => {
                 return Err(format!(
                     "package: unknown argument `{other}`; usage: cargo xtask package \
                      [--target TRIPLE] [--out DIR] [--formats LIST] [-j N] [--no-build] \
-                     [--appimagetool PATH]"
+                     [--appimagetool PATH] [--appimage-runtime PATH]"
                 ));
             }
         }
@@ -191,7 +193,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for f in &formats {
         let file = match f.as_str() {
             "tar" => p.tarball()?,
-            "appimage" => p.appimage(options.appimagetool.as_deref())?,
+            "appimage" => p.appimage(
+                options.appimagetool.as_deref(),
+                options.appimage_runtime.as_deref(),
+            )?,
             "app" => p.app_bundle()?,
             "dmg" => p.dmg()?,
             "zip" => p.zip()?,
@@ -254,17 +259,54 @@ fn read(from: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(from).map_err(|e| format!("cannot read {}: {e}", from.display()))
 }
 
+/// How many lines of a failed tool's output its error repeats.
+const FAILURE_LINES: usize = 20;
+
 /// Runs an external tool and fails with its name when it cannot be started
-/// or does not succeed.
+/// or does not succeed. Its output is captured and passed on, and a failure
+/// repeats the end of it, so the error says why even when the output
+/// scrolled away (a CI log shows the error last).
 fn tool(command: &mut Command, what: &str) -> Result<(), String> {
     eprintln!("$ {command:?}");
-    let status = command
-        .status()
+    let output = command
+        .output()
         .map_err(|e| format!("cannot run {what}: {e}"))?;
-    if status.success() {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stdout.is_empty() {
+        print!("{stdout}");
+    }
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+    }
+    if output.status.success() {
         Ok(())
     } else {
-        Err(format!("{what} failed ({status})"))
+        Err(failure(what, &output.status.to_string(), &stdout, &stderr))
+    }
+}
+
+/// The error of a failed tool: its name, its exit status and the last
+/// lines it wrote (standard output, then standard error).
+fn failure(what: &str, status: &str, stdout: &str, stderr: &str) -> String {
+    let lines: Vec<&str> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let tail = lines
+        .get(lines.len().saturating_sub(FAILURE_LINES)..)
+        .unwrap_or_default();
+    if tail.is_empty() {
+        format!("{what} failed ({status}) and wrote nothing")
+    } else {
+        let mut message = format!("{what} failed ({status}); it wrote:");
+        for line in tail {
+            message.push_str("\n  ");
+            message.push_str(line);
+        }
+        message
     }
 }
 
@@ -354,11 +396,19 @@ impl Packer {
         Ok(file)
     }
 
-    fn appimage(&self, given: Option<&Path>) -> Result<PathBuf, String> {
+    fn appimage(&self, given: Option<&Path>, runtime: Option<&Path>) -> Result<PathBuf, String> {
         let tool_path = given
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os("APPIMAGETOOL").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("appimagetool"));
+        // The runtime the AppImage starts with. Without one, appimagetool
+        // downloads the newest continuous build of the type2 runtime.
+        let runtime = runtime
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("APPIMAGE_RUNTIME").map(PathBuf::from));
+        if let Some(r) = runtime.as_ref().filter(|r| !r.is_file()) {
+            return Err(format!("there is no AppImage runtime {}", r.display()));
+        }
         let app_dir = self.stage.join("AppDir");
         self.linux_tree(&app_dir.join("usr"))?;
         copy(
@@ -382,14 +432,17 @@ impl Packer {
         let file = self
             .out
             .join(format!("3DCraft-{}-{}.AppImage", self.version, self.arch));
+        let mut command = Command::new(&tool_path);
+        command
+            .env("ARCH", &self.arch)
+            // Runs without FUSE (containers, CI runners).
+            .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+            .arg("--no-appstream");
+        if let Some(r) = &runtime {
+            command.arg("--runtime-file").arg(r);
+        }
         tool(
-            Command::new(&tool_path)
-                .env("ARCH", &self.arch)
-                // Runs without FUSE (containers, CI runners).
-                .env("APPIMAGE_EXTRACT_AND_RUN", "1")
-                .arg("--no-appstream")
-                .arg(&app_dir)
-                .arg(&file),
+            command.arg(&app_dir).arg(&file),
             &format!(
                 "appimagetool ({}; pass --appimagetool PATH or APPIMAGETOOL, or --formats tar)",
                 tool_path.display()
@@ -672,6 +725,39 @@ mod tests {
         assert!(!o.build);
         assert!(parse(&["--bogus".to_string()]).is_err());
         assert!(parse(&["--target".to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_failed_tool_says_what_it_wrote() {
+        let m = failure(
+            "appimagetool",
+            "exit status: 1",
+            "appimagetool, build 172\n",
+            "desktop-file-validate command is missing, please install it\n",
+        );
+        assert!(m.starts_with("appimagetool failed (exit status: 1); it wrote:"));
+        assert!(m.contains("\n  appimagetool, build 172"));
+        assert!(m.ends_with("\n  desktop-file-validate command is missing, please install it"));
+        let quiet = failure("tar", "exit status: 2", "", "\n");
+        assert_eq!(quiet, "tar failed (exit status: 2) and wrote nothing");
+        let long: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let m = failure("wix", "exit status: 1", &long, "");
+        assert_eq!(m.lines().count(), 1 + FAILURE_LINES);
+        assert!(m.contains("line 80") && !m.contains("line 79"));
+    }
+
+    #[test]
+    fn the_appimage_runtime_is_read() {
+        let args: Vec<String> = ["--appimage-runtime", "target/tools/runtime"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = parse(&args).unwrap();
+        assert_eq!(
+            o.appimage_runtime,
+            Some(PathBuf::from("target/tools/runtime"))
+        );
+        assert!(parse(&["--appimage-runtime".to_string()]).is_err());
     }
 
     #[test]

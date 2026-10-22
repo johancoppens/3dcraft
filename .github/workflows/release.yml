@@ -53,14 +53,26 @@ jobs:
             exit 1
           fi
 
+      # appimagetool needs `file` and `desktop-file-validate`, and without a
+      # runtime file it downloads the newest continuous type2 runtime; both
+      # downloads are pinned to a release and checked against its sha256.
       - name: appimagetool
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends file desktop-file-utils
           mkdir -p target/tools
           curl -fsSL -o target/tools/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl -fsSL -o target/tools/runtime-x86_64 \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          sha256sum -c - <<'SUMS'
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  target/tools/appimagetool
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  target/tools/runtime-x86_64
+          SUMS
           chmod +x target/tools/appimagetool
           echo "APPIMAGETOOL=$PWD/target/tools/appimagetool" >> "$GITHUB_ENV"
+          echo "APPIMAGE_RUNTIME=$PWD/target/tools/runtime-x86_64" >> "$GITHUB_ENV"
 
       - name: WiX Toolset
         if: runner.os == 'Windows'
