@@ -174,6 +174,7 @@ pub(crate) struct OpenDocument {
 /// (`craft3d_regen::DEFAULT_BODY_BUDGET` otherwise; what a bigger history
 /// costs is derived again when an edit needs it).
 fn new_cache() -> craft3d_regen::RegenCache {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut cache = craft3d_regen::RegenCache::default();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(megabytes) = std::env::var("CRAFT3D_BODY_BUDGET_MB")

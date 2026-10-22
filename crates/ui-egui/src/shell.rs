@@ -4,7 +4,6 @@
 //! (`Session::execute`), from whoever drives the session.
 
 use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
@@ -413,17 +412,15 @@ fn recoverable_text(found: &Recoverable, now: Option<u64>) -> String {
     parts.join(" · ")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn epoch_now() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(target_arch = "wasm32")]
+    use web_time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .ok()
         .map(|since| since.as_secs())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn epoch_now() -> Option<u64> {
-    None
 }
 
 pub struct Shell {
@@ -465,7 +462,6 @@ pub struct Shell {
     shown_report: Option<RendererReport>,
     /// The GPU on the window's own device, when the window lent it: the
     /// path that draws every frame in full and reads nothing back.
-    #[cfg(not(target_arch = "wasm32"))]
     direct: Option<Direct>,
     /// Why the direct path is not used although the GPU was wanted.
     direct_fallback: Option<String>,
@@ -697,16 +693,14 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
     }
 }
 
-/// A clock for timing a render, where the platform has one.
-#[cfg(not(target_arch = "wasm32"))]
+/// A clock for timing a render (in the browser the page's own, since
+/// `std::time::Instant` has none there).
 fn stopwatch() -> impl FnOnce() -> Option<f64> {
+    #[cfg(not(target_arch = "wasm32"))]
     let start = std::time::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    let start = web_time::Instant::now();
     move || Some(start.elapsed().as_secs_f64() * 1000.0)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn stopwatch() -> impl FnOnce() -> Option<f64> {
-    || None
 }
 
 impl Shell {
@@ -740,7 +734,6 @@ impl Shell {
             arrived: Vec::new(),
             renderer: BodyRenderer::new(choice),
             shown_report: None,
-            #[cfg(not(target_arch = "wasm32"))]
             direct: None,
             direct_fallback: None,
             direct_shown: false,
@@ -831,8 +824,9 @@ impl Shell {
     /// shown ([`crate::direct`]), and the CPU renderer stands by for the
     /// frames that path cannot make. When the direct path cannot be set
     /// up, or without a `state`, this is [`Self::threaded_with`], with the
-    /// reason kept for [`Self::renderer_report`].
-    #[cfg(not(target_arch = "wasm32"))]
+    /// reason kept for [`Self::renderer_report`]. In the browser there are
+    /// no threads: the CPU renderer then stands by on the page's own
+    /// thread.
     pub fn threaded_with_gpu(
         choice: RendererChoice,
         state: Option<&egui_wgpu::RenderState>,
@@ -861,7 +855,6 @@ impl Shell {
     /// shell's renderer standing by for what that path cannot make. For a
     /// host that drives the shell headlessly with a device of its own (a
     /// test); the window uses [`Self::threaded_with_gpu`].
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn attach_gpu(&mut self, state: &egui_wgpu::RenderState) -> Result<(), String> {
         let direct = Direct::new(state)?;
         self.direct = Some(direct);
@@ -874,7 +867,6 @@ impl Shell {
     /// frame is drawn by the CPU renderer, on this thread. For tests of
     /// that fallback (a render thread's renderer is not reached).
     pub fn without_gpu_see_through(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(direct) = &mut self.direct {
             direct.without_see_through();
         }
@@ -885,7 +877,6 @@ impl Shell {
     /// frame with a section is the CPU renderer's. For tests of that
     /// fallback.
     pub fn without_gpu_section(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(direct) = &mut self.direct {
             direct.without_section();
         }
@@ -908,7 +899,6 @@ impl Shell {
     /// it draws directly; else the renderer that made the image on screen,
     /// or, before there is one, this thread's.
     pub fn renderer_report(&self) -> RendererReport {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(direct) = &self.direct {
             return direct.report();
         }
@@ -946,13 +936,19 @@ impl Shell {
 
     /// True when the viewport is drawn directly on the window's device.
     pub fn draws_directly(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.direct.is_some()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
+        self.direct.is_some()
+    }
+
+    /// Stops drawing on the window's device, for `why`: from now on the
+    /// viewport is rendered as without a device of the window's. For a
+    /// host that learns of a failure of the device the shell cannot see
+    /// itself (the browser reports errors of WebGPU later, to a handler
+    /// of the page's).
+    pub fn leave_gpu(&mut self, why: String) {
+        if self.direct.take().is_some() {
+            self.direct_fallback = Some(why);
+            self.direct_shown = false;
+            self.shown_report = None;
         }
     }
 
@@ -2640,23 +2636,15 @@ impl Shell {
 
     /// The direct path's texture, when the picture on screen is its.
     fn direct_texture(&self) -> Option<egui::TextureId> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.direct
-                .as_ref()
-                .filter(|_| self.direct_shown)
-                .and_then(Direct::texture_id)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            None
-        }
+        self.direct
+            .as_ref()
+            .filter(|_| self.direct_shown)
+            .and_then(Direct::texture_id)
     }
 
     /// Draws `key` on the window's device, when the shell has it. True
     /// when the picture on screen is now the direct path's; false when
     /// there is no direct path, or this frame has to be made another way.
-    #[cfg(not(target_arch = "wasm32"))]
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
         let cut = self.section_cut().filter(|_| key.section.is_some());
         let chosen = self.selection_marks().clone();
@@ -2715,11 +2703,6 @@ impl Shell {
                 false
             }
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn direct_frame(&mut self, _scene: Option<&Scene>, _key: &FrameKey) -> bool {
-        false
     }
 
     /// Brings the image on screen up to date with `key`: makes a preview

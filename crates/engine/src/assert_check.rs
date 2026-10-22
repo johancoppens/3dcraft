@@ -36,6 +36,7 @@ pub(crate) enum Wait {
     /// Not at all: what is not measured yet is pending.
     No,
     /// At most this long.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     For(Duration),
     /// Until every assertion is measured.
     All,

@@ -18,9 +18,9 @@
 //!
 //! Nothing here panics: no adapter, a lost device, a mesh or target the
 //! device cannot take, all end in the CPU renderer, and the reason is kept
-//! for `ui.get` and the terminal. In the browser the viewport is rendered
-//! on the CPU for now: the GPU renderer's blocking entry points do not
-//! exist there.
+//! for `ui.get` and the terminal. In the browser a renderer of its own
+//! is the CPU one (the GPU renderer's blocking entry points do not exist
+//! there); the page lends the shell its device for `crate::direct`.
 
 use crate::state::CameraState;
 use crate::theme::Tokens;
