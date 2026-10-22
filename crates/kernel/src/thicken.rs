@@ -202,12 +202,16 @@ fn thicken_at(
         trust_operands: true,
         ..BooleanOptions::default()
     };
-    let cut = boolean_with(&outer, &inner, BooleanOp::Subtract, tolerance, &options).map_err(
-        |error| KernelError::FaceOpBoolean {
-            operation: OPERATION,
-            error: Box::new(error),
-        },
-    )?;
+    // The two bodies are made from a loose one: their entities may meet
+    // as far off as two of its gaps (`loose_op::for_tool`).
+    let wide = crate::loose_op::for_tool(body, tolerance);
+    let cut =
+        boolean_with(&outer, &inner, BooleanOp::Subtract, &wide, &options).map_err(|error| {
+            KernelError::FaceOpBoolean {
+                operation: OPERATION,
+                error: Box::new(error),
+            }
+        })?;
     let skins: Vec<(Skin, FaceId)> = cut
         .faces
         .iter()

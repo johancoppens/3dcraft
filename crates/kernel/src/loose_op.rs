@@ -41,6 +41,37 @@ use std::collections::BTreeSet;
 /// Checks of the result before giving up (as the boolean's).
 const ROUNDS: usize = 3;
 
+/// How much wider than the working tolerance the boolean between a loose
+/// body and a tool made from it runs ([`for_tool`]).
+pub(crate) const TOOL_WIDENING: f64 = 4.0;
+
+/// The tolerance for a boolean between `body`, given to an operation that
+/// runs at `at` (its working tolerance), and a tool the operation made
+/// from it (a fillet's or chamfer's tool, thicken's moved copy): for a
+/// body with loose entities [`TOOL_WIDENING`] times `at`, else `at`
+/// itself, bit for bit (tolerant modelling, slice 3, 2026-10-22).
+///
+/// An entity of a loose body lies up to the working tolerance `W` off
+/// where it belongs, and the tool's entity made from it (or from its
+/// neighbour) up to `W` the other way: the two that are one may be `2W`
+/// apart. The boolean merges points within half its tolerance and
+/// refuses points and faces between half and twice it apart (the band,
+/// `docs/design/booleans.md`), so at `W` such a pair is refused ("two
+/// points closer together than the tolerance can tell apart") and at
+/// `4W` it is one. What the boolean builds is measured afterwards and
+/// held to `W` all the same ([`run`]'s settle step): an entity that
+/// needs more is refused, never recorded looser than the body was.
+pub(crate) fn for_tool(body: &Body, at: &Tolerance) -> Tolerance {
+    if body.is_tolerant() {
+        Tolerance {
+            linear: TOOL_WIDENING * at.linear,
+            ..*at
+        }
+    } else {
+        *at
+    }
+}
+
 /// Where the entities of an operation's result came from, in the body
 /// given: per face its face when it lies on that face's surface still
 /// (`None` for a face made, merged or moved), per edge and vertex its

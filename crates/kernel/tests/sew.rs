@@ -710,6 +710,13 @@ fn operations_on_sewn_bodies_carry_their_tolerances_or_refuse() {
     for op in ["fillet", "chamfer", "offset", "shell"] {
         assert!(counts[op].right > 0, "{op} never worked on a loose body");
     }
+    // Since slice 3 the boolean between a loose body and a tool made from
+    // it runs at four times the working tolerance (`loose_op::for_tool`):
+    // chamfer and thicken were refused at 300 tolerances and in the band
+    // (3 and 12 of 18), now none are.
+    for op in ["chamfer", "thicken", "fillet"] {
+        assert_eq!(counts[op].refused, 0, "{op} refused on a loose body");
+    }
 }
 
 /// A fan of 3000 loose triangles round one point (each with its own
