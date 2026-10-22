@@ -969,7 +969,9 @@ fn two_steps_give_the_one_step_frame() {
 /// `CRAFT3D_GPU_SOAK_THREADS` per adapter (default 2: the gate runs the
 /// parity tests in parallel on the shared GPU too), and
 /// `CRAFT3D_GPU_SOAK_ONE_STEP=1` to draw the opaque scene in one step, as
-/// before the Radeon's lost writes were known (`Renderer::in_one_step`);
+/// before the Radeon's lost writes were known (`Renderer::in_one_step`),
+/// and `CRAFT3D_GPU_SOAK_SCENE` `see-through` (opacity 0.5) or `section`
+/// (cut open through the middle, with a cap) for the other passes;
 /// `WGPU_ADAPTER_NAME` and `WGPU_BACKEND` choose the adapters.
 #[test]
 #[ignore = "minutes; on demand and in the Heavy workflow"]
@@ -1001,6 +1003,26 @@ fn soak_the_same_input_gives_the_same_frame() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
+/// The soak's frame: the teapot of [`teapot_frame`], opaque, seen through
+/// or cut open (`CRAFT3D_GPU_SOAK_SCENE`).
+fn soak_frame(offscreen: &mut craft3d_gpu::Offscreen, mesh: &Mesh) -> Frame {
+    let mut params = params(480, 360, 2);
+    match std::env::var("CRAFT3D_GPU_SOAK_SCENE").as_deref() {
+        Ok("see-through") => params.opacity = 0.5,
+        Ok("section") => {
+            params.section = Some(craft3d_render::Section {
+                origin: mesh.bbox().center().unwrap(),
+                normal: Vec3::new(0.3, -1.0, 0.2),
+                cap: true,
+                color: [200, 60, 40],
+            });
+        }
+        _ => {}
+    }
+    let camera = perspective(mesh, TEAPOT_VIEW, 30.0, &params);
+    offscreen.render(mesh, &camera, &params).unwrap()
+}
+
 /// One worker of [`soak_the_same_input_gives_the_same_frame`]: `frames`
 /// teapots on a device of its own on adapter `index`, each compared with
 /// the first; what differed, with the evidence of the first ten.
@@ -1010,17 +1032,18 @@ fn soak(worker: usize, index: usize, frames: usize, one_step: bool, mesh: &Mesh)
     if one_step {
         offscreen.renderer().in_one_step();
     }
-    let steps = if offscreen.renderer().in_two_steps() {
-        "two steps"
-    } else {
-        "one step"
+    let scene = std::env::var("CRAFT3D_GPU_SOAK_SCENE").unwrap_or_else(|_| "opaque".to_string());
+    let steps = match (scene.as_str(), offscreen.renderer().in_two_steps()) {
+        ("see-through" | "section", _) => scene.clone(),
+        (_, true) => "opaque, two steps".to_string(),
+        (_, false) => "opaque, one step".to_string(),
     };
     let started = std::time::Instant::now();
-    let frame = teapot_frame(&mut offscreen, mesh);
+    let frame = soak_frame(&mut offscreen, mesh);
     let mut differences = Vec::new();
     let mut differing = 0;
     for k in 1..frames {
-        let got = teapot_frame(&mut offscreen, mesh);
+        let got = soak_frame(&mut offscreen, mesh);
         if got == frame {
             continue;
         }
