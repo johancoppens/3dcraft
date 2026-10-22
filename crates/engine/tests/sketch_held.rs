@@ -382,3 +382,52 @@ fn bad_held_coordinates_are_refused() {
     assert_eq!(inspected["entities"], json!([]), "{inspected}");
     assert_eq!(inspected["constraints"], json!([]));
 }
+
+/// An arc end held at expressions that put it off the circle through the
+/// start is not snapped onto it (its constraints would pull it back): it
+/// is drawn and held as given, and the path warns, as for an end given by
+/// id. The same end given as numbers is snapped, as before.
+#[test]
+fn a_held_arc_end_off_its_circle_is_warned_about_not_snapped() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    set(&mut s, "r", "10 mm");
+    run(&mut s, "sketch.create", json!({ "name": "S" }));
+    let held = run(
+        &mut s,
+        "sketch.path",
+        json!({ "sketch": "S", "start": ["r", 0], "segments": [
+            { "arc": ["0", "r * 1.005"], "center": ["0 mm", "0 mm"] },
+        ] }),
+    );
+    assert!(held.get("snapped").is_none(), "{held}");
+    let warnings = held["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{held}");
+    assert!(
+        warnings[0].as_str().unwrap().starts_with("segments[0]:"),
+        "{held}"
+    );
+    let end = held["points"][1].as_str().unwrap().to_string();
+    let inspected = run(&mut s, "sketch.inspect", json!({ "sketch": "S" }));
+    // Held where it was given by its two constraints.
+    assert_eq!(
+        inspected["constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["entities"] == json!([end]))
+            .count(),
+        2,
+        "{inspected}"
+    );
+
+    run(&mut s, "sketch.create", json!({ "name": "N" }));
+    let numbers = run(
+        &mut s,
+        "sketch.path",
+        json!({ "sketch": "N", "start": [10, 0], "segments": [
+            { "arc": [0, 10.05], "center": [0, 0] },
+        ] }),
+    );
+    assert_eq!(numbers["snapped"].as_array().unwrap().len(), 1, "{numbers}");
+}

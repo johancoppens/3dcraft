@@ -23,6 +23,42 @@ pub fn faces_named(names: &Names, name: &PersistentName) -> Vec<FaceId> {
         .collect()
 }
 
+/// Why a short cap (`F2:endCap()`, [`PersistentName::shortens`]) cannot
+/// name a face of this body: it answers to the caps of more than one
+/// loop (a sketch of several profiles extruded at once, or one that got a
+/// second profile after the reference was made). `None` for any other
+/// name, and for a short cap of one loop (its pieces after a cut are one
+/// cap). A feature does not take every cap then: that would make a
+/// reference silently take more faces after an upstream edit (rule 4).
+pub fn ambiguous_cap(names: &Names, name: &PersistentName) -> Option<String> {
+    if !name.is_short_cap() {
+        return None;
+    }
+    let mut loops: Vec<&PersistentName> = Vec::new();
+    for face in 0..names.faces.len() {
+        if names.face_answers_to(face, name)
+            && let Some(own) = names.faces.get(face)
+            && !loops.contains(&own)
+        {
+            loops.push(own);
+        }
+    }
+    if loops.len() < 2 {
+        return None;
+    }
+    let listed: Vec<String> = loops.iter().take(12).map(ToString::to_string).collect();
+    Some(format!(
+        "{name} names the caps of {} loops ({}{}); give the full name of the one meant",
+        loops.len(),
+        listed.join(", "),
+        if loops.len() > listed.len() {
+            ", ..."
+        } else {
+            ""
+        }
+    ))
+}
+
 /// For every edge of `body`, the faces that use it, in ascending order
 /// without repeats: two for an edge of a solid, one for a seam or for the
 /// border of a sheet.

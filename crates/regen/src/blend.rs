@@ -70,6 +70,11 @@ pub(crate) fn pick(
                 ));
             }
         }
+        for face in [a, b] {
+            if let Some(why) = crate::query::ambiguous_cap(names, face) {
+                return Err(format!("{role}: {why}"));
+            }
+        }
         let (first, second) = (faces_named(names, a), faces_named(names, b));
         // A reference of two names says every one of them that is gone.
         let gone: Vec<String> = [(a, &first), (b, &second)]

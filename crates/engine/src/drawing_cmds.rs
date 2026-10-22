@@ -475,6 +475,9 @@ fn draw(session: &mut Session, wanted: &Wanted) -> Result<Drawn, CommandError> {
         let Some(names) = &outcome.names else {
             continue;
         };
+        if let Some(why) = craft3d_regen::ambiguous_cap(names, &full) {
+            return fail(format!("{ID}: {role}: {why}"));
+        }
         let faces = craft3d_regen::faces_named(names, &full);
         if !faces.is_empty() {
             found.push((outcome.id, body, faces));

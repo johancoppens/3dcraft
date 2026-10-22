@@ -12,6 +12,7 @@
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
 use crate::sketch_cmds::{PointArg, change, ids, sketch_ref, sketch_result};
+use crate::typed::Typed;
 use crate::{CommandSpec, Session};
 use craft3d_doc::{
     EntityId, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, clamped_uniform_knots,
@@ -252,7 +253,7 @@ pub(crate) fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f6
 }
 
 fn points_param(
-    session: &Session,
+    typed: &Typed<'_>,
     p: &Params,
     command: &'static str,
     key: &'static str,
@@ -268,7 +269,7 @@ fn points_param(
             }
             items
                 .iter()
-                .map(|item| PointArg::parse(session, command, key, item))
+                .map(|item| PointArg::parse(typed, command, key, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Some)
         }
@@ -309,8 +310,9 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         ],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let control = points_param(session, &p, COMMAND, "control")?;
-    let through = points_param(session, &p, COMMAND, "through")?;
+    let typed = session.typed();
+    let control = points_param(&typed, &p, COMMAND, "control")?;
+    let through = points_param(&typed, &p, COMMAND, "through")?;
     let (mut given, fitted) = match (control, through) {
         (Some(control), None) => (control, false),
         (None, Some(through)) => (through, true),

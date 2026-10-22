@@ -63,7 +63,7 @@ pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
-pub use query::{edges_between, faces_named, faces_of_edges};
+pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, image_places_to_record, record_image_places,
     settle_sketches, settle_sketches_cached,

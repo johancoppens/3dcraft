@@ -623,11 +623,13 @@ impl<'a> Resolver<'a> {
         if kind != SelectionKind::Face || !short.is_short_cap() {
             return None;
         }
-        let mut caps = (0..names.faces.len()).filter(|&k| names.face_answers_to(k, &short));
-        match (caps.next(), caps.next()) {
-            (Some(k), None) => names.faces.get(k).map(|name| (name.to_string(), k)),
-            _ => None,
+        // Pieces of one cap share its name: the first stands for it, as
+        // for any name. Caps of several loops are refused.
+        if craft3d_regen::ambiguous_cap(names, &short).is_some() {
+            return None;
         }
+        let k = (0..names.faces.len()).find(|&k| names.face_answers_to(k, &short))?;
+        names.faces.get(k).map(|name| (name.to_string(), k))
     }
 
     /// What `name` means: `kind` when given (otherwise read from the name:

@@ -12,6 +12,7 @@ use crate::commands::{
     Run, doc_error, edit, fail, feature_ref, feature_result, insert_feature, spec,
 };
 use crate::params::Params;
+use crate::typed::Typed;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, Expr, FeatureId,
@@ -138,6 +139,20 @@ impl Held {
     }
 }
 
+/// A finite number as the shortest expression that reads back to exactly
+/// it: the plain decimal (`12.5`) or, when that is longer, the scientific
+/// form (`1e300`, `2.5e-7`). Both are Rust's shortest round-tripping
+/// digits.
+pub(crate) fn number_expr(v: f64) -> String {
+    let plain = v.to_string();
+    let scientific = format!("{v:e}");
+    if scientific.len() < plain.len() {
+        scientific
+    } else {
+        plain
+    }
+}
+
 /// Most characters of a coordinate written as an expression.
 const MAX_COORDINATE_EXPR: usize = 1_000;
 
@@ -146,7 +161,7 @@ const MAX_COORDINATE_EXPR: usize = 1_000;
 /// variables): drawn there and held there, a number beside the expression
 /// at that number. `None` when `value` is not such a pair.
 pub(crate) fn held_coordinates(
-    session: &Session,
+    typed: &Typed<'_>,
     command: &str,
     key: &str,
     value: &Value,
@@ -163,8 +178,8 @@ pub(crate) fn held_coordinates(
                         "{command}: `{key}`: the {axis} expression is longer than {MAX_COORDINATE_EXPR} characters"
                     ));
                 }
-                let at = session
-                    .evaluate_typed(text, crate::typed::TypedKind::Length)
+                let at = typed
+                    .evaluate(text, crate::typed::TypedKind::Length)
                     .map_err(|e| {
                         CommandError::new(format!("{command}: `{key}`: {axis}: {}", e.message()))
                     })?;
@@ -178,7 +193,7 @@ pub(crate) fn held_coordinates(
         // the expression is held at that number (`["-width / 2", 0]` is a
         // place, not a guess along y).
         (Some((x, held_x)), Some((y, held_y))) if held_x.is_some() || held_y.is_some() => {
-            let number = |v: f64| Expr::new(v.to_string());
+            let number = |v: f64| Expr::new(number_expr(v));
             Ok(Some((
                 x,
                 y,
@@ -332,13 +347,13 @@ impl EntityArg {
 
 impl PointArg {
     pub(crate) fn parse(
-        session: &Session,
+        typed: &Typed<'_>,
         command: &str,
         key: &str,
         value: &Value,
     ) -> Result<Self, CommandError> {
         match value {
-            Value::Array(_) => match held_coordinates(session, command, key, value)? {
+            Value::Array(_) => match held_coordinates(typed, command, key, value)? {
                 Some((x, y, held)) => Ok(PointArg::New(x, y, held)),
                 None => fail(format!(
                     "{command}: `{key}` must be a point id or coordinates [x, y]: two finite numbers, or expressions such as \"-width / 2\""
@@ -355,13 +370,13 @@ impl PointArg {
     }
 
     pub(crate) fn required(
-        session: &Session,
+        typed: &Typed<'_>,
         p: &Params,
         command: &str,
         key: &str,
     ) -> Result<Self, CommandError> {
         Self::parse(
-            session,
+            typed,
             command,
             key,
             p.get(key).ok_or_else(|| p.missing(key))?,
@@ -548,7 +563,7 @@ fn sketch_point(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(COMMAND, params, &["sketch", "at"])?;
     let id = sketch_ref(session, &p, COMMAND)?;
     let at = p.get("at").ok_or_else(|| p.missing("at"))?;
-    let Some((x, y, held)) = held_coordinates(session, COMMAND, "at", at)? else {
+    let Some((x, y, held)) = held_coordinates(&session.typed(), COMMAND, "at", at)? else {
         return fail(format!(
             "{COMMAND}: `at` must be [x, y]: two finite numbers, or expressions such as \"-width / 2\""
         ));
@@ -569,8 +584,9 @@ fn sketch_line(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.line";
     let p = Params::new(COMMAND, params, &["sketch", "from", "to", "construction"])?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let from = PointArg::required(session, &p, COMMAND, "from")?;
-    let to = PointArg::required(session, &p, COMMAND, "to")?;
+    let typed = session.typed();
+    let from = PointArg::required(&typed, &p, COMMAND, "from")?;
+    let to = PointArg::required(&typed, &p, COMMAND, "to")?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let (line, start, end) = change(session, COMMAND, "Add line", id, |s| {
         let (start, end) = (from.place(s)?, to.place(s)?);
@@ -591,6 +607,7 @@ fn sketch_polyline(session: &mut Session, params: &Value) -> Run {
         &["sketch", "points", "closed", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
+    let typed = session.typed();
     let Some(Value::Array(items)) = p.get("points") else {
         return match p.get("points") {
             None => Err(p.missing("points")),
@@ -617,7 +634,7 @@ fn sketch_polyline(session: &mut Session, params: &Value) -> Run {
     }
     let mut corners = Vec::with_capacity(items.len());
     for item in items {
-        corners.push(PointArg::parse(session, COMMAND, "points", item)?);
+        corners.push(PointArg::parse(&typed, COMMAND, "points", item)?);
     }
     let (points, lines) = change(session, COMMAND, "Add polyline", id, |s| {
         let mut points = Vec::with_capacity(corners.len());
@@ -650,7 +667,8 @@ fn sketch_circle(session: &mut Session, params: &Value) -> Run {
         &["sketch", "center", "radius", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let center = PointArg::required(session, &p, COMMAND, "center")?;
+    let typed = session.typed();
+    let center = PointArg::required(&typed, &p, COMMAND, "center")?;
     let (radius, held) = match p.get("radius") {
         None => return Err(p.missing("radius")),
         Some(Value::String(text)) => {
@@ -659,8 +677,8 @@ fn sketch_circle(session: &mut Session, params: &Value) -> Run {
                     "{COMMAND}: `radius` is longer than {MAX_COORDINATE_EXPR} characters"
                 ));
             }
-            let radius = session
-                .evaluate_typed(text, crate::typed::TypedKind::Length)
+            let radius = typed
+                .evaluate(text, crate::typed::TypedKind::Length)
                 .map_err(|e| CommandError::new(format!("{COMMAND}: `radius`: {}", e.message())))?;
             (radius, Some(Expr::new(text.clone())))
         }
@@ -694,8 +712,9 @@ fn sketch_rect(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.rect";
     let p = Params::new(COMMAND, params, &["sketch", "from", "to", "construction"])?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let from = PointArg::required(session, &p, COMMAND, "from")?;
-    let to = PointArg::required(session, &p, COMMAND, "to")?;
+    let typed = session.typed();
+    let from = PointArg::required(&typed, &p, COMMAND, "from")?;
+    let to = PointArg::required(&typed, &p, COMMAND, "to")?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let (points, lines, constraints) = change(session, COMMAND, "Add rectangle", id, |s| {
         let (Some(a), Some(c)) = (from.drawn(s), to.drawn(s)) else {
@@ -754,9 +773,10 @@ fn sketch_arc(session: &mut Session, params: &Value) -> Run {
         &["sketch", "center", "start", "end", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let center = PointArg::required(session, &p, COMMAND, "center")?;
-    let start = PointArg::required(session, &p, COMMAND, "start")?;
-    let end = PointArg::required(session, &p, COMMAND, "end")?;
+    let typed = session.typed();
+    let center = PointArg::required(&typed, &p, COMMAND, "center")?;
+    let start = PointArg::required(&typed, &p, COMMAND, "start")?;
+    let end = PointArg::required(&typed, &p, COMMAND, "end")?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let (arc, points) = change(session, COMMAND, "Add arc", id, |s| {
         let points = [center.place(s)?, start.place(s)?, end.place(s)?];
@@ -1192,4 +1212,40 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
         map.insert("lengthUnit".into(), doc.units.length.symbol().into());
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::number_expr;
+
+    /// A number held beside an expression is written short and reads back
+    /// to exactly itself.
+    #[test]
+    fn a_held_number_is_written_short_and_reads_back_exactly() {
+        let values = [
+            0.0,
+            -0.0,
+            7.0,
+            12.5,
+            -0.1,
+            1.0 / 3.0,
+            1e300,
+            -1e300,
+            2.5e-7,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            5e-324,
+            123_456_789.125,
+        ];
+        for v in values {
+            let text = number_expr(v);
+            assert!(text.len() <= 24, "{v}: {text}");
+            let back = craft3d_expr::evaluate(&text, |_| None).unwrap().value;
+            assert_eq!(back.to_bits(), v.to_bits(), "{v}: {text}");
+        }
+        assert_eq!(number_expr(1e300), "1e300");
+        assert_eq!(number_expr(12.5), "12.5");
+        assert_eq!(number_expr(0.0), "0");
+    }
 }

@@ -15,7 +15,8 @@
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
-use crate::sketch_cmds::{PointArg, change, coordinates, ids, sketch_ref, sketch_result};
+use crate::sketch_cmds::{Held, PointArg, change, coordinates, ids, sketch_ref, sketch_result};
+use crate::typed::Typed;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{ConstraintId, ConstraintKind, EntityId, Sketch, SketchError};
 use serde_json::{Map, Value, json};
@@ -120,7 +121,7 @@ fn segment_bool(
     }
 }
 
-fn parse_segment(session: &Session, index: usize, value: &Value) -> Result<Segment, CommandError> {
+fn parse_segment(typed: &Typed<'_>, index: usize, value: &Value) -> Result<Segment, CommandError> {
     let at = format!("{COMMAND}: segments[{index}]");
     let Value::Object(map) = value else {
         return fail(format!(
@@ -153,7 +154,7 @@ fn parse_segment(session: &Session, index: usize, value: &Value) -> Result<Segme
     let end = match end {
         Value::String(word) if word == "start" => End::Start,
         Value::Array(_) | Value::Number(_) | Value::String(_) => End::Point(PointArg::parse(
-            session,
+            typed,
             COMMAND,
             &format!("segments[{index}].{key}"),
             end,
@@ -190,12 +191,7 @@ fn parse_segment(session: &Session, index: usize, value: &Value) -> Result<Segme
 
     let shape = match (center, through, radius) {
         (Some(center), None, None) => Shape::Center {
-            center: PointArg::parse(
-                session,
-                COMMAND,
-                &format!("segments[{index}].center"),
-                center,
-            )?,
+            center: PointArg::parse(typed, COMMAND, &format!("segments[{index}].center"), center)?,
             clockwise: clockwise.unwrap_or(false),
         },
         (None, Some(through), None) => match coordinates(through) {
@@ -472,7 +468,11 @@ fn draw_segment(
         // it can be put on the circle without moving anything else.
         (End::Point(PointArg::New(x, y, held)), Shape::Center { center, .. }) => {
             let (x, y) = (*x, *y);
-            let center_at = center.drawn(s);
+            // An end held at expressions is not snapped: its constraints
+            // would pull it back, and the solver would then move the
+            // centre or the start instead. It is drawn as given, with the
+            // warning of an end off its circle.
+            let center_at = center.drawn(s).filter(|_| *held == Held::default());
             let (point, snapped) = match center_at.and_then(|c| snap(c, from_at, (x, y), tolerance))
             {
                 Some(snap) => (s.add_point(snap.end.0, snap.end.1)?, Some(snap)),
@@ -670,7 +670,8 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
         &["sketch", "start", "segments", "closed", "construction"],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
-    let start = PointArg::required(session, &p, COMMAND, "start")?;
+    let typed = session.typed();
+    let start = PointArg::required(&typed, &p, COMMAND, "start")?;
     let Some(Value::Array(items)) = p.get("segments") else {
         return match p.get("segments") {
             None => Err(p.missing("segments")),
@@ -690,7 +691,7 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
     }
     let mut segments = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        segments.push(parse_segment(session, index, item)?);
+        segments.push(parse_segment(&typed, index, item)?);
     }
     let tolerance = session.document()?.history.current().tolerance.linear;
     let path = Path {

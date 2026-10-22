@@ -198,5 +198,101 @@ fn a_short_cap_that_names_no_face_is_refused() {
         "feature.extrude",
         json!({ "sketch": "Two", "distance": 2, "name": "Pads" }),
     );
-    error(&mut s, "select.set", json!({ "names": ["F3:endCap()"] }));
+    error(&mut s, "select.set", json!({ "names": ["F4:endCap()"] }));
+    // A feature given it fails and lists the full names.
+    let failed = run(
+        &mut s,
+        "feature.offsetFace",
+        json!({ "faces": ["F4:endCap()"], "distance": 1 }),
+    );
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("F4:endCap() names the caps of 2 loops"),
+        "{failed}"
+    );
+}
+
+/// A one-profile sketch `P` extruded 10 as `F2`, then `id` added with
+/// `params`.
+fn one_square_then(id: &str, params: Value) -> Session {
+    let mut s = session();
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    run(&mut s, "sketch.create", json!({ "name": "P" }));
+    run(
+        &mut s,
+        "sketch.rect",
+        json!({ "sketch": "P", "from": [0, 0], "to": [10, 10] }),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({ "sketch": "P", "distance": 10, "name": "Pad" }),
+    );
+    let made = run(&mut s, id, params);
+    assert_eq!(made["status"], "ok", "{made}");
+    s
+}
+
+fn volume(s: &mut Session) -> f64 {
+    run(s, "document.measure", json!({}))["volume"]
+        .as_f64()
+        .unwrap()
+}
+
+/// Rule 4: a short cap made when the sketch had one profile does not take
+/// a second cap when a second profile is drawn later. The feature fails
+/// and names the full names to choose from; the full name keeps meaning
+/// its one cap.
+#[test]
+fn a_short_cap_that_comes_to_name_two_loops_fails_its_feature() {
+    let second = |s: &mut Session| {
+        run(
+            s,
+            "sketch.rect",
+            json!({ "sketch": "P", "from": [20, 0], "to": [30, 10] }),
+        );
+    };
+    for (id, role) in [
+        ("feature.offsetFace", "faces.0"),
+        ("feature.chamfer", "edges.0"),
+    ] {
+        let refer = |cap: &str| {
+            if id == "feature.offsetFace" {
+                json!({ "faces": [cap], "distance": 5, "name": "X" })
+            } else {
+                json!({ "edges": [[cap, "F2:side(e5)"]], "distance": 1, "name": "X" })
+            }
+        };
+        let mut short = one_square_then(id, refer("F2:endCap()"));
+        let mut full = one_square_then(id, refer("F2:endCap(e5,e6,e7,e8)"));
+        assert_eq!(volume(&mut short), volume(&mut full), "{id}");
+        second(&mut short);
+        second(&mut full);
+        let failed = common::checked::feature(&mut short, "X");
+        assert_eq!(failed["status"], "failed", "{id}: {failed}");
+        let error = failed["error"].as_str().unwrap();
+        assert!(
+            error.starts_with(role)
+                && error.contains("F2:endCap() names the caps of 2 loops")
+                && error.contains("F2:endCap(e5,e6,e7,e8)")
+                && error.contains("F2:endCap(e13,e14,e15,e16)"),
+            "{id}: {error}"
+        );
+        assert_eq!(
+            common::checked::feature(&mut full, "X")["status"],
+            "ok",
+            "{id}"
+        );
+    }
+    // The offset by its full name: the first pad 5 longer, the second as
+    // drawn.
+    let mut full = one_square_then(
+        "feature.offsetFace",
+        json!({ "faces": ["F2:endCap(e5,e6,e7,e8)"], "distance": 5, "name": "X" }),
+    );
+    second(&mut full);
+    assert!((volume(&mut full) - 2500.0).abs() < 1e-6);
 }

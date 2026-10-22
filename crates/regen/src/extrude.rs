@@ -373,6 +373,9 @@ fn target<'a>(
             }
         });
     };
+    if let Some(why) = crate::query::ambiguous_cap(names, name) {
+        return Err(format!("upTo: {why}"));
+    }
     let mut faces = faces_named(names, name);
     if faces.is_empty() {
         // The caps of one role of one sweep lie on one surface, whatever
