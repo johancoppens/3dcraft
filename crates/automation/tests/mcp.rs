@@ -837,6 +837,44 @@ fn the_preview_takes_the_options_of_the_render_command() {
 }
 
 #[test]
+fn a_terse_batch_lists_the_features_that_were_added_but_failed() {
+    // Field test 2026-10-22: a fillet in the middle of a terse batch that
+    // could not be built was seen nowhere, as the command succeeded and
+    // was not the last step.
+    let mut s = session();
+    let steps = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [10, 10, 10], "name": "Cube"}},
+        {"id": "feature.fillet", "params": {"edges": [["F1:face(2)", "F1:face(4)"]], "radius": 50, "name": "Huge"}},
+        {"id": "document.measure"},
+    ]);
+    let report = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": steps, "terse": true}),
+    );
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(4), &json!(0))
+    );
+    let failed = report["featuresFailed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{report}");
+    assert_eq!(failed[0]["step"], 2);
+    assert_eq!(failed[0]["name"], "Huge");
+    assert!(
+        failed[0]["error"].as_str().unwrap().contains("radius"),
+        "{report}"
+    );
+    // A batch without such features has no such key.
+    let clean = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "document.measure"}], "terse": true}),
+    );
+    assert!(clean.get("featuresFailed").is_none(), "{clean}");
+}
+
+#[test]
 fn a_terse_batch_reports_the_failures_and_the_last_result() {
     // Field test 2026-10-12, finding 8: every step's result is a lot to
     // send back for a batch of hundreds of sketch entities.

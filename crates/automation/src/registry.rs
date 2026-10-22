@@ -105,6 +105,7 @@ pub(crate) fn run_batch(
 ) -> BatchOutcome {
     let mut results = Vec::with_capacity(if terse { 0 } else { steps.len() });
     let mut errors = Vec::new();
+    let mut features_failed = Vec::new();
     let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
     for (index, step) in steps.iter().enumerate() {
@@ -112,6 +113,17 @@ pub(crate) fn run_batch(
             Ok(result) => {
                 completed = completed.saturating_add(1);
                 if terse {
+                    // A feature that was added but could not be built is no
+                    // error of the command; without this it would be seen
+                    // only when it is the last step.
+                    if result.get("status").and_then(Value::as_str) == Some("failed") {
+                        features_failed.push(json!({
+                            "step": index,
+                            "id": result.get("id"),
+                            "name": result.get("name"),
+                            "error": result.get("error"),
+                        }));
+                    }
                     last = json!({ "step": index, "result": result });
                 } else {
                     results.push(json!({ "ok": true, "result": result }));
@@ -131,7 +143,12 @@ pub(crate) fn run_batch(
         }
     }
     let report = if terse {
-        json!({ "completed": completed, "failed": failed, "errors": errors, "last": last })
+        let mut report =
+            json!({ "completed": completed, "failed": failed, "errors": errors, "last": last });
+        if let (false, Some(map)) = (features_failed.is_empty(), report.as_object_mut()) {
+            map.insert("featuresFailed".into(), features_failed.into());
+        }
+        report
     } else {
         json!({ "completed": completed, "failed": failed, "results": results })
     };

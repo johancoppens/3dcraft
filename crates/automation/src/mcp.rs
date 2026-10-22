@@ -435,7 +435,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_batch",
-            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error}], last: {step, result}}, the failures and the result of the last step that succeeded.",
+            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error}], last: {step, result}}, the failures and the result of the last step that succeeded, plus featuresFailed: [{step, id, name, error}] when steps added features that could not be built (their status is failed; the command itself succeeded, so they are not counted in failed).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
