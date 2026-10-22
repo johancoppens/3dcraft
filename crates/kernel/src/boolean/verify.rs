@@ -47,6 +47,8 @@
 //! compared); a solid cut by a sheet is held to rules 1 and 2 of a
 //! difference, no larger than the solid and within its box, since the
 //! part a cut keeps of a face far from the sheet is the side it is on.
+//! A sheet cut by a sheet is held to rule 2 of a difference (within the
+//! target's box), a union of two sheets to rules 2 and 3 of a union.
 //!
 //! Every rule holds for any pair of solids and any surface; nothing in it
 //! knows what kind of faces it is given. It costs a box per face, a match
@@ -322,6 +324,38 @@ pub fn verify(
             tol,
             &mut found.violations,
         );
+        return Ok(found);
+    }
+    // Two sheets: a sheet cut by a sheet keeps a part of the target on
+    // one side of the tool, within the target's box (rule 2 of a
+    // difference; a face far from the tool is kept or not by the side it
+    // is on, so rule 3 does not hold); a union of two sheets sews them,
+    // every face of both kept (rules 2 and 3 of a union). Neither has a
+    // volume or an inside.
+    if a.kind == BodyKind::Sheet && b.kind == BodyKind::Sheet {
+        let rule = match op {
+            BooleanOp::Union => BooleanOp::Union,
+            BooleanOp::Subtract | BooleanOp::Intersect => BooleanOp::Subtract,
+        };
+        let index = out_of_reach(rule, result, (&box_a, &box_b), tol, &mut found.violations);
+        if op == BooleanOp::Union {
+            far_faces(
+                (a, &boxes_a, Operand::A),
+                &box_b,
+                result,
+                &index,
+                tol,
+                &mut found,
+            );
+            far_faces(
+                (b, &boxes_b, Operand::B),
+                &box_a,
+                result,
+                &index,
+                tol,
+                &mut found,
+            );
+        }
         return Ok(found);
     }
     if options.volumes {

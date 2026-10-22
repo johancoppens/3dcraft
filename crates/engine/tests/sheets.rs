@@ -378,3 +378,130 @@ fn a_fill_on_a_face_of_the_part_cuts_and_is_trimmed_there() {
         deep(&mut s);
     }
 }
+
+/// A fill of the rectangle from `lo` to `hi` (times `k`) in a sketch on
+/// the world plane `plane` (xy: normal z; yz: sketch axes y and z, normal
+/// x) moved by `offset` along its normal.
+fn rectangle_sheet(
+    s: &mut Session,
+    name: &str,
+    (plane, offset): (&str, f64),
+    lo: [f64; 2],
+    hi: [f64; 2],
+    k: f64,
+) {
+    let sketch = format!("{name} sketch");
+    built(
+        s,
+        "sketch.create",
+        json!({"plane": plane, "offset": mm(offset * k), "name": sketch}),
+    );
+    let ([x0, y0], [x1, y1]) = (lo.map(|v| v * k), hi.map(|v| v * k));
+    run(
+        s,
+        "sketch.polyline",
+        json!({"sketch": sketch, "points": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], "closed": true}),
+    );
+    built(s, "feature.fill", json!({"sketch": sketch, "name": name}));
+}
+
+/// Two sheets (decided 2026-10-22): a plate of 20 × 20 cut by a wall at
+/// x = 5 facing +x keeps 5 × 20 in front (subtract) and 15 × 20 behind
+/// (intersect), sheets whose faces are named after the plate's; two
+/// halves of a plate are sewn by a union into the whole plate, one face;
+/// a union of sheets that cross and a wall that ends inside the plate
+/// fail with the reason; saved and reopened the bodies are the same. At
+/// three scales, checked deep.
+#[test]
+fn a_sheet_cuts_a_sheet_and_two_halves_are_sewn() {
+    for k in SCALES {
+        let dir = workdir("sheets", &format!("two-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        for name in ["Plate", "PlateB"] {
+            rectangle_sheet(&mut s, name, ("xy", 0.0), [-10.0, -10.0], [10.0, 10.0], k);
+        }
+        rectangle_sheet(&mut s, "Wall", ("yz", 5.0), [-30.0, -30.0], [30.0, 30.0], k);
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Plate", "tool": "Wall", "keepTool": true, "name": "Front"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "intersect", "target": "PlateB", "tool": "Wall", "keepTool": true, "name": "Behind"}),
+        );
+        let front = body(&mut s, "Front");
+        let behind = body(&mut s, "Behind");
+        for (found, area) in [(&front, 100.0), (&behind, 300.0)] {
+            assert_eq!(found["kind"], "sheet", "{found}");
+            assert_eq!(found["valid"], true, "{found}");
+            assert_eq!(found["faces"], 1, "{found}");
+            assert_eq!(found["edges"], 4, "{found}");
+            assert_close(&found["area"], area * k * k, "a sheet cut by a sheet");
+            assert_eq!(number(&found["volume"]), 0.0);
+            let names: Vec<&str> = found["faceNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_str().unwrap())
+                .collect();
+            assert!(
+                names[0].contains("copy(0)/") && names[0].contains("startCap"),
+                "the plate's face: {names:?}"
+            );
+        }
+        deep(&mut s);
+
+        // Two halves sewn: the whole plate, one face of four edges.
+        rectangle_sheet(&mut s, "Left", ("xy", 0.0), [-10.0, -10.0], [0.0, 10.0], k);
+        rectangle_sheet(&mut s, "Right", ("xy", 0.0), [0.0, -10.0], [10.0, 10.0], k);
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "Left", "tool": "Right", "name": "Whole"}),
+        );
+        let whole = body(&mut s, "Whole");
+        assert_eq!(whole["kind"], "sheet", "{whole}");
+        assert_close(&whole["area"], 400.0 * k * k, "two halves");
+        assert_eq!(whole["faces"], 1, "{whole}");
+        assert_eq!(whole["edges"], 4, "{whole}");
+        assert_eq!(whole["shells"], 1, "{whole}");
+        deep(&mut s);
+
+        // A union of sheets that cross, a wall that ends inside the plate.
+        let crossed = boolean(&mut s, "union", "Whole", "Wall", "Crossed");
+        assert_eq!(crossed["status"], "failed", "{crossed}");
+        assert!(
+            crossed["error"].as_str().unwrap().contains("inside a face"),
+            "{crossed}"
+        );
+        run(&mut s, "feature.delete", json!({"feature": "Crossed"}));
+        rectangle_sheet(&mut s, "Short", ("yz", 5.0), [-30.0, -30.0], [0.0, 30.0], k);
+        let short = boolean(&mut s, "subtract", "Whole", "Short", "Halfway");
+        assert_eq!(short["status"], "failed", "{short}");
+        assert!(
+            short["error"].as_str().unwrap().contains("ends inside"),
+            "{short}"
+        );
+        run(&mut s, "feature.delete", json!({"feature": "Halfway"}));
+        deep(&mut s);
+
+        // Saved and reopened: the same bodies under the same names.
+        let names = ["Front", "Behind", "Whole"];
+        let before: Vec<Value> = names.iter().map(|n| body(&mut s, n)).collect();
+        run(
+            &mut s,
+            "file.save",
+            json!({"path": "two.3dcraft", "overwrite": true}),
+        );
+        run(&mut s, "file.open", json!({"path": "two.3dcraft"}));
+        for (name, before) in names.iter().zip(before) {
+            let after = body(&mut s, name);
+            for key in ["kind", "faces", "edges", "area", "faceNames"] {
+                assert_eq!(after[key], before[key], "{name}: {key} after a round trip");
+            }
+        }
+    }
+}

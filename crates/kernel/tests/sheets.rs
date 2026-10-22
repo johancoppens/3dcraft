@@ -1354,7 +1354,9 @@ fn what_a_sheet_cannot_do_is_refused() {
         assert_mass(&behind, 24.0, 52.0, k);
         assert_eq!(behind.body.faces.len(), 6, "on top: the block as it was");
         trimmed(&on_top, &block, k, 12.0, "on top, trimmed");
-        // Union with a sheet, two sheets.
+        // Union with a sheet. (Two sheets are cut and sewn since
+        // 2026-10-22, `two_sheets.rs`; two on one surface that overlap
+        // are still refused.)
         refused(
             boolean(&block, &big, BooleanOp::Union, &tol),
             "union of a sheet",
@@ -1365,8 +1367,17 @@ fn what_a_sheet_cannot_do_is_refused() {
             "union of a sheet",
             "union",
         );
-        for op in [BooleanOp::Union, BooleanOp::Subtract, BooleanOp::Intersect] {
-            refused(boolean(&big, &small, op, &tol), "two sheets", "two sheets");
+        refused(
+            boolean(&big, &small, BooleanOp::Union, &tol),
+            "overlap on one surface",
+            "two sheets",
+        );
+        for op in [BooleanOp::Subtract, BooleanOp::Intersect] {
+            refused(
+                boolean(&big, &small, op, &tol),
+                "lies on the surface",
+                "two sheets",
+            );
         }
         // A solid of two lumps of which the sheet crosses one.
         let two = craft3d_topo::merge(&[&block, &boxed(k, [5.0, 5.0, 5.0], [6.0, 6.0, 6.0])])
