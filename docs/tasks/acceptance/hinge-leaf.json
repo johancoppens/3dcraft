@@ -1,0 +1,22 @@
+[
+ ["variable.set", {"name": "leaf_w", "expr": "40 mm"}],
+ ["variable.set", {"name": "leaf_d", "expr": "30 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "2 mm"}],
+ ["variable.set", {"name": "knuckle_d", "expr": "6 mm"}],
+ ["variable.set", {"name": "knuckle_len", "expr": "12 mm"}],
+ ["variable.set", {"name": "clearance", "expr": "0.5 mm"}],
+ ["variable.set", {"name": "pin_d", "expr": "2.5 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "4 mm"}],
+ ["variable.set", {"name": "hole_y", "expr": "20 mm"}],
+ ["feature.block", {"size": ["leaf_w", "leaf_d", "thickness"], "name": "Plate"}],
+ ["feature.cylinder", {"radius": "knuckle_d / 2 + clearance", "height": "leaf_w - 2 * knuckle_len", "axis": [1, 0, 0], "position": ["knuckle_len", 0, "knuckle_d / 2"], "name": "CutBack"}],
+ ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "CutBack", "name": "Relieved"}],
+ ["feature.cylinder", {"radius": "knuckle_d / 2", "height": "knuckle_len", "axis": [1, 0, 0], "position": [0, 0, "knuckle_d / 2"], "name": "Knuckle"}],
+ ["feature.pattern", {"source": "Knuckle", "count": 2, "step": ["leaf_w - knuckle_len", 0, 0], "name": "Knuckles"}],
+ ["feature.boolean", {"op": "union", "target": "Relieved", "tool": "Knuckles", "name": "Leaf"}],
+ ["feature.cylinder", {"radius": "pin_d / 2", "height": "leaf_w + 2 mm", "axis": [1, 0, 0], "position": ["-1 mm", 0, "knuckle_d / 2"], "name": "Pin"}],
+ ["feature.boolean", {"op": "subtract", "target": "Leaf", "tool": "Pin", "name": "Pinned"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["leaf_w / 4", "hole_y", "-1 mm"], "name": "ScrewHole"}],
+ ["feature.pattern", {"source": "ScrewHole", "count": 2, "step": ["leaf_w / 2", 0, 0], "name": "ScrewHoles"}],
+ ["feature.boolean", {"op": "subtract", "target": "Pinned", "tool": "ScrewHoles", "name": "HingeLeaf"}]
+]

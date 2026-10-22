@@ -1,0 +1,9 @@
+[
+ ["variable.set", {"name": "span", "expr": "40 mm"}],
+ ["variable.set", {"name": "height", "expr": "30 mm"}],
+ ["variable.set", {"name": "wall", "expr": "3 mm"}],
+ ["variable.set", {"name": "length", "expr": "200 mm"}],
+ ["feature.block", {"size": ["length", "span", "height"], "name": "Outer"}],
+ ["feature.block", {"size": ["length + 2 mm", "span - 2 * wall", "height"], "position": ["-1 mm", "wall", "wall"], "name": "Inner"}],
+ ["feature.boolean", {"op": "subtract", "target": "Outer", "tool": "Inner", "name": "Channel"}]
+]

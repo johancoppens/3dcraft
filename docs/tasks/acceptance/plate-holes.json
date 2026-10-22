@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "length", "expr": "80 mm"}],
+ ["variable.set", {"name": "width", "expr": "50 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "6 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "6.6 mm"}],
+ ["variable.set", {"name": "edge", "expr": "8 mm"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Plate"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["edge", "edge", "-1 mm"], "name": "Hole"}],
+ ["feature.pattern", {"source": "Hole", "count": 2, "step": ["length - 2 * edge", 0, 0], "name": "HoleRow"}],
+ ["feature.pattern", {"source": "HoleRow", "count": 2, "step": [0, "width - 2 * edge", 0], "name": "Holes"}],
+ ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Holes", "name": "Drilled"}]
+]

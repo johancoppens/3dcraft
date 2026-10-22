@@ -1,0 +1,10 @@
+[
+ ["variable.set", {"name": "length", "expr": "60 mm"}],
+ ["variable.set", {"name": "width", "expr": "40 mm"}],
+ ["variable.set", {"name": "height", "expr": "15 mm"}],
+ ["variable.set", {"name": "radius", "expr": "4 mm"}],
+ ["variable.set", {"name": "wall", "expr": "1.5 mm"}],
+ ["feature.block", {"size": ["length", "width", "height"], "name": "Box"}],
+ ["feature.fillet", {"edges": [["F1:face(1)", "F1:face(2)"], ["F1:face(1)", "F1:face(3)"], ["F1:face(1)", "F1:face(4)"], ["F1:face(1)", "F1:face(5)"], ["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "radius", "name": "Rounded"}],
+ ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F2:copy(0)/F1:face(0)"], "name": "Cover"}]
+]

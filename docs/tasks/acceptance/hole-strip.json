@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "length", "expr": "120 mm"}],
+ ["variable.set", {"name": "width", "expr": "20 mm"}],
+ ["variable.set", {"name": "thickness", "expr": "3 mm"}],
+ ["variable.set", {"name": "hole_d", "expr": "5 mm"}],
+ ["variable.set", {"name": "pitch", "expr": "10 mm"}],
+ ["variable.set", {"name": "margin", "expr": "7.5 mm"}],
+ ["variable.set", {"name": "holes", "expr": "floor((length - 2 * margin) / pitch) + 1"}],
+ ["feature.block", {"size": ["length", "width", "thickness"], "name": "Strip"}],
+ ["feature.cylinder", {"radius": "hole_d / 2", "height": "thickness + 2 mm", "position": ["length / 2 - (holes - 1) * pitch / 2", "width / 2", "-1 mm"], "name": "Hole"}],
+ ["feature.pattern", {"source": "Hole", "count": "holes", "step": ["pitch", 0, 0], "name": "Holes"}],
+ ["feature.boolean", {"op": "subtract", "target": "Strip", "tool": "Holes", "name": "Perforated"}]
+]

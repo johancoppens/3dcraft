@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "pipe_d", "expr": "20 mm"}],
+ ["variable.set", {"name": "wall", "expr": "2 mm"}],
+ ["variable.set", {"name": "run", "expr": "80 mm"}],
+ ["variable.set", {"name": "branch", "expr": "40 mm"}],
+ ["feature.cylinder", {"radius": "pipe_d / 2", "height": "run", "axis": [1, 0, 0], "position": ["-run / 2", 0, 0], "name": "RunOuter"}],
+ ["feature.cylinder", {"radius": "pipe_d / 2", "height": "branch", "name": "BranchOuter"}],
+ ["feature.boolean", {"op": "union", "target": "RunOuter", "tool": "BranchOuter", "name": "Outer"}],
+ ["feature.cylinder", {"radius": "pipe_d / 2 - wall", "height": "run + 2 mm", "axis": [1, 0, 0], "position": ["-run / 2 - 1 mm", 0, 0], "name": "RunBore"}],
+ ["feature.cylinder", {"radius": "pipe_d / 2 - wall", "height": "branch + 1 mm", "name": "BranchBore"}],
+ ["feature.boolean", {"op": "union", "target": "RunBore", "tool": "BranchBore", "name": "Bore"}],
+ ["feature.boolean", {"op": "subtract", "target": "Outer", "tool": "Bore", "name": "Tee"}]
+]
