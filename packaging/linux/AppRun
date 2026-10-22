@@ -1,0 +1,15 @@
+#!/bin/sh
+# The entry point of the 3DCraft AppImage. It starts the desktop app, or the
+# command line when the AppImage is called as `craft3d-cli` (a link named so)
+# or with `cli` as its first argument:
+#   ./3DCraft-x86_64.AppImage model.3dcraft
+#   ./3DCraft-x86_64.AppImage cli commands
+here="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+case "$(basename "${ARGV0:-$0}")" in
+  craft3d-cli*) exec "$here/usr/bin/craft3d-cli" "$@" ;;
+esac
+if [ "$1" = "cli" ]; then
+  shift
+  exec "$here/usr/bin/craft3d-cli" "$@"
+fi
+exec "$here/usr/bin/craft3d" "$@"

@@ -1568,6 +1568,17 @@ fn mcp_message_takes_one_line_and_hostile_lines_do_no_harm() {
     assert_eq!(replies[3], json!({"jsonrpc": "2.0", "id": 5, "result": {}}));
 }
 
+/// The window icon is the installers' PNG, decoded to RGBA (packaging/icons).
+#[test]
+fn the_window_icon_decodes() {
+    let icon = app::window_icon().unwrap();
+    assert_eq!((icon.width, icon.height), (64, 64));
+    assert_eq!(icon.rgba.len(), 64 * 64 * 4);
+    // Opaque in the middle, transparent in the corner (a rounded square).
+    assert_eq!(icon.rgba[(32 * 64 + 32) * 4 + 3], 255);
+    assert_eq!(icon.rgba[3], 0);
+}
+
 // The window with an engine thread: commands run there, and the thread
 // that draws keeps turning.
 

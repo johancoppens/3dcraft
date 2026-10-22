@@ -16,6 +16,8 @@ craft3d-ui-egui.workspace = true
 eframe.workspace = true
 getrandom.workspace = true
 log.workspace = true
+# The window icon (app.rs); already in the tree through the renderers.
+png.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
 winit.workspace = true

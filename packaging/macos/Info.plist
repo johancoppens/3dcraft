@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Info.plist of 3DCraft.app. `cargo xtask package` replaces
+     @VERSION@ with the workspace version. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>3DCraft</string>
+  <key>CFBundleName</key>
+  <string>3DCraft</string>
+  <key>CFBundleExecutable</key>
+  <string>craft3d</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.johancoppens.craft3d</string>
+  <key>CFBundleIconFile</key>
+  <string>craft3d</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.graphics-design</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT licence, the 3DCraft contributors</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>3DCraft document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>craft3d</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>io.github.johancoppens.craft3d.document</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>io.github.johancoppens.craft3d.document</string>
+      <key>UTTypeDescription</key>
+      <string>3DCraft document</string>
+      <key>UTTypeIconFile</key>
+      <string>craft3d</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+        <string>public.content</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>3dcraft</string>
+        </array>
+        <key>public.mime-type</key>
+        <array>
+          <string>application/x-craft3d</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>

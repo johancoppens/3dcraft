@@ -278,6 +278,31 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 - `view.render` with `projection:"orthographic"` gives a picture to scale; `box:[[x,y,z],[x,y,z]]` frames a region instead of the whole model, and `zoom` magnifies about the centre: for looking at a detail.
 - Export the smallest failing case as a test in the crate that owns the bug (`crates/<name>/tests/regressions.rs`), not as a file in the repo.
 
+## Packaging
+
+`cargo xtask package` builds `craft3d` and `craft3d-cli` in release (`--locked`) and packs both for the platform it runs on, into `target/package/` (or `--out DIR`):
+
+| Platform | Files | What is in them |
+|---|---|---|
+| Linux | `3dcraft-<version>-<arch>-linux.tar.gz` | `bin/`, `share/` (desktop entry, MIME type for `.3dcraft`, AppStream metainfo, icons), `install.sh [PREFIX]` (default `~/.local`) and `uninstall.sh` |
+| Linux | `3DCraft-<version>-<arch>.AppImage` | the same tree; runs the window, or the command line as `3DCraft-….AppImage cli …` or through a link named `craft3d-cli` |
+| macOS | `3DCraft-<version>-<arch>.dmg` | `3DCraft.app` (both programs in `Contents/MacOS`, document type and UTI for `.3dcraft`, `.icns` icon) and a link to `/Applications` |
+| Windows | `3dcraft-<version>-<arch>-windows.zip` | `craft3d.exe`, `craft3d-cli.exe`, `craft3d.ico`, `LICENSE.txt` |
+| Windows | `3DCraft-<version>-<arch>.msi` | installs into `Program Files\3DCraft` for all users, adds it to `PATH`, a Start menu entry, opens `.3dcraft` files |
+
+Options: `--formats tar,appimage` (Linux), `app,dmg` (macOS), `zip,msi` (Windows) to make only some; `--target TRIPLE`; `-j N`; `--no-build` to pack what is already built; `--appimagetool PATH` (or `APPIMAGETOOL`). The tools: `tar` everywhere; [appimagetool](https://github.com/AppImage/appimagetool) on Linux (it runs without FUSE, `APPIMAGE_EXTRACT_AND_RUN=1`); `hdiutil` and `codesign` on macOS; the WiX Toolset v5 on Windows (`dotnet tool install --global wix --version 5.0.2`). Nothing else is installed; the `.icns` and `.ico` icons are written by the xtask from the PNGs.
+
+The files the packages carry live in `packaging/`: `icons/` (the original SVG and PNGs rendered from it with `inkscape craft3d.svg --export-type=png --export-filename=craft3d-<n>.png -w <n> -h <n>` for n = 16 … 1024; render them again when the SVG changes), `linux/`, `macos/Info.plist` (`@VERSION@` is filled in), `windows/craft3d.wxs`. The identifiers (`io.github.johancoppens.craft3d`, MIME type `application/x-craft3d`) are in [`decisions.md`](decisions.md) (2026-10-22); the xtask's tests check that the files agree on them. The window takes its app id and icon from the same place (`apps/craft3d/src/app.rs`).
+
+**Releases.** `.github/workflows/release.yml` runs `cargo xtask package` on GitHub-hosted runners (Ubuntu 22.04, for an older glibc; macOS 14 on Apple Silicon; Windows Server 2022), starts each packaged program with `--version` and `commands`, and keeps the packages as run artifacts: `gh workflow run Release`. A tag `v<version>` matching the workspace version also makes a draft GitHub release with them, for the developer to publish.
+
+What a user meets today:
+
+- **Not signed.** macOS: the app is ad-hoc signed and not notarised, so a downloaded copy is blocked the first time: right-click › Open, or `xattr -dr com.apple.quarantine /Applications/3DCraft.app`. Windows: SmartScreen warns about an unknown publisher (More info › Run anyway). Signing needs an Apple Developer ID and a Windows code-signing certificate.
+- **macOS:** Apple Silicon only (an Intel or universal build is `--target x86_64-apple-darwin` plus `lipo`, not set up). Double-clicking a `.3dcraft` file starts 3DCraft but does not open the file yet: macOS hands it over as an Apple Event, which winit does not pass on; File › Open does. `craft3d-cli` is at `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` (link it onto `PATH`).
+- **Windows:** the `.exe` files carry no embedded icon (Explorer shows the generic one; the Start menu entry, the file type and the window have the icon).
+- **Linux:** the binaries need the glibc they were built against or newer (Ubuntu 22.04's, 2.35, for the released ones); otherwise they link only glibc and load the window system's libraries at run time.
+
 ## Web build *(later milestone)*
 
 `apps/craft3d-web` will run the same app in the browser through eframe's web runner (WebGPU, WebGL2 fallback), built with trunk; the only JavaScript is the glue wasm-bindgen generates. Until then `cargo xtask wasm` keeps L0–L7 compiling for `wasm32-unknown-unknown`.

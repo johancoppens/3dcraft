@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Windows installer of 3DCraft, for the WiX Toolset v5 (`wix build`,
+     MS-RL; a build tool, not a dependency). `cargo xtask package` passes the
+     variables: Version (numeric, x.y.z), BinDir (with craft3d.exe and
+     craft3d-cli.exe), Icon (craft3d.ico) and Licence (LICENSE).
+
+     It installs both programs into Program Files\3DCraft for all users,
+     adds that folder to the system PATH (so `craft3d-cli` works in a new
+     terminal), a Start menu entry, and opens .3dcraft files with 3DCraft.
+     The UpgradeCode never changes: a newer MSI replaces an older one. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="3DCraft"
+           Manufacturer="3DCraft"
+           Version="$(var.Version)"
+           UpgradeCode="a6b5c86c-a041-4d53-b738-11c2e8f9c5fa"
+           Scope="perMachine"
+           Language="1033">
+    <SummaryInformation Description="3DCraft, a parametric 3D CAD modeller" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of 3DCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="craft3d.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="craft3d.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/johancoppens/3dcraft" />
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="3DCraft">
+        <Component Id="App">
+          <File Id="craft3d.exe" Source="$(var.BinDir)\craft3d.exe" KeyPath="yes">
+            <Shortcut Id="StartMenuShortcut"
+                      Directory="ProgramMenuFolder"
+                      Name="3DCraft"
+                      Description="Parametric 3D CAD modeller"
+                      WorkingDirectory="INSTALLFOLDER"
+                      Icon="craft3d.ico"
+                      Advertise="yes" />
+          </File>
+          <ProgId Id="Craft3D.Document.1" Description="3DCraft document" Icon="craft3d.ico" Advertise="yes">
+            <Extension Id="3dcraft" ContentType="application/x-craft3d">
+              <Verb Id="open" Command="Open" Argument="&quot;%1&quot;" />
+            </Extension>
+          </ProgId>
+        </Component>
+        <Component Id="Cli">
+          <File Id="craft3d_cli.exe" Source="$(var.BinDir)\craft3d-cli.exe" KeyPath="yes" />
+          <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
+        </Component>
+        <Component Id="Licence">
+          <File Id="LICENSE.txt" Source="$(var.Licence)" Name="LICENSE.txt" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="3DCraft" Level="1">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="Cli" />
+      <ComponentRef Id="Licence" />
+    </Feature>
+  </Package>
+</Wix>
