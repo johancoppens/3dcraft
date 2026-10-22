@@ -9,7 +9,8 @@
 //! as `"e3"` (or `3`), constraints as `"c3"`.
 
 use crate::commands::{
-    Run, doc_error, edit, fail, feature_ref, feature_result, insert_feature, spec,
+    Run, add_failed, doc_error, edit, fail, failing, feature_ref, feature_result, insert_feature,
+    spec,
 };
 use crate::params::Params;
 use crate::typed::Typed;
@@ -506,9 +507,20 @@ fn solve_summary(map: &mut Map<String, Value>, result: &SketchResult) {
 }
 
 /// What a sketch command returns: the sketch feature, how it regenerated
-/// and solved, and the command's own fields.
-pub(crate) fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
+/// and solved, and the command's own fields. Given the features that
+/// failed `before` the edit ([`failing`], taken before it), also
+/// `failed`: the features made from the sketch that the edit made fail
+/// (the sketch itself carries its own status).
+pub(crate) fn sketch_result(
+    session: &mut Session,
+    id: FeatureId,
+    before: Option<&[FeatureId]>,
+    own: Value,
+) -> Run {
     let mut result = feature_result(session, id)?;
+    if let Some(before) = before {
+        add_failed(session, before, Some(id), &mut result)?;
+    }
     let regen = session.document_mut()?.regen();
     if let Some(map) = result.as_object_mut() {
         if let Some(solved) = regen.feature(id).and_then(|f| f.sketch.as_ref()) {
@@ -555,7 +567,7 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
     let id = edit(session, COMMAND, "Add sketch", |doc| {
         insert_feature(doc, name, FeatureKind::Sketch(Sketch::new(plane)))
     })?;
-    sketch_result(session, id, Value::Null)
+    sketch_result(session, id, None, Value::Null)
 }
 
 fn sketch_point(session: &mut Session, params: &Value) -> Run {
@@ -568,6 +580,7 @@ fn sketch_point(session: &mut Session, params: &Value) -> Run {
             "{COMMAND}: `at` must be [x, y]: two finite numbers, or expressions such as \"-width / 2\""
         ));
     };
+    let before = failing(session)?;
     let (point, held) = change(session, COMMAND, "Add point", id, |s| {
         let point = s.add_point(x, y)?;
         Ok((point, held.pin(s, point)?))
@@ -576,6 +589,7 @@ fn sketch_point(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({ "entity": point.to_string(), "held": !held.is_empty(), "constraints": held }),
     )
 }
@@ -588,6 +602,7 @@ fn sketch_line(session: &mut Session, params: &Value) -> Run {
     let from = PointArg::required(&typed, &p, COMMAND, "from")?;
     let to = PointArg::required(&typed, &p, COMMAND, "to")?;
     let construction = p.bool("construction")?.unwrap_or(false);
+    let before = failing(session)?;
     let (line, start, end) = change(session, COMMAND, "Add line", id, |s| {
         let (start, end) = (from.place(s)?, to.place(s)?);
         Ok((s.add_line(start, end, construction)?, start, end))
@@ -595,6 +610,7 @@ fn sketch_line(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({ "entity": line.to_string(), "start": start.to_string(), "end": end.to_string() }),
     )
 }
@@ -636,6 +652,7 @@ fn sketch_polyline(session: &mut Session, params: &Value) -> Run {
     for item in items {
         corners.push(PointArg::parse(&typed, COMMAND, "points", item)?);
     }
+    let before = failing(session)?;
     let (points, lines) = change(session, COMMAND, "Add polyline", id, |s| {
         let mut points = Vec::with_capacity(corners.len());
         for corner in &corners {
@@ -655,6 +672,7 @@ fn sketch_polyline(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({ "points": ids(&points), "lines": ids(&lines) }),
     )
 }
@@ -688,6 +706,7 @@ fn sketch_circle(session: &mut Session, params: &Value) -> Run {
         ),
     };
     let construction = p.bool("construction")?.unwrap_or(false);
+    let before = failing(session)?;
     let (circle, center, held) = change(session, COMMAND, "Add circle", id, |s| {
         let center = center.place(s)?;
         let circle = s.add_circle(center, radius, construction)?;
@@ -704,6 +723,7 @@ fn sketch_circle(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({ "entity": circle.to_string(), "center": center.to_string(), "constraints": held }),
     )
 }
@@ -716,6 +736,7 @@ fn sketch_rect(session: &mut Session, params: &Value) -> Run {
     let from = PointArg::required(&typed, &p, COMMAND, "from")?;
     let to = PointArg::required(&typed, &p, COMMAND, "to")?;
     let construction = p.bool("construction")?.unwrap_or(false);
+    let before = failing(session)?;
     let (points, lines, constraints) = change(session, COMMAND, "Add rectangle", id, |s| {
         let (Some(a), Some(c)) = (from.drawn(s), to.drawn(s)) else {
             return Err(SketchError::Invalid(
@@ -761,6 +782,7 @@ fn sketch_rect(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({ "points": ids(&points), "lines": ids(&lines), "constraints": constraints }),
     )
 }
@@ -778,6 +800,7 @@ fn sketch_arc(session: &mut Session, params: &Value) -> Run {
     let start = PointArg::required(&typed, &p, COMMAND, "start")?;
     let end = PointArg::required(&typed, &p, COMMAND, "end")?;
     let construction = p.bool("construction")?.unwrap_or(false);
+    let before = failing(session)?;
     let (arc, points) = change(session, COMMAND, "Add arc", id, |s| {
         let points = [center.place(s)?, start.place(s)?, end.place(s)?];
         let [c, a, b] = points;
@@ -787,6 +810,7 @@ fn sketch_arc(session: &mut Session, params: &Value) -> Run {
     sketch_result(
         session,
         id,
+        Some(&before),
         json!({
             "entity": arc.to_string(), "center": center.to_string(),
             "start": start.to_string(), "end": end.to_string(),
@@ -851,6 +875,7 @@ fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
             CommandError::new(format!("{COMMAND}: {shown}"))
         })?;
     let label = format!("Constrain {}", kind.type_name());
+    let before = failing(session)?;
     let constraint = change(session, COMMAND, &label, id, |s| {
         let mut entities = Vec::with_capacity(given.len());
         for entity in &given {
@@ -860,7 +885,12 @@ fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
             .map_err(SketchError::Invalid)?;
         s.add_constraint(kind)
     })?;
-    sketch_result(session, id, json!({ "constraint": constraint.to_string() }))
+    sketch_result(
+        session,
+        id,
+        Some(&before),
+        json!({ "constraint": constraint.to_string() }),
+    )
 }
 
 fn sketch_edit(session: &mut Session, params: &Value) -> Run {
@@ -932,6 +962,7 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
             "{COMMAND}: give something to change: constraint and value, entity and construction or at, plane or face, or offset"
         ));
     }
+    let before = failing(session)?;
     change(session, COMMAND, "Edit sketch", id, |s| {
         if let (Some(constraint), Some(value)) = (constraint, value) {
             let kind = &mut s.constraint_mut(constraint)?.kind;
@@ -974,7 +1005,7 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
         }
         Ok(())
     })?;
-    sketch_result(session, id, Value::Null)
+    sketch_result(session, id, Some(&before), Value::Null)
 }
 
 fn sketch_delete(session: &mut Session, params: &Value) -> Run {
@@ -992,11 +1023,12 @@ fn sketch_delete(session: &mut Session, params: &Value) -> Run {
             ));
         }
         let pattern = crate::sketch_pattern_cmds::pattern_id(COMMAND, "pattern", value)?;
+        let before = failing(session)?;
         let removal = change(session, COMMAND, "Delete pattern", id, |s| {
             s.remove_pattern(pattern)
         })?;
         let own = removal_json(&removal, json!({ "deleted": pattern.to_string() }));
-        return sketch_result(session, id, own);
+        return sketch_result(session, id, Some(&before), own);
     }
     let entity = p
         .get("entity")
@@ -1006,6 +1038,7 @@ fn sketch_delete(session: &mut Session, params: &Value) -> Run {
         .get("constraint")
         .map(|v| constraint_id(COMMAND, "constraint", v))
         .transpose()?;
+    let before = failing(session)?;
     let own = match (entity, constraint) {
         (Some(entity), None) => {
             let removal = change(session, COMMAND, "Delete entity", id, |s| {
@@ -1025,7 +1058,7 @@ fn sketch_delete(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
-    sketch_result(session, id, own)
+    sketch_result(session, id, Some(&before), own)
 }
 
 /// What a deletion took with it, added to `own`: the constraints always,

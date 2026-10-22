@@ -397,3 +397,123 @@ fn uses_inside_subject_queries_count_and_axis_names_do_not() {
     let deleted = run(&mut s, "variable.delete", json!({"name": "x"}));
     assert_eq!(deleted, json!({"deleted": "x"}));
 }
+
+/// A rectangle 30 mm by `c5` (20 mm) extruded 10 mm, its bottom top edge
+/// rounded by 3 mm: features made from a sketch, for sketch edits to
+/// break. The points are e1 to e4 from the origin round, the lines e5 to
+/// e8 from the bottom one round.
+fn profile(s: &mut Session) {
+    use common::plain::run;
+    run(s, "file.new", json!({"units": "mm"}));
+    run(
+        s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Outline"}),
+    );
+    let rect = run(
+        s,
+        "sketch.rect",
+        json!({"sketch": "Outline", "from": [0, 0], "to": [30, 20]}),
+    );
+    assert_eq!(rect["lines"][0], "e5", "{rect}");
+    let depth = run(
+        s,
+        "sketch.constrain",
+        json!({"sketch": "Outline", "type": "distance", "entities": ["e2", "e3"], "value": "20 mm"}),
+    );
+    assert_eq!(depth["constraint"], "c5", "{depth}");
+    run(
+        s,
+        "feature.extrude",
+        json!({"sketch": "Outline", "distance": "10 mm", "name": "Plate"}),
+    );
+    let round = run(
+        s,
+        "feature.fillet",
+        json!({"edges": [["F2:side(e5)", "F2:endCap()"]], "radius": "3 mm", "name": "Round"}),
+    );
+    assert_eq!(round["status"], "ok", "{round}");
+}
+
+/// Every command that changes a sketch says which features made from it
+/// the change made fail, as variable.set and feature.edit do (owed since
+/// r1-polish, 2026-10-22): an edited dimension, a constraint, an entity
+/// added or deleted. Commands run plainly with undo and redo between them,
+/// so `failed` is measured against the revision each edit starts from.
+#[test]
+fn a_sketch_edit_says_which_features_it_made_fail() {
+    use common::plain::run;
+    let mut s = session();
+    profile(&mut s);
+    let none: Vec<String> = Vec::new();
+    // A dimension that keeps the profile whole breaks nothing.
+    let fine = run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Outline", "constraint": "c5", "value": "25 mm"}),
+    );
+    assert_eq!(fine["status"], "ok", "{fine}");
+    assert_eq!(failed_names(&fine), none, "{fine}");
+    // An open profile: the extrusion fails, and the round with it, made
+    // from what failed. The sketch carries its own status.
+    let opened = run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Outline", "entity": "e5"}),
+    );
+    assert_eq!(failed_names(&opened), ["Plate", "Round"], "{opened}");
+    assert_eq!(opened["failed"][1]["causedBy"], "F2", "{opened}");
+    // Undone (nothing regenerated): drawing a loose point breaks nothing,
+    // and deleting the line again breaks both again.
+    run(&mut s, "edit.undo", json!({}));
+    let point = run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Outline", "at": [50, 50]}),
+    );
+    assert_eq!(failed_names(&point), none, "{point}");
+    run(&mut s, "edit.undo", json!({}));
+    let again = run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Outline", "entity": "e5"}),
+    );
+    assert_eq!(failed_names(&again), ["Plate", "Round"], "{again}");
+    // Closing the gap with a line mends; undone, the next edit finds them
+    // failing already and says nothing.
+    let mended = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Outline", "from": "e1", "to": "e2"}),
+    );
+    assert_eq!(failed_names(&mended), none, "{mended}");
+    run(&mut s, "edit.undo", json!({}));
+    let still = run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Outline", "at": [60, 60]}),
+    );
+    assert_eq!(failed_names(&still), none, "{still}");
+    // Undo the point and the deletion, redo the deletion: broken by the
+    // redo, so a constraint added next made nothing fail.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    let constrained = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Outline", "type": "fixed", "entities": ["e1"]}),
+    );
+    assert_eq!(failed_names(&constrained), none, "{constrained}");
+    // Back to the whole profile: a depth too small for the round breaks
+    // the round alone.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    let shallow = run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Outline", "constraint": "c5", "value": "2 mm"}),
+    );
+    assert_eq!(shallow["status"], "ok", "{shallow}");
+    assert_eq!(failed_names(&shallow), ["Round"], "{shallow}");
+}
