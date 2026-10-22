@@ -92,7 +92,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -2260,6 +2260,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     let mut checked = 0;
     let mut marginal = 0_usize;
     let mut booleans_checked = 0_usize;
+    let mut loose_meshes = 0_usize;
     let mut status = None;
     for outcome in &regen.features {
         if only.is_some_and(|id| id != outcome.id) {
@@ -2371,6 +2372,24 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                         "problem": format!("cannot be searched for self-intersections: {error}"),
                     })),
                 }
+                // A body with loose entities: its mesh's boundary points
+                // held to the tolerance of the edge or vertex they lie on
+                // (`craft3d_tess::off_surfaces`), every other point to
+                // rounding.
+                if body.is_tolerant() {
+                    match loose_mesh_problem(body, doc.tolerance.linear) {
+                        Ok(found) => {
+                            loose_meshes += 1;
+                            if let Some(problem) = found {
+                                problems.push(json!({
+                                    "feature": outcome.id.to_string(), "name": name,
+                                    "problem": problem,
+                                }));
+                            }
+                        }
+                        Err(_) => marginal = marginal.saturating_add(1),
+                    }
+                }
                 // Two shells that touch, a vertex or the middle of an edge
                 // of one on a face of the other: zero thickness, the rule
                 // regeneration holds every body to
@@ -2443,8 +2462,47 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         map.insert("deep".into(), true.into());
         map.insert("marginal".into(), marginal.into());
         map.insert("booleansChecked".into(), booleans_checked.into());
+        map.insert("looseMeshesChecked".into(), loose_meshes.into());
     }
     Ok(result)
+}
+
+/// The mesh check of a body with loose entities (`document.check` deep):
+/// the body meshed at a thousandth of its size, every point of a face's
+/// mesh within rounding of the face's surface, or, on the face's
+/// boundary, within the tolerance of the edge or vertex it lies on
+/// (`craft3d_tess::off_surfaces`). Rounding is a billionth of the body's
+/// size, at least a hundredth of the document's tolerance. `Ok(None)`
+/// when every point is where it may be, the problem when not; `Err` when
+/// the body cannot be meshed or has no size.
+pub(crate) fn loose_mesh_problem(
+    body: &craft3d_topo::Body,
+    linear: f64,
+) -> Result<Option<String>, String> {
+    let size = body.bbox().map_err(|e| e.to_string())?.diagonal();
+    if !(size.is_finite() && size > 0.0) {
+        return Err("the body has no size".into());
+    }
+    let params = TessParams {
+        chordal_tolerance: (1e-3 * size).max(linear),
+        ..TessParams::default()
+    };
+    let mesh = tessellate_body(body, &params).map_err(|e| e.to_string())?;
+    let rounding = (1e-9 * size).max(0.01 * linear);
+    let off = craft3d_tess::off_surfaces(body, &mesh, linear, rounding);
+    let Some(worst) = off
+        .iter()
+        .max_by(|a, b| (a.distance - a.allowed).total_cmp(&(b.distance - b.allowed)))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(format!(
+        "its mesh has {} points off their faces' surfaces by more than the tolerance of the edge or vertex they lie on (the worst {:e} off face {}, {:e} allowed)",
+        off.len(),
+        worst.distance,
+        worst.face.0,
+        worst.allowed
+    )))
 }
 
 /// `document.check` deep for a boolean feature: its body held to what
@@ -2789,4 +2847,45 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod loose_mesh_tests {
+    use super::loose_mesh_problem;
+    use craft3d_math::{Tolerance, Vec3};
+    use craft3d_testkit::loose::{SPLIT_TOP_SIDES, exploded_from, split_top_block};
+
+    /// A sewn body with its faces up to 300 tolerances apart: its mesh is
+    /// held to the tolerances it recorded; the same body with its table
+    /// cleared has boundary points off its surfaces, and says so.
+    #[test]
+    fn a_loose_mesh_is_held_to_its_entities_tolerances() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let tol = Tolerance::new(1e-6 * scale, 1e-9).unwrap();
+            let cap = 1000.0 * tol.linear;
+            let expected = split_top_block(scale, true).unwrap();
+            let whole = split_top_block(scale, false).unwrap();
+            let moves: Vec<Vec3> = (0..expected.faces.len())
+                .map(|f| {
+                    let a = 0.7 * f as f64 + 0.3;
+                    Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (300.0 * tol.linear * 0.5)
+                })
+                .collect();
+            let loose = exploded_from(
+                [&expected, &whole],
+                |f| SPLIT_TOP_SIDES.contains(&f),
+                &moves,
+                None,
+            )
+            .unwrap();
+            let sewn = craft3d_topo::sew(&loose, &tol, cap, cap).unwrap().body;
+            assert!(sewn.is_tolerant());
+            assert_eq!(loose_mesh_problem(&sewn, tol.linear), Ok(None));
+            let mut bare = sewn.clone();
+            bare.tolerances = craft3d_topo::Tolerances::default();
+            let problem = loose_mesh_problem(&bare, tol.linear).unwrap().unwrap();
+            assert!(problem.contains("points off their faces"), "{problem}");
+        }
+    }
 }

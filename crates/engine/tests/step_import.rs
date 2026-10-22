@@ -294,6 +294,32 @@ fn operations_on_a_loose_import_carry_its_tolerances() {
     }
 }
 
+/// The deep check of a loose import meshes it and holds its boundary
+/// points to the tolerances of the entities they lie on (tolerant
+/// modelling, slice 3): the corner 1e-4 mm off its edges passes, and the
+/// body is counted under looseMeshesChecked.
+#[test]
+fn the_deep_check_meshes_a_loose_import_on_its_tolerances() {
+    let dir = workdir("step-import", "loose-mesh");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "feature.block", json!({"size": [10, 20, 30]}));
+    run(&mut s, "file.export", json!({"path": "block.step"}));
+    let text = std::fs::read_to_string(dir.join("block.step")).unwrap();
+    let moved = text.replacen(
+        "CARTESIAN_POINT('',(10.,",
+        "CARTESIAN_POINT('',(10.0001,",
+        1,
+    );
+    std::fs::write(dir.join("loose.step"), moved).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "file.import", json!({"path": "loose.step"}));
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["looseMeshesChecked"], 1, "{check}");
+}
+
 #[test]
 fn import_needs_a_document_and_files() {
     let mut s = Session::new(Workspace {

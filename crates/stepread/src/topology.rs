@@ -603,10 +603,10 @@ impl Builder<'_, '_> {
             // The file's ids of the entities kept: the first that became
             // each (the lowest, kept with its curve or point).
             let mut edge_ids = vec![0u64; sewn.body.edges.len()];
-            let mut seen = vec![false; sewn.body.edges.len()];
+            let mut edge_seen = vec![false; sewn.body.edges.len()];
             for (old, (new, _)) in sewn.edges.iter().enumerate() {
                 let k = new.0 as usize;
-                if let Some(slot) = seen.get_mut(k)
+                if let Some(slot) = edge_seen.get_mut(k)
                     && !*slot
                 {
                     *slot = true;
@@ -628,8 +628,25 @@ impl Builder<'_, '_> {
                     }
                 }
             }
+            // The pieces of an edge split at a T-junction carry the
+            // file's id of the edge they are part of, where no edge of the
+            // file became them already.
+            for (old, pieces) in &sewn.split {
+                for (new, _) in pieces {
+                    let k = new.0 as usize;
+                    if let Some(slot) = edge_seen.get_mut(k)
+                        && !*slot
+                    {
+                        *slot = true;
+                        if let Some(id) = edge_ids.get_mut(k) {
+                            *id = step_id(&self.edge_ids, old.0);
+                        }
+                    }
+                }
+            }
             self.edge_ids = edge_ids;
             self.vertex_ids = vertex_ids;
+            self.report.split_edges += sewn.split.len();
             self.report.sewn_edges += sewn.joined;
             self.report.sewn_vertices += sewn.merged_vertices;
             self.report.sewn_gap = self.report.sewn_gap.max(sewn.largest_gap);

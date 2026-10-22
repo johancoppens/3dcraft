@@ -1834,3 +1834,120 @@ fn a_face_apart_by_more_than_the_cap_is_refused_naming_its_edge() {
     assert!(error.contains("edge #"), "{error}");
     assert!(error.contains("refused rather than moved"), "{error}");
 }
+
+/// `file`, a sheet of open shells as the export writes it, as a solid of
+/// one closed shell with all their faces: the first `OPEN_SHELL` closed
+/// with the faces of every one, the `SHELL_BASED_SURFACE_MODEL` a
+/// `MANIFOLD_SOLID_BREP` of it and the representation an advanced
+/// B-rep's (a solid whose faces our export, which checks the body, would
+/// not write).
+fn as_solid(file: &StepFile) -> StepFile {
+    let mut file = file.clone();
+    let mut faces = Vec::new();
+    let mut first = None;
+    for instance in &file.data {
+        if let Entity::Simple(record) = &instance.entity
+            && record.keyword == "OPEN_SHELL"
+            && let Some(Param::List(items)) = record.params.get(1)
+        {
+            first.get_or_insert(instance.id);
+            faces.extend(items.iter().cloned());
+        }
+    }
+    let first = first.unwrap();
+    for instance in &mut file.data {
+        let id = instance.id;
+        if let Entity::Simple(record) = &mut instance.entity {
+            match record.keyword.as_str() {
+                "OPEN_SHELL" if id == first => {
+                    record.keyword = "CLOSED_SHELL".into();
+                    record.params[1] = Param::List(faces.clone());
+                }
+                "SHELL_BASED_SURFACE_MODEL" => {
+                    record.keyword = "MANIFOLD_SOLID_BREP".into();
+                    record.params[1] = Param::Ref(first);
+                }
+                "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" => {
+                    record.keyword = "ADVANCED_BREP_SHAPE_REPRESENTATION".into();
+                }
+                _ => {}
+            }
+        }
+    }
+    file
+}
+
+/// A file whose front and back faces have their top side whole where the
+/// top is two faces split across it (a T-junction on each side, as files
+/// from modellers that do not split such edges have them), every face its
+/// own edges and vertices, moved by up to k tolerances: read as the block
+/// with the sides split (its counts, valid with what was recorded), both
+/// sides split and every piece sewn, the volume within a slab of the
+/// largest tolerance.
+#[test]
+fn a_side_against_two_faces_split_across_it_reads_as_one_body() {
+    use craft3d_testkit::loose::{SPLIT_TOP_SIDES, exploded_from, split_top_block};
+    let tol = tolerance(1.0);
+    let expected = split_top_block(10.0, true).unwrap();
+    let whole = split_top_block(10.0, false).unwrap();
+    let ours = measure(&[&expected]);
+    let mut problems = Vec::new();
+    for k in [0.0, 30.0, 300.0] {
+        let moves: Vec<Vec3> = (0..expected.faces.len())
+            .map(|f| {
+                let a = 0.7 * f as f64 + 0.3;
+                Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (k * tol.linear * 0.5)
+            })
+            .collect();
+        let loose = exploded_from(
+            [&expected, &whole],
+            |f| SPLIT_TOP_SIDES.contains(&f),
+            &moves,
+            None,
+        )
+        .unwrap();
+        // A sheet of one shell per face, which the export writes.
+        let mut sheet = loose.clone();
+        sheet.kind = BodyKind::Sheet;
+        sheet.shells = (0..sheet.faces.len() as u32)
+            .map(|f| craft3d_topo::Shell {
+                faces: vec![craft3d_topo::FaceId(f)],
+            })
+            .collect();
+        let imported = match read_all(&as_solid(&file_of("split block", &sheet))) {
+            Ok(i) => i,
+            Err(e) => {
+                problems.push(format!("k {k}: {e}"));
+                continue;
+            }
+        };
+        let theirs = measure(&imported.iter().map(|i| &i.body).collect::<Vec<_>>());
+        if (ours.faces, ours.edges, ours.vertices, ours.shells)
+            != (theirs.faces, theirs.edges, theirs.vertices, theirs.shells)
+        {
+            problems.push(format!("k {k}: counts {ours:?} became {theirs:?}"));
+            continue;
+        }
+        let one = &imported[0];
+        if one.report.split_edges != 2 {
+            problems.push(format!("k {k}: split {:?}", one.report));
+        }
+        let defects = craft3d_topo::check_capped(&one.body, &tol, 1e-3);
+        if !defects.is_empty() {
+            problems.push(format!("k {k}: {defects:?}"));
+        }
+        let w = one.body.working_tolerance(tol.linear).max(k * tol.linear);
+        let bound = 4.0 * w * ours.area + 1e-9 * ours.volume.abs();
+        if (ours.volume - theirs.volume).abs() > bound {
+            problems.push(format!(
+                "k {k}: volume {} against {}, bound {bound:e}",
+                theirs.volume, ours.volume
+            ));
+        }
+        println!(
+            "split block k {k}: {} edges sewn, {} split, largest tolerance {:e}",
+            one.report.sewn_edges, one.report.split_edges, one.report.largest_tolerance
+        );
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

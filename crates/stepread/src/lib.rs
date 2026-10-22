@@ -180,6 +180,10 @@ pub struct Report {
     pub sewn_edges: usize,
     pub sewn_vertices: usize,
     pub sewn_gap: f64,
+    /// Edges of the file split where shorter free edges of other faces
+    /// run along them (a T-junction, `topo::sew`): each piece then sewn
+    /// to one of them.
+    pub split_edges: usize,
     /// Shells whose faces were turned over because the volume they
     /// enclose had the wrong sign (a cavity given as a plain shell).
     pub turned_shells: usize,

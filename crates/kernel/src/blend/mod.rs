@@ -1563,15 +1563,18 @@ fn combine(
         refuse_zero_thickness: false,
         loosest: None,
     };
+    // A tool made from a loose body meets it as far off as two of its
+    // gaps (`loose_op::for_tool`).
     let result =
-        boolean_with(&state.body, tool, op, tolerance, &options).map_err(|error| match error {
-            KernelError::InvalidBody { .. } if first => BlendError::Kernel(error),
-            other => BlendError::Boolean {
-                edge,
-                error: Box::new(other),
-                smaller_fails: false,
-            },
-        })?;
+        crate::loose_op::boolean_for_tool(&state.body, tool, op, &state.body, tolerance, &options)
+            .map_err(|error| match error {
+                KernelError::InvalidBody { .. } if first => BlendError::Kernel(error),
+                other => BlendError::Boolean {
+                    edge,
+                    error: Box::new(other),
+                    smaller_fails: false,
+                },
+            })?;
     state.take(result, marks, plan);
     Ok(())
 }
