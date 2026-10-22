@@ -41,6 +41,8 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         next_feature_id,
         bodies,
         faces,
+        assertions,
+        sets,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -83,6 +85,87 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         next_feature_id: *next_feature_id,
         bodies: bodies.iter().map(body_to_manifest).collect(),
         faces: faces.iter().map(face_to_manifest).collect(),
+        sets: sets
+            .iter()
+            .map(|doc::NamedSet { name, query }| manifest::NamedSet {
+                name: name.clone(),
+                query: query.clone(),
+            })
+            .collect(),
+        assertions: assertions.iter().map(assertion_to_manifest).collect(),
+    }
+}
+
+fn assertion_to_manifest(assertion: &doc::Assertion) -> manifest::Assertion {
+    let doc::Assertion {
+        name,
+        measure,
+        expect,
+    } = assertion;
+    // The engine writes the measure as a JSON object; anything else is
+    // kept as the text it is.
+    let measure = serde_json::from_str::<serde_json::Value>(measure)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::Value::String(measure.clone()));
+    let text = |expr: &doc::Expr| expr.source().to_string();
+    let expect = match expect {
+        doc::Expect::Is(is) => manifest::Expect {
+            is: Some(*is),
+            ..manifest::Expect::default()
+        },
+        doc::Expect::Equal { value, tol } => manifest::Expect {
+            eq: Some(text(value)),
+            tol: tol.as_ref().map(text),
+            ..manifest::Expect::default()
+        },
+        doc::Expect::Within { min, max } => manifest::Expect {
+            min: min.as_ref().map(text),
+            max: max.as_ref().map(text),
+            ..manifest::Expect::default()
+        },
+    };
+    manifest::Assertion {
+        name: name.clone(),
+        measure,
+        expect,
+    }
+}
+
+fn assertion_to_doc(assertion: manifest::Assertion) -> doc::Assertion {
+    let manifest::Assertion {
+        name,
+        measure,
+        expect,
+    } = assertion;
+    let measure = match measure {
+        serde_json::Value::String(text) => text,
+        value => serde_json::to_string(&value).unwrap_or_default(),
+    };
+    let manifest::Expect {
+        is,
+        eq,
+        tol,
+        min,
+        max,
+    } = expect;
+    // A combination that means nothing (no bound at all) is refused by the
+    // document's own check after loading.
+    let expect = match (is, eq) {
+        (Some(is), _) => doc::Expect::Is(is),
+        (None, Some(value)) => doc::Expect::Equal {
+            value: doc::Expr(value),
+            tol: tol.map(doc::Expr),
+        },
+        (None, None) => doc::Expect::Within {
+            min: min.map(doc::Expr),
+            max: max.map(doc::Expr),
+        },
+    };
+    doc::Assertion {
+        name,
+        measure,
+        expect,
     }
 }
 
@@ -1349,6 +1432,8 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         next_feature_id,
         bodies,
         faces,
+        assertions,
+        sets,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1390,6 +1475,11 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         next_feature_id,
         bodies: bodies.into_iter().map(body_to_doc).collect(),
         faces: faces.into_iter().map(face_to_doc).collect(),
+        assertions: assertions.into_iter().map(assertion_to_doc).collect(),
+        sets: sets
+            .into_iter()
+            .map(|manifest::NamedSet { name, query }| doc::NamedSet { name, query })
+            .collect(),
     }
 }
 

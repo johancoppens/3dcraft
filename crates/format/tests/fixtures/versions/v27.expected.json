@@ -1,0 +1,74 @@
+{
+  "format_version": 27,
+  "written_by": "67f5981b988c4fa941d8dc30e30ad4ce3e86bd00",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v27.steps.json --out v27.3dcraft, then info v27.3dcraft, and run v27.3dcraft --cmd set.list for sets",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Drills",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Drilled",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 10,
+      "edges": 20,
+      "vertices": 16,
+      "volume": 31095.22131576613,
+      "area": 10456.991118430771
+    }
+  ],
+  "sets": [
+    {
+      "count": 4,
+      "kind": "face",
+      "name": "boltholes",
+      "where": {
+        "hole": true,
+        "radius": "3 mm"
+      }
+    },
+    {
+      "count": 2,
+      "kind": null,
+      "name": "first two",
+      "where": {
+        "below": {
+          "x": "35 mm"
+        },
+        "copyOf": "F3",
+        "set": "boltholes"
+      }
+    },
+    {
+      "count": 1,
+      "kind": [
+        "face"
+      ],
+      "name": "tops",
+      "where": {
+        "normal": {
+          "along": "z"
+        }
+      }
+    }
+  ]
+}

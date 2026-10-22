@@ -58,6 +58,9 @@
     ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e8"], "value": "length - edge", "direction": "horizontal"}],
     ["sketch.constrain", {"sketch": "Holes", "type": "distance", "entities": ["e1", "e8"], "value": "width - edge", "direction": "vertical"}],
     ["sketch.constrain", {"sketch": "Holes", "type": "diameter", "entities": ["e9"], "value": "hole_d"}],
-    ["feature.extrude", {"sketch": "Holes", "throughAll": true, "reversed": true, "cut": "Plate", "name": "Drilled"}]
+    ["feature.extrude", {"sketch": "Holes", "throughAll": true, "reversed": true, "cut": "Plate", "name": "Drilled"}],
+    ["assert.add", {"name": "the holes go through", "measure": "through", "of": {"hole": true, "in": "Drilled"}}],
+    ["assert.add", {"name": "four holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true, "in": "Drilled"}}, "eq": 4}],
+    ["assert.add", {"name": "plate thickness", "measure": "thickness", "of": {"in": "Drilled", "normal": {"along": "z"}}, "eq": "thickness"}]
   ]
 }

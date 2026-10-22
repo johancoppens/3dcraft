@@ -1031,6 +1031,43 @@ pub fn offset_faces_with(
     blends: &Blends,
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
+    offset_faces_with_capped(body, offsets, blends, tolerance, None)
+}
+
+/// [`offset_faces_with`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn offset_faces_with_capped(
+    body: &Body,
+    offsets: &[FaceOffset],
+    blends: &Blends,
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<Offset, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        loosest,
+        |at| offset_faces_at(body, offsets, blends, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn offset_faces_at(
+    body: &Body,
+    offsets: &[FaceOffset],
+    blends: &Blends,
+    tolerance: &Tolerance,
+) -> Result<Offset, KernelError> {
     offset_for(body, offsets, blends, OPERATION, tolerance).map(same_numbers)
 }
 

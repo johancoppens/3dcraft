@@ -173,6 +173,13 @@ pub struct Report {
     /// largest distance between the midpoints of two that did.
     pub merged_edges: usize,
     pub edge_gap: f64,
+    /// Edges the file does not join that were sewn to another within the
+    /// document's cap (`topo::sew`, after the file's own sharing), the
+    /// vertices that went into others doing so, and the largest gap
+    /// between two edges sewn (their ends and places inside).
+    pub sewn_edges: usize,
+    pub sewn_vertices: usize,
+    pub sewn_gap: f64,
     /// Shells whose faces were turned over because the volume they
     /// enclose had the wrong sign (a cavity given as a plain shell).
     pub turned_shells: usize,

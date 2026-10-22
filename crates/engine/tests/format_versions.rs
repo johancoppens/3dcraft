@@ -111,6 +111,24 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
             found.push(format!("{tag}: lostFaces {lost}"));
         }
     }
+    // The assertions (format 28), each as it stood: its name, measure,
+    // status and what it must be; what was measured within the measure's
+    // own rounding (it is said in words).
+    if let Some(assertions) = want.get("assertions") {
+        let keys = |list: &Value| -> Vec<Value> {
+            list.as_array()
+                .map(|l| {
+                    l.iter()
+                        .map(|a| json!([a["name"], a["measure"], a["status"], a["expected"]]))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let got = inspect.get("assertions").cloned().unwrap_or(Value::Null);
+        if keys(&got) != keys(assertions) {
+            found.push(format!("{tag}: assertions {got} (were {assertions})"));
+        }
+    }
     let bodies = inspect["bodies"].as_array().unwrap();
     let wanted = want["bodies"].as_array().unwrap();
     let ids =
@@ -162,6 +180,14 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
         run(&mut s, "file.open", json!({"path": name}));
         let opened = run(&mut s, "document.inspect", json!({}));
         found.extend(differences(version, &opened, &want));
+        // The named sets (format 27), each with what it holds now: the
+        // query computed again against today's regeneration.
+        if let Some(sets) = want.get("sets") {
+            let listed = run(&mut s, "set.list", json!({}));
+            if &listed["sets"] != sets {
+                found.push(format!("v{version}: sets {} (were {sets})", listed["sets"]));
+            }
+        }
 
         // Saved again: the current version, and the same bodies, exactly.
         let again = format!("v{version}-saved.3dcraft");

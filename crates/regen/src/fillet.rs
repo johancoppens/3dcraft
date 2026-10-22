@@ -129,7 +129,12 @@ pub(crate) fn build(
         })
         .collect();
     let unit = doc.units.length.symbol();
-    let made = kernel::fillet(body, &requests, &tolerance).map_err(|error| match error {
+    let made = kernel::fillet_capped(
+        body,
+        &requests,
+        &tolerance,
+        Some(doc.tolerance.loosest_linear()),
+    ).map_err(|error| match error {
         KernelError::InvalidSize { value, .. } => format!(
             "radius: a radius of {value} {unit} is too small to tell from the edge at this document's tolerance"
         ),

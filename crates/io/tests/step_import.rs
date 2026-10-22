@@ -217,7 +217,7 @@ fn round_trip(name: &str, body: &Body, scale: f64, unit: Unit, problems: &mut Ve
     // Nothing merged: our files share every vertex and edge.
     for done in &imported {
         let r = &done.report;
-        if r.merged_vertices + r.merged_edges + r.turned_shells != 0 {
+        if r.merged_vertices + r.merged_edges + r.sewn_edges + r.turned_shells != 0 {
             problems.push(format!(
                 "{name} @ {scale} {unit:?}: sewing changed what the file shares: {r:?}"
             ));
@@ -1641,4 +1641,196 @@ fn faces_with_their_seams_as_edges_read_back_at_three_scales() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// `id` and everything it refers to, copied as new instances with every
+/// `CARTESIAN_POINT` moved by `by` (directions and numbers kept): the
+/// copy of a face, its loops, edges, vertices, curves and surface, moved
+/// rigidly. `memo` maps what was copied already.
+fn copy_moved(
+    index: &std::collections::BTreeMap<u64, Instance>,
+    id: u64,
+    by: Vec3,
+    next: &mut u64,
+    memo: &mut std::collections::BTreeMap<u64, u64>,
+    added: &mut Vec<Instance>,
+) -> u64 {
+    if let Some(&to) = memo.get(&id) {
+        return to;
+    }
+    fn map(
+        param: &Param,
+        index: &std::collections::BTreeMap<u64, Instance>,
+        by: Vec3,
+        next: &mut u64,
+        memo: &mut std::collections::BTreeMap<u64, u64>,
+        added: &mut Vec<Instance>,
+    ) -> Param {
+        match param {
+            Param::Ref(r) if index.contains_key(r) => {
+                Param::Ref(copy_moved(index, *r, by, next, memo, added))
+            }
+            Param::List(items) => Param::List(
+                items
+                    .iter()
+                    .map(|p| map(p, index, by, next, memo, added))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let instance = index[&id].clone();
+    let mut records = instance.entity.records().to_vec();
+    for record in &mut records {
+        if record.keyword == "CARTESIAN_POINT" {
+            if let Param::List(xyz) = &mut record.params[1] {
+                for (k, d) in [by.x, by.y, by.z].into_iter().enumerate() {
+                    if let Some(Param::Real(x)) = xyz.get_mut(k) {
+                        *x += d;
+                    }
+                }
+            }
+            continue;
+        }
+        record.params = record
+            .params
+            .iter()
+            .map(|p| map(p, index, by, next, memo, added))
+            .collect();
+    }
+    let to = *next;
+    *next += 1;
+    memo.insert(id, to);
+    let entity = match instance.entity {
+        Entity::Simple(_) => Entity::Simple(records.into_iter().next().unwrap()),
+        Entity::Complex(_) => Entity::Complex(records),
+    };
+    added.push(Instance { id: to, entity });
+    to
+}
+
+/// `file` with every face given its own loops, edges, vertices, curves
+/// and surface, each face moved rigidly by `moves(k)` for its k-th face:
+/// faces that share nothing and meet within a gap, as files from other
+/// kernels have them.
+fn faces_apart(file: &StepFile, moves: impl Fn(usize) -> Vec3) -> StepFile {
+    let mut file = file.clone();
+    let index: std::collections::BTreeMap<u64, Instance> =
+        file.data.iter().map(|i| (i.id, i.clone())).collect();
+    let mut next = next_id(&file);
+    let mut added = Vec::new();
+    let mut replaced = std::collections::BTreeMap::new();
+    let faces: Vec<u64> = file
+        .data
+        .iter()
+        .filter(|i| i.entity.is("ADVANCED_FACE"))
+        .map(|i| i.id)
+        .collect();
+    for (k, face) in faces.iter().enumerate() {
+        let mut memo = std::collections::BTreeMap::new();
+        let to = copy_moved(&index, *face, moves(k), &mut next, &mut memo, &mut added);
+        replaced.insert(*face, to);
+    }
+    file.data.extend(added);
+    for instance in &mut file.data {
+        for keyword in ["CLOSED_SHELL", "OPEN_SHELL"] {
+            if let Some(record) = simple_mut(instance, keyword)
+                && let Param::List(items) = &mut record.params[1]
+            {
+                for item in items {
+                    if let Param::Ref(face) = item
+                        && let Some(&to) = replaced.get(face)
+                    {
+                        *item = Param::Ref(to);
+                    }
+                }
+            }
+        }
+    }
+    file
+}
+
+#[test]
+fn faces_that_share_nothing_and_meet_within_a_gap_are_sewn() {
+    // Every face its own edges and vertices, moved by up to k tolerances
+    // (0: exactly where they were, sewn by the file's own vertex merge;
+    // 30 and 300: beyond it, sewn by `topo::sew` within the cap): the same
+    // body, nothing moved back, every gap recorded, valid with them.
+    let tol = tolerance(1.0);
+    let mut problems = Vec::new();
+    let mut tally = (0usize, 0usize, 0.0_f64);
+    for (name, body) in variant_bodies() {
+        for k in [0.0, 30.0, 300.0] {
+            let file = file_of(&name, &body);
+            let moves = |f: usize| {
+                let a = 0.7 * f as f64 + 0.3;
+                Vec3::new(a.cos(), a.sin(), (1.3 * a).cos()) * (k * tol.linear * 0.5)
+            };
+            let apart = faces_apart(&file, moves);
+            match read_all(&apart) {
+                Ok(imported) => {
+                    let ours = measure(&[&body]);
+                    let theirs = measure(&imported.iter().map(|i| &i.body).collect::<Vec<_>>());
+                    if (ours.faces, ours.edges, ours.vertices, ours.shells)
+                        != (theirs.faces, theirs.edges, theirs.vertices, theirs.shells)
+                    {
+                        problems.push(format!("{name} k {k}: counts {ours:?} became {theirs:?}"));
+                        continue;
+                    }
+                    // A slab of the largest tolerance over the area.
+                    let w = imported
+                        .iter()
+                        .map(|i| i.body.working_tolerance(tol.linear))
+                        .fold(tol.linear, f64::max)
+                        .max(k * tol.linear);
+                    let bound = 4.0 * w * ours.area + 1e-9 * ours.volume.abs();
+                    if (ours.volume - theirs.volume).abs() > bound {
+                        problems.push(format!(
+                            "{name} k {k}: volume {} against {}, bound {bound:e}",
+                            theirs.volume, ours.volume
+                        ));
+                    }
+                    for one in &imported {
+                        let r = &one.report;
+                        if k > 0.0 && body.kind == BodyKind::Solid && r.sewn_edges == 0 {
+                            problems.push(format!("{name} k {k}: nothing sewn: {r:?}"));
+                        }
+                        if k > 0.0 && r.sewn_edges > 0 && r.sewn_gap <= 0.0 {
+                            problems.push(format!("{name} k {k}: no gap reported"));
+                        }
+                        let defects = craft3d_topo::check_capped(&one.body, &tol, 1e-3);
+                        if !defects.is_empty() {
+                            problems.push(format!("{name} k {k}: {defects:?}"));
+                        }
+                        tally.0 += 1;
+                        tally.1 += r.sewn_edges;
+                        tally.2 = tally.2.max(r.sewn_gap);
+                    }
+                }
+                Err(e) => problems.push(format!("{name} k {k}: {e}")),
+            }
+        }
+    }
+    println!(
+        "faces apart: {} bodies read, {} edges sewn, largest gap {:e}",
+        tally.0, tally.1, tally.2
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_face_apart_by_more_than_the_cap_is_refused_naming_its_edge() {
+    let body = craft3d_kernel::primitives::block(&Frame::WORLD, 10.0, 20.0, 30.0).unwrap();
+    let file = file_of("block", &body);
+    // The second face 2e-3 mm off its neighbours, twice the cap.
+    let apart = faces_apart(&file, |f| {
+        if f == 1 {
+            Vec3::new(0.6, 0.0, 0.8) * 2e-3
+        } else {
+            Vec3::ZERO
+        }
+    });
+    let error = read_all(&apart).unwrap_err();
+    assert!(error.contains("edge #"), "{error}");
+    assert!(error.contains("refused rather than moved"), "{error}");
 }

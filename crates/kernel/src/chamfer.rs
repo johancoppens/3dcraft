@@ -115,6 +115,48 @@ pub fn chamfer(
     edges: &[ChamferEdge],
     tolerance: &Tolerance,
 ) -> Result<ChamferResult, KernelError> {
+    chamfer_capped(body, edges, tolerance, None)
+}
+
+/// [`chamfer`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn chamfer_capped(
+    body: &Body,
+    edges: &[ChamferEdge],
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<ChamferResult, KernelError> {
+    crate::loose_op::run(
+        "chamfer",
+        body,
+        tolerance,
+        loosest,
+        |at| chamfer_at(body, edges, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r
+                    .faces
+                    .iter()
+                    .map(|f| match f {
+                        ChamferFace::Kept(kept) if kept.len() == 1 => kept.first().copied(),
+                        _ => None,
+                    })
+                    .collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn chamfer_at(
+    body: &Body,
+    edges: &[ChamferEdge],
+    tolerance: &Tolerance,
+) -> Result<ChamferResult, KernelError> {
     let requests: Vec<Request> = edges
         .iter()
         .map(|e| Request {

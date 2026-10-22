@@ -1,0 +1,9 @@
+[
+  ["feature.block", {"size": ["80 mm", "50 mm", "8 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"name": "Drill", "radius": "3 mm", "height": "20 mm", "position": ["10 mm", "10 mm", "-5 mm"]}],
+  ["feature.pattern", {"name": "Drills", "source": "Drill", "count": 4, "step": ["20 mm", "0 mm", "0 mm"]}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Drills", "name": "Drilled"}],
+  ["set.define", {"name": "boltholes", "kind": "face", "where": {"hole": true, "radius": "3 mm"}}],
+  ["set.define", {"name": "first two", "where": {"set": "boltholes", "copyOf": "Drills", "below": {"x": "35 mm"}}}],
+  ["set.define", {"name": "tops", "kind": ["face"], "where": {"normal": {"along": "z"}}}]
+]

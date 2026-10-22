@@ -14,6 +14,8 @@
 
 mod appearance;
 mod appearance_cmds;
+mod assert_check;
+mod assert_cmds;
 mod base64;
 mod blend_cmds;
 mod body_cmds;
@@ -42,6 +44,7 @@ mod scene;
 mod section;
 mod select_cmds;
 mod selection;
+mod set_cmds;
 mod sheet_cmds;
 mod sketch_cmds;
 mod sketch_path_cmds;
@@ -54,8 +57,11 @@ mod sweep_cmds;
 mod sweep_path_cmds;
 pub mod task_score;
 mod typed;
+mod verify;
+mod verify_cmds;
 mod workspace;
 
+pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
@@ -156,6 +162,9 @@ pub(crate) struct OpenDocument {
     /// What is selected in it: window state, not saved and not undone
     /// (`selection.rs`).
     pub(crate) selection: selection::Selection,
+    /// The assertions checked against `history.revision()`
+    /// (`assert_cmds.rs`).
+    pub(crate) assertions: assert_check::Checks,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -195,6 +204,7 @@ impl OpenDocument {
             regen: None,
             cache: new_cache(),
             selection: selection::Selection::default(),
+            assertions: assert_check::Checks::default(),
         }
     }
 
@@ -347,8 +357,11 @@ impl Session {
                 split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
+                verify_cmds::SPECS,
+                assert_cmds::SPECS,
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
+                set_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
             ]

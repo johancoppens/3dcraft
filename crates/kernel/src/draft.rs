@@ -141,6 +141,37 @@ fn drafted(
 /// angle that is not between -90 and 90 degrees or a pull direction that
 /// is none.
 pub fn draft(body: &Body, draft: &Draft, tolerance: &Tolerance) -> Result<Offset, KernelError> {
+    draft_capped(body, draft, tolerance, None)
+}
+
+/// [`draft`] held to the document's cap on an entity's own tolerance
+/// (`loosest`; `None` for the default, `topo::DEFAULT_LOOSEST` times the
+/// linear tolerance): a body with loose entities above it is refused.
+pub fn draft_capped(
+    body: &Body,
+    draft: &Draft,
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<Offset, KernelError> {
+    crate::loose_op::run(
+        OPERATION,
+        body,
+        tolerance,
+        loosest,
+        |at| draft_at(body, draft, at),
+        |r| {
+            let sources = crate::loose_op::Sources {
+                faces: r.faces.iter().map(|f| Some(*f)).collect(),
+                edges: r.edges.clone(),
+                vertices: r.vertices.clone(),
+            };
+            (&mut r.body, sources)
+        },
+    )
+}
+
+/// The operation itself, at the tolerance given.
+fn draft_at(body: &Body, draft: &Draft, tolerance: &Tolerance) -> Result<Offset, KernelError> {
     usable(body, &draft.faces, OPERATION, tolerance)?;
     if !(draft.angle.is_finite() && draft.angle.abs() < FRAC_PI_2) {
         return Err(KernelError::InvalidSize {

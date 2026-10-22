@@ -258,6 +258,20 @@ impl Shell {
                 })
             })
             .collect();
+        let assertions: Vec<Value> = self
+            .assertion_rows()
+            .iter()
+            .map(|row| {
+                json!({
+                    "name": row.name,
+                    "measure": row.measure,
+                    "status": row.status.name(),
+                    "measured": row.measured,
+                    "expected": row.expected,
+                    "message": row.message,
+                })
+            })
+            .collect();
         let document = status.map_or(Value::Null, |status| {
             json!({
                 "index": status.index,
@@ -298,6 +312,7 @@ impl Shell {
             "document": document,
             "scene": scene_json,
             "features": features,
+            "assertions": assertions,
             "renderer": renderer,
             "render": render,
             "section": self.section_report(),
@@ -556,6 +571,8 @@ impl Shell {
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.highlight";
+        // What an agent points at stays lit when the selection changes.
+        self.highlight_set_elsewhere();
         let map = fields(
             method,
             params,

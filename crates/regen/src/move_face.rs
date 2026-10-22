@@ -10,7 +10,7 @@ use crate::{FeatureResult, Names, angle};
 use craft3d_doc::{Document, FeatureId, MoveFace};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::move_face::{Motion, move_faces};
+use craft3d_kernel::move_face::{Motion, move_faces_capped};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 
@@ -66,7 +66,13 @@ pub(crate) fn build(
     )?;
     let motion = motion(doc, variables, moving)?;
     let picked = face_ops::pick(&moving.faces, "faces", NOUN, source_id, &source)?;
-    let made = move_faces(source.body, &picked, &motion, &source.tolerance).map_err(|error| {
+    let made = move_faces_capped(
+        source.body,
+        &picked,
+        &motion,
+        &source.tolerance,
+        Some(source.loosest),
+    ).map_err(|error| {
         match error {
             KernelError::FaceOpTooFar {
                 faces,

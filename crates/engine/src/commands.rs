@@ -53,8 +53,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
         "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true.", doc: true, file_save),
-    spec!("file.close", "Close", r#"{"discard": boolean = false}"#,
-        "Closes the active document. Refuses unsaved changes unless discard is true.", doc: true, file_close),
+    spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
+        "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": number = 5 mm, "width": number = no limit, "construction": boolean = false}"#,
         "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
@@ -90,7 +90,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
@@ -358,6 +358,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
             map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
     }
+    crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)
 }
 
@@ -490,17 +491,40 @@ fn file_save(_: &mut Session, _: &Value) -> Run {
 }
 
 fn file_close(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.close", params, &["discard"])?;
+    let p = Params::new("file.close", params, &["document", "discard"])?;
     let discard = p.bool("discard")?.unwrap_or(false);
-    let open = session.document()?;
+    session.document()?;
+    let count = session.documents.len();
+    let index = match p.integer("document", 0, u64::MAX)? {
+        None => session.active,
+        Some(n) => match usize::try_from(n).ok().filter(|&i| i < count) {
+            Some(index) => index,
+            None => {
+                return fail(format!(
+                    "file.close: there is no document {n}; {count} are open (file.list)"
+                ));
+            }
+        },
+    };
+    let Some(open) = session.documents.get(index) else {
+        return fail("file.close: there is no document to close");
+    };
     if open.close_asks() && !discard {
         return fail(
             "file.close: the document has unsaved changes; save it, or pass {\"discard\": true}",
         );
     }
-    session.documents.remove(session.active);
-    session.active = session.documents.len().saturating_sub(1);
-    Ok(json!({ "open": session.documents.len() }))
+    session.documents.remove(index);
+    // The active document stays active when another one closes; when it
+    // closes itself, the last one becomes active, as before.
+    session.active = if index < session.active {
+        session.active - 1
+    } else if index == session.active {
+        session.documents.len().saturating_sub(1)
+    } else {
+        session.active
+    };
+    Ok(json!({ "open": session.documents.len(), "active": session.active }))
 }
 
 /// A default chordal tolerance that suits the size of the model: a
@@ -774,11 +798,9 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
     })?;
     let open = session.document_mut()?;
     let regen = open.regen();
-    Ok(variable_json(
-        &regen,
-        name,
-        length_unit(open.history.current()),
-    ))
+    let mut result = variable_json(&regen, name, length_unit(open.history.current()));
+    crate::assert_cmds::add_summary(session, &mut result);
+    Ok(result)
 }
 
 fn variable_delete(session: &mut Session, params: &Value) -> Run {
@@ -800,7 +822,10 @@ fn variable_rename(session: &mut Session, params: &Value) -> Run {
         session,
         "variable.rename",
         &format!("Rename {name}"),
-        |doc| doc.rename_variable(name, to),
+        |doc| {
+            doc.rename_variable(name, to)?;
+            crate::assert_cmds::rename_variable_in_assertions(doc, name, to)
+        },
     )?;
     Ok(json!({ "name": to }))
 }
@@ -1748,6 +1773,9 @@ fn feature_rename(session: &mut Session, params: &Value) -> Run {
     )?;
     let name = p.required_str("name")?;
     edit(session, "feature.rename", "Rename feature", |doc| {
+        // What assertions name by name is named by id first, so they keep
+        // naming the feature.
+        crate::assert_cmds::assertions_by_id(doc);
         doc.rename_feature(id, name)
     })?;
     feature_result(session, id)
@@ -2054,6 +2082,41 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if !lost_faces.is_empty() {
             map.insert("lostFaces".into(), lost_faces.into());
         }
+        // The named sets, as kept (set.list says what each holds now).
+        if !doc.sets.is_empty() {
+            let sets: Vec<Value> = doc
+                .sets
+                .iter()
+                .map(|set| {
+                    let query: Value = serde_json::from_str(&set.query).unwrap_or(Value::Null);
+                    json!({
+                        "name": set.name,
+                        "kind": query.get("kind").cloned().unwrap_or(Value::Null),
+                        "where": query.get("where").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            map.insert("sets".into(), sets.into());
+        }
+    }
+    // The assertions and how each stands: only when there are any.
+    let states: Vec<crate::AssertionState> = session
+        .assertion_checks(crate::assert_check::Wait::For(
+            crate::assert_check::EDIT_WAIT,
+        ))
+        .map(|c| c.into_iter().map(|c| c.state).collect())
+        .unwrap_or_default();
+    if let (false, Some(map)) = (states.is_empty(), out.as_object_mut()) {
+        let listed: Vec<Value> = states
+            .iter()
+            .map(|a| {
+                json!({
+                    "name": a.name, "measure": a.measure, "status": a.status.name(),
+                    "measured": a.measured, "expected": a.expected, "message": a.message,
+                })
+            })
+            .collect();
+        map.insert("assertions".into(), listed.into());
     }
     Ok(out)
 }
@@ -2330,8 +2393,46 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             }
         }
     }
+    // Broken assertions are problems of the design, like failed
+    // features (only when the whole document is checked); those that are
+    // not proven either way are warnings.
+    let assertions = if only.is_none() {
+        crate::assert_cmds::summary(session, crate::assert_check::Wait::All)
+    } else {
+        None
+    };
+    let warnings: Vec<Value> = assertions
+        .as_ref()
+        .and_then(|s| s.get("unproven"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|b| json!({"assertion": b.get("name"), "warning": b.get("message")}))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(broken) = assertions
+        .as_ref()
+        .and_then(|s| s.get("broken"))
+        .and_then(Value::as_array)
+    {
+        for b in broken {
+            problems.push(json!({
+                "assertion": b.get("name"),
+                "problem": b.get("message"),
+                "measured": b.get("measured"),
+                "expected": b.get("expected"),
+            }));
+        }
+    }
     let mut result =
         json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems });
+    if let (Some(s), Some(map)) = (assertions, result.as_object_mut()) {
+        map.insert("assertions".into(), s);
+    }
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), warnings.into());
+    }
     if let (false, Some(map)) = (loose.is_empty(), result.as_object_mut()) {
         map.insert("loose".into(), loose.into());
     }

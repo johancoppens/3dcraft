@@ -32,7 +32,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M8.5 | A history that survives edits, datums, pointing | 🟡 2026-10-14 | Failed features that can be repaired, reference geometry, extrude ends and pointing in the viewport. | [M8.5](#m85-a-history-that-survives-edits-datums-pointing) |
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
 | R1 | First release | 🟡 2026-10-15 | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
-| V1 | Design verification | ⬜ | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
+| V1 | Design verification | 🟡 2026-10-22 | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
 | M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
 | M12+ | Later candidates | ⬜ | Ideas that are not planned yet. | [Ideas](#ideas-m12) |
@@ -83,8 +83,9 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [x] `body.split`: one body per lump when asked, each said by a face of its lump (numbered by position only when no face is the lump's own), and the piece of a face in one lump named as that split's copy (2026-10-20, [`design/names.md`](design/names.md) › *Splits*).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: freeform booleans and their measures 1.1 to 2.3 times faster, bit for bit (2026-10-17), measures and the self-check's meshes up to a third faster again (2026-10-18); left: the lower bounds near a cusp, the boundaries of faces worked out before their mesh is found ([`design/booleans.md`](design/booleans.md) › *Speed of freeform booleans and of their measures*).
-- [ ] Tolerant modelling (item 4), before STEP import: a tolerance per vertex and edge, the kernel at the body's largest, a cap of 1000 times the tolerance (decided 2026-10-18, [`decisions.md`](decisions.md)); first slice done (below), owed: sewing loose faces, the other operations on loose bodies, fits that miss half the tolerance kept as loose edges.
+- [ ] Tolerant modelling (item 4), before STEP import: a tolerance per vertex and edge, the kernel at the body's largest, a cap of 1000 times the tolerance (decided 2026-10-18, [`decisions.md`](decisions.md)); slices 1 and 2 done (below), owed: fits that miss half the tolerance kept as loose edges, sewing an edge to several (a T-junction), the measure's bound with a gap term, per-entity rules where measurement asks for them.
 - [x] Tolerant modelling, first slice: the table per vertex and edge, the check per entity with loose edges proven, the boolean at the operands' largest tolerance under the document's cap, and the perturbed-body oracle (507 right, 15 refused, 0 invalid at three scales; new entities measured, every raise reported) (2026-10-21, [`design/booleans.md`](design/booleans.md) › *Tolerant operands, the first slice*).
+- [x] Tolerant modelling, second slice: sewing loose faces (`topo::sew`, round trip of 216 exploded bodies at three scales back to their topology), STEP files whose faces share nothing read sewn with their gaps, fillet, chamfer, the face operations, shell and thicken on loose bodies carrying the tolerances, the mesh check on the entities' own tolerances (2026-10-22, [`design/topology.md`](design/topology.md) › *Tolerant entities, the second slice*).
 
 **Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
 
@@ -474,10 +475,12 @@ An agent checks a design by asking it questions, not by looking at a picture: th
 
 #### Done
 - Interference between bodies (`document.interference`): clear, touch (on a face, an edge or a point) or overlap with its volume, read-only, boxes first ([`design/booleans.md`](design/booleans.md) › *Interference*) (2026-10-16)
+- Queries on the exact geometry: `measure.distance`, `measure.clearance`, `measure.thickness` (the thinnest wall and where), `measure.ray`, `measure.through` (a hole cut through along its axis) and `measure.symmetry`, their subjects named as `select.query` names things ([`design/verification.md`](design/verification.md)) (2026-10-22)
+- Assertions kept in the document (`assert.add`, `assert.edit`, `assert.delete`, `assert.list`; format 28): volume, area, mass, count, extent, distance, clearance, thickness, through, no interference and symmetry against a value with a tolerance or bounds in the document's variables, a least searched for (thickness, distance) passing only on a proven bound and otherwise failed or not proven, measured off the caller's thread and only when its subjects changed, never blocking regeneration; a broken one shows in the edit's result, `document.check`, `document.inspect`, the tree and `ui.get`; the housing's bolt holes made blind by a thicker plate are flagged ([`design/verification.md`](design/verification.md)) (2026-10-22)
 
 #### Open
-- [ ] Queries: the distance and the least clearance between two faces or bodies; a section as geometry with its measures (area, outline, the widths across it); a ray cast through the model (the faces it meets and where); symmetry about a plane; wall thickness (the thinnest place and where); the least inside radius
-- [ ] `document.assert`: an assertion kept in the document (a measure against a value with a tolerance, a clearance at least, no interference, symmetric about, thickness at least), checked after every regeneration; a broken one shows like a failed feature, with the measure it found, in `document.check`, the tree and over MCP
+- [ ] Queries: a section as geometry with its measures (area, outline, the widths across it); the least inside radius; thickness by the sphere method and a map of thin places
+- [ ] The acceptance: the morning's models (the aircraft, the M10 screw, the villa) with a set of assertions that a deliberate error breaks; assertions in the task set's scoring
 
 #### Acceptance
 Each query against closed forms at three scales; the morning's models (the aircraft, the M10 screw, the villa) carry a set of assertions that a deliberate error breaks.
@@ -515,11 +518,12 @@ Sketching and feature editing with the mouse, menus, selection, shortcuts and me
 
 #### Done
 - The selection shared with agents (slice 1 of the AI-selection plan, decisions B1 and B4): click, Shift+click, double click, box, Esc and the feature list in the window; picking through (same spot again, Alt+click, a right-click list); `select.get`, `select.set`, `ui.select`, the MCP resource `craft3d://selection`; `select.query` with JSON filters ([`design/selection.md`](design/selection.md)) (2026-10-21)
+- Selection slice 2: named sets kept in the document as queries (`set.define`/`edit`/`remove`/`list`, `{set}`, `select.set {set}`; format 27, B2), a selection that follows its faces, edges and bodies into later features and keeps what a suppressed or rolled-back feature hides, the context an agent acts on (measure, drivers with their edit, pattern instance), and the live bugs of 2026-10-21 (a spline-edged face missed by `inside`, the clicked face left lit after `clear`, `file.close {document}`) ([`design/selection.md`](design/selection.md)) (2026-10-22)
 
 The camera, the tabs, pointing and the section plane are M4 and M8.5.
 
 #### Open
-- [ ] Named sets: a query kept in the document and computed again at every regeneration (B2)
+- [ ] Following a vertex into later features; a set made from the current selection
 - [ ] More of the query: relations (neighbours, the same size as, coaxial, symmetric), extremes, countersinks as holes
 - [ ] Preview and confirmation of large AI actions (B6)
 - [ ] The rest defined when phase 1 is done

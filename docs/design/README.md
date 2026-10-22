@@ -18,6 +18,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`rendering.md`](rendering.md) | the CPU oracle, the GPU renderer and its tolerances, see-through, section, pointing, the viewport |
 | [`engine.md`](engine.md) | Session, commands, undo, threads, scenes, recovery, automation |
 | [`selection.md`](selection.md) | the selection shared by the window and agents, picking through, and selecting by description (`select.query`) |
+| [`verification.md`](verification.md) | checking a design by questions: distance, clearance, wall thickness, ray, through, symmetry, and assertions kept in the document |
 | [`step-import.md`](step-import.md) | STEP files read into bodies: typed reading, sewing on topology only, the import feature and its data, names, oracles |
 | [`files.md`](files.md) | `.3dcraft`, STEP, meshes, flat outlines (the formats themselves: [`../file-formats.md`](../file-formats.md)) |
 | [`plan.md`](plan.md) | the design plan of 2026-10-12 as written then: goals, principles, the CAD holes, workspace, layering, the workspace sketch, the revision history of `architecture.md` |

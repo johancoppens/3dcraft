@@ -505,6 +505,9 @@ pub struct Shell {
     /// changes ([`Self::request_window_close`]).
     quitting: Option<tabs::Quitting>,
     rows: Vec<TreeRow>,
+    /// The document's assertions as checked at the last [`Self::sync`],
+    /// listed under the features.
+    assertion_rows: Vec<craft3d_engine::AssertionState>,
     /// What the File menu or a shortcut asked for, until the host takes it.
     file_action: Option<FileAction>,
     /// Why the scene could not be made.
@@ -746,6 +749,7 @@ impl Shell {
             quit_discards: false,
             quitting: None,
             rows: Vec::new(),
+            assertion_rows: Vec::new(),
             file_action: None,
             problem: None,
             render_problem: None,
@@ -1004,6 +1008,12 @@ impl Shell {
     /// The rows of the feature tree as of the last [`Self::sync`].
     pub fn tree_rows(&self) -> &[TreeRow] {
         &self.rows
+    }
+
+    /// The document's assertions as of the last [`Self::sync`], each with
+    /// how it stands: shown under the features of the tree.
+    pub fn assertion_rows(&self) -> &[craft3d_engine::AssertionState] {
+        &self.assertion_rows
     }
 
     /// What is drawn over the viewport's texture, in the pixels of the
@@ -1334,7 +1344,9 @@ impl Shell {
                 vertex: found.vertex.as_ref().map(entity),
             });
             // One thing is pointed at: the vertex, or else the edge, or
-            // else the face.
+            // else the face. Lit by pointing; a click that selects it
+            // says so after (`click_select`).
+            self.highlight_set_elsewhere();
             self.state.highlight_vertex = found
                 .vertex
                 .as_ref()
@@ -1366,6 +1378,7 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         let scene = self.sync_scene(session);
+        self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
@@ -2038,6 +2051,53 @@ impl Shell {
                         );
                     });
                 }
+            }
+            if !self.assertion_rows.is_empty() {
+                ui.add_space(tokens.inset * 0.5);
+                ui.label(egui::RichText::new("Assertions").strong());
+                ui.separator();
+            }
+            let mut pending = false;
+            for row in &self.assertion_rows {
+                use craft3d_engine::AssertionStatus as A;
+                // Passed: built; failed or in error: failed; not proven
+                // either way: needs attention; being measured: inactive.
+                let (state, tint) = match row.status {
+                    A::Passed => (FeatureState::Ok, tokens.ok),
+                    A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
+                    A::NotProven => (FeatureState::Failed, tokens.attention),
+                    A::Pending => (FeatureState::RolledBack, tokens.inactive),
+                };
+                pending |= row.status == A::Pending;
+                let mut name = egui::RichText::new(&row.name);
+                if row.status != A::Passed {
+                    name = name.color(color(tint));
+                }
+                let status = match &row.measured {
+                    Some(measured) => format!("{} · {}", row.measure, measured),
+                    None => format!("{} · {}", row.measure, row.status.name()),
+                };
+                ui.horizontal(|ui| {
+                    ui.colored_label(color(tint), tree_mark(state))
+                        .on_hover_text(&row.message);
+                    ui.label(name).on_hover_text(&row.message);
+                    ui.colored_label(dim, status);
+                });
+                if matches!(row.status, A::Failed | A::Error | A::NotProven) {
+                    ui.indent(("craft3d-assertion", &row.name), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&row.message).color(color(tint)).small(),
+                            )
+                            .wrap(),
+                        );
+                    });
+                }
+            }
+            // Measured on another thread: look again soon.
+            if pending {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(250));
             }
         });
         self.cause_hits = hits;
