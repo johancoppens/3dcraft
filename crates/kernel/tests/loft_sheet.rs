@@ -461,6 +461,152 @@ fn sections_whose_sketches_disagree_on_down_are_refused() {
     assert!(loft(&started, &options, &tol).is_ok());
 }
 
+/// The section at angle `theta` round the world's y axis, `radius` from
+/// it: its plane square to the bend (normal along the bend, `x` axis the
+/// world's y, so its `y` axis points at the axis and down in the sketch
+/// is out from it), its chain a line across the sketch from `−half` to
+/// `half`.
+fn round_the_bend(theta: f64, radius: f64, half: f64) -> Section {
+    let (sin, cos) = theta.sin_cos();
+    let plane = Frame::new(
+        Vec3::new(radius * cos, 0.0, radius * sin),
+        Vec3::new(-sin, 0.0, cos),
+        Vec3::Y,
+    )
+    .unwrap();
+    Section {
+        plane,
+        outline: chain(&[line(1, [-half, 0.0], [half, 0.0])], radius / 20.0),
+        start: None,
+    }
+}
+
+/// Every face of `sheet` faces out from the world's y axis (sampled at
+/// its vertices' middle for a plane, on a grid of its domain otherwise).
+fn faces_out_from_the_y_axis(sheet: &craft3d_topo::Body, what: &str) {
+    use craft3d_geom::Surface;
+    for (index, face) in sheet.faces.iter().enumerate() {
+        let points: Vec<(f64, f64)> = match &face.surface {
+            Surface::Plane(_) => {
+                let mut sum = Vec3::ZERO;
+                let mut count = 0.0;
+                for l in &face.loops {
+                    for c in &sheet.loops[l.0 as usize].coedges {
+                        let edge = &sheet.edges[c.edge.0 as usize];
+                        sum += sheet.vertices[edge.start.0 as usize].point;
+                        count += 1.0;
+                    }
+                }
+                vec![face.surface.project(sum * (1.0 / count)).unwrap()]
+            }
+            other => {
+                let ((u0, u1), (v0, v1)) = other.domain();
+                (1..5)
+                    .flat_map(|i| {
+                        (1..5).map(move |j| {
+                            (
+                                u0 + (u1 - u0) * i as f64 / 5.0,
+                                v0 + (v1 - v0) * j as f64 / 5.0,
+                            )
+                        })
+                    })
+                    .collect()
+            }
+        };
+        for (u, v) in points {
+            let at = face.surface.eval(u, v);
+            let normal = face.surface.normal(u, v).unwrap();
+            let normal = if face.reversed { -normal } else { normal };
+            let out = Vec3::new(at.x, 0.0, at.z).normalized().unwrap();
+            assert!(
+                normal.dot(out) > 0.9,
+                "{what}: face {index} faces {normal:?} at {at:?}"
+            );
+        }
+    }
+}
+
+/// Open sections whose sketches turn with the loft, round a bend by a
+/// right angle or more (the m9-r1 review, 2026-10-22: refused before as
+/// disagreeing, since the first and the last section's downs are that far
+/// apart): the frames are followed from section to section, so the sheet
+/// is built and faces down in every section's sketch (out from the bend's
+/// axis), in either order of the sections, ruled to the closed form of
+/// its flat strips and smooth within a hundredth of the cylinder it
+/// stands for; at 1e-3, 1 and 1e6.
+#[test]
+fn sections_whose_frames_turn_round_a_bend_build_facing_down_in_each_sketch() {
+    let (radius, half) = (20.0, 15.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (span, count) in [(120.0_f64, 7), (180.0, 13), (270.0, 19)] {
+            let span = span.to_radians();
+            let step = span / (count - 1) as f64;
+            for reverse in [false, true] {
+                let mut sections: Vec<Section> = (0..count)
+                    .map(|i| round_the_bend(i as f64 * step, radius * k, half * k))
+                    .collect();
+                if reverse {
+                    sections.reverse();
+                }
+                let what = format!("{} degrees at {k}, reversed {reverse}", span.to_degrees());
+                let ruled = Options {
+                    ruled: true,
+                    closed: false,
+                };
+                let sheet = loft(&sections, &ruled, &tol)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"))
+                    .body;
+                assert_eq!(sheet.kind, BodyKind::Sheet);
+                assert_eq!(check(&sheet, &tol), [], "{what}");
+                // Flat strips 2 half wide, each across a chord of the bend.
+                let strips = (count - 1) as f64 * 2.0 * half * 2.0 * radius * (step / 2.0).sin();
+                assert_close(
+                    mass_properties(&sheet).unwrap().area,
+                    strips * k * k,
+                    &format!("ruled area, {what}"),
+                );
+                faces_out_from_the_y_axis(&sheet, &format!("ruled, {what}"));
+                let smooth = loft(&sections, &Options::default(), &tol)
+                    .unwrap_or_else(|e| panic!("smooth, {what}: {e}"))
+                    .body;
+                assert_eq!(check(&smooth, &tol), [], "smooth, {what}");
+                let cylinder = 2.0 * half * radius * span * k * k;
+                let area = mass_properties(&smooth).unwrap().area;
+                assert!(
+                    (area - cylinder).abs() <= 0.01 * cylinder,
+                    "smooth, {what}: {area} against {cylinder}"
+                );
+                faces_out_from_the_y_axis(&smooth, &format!("smooth, {what}"));
+            }
+        }
+    }
+}
+
+/// Neighbouring sections whose downs are a right angle or more apart are
+/// still refused, naming both, even when the frames turn slowly elsewhere.
+#[test]
+fn neighbours_turned_the_other_way_in_a_bend_are_refused() {
+    let tol = tolerance(1.0);
+    let step = 15.0_f64.to_radians();
+    let mut sections: Vec<Section> = (0..9)
+        .map(|i| round_the_bend(i as f64 * step, 20.0, 15.0))
+        .collect();
+    // Section 6 drawn upside down: the frame turned about its normal by a
+    // half turn and the line drawn the other way puts the same line in
+    // the same place, with its y axis away from the axis.
+    let sixth = &sections[5];
+    let normal = sixth.plane.z();
+    sections[5] = Section {
+        plane: Frame::new(sixth.plane.origin(), normal, -Vec3::Y).unwrap(),
+        outline: chain(&[line(1, [15.0, 0.0], [-15.0, 0.0])], 1.0),
+        start: None,
+    };
+    let refused = loft(&sections, &Options::default(), &tol).unwrap_err();
+    let text = refused.to_string();
+    assert!(text.contains("sections 5 and 6 disagree"), "{text}");
+}
+
 #[test]
 fn open_and_closed_sections_are_not_mixed() {
     let k = 1.0;

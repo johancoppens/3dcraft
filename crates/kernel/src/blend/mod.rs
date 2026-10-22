@@ -659,7 +659,7 @@ struct Plan {
     /// radius more than the rim's, along an earlier round more than the
     /// round's): the face across the rim and the radius that puts the
     /// ball's centre on the axis, which [`blend_inner`] tries.
-    past_axis: Option<(FaceId, f64)>,
+    past_axis: Option<PastAxis>,
     /// Along a straight edge next to a cylinder: the blend in the plane
     /// across the edge ([`section`]). `None` between two planes and along
     /// a circle.
@@ -667,6 +667,21 @@ struct Plan {
     /// What a distance along each face is in the size asked for: one for
     /// a chamfer, the radius over the distance for a fillet.
     scale: [f64; 2],
+}
+
+/// A fillet along a circle whose ball's centre lies past the circle's
+/// axis, or within the tolerance of it on either side (see
+/// [`Plan::past_axis`]).
+#[derive(Clone, Copy, Debug)]
+struct PastAxis {
+    /// The face across the rim, which no ball of the size touches.
+    face: FaceId,
+    /// The radius that puts the ball's centre on the axis.
+    own: f64,
+    /// Whether the centre is within the tolerance of the axis (past it or
+    /// short of it): the plan then takes it as on the axis and builds at
+    /// the size asked for first, trying `own` only when that fails.
+    within: bool,
 }
 
 impl Plan {
@@ -1000,14 +1015,23 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         }
         // Past the axis no ball of this size touches the face across
         // the rim; the radius that puts its centre on the axis may fit
-        // (`blend_inner` tries it, to say so).
-        if from_axis.is_finite() && from_axis < -tol {
+        // (`blend_inner` tries it, to say so). Within the tolerance of
+        // the axis, on either side, the centre counts as on it and the
+        // size asked for is built first; when that does not build, the
+        // radius on the axis decides what is said (2026-10-22: the band
+        // round a round's radius was refused with a search's false
+        // largest, below half of it).
+        if from_axis.is_finite() && from_axis <= tol && from_axis != 0.0 {
             let reach = rim - from_axis;
             let own = radius * rim / reach;
             let feet = [into_first * distances[0], into_second * distances[1]];
             let side = usize::from(feet[1].dot(*radial) < feet[0].dot(*radial));
-            if own.is_finite() && own > tol {
-                past_axis = faces.get(side).map(|face| (*face, own));
+            if own.is_finite() && own > tol && own != radius {
+                past_axis = faces.get(side).map(|face| PastAxis {
+                    face: *face,
+                    own,
+                    within: from_axis >= -tol,
+                });
             }
         }
     }
@@ -2131,7 +2155,7 @@ pub(crate) fn blend(
     edges: &[Request],
     tolerance: &Tolerance,
 ) -> Result<Blended, BlendError> {
-    blend_inner(body, edges, tolerance, false)
+    blend_inner(body, edges, tolerance, false, true)
 }
 
 /// Blends the edges no closed form covers (`free`, with every edge that
@@ -2177,8 +2201,14 @@ fn mixed(
         return Ok(rolled);
     }
     let picked = pick(&closed);
-    let second = blend_inner(&rolled.body, &renamed(&rolled, &picked)?, tolerance, true)
-        .map_err(|error| named_before(&rolled, body, &picked, error))?;
+    let second = blend_inner(
+        &rolled.body,
+        &renamed(&rolled, &picked)?,
+        tolerance,
+        true,
+        true,
+    )
+    .map_err(|error| named_before(&rolled, body, &picked, error))?;
     Ok(carry_back(rolled, second, &free, &closed))
 }
 
@@ -2508,6 +2538,7 @@ fn blend_inner(
     edges: &[Request],
     tolerance: &Tolerance,
     nested: bool,
+    retry: bool,
 ) -> Result<Blended, BlendError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
@@ -2561,38 +2592,81 @@ fn blend_inner(
     // on the axis builds (along an earlier round of that radius), that
     // is the largest that fits; the sizes between are past the axis (no
     // ball of them touches the face across) or reach it (refused).
-    if let Some((plan, (face, own))) = plans.iter().find_map(|p| p.past_axis.map(|past| (p, past)))
-        && let Size::Radius(asked) = edges
-            .iter()
-            .find(|r| r.edge == plan.edge)
-            .map_or(Size::Radius(own), |r| r.size)
-    {
-        let at_own: Vec<Request> = edges
-            .iter()
-            .map(|r| match r.size {
-                Size::Radius(radius) if radius == asked => Request {
-                    size: Size::Radius(own),
-                    ..*r
-                },
-                _ => *r,
-            })
-            .collect();
-        if blend_inner(body, &at_own, tolerance, nested).is_ok() {
-            return Err(BlendError::TooLarge {
-                edge: plan.edge,
-                face,
-                size: asked,
-                largest: own,
-            });
-        }
+    if retry && let Some(error) = on_axis(body, edges, &plans, tolerance, nested, false) {
+        return Err(error);
     }
     let routed = in_place(body, &uses, &at, edges, &plans);
     match construct(body, &uses, &at, edges, plans.clone(), &routed, tolerance) {
         Ok(made) => Ok(made),
-        Err(failure) => Err(fit::explain(
-            body, &uses, &at, edges, &plans, &routed, failure, tolerance,
-        )),
+        Err(failure) => {
+            // Within the tolerance of the axis: what is said follows from
+            // the radius on the axis when that builds, not from a search
+            // of smaller multiples (it lands below half of it: the sizes
+            // between are spindles).
+            if retry && let Some(error) = on_axis(body, edges, &plans, tolerance, nested, true) {
+                return Err(error);
+            }
+            Err(fit::explain(
+                body, &uses, &at, edges, &plans, &routed, failure, tolerance,
+            ))
+        }
     }
+}
+
+/// What fits along a rim whose ball's centre lies past its axis (by
+/// more than the tolerance, or within it when `within`), when the radius
+/// that puts the centre on the axis builds: "too large" with that radius
+/// as the largest when it is smaller than the size asked for; when it is
+/// larger (the centre short of the axis by no more than the tolerance)
+/// the size asked for is a spindle like those below it, refused with
+/// that reason, which names the rim's own radius as one that builds.
+/// `None` when no plan is past the axis or its radius there does not
+/// build.
+fn on_axis(
+    body: &Body,
+    edges: &[Request],
+    plans: &[Plan],
+    tolerance: &Tolerance,
+    nested: bool,
+    within: bool,
+) -> Option<BlendError> {
+    let (plan, past) = plans.iter().find_map(|p| {
+        p.past_axis
+            .filter(|past| past.within == within)
+            .map(|past| (p, past))
+    })?;
+    let Size::Radius(asked) = edges
+        .iter()
+        .find(|r| r.edge == plan.edge)
+        .map_or(Size::Radius(past.own), |r| r.size)
+    else {
+        return None;
+    };
+    let at_own: Vec<Request> = edges
+        .iter()
+        .map(|r| match r.size {
+            Size::Radius(radius) if radius == asked => Request {
+                size: Size::Radius(past.own),
+                ..*r
+            },
+            _ => *r,
+        })
+        .collect();
+    // No further retry at the radius on the axis: its centre is on the
+    // axis to the last digits, and a retry of a retry would creep.
+    if blend_inner(body, &at_own, tolerance, nested, false).is_err() {
+        return None;
+    }
+    Some(if past.own < asked {
+        BlendError::TooLarge {
+            edge: plan.edge,
+            face: past.face,
+            size: asked,
+            largest: past.own,
+        }
+    } else {
+        refused(plan.edge, Reason::Spindle)
+    })
 }
 
 /// A build that failed, with the edge it failed at when that is known.

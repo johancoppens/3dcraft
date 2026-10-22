@@ -441,13 +441,19 @@ fn sketch_down(section: &Section, tolerance: &Tolerance) -> Option<Vec3> {
     })
 }
 
-/// The side a sheet lofted through open `sections` faces, which every
-/// section's sketch must agree on: the sum of [`sketch_down`] over the
-/// sections, so the order of the sections does not change it either.
-/// Refused when two sections' sketches say opposite sides (the downs of
-/// two sections at a right angle or more: a sketch whose `y` axis points
-/// the other way), since the sum would then turn on how many sections
-/// say which.
+/// The side a sheet lofted through open `sections` faces: down in each
+/// section's sketch ([`sketch_down`]), followed from section to section,
+/// so the sketches' frames may turn with the loft (round a bend, by a
+/// right angle or more over all) as long as each section's down agrees
+/// with the one before it. Refused when two neighbouring sections' downs
+/// are a right angle or more apart (a sketch whose `y` axis points the
+/// other way), since the side would then turn on which of them is
+/// believed. What `open_flip` holds the first section to is the sum of
+/// the downs that agree with the first section's: when every section
+/// agrees with every other that is the sum over all of them, so the order
+/// of the sections does not change it (2026-10-21); when the frames turn
+/// by a right angle or more, the downs near the first section, followed
+/// from there to the last by the sections' nearest ends (2026-10-22).
 fn open_facing(sections: &[Section], tolerance: &Tolerance) -> Result<Vec3, KernelError> {
     let mut downs = Vec::with_capacity(sections.len());
     for (index, section) in sections.iter().enumerate() {
@@ -459,25 +465,26 @@ fn open_facing(sections: &[Section], tolerance: &Tolerance) -> Result<Vec3, Kern
         })?;
         downs.push(down);
     }
-    let sum = downs.iter().fold(Vec3::ZERO, |sum, d| sum + *d);
-    for (index, down) in downs.iter().enumerate() {
-        // At most 256 sections: every pair is looked at.
-        if let Some(other) = downs
-            .iter()
-            .take(index)
-            .position(|other| other.dot(*down) <= tolerance.angular)
-        {
+    for (index, pair) in downs.windows(2).enumerate() {
+        let [before, down] = pair else {
+            return Err(internal());
+        };
+        if before.dot(*down) <= tolerance.angular {
             return Err(refuse(
-                &[other, index],
+                &[index, index + 1],
                 format!(
                     "the sketches of open sections {} and {} disagree on which side the sheet faces (it faces down in each section's sketch, against its y axis, and one of them is turned the other way): draw the sections on planes whose y axes point the same way, or name the curve section 1 starts with (`start`)",
-                    other + 1,
-                    index + 1
+                    index + 1,
+                    index + 2
                 ),
             ));
         }
     }
-    Ok(sum)
+    let first = downs.first().copied().ok_or_else(internal)?;
+    Ok(downs
+        .iter()
+        .filter(|down| down.dot(first) > tolerance.angular)
+        .fold(Vec3::ZERO, |sum, d| sum + *d))
 }
 
 /// Whether open section `index` is walked against the way its chain is

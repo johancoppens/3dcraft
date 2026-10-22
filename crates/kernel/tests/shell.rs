@@ -333,10 +333,238 @@ fn a_block_rounded_all_round_shells_as_thick_as_its_rounds_and_more() {
                 assert_eq!(inner, if t < 2.0 { 26 } else { 6 }, "{what} at {t}");
             }
         }
-        // Open at the top, the top rounds run along the open face: their
-        // lip would be cut by the opening, which is not built.
+    }
+}
+
+/// The block rounded all round, open at its top (2026-10-22; refused
+/// before: the top rounds run along the open face). The top's rounds keep
+/// their walls (offset to `r − t`, or collapsed from `t = r` on), and the
+/// hollow is opened through the top by the prism on its face behind the
+/// top: the lip is the round's wall, `t` thick all along, ending square
+/// to the top where the top's rim was. Its volume in closed form: the
+/// solid less the closed hollow (a block `2t` smaller rounded `r − t`)
+/// less the slab of the hollow's ceiling, `(w − 2m)(d − 2m)` with
+/// `m = max(r, t)`, `t` high. Upright exact to 1e-9, turned off every
+/// axis to the tolerance over the area, at 1e-3, 1 and 1e6.
+#[test]
+fn a_block_rounded_all_round_and_open_at_its_top_keeps_a_lip_along_its_rounds() {
+    let turn = Transform::rotation(Vec3::new(0.4, -1.0, 0.7), 1.1).unwrap();
+    let (w, d, h, r): (f64, f64, f64, f64) = (10.0, 8.0, 6.0, 2.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let upright = rounded_all_round(k);
         let top = face_at(&upright, k, "plane", [5.0, 4.0, 6.0]);
-        assert!(shell(&upright, 2.0 * k, &[top], &tol).is_err());
+        let turned = upright.transformed(&turn).unwrap();
+        for (body, what) in [(&upright, "upright"), (&turned, "turned")] {
+            for t in [0.5, 1.0, 2.0, 2.5] {
+                let made = match shell(body, t * k, &[top], &tol) {
+                    Ok(made) => made,
+                    Err(e) => panic!("{what} at {t}, scale {k}: {e}"),
+                };
+                assert_eq!(check(&made.body, &tol), [], "{what} at {t}, scale {k}");
+                assert_eq!(made.body.shells.len(), 1, "{what} at {t}: one skin, open");
+                let m = r.max(t);
+                let expected = rounded_block_volume(w, d, h, r)
+                    - rounded_block_volume(w - 2.0 * t, d - 2.0 * t, h - 2.0 * t, (r - t).max(0.0))
+                    - (w - 2.0 * m) * (d - 2.0 * m) * t;
+                let mp = mass(&made.body);
+                let slack = if what == "upright" {
+                    1e-9 * expected * k * k * k
+                } else {
+                    tol.linear * mp.area
+                };
+                let off = mp.volume - expected * k * k * k;
+                assert!(
+                    off.abs() <= slack,
+                    "{what} at {t}, scale {k}: off by {off:e}"
+                );
+                // The top is gone up to the thickness of the rounds; past
+                // it a ring of it, `t − r` wide, is the lip's top. The
+                // lip's ends, square to the top, are the hollow behind it:
+                // four planes while the rounds keep a wall, none once the
+                // walls run straight up (they are the hollow's walls
+                // there).
+                assert_eq!(
+                    made.faces.contains(&(Skin::Outer, top)),
+                    t > r,
+                    "{what} at {t}"
+                );
+                let ends = made
+                    .faces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source)| **source == (Skin::Inner, top))
+                    .map(|(i, _)| &made.body.faces[i])
+                    .collect::<Vec<_>>();
+                assert_eq!(ends.len(), if t < r { 4 } else { 0 }, "{what} at {t}");
+                assert!(ends.iter().all(|f| f.surface.kind() == "plane"));
+            }
+        }
+    }
+}
+
+/// A slot (a stadium `2R` wide with straight sides `L` long, `H` high)
+/// left open at one of its flat sides, which its half-cylinders are
+/// tangent to (2026-10-22: refused before, since a tangent neighbour
+/// cannot follow the face outward): the half-cylinders keep their walls
+/// and the hollow is opened through the side by the prism on the hollow's
+/// face behind it, a channel. Its volume: the slot less the closed hollow
+/// (the slot `t` smaller all round) less the slab `L × (H − 2t) × t`.
+#[test]
+fn a_slot_open_at_a_side_its_ends_are_tangent_to() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::Frame;
+    let (l, radius, height) = (12.0, 3.0, 5.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (half, r) = (l / 2.0 * k, radius * k);
+        let curves = vec![
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Line {
+                    start: [-half, -r],
+                    end: [half, -r],
+                },
+            },
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Arc {
+                    center: [half, 0.0],
+                    start: [half, -r],
+                    end: [half, r],
+                },
+            },
+            SketchCurve {
+                id: 3,
+                curve: Curve2::Line {
+                    start: [half, r],
+                    end: [-half, r],
+                },
+            },
+            SketchCurve {
+                id: 4,
+                curve: Curve2::Arc {
+                    center: [-half, 0.0],
+                    start: [-half, r],
+                    end: [-half, -r],
+                },
+            },
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let slot = extrude(&profiles, &Frame::WORLD, 0.0, height * k, &tol)
+            .unwrap()
+            .body;
+        let side = face_at(&slot, k, "plane", [0.0, radius, height / 2.0]);
+        for t in [0.5, 1.0] {
+            let made = hollowed(&slot, t, &[side], k);
+            assert_eq!(made.body.shells.len(), 1);
+            let stadium = |w: f64| l * 2.0 * w + PI * w * w;
+            let expected = stadium(radius) * height
+                - stadium(radius - t) * (height - 2.0 * t)
+                - l * (height - 2.0 * t) * t;
+            let off = mass(&made.body).volume - expected * k * k * k;
+            assert!(
+                off.abs() <= 1e-9 * expected * k * k * k,
+                "at {t}, scale {k}: off by {off:e}"
+            );
+        }
+    }
+}
+
+/// A block whose top-front edge is rounded, shelled open at the top, the
+/// round and the front together (the review of 2026-10-22: built before
+/// the lip, then refused because the round counted as a blend along the
+/// top although it is open too). Open faces tangent to each other all go
+/// outward, as before: the cross-section is the block's less the part of
+/// it the hollow takes, `y ≤ 7, z ≥ 1` with the corner rounded, along the
+/// 8 between the side walls.
+#[test]
+fn a_round_left_open_with_the_faces_it_joins_goes_outward_with_them() {
+    let corner = 4.0 * (1.0 - PI / 4.0);
+    let expected = 10.0 * (48.0 - corner) - 8.0 * (35.0 - corner);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = boxed(k, [0.0, 0.0, 0.0], [10.0, 8.0, 6.0]);
+        let edge = edge_at(&block, k, [5.0, 0.0, 6.0]);
+        let rounded = fillet(
+            &block,
+            &[FilletEdge {
+                edge,
+                radius: 2.0 * k,
+            }],
+            &tol,
+        )
+        .unwrap()
+        .body;
+        let top = face_at(&rounded, k, "plane", [5.0, 5.0, 6.0]);
+        let front = face_at(&rounded, k, "plane", [5.0, 0.0, 2.0]);
+        let round = face_at(&rounded, k, "cylinder", [5.0, 0.6, 5.4]);
+        let made = hollowed(&rounded, 1.0, &[top, round, front], k);
+        let off = mass(&made.body).volume - expected * k * k * k;
+        assert!(
+            off.abs() <= 1e-9 * expected * k * k * k,
+            "at scale {k}: off by {off:e}"
+        );
+        assert!(
+            (expected - 198.283).abs() < 1e-3,
+            "the volume before the lip"
+        );
+    }
+}
+
+/// A prism whose cross-section is a trapezoid (its sides slanting in or
+/// out, 4 over 10), its top-front edge rounded, shelled open at the top:
+/// the opening square to the top would cut the slanted walls thinner over
+/// the top `t` (0.63 for 1 when built so), so it is refused, naming the
+/// top and the slanted side, at three scales.
+#[test]
+fn an_open_face_with_a_blend_along_it_and_a_slanted_neighbour_is_refused() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    use craft3d_math::Frame;
+    for k in SCALES {
+        let tol = tolerance(k);
+        for top_half in [6.0, 14.0] {
+            let points = [
+                [-10.0 * k, 0.0],
+                [10.0 * k, 0.0],
+                [top_half * k, 10.0 * k],
+                [-top_half * k, 10.0 * k],
+            ];
+            let curves: Vec<SketchCurve> = (0..4)
+                .map(|i| SketchCurve {
+                    id: i as u64 + 1,
+                    curve: Curve2::Line {
+                        start: points[i],
+                        end: points[(i + 1) % 4],
+                    },
+                })
+                .collect();
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            // Sketch x along x, y along z; extruded along −y, 8 deep.
+            let frame = Frame::new(Vec3::new(0.0, 0.0, 0.0), -Vec3::Y, Vec3::X).unwrap();
+            let prism = extrude(&profiles, &frame, 0.0, 8.0 * k, &tol).unwrap().body;
+            let edge = edge_at(&prism, k, [0.0, 0.0, 10.0]);
+            let rounded = fillet(
+                &prism,
+                &[FilletEdge {
+                    edge,
+                    radius: 2.0 * k,
+                }],
+                &tol,
+            )
+            .unwrap_or_else(|e| panic!("{top_half} at {k}: {e}"))
+            .body;
+            let top = face_at(&rounded, k, "plane", [0.0, -5.0, 10.0]);
+            match shell(&rounded, k, &[top], &tol) {
+                Err(KernelError::FaceOp { faces, reason, .. }) => {
+                    assert!(reason.contains("neither tangent"), "{reason}");
+                    assert!(faces.contains(&top), "{faces:?}");
+                }
+                other => panic!("{top_half} at {k}: expected a refusal, got {other:?}"),
+            }
+        }
     }
 }
 

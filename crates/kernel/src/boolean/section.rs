@@ -1102,6 +1102,38 @@ fn overlap(a: &Bbox3, b: &Bbox3, margin: f64) -> Option<Bbox3> {
     (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then(|| Bbox3::from_points([lo, hi]))
 }
 
+/// Meets two faces' surfaces (`meet`) in `within`, the box both faces
+/// share grown by `room`, the room of the larger face. The room is taken
+/// from the larger face, so next to a large face (a terrain) the box
+/// reaches far beyond the smaller one, where the surfaces may meet in
+/// curves that cannot be traced (a plane at the height of a lake the
+/// fitted surface ripples about, 20 m from the face) and that no face
+/// holds. When the meeting fails so (`NoConvergence`, `Unsupported`), it is
+/// asked again in the box both faces share grown by the smaller face's
+/// room, which still holds everything of both faces; what that cannot
+/// trace either is refused with the first reason, and any other failure
+/// as it is (*A plane beside a rippled surface*, docs/design/booleans.md).
+fn in_room<T>(
+    box_a: &Bbox3,
+    box_b: &Bbox3,
+    within: &Bbox3,
+    room: f64,
+    tol: f64,
+    meet: impl Fn(&Bbox3) -> Result<T, GeomError>,
+) -> Result<T, GeomError> {
+    match meet(within) {
+        Ok(met) => Ok(met),
+        Err(first @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+            let near = 16.0 * tol + 0.013 * box_a.diagonal().min(box_b.diagonal());
+            match overlap(box_a, box_b, near) {
+                Some(closer) if near < room => meet(&closer).map_err(|_| first),
+                _ => Err(first),
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// How far apart, in tolerances, two faces' covers must be for the pair
 /// to be passed over: beyond every distance a rule of the section reads
 /// (two tolerances for faces over each other or touching, the outline's
@@ -1174,30 +1206,10 @@ pub(super) fn section(
             crate::work::face_pairs(1);
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
-            let met = match meet_surfaces(&oa.surface, &ob.surface, &within, tolerance) {
-                Ok(met) => met,
-                // The room is taken from the larger face, so next to a
-                // large face (a terrain) the box reaches far beyond the
-                // smaller one, where the surfaces may meet in curves that
-                // cannot be traced (a plane at the height of a lake the
-                // fitted surface ripples about, 20 m from the face) and
-                // that no face holds. The meeting is then asked again in
-                // the box with the smaller face's room, which still holds
-                // everything of both faces; what that cannot trace either
-                // is refused as before (*A plane beside a rippled
-                // surface*, docs/design/booleans.md).
-                Err(first @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
-                    let near = 16.0 * tol + 0.013 * box_a.diagonal().min(box_b.diagonal());
-                    match overlap(box_a, box_b, near) {
-                        Some(closer) if near < room => {
-                            meet_surfaces(&oa.surface, &ob.surface, &closer, tolerance)
-                                .map_err(|_| geometry(first, &named))?
-                        }
-                        _ => return Err(geometry(first, &named)),
-                    }
-                }
-                Err(other) => return Err(geometry(other, &named)),
-            };
+            let met = in_room(box_a, box_b, &within, room, tol, |room| {
+                meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
+            })
+            .map_err(|error| geometry(error, &named))?;
             // Faces on one surface, or on two that never cross: the same
             // surface when they are within half the tolerance of each
             // other where one is over the other, apart when twice the
@@ -1848,6 +1860,82 @@ pub(super) mod tests {
 
     use super::*;
     use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
+
+    /// The re-ask with the smaller face's room (`in_room`, the Garabit
+    /// valley's finding 5), held without a terrain: a meeting that cannot
+    /// be traced wherever its box reaches a "lake" beside a small face is
+    /// asked again in the small face's room, which holds both faces where
+    /// they overlap and leaves the lake out; at three scales.
+    #[test]
+    fn a_meeting_that_fails_in_the_larger_faces_room_is_asked_in_the_smaller_ones() {
+        use std::cell::RefCell;
+        for k in [1e-3, 1.0, 1e3] {
+            let tol = 1e-6 * k;
+            let at = |lo: [f64; 3], hi: [f64; 3]| {
+                Bbox3::from_points([
+                    Vec3::new(lo[0] * k, lo[1] * k, lo[2] * k),
+                    Vec3::new(hi[0] * k, hi[1] * k, hi[2] * k),
+                ])
+            };
+            // A terrain face 1 km across and a pit's bottom, 30 × 20 m.
+            let terrain = at([0.0, -500.0, 700.0], [1000.0, 500.0, 800.0]);
+            let pit = at([400.0, 112.0, 735.0], [430.0, 132.0, 735.0]);
+            // A lake 12 m beside the pit: within the terrain's room (about
+            // 18 m), not within the pit's (about half a metre).
+            let lake = Vec3::new(415.0 * k, 100.0 * k, 735.0 * k);
+            let room = 16.0 * tol + 0.013 * terrain.diagonal().max(pit.diagonal());
+            let within = overlap(&terrain, &pit, room).unwrap();
+            assert!(within.contains(lake, 0.0), "the lake is in the larger room");
+            let asked = RefCell::new(Vec::new());
+            let traced = |b: &Bbox3| {
+                asked.borrow_mut().push(*b);
+                if b.contains(lake, 0.0) {
+                    Err(GeomError::NoConvergence(
+                        "an intersection curve needs more points than the cap allows",
+                    ))
+                } else {
+                    Ok(*b)
+                }
+            };
+            let used = in_room(&terrain, &pit, &within, room, tol, traced).unwrap();
+            assert_eq!(asked.borrow().len(), 2, "asked again once at {k}");
+            assert!(!used.contains(lake, 0.0), "at {k}");
+            // Still everything of both faces where they overlap.
+            let both = overlap(&terrain, &pit, 0.0).unwrap();
+            let (lo, hi) = both.corners().unwrap();
+            assert!(used.contains(lo, 0.0) && used.contains(hi, 0.0), "at {k}");
+            // What cannot be traced in the smaller room either is refused
+            // with the first reason.
+            let never =
+                |_: &Bbox3| -> Result<(), GeomError> { Err(GeomError::Unsupported("first")) };
+            assert!(matches!(
+                in_room(&terrain, &pit, &within, room, tol, never),
+                Err(GeomError::Unsupported("first"))
+            ));
+            // Another failure is not asked again.
+            let count = RefCell::new(0);
+            let invalid = |_: &Bbox3| -> Result<(), GeomError> {
+                *count.borrow_mut() += 1;
+                Err(GeomError::InvalidParameter("other"))
+            };
+            assert!(matches!(
+                in_room(&terrain, &pit, &within, room, tol, invalid),
+                Err(GeomError::InvalidParameter("other"))
+            ));
+            assert_eq!(*count.borrow(), 1);
+            // Faces of one size have no smaller room: asked once.
+            let other = at([400.0, 112.0, 735.0], [1400.0, 1112.0, 835.0]);
+            let room = 16.0 * tol + 0.013 * terrain.diagonal().max(other.diagonal());
+            let within = overlap(&terrain, &other, room).unwrap();
+            let count = RefCell::new(0);
+            let fails = |_: &Bbox3| -> Result<(), GeomError> {
+                *count.borrow_mut() += 1;
+                Err(GeomError::NoConvergence("first"))
+            };
+            assert!(in_room(&terrain, &other, &within, room, tol, fails).is_err());
+            assert_eq!(*count.borrow(), 1, "at {k}");
+        }
+    }
     use craft3d_math::Frame;
 
     /// A ball of radius 2 that dips `depth` through the plane z = 0: they
