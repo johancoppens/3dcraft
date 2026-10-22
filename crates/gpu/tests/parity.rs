@@ -887,12 +887,12 @@ fn the_same_input_gives_the_same_frame() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
-/// The opaque scene drawn in two steps (depth first, then the colour of
-/// the first fragment at that depth, once per sample; `FirstWrite` in
-/// `renderer.rs`, the way around the Radeon's lost writes) is the scene
-/// drawn in one step, bit for bit: on the teapot, in perspective and
-/// orthographic, and on the same square drawn twice, where the one drawn
-/// first must stay in both.
+/// The passes over the triangles drawn in two steps (depth first, then
+/// the colour of the first fragment at that depth, once per sample;
+/// `Step` in `renderer.rs`, the way around the Radeon's lost writes) give
+/// the frame of one step, bit for bit: the teapot in perspective and
+/// orthographic, opaque, seen through, cut open with a cap and both, and
+/// the same square drawn twice, where the one drawn first must stay.
 #[test]
 fn two_steps_give_the_one_step_frame() {
     let teapot = teapot_mesh();
@@ -911,22 +911,43 @@ fn two_steps_give_the_one_step_frame() {
         );
     }
     let size = params(480, 360, 2);
+    let see_through = RenderParams {
+        opacity: 0.5,
+        ..size
+    };
+    let cut_open = RenderParams {
+        section: Some(craft3d_render::Section {
+            origin: teapot.bbox().center().unwrap(),
+            normal: Vec3::new(0.3, -1.0, 0.2),
+            cap: true,
+            color: [200, 60, 40],
+        }),
+        ..size
+    };
+    let both = RenderParams {
+        opacity: 0.5,
+        ..cut_open
+    };
+    let in_perspective = perspective(&teapot, TEAPOT_VIEW, 30.0, &size);
+    let square = orthographic(&coincident, Vec3::new(0.2, -0.3, 1.0), &size);
     let views = [
-        (
-            "teapot perspective",
-            &teapot,
-            perspective(&teapot, TEAPOT_VIEW, 30.0, &size),
-        ),
+        ("teapot perspective", &teapot, in_perspective, &size),
         (
             "teapot orthographic",
             &teapot,
             orthographic(&teapot, TEAPOT_VIEW, &size),
+            &size,
         ),
+        ("teapot see-through", &teapot, in_perspective, &see_through),
+        ("teapot cut open", &teapot, in_perspective, &cut_open),
         (
-            "coincident",
-            &coincident,
-            orthographic(&coincident, Vec3::new(0.2, -0.3, 1.0), &size),
+            "teapot cut open see-through",
+            &teapot,
+            in_perspective,
+            &both,
         ),
+        ("coincident", &coincident, square, &size),
+        ("coincident see-through", &coincident, square, &see_through),
     ];
     let mut differences = Vec::new();
     let mut two_steps = 0;
@@ -934,16 +955,16 @@ fn two_steps_give_the_one_step_frame() {
         let mut one = craft3d_gpu::Offscreen::on_adapter(adapter).unwrap();
         let mut two = craft3d_gpu::Offscreen::on_adapter(adapter).unwrap();
         let name = one.adapter().to_string();
-        one.renderer().in_one_step();
+        one.renderer().in_one_step().unwrap();
         assert!(!one.renderer().in_two_steps());
         if !two.renderer().in_two_steps() {
             println!("{name}: draws in one step only");
             continue;
         }
         two_steps += 1;
-        for (what, mesh, camera) in &views {
-            let expected = one.render(mesh, camera, &size).unwrap();
-            let got = two.render(mesh, camera, &size).unwrap();
+        for (what, mesh, camera, params) in &views {
+            let expected = one.render(mesh, camera, params).unwrap();
+            let got = two.render(mesh, camera, params).unwrap();
             assert!(expected.coverage() > 0.05, "{what}, {name}");
             let evidence = format!("two-steps-{index}-{}", what.replace(' ', "-"));
             if let Some(report) = frame_difference(&evidence, &expected, &got) {
@@ -1030,7 +1051,7 @@ fn soak(worker: usize, index: usize, frames: usize, one_step: bool, mesh: &Mesh)
     let adapter = craft3d_gpu::adapters().into_iter().nth(index).unwrap();
     let mut offscreen = craft3d_gpu::Offscreen::on_adapter(&adapter).unwrap();
     if one_step {
-        offscreen.renderer().in_one_step();
+        offscreen.renderer().in_one_step().unwrap();
     }
     let scene = std::env::var("CRAFT3D_GPU_SOAK_SCENE").unwrap_or_else(|_| "opaque".to_string());
     let steps = match (scene.as_str(), offscreen.renderer().in_two_steps()) {

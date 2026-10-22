@@ -60,7 +60,7 @@ use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::peel;
 use crate::readback;
 use crate::renderer::{
-    COLOR_FORMAT, DATA_FORMAT, DEPTH_FORMAT, MESH_ATTRIBUTES, SCENE_FLOATS, check_params,
+    COLOR_FORMAT, DATA_FORMAT, DEPTH_FORMAT, MESH_ATTRIBUTES, SCENE_FLOATS, Step, check_params,
     float_bytes, guarded, scene_pipeline, scene_source, scene_uniforms, target, uniform_entry,
 };
 use crate::{GpuError, Mesh};
@@ -675,6 +675,7 @@ impl SeeThrough {
             &[Some(scene_layout)],
             front_targets,
             samples,
+            Step::One,
         );
         let behind_pipeline = scene_pipeline(
             device,
@@ -684,6 +685,7 @@ impl SeeThrough {
             &[Some(scene_layout), Some(&peel_layout)],
             &[target(COLOR_FORMAT)],
             samples,
+            Step::One,
         );
         let blend_pipeline = peel::blend_pipeline(
             device,
