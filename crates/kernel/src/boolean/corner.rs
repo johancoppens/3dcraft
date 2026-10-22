@@ -113,7 +113,8 @@ pub(super) fn meet(sheets: [Sheet; 3], start: Vec3, reach: f64, tol: f64) -> Opt
 
 /// Where edge `id` of `own`, on a spline, meets `surface`, given `hit`,
 /// the point where its spline does, at parameter `at` of the edge
-/// (`touch` when it only touches the surface there), and
+/// (`touch` when it only touches the surface there: such a hit stands),
+/// and
 /// `between`, the parameters of the hits of the edge on the surface on
 /// either side of it (or the ends of the edge): the point where the
 /// surfaces of the edge's two faces and `surface` meet, when the hit is
@@ -129,6 +130,16 @@ pub(super) fn refine(
     between: (f64, f64),
     tol: f64,
 ) -> Result<Option<Vec3>, Reason> {
+    // Where the edge only touches the surface, the three surfaces meet
+    // in no point of their own: they are tangent there, every point of a
+    // band along the edge is as near all three, and Newton creeps along
+    // it to wherever it stops (48.0 or 48.7 tolerances from the hit by
+    // two stopping rules, at a rolling fillet's end on a cone,
+    // `fillet_contact.rs`). The hit, where the edge comes closest, is the
+    // place.
+    if touch {
+        return Ok(None);
+    }
     let Some(edge) = own.body.edge(id) else {
         return Ok(None);
     };
@@ -163,14 +174,7 @@ pub(super) fn refine(
         Some(slide) => slide,
         None => return Ok(None),
     };
-    // (Where the edge only touches the surface its hit is where it comes
-    // closest, which the angle says nothing of: it is moved no further
-    // than [`REACH`].)
-    let reach = if touch {
-        REACH * tol
-    } else {
-        (REACH * tol).max(4.0 * slide)
-    };
+    let reach = (REACH * tol).max(4.0 * slide);
     if reach > CAP * tol {
         return Err(SHALLOW);
     }
