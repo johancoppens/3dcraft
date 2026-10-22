@@ -4,7 +4,7 @@
 turbofan blend_sections 0
 turbofan boolean_edge_candidates 33269
 turbofan boolean_face_candidates 213861
-turbofan boolean_face_pairs 3397
+turbofan boolean_face_pairs 2883
 turbofan booleans 367
 turbofan check_problems 0
 turbofan commands 242
@@ -40,9 +40,9 @@ engine-block regenerations 331
 engine-block sketch_solves 166
 engine-block triangles 159397
 impeller blend_sections 3564
-impeller boolean_edge_candidates 1071
+impeller boolean_edge_candidates 161
 impeller boolean_face_candidates 3921
-impeller boolean_face_pairs 203
+impeller boolean_face_pairs 49
 impeller booleans 13
 impeller check_problems 0
 impeller commands 83
