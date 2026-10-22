@@ -150,6 +150,7 @@ pub(crate) fn import_bytes(
             "sewnEdges": r.sewn_edges,
             "sewnVertices": r.sewn_vertices,
             "sewnGap": r.sewn_gap,
+            "splitEdges": r.split_edges,
             "turnedShells": r.turned_shells,
             "looseEdges": r.loose_edges,
             "looseVertices": r.loose_vertices,

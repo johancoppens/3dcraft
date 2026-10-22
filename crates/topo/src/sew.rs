@@ -40,6 +40,13 @@
 //! nearest free edge is ([`Sewn::open`]); in a solid they are the
 //! caller's to refuse.
 //!
+//! **T-junctions** (since slice 3). Before pairs are sought, a free edge
+//! along which two or more shorter free edges of other faces run, end to
+//! end, is split at the places their ends meet it (`sew_split`: the chain
+//! proven, nothing moved, the new vertices go into the shorter edges'
+//! ends); the split stays only when every piece is then sewn, and is
+//! listed in [`Sewn::split`].
+//!
 //! **Bounded and deterministic.** Free edges are found through a grid of
 //! their end vertices (cells `2 distance` wide, ordered maps), the
 //! candidates tested are capped ([`MAX_CANDIDATES`]), and every order is
@@ -100,6 +107,12 @@ pub struct Sewn {
     /// better way round), `None` when there is none or it was not looked
     /// for (more than `MAX_REPORTED_OPEN` open edges); in edge order.
     pub open: Vec<(EdgeId, Option<f64>)>,
+    /// The edges of the body given that were split at a T-junction (one
+    /// free edge against several shorter ones along it, `sew_split`), each
+    /// with the edges of the result its pieces are or went into, in order
+    /// along it (its entry in `edges` is the first piece's); in edge
+    /// order, empty when nothing was split.
+    pub split: Vec<(EdgeId, Vec<(EdgeId, bool)>)>,
 }
 
 impl Sewn {
@@ -183,11 +196,11 @@ impl std::error::Error for SewError {}
 
 /// One use of a free edge.
 #[derive(Clone, Copy)]
-struct Free {
-    edge: EdgeId,
-    face: FaceId,
+pub(crate) struct Free {
+    pub(crate) edge: EdgeId,
+    pub(crate) face: FaceId,
     /// The loop runs against the edge.
-    reversed: bool,
+    pub(crate) reversed: bool,
 }
 
 /// A pair of free edges that may be one: `b` goes into `a`, against it
@@ -297,7 +310,7 @@ impl Classes {
 }
 
 /// The distance from `p` to the part of `curve` within `range`.
-fn to_curve(curve: &Curve3, range: (f64, f64), p: Vec3) -> f64 {
+pub(crate) fn to_curve(curve: &Curve3, range: (f64, f64), p: Vec3) -> f64 {
     let (t0, t1) = range;
     let ends = curve.eval(t0).distance(p).min(curve.eval(t1).distance(p));
     let Ok(mut t) = curve.project(p) else {
@@ -322,7 +335,7 @@ fn to_curve(curve: &Curve3, range: (f64, f64), p: Vec3) -> f64 {
 }
 
 /// Points of the edge strictly inside it.
-fn inside(curve: &Curve3, range: (f64, f64)) -> Vec<Vec3> {
+pub(crate) fn inside(curve: &Curve3, range: (f64, f64)) -> Vec<Vec3> {
     let (t0, t1) = range;
     (1..=SAMPLES)
         .map(|k| curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(SAMPLES + 1)))
@@ -337,10 +350,47 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
     if !(distance.is_finite() && distance > 0.0) {
         return Err(SewError::Distance { value: distance });
     }
-    let n_edges = body.edges.len();
-    let n_vertices = body.vertices.len();
-    // Uses of each edge.
-    let mut uses: Vec<Vec<Free>> = vec![Vec::new(); n_edges];
+    // T-junctions first (`sew_split`): an edge split only when every one
+    // of its pieces is then sewn; at most two tries with splits, then the
+    // body as it is.
+    let free_of: BTreeMap<u32, Free> = free_uses(body)?
+        .into_iter()
+        .map(|f| (f.edge.0, f))
+        .collect();
+    let mut probes = 0usize;
+    let mut at = crate::sew_split::stations(body, &free_of, distance, &mut probes)?;
+    for _ in 0..2 {
+        if at.is_empty() {
+            break;
+        }
+        let (split, pieces) = crate::sew_split::split(body, &at)?;
+        let sewn = pairs(&split, tolerance, distance, cap)?;
+        let open: BTreeSet<EdgeId> = sewn.open.iter().map(|(e, _)| *e).collect();
+        let failed: Vec<u32> = pieces
+            .iter()
+            .filter(|(_, ids)| {
+                ids.iter().any(|p| {
+                    sewn.edges
+                        .get(p.0 as usize)
+                        .is_none_or(|(r, _)| open.contains(r))
+                })
+            })
+            .map(|(a, _)| *a)
+            .collect();
+        if failed.is_empty() {
+            return Ok(unsplit_maps(sewn, body, &pieces));
+        }
+        for a in failed {
+            at.remove(&a);
+        }
+    }
+    pairs(body, tolerance, distance, cap)
+}
+
+/// The uses of the free edges of `body` (those one loop uses once), in
+/// edge order.
+fn free_uses(body: &Body) -> Result<Vec<Free>, SewError> {
+    let mut uses: Vec<Vec<Free>> = vec![Vec::new(); body.edges.len()];
     for (f, face) in body.faces.iter().enumerate() {
         for l in &face.loops {
             let l = body.loop_(*l).ok_or(SewError::Dangling)?;
@@ -355,13 +405,43 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
             }
         }
     }
-    let free: Vec<Free> = uses
+    Ok(uses
         .iter()
         .filter_map(|u| match u.as_slice() {
             [one] => Some(*one),
             _ => None,
         })
+        .collect())
+}
+
+/// `sewn`, a sewing of `body` with edges split (`pieces`), with its maps
+/// back to `body`'s own edges and vertices: an edge split maps to its
+/// first piece's edge, and all its pieces' are listed in
+/// [`Sewn::split`].
+fn unsplit_maps(mut sewn: Sewn, body: &Body, pieces: &BTreeMap<u32, Vec<EdgeId>>) -> Sewn {
+    sewn.split = pieces
+        .iter()
+        .map(|(a, ids)| {
+            (
+                EdgeId(*a),
+                ids.iter()
+                    .filter_map(|p| sewn.edges.get(p.0 as usize).copied())
+                    .collect(),
+            )
+        })
         .collect();
+    sewn.edges.truncate(body.edges.len());
+    sewn.vertices.truncate(body.vertices.len());
+    let mut seen: BTreeSet<VertexId> = BTreeSet::new();
+    sewn.merged_vertices = sewn.vertices.iter().filter(|v| !seen.insert(**v)).count();
+    sewn
+}
+
+/// Sews `body`'s free edges in pairs, whole (the module documentation).
+fn pairs(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Result<Sewn, SewError> {
+    let n_edges = body.edges.len();
+    let n_vertices = body.vertices.len();
+    let free = free_uses(body)?;
     let identity = || Sewn {
         body: body.clone(),
         edges: (0..n_edges).map(|i| (EdgeId(id32(i)), false)).collect(),
@@ -371,6 +451,7 @@ pub fn sew(body: &Body, tolerance: &Tolerance, distance: f64, cap: f64) -> Resul
         largest_gap: 0.0,
         largest_tolerance: 0.0,
         open: Vec::new(),
+        split: Vec::new(),
     };
     if free.is_empty() {
         return Ok(identity());
@@ -858,6 +939,7 @@ fn build(
         largest_gap,
         largest_tolerance,
         open,
+        split: Vec::new(),
     })
 }
 

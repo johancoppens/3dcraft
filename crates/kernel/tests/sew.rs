@@ -28,7 +28,7 @@
 
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
-use craft3d_math::{Frame, Tolerance, Transform, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_testkit::parallel::map_parallel;
 use craft3d_testkit::trimmed;
 use craft3d_topo::{
@@ -165,54 +165,20 @@ fn body(kind: usize, scale: f64) -> (String, Body) {
     }
 }
 
-/// `body` as loose faces: each face with its own copies of its edges and
-/// vertices (a seam the face uses twice stays one edge of it), the shells
-/// holding the same faces; each face moved rigidly by `moves[f]` and
+/// `body` as loose faces (`testkit::loose::exploded_from`): each face
+/// with its own copies of its edges and vertices, moved by `moves[f]`,
 /// `nudge` moving one vertex of a face (face, its k-th vertex, by).
 fn exploded(body: &Body, moves: &[Vec3], nudge: Option<(usize, usize, Vec3)>) -> Body {
-    let mut out = Body::new(body.kind);
-    for (f, face) in body.faces.iter().enumerate() {
-        let t = Transform::translation(moves[f]);
-        let mut vertices: BTreeMap<VertexId, VertexId> = BTreeMap::new();
-        let mut edges: BTreeMap<EdgeId, EdgeId> = BTreeMap::new();
-        let mut loops = Vec::new();
-        for l in &face.loops {
-            let mut coedges = Vec::new();
-            for c in &body.loop_(*l).unwrap().coedges {
-                let edge = match edges.get(&c.edge) {
-                    Some(e) => *e,
-                    None => {
-                        let e = body.edge(c.edge).unwrap();
-                        let mut vertex = |v: VertexId| {
-                            *vertices.entry(v).or_insert_with(|| {
-                                out.add_vertex(t.point(body.vertex(v).unwrap().point))
-                            })
-                        };
-                        let (a, b) = (vertex(e.start), vertex(e.end));
-                        let ne = out.add_edge(e.curve.transformed(&t).unwrap(), e.range, a, b);
-                        edges.insert(c.edge, ne);
-                        ne
-                    }
-                };
-                coedges.push(Coedge {
-                    edge,
-                    reversed: c.reversed,
-                });
-            }
-            loops.push(out.add_loop(coedges));
-        }
-        if let Some((nf, k, by)) = nudge
-            && nf == f
-            && let Some(v) = vertices.values().nth(k % vertices.len().max(1))
-        {
-            out.vertices[v.0 as usize].point += by;
-        }
-        out.add_face(face.surface.transformed(&t).unwrap(), face.reversed, loops);
-    }
-    for shell in &body.shells {
-        out.add_shell(shell.faces.clone());
-    }
-    out
+    exploded_from([body, body], |_| false, moves, nudge)
+}
+
+fn exploded_from(
+    sources: [&Body; 2],
+    second: impl Fn(usize) -> bool,
+    moves: &[Vec3],
+    nudge: Option<(usize, usize, Vec3)>,
+) -> Body {
+    craft3d_testkit::loose::exploded_from(sources, second, moves, nudge).unwrap()
 }
 
 /// Per edge, the sorted pair of faces that use it, as a sorted list.
@@ -991,5 +957,364 @@ fn a_face_moved_in_its_own_plane_is_sewn_with_the_gap_recorded() {
                 Err(other) => panic!("{other}"),
             }
         }
+    }
+}
+
+// ------------------------------------------------------------ T-junctions
+
+/// `body` with each edge of `edges` split at the fractions of its range
+/// given: a vertex between two pieces of one curve, valid as it was.
+fn with_split_edges(body: &Body, edges: &[(EdgeId, Vec<f64>)]) -> Body {
+    let mut out = body.clone();
+    let mut pieces: BTreeMap<EdgeId, Vec<EdgeId>> = BTreeMap::new();
+    for (e, fractions) in edges {
+        let edge = out.edges[e.0 as usize].clone();
+        let (t0, t1) = edge.range;
+        let mut bounds = vec![t0];
+        bounds.extend(fractions.iter().map(|f| t0 + (t1 - t0) * f));
+        bounds.push(t1);
+        let mut vertices = vec![edge.start];
+        for s in &bounds[1..bounds.len() - 1] {
+            vertices.push(out.add_vertex(edge.curve.eval(*s)));
+        }
+        vertices.push(edge.end);
+        let mut ids = Vec::new();
+        for i in 0..bounds.len() - 1 {
+            if i == 0 {
+                out.edges[e.0 as usize].range = (bounds[0], bounds[1]);
+                out.edges[e.0 as usize].end = vertices[1];
+                ids.push(*e);
+            } else {
+                ids.push(out.add_edge(
+                    edge.curve.clone(),
+                    (bounds[i], bounds[i + 1]),
+                    vertices[i],
+                    vertices[i + 1],
+                ));
+            }
+        }
+        pieces.insert(*e, ids);
+    }
+    for l in &mut out.loops {
+        let mut coedges = Vec::new();
+        for c in &l.coedges {
+            match pieces.get(&c.edge) {
+                None => coedges.push(*c),
+                Some(ids) if c.reversed => coedges.extend(ids.iter().rev().map(|&edge| Coedge {
+                    edge,
+                    reversed: true,
+                })),
+                Some(ids) => coedges.extend(ids.iter().map(|&edge| Coedge {
+                    edge,
+                    reversed: false,
+                })),
+            }
+        }
+        l.coedges = coedges;
+    }
+    out
+}
+
+/// What a T-junction case checks of a sewing of `loose` (made from
+/// `expected` with some face's edges whole): the counts, genus and
+/// adjacency of `expected`, valid with what it recorded, nothing moved
+/// (every vertex one of `loose`'s, every edge a part of one of its
+/// edges), the same bits twice, the volume within its bound, and at
+/// least one edge split.
+fn t_junction_case(
+    what: &str,
+    expected: &Body,
+    loose: &Body,
+    tol: &Tolerance,
+    delta: f64,
+) -> Tally {
+    let mut tally = Tally {
+        cases: 1,
+        ..Tally::default()
+    };
+    let cap = default_loosest(tol.linear);
+    let sewn = match sew(loose, tol, cap, cap) {
+        Ok(s) => s,
+        Err(e) => {
+            tally.failures.push(format!("{what}: refused: {e}"));
+            return tally;
+        }
+    };
+    let again = sew(loose, tol, cap, cap).unwrap();
+    if format!("{:?}", again.body) != format!("{:?}", sewn.body) {
+        tally.failures.push(format!("{what}: not deterministic"));
+    }
+    if sewn.split.is_empty() {
+        tally.failures.push(format!("{what}: nothing split"));
+    }
+    let b = &sewn.body;
+    if !sewn.open.is_empty() {
+        tally
+            .failures
+            .push(format!("{what}: {} edges left open", sewn.open.len()));
+        return tally;
+    }
+    let counts = |x: &Body| {
+        (
+            x.faces.len(),
+            x.edges.len(),
+            x.vertices.len(),
+            x.shells.len(),
+        )
+    };
+    if counts(b) != counts(expected) {
+        tally.failures.push(format!(
+            "{what}: counts {:?} against {:?}",
+            counts(b),
+            counts(expected)
+        ));
+        return tally;
+    }
+    if genus(b) != genus(expected) {
+        tally.failures.push(format!("{what}: genus"));
+    }
+    if adjacency(b) != adjacency(expected) {
+        tally
+            .failures
+            .push(format!("{what}: another face adjacency"));
+    }
+    let defects = check_capped(b, tol, cap);
+    if !defects.is_empty() {
+        tally.failures.push(format!(
+            "{what}: invalid: {:?}",
+            &defects[..defects.len().min(3)]
+        ));
+        return tally;
+    }
+    for v in &b.vertices {
+        if !loose.vertices.iter().any(|w| w.point == v.point) {
+            tally.failures.push(format!("{what}: a vertex moved"));
+        }
+    }
+    for e in &b.edges {
+        if !loose
+            .edges
+            .iter()
+            .any(|x| x.curve == e.curve && x.range.0 <= e.range.0 && e.range.1 <= x.range.1)
+        {
+            tally.failures.push(format!("{what}: an edge moved"));
+        }
+    }
+    let w = b.working_tolerance(tol.linear);
+    if w > cap {
+        tally.failures.push(format!("{what}: above the cap"));
+    }
+    if delta == 0.0 && b.is_tolerant() {
+        tally
+            .failures
+            .push(format!("{what}: an exact explosion sewn loose"));
+    }
+    if b.is_tolerant() {
+        tally.loose += 1;
+    }
+    tally.largest_tolerance_in_tols = w / tol.linear;
+    tally.joined += sewn.joined;
+    let reference = mass_properties(expected).unwrap();
+    match mass_properties(b) {
+        Ok(m) => {
+            let (lo, hi) = expected.bbox().unwrap().corners().unwrap();
+            let wide = w.max(2.0 * delta);
+            let bound = 2.0 * wide * reference.area
+                + wide * edge_length(expected) * lo.distance(hi) / 3.0
+                + 1e-9 * reference.volume.abs();
+            let off = (m.volume - reference.volume).abs();
+            tally.worst_volume_ratio = tally.worst_volume_ratio.max(off / bound);
+            if off > bound {
+                tally.failures.push(format!(
+                    "{what}: volume {} against {}, bound {bound:e}",
+                    m.volume, reference.volume
+                ));
+            }
+        }
+        Err(e) => tally.failures.push(format!("{what}: not measured: {e}")),
+    }
+    tally.sewn += 1;
+    tally
+}
+
+/// One round-trip body with a face's edges each split into two or three
+/// pieces where the neighbour has them (a valid body), exploded with that
+/// face taken from the body before the split: each of its edges one
+/// against two or three. Sewn, it is the split body again.
+fn t_junction_round_trip(kind: usize, scale: f64, k: f64, seed: u64) -> Tally {
+    let tol = tolerance(scale);
+    let (name, original) = body(kind, scale);
+    let mut rng = Rng(seed ^ (kind as u64) << 40 ^ k.to_bits() ^ 0x7);
+    let faces = edge_faces(&original);
+    // The face whose edges stay whole: the first, from a seeded start,
+    // with an edge between it and another face.
+    let n = original.faces.len();
+    let start = (rng.next() % n as u64) as usize;
+    let (whole, edges) = (0..n)
+        .map(|i| (start + i) % n)
+        .find_map(|f| {
+            let f = FaceId(f as u32);
+            let edges: Vec<EdgeId> = faces
+                .iter()
+                .enumerate()
+                .filter(|(_, uses)| uses.len() == 2 && uses.contains(&f) && uses[0] != uses[1])
+                .map(|(e, _)| EdgeId(e as u32))
+                .collect();
+            (!edges.is_empty()).then_some((f, edges))
+        })
+        .unwrap();
+    let splits: Vec<(EdgeId, Vec<f64>)> = edges
+        .iter()
+        .map(|e| {
+            let n = 1 + (rng.next() % 2) as usize;
+            let mut f: Vec<f64> = (0..n).map(|_| 0.2 + 0.6 * rng.unit()).collect();
+            f.sort_by(f64::total_cmp);
+            if n == 2 && f[1] - f[0] < 0.1 {
+                f[1] = (f[0] + 0.15).min(0.95);
+            }
+            (*e, f)
+        })
+        .collect();
+    let split = with_split_edges(&original, &splits);
+    assert!(check_capped(&split, &tol, default_loosest(tol.linear)).is_empty());
+    let delta = k * tol.linear;
+    let moves: Vec<Vec3> = (0..n)
+        .map(|_| rng.direction() * (delta * rng.unit()))
+        .collect();
+    let nudge = (k > 0.0).then(|| {
+        (
+            (rng.next() % n as u64) as usize,
+            (rng.next() % 4) as usize,
+            rng.direction() * (0.5 * delta),
+        )
+    });
+    let loose = exploded_from(
+        [&split, &original],
+        |f| f == whole.0 as usize,
+        &moves,
+        nudge,
+    );
+    let what = format!(
+        "{name} at {scale:e}, k = {k}, seed {seed}, face {} whole against {} split edges",
+        whole.0,
+        splits.len()
+    );
+    t_junction_case(&what, &split, &loose, &tol, delta)
+}
+
+fn total(tallies: Vec<Tally>) -> Tally {
+    let mut all = Tally::default();
+    for t in tallies {
+        all.cases += t.cases;
+        all.sewn += t.sewn;
+        all.loose += t.loose;
+        all.joined += t.joined;
+        all.worst_volume_ratio = all.worst_volume_ratio.max(t.worst_volume_ratio);
+        all.largest_tolerance_in_tols = all
+            .largest_tolerance_in_tols
+            .max(t.largest_tolerance_in_tols);
+        all.failures.extend(t.failures);
+    }
+    all
+}
+
+#[test]
+fn an_edge_against_several_shorter_ones_is_split_and_sewn() {
+    let mut cases = Vec::new();
+    for kind in 0..BODIES {
+        for scale in [1e-3, 1.0, 1e6] {
+            for k in [0.0, 3.0, 30.0, 300.0] {
+                for seed in [1u64, 2] {
+                    cases.push((kind, scale, k, seed));
+                }
+            }
+        }
+    }
+    let all = total(map_parallel(cases, |(kind, scale, k, seed)| {
+        t_junction_round_trip(kind, scale, k, seed)
+    }));
+    println!(
+        "T-junctions: {} cases, {} sewn back ({} loose), {} pairs joined, largest tolerance {:.1} tolerances, worst volume {:.3} of its bound",
+        all.cases,
+        all.sewn,
+        all.loose,
+        all.joined,
+        all.largest_tolerance_in_tols,
+        all.worst_volume_ratio
+    );
+    for f in all.failures.iter().take(20) {
+        println!("  {f}");
+    }
+    assert!(all.failures.is_empty(), "{} failures", all.failures.len());
+    assert_eq!(all.sewn, all.cases);
+}
+
+fn split_top_block(scale: f64, split: bool) -> Body {
+    craft3d_testkit::loose::split_top_block(scale, split).unwrap()
+}
+
+/// The block with a split top whose front and back come whole (each one
+/// side against the two top faces' sides, and their stem between): sewn,
+/// it is the split block again, at three scales, faces moved by up to k
+/// tolerances.
+#[test]
+fn a_side_against_two_faces_split_across_it_is_sewn() {
+    let mut tallies = Vec::new();
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(scale);
+        let expected = split_top_block(scale, true);
+        let whole = split_top_block(scale, false);
+        assert!(check_capped(&expected, &tol, default_loosest(tol.linear)).is_empty());
+        for k in [0.0_f64, 3.0, 30.0, 300.0] {
+            for seed in [1u64, 2, 3] {
+                let mut rng = Rng(seed ^ k.to_bits());
+                let delta = k * tol.linear;
+                let moves: Vec<Vec3> = (0..7)
+                    .map(|_| rng.direction() * (delta * rng.unit()))
+                    .collect();
+                let loose = exploded_from([&expected, &whole], |f| f == 3 || f == 4, &moves, None);
+                let what = format!("split block at {scale:e}, k = {k}, seed {seed}");
+                tallies.push(t_junction_case(&what, &expected, &loose, &tol, delta));
+            }
+        }
+    }
+    let all = total(tallies);
+    println!(
+        "split block: {} cases, {} sewn back ({} loose), largest tolerance {:.1} tolerances",
+        all.cases, all.sewn, all.loose, all.largest_tolerance_in_tols
+    );
+    for f in all.failures.iter().take(20) {
+        println!("  {f}");
+    }
+    assert!(all.failures.is_empty(), "{} failures", all.failures.len());
+}
+
+/// A side against two shorter edges that leave a gap between them wider
+/// than the cap along it: no chain, the side is not split, and stays open
+/// (the solid is the caller's to refuse); the same with the side twice
+/// the cap off the shorter edges.
+#[test]
+fn a_side_whose_pieces_do_not_reach_along_it_is_left_whole() {
+    for scale in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(scale);
+        let cap = default_loosest(tol.linear);
+        let expected = split_top_block(scale, true);
+        let whole = split_top_block(scale, false);
+        // The right top face moved along x by three caps: its side along
+        // the front starts three caps after the left one's ends.
+        let mut moves = vec![Vec3::ZERO; 7];
+        moves[2] = Vec3::X * (3.0 * cap);
+        let loose = exploded_from([&expected, &whole], |f| f == 3 || f == 4, &moves, None);
+        let sewn = sew(&loose, &tol, cap, cap).unwrap();
+        assert!(sewn.split.is_empty(), "{scale:e}: split {:?}", sewn.split);
+        assert!(!sewn.open.is_empty());
+        assert!(!check_capped(&sewn.body, &tol, cap).is_empty());
+        // The front moved off by twice the cap.
+        let mut moves = vec![Vec3::ZERO; 7];
+        moves[3] = Vec3::Y * (-2.0 * cap);
+        let loose = exploded_from([&expected, &whole], |f| f == 3 || f == 4, &moves, None);
+        let sewn = sew(&loose, &tol, cap, cap).unwrap();
+        assert!(!sewn.open.is_empty());
+        assert!(!check_capped(&sewn.body, &tol, cap).is_empty());
     }
 }
