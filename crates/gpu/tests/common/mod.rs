@@ -1055,3 +1055,87 @@ impl MsaaParity {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// Rule 5: the same input gives the same frame, bit for bit.
+
+/// `None` when `got` is `expected` bit for bit (colours, face ids and the
+/// bits of the distances). Otherwise a short report, and the evidence for
+/// the developer under `target/evidence/gpu/`: `<name>.png` with the
+/// expected frame, the frame got and their difference side by side (in
+/// the third panel a pixel that differs is red over the expected picture
+/// darkened), and `<name>.txt` with the pixels that differ. A rare
+/// difference cannot be brought back on demand, so the run that sees it
+/// has to leave what it saw.
+pub fn frame_difference(name: &str, expected: &Frame, got: &Frame) -> Option<String> {
+    let same_size = (expected.width, expected.height) == (got.width, got.height)
+        && expected.rgb.len() == got.rgb.len()
+        && expected.ids.len() == got.ids.len()
+        && expected.depth.len() == got.depth.len()
+        && expected.rgb.len() == expected.ids.len() * 3;
+    if !same_size {
+        return Some(format!(
+            "{}x{} against {}x{}",
+            expected.width, expected.height, got.width, got.height
+        ));
+    }
+    let pixels = expected.ids.len();
+    let differs: Vec<usize> = (0..pixels)
+        .filter(|&i| {
+            expected.rgb[i * 3..i * 3 + 3] != got.rgb[i * 3..i * 3 + 3]
+                || expected.ids[i] != got.ids[i]
+                || expected.depth[i].to_bits() != got.depth[i].to_bits()
+        })
+        .collect();
+    if differs.is_empty() && expected.sample.to_bits() == got.sample.to_bits() {
+        return None;
+    }
+    let w = expected.width as usize;
+    let mut listing = format!(
+        "{} pixels differ ({}x{}, sample {} / {}); x y: rgb expected / got, \
+         id expected / got, distance expected / got\n",
+        differs.len(),
+        expected.width,
+        expected.height,
+        expected.sample,
+        got.sample
+    );
+    for &i in differs.iter().take(1000) {
+        listing.push_str(&format!(
+            "{} {}: {:?} / {:?}, {} / {}, {} / {}\n",
+            i % w,
+            i / w,
+            &expected.rgb[i * 3..i * 3 + 3],
+            &got.rgb[i * 3..i * 3 + 3],
+            expected.ids[i],
+            got.ids[i],
+            expected.depth[i],
+            got.depth[i]
+        ));
+    }
+    std::fs::write(evidence(&format!("{name}.txt")), &listing).unwrap();
+    let mut rgb = Vec::with_capacity(pixels * 9);
+    for y in 0..expected.height as usize {
+        for frame in [expected, got] {
+            rgb.extend_from_slice(&frame.rgb[y * w * 3..(y + 1) * w * 3]);
+        }
+        for x in 0..w {
+            let i = y * w + x;
+            if differs.binary_search(&i).is_ok() {
+                rgb.extend([255, 0, 0]);
+            } else {
+                rgb.extend(expected.rgb[i * 3..i * 3 + 3].iter().map(|c| c / 3));
+            }
+        }
+    }
+    let path = evidence(&format!("{name}.png"));
+    let png = craft3d_render::encode_png(expected.width * 3, expected.height, &rgb).unwrap();
+    std::fs::write(&path, png).unwrap();
+    let first: Vec<&str> = listing.lines().skip(1).take(4).collect();
+    Some(format!(
+        "{} pixels differ, first: {}; evidence: {}",
+        differs.len(),
+        first.join("; "),
+        path.display()
+    ))
+}

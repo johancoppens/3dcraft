@@ -12,8 +12,8 @@
 mod common;
 
 use common::{
-    compare, compare_see_through, evidence, offscreens, orthographic, params, perspective,
-    write_evidence,
+    compare, compare_see_through, evidence, frame_difference, offscreens, orthographic, params,
+    perspective, write_evidence,
 };
 use craft3d_gpu::{Camera, FaceColors, Frame, Mesh, NO_FACE, Projection, RenderParams};
 use craft3d_math::Vec3;
@@ -844,34 +844,120 @@ fn teapot_frame(offscreen: &mut craft3d_gpu::Offscreen, mesh: &Mesh) -> Frame {
 }
 
 /// Rule 5: the same input gives the same frame, bit for bit, on the same
-/// adapter: twice on one device, and again on a new device.
+/// adapter: again on one device, on a new device, after another picture of
+/// the same size (whose contents are then in every target the teapot's
+/// passes reuse) and after one of another size. Every comparison runs and
+/// the test fails with all that differed; each difference leaves its
+/// frames under `target/evidence/gpu/same-frame-*` ([`frame_difference`]).
 #[test]
 fn the_same_input_gives_the_same_frame() {
     let mesh = teapot_mesh();
     let mut first_run = offscreens();
     let mut second_run = offscreens();
-    for (a, b) in first_run.iter_mut().zip(&mut second_run) {
+    let mut differences = Vec::new();
+    for (index, (a, b)) in first_run.iter_mut().zip(&mut second_run).enumerate() {
         assert_eq!(a.adapter(), b.adapter());
         let frame = teapot_frame(a, &mesh);
         assert!(frame.coverage() > 0.15, "{}", a.adapter());
-        assert_eq!(
-            frame,
-            teapot_frame(a, &mesh),
-            "same device, {}",
-            a.adapter()
+        let adapter = a.adapter().to_string();
+        let mut check = |what: &str, got: Frame| {
+            let name = format!("same-frame-{index}-{}", what.replace(' ', "-"));
+            if let Some(report) = frame_difference(&name, &frame, &got) {
+                differences.push(format!("{what}, {adapter}: {report}"));
+            }
+        };
+        check("same device", teapot_frame(a, &mesh));
+        check("new device", teapot_frame(b, &mesh));
+        // Another picture of the same size in between: the targets are
+        // kept and hold its pixels when the teapot is drawn again.
+        let same_size = params(480, 360, 2);
+        let camera = orthographic(&mesh, Vec3::new(-0.3, 1.0, -0.6), &same_size);
+        let dirty = a.render(&mesh, &camera, &same_size).unwrap();
+        assert!(
+            dirty.rgb != frame.rgb && dirty.ids != frame.ids,
+            "{adapter}"
         );
-        assert_eq!(frame, teapot_frame(b, &mesh), "new device, {}", a.adapter());
-        // Another picture in between does not leak into the next one.
+        check("after another picture", teapot_frame(a, &mesh));
+        // And one of another size: the targets are made again.
         let other = params(100, 50, 1);
         let camera = orthographic(&mesh, Vec3::X, &other);
         a.render(&mesh, &camera, &other).unwrap();
-        assert_eq!(
-            frame,
-            teapot_frame(a, &mesh),
-            "after another size, {}",
-            a.adapter()
-        );
+        check("after another size", teapot_frame(a, &mesh));
     }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// [`the_same_input_gives_the_same_frame`] many times over in one process:
+/// the teapot drawn `CRAFT3D_GPU_SOAK` times (default 2000) by each of two
+/// threads per adapter, all at once, and compared with the thread's first
+/// frame, for a difference too rare for one
+/// run of the test to meet (it failed once on the Strix's Radeon over
+/// OpenGL in about sixty gates; docs/design/rendering.md, *A frame that
+/// differed once*). Not part of the gate: `cargo test -p craft3d-gpu
+/// --release --test parity -- --ignored --nocapture soak`, or the task
+/// `gpu-soak` of the Heavy workflow on the Strix.
+#[test]
+#[ignore = "minutes; on demand and in the Heavy workflow"]
+fn soak_the_same_input_gives_the_same_frame() {
+    let frames: usize = std::env::var("CRAFT3D_GPU_SOAK")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(2000);
+    let mesh = teapot_mesh();
+    let adapters = offscreens().len();
+    // Two threads per adapter, all at once, each with a device of its own:
+    // the gate runs the parity tests in parallel on the shared GPU too.
+    let differences: Vec<String> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..adapters * 2)
+            .map(|worker| {
+                let mesh = &mesh;
+                scope.spawn(move || soak(worker, worker / 2, frames, mesh))
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// One worker of [`soak_the_same_input_gives_the_same_frame`]: `frames`
+/// teapots on a device of its own on adapter `index`, each compared with
+/// the first; what differed, with the evidence of the first ten.
+fn soak(worker: usize, index: usize, frames: usize, mesh: &Mesh) -> Vec<String> {
+    let adapter = craft3d_gpu::adapters().into_iter().nth(index).unwrap();
+    let mut offscreen = craft3d_gpu::Offscreen::on_adapter(&adapter).unwrap();
+    let started = std::time::Instant::now();
+    let frame = teapot_frame(&mut offscreen, mesh);
+    let mut differences = Vec::new();
+    let mut differing = 0;
+    for k in 1..frames {
+        let got = teapot_frame(&mut offscreen, mesh);
+        if got == frame {
+            continue;
+        }
+        differing += 1;
+        // The evidence of the first few; the rest are counted.
+        if differing <= 10 {
+            let name = format!("same-frame-soak-{worker}-{k}");
+            let report = frame_difference(&name, &frame, &got).unwrap_or_default();
+            differences.push(format!("frame {k}, {}: {report}", offscreen.adapter()));
+        }
+    }
+    if differing > 10 {
+        differences.push(format!(
+            "{}: {differing} frames differ in all",
+            offscreen.adapter()
+        ));
+    }
+    println!(
+        "worker {worker}, {}: {differing} of {} frames differ from the first ({:.1} s)",
+        offscreen.adapter(),
+        frames.saturating_sub(1),
+        started.elapsed().as_secs_f64()
+    );
+    differences
 }
 
 /// The adapters the tests above ran on, for the test log and the evidence
