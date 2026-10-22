@@ -14,6 +14,7 @@
 
 mod appearance;
 mod appearance_cmds;
+mod assert_check;
 mod assert_cmds;
 mod base64;
 mod blend_cmds;
@@ -162,7 +163,7 @@ pub(crate) struct OpenDocument {
     pub(crate) selection: selection::Selection,
     /// The assertions checked against `history.revision()`
     /// (`assert_cmds.rs`).
-    pub(crate) assertions: Option<(u64, Arc<Vec<assert_cmds::Checked>>)>,
+    pub(crate) assertions: assert_check::Checks,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -202,7 +203,7 @@ impl OpenDocument {
             regen: None,
             cache: new_cache(),
             selection: selection::Selection::default(),
-            assertions: None,
+            assertions: assert_check::Checks::default(),
         }
     }
 

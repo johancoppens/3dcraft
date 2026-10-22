@@ -35,15 +35,15 @@ const SUBJECT: &str = "a body (feature name or id), a list of them, a query {kin
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("measure.distance", "Distance", r#"{"from": subject, "to": subject}"#,
-        "The least distance between two sets of faces (a subject is a body by name or id, a list of them, a query {kind, where} as select.query takes, or a bare filter, which selects faces): distance in the document's length unit, from and to: the nearest points, each with the body and the face (persistent name) it lies on. Found on a mesh and settled on the exact faces (their surfaces and edges, by projection), so it is exact for planes, cylinders, cones, spheres and tori and as close as projection gets on freeform faces. Read-only. Faces that touch or cross are 0 apart; for whether bodies overlap use measure.clearance.", doc: true, measure_distance),
+        "The least distance between two sets of faces (a subject is a body by name or id, a list of them, a query {kind, where} as select.query takes, or a bare filter, which selects faces): distance in the document's length unit, from and to: the nearest points, each with the body and the face (persistent name) it lies on. Found on a mesh and settled on the exact faces (their surfaces and edges, by projection), so it is exact for planes, cylinders, cones, spheres and tori and as close as projection gets on freeform faces; atLeast is proven (the mesh's distance less what it can be off by). Read-only. Faces that touch or cross are 0 apart; for whether bodies overlap use measure.clearance.", doc: true, measure_distance),
     spec!("measure.clearance", "Clearance", r#"{"from": subject, "to": subject}"#,
         "The least clearance between two sets of bodies (a bare filter selects bodies): for every pair, status clear (with its distance), touch (0) or overlap (one in the other, or a common volume), and the least: clearance (null when a pair overlaps) with the pair and the nearest points. Read-only; at most 500 pairs.", doc: true, measure_clearance),
     spec!("measure.thickness", "Wall Thickness", r#"{"of": subject}"#,
-        "The thinnest place of a body (or of the faces given, the places measured from): at sampled points of every face a line goes into the material along the inward normal, the thickness there is how far it goes before it leaves the body (exact, the line against the faces' surfaces), and the least sample is moved along its face to where it is least. Returns thickness, at (the point and its face), to (where the line leaves, and that face), samples. Exact where the wall has parallel or concentric sides; a sampled search otherwise (the least found). Read-only.", doc: true, measure_thickness),
+        "The thinnest place of a body (or of the faces given, the places measured from): at sampled points of every face a line goes into the material along the inward normal, the thickness there is how far it goes before it leaves the body (exact, the line against the faces' surfaces), and the least sample is moved along its face to where it is least. Returns thickness (the least found, at a real place), atLeast (proven: no place is thinner), at (the point and its face), to (where the line leaves, and that face), samples. Exact where the wall has parallel or concentric sides; a searched least otherwise. Near an acute edge the ray method's thickness tends to 0. Read-only.", doc: true, measure_thickness),
     spec!("measure.ray", "Ray Cast", r#"{"from": [expr, expr, expr], "direction": "x|y|z|-x|-y|-z" or [number, number, number], "of": subject = all bodies, "limit": integer = 100}"#,
         "Casts a ray through the model and lists every face it meets, nearest first: distance from the start along the ray, point, body, face (persistent name), enters (true where the ray goes into the material, false where it comes out), edge (true where it crosses at an edge or vertex, met by each face there), tangent (grazes without crossing). Exact (the line against each face's surface, kept to the face). Read-only.", doc: true, measure_ray),
     spec!("measure.through", "Goes Through", r#"{"of": subject}"#,
-        "Whether holes go through: for every cylindrical or conical face named (a bare filter selects faces, such as {\"hole\": true} or {\"madeBy\": \"Drill\"}), whether the material is cut through along its axis: from the middle of the face's axis the line meets no face of the body either way. Per face: through, the axis (point, direction), and where it is blocked (the face met first, its distance beyond the face's end); why not, for a face whose axis runs in the material (a boss, not a hole). through: all of them. Exact (the axis against the faces). Read-only.", doc: true, measure_through),
+        "Whether holes go through: for every cylindrical or conical face named (a bare filter selects faces, such as {\"hole\": true} or {\"madeBy\": \"Drill\"}), whether the whole bore is clear: a cylinder on the face's axis of its narrowest radius (less a margin), as long as the body and beyond, has no point in common with the body (the boolean's exact intersection; one line down the axis would pass a blind hole with a vent). Per face: through, the axis (point, direction), radius, and where it is blocked (a point of the material in the bore and the faces around it); why not, also for a face whose axis runs in the material (a boss, not a hole). through: all of them. Read-only.", doc: true, measure_through),
     spec!("measure.symmetry", "Symmetry", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or {point: [expr, expr, expr], normal: [number, number, number]}, "tol": length = 10 × the document's tolerance}"#,
         "Whether the bodies (or faces) are their own mirror image in a plane: points of every face (its mesh's vertices, on the exact faces) are mirrored and the distance to the nearest face found exactly; deviation is the largest, symmetric whether it is within tol, worst where (point, body, face). A feature on one side only is found from its own faces. Read-only.", doc: true, measure_symmetry),
 ];
@@ -103,6 +103,9 @@ impl<'a> Ctx<'a> {
         let number = match value {
             Value::Number(n) => n.as_f64(),
             Value::String(source) => {
+                if let Some(why) = power_of_a_quantity(source) {
+                    return Err(format!("`{key}`: {why}"));
+                }
                 let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
                 let quantity = craft3d_expr::evaluate(source, |name| {
                     evaluation.as_ref().and_then(|e| e.value(name))
@@ -147,6 +150,52 @@ impl<'a> Ctx<'a> {
             self.quantity(z, key, 1)?,
         ))
     }
+}
+
+/// Refuses `N unit^k` (such as `50 cm^3`): in expressions a power binds
+/// to the number with its unit, so that is (50 cm)³, not 50 cm³, and a
+/// bound written so would pass silently. Says how to write what was
+/// meant. `None` when the text has no such form.
+pub(crate) fn power_of_a_quantity(source: &str) -> Option<String> {
+    let b = source.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c != b'^' {
+            continue;
+        }
+        let back = |mut j: usize, take: &dyn Fn(u8) -> bool| {
+            while j > 0 && b.get(j - 1).is_some_and(|&c| take(c)) {
+                j -= 1;
+            }
+            j
+        };
+        let end = back(i, &|c| c == b' ');
+        let start = back(end, &|c| c.is_ascii_alphabetic());
+        let Some(unit) = source.get(start..end).filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        if craft3d_expr::Unit::from_symbol(unit).is_none() {
+            continue;
+        }
+        let number_end = back(start, &|c| c == b' ');
+        let number_start = back(number_end, &|c| c.is_ascii_digit() || c == b'.');
+        let Some(number) = source
+            .get(number_start..number_end)
+            .filter(|n| !n.is_empty() && n.bytes().any(|c| c.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let k: String = source
+            .get(i + 1..)
+            .unwrap_or("")
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        return Some(format!(
+            "`{number} {unit}^{k}` means ({number} {unit})^{k} in expressions; for {number} {unit}^{k} write `{number} * (1 {unit})^{k}`, or the plain number in the document's unit"
+        ));
+    }
+    None
 }
 
 /// A direction: an axis word or three numbers.
@@ -290,9 +339,9 @@ fn bodies_of(ctx: &Ctx<'_>, found: &[Found]) -> Result<Vec<Named>, String> {
             }
         }
     }
-    if order.len() > MAX_PARTS {
+    if order.len() > MAX_ITEMS {
         return Err(format!(
-            "the subject names faces of {} bodies; at most {MAX_PARTS}",
+            "the subject names {} bodies (or faces of them); at most {MAX_ITEMS}",
             order.len()
         ));
     }
@@ -374,6 +423,13 @@ pub(crate) struct Outcome {
     pub flag: Option<bool>,
     /// What it found in words when the number cannot say it.
     pub note: Option<String>,
+    /// Proven bounds on the true value: it is at least `lower` and at
+    /// most `upper`. Equal to `number` for what is measured exactly (an
+    /// integral, a count, a box); for the least of something searched for
+    /// (a thickness, a distance) `upper` is what was found at a real place
+    /// and `lower` what nothing can be below.
+    pub lower: Option<f64>,
+    pub upper: Option<f64>,
     pub detail: Map<String, Value>,
 }
 
@@ -384,6 +440,8 @@ impl Outcome {
             number: Some(value),
             flag: None,
             note: None,
+            lower: Some(value),
+            upper: Some(value),
             detail: Map::new(),
         }
     }
@@ -394,6 +452,8 @@ impl Outcome {
             number: None,
             flag: Some(value),
             note: None,
+            lower: None,
+            upper: None,
             detail: Map::new(),
         }
     }
@@ -556,6 +616,12 @@ fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
 
 /// The parts (bodies with their meshes) of the bodies and faces named.
 fn parts<'b>(ctx: &Ctx<'_>, bodies: &'b [Named]) -> Result<Vec<Part<'b>>, String> {
+    if bodies.len() > MAX_PARTS {
+        return Err(format!(
+            "the subject names {} bodies (or faces of them); a geometric measure takes at most {MAX_PARTS}",
+            bodies.len()
+        ));
+    }
     bodies
         .iter()
         .map(|(id, body, faces)| {
@@ -583,6 +649,8 @@ fn distance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let (pa, pb) = (parts(ctx, &ba)?, parts(ctx, &bb)?);
     let near = verify::distance(&pa, &pb)?;
     let mut out = Outcome::number(Dim::Length(1), near.distance);
+    out.lower = Some(near.lower);
+    out.detail.insert("atLeast".into(), near.lower.into());
     out.detail
         .insert("from".into(), place_json(ctx, &ba, near.face_a, near.a));
     out.detail
@@ -611,6 +679,7 @@ fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let tol = ctx.tolerance.linear;
     let mut pairs = Vec::new();
     let mut least: Option<(f64, Value)> = None;
+    let mut lower = f64::INFINITY;
     let mut overlap = false;
     for (i, (ida, body_a, _)) in ba.iter().enumerate() {
         for (j, (idb, body_b, _)) in bb.iter().enumerate() {
@@ -655,6 +724,7 @@ fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
                 "touch" => Some(0.0),
                 _ => None,
             };
+            lower = lower.min(if status == "clear" { near.lower } else { 0.0 });
             overlap |= value.is_none();
             let entry = json!({
                 "a": ctx.feature_name(*ida), "b": ctx.feature_name(*idb),
@@ -680,6 +750,11 @@ fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     } else if let Some((v, _)) = &least {
         out.number = Some(*v);
     }
+    out.upper = out.number;
+    out.lower = out.number.map(|v| lower.min(v));
+    if let Some(at_least) = out.lower {
+        out.detail.insert("atLeast".into(), at_least.into());
+    }
     if let Some((_, pair)) = least {
         out.detail.insert("least".into(), pair);
     }
@@ -694,9 +769,11 @@ fn thickness(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let parts = parts(ctx, &bodies)?;
     let mut best: Option<(usize, verify::Thin)> = None;
     let mut samples = 0;
+    let mut lower = f64::INFINITY;
     for (i, part) in parts.iter().enumerate() {
         if let Some(thin) = verify::thickness(part, ctx.tolerance.linear)? {
             samples += thin.samples;
+            lower = lower.min(thin.lower);
             if best
                 .as_ref()
                 .is_none_or(|(_, b)| thin.thickness < b.thickness)
@@ -707,6 +784,9 @@ fn thickness(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     }
     let (i, thin) = best.ok_or("no point of the faces could be measured from")?;
     let mut out = Outcome::number(Dim::Length(1), thin.thickness);
+    out.lower = Some(lower.min(thin.thickness));
+    out.detail
+        .insert("atLeast".into(), lower.min(thin.thickness).into());
     out.detail.insert(
         "at".into(),
         place_json(ctx, &bodies, (i, thin.face), thin.at),
@@ -732,7 +812,6 @@ fn through(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     // The bodies once, each with the faces asked about.
     let bodies = bodies_of(ctx, &found)?;
     let parts = parts(ctx, &bodies)?;
-    let tol = ctx.tolerance.linear;
     let mut listed = Vec::new();
     let (mut all, mut count) = (true, 0_usize);
     for item in &found {
@@ -748,25 +827,22 @@ fn through(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
         let mut is_through = true;
         let mut blocked = Vec::new();
         for &face in &item.indices {
-            let t = verify::through(part, face, tol)?;
+            let t = verify::through(part, face, &ctx.tolerance)?;
             entry.insert(
                 "axis".into(),
                 json!({"point": vec3(t.middle), "direction": vec3(t.axis)}),
             );
+            entry.insert("radius".into(), t.radius.into());
             if !t.through {
                 is_through = false;
                 if let Some(why) = &t.why {
                     entry.insert("why".into(), why.clone().into());
                 }
-                for (k, b) in t.blocked.iter().enumerate() {
-                    if let Some((other, d, point)) = b {
-                        blocked.push(json!({
-                            "toward": if k == 0 { "+axis" } else { "-axis" },
-                            "face": ctx.face_name(item.feature, *other),
-                            "point": vec3(*point),
-                            "beyondEnd": d - t.half_length,
-                        }));
-                    }
+                for (point, faces) in &t.blocked {
+                    blocked.push(json!({
+                        "point": vec3(*point),
+                        "faces": faces.iter().take(20).map(|f| ctx.face_name(item.feature, *f)).collect::<Vec<_>>(),
+                    }));
                 }
             }
         }

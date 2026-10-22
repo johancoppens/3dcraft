@@ -90,7 +90,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed or error, what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
@@ -799,7 +799,10 @@ fn variable_rename(session: &mut Session, params: &Value) -> Run {
         session,
         "variable.rename",
         &format!("Rename {name}"),
-        |doc| doc.rename_variable(name, to),
+        |doc| {
+            doc.rename_variable(name, to)?;
+            crate::assert_cmds::rename_variable_in_assertions(doc, name, to)
+        },
     )?;
     Ok(json!({ "name": to }))
 }
@@ -1747,6 +1750,9 @@ fn feature_rename(session: &mut Session, params: &Value) -> Run {
     )?;
     let name = p.required_str("name")?;
     edit(session, "feature.rename", "Rename feature", |doc| {
+        // What assertions name by name is named by id first, so they keep
+        // naming the feature.
+        crate::assert_cmds::assertions_by_id(doc);
         doc.rename_feature(id, name)
     })?;
     feature_result(session, id)
@@ -2055,7 +2061,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         }
     }
     // The assertions and how each stands: only when there are any.
-    let states = session.assertion_states();
+    let states: Vec<crate::AssertionState> = session
+        .assertion_checks(crate::assert_check::Wait::For(
+            crate::assert_check::EDIT_WAIT,
+        ))
+        .map(|c| c.into_iter().map(|c| c.state).collect())
+        .unwrap_or_default();
     if let (false, Some(map)) = (states.is_empty(), out.as_object_mut()) {
         let listed: Vec<Value> = states
             .iter()
@@ -2344,12 +2355,23 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         }
     }
     // Broken assertions are problems of the design, like failed
-    // features (only when the whole document is checked).
+    // features (only when the whole document is checked); those that are
+    // not proven either way are warnings.
     let assertions = if only.is_none() {
-        crate::assert_cmds::summary(session)
+        crate::assert_cmds::summary(session, crate::assert_check::Wait::All)
     } else {
         None
     };
+    let warnings: Vec<Value> = assertions
+        .as_ref()
+        .and_then(|s| s.get("unproven"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|b| json!({"assertion": b.get("name"), "warning": b.get("message")}))
+                .collect()
+        })
+        .unwrap_or_default();
     if let Some(broken) = assertions
         .as_ref()
         .and_then(|s| s.get("broken"))
@@ -2368,6 +2390,9 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems });
     if let (Some(s), Some(map)) = (assertions, result.as_object_mut()) {
         map.insert("assertions".into(), s);
+    }
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), warnings.into());
     }
     if let (false, Some(map)) = (loose.is_empty(), result.as_object_mut()) {
         map.insert("loose".into(), loose.into());

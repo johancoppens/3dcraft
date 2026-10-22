@@ -302,15 +302,18 @@ fn holes_go_through_until_the_plate_is_thicker_than_they_are_long() {
     assert_eq!(blind["through"], false, "{blind}");
     let face = &blind["faces"][0];
     assert_eq!(face["through"], false);
+    // The material left above the hole's end, z 15 to 16.
     let blocked = &face["blocked"][0];
-    assert_eq!(blocked["toward"], "+axis");
     close(
         &blocked["point"][2],
-        15.0,
+        15.5,
         1e-9,
-        "blocked at the hole's end",
+        "the material above the hole",
     );
-    close(&blocked["beyondEnd"], 0.0, 1e-9, "right at the end");
+    assert!(
+        !blocked["faces"].as_array().unwrap().is_empty(),
+        "{blocked}"
+    );
     // A boss is not a hole: its axis runs in the material.
     let mut b = Session::new(Workspace::none());
     run(&mut b, "file.new", json!({"units": "mm"}));
@@ -462,7 +465,13 @@ fn assertions_pass_break_on_an_edit_and_pass_again() {
         .iter()
         .map(|b| b["name"].as_str().unwrap())
         .collect();
-    assert_eq!(broken, ["bolt holes go through", "volume"], "{edit}");
+    // The holes stop 1 below the top: the wall over them is 1 thick, found
+    // from the top face (the plate's own thickness is 16 elsewhere).
+    assert_eq!(
+        broken,
+        ["bolt holes go through", "wall", "volume"],
+        "{edit}"
+    );
     let check = run(&mut s, "document.check", json!({}));
     assert_eq!(check["ok"], false);
     let problem = &check["problems"][0];
@@ -470,8 +479,8 @@ fn assertions_pass_break_on_an_edit_and_pass_again() {
     assert_eq!(problem["measured"], false);
     assert_eq!(states(&mut s)[0].1, AssertionStatus::Failed);
     let wall_now = run(&mut s, "assert.list", json!({"details": true}))["assertions"][1].clone();
-    close(&wall_now["measured"], 16.0, 1e-9, "the wall follows");
-    assert_eq!(wall_now["status"], "passed");
+    close(&wall_now["measured"], 1.0, 1e-6, "over the blind holes");
+    assert_eq!(wall_now["status"], "failed");
     // Longer holes: through again; the volume assertion now follows a
     // variable.
     run(
@@ -551,7 +560,7 @@ fn assertions_are_saved_and_read_back() {
     run(
         &mut w,
         "assert.add",
-        json!({"name": "thick", "measure": "thickness", "of": "Drilled", "min": "t - 1 mm", "max": "t"}),
+        json!({"name": "thick", "measure": "thickness", "of": {"in": "Drilled", "normal": {"along": "z"}}, "min": "t - 1 mm", "max": "t"}),
     );
     run(
         &mut w,
@@ -730,12 +739,13 @@ fn the_housings_bolt_holes_stop_going_through_when_the_plate_is_made_thicker() {
     assert_eq!(broken["measured"], false);
     let blind = run(&mut s, "measure.through", json!({"of": bolts}));
     assert_eq!(blind["throughCount"], 0, "{blind}");
+    // Material from the hole's end at z = 14 to the top at 16.
     let stop = &blind["faces"][0]["blocked"][0];
     close(
         &stop["point"][2],
-        14.0,
-        1e-9,
-        "blocked where the hole ends, 2 below the top",
+        15.0,
+        1e-6,
+        "the material above the hole's end",
     );
     assert_eq!(run(&mut s, "document.check", json!({}))["ok"], false);
     run(
@@ -745,4 +755,396 @@ fn the_housings_bolt_holes_stop_going_through_when_the_plate_is_made_thicker() {
     );
     let list = run(&mut s, "assert.list", json!({}));
     assert_eq!(list["passed"], 1, "{list}");
+}
+
+/// The review's probe (2026-10-22): a plate 10 thick, pocketed from below
+/// to 3, a 45° groove leaving 1.5 at x = 47.5 and ten pockets leaving 2.5.
+/// The thinnest wall is 1.5; `thickness min 2 mm` must fail, not pass on
+/// the least of a sample that missed the groove.
+fn ridge_plate() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": ["100 mm", "100 mm", "10 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Pocket", "size": ["35 mm", "120 mm", "8 mm"], "position": ["30 mm", "-10 mm", "-1 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "Cut1", "op": "subtract", "target": "Plate", "tool": "Pocket"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Ridge", "size": ["3 mm", "3 mm", "200 mm"], "position": ["47.5 mm", "-50 mm", "8.5 mm"], "axis": [0, 1, 0], "angle": "45 deg"}),
+    );
+    let mut last = "Cut".to_string();
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "Cut", "op": "subtract", "target": "Cut1", "tool": "Ridge"}),
+    );
+    for (i, (x, y)) in [
+        (72, 5),
+        (84, 5),
+        (72, 24),
+        (84, 24),
+        (72, 43),
+        (84, 43),
+        (72, 62),
+        (84, 62),
+        (72, 81),
+        (84, 81),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": format!("P{i}"), "size": ["5 mm", "5 mm", "8.5 mm"], "position": [format!("{x} mm"), format!("{y} mm"), "-1 mm"]}),
+        );
+        let next = format!("C{i}");
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": next, "op": "subtract", "target": last, "tool": format!("P{i}")}),
+        );
+        last = next;
+    }
+    s
+}
+
+#[test]
+fn a_wall_thinner_than_the_bound_fails_and_never_passes_on_a_sample() {
+    let mut s = ridge_plate();
+    // The ray down the groove's apex: 1.5 of material.
+    let ray = run(
+        &mut s,
+        "measure.ray",
+        json!({"from": [47.5, 50, 20], "direction": "-z"}),
+    );
+    close(
+        &ray["hits"][1]["distance"],
+        10.0 + 1.5,
+        1e-9,
+        "the ray through the groove",
+    );
+    let thin = run(&mut s, "measure.thickness", json!({"of": "C9"}));
+    close(&thin["thickness"], 1.5, 1e-5, "the groove");
+    let at_least = thin["atLeast"].as_f64().unwrap();
+    assert!(at_least <= thin["thickness"].as_f64().unwrap(), "{thin}");
+    let wall = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "wall", "measure": "thickness", "of": "C9", "min": "2 mm"}),
+    );
+    assert_eq!(wall["status"], "failed", "{wall}");
+    // Below what is proven: passes.
+    let low = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "low", "measure": "thickness", "of": "C9", "min": "1 mm"}),
+    );
+    assert_eq!(low["status"], "passed", "{low}");
+}
+
+#[test]
+fn a_bound_within_what_the_search_cannot_pin_down_is_not_proven() {
+    // A fat torus (R = 5, r = 4): every line into it along the inward
+    // normal passes the tube's middle and is 2r = 8 long, but a line could
+    // in principle meet the tube across the axis after 2 (R − r) = 2, and
+    // that is all the bound proves.
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.torus",
+        json!({"name": "Ring", "major": 5, "minor": 4}),
+    );
+    let thin = run(&mut s, "measure.thickness", json!({"of": "Ring"}));
+    close(&thin["thickness"], 8.0, 1e-6, "the tube");
+    close(&thin["atLeast"], 2.0, 1e-9, "what is proven");
+    let tight = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "tight", "measure": "thickness", "of": "Ring", "min": "5 mm"}),
+    );
+    assert_eq!(tight["status"], "notProven", "{tight}");
+    // Not passed: the check warns, the list is not ok.
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["warnings"][0]["assertion"], "tight", "{check}");
+    assert_eq!(check["ok"], true, "a warning is not a problem: {check}");
+    assert_eq!(run(&mut s, "assert.list", json!({}))["ok"], false);
+    assert_eq!(states(&mut s)[0].1, AssertionStatus::NotProven);
+    // A bound above what was found fails; one below what is proven passes.
+    let over = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "over", "measure": "thickness", "of": "Ring", "min": "9 mm"}),
+    );
+    assert_eq!(over["status"], "failed", "{over}");
+    let under = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "under", "measure": "thickness", "of": "Ring", "min": "1 mm"}),
+    );
+    assert_eq!(under["status"], "passed", "{under}");
+    // A tube: coaxial walls, proven exactly.
+    let mut t = Session::new(Workspace::none());
+    run(&mut t, "file.new", json!({"units": "mm"}));
+    run(
+        &mut t,
+        "feature.cylinder",
+        json!({"name": "Out", "radius": 10, "height": 30}),
+    );
+    run(
+        &mut t,
+        "feature.cylinder",
+        json!({"name": "In", "radius": 8, "height": 40, "position": [0, 0, -5]}),
+    );
+    run(
+        &mut t,
+        "feature.boolean",
+        json!({"name": "Tube", "op": "subtract", "target": "Out", "tool": "In"}),
+    );
+    let tube = run(
+        &mut t,
+        "assert.add",
+        json!({"name": "tube", "measure": "thickness", "of": "Tube", "min": "2 mm"}),
+    );
+    assert_eq!(tube["status"], "passed", "{tube}");
+}
+
+/// The review's probe: a blind hole with a coaxial vent, and a through
+/// hole a rib blocks a third of: neither goes through, though the axis of
+/// each is clear.
+#[test]
+fn a_vent_or_a_rib_in_the_bore_is_not_through() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 40, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Bolt", "radius": 3, "height": 7, "position": [10, 10, 4]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "C1", "op": "subtract", "target": "Plate", "tool": "Bolt"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Vent", "radius": 0.3, "height": 6, "position": [10, 10, -1]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "C2", "op": "subtract", "target": "C1", "tool": "Vent"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Bolt2", "radius": 3, "height": 12, "position": [30, 30, -1]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "C3", "op": "subtract", "target": "C2", "tool": "Bolt2"}),
+    );
+    // Before the rib, the second goes through.
+    let clear = run(
+        &mut s,
+        "measure.through",
+        json!({"of": {"madeBy": "Bolt2", "hole": true}}),
+    );
+    assert_eq!(clear["through"], true, "{clear}");
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Rib", "size": [1, 8, 2], "position": [31.5, 26, 4]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"name": "C4", "op": "union", "target": "C3", "tool": "Rib"}),
+    );
+    for (made_by, z) in [("Bolt", 2.0), ("Bolt2", 5.0)] {
+        let r = run(
+            &mut s,
+            "measure.through",
+            json!({"of": {"in": "C4", "madeBy": made_by, "hole": true}}),
+        );
+        assert_eq!(r["through"], false, "{made_by}: {r}");
+        let blocked = &r["faces"][0]["blocked"][0];
+        close(&blocked["point"][2], z, 1e-6, made_by);
+        // The axis itself is clear: one ray would have said through.
+        let axis = &r["faces"][0]["axis"]["point"];
+        let (x, y) = (axis[0].as_f64().unwrap(), axis[1].as_f64().unwrap());
+        let ray = run(
+            &mut s,
+            "measure.ray",
+            json!({"from": [x, y, 20], "direction": "-z", "of": "C4"}),
+        );
+        let along = ray["hits"].as_array().unwrap().len();
+        assert!(made_by == "Bolt" || along == 0, "{ray}");
+    }
+}
+
+#[test]
+fn a_unit_with_a_power_after_a_number_is_refused_in_a_bound() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cube", "size": [100, 100, 100]}),
+    );
+    for bad in ["50000 mm^3", "50 cm^3", "2 cm^2"] {
+        let e = refused(
+            &mut s,
+            "assert.add",
+            json!({"name": "v", "measure": "volume", "max": bad}),
+        );
+        assert!(e.contains("* (1 "), "{bad}: {e}");
+    }
+    let ok = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "v", "measure": "volume", "max": "2000 * (1 cm)^3"}),
+    );
+    assert_eq!(ok["status"], "passed", "{ok}");
+    let small = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "w", "measure": "volume", "max": "50 * (1 cm)^3"}),
+    );
+    assert_eq!(small["status"], "failed", "{small}");
+    // In a measure's own parameters too.
+    let e = s
+        .execute(
+            "measure.symmetry",
+            &json!({"of": "Cube", "plane": "yz", "tol": "1 mm^1"}),
+        )
+        .unwrap_err();
+    assert!(e.message().contains("* (1 mm)"), "{e}");
+}
+
+#[test]
+fn an_edit_measures_again_only_the_assertions_whose_subjects_it_changed() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "10 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "A", "size": ["w", 10, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "B", "size": [5, 5, 5], "position": [20, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "a", "measure": "thickness", "of": "A", "min": "w - 2 mm"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "b", "measure": "volume", "of": "B", "eq": 125}),
+    );
+    let before = s.assertions_measured().unwrap();
+    // B changes: only b is measured again.
+    let edit = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "B", "size": [6, 5, 5]}),
+    );
+    assert_eq!(edit["assertions"]["broken"][0]["name"], "b", "{edit}");
+    assert_eq!(s.assertions_measured().unwrap(), before + 1);
+    // A body added elsewhere: nothing.
+    run(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "S", "radius": 1, "position": [50, 0, 0]}),
+    );
+    run(&mut s, "assert.list", json!({}));
+    assert_eq!(s.assertions_measured().unwrap(), before + 1);
+    // w changes A and the bound of a.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "12 mm"}),
+    );
+    assert_eq!(run(&mut s, "assert.list", json!({}))["passed"], 1);
+    assert_eq!(s.assertions_measured().unwrap(), before + 2);
+    // Undo rebuilds A (bodies are known by identity, not by content), so
+    // a is measured again; b is not.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "assert.list", json!({}));
+    assert_eq!(s.assertions_measured().unwrap(), before + 3);
+}
+
+#[test]
+fn renames_reach_into_what_assertions_measure() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "half", "expr": "20 mm"}),
+    );
+    // Written before its body exists, by name.
+    let early = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "box", "measure": "volume", "of": "Box", "min": 1}),
+    );
+    assert_eq!(early["status"], "error", "{early}");
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Box", "size": [40, 10, 10]}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "mirror", "measure": "symmetric", "of": "Box", "plane": {"point": ["half", 0, 0], "normal": [1, 0, 0]}}),
+    );
+    assert_eq!(run(&mut s, "assert.list", json!({}))["passed"], 2);
+    run(
+        &mut s,
+        "feature.rename",
+        json!({"feature": "Box", "name": "Brick"}),
+    );
+    run(
+        &mut s,
+        "variable.rename",
+        json!({"name": "half", "to": "middle"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    assert_eq!(listed["passed"], 2, "{listed}");
+    assert_eq!(listed["assertions"][0]["measure"]["of"], "F1");
+    assert_eq!(
+        listed["assertions"][1]["measure"]["plane"]["point"][0],
+        "middle"
+    );
 }

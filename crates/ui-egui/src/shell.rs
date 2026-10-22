@@ -2055,17 +2055,21 @@ impl Shell {
                 ui.label(egui::RichText::new("Assertions").strong());
                 ui.separator();
             }
+            let mut pending = false;
             for row in &self.assertion_rows {
-                let passed = row.status == craft3d_engine::AssertionStatus::Passed;
-                let state = if passed {
-                    FeatureState::Ok
-                } else {
-                    FeatureState::Failed
+                use craft3d_engine::AssertionStatus as A;
+                // Passed: built; failed or in error: failed; not proven
+                // either way: needs attention; being measured: inactive.
+                let (state, tint) = match row.status {
+                    A::Passed => (FeatureState::Ok, tokens.ok),
+                    A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
+                    A::NotProven => (FeatureState::Failed, tokens.attention),
+                    A::Pending => (FeatureState::RolledBack, tokens.inactive),
                 };
-                let tint = if passed { tokens.ok } else { tokens.failed };
+                pending |= row.status == A::Pending;
                 let mut name = egui::RichText::new(&row.name);
-                if !passed {
-                    name = name.color(color(tokens.failed));
+                if row.status != A::Passed {
+                    name = name.color(color(tint));
                 }
                 let status = match &row.measured {
                     Some(measured) => format!("{} · {}", row.measure, measured),
@@ -2077,18 +2081,21 @@ impl Shell {
                     ui.label(name).on_hover_text(&row.message);
                     ui.colored_label(dim, status);
                 });
-                if !passed {
+                if matches!(row.status, A::Failed | A::Error | A::NotProven) {
                     ui.indent(("craft3d-assertion", &row.name), |ui| {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(&row.message)
-                                    .color(color(tokens.failed))
-                                    .small(),
+                                egui::RichText::new(&row.message).color(color(tint)).small(),
                             )
                             .wrap(),
                         );
                     });
                 }
+            }
+            // Measured on another thread: look again soon.
+            if pending {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(250));
             }
         });
         self.cause_hits = hits;

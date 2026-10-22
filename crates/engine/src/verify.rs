@@ -20,6 +20,9 @@ use std::collections::BTreeMap;
 
 /// Most triangles of the mesh of one body.
 const MAX_TRIANGLES: usize = 400_000;
+/// The angle criterion of the meshes (radians): what bounds how far a
+/// round face can lie from its triangles.
+const MESH_ANGLE: f64 = 12.0 * std::f64::consts::PI / 180.0;
 /// Most pairs of triangles one distance compares.
 const MAX_PAIRS: u64 = 60_000_000;
 /// Most points a thickness or a symmetry samples.
@@ -43,6 +46,14 @@ pub(crate) struct Part<'a> {
     pub triangles: BTreeMap<usize, Vec<[Vec3; 3]>>,
     /// Per face taking part: the box of its triangles grown by the chord.
     pub boxes: BTreeMap<usize, Bbox3>,
+    /// Every face of the body (taking part or not): its triangles and box.
+    pub every: BTreeMap<usize, Vec<[Vec3; 3]>>,
+    pub every_boxes: BTreeMap<usize, Bbox3>,
+    /// Per face of the body: how far a point of the exact face can be from
+    /// the face's triangles. 0 for a flat face bounded by lines (its
+    /// triangles cover it exactly), the chordal tolerance otherwise (the
+    /// tessellator's promise).
+    pub err: Vec<f64>,
 }
 
 impl<'a> Part<'a> {
@@ -54,33 +65,64 @@ impl<'a> Part<'a> {
     ) -> Answer<Self> {
         let probe = Probe::new(body, tolerance).map_err(|e| e.to_string())?;
         let (mesh, chord) = mesh_of(body, tolerance.linear)?;
-        let mut triangles: BTreeMap<usize, Vec<[Vec3; 3]>> = BTreeMap::new();
-        let wanted = |face: usize| faces.is_none_or(|list| list.contains(&face));
+        let mut every: BTreeMap<usize, Vec<[Vec3; 3]>> = BTreeMap::new();
+        for face in 0..body.faces.len() {
+            every.insert(face, Vec::new());
+        }
         for (t, &face) in mesh.face_ids.iter().enumerate() {
-            let face = face as usize;
-            if !wanted(face) {
-                continue;
-            }
-            if let Some(corners) = mesh.corners(t) {
-                triangles.entry(face).or_default().push(corners);
+            if let (Some(corners), Some(list)) = (mesh.corners(t), every.get_mut(&(face as usize)))
+            {
+                list.push(corners);
             }
         }
-        if let Some(list) = faces {
-            // A face without a triangle (none should be) is still asked.
-            for &face in list {
-                if face < body.faces.len() {
-                    triangles.entry(face).or_default();
-                }
-            }
-        }
-        let boxes = triangles
+        let wanted = |face: usize| faces.is_none_or(|list| list.contains(&face));
+        let triangles: BTreeMap<usize, Vec<[Vec3; 3]>> = every
             .iter()
-            .map(|(&face, tris)| {
-                let mut b = Bbox3::from_points(tris.iter().flatten().copied());
-                if b.is_empty() {
-                    b = face_box(body, face);
+            .filter(|(f, _)| wanted(**f))
+            .map(|(f, t)| (*f, t.clone()))
+            .collect();
+        let box_of = |face: usize, tris: &[[Vec3; 3]]| {
+            let mut b = Bbox3::from_points(tris.iter().flatten().copied());
+            if b.is_empty() {
+                b = face_box(body, face);
+            }
+            grown(&b, chord)
+        };
+        let every_boxes: BTreeMap<usize, Bbox3> =
+            every.iter().map(|(&f, t)| (f, box_of(f, t))).collect();
+        let boxes = triangles
+            .keys()
+            .filter_map(|f| every_boxes.get(f).map(|b| (*f, *b)))
+            .collect();
+        let err = body
+            .faces
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let straight = face_edges(body, i).all(|e| matches!(e.curve, Curve3::Line(_)));
+                // The mesh holds a curved face's triangles to the angle
+                // (corner normals at most MESH_ANGLE apart) unless a side
+                // is shorter than the chord: so a round of radius r is
+                // off by no more than r (1 − cos(MESH_ANGLE / 2)), or the
+                // sagitta of a chord-long side.
+                let round = |r: f64| {
+                    let sagitta = if chord >= 2.0 * r {
+                        r
+                    } else {
+                        r - (r * r - chord * chord / 4.0).max(0.0).sqrt()
+                    };
+                    chord.min((r * (1.0 - (0.5 * MESH_ANGLE).cos())).max(sagitta))
+                };
+                match &f.surface {
+                    Surface::Plane(_) if straight => 0.0,
+                    Surface::Cylinder(c) => round(c.radius()),
+                    Surface::Sphere(c) => round(c.radius()),
+                    Surface::Torus(t) => {
+                        let (major, minor) = t.radii();
+                        round(major + minor)
+                    }
+                    _ => chord,
                 }
-                (face, grown(&b, chord))
             })
             .collect();
         Ok(Part {
@@ -88,7 +130,14 @@ impl<'a> Part<'a> {
             chord,
             triangles,
             boxes,
+            every,
+            every_boxes,
+            err,
         })
+    }
+
+    pub fn err(&self, face: usize) -> f64 {
+        self.err.get(face).copied().unwrap_or(self.chord)
     }
 
     pub fn body(&self) -> &'a Body {
@@ -110,7 +159,7 @@ fn mesh_of(body: &Body, tol: f64) -> Answer<(Mesh, f64)> {
         let params = TessParams {
             chordal_tolerance: chord,
             max_triangles: Some(MAX_TRIANGLES),
-            max_angle: Some(12.0_f64.to_radians()),
+            max_angle: Some(MESH_ANGLE),
             ..TessParams::default()
         };
         match tessellate_body(body, &params) {
@@ -257,7 +306,11 @@ pub(crate) fn nearest_on_face(probe: &Probe<'_>, face: usize, p: Vec3) -> Answer
 /// The nearest places of two sets of faces.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Nearest {
+    /// Between the two places found: no less than the least distance.
     pub distance: f64,
+    /// Proven no more than the least distance: from the mesh, less what
+    /// the mesh can be off by.
+    pub lower: f64,
     pub a: Vec3,
     pub b: Vec3,
     /// The faces they are on: (part, face) of each side.
@@ -306,6 +359,8 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     let mut best = f64::INFINITY;
     let mut work = 0_u64;
     let mut found: Vec<(f64, Key, Vec3, Vec3)> = Vec::new();
+    let mut lower = f64::INFINITY;
+    let err = |parts: &[Part<'_>], (i, f): (usize, usize)| parts.get(i).map_or(chord, |p| p.err(f));
     for (box_distance, (ka, kb)) in pairs {
         if box_distance > best + slack {
             break;
@@ -337,9 +392,11 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         }
         if let Some((d, p, q)) = pair_best {
             found.push((d, (ka, kb), p, q));
+            lower = lower.min(d - err(a, ka) - err(b, kb));
         }
         // A face pair without triangles: from points of their edges.
         if ta.is_empty() || tb.is_empty() {
+            lower = lower.min(box_distance);
             found.push((f64::INFINITY, (ka, kb), Vec3::ZERO, Vec3::ZERO));
         }
     }
@@ -368,6 +425,7 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         if answer.is_none_or(|n| d < n.distance) {
             answer = Some(Nearest {
                 distance: d,
+                lower: 0.0,
                 a: p,
                 b: q,
                 face_a: ka,
@@ -375,7 +433,9 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
             });
         }
     }
-    answer.ok_or_else(|| "the nearest places could not be settled on the exact faces".into())
+    let mut answer = answer.ok_or("the nearest places could not be settled on the exact faces")?;
+    answer.lower = lower.min(answer.distance).max(0.0);
+    Ok(answer)
 }
 
 /// Nearest points of two faces by projecting onto each in turn from the
@@ -529,7 +589,11 @@ fn triangles_nearest(t: &[Vec3; 3], u: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
 /// The thinnest place of a body.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Thin {
+    /// The least found: the thickness at a real place, so no less than the
+    /// least there is.
     pub thickness: f64,
+    /// Proven no more than the least there is.
+    pub lower: f64,
     /// Where it is measured from, on face `face`.
     pub at: Vec3,
     /// Where the line into the material from there comes out, on face
@@ -547,6 +611,7 @@ fn thickness_at(
     face: usize,
     p: Vec3,
     tol: f64,
+    limit: f64,
 ) -> Answer<Option<(f64, Vec3, usize)>> {
     let Some(normal) = part.probe.normal(face, p).map_err(|e| e.to_string())? else {
         return Ok(None);
@@ -554,7 +619,7 @@ fn thickness_at(
     let from = 4.0 * tol;
     let hits = part
         .probe
-        .line_hits(p, -normal, from, f64::INFINITY)
+        .line_hits(p, -normal, from, limit)
         .map_err(|e| e.to_string())?;
     Ok(hits
         .iter()
@@ -588,9 +653,467 @@ fn tangents(n: Vec3) -> Option<(Vec3, Vec3)> {
     Some((e1, e2))
 }
 
-/// The thinnest place of the faces of `part` (the least of the
-/// thicknesses at sampled points of every face, each of the least few
-/// then moved along its face to where it is least).
+/// What a face is, for bounding how short a line into the material from
+/// one face to another can be.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// A flat face: a point of its plane and its outward normal.
+    Flat(Vec3, Vec3),
+    /// A cylinder, sphere or torus: its axis (a point and a direction; a
+    /// sphere's centre), its radius (a torus's tube radius and the radius
+    /// of its middle circle), and whether the material is inside the
+    /// round (convex: the outward normal points away from the axis).
+    Round {
+        origin: Vec3,
+        axis: Vec3,
+        radius: f64,
+        major: Option<f64>,
+        sphere: bool,
+        convex: bool,
+    },
+    Other,
+}
+
+fn shape(body: &Body, face: usize) -> Shape {
+    let Some(f) = body.faces.get(face) else {
+        return Shape::Other;
+    };
+    let sign = if f.reversed { -1.0 } else { 1.0 };
+    match &f.surface {
+        Surface::Plane(p) => Shape::Flat(p.frame().origin(), p.frame().z() * sign),
+        Surface::Cylinder(c) => Shape::Round {
+            origin: c.frame().origin(),
+            axis: c.frame().z(),
+            radius: c.radius(),
+            major: None,
+            sphere: false,
+            convex: !f.reversed,
+        },
+        Surface::Sphere(c) => Shape::Round {
+            origin: c.frame().origin(),
+            axis: c.frame().z(),
+            radius: c.radius(),
+            major: None,
+            sphere: true,
+            convex: !f.reversed,
+        },
+        Surface::Torus(t) => {
+            let (major, minor) = t.radii();
+            Shape::Round {
+                origin: t.frame().origin(),
+                axis: t.frame().z(),
+                radius: minor,
+                major: Some(major),
+                sphere: false,
+                convex: !f.reversed,
+            }
+        }
+        _ => Shape::Other,
+    }
+}
+
+/// The outward normal of a flat or round face at `p` (a point of it), and
+/// how much the normal can turn between the corners of one of its
+/// triangles and inside it (as a change of a dot product).
+fn normal_at(part: &Part<'_>, shape: Shape, p: Vec3) -> Option<(Vec3, f64)> {
+    match shape {
+        Shape::Flat(_, n) => Some((n, 0.0)),
+        Shape::Round {
+            origin,
+            axis,
+            radius,
+            major,
+            sphere,
+            convex,
+        } => {
+            let centre = if sphere {
+                origin
+            } else {
+                let along = origin + axis * (p - origin).dot(axis);
+                match major {
+                    // The nearest point of the tube's middle circle.
+                    Some(major) => {
+                        origin
+                            + (along - origin + (p - along))
+                                .normalized()
+                                .map_or(Vec3::ZERO, |d| {
+                                    let flat = d - axis * d.dot(axis);
+                                    flat.normalized().map_or(Vec3::ZERO, |f| f * major)
+                                })
+                    }
+                    None => along,
+                }
+            };
+            let n = (p - centre).normalized()?;
+            let n = if convex { n } else { -n };
+            // A side shorter than the chord is not held to the angle.
+            Some((n, MESH_ANGLE.max(part.chord / radius.max(1e-300))))
+        }
+        Shape::Other => None,
+    }
+}
+
+/// [`least_height`] over the triangles of `face` that hold a point where
+/// `keep` (of the face's normal there, within how much it turns) may hold:
+/// `None` when none does.
+fn least_height_where(
+    part: &Part<'_>,
+    face: usize,
+    o: Vec3,
+    n: Vec3,
+    keep: impl Fn(Vec3, f64) -> bool,
+) -> Option<f64> {
+    let tris = part.every.get(&face)?;
+    let shape = shape(part.body(), face);
+    let mut kept = Vec::new();
+    for t in tris {
+        let ok = t.iter().any(|&c| match normal_at(part, shape, c) {
+            Some((m, turn)) => keep(m, turn),
+            None => true,
+        });
+        if ok {
+            kept.push(*t);
+        }
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    Some(heights(&kept, o, n, part.err(face)))
+}
+
+fn heights(tris: &[[Vec3; 3]], o: Vec3, n: Vec3, err: f64) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in tris.iter().flatten() {
+        let h = n.dot(*p - o);
+        lo = lo.min(h);
+        hi = hi.max(h);
+    }
+    if !(lo.is_finite() && hi.is_finite()) {
+        return 0.0;
+    }
+    let least = if lo > 0.0 {
+        lo
+    } else if hi < 0.0 {
+        -hi
+    } else {
+        0.0
+    };
+    (least - err).max(0.0)
+}
+
+/// The least of `|n·(p − o)|` over the face of `part` (its triangles'
+/// corners, less how far the exact face can lie from them), or 0 when the
+/// face reaches the plane.
+fn least_height(part: &Part<'_>, face: usize, o: Vec3, n: Vec3) -> f64 {
+    let Some(tris) = part.every.get(&face) else {
+        return 0.0;
+    };
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in tris.iter().flatten() {
+        let h = n.dot(*p - o);
+        lo = lo.min(h);
+        hi = hi.max(h);
+    }
+    if !(lo.is_finite() && hi.is_finite()) {
+        return 0.0;
+    }
+    let err = part.err(face);
+    let least = if lo > 0.0 {
+        lo
+    } else if hi < 0.0 {
+        -hi
+    } else {
+        0.0
+    };
+    (least - err).max(0.0)
+}
+
+/// A bound, proven, below the length of any line that leaves face `a` of
+/// `part` into the material along its inward normal and comes out through
+/// face `b` (`None`: no such line can come out there), and where to look
+/// for a short one.
+fn pair_bound(part: &Part<'_>, a: usize, b: usize, tol: f64) -> (Option<f64>, Vec<(usize, Vec3)>) {
+    let body = part.body();
+    let (sa, sb) = (shape(body, a), shape(body, b));
+    let mut seeds = Vec::new();
+    if a == b {
+        let bound = match sa {
+            // A line into the material from a flat face never meets its
+            // plane again; one from a hole's wall never comes back to it.
+            Shape::Flat(..) => None,
+            Shape::Round {
+                convex: false,
+                major: None,
+                ..
+            } => None,
+            // Through the axis (the centre, the tube's middle) to the other
+            // side; a torus's line may meet the tube across its axis
+            // first, no nearer than 2 (R − r).
+            Shape::Round {
+                convex: true,
+                radius,
+                major,
+                ..
+            } => Some(match major {
+                Some(major) => (2.0 * radius).min(2.0 * (major - radius)).max(0.0),
+                None => 2.0 * radius,
+            }),
+            Shape::Round {
+                convex: false,
+                radius,
+                major: Some(major),
+                ..
+            } => Some((2.0 * (major - radius)).max(0.0)),
+            Shape::Other => Some(0.0),
+        };
+        return (bound, seeds);
+    }
+    let boxes = match (part.every_boxes.get(&a), part.every_boxes.get(&b)) {
+        (Some(x), Some(y)) => boxes_distance(x, y),
+        _ => 0.0,
+    };
+    // A line square to a cylinder's axis never comes out through a flat
+    // face square to that axis, and a line along the axis never through
+    // the cylinder: they only graze.
+    let cylinder = |s: Shape| match s {
+        Shape::Round {
+            axis,
+            major: None,
+            sphere: false,
+            ..
+        } => Some(axis),
+        _ => None,
+    };
+    match (sa, sb) {
+        (Shape::Flat(_, na), _) if cylinder(sb).is_some_and(|z| na.cross(z).length() < 1e-12) => {
+            return (None, seeds);
+        }
+        (_, Shape::Flat(_, nb)) if cylinder(sa).is_some_and(|z| nb.cross(z).length() < 1e-12) => {
+            return (None, seeds);
+        }
+        _ => {}
+    }
+    let mut bound = boxes;
+    match (sa, sb) {
+        (Shape::Flat(oa, na), Shape::Flat(ob, nb)) => {
+            // Leaving `a` along −na and coming out of `b` needs na·nb < 0.
+            if na.dot(nb) > -1e-12 {
+                return (None, seeds);
+            }
+            if na.cross(nb).length() < 1e-12 {
+                bound = bound.max(nb.dot(oa - ob).abs());
+            }
+            bound = bound
+                .max(least_height(part, a, ob, nb))
+                .max(least_height(part, b, oa, na));
+        }
+        // A line leaves a round face `a` along −n_a and comes out of the
+        // flat `b` only where n_a·n_b < 0: only the triangles of `a` that
+        // may hold such a point count.
+        (_, Shape::Flat(ob, nb)) => {
+            match least_height_where(part, a, ob, nb, |m, turn| m.dot(nb) <= turn) {
+                Some(h) => bound = bound.max(h),
+                None => return (None, seeds),
+            }
+        }
+        // Leaving the flat `a` along −n_a, it comes out of `b` only where
+        // n_b·n_a < 0, after the depth of that point below `a`'s plane.
+        (Shape::Flat(oa, na), _) => {
+            match least_height_where(part, b, oa, na, |m, turn| m.dot(na) <= turn) {
+                Some(h) => bound = bound.max(h),
+                None => return (None, seeds),
+            }
+        }
+        (
+            Shape::Round {
+                origin: o1,
+                axis: z1,
+                radius: r1,
+                major: None,
+                sphere: false,
+                ..
+            },
+            Shape::Round {
+                origin: o2,
+                axis: z2,
+                radius: r2,
+                major: None,
+                sphere: false,
+                ..
+            },
+        ) if z1.cross(z2).length() < 1e-12
+            && (o2 - o1 - z1 * (o2 - o1).dot(z1)).length() <= tol =>
+        {
+            // Coaxial cylinders: every point of one is |r1 − r2| from the
+            // other's surface.
+            bound = bound.max((r1 - r2).abs());
+        }
+        _ => {}
+    }
+    // Where to look: the corner of each face nearest the other's plane,
+    // or the nearest corners of their triangles.
+    let near_plane = |from: usize, to_o: Vec3, to_n: Vec3| {
+        part.every
+            .get(&from)
+            .and_then(|t| {
+                t.iter().flatten().min_by(|x, y| {
+                    to_n.dot(**x - to_o)
+                        .abs()
+                        .total_cmp(&to_n.dot(**y - to_o).abs())
+                })
+            })
+            .copied()
+    };
+    if let Shape::Flat(ob, nb) = sb
+        && let Some(v) = near_plane(a, ob, nb)
+    {
+        seeds.push((a, v));
+        seeds.push((b, v - nb * nb.dot(v - ob)));
+    }
+    if let Shape::Flat(oa, na) = sa
+        && let Some(v) = near_plane(b, oa, na)
+    {
+        seeds.push((b, v));
+        seeds.push((a, v - na * na.dot(v - oa)));
+    }
+    (Some(bound), seeds)
+}
+
+/// The mesh's least distance between faces `a` and `b`, less what the
+/// mesh can be off by, with the nearest corners; at most `budget` pairs of
+/// triangles (an unfinished search bounds nothing: `None`).
+fn mesh_bound(part: &Part<'_>, a: usize, b: usize, budget: &mut u64) -> Option<(f64, Vec3, Vec3)> {
+    let (ta, tb) = (part.every.get(&a)?, part.every.get(&b)?);
+    let (sa, sb) = (shape(part.body(), a), shape(part.body(), b));
+    // Per triangle, its corners' normals and how much they turn: a line
+    // leaving `a` along −n_a comes out of `b` only where n_a·n_b < 0, so a
+    // pair of triangles where that cannot be is passed over.
+    let normals = |tris: &[[Vec3; 3]], s: Shape| -> Vec<Option<([Vec3; 3], f64)>> {
+        tris.iter()
+            .map(|t| {
+                let [x, y, z] = *t;
+                let (nx, k) = normal_at(part, s, x)?;
+                let (ny, _) = normal_at(part, s, y)?;
+                let (nz, _) = normal_at(part, s, z)?;
+                Some(([nx, ny, nz], k))
+            })
+            .collect()
+    };
+    let (na, nb) = (normals(ta, sa), normals(tb, sb));
+    let mut best: Option<(f64, Vec3, Vec3)> = None;
+    for (t, ma) in ta.iter().zip(&na) {
+        for (u, mb) in tb.iter().zip(&nb) {
+            if let (Some((ma, ka)), Some((mb, kb))) = (ma, mb) {
+                let least = ma
+                    .iter()
+                    .flat_map(|x| mb.iter().map(move |y| x.dot(*y)))
+                    .fold(f64::INFINITY, f64::min);
+                if least > ka + kb {
+                    continue;
+                }
+            }
+            *budget = budget.checked_sub(1)?;
+            let (d, p, q) = triangles_nearest(t, u);
+            if best.is_none_or(|(x, _, _)| d < x) {
+                best = Some((d, p, q));
+            }
+        }
+    }
+    // No pair of triangles where a line could come out: no bound needed,
+    // nothing below the boxes'.
+    Some(
+        best.map_or((f64::INFINITY, Vec3::ZERO, Vec3::ZERO), |(d, p, q)| {
+            ((d - part.err(a) - part.err(b)).max(0.0), p, q)
+        }),
+    )
+}
+
+/// Most pairs of triangles the bound of a thickness compares.
+const BOUND_WORK: u64 = 20_000_000;
+/// Most places a thickness starts a search from, beyond its samples.
+const MAX_SEEDS: usize = 256;
+
+/// A bound, proven, below the thickness at every point of the faces of
+/// `part` taking part: below the length of every line into the material
+/// along the inward normal from one of them. Per pair of faces it could
+/// leave and come out through: their boxes' distance, the distance of one
+/// to the other's plane, coaxial cylinders' radii, a round's own diameter,
+/// the mesh's distance less what the mesh can be off by. Pairs are taken
+/// in order of their cheap bound, until that bound is above the least
+/// found. With the places where it was least, to search from.
+fn thickness_bound(part: &Part<'_>, tol: f64, below: f64) -> (f64, Vec<(usize, Vec3)>) {
+    // Only pairs whose boxes are nearer than `below` (the least found):
+    // the others cannot bring the bound under it, and the bound is never
+    // given above what was found.
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (&a, ba) in part
+        .triangles
+        .keys()
+        .filter_map(|a| part.every_boxes.get(a).map(|b| (a, b)))
+    {
+        for (&b, bb) in &part.every_boxes {
+            let d = if a == b { 0.0 } else { boxes_distance(ba, bb) };
+            if d < below {
+                pairs.push((d, a, b));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
+    let mut lower = f64::INFINITY;
+    if let Some(&(d, ..)) = pairs.get(MAX_BOUND_PAIRS) {
+        // Past the cap, what is left is bounded by its boxes.
+        lower = d;
+        pairs.truncate(MAX_BOUND_PAIRS);
+    }
+    let mut seeds: Vec<(usize, Vec3)> = Vec::new();
+    let mut budget = BOUND_WORK;
+    let flat = |f| matches!(shape(part.body(), f), Shape::Flat(..));
+    for (boxes, a, b) in pairs {
+        if boxes >= lower {
+            break;
+        }
+        let (Some(cheap), found) = pair_bound(part, a, b, tol) else {
+            continue;
+        };
+        if seeds.len() < MAX_SEEDS {
+            seeds.extend(found);
+        }
+        if cheap >= lower {
+            continue;
+        }
+        // Between flat faces the planes bound it as well as the mesh; the
+        // mesh is asked when a face is round.
+        let bound = if a != b && !(flat(a) && flat(b)) {
+            match mesh_bound(part, a, b, &mut budget) {
+                Some((d, p, q)) => {
+                    if seeds.len() < MAX_SEEDS && d.is_finite() {
+                        seeds.push((a, p));
+                        seeds.push((b, q));
+                    }
+                    cheap.max(d)
+                }
+                // Out of work: what is left is bounded by its boxes, the
+                // least of them this pair's.
+                None => {
+                    lower = lower.min(boxes);
+                    break;
+                }
+            }
+        } else {
+            cheap
+        };
+        lower = lower.min(bound);
+    }
+    (lower.max(0.0), seeds)
+}
+
+/// Most pairs of faces the bound of a thickness looks at.
+const MAX_BOUND_PAIRS: usize = 200_000;
+
+/// The thinnest place of the faces of `part`: the least thickness found
+/// (at sampled points of every face, at the places the bound points to,
+/// each of the least few moved along its face to where it is least), and
+/// a bound, proven, below which no thickness lies.
 pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
     let faces: Vec<usize> = part.triangles.keys().copied().collect();
     if faces.is_empty() {
@@ -599,31 +1122,64 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
     let per_face = (MAX_SAMPLES / faces.len()).max(3);
     let mut samples: Vec<(f64, usize, Vec3, Vec3, usize)> = Vec::new();
     let mut count = 0_usize;
+    // A line need go no further than twice the least found so far (with
+    // room for the faces' own least, to be refined): what is longer
+    // cannot be the thinnest place, and a short line meets few faces.
+    let mut best = f64::INFINITY;
+    let mut try_at = |face: usize, c: Vec3, samples: &mut Vec<_>| -> Answer<()> {
+        let Some(p) = onto_face(part, face, c)? else {
+            return Ok(());
+        };
+        count += 1;
+        let limit = if best.is_finite() {
+            2.0 * best + 10.0 * tol
+        } else {
+            f64::INFINITY
+        };
+        if let Some((d, to, other)) = thickness_at(part, face, p, tol, limit)? {
+            best = best.min(d);
+            samples.push((d, face, p, to, other));
+        }
+        Ok(())
+    };
     for &face in &faces {
         let tris = part.triangles.get(&face).map_or(&[][..], Vec::as_slice);
         let stride = tris.len().div_ceil(per_face).max(1);
         for t in tris.iter().step_by(stride) {
-            let c = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
-            let Some(p) = onto_face(part, face, c)? else {
-                continue;
-            };
-            count += 1;
-            if let Some((d, to, other)) = thickness_at(part, face, p, tol)? {
-                samples.push((d, face, p, to, other));
-            }
+            try_at(face, (t[0] + t[1] + t[2]) * (1.0 / 3.0), &mut samples)?;
+        }
+    }
+    let found = samples.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+    let (lower, seeds) = thickness_bound(part, tol, found);
+    // The places the bound points to, nudged off the face's edges.
+    for &(face, p) in seeds.iter().take(MAX_SEEDS) {
+        if !part.triangles.contains_key(&face) {
+            continue;
+        }
+        let nudge = part
+            .every
+            .get(&face)
+            .and_then(|tris| {
+                tris.iter()
+                    .map(|t| (t[0] + t[1] + t[2]) * (1.0 / 3.0))
+                    .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
+            })
+            .unwrap_or(p);
+        for k in [1e-6, 1e-3, 1e-1] {
+            try_at(face, p + (nudge - p) * k, &mut samples)?;
         }
     }
     samples.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
     let mut best: Option<Thin> = None;
-    let mut tried_faces: Vec<usize> = Vec::new();
+    let mut tried: Vec<usize> = Vec::new();
     for &(d, face, p, to, other) in &samples {
-        if tried_faces.len() >= MAX_REFINED / 2 {
+        if tried.len() >= MAX_TRIED_FACES {
             break;
         }
-        if tried_faces.contains(&face) {
+        if tried.contains(&face) {
             continue;
         }
-        tried_faces.push(face);
+        tried.push(face);
         let step0 = part
             .triangles
             .get(&face)
@@ -634,6 +1190,7 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
         if best.is_none_or(|b| d < b.thickness) {
             best = Some(Thin {
                 thickness: d,
+                lower: 0.0,
                 at: p,
                 to,
                 face,
@@ -642,8 +1199,14 @@ pub(crate) fn thickness(part: &Part<'_>, tol: f64) -> Answer<Option<Thin>> {
             });
         }
     }
-    Ok(best)
+    Ok(best.map(|mut b| {
+        b.lower = lower.min(b.thickness);
+        b
+    }))
 }
+
+/// Most faces whose least sample is moved along the face.
+const MAX_TRIED_FACES: usize = 8;
 
 /// A pattern search along the face for where the thickness is least.
 fn descend(
@@ -655,7 +1218,7 @@ fn descend(
 ) -> Answer<(f64, Vec3, Vec3, usize)> {
     let mut cur = start;
     let mut step = step0;
-    let stop = (tol * 1e-3).max(1e-12 * (1.0 + cur.1.length()));
+    let stop = (tol * 0.1).max(1e-12 * (1.0 + cur.1.length()));
     for _ in 0..MAX_STEPS {
         if step < stop {
             break;
@@ -681,7 +1244,7 @@ fn descend(
             let Some(p) = onto_face(part, face, cur.1 + dir * step)? else {
                 continue;
             };
-            if let Some((d, to, other)) = thickness_at(part, face, p, tol)?
+            if let Some((d, to, other)) = thickness_at(part, face, p, tol, cur.0)?
                 && d < cur.0
             {
                 cur = (d, p, to, other);
@@ -699,7 +1262,7 @@ fn descend(
 // ------------------------------------------------------------- through
 
 /// Whether the material is cut through along the axis of a cylindrical or
-/// conical face.
+/// conical face, across the whole of its narrowest circle.
 #[derive(Clone, Debug)]
 pub(crate) struct Through {
     pub through: bool,
@@ -707,13 +1270,15 @@ pub(crate) struct Through {
     /// direction.
     pub middle: Vec3,
     pub axis: Vec3,
-    /// How far the face reaches either way from `middle` along the axis.
-    pub half_length: f64,
+    /// The radius of the face's narrowest circle: the bore that must be
+    /// clear.
+    pub radius: f64,
     /// Why not, when it is not.
     pub why: Option<String>,
-    /// The first face met each way (+axis, -axis), with its distance from
-    /// `middle`.
-    pub blocked: [Option<(usize, f64, Vec3)>; 2],
+    /// Where material is in the bore: a point of it (the middle of the
+    /// common volume, or a place of contact) and the faces of the body
+    /// that bound it.
+    pub blocked: Vec<(Vec3, Vec<usize>)>,
 }
 
 /// The axis of a cylinder or a cone.
@@ -725,7 +1290,18 @@ pub(crate) fn axis_of(surface: &Surface) -> Option<(Vec3, Vec3)> {
     }
 }
 
-pub(crate) fn through(part: &Part<'_>, face: usize, tol: f64) -> Answer<Through> {
+/// Whether the body of `part` leaves the bore of face `face` clear: a
+/// cylinder on the face's axis, of the radius of its narrowest circle less
+/// a margin, as long as the body is along the axis and beyond, has no
+/// point in common with the body (`craft3d_kernel::boolean::interference`:
+/// exact, the boolean's intersection). One ray down the axis would let a
+/// blind hole with a vent or a bore half blocked by a rib pass.
+pub(crate) fn through(
+    part: &Part<'_>,
+    face: usize,
+    tolerance: &craft3d_math::Tolerance,
+) -> Answer<Through> {
+    let tol = tolerance.linear;
     let body = part.body();
     let f = body.faces.get(face).ok_or("a face is missing")?;
     let (origin, axis) = axis_of(&f.surface).ok_or_else(|| {
@@ -735,27 +1311,32 @@ pub(crate) fn through(part: &Part<'_>, face: usize, tol: f64) -> Answer<Through>
         )
     })?;
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut narrowest = f64::INFINITY;
     for edge in face_edges(body, face) {
         for p in edge_points(edge, EDGE_SAMPLES) {
             let s = (p - origin).dot(axis);
-            if s.is_finite() {
+            let off = (p - origin - axis * s).length();
+            if s.is_finite() && off.is_finite() {
                 lo = lo.min(s);
                 hi = hi.max(s);
+                narrowest = narrowest.min(off);
             }
         }
     }
-    if !(lo.is_finite() && hi.is_finite()) {
+    if let Surface::Cylinder(c) = &f.surface {
+        narrowest = c.radius();
+    }
+    if !(lo.is_finite() && hi.is_finite() && narrowest.is_finite()) {
         return Err("the face has no bounded extent along its axis".into());
     }
-    let half_length = 0.5 * (hi - lo);
     let middle = origin + axis * (0.5 * (lo + hi));
     let mut result = Through {
         through: false,
         middle,
         axis,
-        half_length,
+        radius: narrowest,
         why: None,
-        blocked: [None, None],
+        blocked: Vec::new(),
     };
     match part.probe.place(middle).map_err(|e| e.to_string())? {
         Place::Outside => {}
@@ -772,19 +1353,65 @@ pub(crate) fn through(part: &Part<'_>, face: usize, tol: f64) -> Answer<Through>
             return Err("where the axis lies could not be told (every ray grazed the body)".into());
         }
     }
-    let from = 2.0 * tol;
-    for (k, dir) in [axis, -axis].into_iter().enumerate() {
-        let hits = part
-            .probe
-            .line_hits(middle, dir, from, f64::INFINITY)
-            .map_err(|e| e.to_string())?;
-        if let (Some(hit), Some(slot)) = (hits.first(), result.blocked.get_mut(k)) {
-            *slot = Some((hit.face, hit.t, hit.point));
+    let margin = (10.0 * tol).max(1e-6 * narrowest);
+    let bore = narrowest - margin;
+    if bore.is_nan() || bore <= 0.0 {
+        return Err(format!(
+            "the face's narrowest circle (radius {narrowest:e}) is too small to tell"
+        ));
+    }
+    // From before the body to beyond it, along the axis.
+    let (blo, bhi) = body
+        .bbox()
+        .ok()
+        .and_then(|b| b.corners())
+        .ok_or("the body has no box")?;
+    let (mut from, mut to) = (f64::INFINITY, f64::NEG_INFINITY);
+    for x in [blo.x, bhi.x] {
+        for y in [blo.y, bhi.y] {
+            for z in [blo.z, bhi.z] {
+                let s = (Vec3::new(x, y, z) - middle).dot(axis);
+                from = from.min(s);
+                to = to.max(s);
+            }
         }
     }
-    result.through = result.blocked.iter().all(Option::is_none);
-    if !result.through {
-        result.why = Some("material lies on the axis beyond the hole".into());
+    let pad = 0.01 * (to - from) + 10.0 * tol + narrowest;
+    let (from, to) = (from - pad, to + pad);
+    let frame = craft3d_math::Frame::from_z(middle + axis * from, axis)
+        .ok_or("the face's axis has no direction")?;
+    let tool =
+        craft3d_kernel::primitives::cylinder(&frame, bore, to - from).map_err(|e| e.to_string())?;
+    use craft3d_kernel::boolean::{Interference, Operand, interference};
+    match interference(body, &tool, tolerance)
+        .map_err(|e| format!("whether the bore is clear cannot be told: {e}"))?
+    {
+        Interference::Clear => result.through = true,
+        Interference::Touch { at, faces_a, .. } => {
+            let faces = faces_a.iter().map(|f| f.0 as usize).collect::<Vec<_>>();
+            for p in at.into_iter().take(4) {
+                result.blocked.push((p, faces.clone()));
+            }
+            result.why = Some("the body reaches into the bore".into());
+        }
+        Interference::Overlap(common) => {
+            let faces: Vec<usize> = common
+                .merged
+                .iter()
+                .flatten()
+                .filter(|s| s.operand == Operand::A)
+                .map(|s| s.face.0 as usize)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let at = craft3d_topo::mass_properties(&common.body)
+                .ok()
+                .and_then(|m| m.centroid)
+                .or_else(|| common.body.bbox().ok().and_then(|b| b.center()))
+                .unwrap_or(middle);
+            result.blocked.push((at, faces));
+            result.why = Some("material lies in the bore".into());
+        }
     }
     Ok(result)
 }

@@ -7,6 +7,7 @@
 //! in the window's tree and over MCP. The design note is
 //! docs/design/verification.md.
 
+use crate::assert_check::{EDIT_WAIT, Wait};
 use crate::commands::{Run, edit, fail, length_unit, spec};
 use crate::params::Params;
 use crate::verify_cmds::{Ctx, Dim, MEASURES, Outcome, only, take};
@@ -14,17 +15,16 @@ use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Assertion, Document, Expect, Expr};
 use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
-use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|distance|clearance|thickness|through|interference|symmetric", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean = true}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), interference (of: bodies, to: bodies = each other; none overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through, interference and symmetric take is (default true). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it).", doc: true, assert_add),
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), interference (of: bodies, to: bodies = each other; none overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through, interference and symmetric take is (default true). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
         "Removes an assertion from the document (one undo step).", doc: true, assert_delete),
-    spec!("assert.list", "Assertions", r#"{"details": boolean = false}"#,
-        "Lists the document's assertions, each checked against the document as it is now: name, measure (as stored), expected, status (passed, failed or error), measured with its unit, message (one line); with details what the measure found (where the thinnest place is, which hole is blocked). passed, failed and errors count them; ok is true when none failed and none is in error.", doc: true, assert_list),
+    spec!("assert.list", "Assertions", r#"{"details": boolean = false, "wait": boolean = true}"#,
+        "Lists the document's assertions, each checked against the document as it is now: name, measure (as stored), expected, status (passed, failed, notProven, error, or pending while it is measured: only with wait false), measured with its unit (and what is proven, for a least searched for), message (one line); with details what the measure found (where the thinnest place is, which hole is blocked). passed, failed, errors, notProven and pending count them; ok is true when all passed.", doc: true, assert_list),
 ];
 
 /// The keys of each measure's parameters.
@@ -87,6 +87,94 @@ fn by_id(doc: &Document, value: &Value, depth: usize) -> Value {
     }
 }
 
+/// Rewrites what the assertions of `doc` name by a feature's name as its
+/// id (a subject written before its feature existed keeps the name until
+/// then): done before a feature is renamed.
+pub(crate) fn assertions_by_id(doc: &mut Document) {
+    let mut rewritten = Vec::with_capacity(doc.assertions.len());
+    for assertion in &doc.assertions {
+        let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(&assertion.measure) else {
+            rewritten.push(assertion.measure.clone());
+            continue;
+        };
+        for key in ["of", "from", "to"] {
+            if let Some(v) = map.get_mut(key) {
+                *v = by_id(doc, v, 0);
+            }
+        }
+        if let Some(v @ Value::String(_)) = map.get_mut("plane") {
+            *v = by_id(doc, v, 0);
+        }
+        rewritten.push(
+            serde_json::to_string(&Value::Object(map))
+                .unwrap_or_else(|_| assertion.measure.clone()),
+        );
+    }
+    for (assertion, text) in doc.assertions.iter_mut().zip(rewritten) {
+        if text.len() <= craft3d_doc::MAX_ASSERTION_TEXT {
+            assertion.measure = text;
+        }
+    }
+}
+
+/// Renames variable `old` to `new` in the expressions inside what the
+/// assertions of `doc` measure (a symmetry plane's point, its tol); their
+/// bounds are renamed by the document itself.
+pub(crate) fn rename_variable_in_assertions(
+    doc: &mut Document,
+    old: &str,
+    new: &str,
+) -> Result<(), craft3d_doc::DocError> {
+    fn walk(
+        v: &mut Value,
+        old: &str,
+        new: &str,
+        depth: usize,
+    ) -> Result<(), craft3d_expr::VariableError> {
+        match v {
+            Value::String(text) => {
+                if let Ok(renamed) = craft3d_expr::rename_variable(text, old, new) {
+                    *text = renamed;
+                }
+            }
+            Value::Array(items) if depth < 4 => {
+                for item in items {
+                    walk(item, old, new, depth + 1)?;
+                }
+            }
+            Value::Object(map) if depth < 4 => {
+                for (k, item) in map.iter_mut() {
+                    if ["point", "tol"].contains(&k.as_str()) {
+                        walk(item, old, new, depth + 1)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    for assertion in &mut doc.assertions {
+        let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(&assertion.measure) else {
+            continue;
+        };
+        for key in ["tol", "plane"] {
+            if let Some(v) = map.get_mut(key) {
+                match v {
+                    Value::String(_) if key == "plane" => {}
+                    _ => walk(v, old, new, if key == "plane" { 1 } else { 0 })
+                        .map_err(craft3d_doc::DocError::Variable)?,
+                }
+            }
+        }
+        if let Ok(text) = serde_json::to_string(&Value::Object(map))
+            && text.len() <= craft3d_doc::MAX_ASSERTION_TEXT
+        {
+            assertion.measure = text;
+        }
+    }
+    Ok(())
+}
+
 /// The measure of an assertion as stored: `{"measure": name, ...}` with
 /// its parameters, the subjects' features by id.
 fn stored_measure(
@@ -137,9 +225,16 @@ fn stored_measure(
     Ok(text)
 }
 
-/// An expression parameter.
+/// An expression parameter; `N unit^k` is refused
+/// ([`crate::verify_cmds::power_of_a_quantity`]).
 fn expr(p: &Params, key: &str) -> Result<Option<Expr>, CommandError> {
-    Ok(p.expr(key)?.map(Expr::new))
+    let Some(source) = p.expr(key)? else {
+        return Ok(None);
+    };
+    if let Some(why) = crate::verify_cmds::power_of_a_quantity(&source) {
+        return fail(format!("{}: `{key}`: {why}", p.command()));
+    }
+    Ok(Some(Expr::new(source)))
 }
 
 /// What the assertion expects, from `eq`, `tol`, `min`, `max` and `is`.
@@ -301,31 +396,34 @@ fn assert_delete(session: &mut Session, params: &Value) -> Run {
 }
 
 fn assert_list(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("assert.list", params, &["details"])?;
+    let p = Params::new("assert.list", params, &["details", "wait"])?;
     let details = p.bool("details")?.unwrap_or(false);
-    let checked = session.checked_assertions()?;
+    let wait = if p.bool("wait")?.unwrap_or(true) {
+        Wait::All
+    } else {
+        Wait::No
+    };
+    let checked = session.assertion_checks(wait)?;
     let doc = session.document()?.history.current();
     let listed: Vec<Value> = checked.iter().map(|c| c.json(doc, details)).collect();
     let count = |s: Status| checked.iter().filter(|c| c.state.status == s).count();
-    let (passed, failed, errors) = (
-        count(Status::Passed),
-        count(Status::Failed),
-        count(Status::Error),
-    );
+    let passed = count(Status::Passed);
     Ok(json!({
         "assertions": listed,
         "count": checked.len(),
         "passed": passed,
-        "failed": failed,
-        "errors": errors,
-        "ok": failed == 0 && errors == 0,
+        "failed": count(Status::Failed),
+        "errors": count(Status::Error),
+        "notProven": count(Status::NotProven),
+        "pending": count(Status::Pending),
+        "ok": passed == checked.len(),
     }))
 }
 
 /// One assertion with its check, as `assert.add` and `assert.edit`
 /// return it.
 fn one(session: &mut Session, name: &str, details: bool) -> Run {
-    let checked = session.checked_assertions()?;
+    let checked = session.assertion_checks(Wait::All)?;
     let doc = session.document()?.history.current();
     checked
         .iter()
@@ -341,6 +439,13 @@ fn one(session: &mut Session, name: &str, details: bool) -> Run {
 pub enum AssertionStatus {
     Passed,
     Failed,
+    /// The measure was taken but does not settle it: the least found is
+    /// within the bound while what is proven is not (a thickness or a
+    /// distance searched for). Shown like a warning, never as passed.
+    NotProven,
+    /// Being measured (on another thread): asked again, it is one of the
+    /// others.
+    Pending,
     /// The measure could not be taken (its subject names nothing, the
     /// geometry refused); counted as broken.
     Error,
@@ -352,6 +457,8 @@ impl AssertionStatus {
         match self {
             Status::Passed => "passed",
             Status::Failed => "failed",
+            Status::NotProven => "notProven",
+            Status::Pending => "pending",
             Status::Error => "error",
         }
     }
@@ -552,144 +659,165 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         }
     };
     checked.detail = outcome.detail;
-    let pass = if let Some(want) = want {
+    // Yes, no, or not proven either way.
+    let verdict: Option<bool> = if let Some(want) = want {
         let got = outcome.flag.unwrap_or(false);
         checked.value = got.into();
         checked.state.measured = Some(match &outcome.note {
             Some(note) => format!("{got} ({note})"),
             None => got.to_string(),
         });
-        got == want
+        Some(got == want)
     } else {
         match outcome.number {
             Some(v) => {
                 checked.value = v.into();
                 checked.state.measured = Some(with_unit(v));
-                lo.is_none_or(|lo| v >= lo) && hi.is_none_or(|hi| v <= hi)
+                // The true value lies in [lower, upper]: a bound holds when
+                // the whole of that range is within it, fails when none of
+                // it is, and is not proven otherwise.
+                let lower = outcome.lower.unwrap_or(v);
+                let upper = outcome.upper.unwrap_or(v);
+                if lower < upper {
+                    checked.state.measured =
+                        Some(format!("{} (at least {})", with_unit(v), with_unit(lower)));
+                    checked.detail.insert("atLeast".into(), lower.into());
+                }
+                // Within the document's tolerance (of a length; its square
+                // or cube for an area or a volume, and rounding for the
+                // rest) a bound is met: what the geometry cannot tell
+                // apart does not fail it.
+                let slack = |b: f64| {
+                    let tol = match dim {
+                        Dim::Length(k) => doc.tolerance.linear.powi(k),
+                        _ => 0.0,
+                    };
+                    tol.max(1e-12 * b.abs())
+                };
+                let at_least = |lo: f64| {
+                    if lower >= lo - slack(lo) {
+                        Some(true)
+                    } else if upper < lo - slack(lo) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                };
+                let at_most = |hi: f64| {
+                    if upper <= hi + slack(hi) {
+                        Some(true)
+                    } else if lower > hi + slack(hi) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                };
+                let checks = [lo.map(at_least), hi.map(at_most)];
+                if checks.contains(&Some(Some(false))) {
+                    Some(false)
+                } else if checks.contains(&Some(None)) {
+                    None
+                } else {
+                    Some(true)
+                }
             }
             None => {
                 checked.value = outcome.note.clone().map_or(Value::Null, Value::from);
                 checked.state.measured = outcome.note.clone();
-                false
+                Some(false)
             }
         }
     };
-    checked.state.status = if pass { Status::Passed } else { Status::Failed };
-    checked.state.message = if pass {
-        format!(
-            "{measure}: {}",
-            checked.state.measured.clone().unwrap_or_default()
-        )
-    } else {
-        format!(
-            "{measure}: measured {}, expected {}",
-            checked
-                .state
-                .measured
-                .clone()
-                .unwrap_or_else(|| "nothing".into()),
-            checked.state.expected
-        )
+    let measured = checked
+        .state
+        .measured
+        .clone()
+        .unwrap_or_else(|| "nothing".into());
+    (checked.state.status, checked.state.message) = match verdict {
+        Some(true) => (Status::Passed, format!("{measure}: {measured}")),
+        Some(false) => (
+            Status::Failed,
+            format!(
+                "{measure}: measured {measured}, expected {}",
+                checked.state.expected
+            ),
+        ),
+        None => (
+            Status::NotProven,
+            format!(
+                "{measure}: not proven: found {measured}, expected {}; the least there is was not pinned down closely enough to tell",
+                checked.state.expected
+            ),
+        ),
     };
     checked
 }
 
-/// Checks every assertion of `doc`, each on its own: one that panics is
-/// an error, not a lost document.
-fn check_all(doc: &Document, regen: &Regen) -> Vec<Checked> {
-    doc.assertions
-        .iter()
-        .map(|assertion| {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check(doc, regen, assertion)
-            }))
-            .unwrap_or_else(|_| Checked {
-                state: AssertionState {
-                    name: assertion.name.clone(),
-                    measure: String::new(),
-                    status: Status::Error,
-                    measured: None,
-                    expected: String::new(),
-                    message: "internal error while measuring (a bug in 3DCraft, please report it)"
-                        .into(),
-                },
-                stored: assertion.measure.clone(),
-                value: Value::Null,
-                unit: None,
-                detail: Map::new(),
-            })
-        })
-        .collect()
+/// Checks one assertion; one that panics is an error, not a lost
+/// document.
+pub(crate) fn check_one(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check(doc, regen, assertion)
+    }))
+    .unwrap_or_else(|_| Checked {
+        state: AssertionState {
+            name: assertion.name.clone(),
+            measure: String::new(),
+            status: Status::Error,
+            measured: None,
+            expected: String::new(),
+            message: "internal error while measuring (a bug in 3DCraft, please report it)".into(),
+        },
+        stored: assertion.measure.clone(),
+        value: Value::Null,
+        unit: None,
+        detail: Map::new(),
+    })
 }
 
-impl Session {
-    /// The assertions of the active document checked against it as it is
-    /// now, remembered per revision.
-    pub(crate) fn checked_assertions(&mut self) -> Result<Arc<Vec<Checked>>, CommandError> {
-        let open = self.document_mut()?;
-        let revision = open.history.revision();
-        if let Some((at, checked)) = &open.assertions
-            && *at == revision
-        {
-            return Ok(Arc::clone(checked));
-        }
-        let regen = open.regen();
-        let checked = Arc::new(check_all(open.history.current(), &regen));
-        open.assertions = Some((revision, Arc::clone(&checked)));
-        Ok(checked)
-    }
-
-    /// The assertions of the active document and how each stands, in the
-    /// document's order; empty without a document or assertions.
-    pub fn assertion_states(&mut self) -> Vec<AssertionState> {
-        if self
-            .document()
-            .map_or(true, |d| d.history.current().assertions.is_empty())
-        {
-            return Vec::new();
-        }
-        self.checked_assertions()
-            .map(|c| c.iter().map(|c| c.state.clone()).collect())
-            .unwrap_or_default()
-    }
-}
-
-/// For the result of an edit and for `document.check`: the broken
-/// assertions of the active document, or `None` when it has none.
-pub(crate) fn summary(session: &mut Session) -> Option<Value> {
-    if session
-        .document()
-        .map_or(true, |d| d.history.current().assertions.is_empty())
-    {
+/// For the result of an edit and for `document.check`: how the
+/// assertions of the active document stand, `None` when it has none:
+/// `{count, passed, broken: [failed or in error], unproven, pending}`.
+pub(crate) fn summary(session: &mut Session, wait: Wait) -> Option<Value> {
+    let checked = session.assertion_checks(wait).ok()?;
+    if checked.is_empty() {
         return None;
     }
-    let checked = session.checked_assertions().ok()?;
-    let broken: Vec<Value> = checked
-        .iter()
-        .filter(|c| c.state.status != Status::Passed)
-        .map(|c| {
-            json!({
-                "name": c.state.name,
-                "status": c.state.status.name(),
-                "measured": c.value,
-                "unit": c.unit,
-                "expected": c.state.expected,
-                "message": c.state.message,
-            })
+    let entry = |c: &Checked| {
+        json!({
+            "name": c.state.name,
+            "status": c.state.status.name(),
+            "measured": c.value,
+            "unit": c.unit,
+            "expected": c.state.expected,
+            "message": c.state.message,
         })
-        .collect();
-    let passed = checked.len() - broken.len();
+    };
+    let of = |want: &[Status]| -> Vec<Value> {
+        checked
+            .iter()
+            .filter(|c| want.contains(&c.state.status))
+            .map(entry)
+            .collect()
+    };
+    let count = |s: Status| checked.iter().filter(|c| c.state.status == s).count();
     Some(json!({
         "count": checked.len(),
-        "passed": passed,
-        "broken": broken,
+        "passed": count(Status::Passed),
+        "broken": of(&[Status::Failed, Status::Error]),
+        "unproven": of(&[Status::NotProven]),
+        "pending": count(Status::Pending),
     }))
 }
 
 /// Adds the assertions' summary to the result of an edit, under
-/// `assertions`, when the document has any.
+/// `assertions`, when the document has any: waiting at most
+/// [`EDIT_WAIT`] for those the edit touched.
 pub(crate) fn add_summary(session: &mut Session, result: &mut Value) {
-    if let (Some(s), Some(map)) = (summary(session), result.as_object_mut()) {
+    if let (Some(s), Some(map)) = (
+        summary(session, Wait::For(EDIT_WAIT)),
+        result.as_object_mut(),
+    ) {
         map.insert("assertions".into(), s);
     }
 }
