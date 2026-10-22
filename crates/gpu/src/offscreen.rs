@@ -131,7 +131,7 @@ impl Offscreen {
         let summary = AdapterSummary::of(&adapter.get_info());
         let descriptor = |required_limits| wgpu::DeviceDescriptor {
             label: Some("craft3d offscreen"),
-            // The opaque scene in two steps (`renderer::FirstWrite`) where
+            // The opaque scene in two steps (`renderer::Step`) where
             // the adapter can.
             required_features: adapter.features() & wgpu::Features::DEPTH32FLOAT_STENCIL8,
             required_limits,
