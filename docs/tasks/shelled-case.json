@@ -38,6 +38,8 @@
     ["variable.set", {"name": "wall", "expr": "2 mm"}],
     ["feature.block", {"size": ["length", "width", "height"], "name": "Blank"}],
     ["feature.fillet", {"edges": [["F1:face(1)", "F1:face(2)"], ["F1:face(1)", "F1:face(3)"], ["F1:face(1)", "F1:face(4)"], ["F1:face(1)", "F1:face(5)"], ["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"], ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]], "radius": "radius", "name": "Rounded"}],
-    ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F1:face(0)"], "name": "Case"}]
+    ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F1:face(0)"], "name": "Case"}],
+    ["assert.add", {"name": "even wall", "measure": "thickness", "of": "Case", "eq": "wall", "tol": "0.001 mm"}],
+    ["assert.add", {"name": "symmetric", "measure": "symmetric", "of": "Case", "plane": {"point": ["length / 2", 0, 0], "normal": [1, 0, 0]}}]
   ]
 }

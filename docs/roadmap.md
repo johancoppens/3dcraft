@@ -32,7 +32,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M8.5 | A history that survives edits, datums, pointing | 🟡 2026-10-14 | Failed features that can be repaired, reference geometry, extrude ends and pointing in the viewport. | [M8.5](#m85-a-history-that-survives-edits-datums-pointing) |
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
 | R1 | First release | 🟡 2026-10-15 | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
-| V1 | Design verification | ⬜ | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
+| V1 | Design verification | 🟡 2026-10-22 | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
 | M10 | STEP import, corpus, web | 🟡 2026-10-21 | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
 | M12+ | Later candidates | ⬜ | Ideas that are not planned yet. | [Ideas](#ideas-m12) |
@@ -474,10 +474,12 @@ An agent checks a design by asking it questions, not by looking at a picture: th
 
 #### Done
 - Interference between bodies (`document.interference`): clear, touch (on a face, an edge or a point) or overlap with its volume, read-only, boxes first ([`design/booleans.md`](design/booleans.md) › *Interference*) (2026-10-16)
+- Queries on the exact geometry: `measure.distance`, `measure.clearance`, `measure.thickness` (the thinnest wall and where), `measure.ray`, `measure.through` (a hole cut through along its axis) and `measure.symmetry`, their subjects named as `select.query` names things ([`design/verification.md`](design/verification.md)) (2026-10-22)
+- Assertions kept in the document (`assert.add`, `assert.edit`, `assert.delete`, `assert.list`; format 27): volume, area, mass, count, extent, distance, clearance, thickness, through, no interference and symmetry against a value with a tolerance or bounds in the document's variables, checked after every regeneration without blocking it; a broken one shows in the edit's result, `document.check`, `document.inspect`, the tree and `ui.get`; the housing's bolt holes made blind by a thicker plate are flagged ([`design/verification.md`](design/verification.md)) (2026-10-22)
 
 #### Open
-- [ ] Queries: the distance and the least clearance between two faces or bodies; a section as geometry with its measures (area, outline, the widths across it); a ray cast through the model (the faces it meets and where); symmetry about a plane; wall thickness (the thinnest place and where); the least inside radius
-- [ ] `document.assert`: an assertion kept in the document (a measure against a value with a tolerance, a clearance at least, no interference, symmetric about, thickness at least), checked after every regeneration; a broken one shows like a failed feature, with the measure it found, in `document.check`, the tree and over MCP
+- [ ] Queries: a section as geometry with its measures (area, outline, the widths across it); the least inside radius; thickness by the sphere method and a map of thin places
+- [ ] The acceptance: the morning's models (the aircraft, the M10 screw, the villa) with a set of assertions that a deliberate error breaks; assertions in the task set's scoring
 
 #### Acceptance
 Each query against closed forms at three scales; the morning's models (the aircraft, the M10 screw, the villa) carry a set of assertions that a deliberate error breaks.

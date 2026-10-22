@@ -45,6 +45,8 @@
     ["feature.boolean", {"op": "union", "target": "Shank", "tool": "Sink", "name": "HoleTool"}],
     ["feature.pattern", {"source": "HoleTool", "count": 2, "step": ["length - 2 * edge", 0, 0], "name": "Row"}],
     ["feature.pattern", {"source": "Row", "count": 2, "step": [0, "width - 2 * edge", 0], "name": "Grid"}],
-    ["feature.boolean", {"op": "subtract", "target": "Panel", "tool": "Grid", "name": "Drilled"}]
+    ["feature.boolean", {"op": "subtract", "target": "Panel", "tool": "Grid", "name": "Drilled"}],
+    ["assert.add", {"name": "the holes go through", "measure": "through", "of": {"in": "Drilled", "surface": ["cylinder", "cone"]}}],
+    ["assert.add", {"name": "symmetric", "measure": "symmetric", "of": "Drilled", "plane": {"point": ["length / 2", 0, 0], "normal": [1, 0, 0]}}]
   ]
 }

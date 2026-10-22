@@ -1,0 +1,89 @@
+{
+  "format_version": 27,
+  "written_by": "ea56aafd6bf7b6454d9d00937a57f7a87908e11c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v27.steps.json --out v27.3dcraft, then info v27.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Row",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Drilled",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 16,
+      "vertices": 12,
+      "volume": 18747.610657883073,
+      "area": 6588.495559215387
+    }
+  ],
+  "assertions": [
+    {
+      "expected": "true",
+      "measure": "through",
+      "measured": "true",
+      "message": "through: true",
+      "name": "the holes go through",
+      "status": "passed"
+    },
+    {
+      "expected": "18747.6107 mm^3 ± 0.000001",
+      "measure": "volume",
+      "measured": "18747.6107 mm^3",
+      "message": "volume: 18747.6107 mm^3",
+      "name": "volume",
+      "status": "passed"
+    },
+    {
+      "expected": "8 mm to 8 mm",
+      "measure": "thickness",
+      "measured": "8 mm",
+      "message": "thickness: 8 mm",
+      "name": "plate thickness",
+      "status": "passed"
+    },
+    {
+      "expected": "2 ± 0",
+      "measure": "count",
+      "measured": "2",
+      "message": "count: 2",
+      "name": "two holes",
+      "status": "passed"
+    },
+    {
+      "expected": "true",
+      "measure": "symmetric",
+      "measured": "true",
+      "message": "symmetric: true",
+      "name": "symmetric",
+      "status": "passed"
+    },
+    {
+      "expected": "≤ 5 mm",
+      "measure": "extent",
+      "measured": "8 mm",
+      "message": "extent: measured 8 mm, expected ≤ 5 mm",
+      "name": "thin enough",
+      "status": "failed"
+    }
+  ]
+}
