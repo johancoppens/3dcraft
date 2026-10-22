@@ -301,3 +301,99 @@ fn a_sketch_point_says_whether_it_is_held() {
     assert_eq!(held["held"], true, "{held}");
     assert_eq!(held["constraints"].as_array().unwrap().len(), 2, "{held}");
 }
+
+/// The names of the features in `failed` of a result.
+fn failed_names(result: &Value) -> Vec<String> {
+    result
+        .get("failed")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|f| f["feature"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Undo and redo do not regenerate: `failed` is measured against the
+/// document as it is before the edit, not against the last regeneration
+/// of another revision (the review of 2026-10-22: a failure missed after
+/// an undo, an unrelated edit blamed for what the undo did). Commands run
+/// plainly, so that no check regenerates in between.
+#[test]
+fn failed_is_measured_against_the_revision_the_edit_starts_from() {
+    use common::plain::run;
+    let mut s = session();
+    part(&mut s);
+    let set = |s: &mut Session, name: &str, expr: &str| {
+        run(s, "variable.set", json!({"name": name, "expr": expr}))
+    };
+    let none: Vec<String> = Vec::new();
+    assert_eq!(failed_names(&set(&mut s, "r", "30 mm")), ["Round"]);
+    run(&mut s, "edit.undo", json!({}));
+    // Undone (r is 2 again, nothing regenerated): the same edit breaks
+    // the round again, and says so.
+    assert_eq!(failed_names(&set(&mut s, "r", "30 mm")), ["Round"]);
+    assert_eq!(failed_names(&set(&mut s, "r", "2 mm")), none);
+    // Undone to r = 30 (the round fails again, by the undo): an unrelated
+    // edit made nothing fail.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(failed_names(&set(&mut s, "spare", "2")), none);
+    // Back to r = 2 by undo, to 30 by redo: mended, then broken again.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(failed_names(&set(&mut s, "r", "3 mm")), none);
+    assert_eq!(failed_names(&set(&mut s, "r", "31 mm")), ["Round"]);
+}
+
+/// Variables inside the subject of an assertion and in a set's filter
+/// are uses; a string that names an axis or a plane is not.
+#[test]
+fn uses_inside_subject_queries_count_and_axis_names_do_not() {
+    let mut s = session();
+    part(&mut s);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "hr", "expr": "7 mm"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "no 7 mm holes", "measure": "count",
+               "of": {"kind": "face", "where": {"radius": "hr"}}, "eq": "0"}),
+    );
+    let refused = error(&mut s, "variable.delete", json!({"name": "hr"}));
+    assert!(
+        refused.contains("the assertion `no 7 mm holes`"),
+        "{refused}"
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "sr", "expr": "2 mm"}),
+    );
+    run(
+        &mut s,
+        "set.define",
+        json!({"name": "rounds", "kind": ["face"], "where": {"any": [{"radius": "sr"}]}}),
+    );
+    let refused = error(&mut s, "variable.delete", json!({"name": "sr"}));
+    assert!(refused.contains("the set `rounds`"), "{refused}");
+    // A variable called x, beside an assertion along the axis x and a
+    // set of faces facing x: neither uses it.
+    run(&mut s, "variable.set", json!({"name": "x", "expr": "1 mm"}));
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "long", "measure": "extent", "of": "Round", "axis": "x", "min": "1 mm"}),
+    );
+    run(
+        &mut s,
+        "set.define",
+        json!({"name": "ends", "kind": "face", "where": {"normal": {"along": "x"}}}),
+    );
+    let deleted = run(&mut s, "variable.delete", json!({"name": "x"}));
+    assert_eq!(deleted, json!({"deleted": "x"}));
+}

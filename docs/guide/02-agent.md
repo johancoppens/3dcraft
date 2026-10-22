@@ -147,7 +147,7 @@ Every command answers with JSON. The parts worth knowing:
   the entities and often the largest value that would fit ("the largest radius that fits there is below
   26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4.
 - **`failed`** in the result of `variable.set` and of the edits that can break other features
-  (`feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`): the features
+  (`variable.delete` with `force`, `feature.edit`, `feature.suppress`, `feature.move`, `feature.delete`, `history.rollback`): the features
   the change made fail, each `{feature, id, error}` (and `causedBy`), left out when there are none. "Make
   the plate 2 mm thick" that breaks a fillet says so in its own result.
 - **`assertions`** in the result of every feature command and `variable.set`: how many passed and which

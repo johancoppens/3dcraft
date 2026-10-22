@@ -371,17 +371,19 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
     }
 }
 
-/// The features of the active document that failed at its last
-/// regeneration (which, for a document not regenerated since it was
-/// opened or undone, may be one of an earlier revision: what was last
-/// shown), by id, in history order: what an edit is compared with to
-/// say which features it made fail ([`add_failed`]).
+/// The features of the active document as it is now that fail, by id,
+/// in history order: what an edit is compared with to say which features
+/// it made fail ([`add_failed`]). Of this revision, never of an earlier
+/// one (an undo or a redo does not regenerate, and a regeneration of the
+/// revision before it would blame the next edit for what the undo did);
+/// when the document was not regenerated since, it is now, which the
+/// regeneration cache keeps to what changed.
 pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandError> {
     let open = session.document_mut()?;
     if open.history.current().features.is_empty() {
         return Ok(Vec::new());
     }
-    let regen = open.last_regen();
+    let regen = open.regen();
     Ok(regen
         .features
         .iter()
@@ -930,6 +932,8 @@ fn json_mentions(value: &Value, name: &str, depth: usize) -> bool {
         "face",
         "edge",
         "feature",
+        "axis",
+        "plane",
     ];
     if depth > 16 {
         return false;
@@ -939,8 +943,16 @@ fn json_mentions(value: &Value, name: &str, depth: usize) -> bool {
         Value::Array(items) => items
             .iter()
             .any(|item| json_mentions(item, name, depth + 1)),
+        // Under a key that names something, a string or a list of
+        // strings is names (bodies, kinds, a plane, an axis); an object
+        // there (a subject query) is looked into like the rest.
         Value::Object(map) => map.iter().any(|(key, inner)| {
-            !NAMES.contains(&key.as_str()) && json_mentions(inner, name, depth + 1)
+            let names = match inner {
+                Value::String(_) => true,
+                Value::Array(items) => items.iter().all(Value::is_string),
+                _ => false,
+            };
+            !(NAMES.contains(&key.as_str()) && names) && json_mentions(inner, name, depth + 1)
         }),
         _ => false,
     }
