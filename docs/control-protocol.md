@@ -194,6 +194,8 @@ The contract that lets an agent verify its work without a picture:
 
 `detail: "topology"` adds every face, edge and vertex with its persistent name, geometry kind and tolerance. Field names are part of the protocol: changing one is a breaking change recorded in this document.
 
+Two short forms save an agent a round trip (2026-10-22, from the R1 acceptance): wherever a face is named, `F2:startCap()` and `F2:endCap()` name the cap of that role of feature `F2` without spelling out its outline ([`design/names.md`](design/names.md) › *The short form of a cap, everywhere*); and a sketch point given as `[x, y]` with an expression in it (`["-width / 2", 0]`) is held there by `x` and `y` constraints, so a profile is drawn on variables in one command (`sketch.rect`, `sketch.polyline`, `sketch.path`; [`design/document.md`](design/document.md) › *Sketch coordinates as expressions*).
+
 ## MCP
 
 `craft3d-cli mcp` serves MCP on stdio. Tool names use underscores (the dotted names belong to the JSON protocol above).

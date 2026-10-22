@@ -1,0 +1,35 @@
+{
+  "format_version": 29,
+  "written_by": "89e4217bf5fa681098fd920f2617e327f3d62f62",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v29.steps.json --out v29.3dcraft, then info v29.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Base",
+      "status": "ok",
+      "dof": 0
+    },
+    {
+      "id": "F2",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Edge",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 9,
+      "edges": 19,
+      "vertices": 14,
+      "volume": 7333.27436402666,
+      "area": 3089.2145457887764
+    }
+  ]
+}
