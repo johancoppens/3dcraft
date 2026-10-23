@@ -31,7 +31,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "document.sample",
     "Check Over the Range",
     r#"{"samples": integer = 32, "seed": integer = 1, "corners": boolean = true, "maxCorners": integer = 64, "choices": boolean = true, "deep": boolean = false, "budgetMs": number = none, "timeLimitMs": number or null = 60000, "maxFailures": integer = 100, "values": boolean = false}"#,
-    "Proves a Jig over its parameter range: on a copy of the active document (the document and its undo history do not change), sets the public parameters (param.list) to a series of points and checks each one: the defaults; the corners of the box of the ranges (every parameter at its min or max, a boolean off or on, a choice its first or last; all 2^n of them while that is at most maxCorners (at most 4096), else maxCorners of them chosen by the seed, the two all-low and all-high corners always among them); with choices every other choice of each choice parameter, the rest at the defaults; then samples (at most 10000) random points chosen by the seed (a number uniform over its range and on its step, an integer, a choice or a boolean uniform over its values; the same points whatever corners are asked for). A range that uses other parameters is evaluated at each point after them; ranges that keep moving each other fail the point (did not settle). A side of a range that is not given is the default. Each point is set as param.set sets it (a point it refuses, such as a range that is empty there, fails with the reason), regenerated without the open document's cache (timed: ms; the kernel's trees of freeform surfaces are shared within the process, so a surface the open document has met may be quicker), and checked as document.check (deep with deep) checks: no failed variables or features, valid bodies, no invalid parameter, no broken assertion; and every feature whose body is a solid at the defaults has a solid there too. With budgetMs a point whose regeneration takes longer fails as well; without it times are reported and never part of the verdict. timeLimitMs bounds the whole run (checked between points; null: no limit, as craft3d-cli check-range runs it); in a browser, which has no clock, a run stops after 128 points instead. A run that stops early has complete false, stoppedBy (timeLimit or pointCap) and ok false when a point failed, else null: never true. The same seed gives the same points and the same verdict. Returns ok, complete, the number of points by kind, failed (how many failed), failures (the first maxFailures: index, kind default|corner|choice|random, values: every parameter as param.set takes it, to reproduce the point, problems, ms), points ({index, kind, ok, ms} each; with values also its values), the parameters, unbounded (numbers without min and max: only their default is tried) and timing (medianMs, maxMs, totalMs, slowest point; null where there is no clock, as in a browser).",
+    "Proves a Jig over its parameter range: on a copy of the active document (the document and its undo history do not change), sets the public parameters (param.list) to a series of points and checks each one: the defaults; the corners of the box of the ranges (every parameter at its min or max, a boolean off or on, a choice its first or last; all 2^n of them while that is at most maxCorners (at most 4096), else maxCorners of them chosen by the seed, the two all-low and all-high corners always among them); with choices every other choice of each choice parameter, the rest at the defaults; then samples (at most 10000) random points chosen by the seed (a number uniform over its range and on its step, an integer, a choice or a boolean uniform over its values; the same points whatever corners are asked for). A range that uses other parameters is evaluated at each point after them; ranges that keep moving each other fail the point (did not settle). A side of a range that is not given is the default. Each point is set as param.set sets it (a point it refuses, such as a range that is empty there, fails with the reason), regenerated without the open document's cache (timed: ms; the kernel's trees of freeform surfaces are shared within the process, so a surface the open document has met may be quicker), and checked as document.check (deep with deep) checks: no failed variables or features, valid bodies, no invalid parameter, no broken assertion (the bodies measured, mass properties from the exact faces, at the defaults and with deep at every point: measuring costs several times a regeneration); and every feature whose body is a solid at the defaults has a solid there too. With budgetMs a point whose regeneration takes longer fails as well; without it times are reported and never part of the verdict. timeLimitMs bounds the whole run (checked between points; null: no limit, as craft3d-cli check-range runs it); in a browser, which has no clock, a run stops after 128 points instead. A run that stops early has complete false, stoppedBy (timeLimit or pointCap) and ok false when a point failed, else null: never true. The same seed gives the same points and the same verdict. Returns ok, complete, the number of points by kind, failed (how many failed), failures (the first maxFailures: index, kind default|corner|choice|random, values: every parameter as param.set takes it, to reproduce the point, problems, ms), points ({index, kind, ok, ms} each; with values also its values), the parameters, unbounded (numbers without min and max: only their default is tried) and timing (medianMs, maxMs, totalMs, slowest point; null where there is no clock, as in a browser).",
     doc: true,
     document_sample
 )];
@@ -493,11 +493,15 @@ fn body_kinds(regen: &craft3d_regen::Regen) -> Vec<(FeatureId, BodyKind)> {
 
 /// Sets `values` on a copy of `base` as `param.set` would, regenerates it
 /// without any cache of the open document's and checks it; the kinds of
-/// its bodies go to `kinds`.
+/// its bodies go to `kinds`. The bodies are measured (mass properties from
+/// the exact faces) with `measure` or `deep` only: on a part with many
+/// curved faces measuring costs several times the regeneration (the
+/// welding table Jig, 2026-10-23: 90 % of a check-range run).
 fn check_point(
     base: &Document,
     values: &Map<String, Value>,
     deep: bool,
+    measure: bool,
     body_budget: Option<usize>,
     solids: Option<&[(FeatureId, BodyKind)]>,
     kinds: &mut Vec<(FeatureId, BodyKind)>,
@@ -559,9 +563,7 @@ fn check_point(
             }
         }
     }
-    let check = Session::command("document.check")
-        .ok_or_else(|| CommandError::new("document.sample: document.check is not registered"))?;
-    let result = (check.run)(&mut scratch, &json!({ "deep": deep }))?;
+    let result = crate::commands::check_document(&mut scratch, deep, None, measure)?;
     if let Some(found) = result.get("problems").and_then(Value::as_array) {
         problems.extend(found.iter().cloned());
     }
@@ -684,6 +686,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
                     &base,
                     &values,
                     deep,
+                    point.kind == Kind::Default,
                     body_budget,
                     solids.as_deref(),
                     &mut kinds,
@@ -795,6 +798,42 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measuring is the costly part of a point's check: without `deep`
+    /// only the defaults' bodies are measured, with it every point's.
+    #[test]
+    fn only_the_defaults_are_measured_unless_deep() {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            (
+                "feature.block",
+                json!({"name": "Plate", "size": ["w", 20, 5]}),
+            ),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "80 mm"}),
+            ),
+        ] {
+            s.execute(id, &params).unwrap();
+        }
+        let measured = |s: &mut Session, deep: bool| {
+            let before = crate::mass::fresh_measures();
+            let result = s
+                .execute(
+                    "document.sample",
+                    &json!({"samples": 3, "seed": 1, "deep": deep}),
+                )
+                .unwrap();
+            assert_eq!(result["ok"], true, "{result}");
+            // The defaults, two corners and three random points.
+            assert_eq!(result["counts"]["points"], 6, "{result}");
+            crate::mass::fresh_measures() - before
+        };
+        assert_eq!(measured(&mut s, false), 1);
+        assert_eq!(measured(&mut s, true), 6);
+    }
 
     #[test]
     fn the_generator_is_seeded_and_stays_in_the_unit_interval() {

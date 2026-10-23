@@ -257,7 +257,9 @@ Options:
   --seed S          Seed of the random points and of a subset of corners.
                     Default 1
   --deep            Check each point as document.check --deep does
-                    (self-intersection, booleans held to their operands)
+                    (self-intersection, booleans held to their operands,
+                    every body measured; without it only the defaults'
+                    bodies are measured)
   --budget-ms M     A point whose regeneration takes longer than M
                     milliseconds fails
   --time-limit-ms M Stop the whole run after M milliseconds (exit 4 when

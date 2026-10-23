@@ -2992,6 +2992,22 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             "feature",
         )?),
     };
+    check_document(session, deep, only, true)
+}
+
+/// `document.check` of the active document: of every feature, or of
+/// `only`. Without `measure` the bodies are not measured (their mass
+/// properties integrated from the exact faces, which shows an unbounded
+/// or otherwise unmeasurable face): `document.sample` measures at the
+/// defaults and, with `deep`, at every point, as measuring costs several
+/// times a regeneration.
+pub(crate) fn check_document(
+    session: &mut Session,
+    deep: bool,
+    only: Option<craft3d_doc::FeatureId>,
+    measure: bool,
+) -> Run {
+    let measure = measure || deep;
     let open = session.document_mut()?;
     // A deep check holds every boolean to its operands, also those the
     // cache let go of.
@@ -3089,8 +3105,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 }));
             }
             // An unbounded or otherwise unmeasurable face shows up here.
-            crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
-            if let Err(error) = mass_of(body) {
+            if measure {
+                crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
+            }
+            if measure && let Err(error) = mass_of(body) {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
                 }));
