@@ -140,6 +140,8 @@ Under the timeline is a **player**, like a video player's:
 | Loop | | Starts again at the first step after the last |
 | Orbit | | Turns the camera slowly while it plays |
 
+In a narrow feature panel the speed, Loop and Orbit move to a second row, under the other five.
+
 The keys work while the pointer is over the view or the feature list and you are not typing in a field.
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a
 step. Playing stops at the end, when the document changes or when you switch tabs.

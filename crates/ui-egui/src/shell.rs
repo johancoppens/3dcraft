@@ -180,6 +180,10 @@ impl FileAction {
     }
 }
 
+/// The least width of the feature panel, in points: the history player's
+/// five buttons that move through the history still fit on a row.
+pub(crate) const TREE_PANEL_MIN: f32 = 190.0;
+
 /// The window's title for a document: its file's name (`untitled` when it
 /// has none), a `*` when it has changes that are not on disk, and the
 /// product's name. Just the product's name without a document.
@@ -1816,6 +1820,7 @@ impl Shell {
             let panel = egui::Panel::left("craft3d-tree")
                 .resizable(true)
                 .default_size(260.0)
+                .min_size(TREE_PANEL_MIN)
                 .frame(frame)
                 .show(ui, |ui| self.side_panel(ui, status.is_some()));
             self.tree_panel = Some(panel.response.rect);
