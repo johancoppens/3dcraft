@@ -907,7 +907,7 @@ impl Shell {
 
     /// Whether the File menu offers `action` for the document shown:
     /// Export as Jig for a document with public parameters that is not a
-    /// Jig in use, Open for Editing for a Jig in use; the rest always.
+    /// Jig in use, Open for editing for a Jig in use; the rest always.
     pub(super) fn file_action_available(&self, action: crate::shell::FileAction) -> bool {
         use crate::shell::FileAction as A;
         let jig = self.params.list.as_ref().is_some_and(|l| l.jig);
@@ -1393,12 +1393,12 @@ impl Shell {
             if self.jig_in_use() {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(dim, "A Jig: set its parameters.");
-                    let edit = ui.small_button("Open for editing").on_hover_text(
+                    // The File menu's item, by the same words.
+                    let label = crate::shell::FileAction::OpenForEditing.label();
+                    let edit = ui.small_button(label).on_hover_text(
                         "A new untitled model of it, as it is set, to edit (jig.edit)",
                     );
-                    self.params
-                        .hits
-                        .push(("Open for editing".to_string(), edit.rect));
+                    self.params.hits.push((label.to_string(), edit.rect));
                     if edit.clicked() {
                         self.request_file_action(crate::shell::FileAction::OpenForEditing);
                     }

@@ -141,7 +141,7 @@ impl FileAction {
             FileAction::Import => "Import…",
             FileAction::Export => "Export…",
             FileAction::ExportJig => "Export as Jig…",
-            FileAction::OpenForEditing => "Open for Editing",
+            FileAction::OpenForEditing => "Open for editing",
         }
     }
 

@@ -1115,7 +1115,7 @@ mod tests {
     /// The two roles of a Jig at the window: Export as Jig publishes a
     /// model as a `.3dcraftjig`; opening that file uses it (read-only but
     /// for its parameters); Save then asks for a model's name and never
-    /// writes the Jig's file; Open for Editing makes a new model of it.
+    /// writes the Jig's file; Open for editing makes a new model of it.
     #[test]
     fn a_jig_is_published_opened_for_use_and_saved_as_a_model() {
         let dir = workdir("jig");
@@ -1164,7 +1164,7 @@ mod tests {
         );
         assert_eq!(volume_on_disk(&mine.join("my-plate.3dcraft")), 1200.0);
         assert!(!host.session.document_status().unwrap().jig_in_use);
-        // Open for Editing: a new untitled model of a Jig in use.
+        // Open for editing: a new untitled model of a Jig in use.
         let again = Person::who_answers(&[Some(&jig)]);
         let mut dialogs = picker(&again);
         act(&mut host, &mut dialogs, FileAction::Open);

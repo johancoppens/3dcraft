@@ -1184,7 +1184,7 @@ mod tests {
 
     /// Export as Jig downloads a `.3dcraftjig`; handed back to the page it
     /// opens as a Jig in use, which Save saves as a model under a name of
-    /// its own (never the Jig's) and Open for Editing copies into a model.
+    /// its own (never the Jig's) and Open for editing copies into a model.
     #[test]
     fn a_jig_is_exported_opened_for_use_and_saved_as_a_model() {
         let mut host = modelled();
@@ -1231,7 +1231,7 @@ mod tests {
         let saved = host.answer(dialog, true).downloads;
         assert_eq!(saved[0].name, "plate.3dcraft");
         assert!(!host.session.document_status().unwrap().jig_in_use);
-        // Open for Editing: a new model of a Jig in use.
+        // Open for editing: a new model of a Jig in use.
         host.receive(&jig.name, jig.bytes.clone(), None).unwrap();
         // Changed and closed from its tab: Save names a model.
         host.session

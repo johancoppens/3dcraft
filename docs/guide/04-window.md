@@ -53,7 +53,7 @@ The **File** menu:
 |---|---|---|
 | **New** | Ctrl+N | A new, empty document in a new tab |
 | **Open…** | Ctrl+O | Opens a `.3dcraft` document or a `.3dcraftjig` Jig (a STEP file is imported with Import…) |
-| **Open for Editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
+| **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
 | **Save As…** | Ctrl+Shift+S | Saves under a new name |
 | **Import…** | Ctrl+I | Reads a STEP file into the document |

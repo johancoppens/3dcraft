@@ -1997,7 +1997,7 @@ mod tests {
         );
     }
 
-    /// Open for Editing makes the model of a Jig on the engine thread,
+    /// Open for editing makes the model of a Jig on the engine thread,
     /// as opening a file does.
     #[test]
     fn open_for_editing_runs_on_the_engine_thread() {

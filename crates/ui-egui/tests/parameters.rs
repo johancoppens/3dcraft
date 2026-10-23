@@ -632,7 +632,13 @@ fn a_jig_in_use_offers_open_for_editing_and_only_its_parameters_change() {
         .unwrap()
         .unwrap();
     assert_eq!(answer["result"]["changed"], true, "{answer}");
-    // Open for editing asks the host for a model of it.
+    // Open for editing asks the host for a model of it. The button says
+    // what the File menu's item says (sentence case, as the window's
+    // other menu items and buttons; 2026-10-23).
+    assert_eq!(
+        craft3d_ui_egui::FileAction::OpenForEditing.label(),
+        "Open for editing"
+    );
     let edit = hit(&shell, "Open for editing");
     window.click(&mut shell, &mut session, edit.center());
     assert_eq!(
