@@ -258,8 +258,8 @@ Options:
                     Default 1
   --deep            Check each point as document.check --deep does
                     (self-intersection, booleans held to their operands,
-                    every body measured; without it only the defaults'
-                    bodies are measured)
+                    every body measured; without it only at the
+                    defaults and the corners)
   --budget-ms M     A point whose regeneration takes longer than M
                     milliseconds fails
   --time-limit-ms M Stop the whole run after M milliseconds (exit 4 when
