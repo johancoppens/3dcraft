@@ -24,21 +24,28 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
+pub mod help;
 mod icons;
 mod layout;
 pub mod number_field;
 mod params;
+pub mod recent;
 mod report;
 mod selection;
+pub mod start;
 mod tabs;
+mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
+pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use params::{
     DEBOUNCE, Faults, NOTE_SECONDS, Pacer, Param, ParamAsk, ParamKind, ParamList, Settled,
     ShellCommand, Verdict, reported_faults, settle, verdict,
 };
+pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
+pub use start::{AgentSetup, EXAMPLES, Example, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -192,6 +199,8 @@ pub struct TreeRow {
     /// (`F3`) and its name.
     pub caused_by: Option<(String, String)>,
     pub selected: bool,
+    /// Hidden in the view (`feature.visible`).
+    pub hidden: bool,
     /// The first face, edge or vertex selected was made by this feature
     /// (by its persistent name): the row is marked as selected too.
     pub made_selection: bool,
@@ -251,7 +260,7 @@ fn plain_f(input: &egui::InputState) -> bool {
         matches!(
             event,
             egui::Event::Key {
-                key: egui::Key::F,
+                key: help::FIT_KEY,
                 pressed: true,
                 modifiers,
                 ..
@@ -543,6 +552,8 @@ pub struct Shell {
     status_hits: Vec<(StatusSlot, egui::Rect)>,
     /// The selection as the window draws and changes it.
     select: selection::Selecting,
+    /// The history timeline and the rows' eyes (`shell/timeline.rs`).
+    timeline: timeline::Timeline,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -614,6 +625,10 @@ pub struct Shell {
     /// The Parameters tab: its list, the field being changed, the commit
     /// waiting for the host (`shell/params.rs`).
     params: params::ParamForm,
+    /// The Help menu, the recent files and the start screen.
+    help: help::HelpMemory,
+    recent: recent::RecentMemory,
+    start: start::StartMemory,
 }
 
 impl Default for Shell {
@@ -820,6 +835,7 @@ impl Shell {
             status_hits: Vec::new(),
             zoom_anchor: None,
             select: selection::Selecting::default(),
+            timeline: timeline::Timeline::default(),
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -851,6 +867,9 @@ impl Shell {
             tree_row_hits: Vec::new(),
             tree_view: None,
             params: params::ParamForm::default(),
+            help: help::HelpMemory::default(),
+            recent: recent::RecentMemory::default(),
+            start: start::StartMemory::default(),
         }
     }
 
@@ -1483,10 +1502,13 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.follow_active_tab(session);
+        self.sync_timeline(session);
         let scene = self.sync_scene(session);
+        self.mark_scrubbed_rows();
         self.assertion_rows = session.assertion_states();
         self.sync_params(session, scene.as_ref());
         self.sync_tabs(session);
+        self.note_recent(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
         self.sync_report(session);
@@ -1602,6 +1624,7 @@ impl Shell {
                 error: f.error.clone(),
                 caused_by: f.caused_by.as_ref().map(|id| (id.clone(), name_of(id))),
                 selected: selected == Some(f.id.as_str()),
+                hidden: f.hidden,
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
             })
             .collect();
@@ -1658,6 +1681,7 @@ impl Shell {
         };
         self.file_shortcuts(ui, status.is_some());
         self.tab_shortcuts(ui);
+        self.help_keys(ui);
         let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1745,6 +1769,13 @@ impl Shell {
                 ui.ctx().request_repaint();
             }
         }
+        // What the timeline and the eyes asked for: the scene of a new
+        // step is built where the window's scenes are, not here.
+        if let Some(session) = session.as_deref_mut()
+            && self.apply_timeline_requests(session)
+        {
+            ui.ctx().request_repaint();
+        }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session
             && self.apply_selection_requests(session)
@@ -1753,6 +1784,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.closing_dialog(ui);
+        self.help_windows(ui);
     }
 
     /// The File shortcuts, wherever the pointer is.
@@ -1789,9 +1821,11 @@ impl Shell {
                         ui.close();
                     }
                 }
+                self.recent_menu(ui);
                 ui.separator();
                 self.menu_documents(ui);
             });
+            self.help_menu(ui);
         });
     }
 
@@ -2150,6 +2184,10 @@ impl Shell {
     fn tree(&mut self, ui: &mut egui::Ui, has_document: bool) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
+        // The timeline at the foot of the panel, under the list.
+        egui::Panel::bottom("craft3d-timeline")
+            .resizable(false)
+            .show(ui, |ui| self.timeline_ui(ui));
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."
@@ -2162,6 +2200,7 @@ impl Shell {
         let mut clicked = None;
         let mut double = None;
         let mut followed = None;
+        let mut eye_clicked = None;
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
@@ -2210,6 +2249,11 @@ impl Shell {
                                     "Suppressed: not built, and what is made from it fails."
                                         .to_string()
                                 }
+                                (None, FeatureState::RolledBack)
+                                    if row.status == timeline::AFTER_SCRUB =>
+                                {
+                                    "After the step the timeline shows: not shown now.".to_string()
+                                }
                                 (None, FeatureState::RolledBack) => {
                                     "Rolled back: after the rollback marker, not built.".to_string()
                                 }
@@ -2238,6 +2282,9 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                                if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                                    eye_clicked = Some((row.id.clone(), row.hidden));
+                                }
                             });
                             if let Some((cause, cause_name)) = &row.caused_by {
                                 ui.indent(("craft3d-cause", &row.id), |ui| {
@@ -2321,6 +2368,10 @@ impl Shell {
                     });
             });
         self.cause_hits = hits;
+        if let Some((id, hidden)) = eye_clicked {
+            self.toggle_visible(id, hidden);
+            ui.ctx().request_repaint();
+        }
         self.tree_row_hits = rows_drawn;
         self.tree_view = Some(list.inner_rect);
         // A double click on a row selects that feature (whatever its
@@ -2498,7 +2549,7 @@ impl Shell {
         }
         if response.contains_pointer()
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
         {
             self.escape_selection();
             ui.ctx().request_repaint();
@@ -2600,8 +2651,9 @@ impl Shell {
                 color(tokens.text_dim),
             );
         };
+        let start = scene.is_none() && self.problem().is_none() && self.work.is_none();
         match (scene, self.problem()) {
-            (None, None) => hint("No document. Run file.new or file.open."),
+            (None, None) if self.work.is_some() => hint("No document."),
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
@@ -2632,10 +2684,22 @@ impl Shell {
 
         // The box being dragged, and the "select other" list.
         self.paint_selecting(ui);
-        // The view cube, the triad and the controls over the viewport.
-        self.viewport_controls(ui, rect, scene);
+        // The view cube, the triad and the controls over the viewport;
+        // the start screen instead while there is no document.
+        if start {
+            self.controls_layout = None;
+        } else {
+            self.viewport_controls(ui, rect, scene);
+        }
         if let Some(problem) = self.problem().map(str::to_string) {
             self.problem_text(&painter, rect, &problem);
+        }
+        // No document: New, Open, the examples, the recent files and how
+        // to connect an agent (`start.rs`).
+        if start {
+            self.start_screen(ui, rect);
+        } else {
+            self.no_start_screen();
         }
     }
 

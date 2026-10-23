@@ -95,6 +95,17 @@ A document may hold any number of bodies; every feature that does not consume an
 `body.appearance` and `face.appearance` give colours, `body.material` a density (then `document.inspect`
 gives the mass), `document.interference` says whether bodies overlap.
 
+## Hiding and looking back
+
+`feature.visible` with `"visible": false` hides a feature's body, sketch or datum in the view (the
+window, `view.render`, `view.pick`); `true` shows it again. It is not `feature.suppress`: the feature is
+still built, measured and exported, and later features are still made from it. It is saved with the
+document and undone like a colour; `document.inspect` marks it `"hidden": true`.
+
+`view.scrub` shows the model as it was after one step (`{"step": 3}` or `{"feature": "Plate"}`;
+`{"feature": null}` shows it as it is again), without changing the document: the timeline in the window
+does the same. To build on from that step, move the real marker there with `history.rollback`.
+
 ## Jigs: parameters
 
 A **Jig** is a document that others set without knowing how it is modelled: a box sized by its width,

@@ -12,7 +12,9 @@
 //!   selected, flies the camera in [`FLY_SECONDS`] (eased) to frame what
 //!   the feature made or what is selected, from the direction it looks
 //!   from now. What the flight is aimed at is made visible: a hidden
-//!   sketch or datum is shown again, and a section that cuts away all of
+//!   sketch or datum is shown again, a feature hidden with its eye
+//!   (`feature.visible`) is shown, a timeline scrubbed to a step before it
+//!   goes back to the end (`shell/timeline.rs`), and a section that cuts away all of
 //!   it is switched off (one that leaves some of it in view stays: the
 //!   person put it there). The flight is view state only: nothing in the
 //!   document changes, and `ui.fit` with `feature` or `selection` frames
@@ -92,6 +94,7 @@ impl Shell {
         self.fly = None;
         self.made_selection = None;
         self.tree_scroll = None;
+        self.timeline_switched();
         self.tab_switched = true;
         // The session's selection is the document's: read it afresh.
         let drawn = self.select.drawn.wrapping_add(1);
@@ -233,6 +236,12 @@ impl Shell {
         let Some(scene) = scene else {
             return;
         };
+        // A hidden target is shown, a scrub before it let go of, first
+        // (`shell/timeline.rs`); the flight waits for that scene.
+        if self.prepare_fly(scene, &to) {
+            self.fly = Some(to);
+            return;
+        }
         match self.fly_to(scene, &to, Some(now)) {
             Ok(()) => self.select.problem = None,
             Err(why) => self.select.problem = Some(why),
@@ -244,6 +253,13 @@ impl Shell {
     /// shown). What is selected is looked at once.
     pub(crate) fn fit_key(&mut self, scene: Option<&Scene>, now: f64) {
         let to = FlyTo::Selection;
+        if let Some(scene) = scene
+            && !self.select.view.items.is_empty()
+            && self.prepare_fly(scene, &to)
+        {
+            self.fly = Some(to);
+            return;
+        }
         let target = scene
             .filter(|_| !self.select.view.items.is_empty())
             .and_then(|scene| Some((scene, self.fly_target(scene, &to).ok()?)));

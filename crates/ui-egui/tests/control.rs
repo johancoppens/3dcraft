@@ -238,6 +238,7 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
         features[0],
         json!({"id": "F1", "name": "Plate", "kind": "block", "state": "ok",
                "status": "ok", "error": null, "causedBy": null, "selected": false,
+               "hidden": false,
                // Added with the list following the selection (2026-10-23).
                "madeSelection": false})
     );

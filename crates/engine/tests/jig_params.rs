@@ -734,3 +734,36 @@ fn info_url_must_be_a_web_address() {
         json!({"url": "https://example.org"}),
     );
 }
+
+#[test]
+fn the_thumbnail_shows_the_document_not_where_the_view_is_scrubbed() {
+    let dir = workdir("jig-params", "scrub");
+    let mut s = session_in(&dir);
+    jig(&mut s);
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Peg", "radius": "3 mm", "height": "20 mm", "position": ["10 mm", "10 mm", "0 mm"]}),
+    );
+    run(&mut s, "file.save", json!({"path": "plain.3dcraft"}));
+    let plain = std::fs::read(dir.join("plain.3dcraft")).unwrap();
+    // A fresh session (no cached thumbnail) with the view scrubbed back
+    // to before the peg saves the same bytes.
+    let mut t = session_in(&dir);
+    run(&mut t, "file.open", json!({"path": "plain.3dcraft"}));
+    run(&mut t, "view.scrub", json!({"step": 1}));
+    let scrubbed = run(&mut t, "view.render", json!({"width": 64, "height": 48}));
+    let full = {
+        let mut u = session_in(&dir);
+        run(&mut u, "file.open", json!({"path": "plain.3dcraft"}));
+        run(&mut u, "view.render", json!({"width": 64, "height": 48}))
+    };
+    // The scrub does show in the view: the pictures differ.
+    assert_ne!(scrubbed["base64"], full["base64"]);
+    run(&mut t, "file.save", json!({"path": "scrubbed.3dcraft"}));
+    assert_eq!(std::fs::read(dir.join("scrubbed.3dcraft")).unwrap(), plain);
+    // And the view stays scrubbed.
+    let still = run(&mut t, "view.render", json!({"width": 64, "height": 48}));
+    assert_eq!(still["base64"], scrubbed["base64"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

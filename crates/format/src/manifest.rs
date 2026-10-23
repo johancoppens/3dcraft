@@ -65,6 +65,11 @@ pub struct Document {
     /// version 28).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assertions: Vec<Assertion>,
+    /// The ids of the features hidden in the view, in ascending order:
+    /// view data, which regeneration does not read. Absent when none is
+    /// hidden (and in files before version 30).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<u64>,
     /// What a gallery shows of the document. Absent when every field is
     /// empty (and in files before version 32).
     #[serde(default, skip_serializing_if = "Option::is_none")]

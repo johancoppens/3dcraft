@@ -110,9 +110,10 @@ impl<'a> Ctx<'a> {
                     return Err(format!("`{key}`: {why}"));
                 }
                 let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
-                let quantity = craft3d_expr::evaluate(source, |name| {
-                    evaluation.as_ref().and_then(|e| e.value(name))
-                })
+                let quantity = match &evaluation {
+                    Some(evaluation) => evaluation.evaluate(source),
+                    None => craft3d_expr::evaluate(source, |_| None),
+                }
                 .map_err(|e| format!("`{key}`: {e}"))?;
                 let wanted = craft3d_expr::Dimension::new(power, 0);
                 if quantity.dimension.is_dimensionless() {

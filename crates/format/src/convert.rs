@@ -43,6 +43,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         faces,
         assertions,
         sets,
+        hidden,
         info,
     } = document;
     let doc::Units { length, angle } = units;
@@ -95,6 +96,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
             })
             .collect(),
         assertions: assertions.iter().map(assertion_to_manifest).collect(),
+        hidden: hidden.iter().map(|doc::FeatureId(id)| *id).collect(),
         info: (!info.is_empty()).then(|| info_to_manifest(info)),
     }
 }
@@ -1559,6 +1561,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         faces,
         assertions,
         sets,
+        hidden,
         info,
     } = document;
     doc::Document {
@@ -1607,6 +1610,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
             .into_iter()
             .map(|manifest::NamedSet { name, query }| doc::NamedSet { name, query })
             .collect(),
+        hidden: hidden.into_iter().map(doc::FeatureId).collect(),
         info: info.map(info_to_doc).unwrap_or_default(),
     }
 }

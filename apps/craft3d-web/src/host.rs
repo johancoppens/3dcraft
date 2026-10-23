@@ -5,6 +5,18 @@
 //! [`WebHost::receive`], and offers each [`Download`] to the person. So
 //! the whole flow runs in native tests.
 //!
+//! Where the browser has the File System Access API (Chrome, Edge,
+//! Chromebooks) the page asks with the system's file dialogs
+//! ([`WebHost::pickers`]): Save, Save As and Export name the file in a
+//! save dialog ([`Outcome::pick`]; an export is made before, with its
+//! format chosen in the dialog over the page), and a document opened or
+//! saved through one is saved back to that file without asking again
+//! ([`WebHost::writable`]). Such a write ends later: a tab is closed and a
+//! document stays saved only once it succeeded
+//! ([`WebHost::close_document`], [`WebHost::write_failed`]). Elsewhere a
+//! saved or exported file is a download and the dialog over the page
+//! ([`NameDialog`]) names it.
+//!
 //! The session keeps its files in memory (`craft3d_engine::Access::Memory`):
 //! a file the person chose is put there under its name, the same command
 //! as on the desktop reads it (`file.open`, `file.import`), and what
@@ -18,12 +30,165 @@ use craft3d_ui_egui::files::{
 };
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// A file for the person to save: its name and its bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Download {
     pub name: String,
     pub bytes: Vec<u8>,
+    /// The document this is the saved file of (its id in the session),
+    /// for the page to write it back to the file it came from; `None`
+    /// for an export.
+    pub document: Option<u64>,
+    /// True when the document is to be closed once this file is written
+    /// (Save in the question before closing a tab): the page closes it
+    /// only after the write succeeded ([`WebHost::close_document`]).
+    pub close: bool,
+}
+
+impl Download {
+    /// An exported file (not a document's).
+    fn export(name: String, bytes: Vec<u8>) -> Self {
+        Self {
+            name,
+            bytes,
+            document: None,
+            close: false,
+        }
+    }
+}
+
+/// What the page names a file for with the system's save dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// The document `document` (its id), saved as a `.3dcraft` file, and
+    /// closed once it is written when `close`.
+    Save {
+        document: u64,
+        suggested: String,
+        close: bool,
+    },
+    /// An export, already made: `file` is written where the dialog says.
+    /// The format is chosen before (the dialog over the page), so a dialog
+    /// is only shown for bytes that exist, and an export that fails never
+    /// touches the person's file.
+    Export { file: Download },
+}
+
+impl Pick {
+    /// The kinds of file the dialog offers: one, the file's.
+    pub fn types(&self) -> Vec<PickerType> {
+        match self {
+            Pick::Save { .. } => vec![document_type()],
+            Pick::Export { file } => {
+                let extension = extension_of(&file.name);
+                export_types(extension.as_deref())
+                    .into_iter()
+                    .filter(|t| {
+                        extension
+                            .as_deref()
+                            .is_some_and(|e| t.extensions.contains(&e))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// The name the dialog proposes.
+    pub fn suggested(&self) -> &str {
+        match self {
+            Pick::Save { suggested, .. } => suggested,
+            Pick::Export { file } => &file.name,
+        }
+    }
+
+    /// True when the file the dialog chose, `name`, can hold what is
+    /// written: a `.3dcraft` name for a document, an extension of the
+    /// export's format for an export (never STEP bytes under `.stl`).
+    pub fn accepts(&self, name: &str) -> bool {
+        let Some(chosen) = extension_of(name) else {
+            return false;
+        };
+        self.types()
+            .iter()
+            .any(|t| t.extensions.contains(&chosen.as_str()))
+    }
+}
+
+fn document_type() -> PickerType {
+    PickerType {
+        description: "3DCraft document",
+        mime: "application/x-3dcraft",
+        extensions: vec![EXTENSION],
+    }
+}
+
+/// A kind of file in the system's file dialog: a description, a media
+/// type and its extensions (without the dot).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerType {
+    pub description: &'static str,
+    pub mime: &'static str,
+    pub extensions: Vec<&'static str>,
+}
+
+/// The kinds of file Open and Import choose from.
+pub fn open_types(ask: Ask) -> Vec<PickerType> {
+    match ask {
+        Ask::Open => vec![document_type()],
+        Ask::Import => vec![PickerType {
+            description: "STEP",
+            mime: "model/step",
+            extensions: vec!["step", "stp"],
+        }],
+    }
+}
+
+/// The media type the file dialog files a format under (the dialog
+/// filters by the extensions; the type only has to be well formed).
+fn export_mime(extension: &str) -> &'static str {
+    match extension {
+        "step" | "stp" => "model/step",
+        "stl" => "model/stl",
+        "3mf" => "model/3mf",
+        "obj" => "model/obj",
+        "dxf" => "image/vnd.dxf",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Every export format as a kind of file for the save dialog, the one
+/// with extension `first` (the last format exported) first.
+pub fn export_types(first: Option<&str>) -> Vec<PickerType> {
+    let mut types: Vec<PickerType> = EXPORT_FORMATS
+        .iter()
+        .map(|(format, extensions)| PickerType {
+            description: format,
+            mime: export_mime(extensions.first().copied().unwrap_or_default()),
+            extensions: extensions.to_vec(),
+        })
+        .collect();
+    if let Some(at) = types
+        .iter()
+        .position(|t| first.is_some_and(|f| t.extensions.contains(&f)))
+    {
+        let chosen = types.remove(at);
+        types.insert(0, chosen);
+    }
+    types
+}
+
+/// True when a browser refused a file dialog (`why`, the error's name and
+/// message) because the click or key press that asked for it came too
+/// long ago, or none did: the next click may well show it. Any other
+/// refusal (a cross-origin iframe, a sandbox, a browser that has the API
+/// but not for this page) is for good, and the page falls back to
+/// downloads and the file input for the rest of the session.
+pub fn refusal_is_about_activation(why: &str) -> bool {
+    let why = why.to_ascii_lowercase();
+    why.contains("user gesture") || why.contains("activation")
 }
 
 /// What the page asks the person for.
@@ -39,6 +204,9 @@ pub enum Ask {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub ask: Option<Ask>,
+    /// A file to name with the system's save dialog (with
+    /// [`WebHost::pickers`] only).
+    pub pick: Option<Pick>,
     pub downloads: Vec<Download>,
 }
 
@@ -112,6 +280,18 @@ pub struct WebHost {
     /// The extension of the last export, for the next one's name.
     pub export_extension: Option<String>,
     pub dialog: Option<NameDialog>,
+    /// True when the page names files with the system's file dialogs
+    /// (the File System Access API): Save, Save As and Export then ask
+    /// through [`Outcome::pick`], not [`NameDialog`].
+    pub pickers: bool,
+    /// The documents (by id) whose file the page can write to again: Save
+    /// goes there without asking. Only with [`WebHost::pickers`].
+    pub writable: BTreeSet<u64>,
+    /// A file that goes with an export written through a file dialog (an
+    /// OBJ's material library), waiting for the person to ask for its own
+    /// dialog ([`WebHost::companion_ui`]): a browser shows one file dialog
+    /// per click.
+    pub companion: Option<Download>,
 }
 
 impl WebHost {
@@ -122,7 +302,125 @@ impl WebHost {
             shell,
             export_extension: None,
             dialog: None,
+            pickers: false,
+            writable: BTreeSet::new(),
+            companion: None,
         }
+    }
+
+    /// The index of the open document `id`, as `file.activate` takes it.
+    fn index_of(&self, id: u64) -> Option<usize> {
+        self.session
+            .document_statuses()
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.index)
+    }
+
+    /// Saves the document `id` (not necessarily the one shown) as `name`,
+    /// which becomes its name; the one shown before is shown again. The
+    /// file is the download, with `close` carried for the page: it closes
+    /// the document only once the file is written.
+    pub fn save_document(&mut self, id: u64, name: &str, close: bool) -> Vec<Download> {
+        let shown = self.session.document_status().map(|s| s.id);
+        let Some(index) = self.index_of(id) else {
+            self.finish(
+                "file.save",
+                &Err("the document to save was closed meanwhile".to_string()),
+            );
+            return Vec::new();
+        };
+        if shown != Some(id) {
+            let done = self.run("file.activate", &json!({ "document": index }));
+            if let Err(e) = done {
+                self.finish("file.activate", &Err(e));
+                return Vec::new();
+            }
+        }
+        let mut downloads = self.save_as(name, None);
+        if let Some(back) = shown.filter(|&s| s != id).and_then(|s| self.index_of(s)) {
+            let report = self.shell.last_command.clone();
+            let _ = self.run("file.activate", &json!({ "document": back }));
+            self.shell.sync(&mut self.session);
+            self.shell.last_command = report;
+        }
+        for download in &mut downloads {
+            download.close = close;
+        }
+        downloads
+    }
+
+    /// Closes the document `id` once its file is written (Save in the
+    /// question before closing a tab). It is refused, and says so, when
+    /// it was changed again since.
+    pub fn close_document(&mut self, id: u64) {
+        let Some(index) = self.index_of(id) else {
+            return;
+        };
+        let closed = self.run("file.close", &json!({ "document": index }));
+        self.finish("file.close", &closed);
+    }
+
+    /// The file a save made did not reach the person's file: the document
+    /// counts as unsaved again (it asks before it is closed, and the
+    /// browser before the page is left), and the next Save asks where.
+    pub fn write_failed(&mut self, id: u64) {
+        self.session.mark_unsaved(id);
+        self.writable.remove(&id);
+        self.shell.sync(&mut self.session);
+    }
+
+    /// The browser did not show the save dialog for `pick` (`why`): an
+    /// export, already made, is downloaded (with its companion); a save
+    /// is asked for with the dialog over the page and downloaded.
+    pub fn without_picker(&mut self, pick: Pick, why: &str) -> Outcome {
+        let mut outcome = Outcome::default();
+        let text =
+            format!("the browser did not show its file dialog ({why}): the file is downloaded");
+        match pick {
+            Pick::Export { file } => {
+                outcome.downloads.push(file);
+                outcome.downloads.extend(self.companion.take());
+                self.note("file.export", true, text);
+            }
+            Pick::Save {
+                document,
+                suggested,
+                close,
+            } => {
+                let shown = self.session.document_status();
+                match shown.filter(|s| s.id == document) {
+                    Some(status) => {
+                        self.dialog = Some(NameDialog {
+                            purpose: Purpose::Save {
+                                close: close.then_some(status.index),
+                            },
+                            name: suggested,
+                        });
+                        self.note("file.save", false, text);
+                    }
+                    None => self.note(
+                        "file.save",
+                        false,
+                        format!(
+                            "the browser did not show its file dialog ({why}), and another \
+                             document is shown now: nothing was saved; save again"
+                        ),
+                    ),
+                }
+            }
+        }
+        outcome
+    }
+
+    /// Shows `text` in the status bar under `label`, as a command's
+    /// report.
+    pub fn note(&mut self, label: &str, ok: bool, text: String) {
+        self.shell.last_command = Some(CommandReport {
+            label: label.to_string(),
+            ok,
+            text,
+        });
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
@@ -157,7 +455,7 @@ impl WebHost {
             .into_iter()
             .filter_map(|name| {
                 let bytes = self.session.take_file(&name)?;
-                Some(Download { name, bytes })
+                Some(Download::export(name, bytes))
             })
             .collect()
     }
@@ -249,6 +547,18 @@ impl WebHost {
             let more = self.doc_action(action);
             outcome.downloads.extend(more.downloads);
             outcome.ask = outcome.ask.or(more.ask);
+            outcome.pick = outcome.pick.or(more.pick);
+        }
+        // An example from the start screen, built in a new document.
+        if let Some(example) = self.shell.take_example() {
+            let session = &mut self.session;
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft3d_ui_egui::shell::run_example(session, example)
+            }))
+            .unwrap_or_else(|_| {
+                Err("internal error (a bug in 3DCraft, please report it)".to_string())
+            });
+            self.finish("example", &built);
         }
         // The Parameters tab's param.set: the frame before this one
         // showed that it is regenerating, now the page's one thread does
@@ -281,8 +591,23 @@ impl WebHost {
                     );
                     return outcome;
                 };
-                match status.path.clone().filter(|_| action == FileAction::Save) {
+                // Save goes to the file the document has without asking:
+                // a download of it again, or (with the file dialogs) the
+                // file it was opened from or saved to, when the page can
+                // write there.
+                let own = status.path.clone().filter(|_| {
+                    action == FileAction::Save
+                        && (!self.pickers || self.writable.contains(&status.id))
+                });
+                match own {
                     Some(own) => outcome.downloads = self.save_as(&own, None),
+                    None if self.pickers => {
+                        outcome.pick = Some(Pick::Save {
+                            document: status.id,
+                            suggested: suggested_name(status.path.as_deref()),
+                            close: false,
+                        });
+                    }
                     None => {
                         self.dialog = Some(NameDialog {
                             purpose: Purpose::Save { close: None },
@@ -299,6 +624,9 @@ impl WebHost {
                     );
                     return outcome;
                 };
+                // The format is chosen first, in the dialog over the page:
+                // with the file dialogs, the export is made before the
+                // system's dialog is shown ([`Pick::Export`]).
                 self.dialog = Some(NameDialog {
                     purpose: Purpose::Export,
                     name: suggested_export_name(
@@ -333,9 +661,29 @@ impl WebHost {
                     self.finish("file.activate", &Err(e));
                     return outcome;
                 }
-                let own = self.session.document_status().and_then(|s| s.path);
+                let Some(status) = self.session.document_status() else {
+                    return outcome;
+                };
+                let own = status
+                    .path
+                    .clone()
+                    .filter(|_| !self.pickers || self.writable.contains(&status.id));
                 match own {
+                    // Written through a file dialog's handle: the page
+                    // closes the tab once the write succeeded.
+                    Some(own) if self.pickers => {
+                        outcome.downloads = self.save_document(status.id, &own, true);
+                    }
+                    // A download: closed now (the browser has the file).
                     Some(own) => outcome.downloads = self.save_as(&own, Some(document)),
+                    None if self.pickers => {
+                        self.shell.sync(&mut self.session);
+                        outcome.pick = Some(Pick::Save {
+                            document: status.id,
+                            suggested: suggested_name(status.path.as_deref()),
+                            close: true,
+                        });
+                    }
                     None => {
                         self.shell.sync(&mut self.session);
                         self.dialog = Some(NameDialog {
@@ -359,6 +707,7 @@ impl WebHost {
             self.finish("file.save", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
         };
+        let id = self.session.document_status().map(|s| s.id);
         let saved = self.run("file.save", &json!({ "path": name, "overwrite": true }));
         let file = self.session.take_file(&name);
         let mut downloads = Vec::new();
@@ -367,6 +716,8 @@ impl WebHost {
                 downloads.push(Download {
                     name: name.clone(),
                     bytes,
+                    document: id,
+                    close: false,
                 });
                 match close {
                     Some(_) => {
@@ -406,18 +757,12 @@ impl WebHost {
         let mut downloads = Vec::new();
         if let Ok(result) = &exported {
             if let Some(bytes) = self.session.take_file(&name) {
-                downloads.push(Download {
-                    name: name.clone(),
-                    bytes,
-                });
+                downloads.push(Download::export(name.clone(), bytes));
             }
             if let Some(library) = result.get("mtl").and_then(Value::as_str)
                 && let Some(bytes) = self.session.take_file(library)
             {
-                downloads.push(Download {
-                    name: library.to_string(),
-                    bytes,
-                });
+                downloads.push(Download::export(library.to_string(), bytes));
             }
         }
         self.finish("file.export", &exported);
@@ -425,27 +770,80 @@ impl WebHost {
     }
 
     /// The dialog's answer: the file named, or nothing when it was
-    /// cancelled.
-    pub fn answer(&mut self, dialog: NameDialog, confirmed: bool) -> Vec<Download> {
+    /// cancelled. An export with the file dialogs is made here and left
+    /// for the system's save dialog ([`Outcome::pick`]); a file that goes
+    /// with it waits in [`WebHost::companion`].
+    pub fn answer(&mut self, dialog: NameDialog, confirmed: bool) -> Outcome {
+        let mut outcome = Outcome::default();
         if !confirmed {
             let label = match dialog.purpose {
                 Purpose::Save { .. } => "file.save",
                 Purpose::Export => "file.export",
             };
             self.report(label, &Err("cancelled".to_string()));
-            return Vec::new();
+            return outcome;
         }
         match dialog.purpose {
-            Purpose::Save { close } => self.save_as(&dialog.name, close),
-            Purpose::Export => self.export_as(&dialog.name),
+            Purpose::Save { close } => outcome.downloads = self.save_as(&dialog.name, close),
+            Purpose::Export if self.pickers => {
+                let mut files = self.export_as(&dialog.name).into_iter();
+                if let Some(file) = files.next() {
+                    outcome.pick = Some(Pick::Export { file });
+                }
+                self.companion = files.next();
+            }
+            Purpose::Export => outcome.downloads = self.export_as(&dialog.name),
+        }
+        outcome
+    }
+
+    /// Draws the small window that offers the file that goes with an
+    /// export (an OBJ's material library) while one waits; the file when
+    /// the person asked to save it (a click, so the page may show the
+    /// system's save dialog for it).
+    pub fn companion_ui(&mut self, ctx: &egui::Context) -> Option<Download> {
+        let file = self.companion.take()?;
+        let mut answer = None;
+        egui::Window::new("Material library")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The OBJ's colours are in `{}`. Save it next to the OBJ.",
+                    file.name
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Save…").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Skip").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        match answer {
+            Some(true) => Some(file),
+            Some(false) => {
+                self.note(
+                    "file.export",
+                    true,
+                    format!("`{}` (the OBJ's colours) was not saved", file.name),
+                );
+                None
+            }
+            None => {
+                self.companion = Some(file);
+                None
+            }
         }
     }
 
     /// Draws the dialog in which the person names a file, while it is open;
-    /// the downloads of its answer.
-    pub fn dialog_ui(&mut self, ctx: &egui::Context) -> Vec<Download> {
+    /// what its answer leaves for the page.
+    pub fn dialog_ui(&mut self, ctx: &egui::Context) -> Outcome {
         let Some(mut dialog) = self.dialog.take() else {
-            return Vec::new();
+            return Outcome::default();
         };
         let mut answer = None;
         let title = match dialog.purpose {
@@ -482,8 +880,11 @@ impl WebHost {
                     answer = Some(true);
                 }
                 ui.horizontal(|ui| {
+                    // With the file dialogs, Export goes on to the
+                    // system's save dialog.
                     let verb = match dialog.purpose {
                         Purpose::Save { .. } => "Save",
+                        Purpose::Export if self.pickers => "Export…",
                         Purpose::Export => "Export",
                     };
                     if ui.button(verb).clicked() {
@@ -501,7 +902,7 @@ impl WebHost {
             Some(confirmed) => self.answer(dialog, confirmed),
             None => {
                 self.dialog = Some(dialog);
-                Vec::new()
+                Outcome::default()
             }
         }
     }
@@ -575,13 +976,15 @@ mod tests {
         assert!(first.file_action(FileAction::Save).downloads.is_empty());
         let dialog = first.dialog.take().unwrap();
         assert_eq!(dialog.name, "untitled.3dcraft");
-        let downloads = first.answer(
-            NameDialog {
-                name: "plate".to_string(),
-                ..dialog
-            },
-            true,
-        );
+        let downloads = first
+            .answer(
+                NameDialog {
+                    name: "plate".to_string(),
+                    ..dialog
+                },
+                true,
+            )
+            .downloads;
         assert_eq!(downloads.len(), 1);
         assert_eq!(downloads[0].name, "plate.3dcraft");
         assert!(!first.has_unsaved());
@@ -650,7 +1053,7 @@ mod tests {
         host.file_action(FileAction::Export);
         assert_eq!(host.dialog.as_ref().unwrap().name, "untitled.svg");
         let cancelled = host.answer(host.dialog.clone().unwrap(), false);
-        assert!(cancelled.is_empty());
+        assert_eq!(cancelled, Outcome::default());
     }
 
     #[test]
@@ -675,8 +1078,10 @@ mod tests {
         assert!(outcome.downloads.is_empty());
         let dialog = host.dialog.take().unwrap();
         assert_eq!(dialog.purpose, Purpose::Save { close: Some(0) });
-        let downloads = host.answer(dialog, true);
+        // A download: the tab closes at once (the browser has the file).
+        let downloads = host.answer(dialog, true).downloads;
         assert_eq!(downloads.len(), 1);
+        assert!(!downloads[0].close);
         assert!(host.session.document_statuses().is_empty());
         // Without a document, Save and Export say so.
         host.file_action(FileAction::Export);
@@ -756,5 +1161,215 @@ mod tests {
         let report = host.shell.last_command.clone().unwrap();
         assert_eq!(report.label, "param.set");
         assert!(report.ok, "{}", report.text);
+    }
+
+    #[test]
+    fn with_file_dialogs_save_asks_once_and_then_writes_back() {
+        let mut host = modelled();
+        host.pickers = true;
+        let id = host.session.document_status().unwrap().id;
+        // The first Save names the file in the system's dialog, not ours.
+        let outcome = host.file_action(FileAction::Save);
+        assert!(host.dialog.is_none() && outcome.downloads.is_empty());
+        let pick = outcome.pick.unwrap();
+        assert_eq!(
+            pick,
+            Pick::Save {
+                document: id,
+                suggested: "untitled.3dcraft".to_string(),
+                close: false
+            }
+        );
+        assert_eq!(pick.types().len(), 1);
+        assert_eq!(pick.types()[0].extensions, [EXTENSION]);
+        // Only a .3dcraft name holds a document.
+        assert!(pick.accepts("plate.3dcraft") && pick.accepts("P.3DCRAFT"));
+        assert!(!pick.accepts("plate.stl") && !pick.accepts("plate"));
+        // The page saves under the name chosen and can write there again.
+        let saved = host.save_document(id, "plate.3dcraft", false);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].document, Some(id));
+        host.writable.insert(id);
+        // Save now writes back without asking; Save As still asks.
+        let again = host.file_action(FileAction::Save);
+        assert!(again.pick.is_none());
+        assert_eq!(again.downloads[0].name, "plate.3dcraft");
+        assert_eq!(again.downloads[0].document, Some(id));
+        assert!(host.file_action(FileAction::SaveAs).pick.is_some());
+        // A document with a name the page cannot write to (dropped, or
+        // opened from the address) asks where to save.
+        host.writable.clear();
+        let asked = host.file_action(FileAction::Save).pick.unwrap();
+        assert_eq!(asked.suggested(), "plate.3dcraft");
+        assert!(host.dialog.is_none());
+    }
+
+    #[test]
+    fn a_tab_closes_only_once_its_file_is_written() {
+        let mut host = modelled();
+        host.pickers = true;
+        let id = host.session.document_status().unwrap().id;
+        host.save_document(id, "plate.3dcraft", false);
+        host.writable.insert(id);
+        host.session
+            .execute("feature.block", &json!({"size": [1, 1, 1]}))
+            .unwrap();
+        // Save in the question before closing: the file is made, the tab
+        // stays until the page says the write succeeded.
+        let outcome = host.doc_action(DocAction::SaveAndClose(0));
+        assert_eq!(outcome.downloads.len(), 1);
+        assert!(outcome.downloads[0].close);
+        assert_eq!(host.session.document_statuses().len(), 1);
+        // The write failed: still open, and unsaved again, so nothing is
+        // lost and the browser still asks before the page is left.
+        host.write_failed(id);
+        assert_eq!(host.session.document_statuses().len(), 1);
+        assert!(host.has_unsaved());
+        assert!(!host.writable.contains(&id));
+        // Without a file it can write to, the next try asks where.
+        let pick = host.doc_action(DocAction::SaveAndClose(0)).pick.unwrap();
+        assert!(matches!(pick, Pick::Save { close: true, .. }));
+        // Written this time: the page closes it.
+        let saved = host.save_document(id, "plate.3dcraft", true);
+        assert!(saved[0].close && !host.has_unsaved());
+        host.close_document(id);
+        assert!(host.session.document_statuses().is_empty());
+        host.close_document(id);
+    }
+
+    #[test]
+    fn a_document_not_shown_is_saved_and_the_shown_one_stays() {
+        let mut host = modelled();
+        host.pickers = true;
+        let first = host.session.document_status().unwrap().id;
+        host.session.execute("file.new", &json!({})).unwrap();
+        let second = host.session.document_status().unwrap().id;
+        // The dialog was answered while the second document was shown.
+        let saved = host.save_document(first, "plate.3dcraft", false);
+        assert_eq!(saved[0].document, Some(first));
+        assert_eq!(host.session.document_status().unwrap().id, second);
+        let statuses = host.session.document_statuses();
+        let saved_one = statuses.iter().find(|s| s.id == first).unwrap();
+        assert_eq!(saved_one.path.as_deref(), Some("plate.3dcraft"));
+        assert!(!saved_one.dirty);
+        // A document closed meanwhile is said, not saved.
+        assert!(host.save_document(9_999_999, "x.3dcraft", false).is_empty());
+        assert!(!host.shell.last_command.as_ref().unwrap().ok);
+    }
+
+    #[test]
+    fn with_file_dialogs_the_export_is_made_before_the_dialog() {
+        let mut host = modelled();
+        host.pickers = true;
+        host.export_extension = Some("stl".to_string());
+        // The format is chosen first, in the dialog over the page.
+        assert!(host.file_action(FileAction::Export).pick.is_none());
+        let dialog = host.dialog.take().unwrap();
+        assert_eq!(dialog.name, "untitled.stl");
+        let outcome = host.answer(dialog, true);
+        assert!(outcome.downloads.is_empty());
+        let pick = outcome.pick.unwrap();
+        let Pick::Export { file } = &pick else {
+            panic!("{pick:?}")
+        };
+        assert_eq!(file.name, "untitled.stl");
+        assert!(!file.bytes.is_empty() && file.document.is_none());
+        // The save dialog offers that format only, and takes no other.
+        let types = pick.types();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].extensions, ["stl"]);
+        assert!(types[0].mime.contains('/'));
+        assert!(pick.accepts("part.STL") && !pick.accepts("part.step"));
+        // An export that fails shows no dialog at all.
+        let failed = host.answer(
+            NameDialog {
+                purpose: Purpose::Export,
+                name: "plate.dxf".to_string(),
+            },
+            true,
+        );
+        assert_eq!(failed, Outcome::default());
+        assert!(!host.shell.last_command.as_ref().unwrap().ok);
+        // An OBJ's material library waits for its own click.
+        let obj = host.answer(
+            NameDialog {
+                purpose: Purpose::Export,
+                name: "plate.obj".to_string(),
+            },
+            true,
+        );
+        assert!(matches!(obj.pick, Some(Pick::Export { ref file }) if file.name == "plate.obj"));
+        assert_eq!(host.companion.as_ref().unwrap().name, "plate.mtl");
+        let step = Pick::Export {
+            file: Download::export("a.step".to_string(), vec![1]),
+        };
+        assert!(step.accepts("a.stp") && step.accepts("a.step"));
+        assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
+        assert_eq!(export_types(Some("svg"))[0].description, "SVG");
+        assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);
+        assert_eq!(open_types(Ask::Open)[0].extensions, [EXTENSION]);
+    }
+
+    #[test]
+    fn a_refused_file_dialog_falls_back_to_downloads() {
+        // Chrome's words for a click that came too long ago, and for good.
+        assert!(refusal_is_about_activation(
+            "SecurityError: Must be handling a user gesture to show a file picker."
+        ));
+        assert!(refusal_is_about_activation(
+            "SecurityError: no user activation"
+        ));
+        assert!(!refusal_is_about_activation(
+            "SecurityError: Cross origin sub frames aren't allowed to show a file picker."
+        ));
+        assert!(!refusal_is_about_activation("TypeError: bad options"));
+        let mut host = modelled();
+        host.pickers = true;
+        // An export already made is downloaded, with its companion.
+        let obj = host
+            .answer(
+                NameDialog {
+                    purpose: Purpose::Export,
+                    name: "plate.obj".to_string(),
+                },
+                true,
+            )
+            .pick
+            .unwrap();
+        let outcome = host.without_picker(obj, "SecurityError: no");
+        let names: Vec<&str> = outcome.downloads.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["plate.obj", "plate.mtl"]);
+        assert!(host.companion.is_none());
+        // A save is named in the dialog over the page.
+        let id = host.session.document_status().unwrap().id;
+        let save = Pick::Save {
+            document: id,
+            suggested: "a.3dcraft".to_string(),
+            close: true,
+        };
+        assert!(host.without_picker(save.clone(), "x").downloads.is_empty());
+        assert_eq!(
+            host.dialog.take().unwrap().purpose,
+            Purpose::Save { close: Some(0) }
+        );
+        // Not when another document is shown by then: said, not guessed.
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.without_picker(save, "x");
+        assert!(host.dialog.is_none());
+        assert!(!host.shell.last_command.as_ref().unwrap().ok);
+    }
+
+    #[test]
+    fn an_example_from_the_start_screen_is_built_in_a_new_document() {
+        let mut host = host();
+        let example = &craft3d_ui_egui::shell::EXAMPLES[0];
+        host.shell.choose_example(example);
+        host.pump();
+        assert_eq!(host.session.document_statuses().len(), 1);
+        let report = host.shell.last_command.as_ref().unwrap();
+        assert!(report.ok, "{}", report.text);
+        // Nothing is left in memory, and nothing is recent in the browser.
+        assert!(host.session.file_names().is_empty());
+        assert!(host.shell.recent_files().is_empty());
     }
 }

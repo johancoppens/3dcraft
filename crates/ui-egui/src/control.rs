@@ -264,6 +264,7 @@ impl Shell {
                     "error": row.error,
                     "causedBy": row.caused_by.as_ref().map(|(id, name)| json!({"id": id, "name": name})),
                     "selected": row.selected,
+                    "hidden": row.hidden,
                     "madeSelection": row.made_selection,
                 })
             })
@@ -338,6 +339,9 @@ impl Shell {
             "quitting": self.quitting(),
             "selection": self.selection().json(),
             "parameters": self.parameters_report(),
+            "recent": self.recent_json(),
+            "startScreen": self.start_shown(),
+            "timeline": self.timeline_json(),
         }))
     }
 
@@ -426,10 +430,24 @@ impl Shell {
         let before = (self.state.camera, self.state.show, self.state.section.on);
         self.state.camera = camera;
         if let Some(to) = to {
-            let Some(scene) = self.sync(session) else {
+            let Some(mut scene) = self.sync(session) else {
                 self.state.camera = before.0;
                 return Err("ui.fit: there is no document; open one first".to_string());
             };
+            // A hidden target is shown again and a scrub before it let go
+            // of, first (`shell/timeline.rs`).
+            match self.reveal_now(session, &scene, &to) {
+                Ok(false) => {}
+                Ok(true) => {
+                    if let Some(again) = self.sync(session) {
+                        scene = again;
+                    }
+                }
+                Err(why) => {
+                    self.state.camera = before.0;
+                    return Err(format!("ui.fit: {why}"));
+                }
+            }
             if let Err(why) = self.fly_to(&scene, &to, None) {
                 (self.state.camera, self.state.show, self.state.section.on) = before;
                 return Err(format!("ui.fit: {why}"));

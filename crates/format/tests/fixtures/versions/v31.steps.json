@@ -1,0 +1,10 @@
+[
+  ["variable.set", {"name": "length", "expr": "240 mm"}],
+  ["variable.set", {"name": "flanged", "expr": "length > 200 mm && !(length >= 400 mm) || length == 1 m"}],
+  ["variable.set", {"name": "wall", "expr": "clamp(length / 40, 1.2 mm, 5 mm)"}],
+  ["variable.set", {"name": "size", "expr": "choose(2, 8 mm, 10 mm, 12 mm)"}],
+  ["variable.set", {"name": "ribs", "expr": "if(flanged, 4, if(wall != 0 mm, 12 / (wall / 1 mm), 2))"}],
+  ["variable.set", {"name": "sag", "expr": "(pow(2, 0.5) * (cosh(0.5) - 1) + sinh(0.1) * tanh(1) + exp(0) * ln(10) / log10(10) - ln(10)) * 1 mm"}],
+  ["feature.block", {"size": ["size", "wall", "size + sag"], "name": "Rib"}],
+  ["feature.pattern", {"source": "Rib", "count": "ribs", "step": ["if(ribs > 2, 2 * size, 3 * size)", 0, 0], "name": "Ribs"}]
+]

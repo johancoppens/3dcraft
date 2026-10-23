@@ -671,6 +671,15 @@ impl Generator {
                 *slot = length;
             }
             let count = self.rng.range(2, 4);
+            // A count of 3 is written as a condition whose branch not
+            // taken would divide by zero (formulas with conditions, format
+            // 31); it draws nothing more from the generator, so a seed
+            // makes the same design as before.
+            let count = if count == 3 {
+                json!("if(3 > 2, 3, 1 / 0)")
+            } else {
+                json!(count)
+            };
             return vec![cmd(
                 "feature.pattern",
                 json!({"source": body.name, "count": count, "step": step, "name": name}),

@@ -18,6 +18,8 @@
 //!   `file.activate`, `file.close` and `file.save`.
 //! - [`worker`]: the engine thread, where commands run while the window
 //!   keeps drawing.
+//! - [`places`]: the recent files on disk, and the pages and folders the
+//!   Help menu opens with the platform's opener.
 //! - [`refine`]: the display scene built on a thread of its own while the
 //!   window shows the quick first picture.
 //! - [`app`]: the eframe window.
@@ -30,6 +32,7 @@ pub mod args;
 pub mod control;
 pub mod files;
 pub mod host;
+pub mod places;
 pub mod refine;
 pub mod tabs;
 pub mod token;

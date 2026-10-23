@@ -1,0 +1,53 @@
+{
+  "format_version": 30,
+  "written_by": "c9310d87b726d57535c8688926ea5f9638e2a5d8",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v30.steps.json --out v30.3dcraft, then info v30.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Marks",
+      "status": "ok",
+      "dof": 2
+    },
+    {
+      "id": "F3",
+      "name": "Peg",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Joined",
+      "status": "ok"
+    }
+  ],
+  "hidden": [
+    "F2",
+    "F3"
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 3,
+      "edges": 2,
+      "vertices": 2,
+      "volume": 125.66370614359175,
+      "area": 150.7964473723102
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 2125.6637061435927,
+      "area": 1325.6637061435924
+    }
+  ]
+}
