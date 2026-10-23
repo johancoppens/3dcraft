@@ -12,7 +12,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the speed of a cusp's axis on a block edge, the meshes of rational faces with weights a thousand apart).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
-3. **R1, the first release:** installers, a user guide and example models, Jigs at level 1 with a few Jigs to try (so the web build, which has no AI yet, is a tool and not only a viewer; the developer, 2026-10-23), then a field test by people outside the project, before new breadth (the developer, 2026-10-22; [R1](#r1-first-release)).
+3. **R1, the first release:** installers, a user guide and example models, formulas (conditions, tables, conditional features, curves from formulas) and Jigs at level 1 with a few Jigs to try (so the web build, which has no AI yet, is a tool and not only a viewer; the developer, 2026-10-23), then a field test by people outside the project, before new breadth (the developer, 2026-10-22; [R1](#r1-first-release)).
 
 ## Milestones
 
@@ -591,6 +591,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | R1: formulas (conditions, tables, conditional features, curves from formulas) moved into R1 (the developer) |
 | 2026-10-23 | minor | R1: Jigs at level 1 (public variables, a parameter form, a Jig package) and a few Jigs to try, moved from the ideas into R1 (the developer) |
 | 2026-10-23 | minor | R1: Help menu, recent files, keyboard shortcuts window and a start screen in the window |
 | 2026-10-23 | minor | Ideas: an AI in the browser driving the web build, researched and parked until a web AI calls WebMCP tools for every user |
