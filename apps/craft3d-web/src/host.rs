@@ -317,11 +317,25 @@ pub struct WebHost {
     pub companion: Option<Download>,
 }
 
+/// Most bytes of scenes the page keeps (`Session::set_scene_budget`):
+/// the meshes of bodies are kept within as much again, so 512 MiB at most
+/// for both, where the desktop's default allows 3 GiB. A WebAssembly
+/// module has 4 GiB of memory at most and never gives any back, and the
+/// scene of every undo step was kept until the budget was reached: a
+/// Jig's parameters set some hundred times filled it (R1 B7, 2026-10-23:
+/// a tab of 9.1 GB after 1 h 20 min). Older states are meshed again when
+/// they are shown again (an undo), as on the desktop beyond its budget.
+pub const WEB_SCENE_BUDGET: usize = 256 << 20;
+
 impl WebHost {
-    /// A host whose session keeps its files in memory, around `shell`.
+    /// A host whose session keeps its files in memory, around `shell`,
+    /// within the page's memory budgets ([`WEB_SCENE_BUDGET`]; the bodies
+    /// a regeneration keeps have their own wasm budget in `craft3d_regen`).
     pub fn new(shell: Shell) -> Self {
+        let mut session = Session::new(Workspace::memory());
+        session.set_scene_budget(WEB_SCENE_BUDGET);
         Self {
-            session: Session::new(Workspace::memory()),
+            session,
             shell,
             export_extension: None,
             dialog: None,
