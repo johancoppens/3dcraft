@@ -27,7 +27,8 @@ fn feature_when(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "feature.when";
     let p = Params::new(ID, params, &["feature", "expr"])?;
     let id = feature_ref(session.document()?.history.current(), &p, ID, "feature")?;
-    let when = match p.get("expr") {
+    // `null` is a value here (no condition), not a missing parameter.
+    let when = match params.get("expr") {
         None => return Err(p.missing("expr")),
         Some(Value::Null) => None,
         Some(value) => {

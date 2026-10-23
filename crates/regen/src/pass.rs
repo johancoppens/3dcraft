@@ -80,7 +80,10 @@ pub(crate) fn off_reason(feature: &Feature, status: &Status) -> String {
     let name = &feature.name;
     match (status, &feature.when) {
         (Status::Inactive, Some(when)) => {
-            format!("`{name}` is inactive (its condition `{}` is 0)", when.source())
+            format!(
+                "`{name}` is inactive (its condition `{}` is 0)",
+                when.source()
+            )
         }
         (Status::Inactive, None) => format!("`{name}` is inactive"),
         _ => format!("`{name}` is suppressed"),

@@ -357,6 +357,52 @@ struct Case {
     repair: fn(&mut Session, &str),
 }
 
+/// True for a case whose `D` reads the upstream body as an operand (a
+/// body parameter of a boolean, a transform, a mirror, a pattern or a
+/// shell): with that body switched off, `D` goes on without it rather
+/// than failing (docs/design/regeneration.md › Switched off).
+fn reads_an_operand(case: &Case) -> bool {
+    [
+        "transform: source",
+        "mirror: source",
+        "pattern: source",
+        "boolean: target",
+        "boolean: tool",
+        "shell: source",
+    ]
+    .contains(&case.what)
+}
+
+/// With the upstream body suppressed, `D` of a case that reads it as an
+/// operand is built and passes on what it can: the target, for a
+/// boolean whose tool is gone; nothing, saying why, otherwise. Nothing
+/// fails. Returns what does not hold.
+fn passed_as_expected(s: &mut Session, context: &str, case: &Case) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let broken = state(s);
+    let d = feature(&broken, "D");
+    if d["status"] != "ok" {
+        wrong.push(format!("{context}: D is not ok: {d}"));
+    }
+    let said = if case.what == "boolean: tool" {
+        d.get("passesOn").is_some()
+    } else {
+        d["passesNothing"] == format!("`{}` is suppressed", case.upstream)
+    };
+    if !said {
+        wrong.push(format!("{context}: D does not say what it passes on: {d}"));
+    }
+    for entry in broken["features"].as_array().unwrap() {
+        if entry["status"] == "failed" && entry["name"] != "T" {
+            wrong.push(format!(
+                "{context}: {} failed: {}",
+                entry["name"], entry["error"]
+            ));
+        }
+    }
+    wrong
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -1055,13 +1101,29 @@ fn independent_features_are_untouched(session: &Session, context: &str) {
         only(&mut without, "feature.delete", json!({"feature": id}));
     }
     let after = state(&mut without);
-    let kept: Vec<&Value> = before["features"]
+    // A feature switched off that cannot pass its body on says why, as a
+    // failed feature does, in terms of the document it is in: its reason
+    // is not compared, that it has one is.
+    let reasonless = |entry: &Value| {
+        let mut entry = entry.clone();
+        if let Some(why) = entry.get_mut("cannotPass") {
+            *why = json!("...");
+        }
+        entry
+    };
+    let kept: Vec<Value> = before["features"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|f| f["status"] != "failed")
+        .map(reasonless)
         .collect();
-    let now: Vec<&Value> = after["features"].as_array().unwrap().iter().collect();
+    let now: Vec<Value> = after["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(reasonless)
+        .collect();
     assert_eq!(kept, now, "{context}: features without the failed ones");
     assert_eq!(
         before["bodies"], after["bodies"],
@@ -1264,6 +1326,12 @@ fn a_broken_reference_fails_its_feature_with_the_reason_and_nothing_else() {
             apply(&mut s, way, case.upstream);
             let broken = state(&mut s);
             table.push(format!("{context}: {}", status(&broken, "D").1));
+            if way == Break::Suppress && reads_an_operand(&case) {
+                wrong.extend(passed_as_expected(&mut s, &context, &case));
+                run(&mut s, "edit.undo", json!({}));
+                assert_eq!(state(&mut s), intact, "{context}: after undo");
+                continue;
+            }
             let mut expected = expected_reason(way, case.role, case.upstream, &upstream_id);
             // The names it lost.
             expected.extend(names.iter().cloned());
@@ -1369,6 +1437,10 @@ fn rolled_back_is_the_document_that_ends_there(session: &Session, context: &str)
             .map(|entry| {
                 let mut entry = entry.clone();
                 entry.as_object_mut().unwrap().remove("error");
+                // So does one switched off that cannot pass its body on.
+                if let Some(why) = entry.get_mut("cannotPass") {
+                    *why = json!("...");
+                }
                 entry
             })
             .collect()
@@ -1390,6 +1462,10 @@ fn a_repaired_reference_gives_the_document_built_that_way_from_the_start() {
         let mut wrong: Vec<String> = Vec::new();
         for way in BREAKS {
             let context = format!("{} / {way:?}", case.what);
+            if way == Break::Suppress && reads_an_operand(&case) {
+                // Nothing to repair: `D` goes on without the operand.
+                continue;
+            }
             let (mut repaired, _) = model(&case, case.upstream);
             let intact = state(&mut repaired);
             apply(&mut repaired, way, case.upstream);
@@ -2322,11 +2398,17 @@ fn failed_suppressed_and_rolled_back_features_survive_saving_and_opening() {
         .map(|name| (name.clone(), status(&saved, name).0))
         .collect();
     let count = |wanted: &str| states.iter().filter(|(_, s)| s == wanted).count();
-    // Shelf (its variable), Lid and Cover (the shelf), Hole (its tool),
-    // Ring (its source); Peg; Twin, Under, Post, Bystander.
+    // Shelf (its variable), Lid and Cover (the shelf), Hole (its tool);
+    // Peg (Ring, its pattern, passes nothing on); Twin, Under, Post,
+    // Bystander.
+    assert_eq!(status(&saved, "Ring").0, "ok");
+    assert_eq!(
+        feature(&saved, "Ring")["passesNothing"],
+        "`Peg` is suppressed"
+    );
     assert_eq!(
         (count("failed"), count("suppressed"), count("rolledBack")),
-        (5, 1, 4),
+        (4, 1, 4),
         "{states:?}"
     );
     assert_eq!(saved["ok"], false);

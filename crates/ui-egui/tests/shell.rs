@@ -1568,3 +1568,47 @@ fn the_tree_marks_are_in_the_fonts() {
         assert_ne!(glyph(mark), missing, "{mark}");
     }
 }
+
+/// A feature switched off by its condition is a row of its own state,
+/// `inactive`, with its condition: greyed in the window, said by `ui.get`.
+#[test]
+fn the_tree_shows_an_inactive_feature_with_its_condition() {
+    let mut session = part();
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "lid", "expr": "0"}),
+    );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [100, 0, 0], "name": "Lid"}),
+    );
+    run(
+        &mut session,
+        "feature.when",
+        json!({"feature": "Lid", "expr": "lid"}),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 3);
+    let row = shell.tree_rows().last().unwrap().clone();
+    assert_eq!(row.state, FeatureState::Inactive);
+    assert_eq!(row.status, "inactive");
+    assert_eq!(row.when.as_deref(), Some("lid"));
+    let got = shell
+        .handle_method(&mut session, "ui.get", None)
+        .unwrap()
+        .unwrap();
+    let last = got["features"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["state"], "inactive", "{last}");
+    assert_eq!(last["when"], "lid", "{last}");
+    assert_eq!(last["zoomable"], false, "{last}");
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "lid", "expr": "1"}),
+    );
+    window.idle(&mut shell, &mut session, 2);
+    assert_eq!(shell.tree_rows().last().unwrap().state, FeatureState::Ok);
+}

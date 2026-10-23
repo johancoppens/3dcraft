@@ -752,7 +752,9 @@ fn maker<'a>(
     }
     let Some(body) = &outcome.body else {
         if let Some(why) = crate::pass::absent(earlier, feature) {
-            return Err(format!("plane: `{made_by}`, which makes the face {name}, has no body: {why}"));
+            return Err(format!(
+                "plane: `{made_by}`, which makes the face {name}, has no body: {why}"
+            ));
         }
         return Err(match &outcome.status {
             Status::Ok => format!(

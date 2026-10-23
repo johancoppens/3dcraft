@@ -1204,7 +1204,16 @@ fn an_edit_that_removes_an_entity_fails_the_references_to_it_and_no_others() {
     // corners are found.
     run(&mut s, "feature.suppress", json!({"feature": "Hole"}));
     let lost = lost_marks(&mut s);
-    assert_eq!(lost.len(), names.len(), "the part is not built");
+    // (Suppressed, the hole passes the base on unchanged: since
+    // 2026-10-23 the part is built without it.)
+    assert_eq!(
+        lost.keys().copied().collect::<Vec<_>>(),
+        [5, 6],
+        "{lost:?}: the corners on the hole's wall"
+    );
+    for (mark, reason) in &lost {
+        assert!(reason.contains(&names[*mark]), "{reason}");
+    }
     run(
         &mut s,
         "feature.suppress",

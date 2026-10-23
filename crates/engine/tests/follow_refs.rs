@@ -527,13 +527,16 @@ fn a_feature_inserted_between_is_followed_through_and_a_move_changes_the_chain()
     // Undo puts the chamfer back before the foot.
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(bodies(&mut s)[0]["volume"], expected[0]["volume"]);
-    // Suppressed, the chamfer takes no body, and the foot follows the
-    // round alone.
+    // Suppressed, the chamfer passes the round's body on unchanged and
+    // the foot follows through it as through the chamfer: the same faces,
+    // and the body of the round with its foot alone.
     run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
     assert_eq!(
         feature(&mut s, "Foot")["followed"]["edges"],
-        json!([["F2:copy(0)/F1:face(0)", "F2:copy(0)/F1:face(2)"]])
+        json!([["F4:copy(0)/F1:face(0)", "F4:copy(0)/F1:face(2)"]])
     );
+    assert_eq!(feature(&mut s, "Bevel")["passesOn"], "F2");
+    assert_eq!(feature(&mut s, "Foot")["status"], "ok");
 }
 
 #[test]

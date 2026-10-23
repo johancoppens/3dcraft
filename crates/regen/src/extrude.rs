@@ -365,7 +365,9 @@ fn target<'a>(
     }
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
         if let Some(why) = crate::pass::absent(earlier, name.feature) {
-            return Err(format!("upTo: `{made_by}`, which makes the face {name}, has no body: {why}"));
+            return Err(format!(
+                "upTo: `{made_by}`, which makes the face {name}, has no body: {why}"
+            ));
         }
         return Err(match &outcome.status {
             Status::Ok => format!(

@@ -204,7 +204,9 @@ pub(crate) fn named_body_of<'a>(
     }
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
         if let Some(why) = crate::pass::absent(earlier, first.feature) {
-            return Err(format!("{role}: `{made_by}`, which makes {name}, has no body: {why}"));
+            return Err(format!(
+                "{role}: `{made_by}`, which makes {name}, has no body: {why}"
+            ));
         }
         return Err(match &outcome.status {
             Status::Ok => format!(
