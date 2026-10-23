@@ -818,6 +818,33 @@ mod tests {
         assert_eq!(arch_of(None), std::env::consts::ARCH);
     }
 
+    /// A version bump updates what carries the version by hand: the
+    /// release notes (CHANGELOG.md, which the Release workflow takes them
+    /// from) and the AppStream metainfo's newest release.
+    #[test]
+    fn the_changelog_and_the_metainfo_name_this_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        let root = repo_root();
+        let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+        assert!(
+            changelog
+                .lines()
+                .any(|l| l.starts_with(&format!("## [{version}]"))),
+            "CHANGELOG.md has no section ## [{version}]"
+        );
+        let metainfo = std::fs::read_to_string(
+            root.join("packaging/linux")
+                .join(format!("{APP_ID}.metainfo.xml")),
+        )
+        .unwrap();
+        let first = metainfo.find("<release ").unwrap();
+        let newest = metainfo.get(first..).unwrap();
+        assert!(
+            newest.starts_with(&format!("<release version=\"{version}\"")),
+            "the metainfo's first <release> is not {version}"
+        );
+    }
+
     #[test]
     fn msi_versions_are_three_numbers() {
         assert_eq!(msi_version("0.0.1").unwrap(), "0.0.1");

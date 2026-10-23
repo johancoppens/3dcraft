@@ -23,8 +23,8 @@ pub const AGENT_SETUP_URL: &str = "https://github.com/johancoppens/3dcraft/blob/
 pub const REPO_URL: &str = "https://github.com/johancoppens/3dcraft";
 /// The licence 3DCraft is published under.
 pub const LICENCE: &str = "MIT";
-/// The version of this build.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version of this build (the engine's, which bug reports name).
+pub const VERSION: &str = craft3d_engine::VERSION;
 
 /// F: fly to the selection, or frame everything when nothing is
 /// selected; over the viewport and over the feature list.
@@ -182,6 +182,21 @@ impl Shell {
         self.help.data_folder.as_deref()
     }
 
+    /// What About 3DCraft copies: the version and commit, the platform and
+    /// the window's own details (frontend, renderer), as the first lines
+    /// of a bug report (`session.report`) name them.
+    pub fn system_info(&self) -> String {
+        let mut out = format!(
+            "3DCraft {VERSION}\ncommit: {}\nplatform: {}\n",
+            craft3d_engine::build_commit().unwrap_or("unknown"),
+            craft3d_engine::platform()
+        );
+        for (name, value) in self.host_details() {
+            out.push_str(&format!("{name}: {value}\n"));
+        }
+        out
+    }
+
     /// Opens `target` outside the window: in the browser at once, else by
     /// way of the host.
     pub(crate) fn open_external(&mut self, ctx: &egui::Context, target: External) {
@@ -260,8 +275,10 @@ impl Shell {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
         let report = self.renderer_report();
+        let commit = craft3d_engine::build_commit().unwrap_or("unknown");
         let mut open = true;
         let mut go = None;
+        let mut copy = false;
         egui::Window::new("About 3DCraft")
             .id(egui::Id::new("craft3d-about"))
             .open(&mut open)
@@ -269,9 +286,9 @@ impl Shell {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.set_width(360.0);
+                ui.set_width(420.0);
                 ui.label(egui::RichText::new(super::PRODUCT).size(22.0).strong());
-                ui.colored_label(dim, format!("Version {VERSION}"));
+                ui.colored_label(dim, format!("Version {VERSION} (commit {commit})"));
                 ui.add_space(tokens.inset * 0.6);
                 ui.label("A parametric 3D CAD modeller built for AI: every action is a command, for the window, the command line and agents over MCP.");
                 ui.add_space(tokens.inset * 0.6);
@@ -282,8 +299,11 @@ impl Shell {
                         ui.colored_label(dim, "Licence");
                         ui.label(LICENCE);
                         ui.end_row();
+                        ui.colored_label(dim, "Platform");
+                        ui.label(craft3d_engine::platform());
+                        ui.end_row();
                         ui.colored_label(dim, "Renderer");
-                        ui.label(report.describe());
+                        ui.add(egui::Label::new(report.describe()).wrap());
                         ui.end_row();
                         ui.colored_label(dim, "User guide");
                         if ui.link(GUIDE_URL).clicked() {
@@ -296,7 +316,17 @@ impl Shell {
                         }
                         ui.end_row();
                     });
+                ui.add_space(tokens.inset * 0.6);
+                copy = ui
+                    .button("Copy system info")
+                    .on_hover_text(
+                        "The version, commit, platform and graphics, to paste into a bug report",
+                    )
+                    .clicked();
             });
+        if copy {
+            ctx.copy_text(self.system_info());
+        }
         if let Some(url) = go {
             self.open_external(ctx, External::Url(url.to_string()));
         }

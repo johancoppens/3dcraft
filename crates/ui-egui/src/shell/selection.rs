@@ -272,9 +272,14 @@ impl Shell {
     /// selected feature (the tree's row, the sketch drawn as selected)
     /// follows its first body, feature, sketch or datum.
     pub(crate) fn sync_selection(&mut self, session: &mut Session, scene: &Scene) {
+        // The first look at a document's selection after its tab was
+        // switched to is no change of it: the list keeps where that tab
+        // had it scrolled.
+        let after_switch = std::mem::take(&mut self.tab_switched);
         // Copied only when it changed: it may hold thousands of names.
         let serial = session.selection_serial();
-        if serial != self.select.view.serial {
+        let changed = serial != self.select.view.serial;
+        if changed {
             // Changed by something else than the last click: what that
             // click lit is no longer what is selected.
             if self.select.lit && self.select.own != Some(serial) {
@@ -287,7 +292,6 @@ impl Shell {
                 .find(|item| !item.kind.is_entity())
                 .map(|item| item.feature.clone());
             self.select.view = view;
-            self.follow_selection_in_tree(scene);
         }
         let key = (self.select.view.serial, scene.revision, scene.sampling());
         if self.select.drawn_for != Some(key) {
@@ -299,6 +303,11 @@ impl Shell {
             // A list of the faces of another state of the model.
             self.select.menu = None;
             self.select.hover = None;
+            // Which feature made it, as the model is now.
+            self.mark_made_selection(scene);
+        }
+        if changed && !after_switch {
+            self.scroll_tree_to_selection();
         }
     }
 

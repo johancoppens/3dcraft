@@ -298,3 +298,23 @@ fn a_chosen_example_waits_for_the_host() {
     assert_eq!(shell.take_example().map(|e| e.id), Some("case"));
     assert!(shell.take_example().is_none());
 }
+
+#[test]
+fn about_copies_the_version_commit_platform_and_renderer() {
+    let shell = Shell::new();
+    let info = shell.system_info();
+    let lines: Vec<&str> = info.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!("3DCraft {}", craft3d_engine::VERSION).as_str()
+    );
+    assert!(lines[1].starts_with("commit: "), "{info}");
+    assert_eq!(
+        lines[2],
+        format!("platform: {}", craft3d_engine::platform()).as_str()
+    );
+    assert!(info.contains("renderer: cpu"), "{info}");
+    // The same build lines as the bug report.
+    let report = craft3d_engine::bug_report(None, false, &[], None);
+    assert!(report.contains(lines[1]) && report.contains(lines[2]));
+}

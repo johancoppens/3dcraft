@@ -29,6 +29,7 @@ mod icons;
 mod layout;
 pub mod number_field;
 pub mod recent;
+mod report;
 mod selection;
 pub mod start;
 mod tabs;
@@ -244,6 +245,22 @@ pub struct RenderStats {
     pub msaa: u32,
 }
 
+/// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
+/// Ctrl+F and the like are other shortcuts, not Fit.
+fn plain_f(input: &egui::InputState) -> bool {
+    input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key: help::FIT_KEY,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.is_none()
+        )
+    }) && input.modifiers.is_none()
+}
+
 /// Room the rows of the feature list keep on their right, in points,
 /// for the scroll bar that lies over them against the panel's edge.
 const TREE_BAR_ROOM: i8 = 12;
@@ -449,6 +466,11 @@ pub struct Shell {
     pub state: UiState,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
+    /// What "Copy details" reports and whether its window is open
+    /// (`shell/report.rs`).
+    report: report::ReportState,
+    /// Where "Copy details" was drawn in the last frame.
+    copy_hit: Option<egui::Rect>,
     /// Autosave and what can be recovered, as of the last `sync`.
     recovery: RecoveryOverview,
     /// Where the buttons of the recovery bar were drawn in the last frame.
@@ -584,6 +606,8 @@ pub struct Shell {
     made_selection: Option<String>,
     /// The row of the feature list to bring into view in the next frame.
     tree_scroll: Option<String>,
+    /// The tab was switched and its selection not read yet.
+    tab_switched: bool,
     /// Where the last frame drew the name of each row of the feature
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
@@ -759,6 +783,8 @@ impl Shell {
             state: UiState::default(),
             tokens: Tokens::default(),
             last_command: None,
+            report: report::ReportState::default(),
+            copy_hit: None,
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
@@ -823,6 +849,7 @@ impl Shell {
             fly: None,
             made_selection: None,
             tree_scroll: None,
+            tab_switched: false,
             tree_row_hits: Vec::new(),
             tree_view: None,
             help: help::HelpMemory::default(),
@@ -1466,6 +1493,7 @@ impl Shell {
         self.note_recent(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
+        self.sync_report(session);
         scene
     }
 
@@ -2009,15 +2037,43 @@ impl Shell {
             })
             .collect();
         let available = ui.available_width();
-        let widths = fit_status(available, tokens.status_gap, &fits);
+        // "Copy details" after the answer of a command that failed
+        // (`shell/report.rs`): its room is kept out of what the items get.
+        let copy = self
+            .last_command
+            .as_ref()
+            .is_some_and(|r| !r.ok)
+            .then(|| self.copy_label());
+        let copy_width = copy.map_or(0.0, |label| {
+            measure(label) + 2.0 * ui.spacing().button_padding.x + tokens.status_gap
+        });
+        let widths = fit_status((available - copy_width).max(0.0), tokens.status_gap, &fits);
         let height = ui.spacing().interact_size.y;
         let mut hits = Vec::new();
+        let mut copy_clicked = false;
+        let mut copy_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let mut used = 0.0;
             let mut first = true;
+            let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
+                if let Some(label) = copy {
+                    ui.add_space(tokens.status_gap);
+                    let response = ui
+                        .add(egui::Button::new(label))
+                        .on_hover_text(report::COPY_TOOLTIP);
+                    copy_clicked |= response.clicked();
+                    copy_rect = Some(response.rect);
+                    *used += copy_width;
+                }
+            };
+            let mut copy_shown = false;
             for (item, width) in items.iter().zip(&widths) {
                 let Some(width) = *width else { continue };
+                if item.slot == StatusSlot::Render && !copy_shown {
+                    copy_button(ui, &mut used);
+                    copy_shown = true;
+                }
                 if item.slot == StatusSlot::Render {
                     // Right-aligned: the room left goes before it.
                     let room = (available - used - width).max(0.0);
@@ -2064,9 +2120,27 @@ impl Shell {
                     response.on_hover_text(&item.text);
                 }
                 used += width;
+                if item.slot == StatusSlot::Answer && !copy_shown {
+                    copy_button(ui, &mut used);
+                    copy_shown = true;
+                }
+            }
+            if !copy_shown {
+                copy_button(ui, &mut used);
             }
         });
         self.status_hits = hits;
+        self.copy_hit = copy_rect;
+        if copy_clicked {
+            self.copy_error_report(ui.ctx());
+        }
+        self.error_details(ui.ctx());
+    }
+
+    /// Where the status bar's "Copy details" was drawn in the last frame:
+    /// `None` when the last command did not fail.
+    pub fn copy_details_rect(&self) -> Option<egui::Rect> {
+        self.copy_hit
     }
 
     /// Where the items of the status bar were drawn in the last frame.
@@ -2098,7 +2172,7 @@ impl Shell {
         // F over the list as over the viewport: to the selection.
         let fit = ui.rect_contains_pointer(ui.max_rect())
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(help::FIT_KEY) && i.modifiers.is_none());
+            && ui.input(plain_f);
         // Each document keeps where its list was scrolled to. The bar
         // lies against the panel's edge: the area takes the whole width
         // and the rows keep clear of the bar.
@@ -2262,7 +2336,8 @@ impl Shell {
             return;
         }
         if fit {
-            self.fit_key(self.shown_scene.clone().as_deref());
+            let now = ui.input(|i| i.time);
+            self.fit_key(self.shown_scene.clone().as_deref(), now);
         }
         // A click on a cause selects that feature (it does not toggle: the
         // point is to get there).
@@ -2716,7 +2791,7 @@ impl Shell {
                         f64::from(i.smooth_scroll_delta().y)
                     },
                     f64::from(i.zoom_delta()),
-                    i.key_pressed(help::FIT_KEY) && !typing,
+                    plain_f(i) && !typing,
                     pointer,
                 )
             });
@@ -2743,7 +2818,7 @@ impl Shell {
                 moving = true;
             }
             if fit {
-                self.fit_key(scene);
+                self.fit_key(scene, ui.input(|i| i.time));
             }
         }
         moving

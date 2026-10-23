@@ -128,6 +128,17 @@ impl Window {
     }
 
     fn key(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2, key: egui::Key) {
+        self.key_with(shell, session, at, key, egui::Modifiers::NONE);
+    }
+
+    fn key_with(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+        at: Pos2,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) {
         self.frame(shell, session, vec![Event::PointerMoved(at)]);
         self.frame(
             shell,
@@ -137,9 +148,26 @@ impl Window {
                 physical_key: None,
                 pressed: true,
                 repeat: false,
+                modifiers,
+            }],
+        );
+    }
+
+    /// The wheel over `at`, `delta` points, then time for egui's smooth
+    /// scrolling to finish.
+    fn wheel(&mut self, shell: &mut Shell, session: &mut Session, at: Pos2, delta: f32) {
+        self.frame(shell, session, vec![Event::PointerMoved(at)]);
+        self.frame(
+            shell,
+            session,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, delta),
+                phase: egui::TouchPhase::Move,
                 modifiers: egui::Modifiers::NONE,
             }],
         );
+        self.idle(shell, session, 60);
     }
 }
 
@@ -526,4 +554,227 @@ fn selecting_in_the_viewport_scrolls_the_list_to_its_feature() {
     let body = row(&shell, "F35");
     assert!(body.bottom() <= view.bottom() + 1.0, "{body:?}");
     assert_eq!(shell.state.selected_feature.as_deref(), Some("F35"));
+}
+
+// Review fixes (2026-10-23): the control channel acts on the tab the
+// session shows even before a frame, a flight under way is kept as where
+// it was going, the list keeps each tab's scroll, the section is judged
+// by real points, a point is framed with room, the mark follows edits and
+// Ctrl+F is no fly.
+
+#[test]
+fn the_control_channel_sets_the_active_tab_before_any_frame() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    let mut shell = Shell::new();
+    let mut window = Window::new(800.0, 600.0);
+    window.idle(&mut shell, &mut session, 2);
+    let a = shell.state.camera;
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "feature.block", json!({"size": [40, 40, 40]}));
+    // No frame and no sync: ui.set goes to the second document.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"yaw": 77}}),
+    );
+    assert_eq!(shell.state.camera.yaw, 77.0);
+    run(&mut session, "file.activate", json!({"document": 0}));
+    // A refused section, again before any frame: the first document's
+    // view is put back, not the second's.
+    let error = refused(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"on": true, "plane": "nothing-of-that-name"}}),
+    );
+    assert!(!error.is_empty());
+    assert_eq!(shell.state.camera, a);
+    run(&mut session, "file.activate", json!({"document": 1}));
+    let got = call(&mut shell, &mut session, "ui.get", Value::Null);
+    assert_eq!(got["state"]["camera"]["yaw"], json!(77.0));
+    // ui.fit before a frame frames the active document's model.
+    run(&mut session, "file.activate", json!({"document": 0}));
+    call(&mut shell, &mut session, "ui.fit", json!({"feature": "F1"}));
+    assert_eq!(shell.state.camera.target, [5.0, 5.0, 5.0]);
+}
+
+#[test]
+fn a_tab_switched_away_mid_flight_comes_back_where_the_flight_went() {
+    let mut session = plate();
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "feature.block", json!({"size": [5, 5, 5]}));
+    run(&mut session, "file.activate", json!({"document": 0}));
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 3);
+    let start = shell.state.camera;
+    let tool = row(&shell, "F2").center();
+    window.clicks(&mut shell, &mut session, tool, 2);
+    window.idle(&mut shell, &mut session, 3);
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let goal = framed(&shell, start, &scene.feature_box("F2"));
+    assert_ne!(shell.state.camera, goal, "under way");
+    run(&mut session, "file.activate", json!({"document": 1}));
+    window.idle(&mut shell, &mut session, 2);
+    run(&mut session, "file.activate", json!({"document": 0}));
+    window.idle(&mut shell, &mut session, 2);
+    assert_eq!(shell.state.camera, goal);
+}
+
+#[test]
+fn each_tab_keeps_where_its_list_was_scrolled() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    for k in 0..40 {
+        run(
+            &mut session,
+            "feature.block",
+            json!({"size": [5, 5, 5], "position": [k * 10, 0, 0]}),
+        );
+    }
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "feature.block", json!({"size": [5, 5, 5]}));
+    run(&mut session, "file.activate", json!({"document": 0}));
+    let mut shell = Shell::new();
+    let mut window = Window::new(900.0, 360.0);
+    window.idle(&mut shell, &mut session, 3);
+    // Selected at the bottom: the list goes there.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"items": [{"kind": "body", "feature": "F40"}]}),
+    );
+    window.idle(&mut shell, &mut session, SCROLLED);
+    let view = shell.tree_view().unwrap();
+    assert!(row(&shell, "F40").bottom() <= view.bottom() + 1.0);
+    // Scrolled back to the top by hand, the selection staying.
+    window.wheel(&mut shell, &mut session, view.center(), 5000.0);
+    assert!(row(&shell, "F1").top() >= view.top() - 1.0, "at the top");
+    assert!(row(&shell, "F40").top() > view.bottom());
+    // Away and back: still at the top, not taken to the selection again.
+    run(&mut session, "file.activate", json!({"document": 1}));
+    window.idle(&mut shell, &mut session, SCROLLED);
+    run(&mut session, "file.activate", json!({"document": 0}));
+    window.idle(&mut shell, &mut session, SCROLLED);
+    assert!(row(&shell, "F1").top() >= view.top() - 1.0);
+    assert!(row(&shell, "F40").top() > view.bottom());
+    assert_eq!(shell.state.selected_feature.as_deref(), Some("F40"));
+}
+
+#[test]
+fn the_section_is_judged_by_the_points_and_a_point_is_framed_with_room() {
+    let mut session = plate();
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    let start = shell.state.camera;
+    // A slanted plane that cuts away every point of the sketch's
+    // triangle (x - y from 20 to 50) but not the corner (60, 55) of its
+    // box (x - y = 5): the section is switched off.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"on": true, "point": [10, 0, 0], "normal": [1, -1, 0]}}),
+    );
+    assert!(shell.section().is_some());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.fit",
+        json!({"feature": "Above"}),
+    );
+    assert!(!shell.state.section.on);
+
+    // A vertex: framed with room around it, nearer than the whole model.
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let body = scene.bodies.iter().find(|b| b.feature == "F3").unwrap();
+    let vertex = body.vertex_names.iter().find(|n| !n.is_empty()).unwrap();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"items": [{"kind": "vertex", "name": vertex, "feature": "F3"}]}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": serde_json::to_value(start).unwrap()}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.fit",
+        json!({"selection": true}),
+    );
+    let camera = shell.state.camera;
+    assert!(
+        camera.distance < start.distance * 0.2,
+        "{}",
+        camera.distance
+    );
+    assert!(
+        camera.distance > 1e-3 * scene.bbox.diagonal(),
+        "{}",
+        camera.distance
+    );
+}
+
+#[test]
+fn the_mark_follows_edits_and_ctrl_f_does_not_fly() {
+    let mut session = plate();
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let body = scene.bodies.iter().find(|b| b.feature == "F3").unwrap();
+    let wall = body
+        .face_names
+        .iter()
+        .find(|name| scene.made_by(name).as_deref() == Some("F2"))
+        .unwrap()
+        .clone();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"items": [{"kind": "face", "name": wall, "feature": "F3"}]}),
+    );
+    window.idle(&mut shell, &mut session, 1);
+    assert_eq!(shell.made_selection(), Some("F2"));
+    // Deleting the cut and the tool drops the face: no mark is left.
+    run(&mut session, "feature.delete", json!({"feature": "Hole"}));
+    run(&mut session, "feature.delete", json!({"feature": "Tool"}));
+    window.idle(&mut shell, &mut session, 2);
+    assert_eq!(shell.made_selection(), None);
+    assert!(shell.tree_rows().iter().all(|r| !r.made_selection));
+
+    // Ctrl+F over the viewport is no fly.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
+    );
+    window.idle(&mut shell, &mut session, 1);
+    let before = shell.state.camera;
+    let middle = shell.viewport_rect().unwrap().center();
+    window.key_with(
+        &mut shell,
+        &mut session,
+        middle,
+        egui::Key::F,
+        egui::Modifiers::CTRL,
+    );
+    window.idle(&mut shell, &mut session, 30);
+    assert_eq!(shell.state.camera, before);
+    // F alone flies.
+    window.key(&mut shell, &mut session, middle, egui::Key::F);
+    window.idle(&mut shell, &mut session, 30);
+    assert_ne!(shell.state.camera, before);
 }
