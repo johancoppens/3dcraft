@@ -369,6 +369,14 @@ fn face_names(regen: &Regen, id: FeatureId, faces: &[FaceId]) -> Vec<Value> {
 
 /// `job` for every index of `indices`, on several threads; the results in
 /// the order of `indices`. `None` for a job whose thread stopped.
+///
+/// Each pair's `interference` is an operation of its own, whose freeform
+/// search trees are held to the kernel's budget per thread
+/// (`craft3d_kernel` › `freeform::HELD_BYTES`): with `MAX_THREADS` threads
+/// the trees held at once can reach that many budgets. The budget is not
+/// divided by the threads, so that whether a pair is refused does not
+/// depend on the machine (docs/design/booleans.md › *Patch trees of thin
+/// strips*).
 fn in_order<T: Send>(indices: &[usize], job: impl Fn(usize) -> Option<T> + Sync) -> Vec<Option<T>> {
     let threads = craft3d_math::available_threads().min(MAX_THREADS);
     let threads = threads.min(indices.len());
