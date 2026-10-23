@@ -1300,6 +1300,8 @@ fn variable_json(regen: &Regen, name: &str, unit: &str) -> Value {
                             "warning".into(),
                             format!("`{}` is {}{hint}", v.expr, value.dimension.described()).into(),
                         );
+                    } else if let Some(degrees) = degrees_in_radians(&v.expr) {
+                        map.insert("warning".into(), degrees.into());
                     }
                 }
                 out
@@ -1307,6 +1309,45 @@ fn variable_json(regen: &Regen, name: &str, unit: &str) -> Value {
             Err(error) => json!({ "name": v.name, "expr": v.expr, "error": error }),
         },
     }
+}
+
+/// A plain number inside `sin`, `cos` or `tan` that looks like degrees
+/// (more than a full turn in radians: `sin(30)`), which those functions
+/// take as radians: the warning to give, naming the unit to write. Only a
+/// literal argument is looked at; the meaning does not change (a plain
+/// number in them stays radians, as files rely on).
+pub(crate) fn degrees_in_radians(source: &str) -> Option<String> {
+    let bytes = source.as_bytes();
+    for function in ["sin", "cos", "tan"] {
+        let pattern = format!("{function}(");
+        let mut from = 0;
+        while let Some(found) = source.get(from..).and_then(|rest| rest.find(&pattern)) {
+            let at = from + found;
+            from = at + pattern.len();
+            // `asin(`, `my_sin(`: another name.
+            let before = at.checked_sub(1).and_then(|i| bytes.get(i)).copied();
+            if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                continue;
+            }
+            let Some(inner) = source.get(from..) else {
+                continue;
+            };
+            let Some(close) = inner.find(')') else {
+                continue;
+            };
+            let argument = inner.get(..close).unwrap_or("").trim();
+            if let Ok(number) = argument.parse::<f64>()
+                && number.is_finite()
+                && number.abs() > std::f64::consts::TAU
+            {
+                return Some(format!(
+                    "`{function}({argument})` takes {argument} as radians ({:.0} degrees); for degrees write `{function}({argument} deg)`",
+                    number.to_degrees()
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn variable_set(session: &mut Session, params: &Value) -> Run {
@@ -2641,6 +2682,16 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             "status": status,
             "params": serde_json::to_value(&feature.kind).unwrap_or(Value::Null),
         });
+        // The parameters in the commands' words beside the document's own.
+        if let Some(map) = entry.as_object_mut()
+            && let Some(params) = map.get("params")
+        {
+            // Only where they differ: most features say the same in both.
+            let named = in_command_words(params, doc, 0);
+            if named != *params {
+                map.insert("named".into(), named);
+            }
+        }
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
@@ -3192,6 +3243,10 @@ pub(crate) fn check_document(
             }
         }
     }
+    // Lines shrunk to a point under directions (a contradiction the
+    // solver reports as holding) and sketches with freedom left.
+    let mut sketch_warnings = Vec::new();
+    crate::sketch_warnings::check_sketches(doc, &regen, only, &mut problems, &mut sketch_warnings);
     // Broken assertions are problems of the design, like failed
     // features (only when the whole document is checked); those that are
     // not proven either way are warnings.
@@ -3200,7 +3255,7 @@ pub(crate) fn check_document(
     } else {
         None
     };
-    let warnings: Vec<Value> = assertions
+    let mut warnings: Vec<Value> = assertions
         .as_ref()
         .and_then(|s| s.get("unproven"))
         .and_then(Value::as_array)
@@ -3210,6 +3265,7 @@ pub(crate) fn check_document(
                 .collect()
         })
         .unwrap_or_default();
+    warnings.extend(sketch_warnings);
     if let Some(broken) = assertions
         .as_ref()
         .and_then(|s| s.get("broken"))
@@ -3245,6 +3301,76 @@ pub(crate) fn check_document(
         map.insert("looseMeshesChecked".into(), loose_meshes.into());
     }
     Ok(result)
+}
+
+/// Keys whose integer values are features in a feature's parameters.
+const FEATURE_KEYS: &[&str] = &[
+    "target", "tool", "sketch", "source", "path", "plane", "feature",
+];
+
+/// A feature's parameters as `document.inspect` lists them (`params`,
+/// the document's own form) in the words of the commands (`named`): keys
+/// in camelCase as the commands spell them (`keepTool`, not `keep_tool`),
+/// and a feature referred to by its name instead of its number
+/// (`"target": "Plate"`, not `"target": 1`). The same structure
+/// otherwise; `params` stays as it was for the agents that read it.
+fn in_command_words(value: &Value, doc: &Document, depth: usize) -> Value {
+    // Our own structures nest a few levels; deeper is cut off, not
+    // followed.
+    if depth > 32 {
+        return Value::Null;
+    }
+    let camel = |key: &str| -> String {
+        let mut out = String::with_capacity(key.len());
+        let mut up = false;
+        for c in key.chars() {
+            if c == '_' {
+                up = true;
+            } else if up {
+                out.extend(c.to_uppercase());
+                up = false;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let name_of = |v: &Value| -> Option<Value> {
+        let id = v.as_u64()?;
+        doc.feature(FeatureId(id))
+            .map(|f| Value::from(f.name.clone()))
+    };
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, v)| {
+                    let key = camel(key);
+                    let v = if FEATURE_KEYS.contains(&key.as_str()) {
+                        match v {
+                            Value::Array(items) => Value::Array(
+                                items
+                                    .iter()
+                                    .map(|item| name_of(item).unwrap_or_else(|| item.clone()))
+                                    .collect(),
+                            ),
+                            other => name_of(other)
+                                .unwrap_or_else(|| in_command_words(other, doc, depth + 1)),
+                        }
+                    } else {
+                        in_command_words(v, doc, depth + 1)
+                    };
+                    (key, v)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| in_command_words(v, doc, depth + 1))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// The mesh check of a body with loose entities (`document.check` deep):
