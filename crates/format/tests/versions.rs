@@ -62,6 +62,7 @@ const FROZEN: &[(u32, usize, u64)] = &[
     (27, 2398, 0x8b38052614ce3ebb),
     (28, 3754, 0x4e84caf0fe28ae0c),
     (29, 7092, 0x51e129004d0dd106),
+    (30, 2752, 0x955394bf268677d2),
 ];
 
 fn dir() -> PathBuf {
