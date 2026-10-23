@@ -85,6 +85,18 @@ fn reserved_since(name: &str) -> u32 {
 /// The file extension, without the dot.
 pub const EXTENSION: &str = "3dcraft";
 
+/// The extension of a published Jig, without the dot: the same format as
+/// a `.3dcraft` file, opened to be used (its parameters set) rather than
+/// edited (docs/decisions.md, 2026-10-23).
+pub const JIG_EXTENSION: &str = "3dcraftjig";
+
+/// Whether `path` names a published Jig: it ends in `.3dcraftjig`, in any
+/// case.
+pub fn is_jig_path(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(JIG_EXTENSION))
+}
+
 /// Name of the ZIP entry that holds the document.
 pub const MANIFEST_NAME: &str = "manifest.json";
 

@@ -151,6 +151,10 @@ pub(crate) fn edit_merging<T>(
     // in the same undo step: a changed variable moves the sketches that
     // use it, and the next solve starts from where they are now.
     let open = session.document_mut()?;
+    // A Jig in use changes only through its parameters.
+    if open.jig_in_use && command != "param.set" {
+        return Err(crate::jig_cmds::in_use_refusal(command));
+    }
     let cache = &mut open.cache;
     open.history
         .apply_merging(label, key, merge, |doc| {
@@ -537,7 +541,7 @@ fn load_from_disk(
 
 /// Writes a `.3dcraft` file to disk; where there is no file system, says
 /// so.
-fn save_to_disk(
+pub(crate) fn save_to_disk(
     resolved: &std::path::Path,
     document: &craft3d_doc::Document,
     thumbnail: Option<&[u8]>,
@@ -573,8 +577,14 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
+    // A published Jig is opened to be used.
+    let jig = craft3d_format::is_jig_path(path);
+    open.jig_in_use = jig;
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
+    if let (true, Some(map)) = (jig, result.as_object_mut()) {
+        map.insert("jigInUse".into(), true.into());
+    }
     // What reading the file changed (a tolerance outside the range a
     // document may have, from a file saved before 2026-10-15).
     if let (false, Some(map)) = (read.is_empty(), result.as_object_mut()) {
@@ -598,11 +608,22 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.save", params, &["path", "overwrite", "thumbnail"])?;
     let overwrite = p.bool("overwrite")?.unwrap_or(false);
     let thumbnail = p.bool("thumbnail")?;
+    let in_use = session.document()?.jig_in_use;
     let path = match (p.str("path")?, &session.document()?.path) {
         (Some(path), _) => path.to_string(),
+        (None, _) if in_use => {
+            return fail(
+                "file.save: this is a Jig in use and its .3dcraftjig file is never saved over; save it as a model: give a `path` ending in .3dcraft",
+            );
+        }
         (None, Some(own)) => own.clone(),
         (None, None) => return fail("file.save: this document has no file yet; give a `path`"),
     };
+    if craft3d_format::is_jig_path(&path) {
+        return fail(
+            "file.save: a .3dcraftjig file is a published Jig and is written by jig.export (File, Export as Jig…), never saved over; give a `path` ending in .3dcraft",
+        );
+    }
     let resolved = session.workspace.resolve_write(&path)?;
     let access = session.workspace.write.clone();
     let in_memory = session.writes_to_memory();
@@ -653,6 +674,8 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
     open.recovered = None;
+    // Saved as a model: it is edited like any other from now on.
+    open.jig_in_use = false;
     let mut result = json!({ "path": kept });
     if let Some(map) = result.as_object_mut()
         && wants_thumbnail

@@ -28,6 +28,7 @@ mod file_cmds;
 mod helix_cmds;
 mod import_cmds;
 mod interference_cmds;
+mod jig_cmds;
 mod loft_cmds;
 mod mass;
 mod memory_files;
@@ -186,6 +187,11 @@ pub(crate) struct OpenDocument {
     /// The thumbnail drawn for a save, with the revision it shows, so a
     /// Jig saved again unchanged is not drawn again (`file.save`).
     pub(crate) thumbnail: Option<(u64, Arc<Vec<u8>>)>,
+    /// A published Jig opened to be used (a `.3dcraftjig` file): only its
+    /// parameters change, it is never saved over its file, and its
+    /// parameter changes are not unsaved changes (`jig_cmds.rs`). Derived
+    /// from how it was opened, not stored in the file.
+    pub(crate) jig_in_use: bool,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -230,11 +236,14 @@ impl OpenDocument {
             assertions: assert_check::Checks::default(),
             scrub: scrub::Scrub::default(),
             thumbnail: None,
+            jig_in_use: false,
         }
     }
 
+    /// Changes not on disk. A Jig in use has none: its file is never
+    /// written, and setting its parameters is using it, as a form is.
     pub(crate) fn dirty(&self) -> bool {
-        self.saved_revision != Some(self.history.revision())
+        !self.jig_in_use && self.saved_revision != Some(self.history.revision())
     }
 
     /// True when `file.close` refuses it without `discard`: it has changes
@@ -397,6 +406,7 @@ impl Session {
                 select_cmds::SPECS,
                 set_cmds::SPECS,
                 param_cmds::SPECS,
+                jig_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
