@@ -50,16 +50,18 @@ mod lexer;
 mod parser;
 #[cfg(test)]
 mod robustness;
+mod tables;
 mod units;
 mod variables;
 
 pub use error::{ErrorKind, ExprError, UnitMismatch, VariableError};
 pub use eval::evaluate;
-pub use parser::{BinaryOp, Expr, Function, Node, NodeId, NodeKind};
+pub use parser::{BinaryOp, Expr, Function, LookupRow, Node, NodeId, NodeKind};
+pub use tables::{Cell, Column, MAX_COLUMNS, MAX_ROWS, RowRef, Table, cell_label, rename_table};
 pub use units::{Dimension, Quantity, Unit};
 pub use variables::{
     EvaluatedVariable, Evaluation, Variable, VariableTable, check_variable_name, is_reserved_name,
-    names_in, rename_reserved_variable, rename_variable,
+    names_in, refers_to_variable, rename_reserved_variable, rename_variable,
 };
 
 /// Longest expression source accepted, in bytes. Real expressions are a few
@@ -72,6 +74,10 @@ pub const MAX_DEPTH: usize = 64;
 
 /// Longest variable name, in bytes.
 pub const MAX_NAME_LEN: usize = 128;
+
+/// Longest text in an expression (a table row's key in quotes) and in a
+/// table's text cell, in bytes.
+pub const MAX_TEXT_LEN: usize = 64;
 
 /// Most variables a [`VariableTable`] holds.
 pub const MAX_VARIABLES: usize = 4096;

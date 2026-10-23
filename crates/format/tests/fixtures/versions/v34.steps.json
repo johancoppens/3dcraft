@@ -1,0 +1,14 @@
+[
+  ["variable.set", {"name": "lid", "expr": "0"}],
+  ["variable.publish", {"name": "lid", "kind": "boolean", "label": "Lid"}],
+  ["variable.set", {"name": "holes", "expr": "1"}],
+  ["feature.block", {"size": ["40 mm", "20 mm", "10 mm"], "name": "Plate"}],
+  ["feature.fillet", {"edges": [["F1:face(0)", "F1:face(2)"]], "radius": "2 mm", "name": "Round"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "30 mm", "position": ["10 mm", "10 mm", "-5 mm"], "name": "Drill"}],
+  ["feature.when", {"feature": "Drill", "expr": "holes == 1"}],
+  ["feature.boolean", {"op": "subtract", "target": "Round", "tool": "Drill", "name": "Cut"}],
+  ["feature.block", {"size": ["40 mm", "20 mm", "2 mm"], "position": ["0 mm", "0 mm", "10 mm"], "name": "Lid"}],
+  ["feature.when", {"feature": "Lid", "expr": "lid"}],
+  ["feature.boolean", {"op": "union", "target": "Cut", "tool": "Lid", "name": "Top"}],
+  ["feature.suppress", {"feature": "Round"}]
+]

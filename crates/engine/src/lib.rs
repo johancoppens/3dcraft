@@ -63,12 +63,14 @@ mod split_cmds;
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
+mod table_cmds;
 pub mod task_score;
 mod typed;
 mod verify;
 mod verify_cmds;
 mod view_export;
 mod visibility_cmds;
+mod when_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
@@ -286,7 +288,7 @@ impl OpenDocument {
             regen.features.iter().any(|f| {
                 f.body.is_none()
                     && f.consumed_by.is_some()
-                    && matches!(f.status, craft3d_regen::Status::Ok)
+                    && f.is_built()
                     && match need {
                         Need::Bodies => false,
                         Need::All => true,
@@ -448,11 +450,13 @@ impl Session {
                 select_cmds::SPECS,
                 set_cmds::SPECS,
                 param_cmds::SPECS,
+                table_cmds::SPECS,
                 jig_cmds::SPECS,
                 sample_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
+                when_cmds::SPECS,
                 scrub::SPECS,
                 report::SPECS,
             ]

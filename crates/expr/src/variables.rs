@@ -9,6 +9,7 @@
 use crate::error::{ErrorKind, ExprError, VariableError};
 use crate::lexer::{TokenKind, scan};
 use crate::parser::{Expr, Function};
+use crate::tables::Table;
 use crate::units::{Quantity, Unit};
 use crate::{MAX_NAME_LEN, MAX_SOURCE_LEN, MAX_VARIABLES};
 use std::cmp::Reverse;
@@ -83,6 +84,13 @@ pub fn rename_reserved_variable(
     Ok(rename_in(source, old, new).unwrap_or_else(|| source.to_string()))
 }
 
+/// Whether `source` refers to the variable `name`: a name token that is
+/// not a table (before `[`) or a column (after `.`). Works on source that
+/// does not parse.
+pub fn refers_to_variable(source: &str, name: &str) -> bool {
+    rename_tokens(source, name, name, NameRole::Variable).is_some()
+}
+
 /// Every name token in `source`, in order, repeats included: variables,
 /// functions, units, `pi`. Works on source that does not parse. For
 /// finding a name that no expression uses yet.
@@ -114,10 +122,27 @@ pub fn names_in(source: &str) -> Vec<&str> {
 /// `old` must be a valid variable name: then every identifier token equal
 /// to it is a reference to that variable.
 fn rename_in(source: &str, old: &str, new: &str) -> Option<String> {
+    rename_tokens(source, old, new, NameRole::Variable)
+}
+
+/// What a name token stands for, by its neighbours.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameRole {
+    /// A variable (or a function name, for a variable that became one):
+    /// not followed by `[` and not after `.`.
+    Variable,
+    /// A table: followed by `[`, not after `.`.
+    Table,
+}
+
+/// The renamed text, or `None` when `source` does not mention `old` in
+/// that role. A column name (after `.`) is never renamed.
+pub(crate) fn rename_tokens(source: &str, old: &str, new: &str, role: NameRole) -> Option<String> {
     let mut renamed: Option<String> = None;
     // Everything before `copied` is already in `renamed`.
     let mut copied = 0;
     let mut at = 0;
+    let mut previous = TokenKind::End;
     loop {
         let token = match scan(source, at) {
             Ok(token) => token,
@@ -131,7 +156,17 @@ fn rename_in(source: &str, old: &str, new: &str) -> Option<String> {
             break;
         }
         at = token.end;
-        if token.kind == TokenKind::Ident && source.get(token.pos..token.end) == Some(old) {
+        let after_dot = previous == TokenKind::Dot;
+        previous = token.kind;
+        if token.kind == TokenKind::Ident
+            && !after_dot
+            && source.get(token.pos..token.end) == Some(old)
+        {
+            let before_bracket =
+                scan(source, token.end).is_ok_and(|next| next.kind == TokenKind::LBracket);
+            if before_bracket != (role == NameRole::Table) {
+                continue;
+            }
             let out = renamed.get_or_insert_with(String::new);
             out.push_str(source.get(copied..token.pos).unwrap_or(""));
             out.push_str(new);
@@ -172,9 +207,21 @@ impl Variable {
 /// An ordered list of `name = expression`. The order is the order of
 /// insertion and is part of the document: it decides the evaluation order
 /// among variables that do not depend on each other.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VariableTable {
     variables: Vec<Variable>,
+    /// The tables expressions may look values up in. Constants to the
+    /// table: they add no dependencies between variables.
+    tables: Arc<[Table]>,
+}
+
+impl Default for VariableTable {
+    fn default() -> VariableTable {
+        VariableTable {
+            variables: Vec::new(),
+            tables: Arc::from(Vec::new()),
+        }
+    }
 }
 
 impl VariableTable {
@@ -184,6 +231,17 @@ impl VariableTable {
 
     pub fn len(&self) -> usize {
         self.variables.len()
+    }
+
+    /// Gives the table the tables its expressions may look values up in
+    /// (`belt[2].pitch`), replacing any it had.
+    pub fn set_tables(&mut self, tables: Vec<Table>) {
+        self.tables = Arc::from(tables);
+    }
+
+    /// The tables lookups are made in.
+    pub fn tables(&self) -> &[Table] {
+        &self.tables
     }
 
     pub fn is_empty(&self) -> bool {
@@ -347,7 +405,11 @@ impl VariableTable {
             .enumerate()
             .map(|(i, entry)| (entry.name.clone(), i))
             .collect();
-        Evaluation { entries, index }
+        Evaluation {
+            entries,
+            index,
+            tables: Arc::clone(&self.tables),
+        }
     }
 
     /// The result of variable `i`, given the results of everything before
@@ -380,6 +442,7 @@ impl VariableTable {
         }
         evaluate_known(
             expr,
+            &self.tables,
             |name| plan.index.contains_key(name),
             |name| {
                 let j = *plan.index.get(name)?;
@@ -580,6 +643,9 @@ pub struct EvaluatedVariable {
 pub struct Evaluation {
     entries: Vec<EvaluatedVariable>,
     index: BTreeMap<String, usize>,
+    /// The tables the variables were evaluated with, for
+    /// [`Evaluation::evaluate`].
+    tables: Arc<[Table]>,
 }
 
 /// Evaluates `expr` against a set of variables: `known` says whether a
@@ -593,6 +659,7 @@ pub struct Evaluation {
 /// own.
 fn evaluate_known(
     expr: &Expr,
+    tables: &[Table],
     known: impl Fn(&str) -> bool,
     value: impl FnMut(&str) -> Option<Quantity>,
 ) -> Result<Quantity, ExprError> {
@@ -604,12 +671,25 @@ fn evaluate_known(
             },
         ));
     }
-    expr.eval(value).map_err(|error| match error.kind {
-        ErrorKind::UnknownVariable { name } if known(&name) => {
-            ExprError::new(error.pos, ErrorKind::DependencyFailed { name })
-        }
-        kind => ExprError::new(error.pos, kind),
-    })
+    // A table that does not exist, like a name that is no variable.
+    if let Some((name, pos)) = expr
+        .table_refs()
+        .find(|(name, _)| !tables.iter().any(|t| t.name == *name))
+    {
+        return Err(ExprError::new(
+            pos,
+            ErrorKind::UnknownTable {
+                name: name.to_string(),
+            },
+        ));
+    }
+    expr.eval_with(value, tables)
+        .map_err(|error| match error.kind {
+            ErrorKind::UnknownVariable { name } if known(&name) => {
+                ExprError::new(error.pos, ErrorKind::DependencyFailed { name })
+            }
+            kind => ExprError::new(error.pos, kind),
+        })
 }
 
 impl Evaluation {
@@ -622,6 +702,7 @@ impl Evaluation {
         let expr = Expr::parse(source)?;
         evaluate_known(
             &expr,
+            &self.tables,
             |name| self.index.contains_key(name),
             |name| self.value(name),
         )
@@ -639,6 +720,7 @@ impl Evaluation {
     ) -> Result<Quantity, ExprError> {
         evaluate_known(
             expr,
+            &self.tables,
             |known| known == name || self.index.contains_key(known),
             |wanted| {
                 if wanted == name {
@@ -648,6 +730,11 @@ impl Evaluation {
                 }
             },
         )
+    }
+
+    /// The table `name` lookups are made in, if there is one.
+    pub fn table(&self, name: &str) -> Option<&Table> {
+        self.tables.iter().find(|t| t.name == name)
     }
 
     /// Every variable of the table, in evaluation order
@@ -1410,5 +1497,69 @@ mod tests {
         let e = t.evaluate();
         assert!(matches!(kind(&e, "x"), ErrorKind::DimensionMismatch { .. }));
         assert_eq!(kind(&e, "y"), dependency_failed("bad"));
+    }
+
+    #[test]
+    fn variables_look_values_up_in_tables() {
+        use crate::tables::{Cell, Column};
+        let mut t = table(&[
+            ("profile", "2"),
+            ("pitch", "belt[profile].pitch"),
+            ("teeth", "if(profile > 5, belt[nope].pitch, 20)"),
+            ("bad", "gear[1].m"),
+            ("off", "if(0, gear[1].m, 1)"),
+        ]);
+        t.set_tables(vec![Table {
+            name: "belt".into(),
+            columns: vec![
+                Column {
+                    name: "key".into(),
+                    unit: None,
+                },
+                Column {
+                    name: "pitch".into(),
+                    unit: Some(Unit::Millimetre),
+                },
+            ],
+            key: 0,
+            rows: Arc::new(vec![
+                vec![Cell::Text("a".into()), Cell::Number(2.0)],
+                vec![Cell::Text("b".into()), Cell::Number(3.0)],
+            ]),
+        }]);
+        let e = t.evaluate();
+        assert_eq!(e.get("pitch"), Some(&length(3.0)));
+        assert_eq!(
+            kind(&e, "teeth"),
+            ErrorKind::UnknownVariable {
+                name: "nope".into()
+            }
+        );
+        let unknown_table = ErrorKind::UnknownTable {
+            name: "gear".into(),
+        };
+        assert_eq!(kind(&e, "bad"), unknown_table);
+        // A table that does not exist is refused in a branch not taken too.
+        assert_eq!(kind(&e, "off"), unknown_table);
+        assert_eq!(e.evaluate("belt[\"a\"].pitch * 2").unwrap().value, 4.0);
+        // A table is a constant: it adds no dependency.
+        assert_eq!(
+            t.evaluation_order(),
+            ["profile", "pitch", "teeth", "bad", "off"]
+        );
+    }
+
+    #[test]
+    fn renames_tell_tables_variables_and_columns_apart() {
+        let source = "belt[belt].belt + belt * x[1].belt";
+        assert_eq!(
+            rename_variable(source, "belt", "b").unwrap(),
+            "belt[b].belt + b * x[1].belt"
+        );
+        assert_eq!(
+            crate::rename_table(source, "belt", "t"),
+            "t[belt].belt + belt * x[1].belt"
+        );
+        assert_eq!(crate::rename_table("nothing", "belt", "t"), "nothing");
     }
 }

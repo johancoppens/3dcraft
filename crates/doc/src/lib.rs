@@ -19,6 +19,7 @@ pub mod name;
 pub mod public;
 pub mod sets;
 pub mod sketch;
+pub mod table;
 pub mod visibility;
 
 pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
@@ -38,6 +39,7 @@ pub use public::{
     PublicParam,
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
+pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
@@ -1406,7 +1408,37 @@ pub struct Feature {
     pub name: String,
     #[serde(default)]
     pub suppressed: bool,
+    /// The condition that switches the feature on: it is built when this
+    /// evaluates to a number other than zero (dimensionless), and
+    /// otherwise behaves exactly as when suppressed (inactive). `None`:
+    /// always on. Evaluated again at every regeneration, so a public
+    /// parameter (a boolean, a choice) can switch features on and off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Expr>,
     pub kind: FeatureKind,
+}
+
+impl Feature {
+    /// Every expression of the feature with the name of its parameter, in
+    /// a fixed order: those of its kind ([`FeatureKind::exprs`]), then its
+    /// condition as `when`.
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        let mut out = self.kind.exprs();
+        if let Some(when) = &self.when {
+            out.push(("when".to_string(), when));
+        }
+        out
+    }
+
+    /// Every expression of the feature, to rewrite (a rename): those of
+    /// its kind, then its condition.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = self.kind.exprs_mut();
+        if let Some(when) = &mut self.when {
+            out.push(when);
+        }
+        out
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1508,6 +1540,11 @@ pub struct Document {
     /// history either.
     #[serde(default)]
     pub info: DocInfo,
+    /// Tables of values that expressions look up (`belt[2].pitch`), in
+    /// the order they were defined ([`table`]). Part of the design like
+    /// the variables.
+    #[serde(default)]
+    pub tables: Vec<Table>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1715,6 +1752,7 @@ impl Document {
         self.validate_sets()?;
         self.validate_hidden()?;
         self.validate_public()?;
+        self.validate_tables()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1727,6 +1765,9 @@ impl Document {
         for v in &self.variables {
             table.set(&v.name, v.expr.source())?;
         }
+        if !self.tables.is_empty() {
+            table.set_tables(self.tables.iter().map(Table::to_expr).collect());
+        }
         Ok(table)
     }
 
@@ -1738,6 +1779,11 @@ impl Document {
     /// evaluated here: a formula that does not parse or refers to a missing
     /// variable is stored, and reported by regeneration.
     pub fn set_variable(&mut self, name: &str, expr: &str) -> Result<(), DocError> {
+        if self.table(name).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{name}` is a table; a variable needs a name of its own"
+            )));
+        }
         // The table validates the name and the caps.
         let mut table = self.variable_table()?;
         table.set(name, expr)?;
@@ -1769,30 +1815,35 @@ impl Document {
     /// Renames a variable everywhere: in the table, in other variables'
     /// expressions and in feature parameters. All or nothing.
     pub fn rename_variable(&mut self, old: &str, new: &str) -> Result<(), DocError> {
+        if self.table(new).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{new}` is a table; a variable needs a name of its own"
+            )));
+        }
         let mut table = self.variable_table()?;
         table.rename(old, new)?;
         let mut renamed_features = Vec::with_capacity(self.features.len());
         for feature in &self.features {
-            let mut kind = feature.kind.clone();
-            for expr in kind.exprs_mut() {
+            let mut renamed = feature.clone();
+            for expr in renamed.exprs_mut() {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
             // In the formulas of a curve the parameter shadows a variable
             // of its name: a variable called so is not renamed there, and
             // a variable used there cannot take the parameter's name.
             if old != FORMULA_PARAMETER {
-                for expr in kind.formula_exprs_mut() {
-                    let renamed = craft3d_expr::rename_variable(expr.source(), old, new)?;
-                    if new == FORMULA_PARAMETER && renamed != expr.source() {
+                for expr in renamed.kind.formula_exprs_mut() {
+                    let text = craft3d_expr::rename_variable(expr.source(), old, new)?;
+                    if new == FORMULA_PARAMETER && text != expr.source() {
                         return Err(DocError::Invalid(format!(
                             "`{old}` is used in a formula curve of `{}`, where `{FORMULA_PARAMETER}` is the curve's parameter; renamed to `{new}` it would become the parameter: choose another name",
                             feature.name
                         )));
                     }
-                    *expr = Expr::new(renamed);
+                    *expr = Expr::new(text);
                 }
             }
-            renamed_features.push(kind);
+            renamed_features.push(renamed);
         }
         // The public descriptions go with their variables, and the
         // ranges in them are expressions like any other.
@@ -1826,9 +1877,7 @@ impl Document {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
         }
-        for (feature, kind) in self.features.iter_mut().zip(renamed_features) {
-            feature.kind = kind;
-        }
+        self.features = renamed_features;
         self.assertions = renamed_assertions;
         Ok(())
     }
@@ -1865,7 +1914,7 @@ impl Document {
         }
         for feature in &self.features {
             let formulas = feature.kind.formula_exprs();
-            for (_, expr) in feature.kind.exprs().into_iter().chain(formulas) {
+            for (_, expr) in feature.exprs().into_iter().chain(formulas) {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -1920,7 +1969,7 @@ impl Document {
                 }
             }
             for feature in &mut self.features {
-                for expr in feature.kind.exprs_mut() {
+                for expr in feature.exprs_mut() {
                     rename(expr)?;
                 }
                 for expr in feature.kind.formula_exprs_mut() {
@@ -2024,6 +2073,7 @@ impl Document {
             id,
             name,
             suppressed: false,
+            when: None,
             kind,
         });
         Ok(id)

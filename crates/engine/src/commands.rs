@@ -81,7 +81,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
-        "Switches a feature off (or back on) without deleting it. What is made from its body fails until it is switched on again: a suppressed boolean, fillet or chamfer does not pass the body it changes on to the features after it. The result lists the features that fail under failed.", doc: true, feature_suppress),
+        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, and a boolean with that body as its tool passes its target on (passesNothing says why there is no body). A reference to a face or edge only the suppressed feature makes (a fillet's face) fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
         "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
@@ -365,6 +365,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
             map.insert("causedBy".into(), root.to_string().into());
         }
+        add_switch(map, feature, outcome);
         if let Some(report) = &outcome.sweep {
             map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
@@ -379,10 +380,38 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
     Ok(result)
 }
 
+/// The condition of a feature (`when`, as written) and, for one switched
+/// off or with an operand switched off, what it passes on to the features
+/// after it: `passesOn` the id of the feature whose body it passes on
+/// unchanged, `passesNothing` why it passes no body on (as it should),
+/// `cannotPass` why the body it would pass on cannot be had.
+pub(crate) fn add_switch(
+    map: &mut serde_json::Map<String, Value>,
+    feature: &Feature,
+    outcome: &craft3d_regen::FeatureResult,
+) {
+    if let Some(when) = &feature.when {
+        map.insert("when".into(), when.source().into());
+    }
+    match &outcome.passed {
+        Some(craft3d_regen::Passed::Body(from)) => {
+            map.insert("passesOn".into(), from.to_string().into());
+        }
+        Some(craft3d_regen::Passed::Nothing(why)) => {
+            map.insert("passesNothing".into(), why.clone().into());
+        }
+        Some(craft3d_regen::Passed::Broken(why)) => {
+            map.insert("cannotPass".into(), why.clone().into());
+        }
+        None => {}
+    }
+}
+
 fn status_json(status: &Status) -> (&'static str, Option<&str>) {
     match status {
         Status::Ok => ("ok", None),
         Status::Suppressed => ("suppressed", None),
+        Status::Inactive => ("inactive", None),
         Status::RolledBack => ("rolledBack", None),
         Status::Failed(reason) => ("failed", Some(reason)),
     }
@@ -1402,7 +1431,7 @@ fn add_parameter_warnings(before: &Document, after: &Document, result: &mut Valu
 
 /// Whether the expression text `source` refers to the variable `name`.
 fn mentions(source: &str, name: &str) -> bool {
-    craft3d_expr::names_in(source).contains(&name)
+    craft3d_expr::refers_to_variable(source, name)
 }
 
 /// Whether a string inside the JSON `value` (a stored query or what an
@@ -1493,7 +1522,6 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             .into_iter()
             .filter(|_| name != craft3d_doc::FORMULA_PARAMETER);
         let params: Vec<String> = feature
-            .kind
             .exprs()
             .into_iter()
             .chain(formulas)
@@ -2652,6 +2680,9 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
+        if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome) {
+            add_switch(map, feature, outcome);
+        }
         // Hidden in the view (`feature.visible`): said only when it is.
         if let Some(map) = entry.as_object_mut()
             && doc.is_hidden(feature.id)
@@ -3042,21 +3073,29 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         if only.is_some() {
             // What was asked about is not built: say so rather than "ok,
             // no bodies".
-            let not_built = match outcome.status {
-                Status::Suppressed => Some("suppressed"),
-                Status::RolledBack => Some("after the rollback marker"),
-                Status::Ok | Status::Failed(_) => None,
+            // One switched off that passes a body on holds that body,
+            // which is checked as any other.
+            let not_built = match (&outcome.status, &outcome.passed) {
+                _ if outcome.is_built() => None,
+                (Status::Suppressed, _) => Some("is suppressed".to_string()),
+                (Status::Inactive, _) => Some("is inactive (its condition is 0)".to_string()),
+                (Status::RolledBack, _) => Some("is after the rollback marker".to_string()),
+                (Status::Ok, Some(craft3d_regen::Passed::Nothing(why))) => {
+                    Some(format!("passes no body on ({why})"))
+                }
+                (Status::Ok | Status::Failed(_), _) => None,
             };
             if let Some(why) = not_built {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name,
-                    "problem": format!("the feature is {why}: nothing is built to check"),
+                    "problem": format!("the feature {why}: nothing is built to check"),
                 }));
             }
             status = Some(match &outcome.status {
                 Status::Ok => "ok",
                 Status::Failed(_) => "failed",
                 Status::Suppressed => "suppressed",
+                Status::Inactive => "inactive",
                 Status::RolledBack => "rolledBack",
             });
         }

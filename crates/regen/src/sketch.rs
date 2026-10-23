@@ -939,14 +939,27 @@ fn maker<'a>(
             crate::comes_after(doc, earlier, feature)
         ));
     };
+    if let Some(off) = crate::pass::lost(outcome, name) {
+        return Err(format!(
+            "plane: `{made_by}`, which makes the face {name}, is {off}"
+        ));
+    }
     let Some(body) = &outcome.body else {
+        if let Some(why) = crate::pass::absent(earlier, feature) {
+            return Err(format!(
+                "plane: `{made_by}`, which makes the face {name}, has no body: {why}"
+            ));
+        }
         return Err(match &outcome.status {
             Status::Ok => format!(
                 "plane: `{made_by}` is a {}, whose faces have no names yet",
                 source.kind.type_name()
             ),
-            Status::Suppressed => {
-                format!("plane: `{made_by}`, which makes the face {name}, is suppressed")
+            status @ (Status::Suppressed | Status::Inactive) => {
+                format!(
+                    "plane: `{made_by}`, which makes the face {name}, is {}",
+                    crate::pass::word(status)
+                )
             }
             Status::RolledBack => {
                 format!("plane: `{made_by}`, which makes the face {name}, is rolled back")
@@ -1777,7 +1790,8 @@ pub fn image_places_to_record(
             .entities
             .iter()
             .any(|e| matches!(e.geometry, Geometry::Image { .. }) && !has(e.id));
-        if feature.suppressed || !lacking {
+        let on = matches!(crate::pass::switch(&variables, feature), Ok(None));
+        if !on || !lacking {
             continue;
         }
         let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch) else {
@@ -1856,7 +1870,8 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
     let mut solved = Vec::new();
     for (index, feature) in doc.features.iter().enumerate() {
         if let FeatureKind::Sketch(sketch) = &feature.kind
-            && !feature.suppressed
+            // A sketch switched off is left as it is, as when suppressed.
+            && matches!(crate::pass::switch(&variables, feature), Ok(None))
             // Where the sketch lies does not change how it solves.
             && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
             && clean(&result)

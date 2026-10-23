@@ -664,21 +664,36 @@ fn a_lost_face_fails_the_extrusion_and_nothing_else() {
         "repaired",
     );
 
-    // The feature the face comes from is suppressed, rolled back past, or
-    // moved after the post: each its own reason.
+    // The union suppressed passes the slab on unchanged: its underside is
+    // still there, as the copy the union would have made of it.
     run(&mut s, "feature.suppress", json!({"feature": "Part"}));
-    let reason = run(&mut s, "document.inspect", json!({}))["features"][5]["error"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        reason.contains("`Part`, which makes the face") && reason.contains("is suppressed"),
-        "{reason}"
+    assert_close(
+        &body(&mut s, "Post")["volume"],
+        PI * 4.0 * 10.0,
+        1e-9,
+        "through the suppressed union",
     );
     run(
         &mut s,
         "feature.suppress",
         json!({"feature": "Part", "suppressed": false}),
+    );
+    // The feature the face comes from has no body (its target is
+    // suppressed), is rolled back past, or is moved after the post: each
+    // its own reason.
+    run(&mut s, "feature.suppress", json!({"feature": "Slab"}));
+    let reason = run(&mut s, "document.inspect", json!({}))["features"][5]["error"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("`Part`, which makes the face") && reason.contains("`Slab` is suppressed"),
+        "{reason}"
+    );
+    run(
+        &mut s,
+        "feature.suppress",
+        json!({"feature": "Slab", "suppressed": false}),
     );
     let moved = failed(
         &mut s,

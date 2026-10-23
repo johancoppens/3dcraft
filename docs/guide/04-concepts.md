@@ -17,9 +17,12 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   and its name; it also repairs a feature that lost what it was made from (give the new sketch, target or
   edges). A parameter given as a plain number (`"count": 8`) replaces the expression that was there: the
   feature no longer follows the variable.
-- `feature.suppress` switches a feature off without deleting it; what is made from it fails until it is
-  switched on again. That includes a suppressed boolean, fillet or chamfer: it does not hand the body it
-  changes on to the features after it, so they fail too (other modellers pass the body through).
+- `feature.suppress` switches a feature off without deleting it, and the features after it go on as if
+  it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
+  change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
+  tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
+  and a feature that names it fails saying so. `feature.when` does the same by a condition (chapter 6,
+  *Switching a feature on or off*).
 - `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
   list of features (sketches and datums count); one moved before what it is made from fails and says so.
 - `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
@@ -101,6 +104,36 @@ have the same dimension. `&&` (and), `||` (or) and `!` (not) combine them. Three
   `variable.rename` renames it everywhere it is used. `variable.delete` refuses a variable that is still
   used and names what uses it; with `"force": true` it deletes it anyway, and what used it then fails
   (undo brings it back).
+
+### Tables
+
+A **table** holds values a model looks up by row: the sizes of a belt profile, a series of standard
+modules. Each column has a name and, for numbers, a unit; one column, the key (the first unless `key`
+says otherwise), names the rows.
+
+```json
+[
+ ["table.set", {"name": "belt", "columns": ["profile", {"name": "pitch", "unit": "mm"}, "teeth"],
+                "rows": [["GT2", 2, 20], ["HTD3", 3, 30]]}],
+ ["variable.set", {"name": "profile", "expr": "1"}],
+ ["variable.set", {"name": "pitch", "expr": "belt[profile].pitch"}],
+ ["variable.set", {"name": "teeth", "expr": "belt[\"HTD3\"].teeth"}],
+ ["variable.publish", {"name": "profile", "kind": "choice", "choicesFrom": "belt"}]
+]
+```
+
+- `belt[profile].pitch` is the `pitch` of row `profile`, counted from 1; `belt["HTD3"].pitch` finds the row
+  by its key. The value has the column's unit, so `pitch` is a length here. A row the table does not have,
+  a column it does not have, or a text where a number is needed fails the variable with that reason.
+- `table.set` replaces the whole table in one undo step, and everything that uses its values is rebuilt.
+  `table.list` shows the tables and what uses them; `table.rename` renames a table everywhere;
+  `table.delete` refuses a table that is still used (with `"force": true` it deletes it anyway).
+- A choice parameter with `choicesFrom` offers the table's keys (here GT2 and HTD3) and follows the table
+  when it changes: it keeps its key when rows move, and when its key is removed it becomes 0 (no choice) and
+  `table.set` warns under `parameterWarnings`. `param.set` takes a key as the value; a JSON number is always
+  the row's number. Keys that are numbers are looked up by how they are written: `t["2.5"]`.
+- A cell is a number or a short text (at most 64 characters, no quotes); at most 10 000 rows and 64
+  columns. A table and a variable never share a name.
 
 ### Curves from formulas
 

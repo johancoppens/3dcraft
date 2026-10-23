@@ -74,6 +74,38 @@ pub struct Document {
     /// empty (and in files before version 32).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info: Option<DocInfo>,
+    /// Tables of values that expressions look up (`belt[2].pitch`), in
+    /// the order they were defined. Absent when there are none (and in
+    /// files before version 33).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<Table>,
+}
+
+/// A table: `{"name": "belt", "key": "profile", "columns": [{"name":
+/// "profile"}, {"name": "pitch", "unit": "mm"}], "rows": [["GT2", 2]]}`.
+/// A cell is a number in its column's unit or a text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Table {
+    pub name: String,
+    pub key: String,
+    pub columns: Vec<TableColumn>,
+    pub rows: Vec<Vec<TableCell>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TableColumn {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TableCell {
+    Number(f64),
+    Text(String),
 }
 
 /// The document info: every field optional, absent when empty.
@@ -245,6 +277,9 @@ pub struct PublicParam {
     /// The labels of a choice, the value 1 first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
+    /// The table whose key column gives a choice's labels (version 33).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +313,10 @@ pub struct Feature {
     /// Always written; absent means not suppressed.
     #[serde(default)]
     pub suppressed: bool,
+    /// The condition that switches the feature on (an expression); absent
+    /// means always on. Since format 34.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
     pub kind: FeatureKind,
 }
 

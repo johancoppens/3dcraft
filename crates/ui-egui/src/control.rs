@@ -267,6 +267,7 @@ impl Shell {
                     "hidden": row.hidden,
                     "madeSelection": row.made_selection,
                     "zoomable": row.zoomable,
+                    "when": row.when,
                 })
             })
             .collect();

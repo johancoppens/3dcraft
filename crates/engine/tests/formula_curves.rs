@@ -927,3 +927,61 @@ fn a_live_spline_through_too_many_points_is_refused() {
     );
     assert!(refused.contains("at most 400"), "{refused}");
 }
+
+/// A formula may look values up in a table: the curve follows the table
+/// when it changes (the fit is made again), a rename of the table reaches
+/// the formula, and the table is in use.
+#[test]
+fn a_formula_curve_follows_the_tables_it_looks_up() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "dish", "columns": ["kind", {"name": "focus", "unit": "mm"}], "rows": [["flat", 20], ["deep", 10]]}),
+    );
+    set(&mut s, "a", "20 mm");
+    run(&mut s, "sketch.create", json!({"name": "P"}));
+    let curve = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "P", "x": "t", "y": "t^2 / (4 * dish[1].focus)", "t": ["-a", "a"]}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "P", "from": curve["end"], "to": curve["start"]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "P", "distance": 1, "name": "Segment"}),
+    );
+    let area = |f: f64| 4.0 / 3.0 * 20.0 * 400.0 / (4.0 * f);
+    assert_volume(&mut s, "Segment", area(20.0), 100.0 * 1e-6);
+    // The table changes: the curve is fitted again.
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "dish", "columns": ["kind", {"name": "focus", "unit": "mm"}], "rows": [["flat", 40], ["deep", 10]]}),
+    );
+    assert_volume(&mut s, "Segment", area(40.0), 100.0 * 1e-6);
+    run(
+        &mut s,
+        "table.rename",
+        json!({"name": "dish", "to": "bowl"}),
+    );
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+    let entity = curve["entity"].as_str().unwrap();
+    let entry = inspected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entity)
+        .unwrap()
+        .clone();
+    assert_eq!(entry["y"], "t^2 / (4 * bowl[1].focus)", "{entry}");
+    assert_volume(&mut s, "Segment", area(40.0), 100.0 * 1e-6);
+    let refused = error(&mut s, "table.delete", json!({"name": "bowl"}));
+    assert!(refused.contains("P"), "{refused}");
+}
