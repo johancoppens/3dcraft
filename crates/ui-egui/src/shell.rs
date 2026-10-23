@@ -2141,8 +2141,13 @@ impl Shell {
                                     clicked = Some(row.id.clone());
                                 }
                                 if scroll_to.as_deref() == Some(row.id.as_str()) {
-                                    // Only as far as it takes: a row in view stays.
-                                    label.scroll_to_me(None);
+                                    // Only as far as it takes (a row in view
+                                    // stays), and at once: the list follows a
+                                    // click in the viewport, it does not glide.
+                                    label.scroll_to_me_animation(
+                                        None,
+                                        egui::style::ScrollAnimation::none(),
+                                    );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
                             });

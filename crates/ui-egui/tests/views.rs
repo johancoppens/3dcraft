@@ -460,9 +460,9 @@ fn flying_to_what_is_hidden_shows_it() {
     assert!(shell.state.section.on);
 }
 
-/// Frames for the list to scroll: egui animates it, for at most a
-/// second.
-const SCROLLED: usize = 70;
+/// Frames for the list to scroll: it jumps (the frame that draws the
+/// row asks, the next one scrolls).
+const SCROLLED: usize = 3;
 
 /// Forty blocks in a window whose list shows a dozen rows.
 #[test]
