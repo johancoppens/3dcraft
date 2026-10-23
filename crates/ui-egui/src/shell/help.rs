@@ -1,10 +1,12 @@
 //! The Help menu: About 3DCraft, the user guide, the keyboard shortcuts
 //! (also F1) and, on the desktop, the folder 3DCraft keeps its data in.
 //!
-//! The shortcuts window is made from one table, [`shortcuts`], built from
-//! the very shortcuts the key handling uses (the File menu's, the tabs',
-//! [`FIT_KEY`], [`CLEAR_KEY`], [`help_shortcut`]), so the list cannot
-//! tell of a key that does something else.
+//! The shortcuts window is made from one table, [`shortcuts`]. Its keys
+//! are the values the key handling itself uses (the File menu's
+//! shortcuts, the tabs', [`FIT_KEY`] and [`CLEAR_KEY`] without modifiers,
+//! as the viewport and the list take them, and [`help_shortcut`]), so a
+//! key changed there changes here. What a key does is written in words,
+//! as are the mouse rows: those are kept true by hand.
 //!
 //! The shell does not open a browser or a file manager itself: it asks
 //! the host ([`Shell::take_external`]), which knows the platform. In the

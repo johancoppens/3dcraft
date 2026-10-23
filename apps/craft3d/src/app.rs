@@ -1168,10 +1168,13 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         .as_deref()
         .map(crate::places::read_recent)
         .unwrap_or_default();
-    let data_folder = crate::places::data_folder(options);
+    host.recent_baseline = recent.clone();
+    let env = |name: &str| std::env::var(name).ok();
+    let data_folder = crate::places::data_folder(options, &env);
     let agent = crate::places::agent_setup(
         server.as_ref().map(|server| server.address().port()),
         options.token_file.as_deref(),
+        &env,
     );
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));

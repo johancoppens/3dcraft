@@ -91,7 +91,15 @@ pub fn run_example(session: &mut Session, example: &Example) -> Result<Value, St
 pub struct AgentSetup {
     pub cli: String,
     pub port: Option<u16>,
+    /// The token file of the window, absolute, while it listens.
     pub token_file: Option<String>,
+    /// Where a token file would go when the window does not listen yet:
+    /// an absolute path the host picks (the user's configuration folder).
+    /// Never `~`: an MCP client starts the server without a shell, so
+    /// nothing would expand it.
+    pub suggested_token: Option<String>,
+    /// Quote command lines for Windows (`"…"`) rather than a POSIX shell.
+    pub windows: bool,
 }
 
 impl Default for AgentSetup {
@@ -100,14 +108,35 @@ impl Default for AgentSetup {
             cli: "craft3d-cli".to_string(),
             port: None,
             token_file: None,
+            suggested_token: None,
+            windows: cfg!(windows),
         }
     }
 }
 
-/// The port and token file the guide uses when the window does not
-/// listen yet.
+/// The port the guide uses when the window does not listen yet, and the
+/// token file named when the host suggests none: a placeholder to fill
+/// in, absolute in form.
 const GUIDE_PORT: u16 = 7878;
-const GUIDE_TOKEN: &str = "~/.config/craft3d-control.token";
+const PLACEHOLDER_TOKEN: &str = "/path/to/craft3d-control.token";
+
+/// `text` as one word of a command line: as it is when it needs no
+/// quotes; else in single quotes for a POSIX shell (a `'` in it written
+/// `'\''`), or in double quotes for Windows (where a path cannot hold a
+/// `"`).
+pub fn shell_word(text: &str, windows: bool) -> String {
+    let plain = !text.is_empty()
+        && text.chars().all(|c| {
+            c.is_ascii_alphanumeric() || "_-./:=@+,".contains(c) || (windows && c == '\\')
+        });
+    if plain {
+        text.to_string()
+    } else if windows {
+        format!("\"{}\"", text.replace('"', ""))
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
 
 impl AgentSetup {
     /// True when this window listens for an agent now.
@@ -115,11 +144,17 @@ impl AgentSetup {
         self.port.is_some() && self.token_file.is_some()
     }
 
+    fn token(&self) -> &str {
+        self.token_file
+            .as_deref()
+            .or(self.suggested_token.as_deref())
+            .unwrap_or(PLACEHOLDER_TOKEN)
+    }
+
     /// The MCP client configuration that bridges an agent to this window
     /// (docs/guide/01-install.md).
     pub fn mcp_config(&self) -> String {
         let port = self.port.unwrap_or(GUIDE_PORT).to_string();
-        let token = self.token_file.as_deref().unwrap_or(GUIDE_TOKEN);
         // Written by hand, so the command comes before its arguments and
         // the arguments stay on one line; the strings by serde, escaped.
         let text = |s: &str| Value::String(s.to_string()).to_string();
@@ -127,24 +162,27 @@ impl AgentSetup {
             "{{\n  \"mcpServers\": {{\n    \"craft3d\": {{\n      \"command\": {},\n      \"args\": [\"mcp\", \"--bridge\", {}, \"--control-token-file\",\n               {}]\n    }}\n  }}\n}}",
             text(&self.cli),
             text(&port),
-            text(token)
+            text(self.token())
         )
     }
 
     /// The same as a command line for a client that adds servers that
-    /// way (Claude Code).
+    /// way (Claude Code), quoted for the platform.
     pub fn claude_command(&self) -> String {
         format!(
             "claude mcp add craft3d -- {} mcp --bridge {} --control-token-file {}",
-            self.cli,
+            shell_word(&self.cli, self.windows),
             self.port.unwrap_or(GUIDE_PORT),
-            self.token_file.as_deref().unwrap_or(GUIDE_TOKEN)
+            shell_word(self.token(), self.windows)
         )
     }
 
     /// How to start the window so that it listens.
     pub fn window_command(&self) -> String {
-        format!("craft3d --control {GUIDE_PORT} --control-token-file {GUIDE_TOKEN}")
+        format!(
+            "craft3d --control {GUIDE_PORT} --control-token-file {}",
+            shell_word(self.token(), self.windows)
+        )
     }
 }
 
@@ -206,6 +244,10 @@ impl Shell {
 
     /// The start screen over the viewport `rect`.
     pub(super) fn start_screen(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        if !self.start.shown {
+            // The recent files are looked at again as the screen comes up.
+            self.refresh_recent();
+        }
         self.start.shown = true;
         self.start.hits.clear();
         let tokens = self.tokens;
@@ -389,6 +431,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_step_that_fails_closes_the_new_document_again() {
+        let broken = Example {
+            id: "broken",
+            title: "Broken",
+            summary: "a step that fails",
+            script: r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
+        };
+        let mut session = Session::new(craft3d_engine::Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        let error = run_example(&mut session, &broken).unwrap_err();
+        assert!(error.contains("step 1 (feature.fillet)"), "{error}");
+        // The document that was open before stays, alone and active.
+        assert_eq!(session.document_statuses().len(), 1);
+        // A script that does not read opens nothing.
+        let unreadable = Example {
+            script: "{",
+            ..broken
+        };
+        assert!(run_example(&mut session, &unreadable).is_err());
+        let not_steps = Example {
+            script: r#"{"steps": 1}"#,
+            ..broken
+        };
+        assert!(run_example(&mut session, &not_steps).is_err());
+        assert_eq!(session.document_statuses().len(), 1);
+    }
+
+    #[test]
     fn every_example_reads_as_a_script() {
         for example in &EXAMPLES {
             let script: Value = serde_json::from_str(example.script).unwrap();
@@ -405,6 +475,8 @@ mod tests {
             cli: "/opt/3dcraft/craft3d-cli".to_string(),
             port: Some(7901),
             token_file: Some("/home/me/t.token".to_string()),
+            suggested_token: None,
+            windows: false,
         };
         assert!(listening.listening());
         let config: Value = serde_json::from_str(&listening.mcp_config()).unwrap();
@@ -428,6 +500,8 @@ mod tests {
             cli: r"C:\3D Craft\craft3d-cli.exe".to_string(),
             port: Some(1),
             token_file: Some(r#"C:\a "b".token"#.to_string()),
+            suggested_token: None,
+            windows: true,
         };
         let config: Value = serde_json::from_str(&odd.mcp_config()).unwrap();
         assert_eq!(
@@ -438,5 +512,60 @@ mod tests {
         assert!(!not.listening());
         assert!(not.mcp_config().contains("7878"));
         assert!(not.window_command().contains("--control 7878"));
+        // Never `~`: nothing expands it in an MCP client's configuration.
+        assert!(!not.mcp_config().contains('~'));
+        let suggested = AgentSetup {
+            suggested_token: Some("/home/me/.config/craft3d-control.token".to_string()),
+            windows: false,
+            ..AgentSetup::default()
+        };
+        let config: Value = serde_json::from_str(&suggested.mcp_config()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["craft3d"]["args"][4],
+            "/home/me/.config/craft3d-control.token"
+        );
+    }
+
+    #[test]
+    fn command_lines_quote_paths_with_spaces_per_platform() {
+        assert_eq!(
+            shell_word("/opt/x/craft3d-cli", false),
+            "/opt/x/craft3d-cli"
+        );
+        assert_eq!(shell_word("/home/a b/t", false), "'/home/a b/t'");
+        assert_eq!(shell_word("it's", false), r"'it'\''s'");
+        assert_eq!(shell_word("", false), "''");
+        assert_eq!(
+            shell_word(r"C:\Program Files\3DCraft\craft3d-cli.exe", true),
+            r#""C:\Program Files\3DCraft\craft3d-cli.exe""#
+        );
+        assert_eq!(shell_word(r"C:\x\t.token", true), r"C:\x\t.token");
+        let windows = AgentSetup {
+            cli: r"C:\Program Files\3DCraft\craft3d-cli.exe".to_string(),
+            port: Some(7878),
+            token_file: Some(r"C:\Users\An Na\t.token".to_string()),
+            suggested_token: None,
+            windows: true,
+        };
+        assert_eq!(
+            windows.claude_command(),
+            r#"claude mcp add craft3d -- "C:\Program Files\3DCraft\craft3d-cli.exe" mcp --bridge 7878 --control-token-file "C:\Users\An Na\t.token""#
+        );
+        let posix = AgentSetup {
+            cli: "/opt/3D Craft/craft3d-cli".to_string(),
+            windows: false,
+            suggested_token: Some("/home/an na/.config/craft3d-control.token".to_string()),
+            ..AgentSetup::default()
+        };
+        assert!(
+            posix
+                .claude_command()
+                .contains("-- '/opt/3D Craft/craft3d-cli' mcp")
+        );
+        assert!(
+            posix
+                .window_command()
+                .ends_with("'/home/an na/.config/craft3d-control.token'")
+        );
     }
 }

@@ -152,6 +152,10 @@ pub(crate) struct OpenDocument {
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.
     pub path: Option<String>,
+    /// The file on disk it was opened from or last saved to, absolute,
+    /// whatever root `path` is relative to; `None` in memory, for a new
+    /// document and for a recovered one until it is saved.
+    pub file: Option<String>,
     /// The revision that is on disk.
     pub saved_revision: Option<u64>,
     /// What the file at `path` looked like when the document was opened
@@ -206,6 +210,7 @@ impl OpenDocument {
             id: next_document_id(),
             history,
             path,
+            file: None,
             saved_revision,
             disk: None,
             recovered: None,

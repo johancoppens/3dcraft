@@ -1,10 +1,11 @@
 //! The files opened or saved lately: in the File menu and on the start
 //! screen, newest first, at most [`MAX_RECENT`].
 //!
-//! The shell notes a path whenever a document shows up with it (opened or
+//! The shell notes a file whenever a document shows up with it (opened or
 //! saved, from the menu, the command line or an agent): it follows the
-//! open documents, not the person's clicks. A path beneath an automation
-//! root is kept absolute, so the list means the same file to the menu. The
+//! open documents, not the person's clicks. It keeps the file on disk the
+//! engine reports, absolute, whichever root a request named it beneath.
+//! `ui.get` tells an agent only of the files beneath the session's roots. The
 //! host keeps the list between runs ([`RecentFiles::from_json`],
 //! [`Shell::take_recent_changed`]); what it reads back is hostile input,
 //! and anything that does not read is left out. In the browser there are
@@ -12,9 +13,10 @@
 
 use super::Shell;
 use crate::theme::color;
-use craft3d_engine::Session;
+use craft3d_engine::{Access, Session};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 /// Most files the list keeps.
 pub const MAX_RECENT: usize = 10;
@@ -98,10 +100,20 @@ pub(crate) struct RecentMemory {
     list: RecentFiles,
     /// Changed since the host last took it.
     changed: bool,
-    /// The paths of the documents open at the last sync.
+    /// The files of the documents open at the last sync.
     open: BTreeSet<String>,
     /// A recent file chosen, until the host opens it.
     pub(super) chosen: Option<String>,
+    /// The entries with whether each file is there, as last looked at:
+    /// `None` until the list changes are looked at again. Looked at when
+    /// the list changes, when the start screen comes up and when the
+    /// menu opens, not every frame.
+    entries: Option<Vec<RecentEntry>>,
+    /// The frame the Recent files menu was last drawn in.
+    menu_pass: Option<u64>,
+    /// The session's roots as of the last sync, absolute: what `ui.get`
+    /// may tell an agent about. `None` for unrestricted access.
+    roots: Option<Vec<PathBuf>>,
 }
 
 fn file_name(path: &str) -> String {
@@ -121,54 +133,66 @@ fn exists(_path: &str) -> bool {
     false
 }
 
-/// The path of a document as a file on disk: as it is when absolute, else
-/// beneath the session's read root (or write root). `None` for a document
-/// in memory or a path that names no file.
-#[cfg(not(target_arch = "wasm32"))]
-fn on_disk(session: &Session, path: &str) -> Option<String> {
-    use craft3d_engine::Access;
-    let given = std::path::Path::new(path);
-    if given.is_absolute() {
-        return Some(path.to_string());
-    }
+/// The roots of `session`'s workspace, absolute; `None` when one way is
+/// unrestricted (every file is the agent's to name).
+fn roots_of(session: &Session) -> Option<Vec<PathBuf>> {
     let workspace = session.workspace();
-    let resolved =
-        [&workspace.read, &workspace.write]
-            .into_iter()
-            .find_map(|access| match access {
-                Access::Root(root) => Some(root.join(given)),
-                Access::Unrestricted => Some(given.to_path_buf()),
-                Access::None | Access::Memory => None,
-            })?;
-    let absolute = std::path::absolute(resolved).ok()?;
-    absolute.to_str().map(str::to_string)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn on_disk(_session: &Session, _path: &str) -> Option<String> {
-    None
+    let mut roots = Vec::new();
+    for access in [&workspace.read, &workspace.write] {
+        match access {
+            Access::Unrestricted => return None,
+            Access::Root(root) => {
+                if let Ok(root) = std::path::absolute(root) {
+                    roots.push(root);
+                }
+            }
+            Access::None | Access::Memory => {}
+        }
+    }
+    Some(roots)
 }
 
 impl Shell {
-    /// The recent files, newest first, with whether each is still there.
-    pub fn recent_files(&self) -> Vec<RecentEntry> {
-        self.recent
-            .list
-            .paths()
-            .iter()
-            .map(|path| RecentEntry {
-                path: path.clone(),
-                name: file_name(path),
-                exists: exists(path),
-            })
-            .collect()
+    /// The recent files, newest first, with whether each is still there
+    /// (as last looked at).
+    pub fn recent_files(&mut self) -> Vec<RecentEntry> {
+        if self.recent.entries.is_none() {
+            self.refresh_recent();
+        }
+        self.recent.entries.clone().unwrap_or_default()
     }
 
-    /// The list as `ui.get` gives it.
-    pub fn recent_json(&self) -> Value {
+    /// Looks again whether each recent file is there.
+    pub fn refresh_recent(&mut self) {
+        self.recent.entries = Some(
+            self.recent
+                .list
+                .paths()
+                .iter()
+                .map(|path| RecentEntry {
+                    path: path.clone(),
+                    name: file_name(path),
+                    exists: exists(path),
+                })
+                .collect(),
+        );
+    }
+
+    /// The list as `ui.get` gives it: only the files beneath the
+    /// session's roots, the ones an agent may open (all of them with
+    /// unrestricted access).
+    pub fn recent_json(&mut self) -> Value {
+        let roots = self.recent.roots.clone();
         Value::Array(
             self.recent_files()
                 .into_iter()
+                .filter(|entry| {
+                    roots.as_ref().is_none_or(|roots| {
+                        roots
+                            .iter()
+                            .any(|root| std::path::Path::new(&entry.path).starts_with(root))
+                    })
+                })
                 .map(
                     |entry| json!({"path": entry.path, "name": entry.name, "exists": entry.exists}),
                 )
@@ -183,11 +207,17 @@ impl Shell {
         for path in noted.paths().iter().rev() {
             self.recent.list.note(path);
         }
+        self.recent.entries = None;
     }
 
     /// The list, as JSON to store, when it changed since the last call.
     pub fn take_recent_changed(&mut self) -> Option<String> {
         std::mem::take(&mut self.recent.changed).then(|| self.recent.list.to_json())
+    }
+
+    /// The list as it is now.
+    pub fn recent_list(&self) -> &RecentFiles {
+        &self.recent.list
     }
 
     /// The recent file chosen in the menu or on the start screen, for the
@@ -199,33 +229,39 @@ impl Shell {
     /// Empties the list (File, Recent files, Clear recent).
     pub fn clear_recent_files(&mut self) {
         self.recent.changed |= self.recent.list.clear();
+        self.recent.entries = None;
     }
 
     pub(crate) fn choose_recent(&mut self, path: String) {
         self.recent.chosen = Some(path);
     }
 
-    /// Notes the documents that came with a path since the last sync:
-    /// opened, or saved under a new name. The active one goes first.
+    /// Notes the documents that came with a file since the last sync:
+    /// opened, or saved under a new name. The active one goes first. The
+    /// file is the one on disk the engine reports
+    /// ([`craft3d_engine::DocumentStatus::file`]), absolute, whichever
+    /// root the request named it beneath.
     pub(super) fn note_recent(&mut self, session: &Session) {
+        self.recent.roots = roots_of(session);
         let statuses = session.document_statuses();
         let active = session.document_status().map(|status| status.index);
         let mut open = BTreeSet::new();
         let mut new = Vec::new();
         for status in &statuses {
-            let Some(path) = status.path.as_deref() else {
+            let Some(file) = status.file.as_deref() else {
                 continue;
             };
-            if !self.recent.open.contains(path) {
-                new.push((Some(status.index) == active, path.to_string()));
+            if !self.recent.open.contains(file) {
+                new.push((Some(status.index) == active, file.to_string()));
             }
-            open.insert(path.to_string());
+            open.insert(file.to_string());
         }
         // Inactive ones first, so the active one ends up in front.
         new.sort_by_key(|(active, _)| *active);
-        for (_, path) in new {
-            if let Some(full) = on_disk(session, &path) {
-                self.recent.changed |= self.recent.list.note(&full);
+        for (_, file) in new {
+            if self.recent.list.note(&file) {
+                self.recent.changed = true;
+                self.recent.entries = None;
             }
         }
         self.recent.open = open;
@@ -236,8 +272,18 @@ impl Shell {
         if cfg!(target_arch = "wasm32") {
             return;
         }
-        let entries = self.recent_files();
         ui.menu_button("Recent files", |ui| {
+            // Looked at again when the menu opens.
+            let pass = ui.ctx().cumulative_pass_nr();
+            if self
+                .recent
+                .menu_pass
+                .is_none_or(|last| last.saturating_add(1) < pass)
+            {
+                self.refresh_recent();
+            }
+            self.recent.menu_pass = Some(pass);
+            let entries = self.recent_files();
             if entries.is_empty() {
                 ui.add_enabled(false, egui::Button::new("No recent files"));
                 return;

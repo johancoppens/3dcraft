@@ -41,6 +41,9 @@ pub struct Host {
     /// Where the recent files are kept between runs; `None` keeps them
     /// for this run only (`places.rs`).
     pub(crate) recent_file: Option<std::path::PathBuf>,
+    /// The recent files as last read from or written to that file: what
+    /// another window added since is what is new there.
+    pub(crate) recent_baseline: craft3d_ui_egui::shell::RecentFiles,
 }
 
 fn methods() -> &'static [Method] {
@@ -348,6 +351,7 @@ impl Host {
             close_after_save: false,
             export_extension: None,
             recent_file: None,
+            recent_baseline: craft3d_ui_egui::shell::RecentFiles::default(),
         }
     }
 

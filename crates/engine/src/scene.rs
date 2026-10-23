@@ -545,6 +545,11 @@ pub struct DocumentStatus {
     pub open: usize,
     /// The path it was opened from or last saved to.
     pub path: Option<String>,
+    /// That file on disk, as an absolute path, whichever root `path` is
+    /// relative to; `None` for a document in memory (the browser), a new
+    /// one, and a recovered one until it is saved. What the window's list
+    /// of recent files keeps.
+    pub file: Option<String>,
     /// True when it has changes that are not on disk.
     pub dirty: bool,
     /// True when `file.close` refuses to close it without `discard`:
@@ -2217,6 +2222,7 @@ impl Session {
             id: open.id,
             open: self.documents.len(),
             path: open.path.clone(),
+            file: open.file.clone(),
             dirty: open.dirty(),
             close_asks: open.close_asks(),
             length_unit: doc.units.length.symbol(),

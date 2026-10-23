@@ -48,10 +48,11 @@ Options:
   --autosave-interval SECONDS How long after a change a document is
                               autosaved. Default: 30
   --recent-file FILE|none     Where the list of recent files is kept.
-                              Default: recent-files.json beside the
-                              recovery directory (3dcraft/ in your state
-                              directory); none keeps it for this run only,
-                              and so does --recovery-dir none.
+                              Default: 3dcraft/recent-files.json in your
+                              state directory, beside the default recovery
+                              directory; with --recovery-dir given (or
+                              none), or none here, the list is kept for
+                              this run only.
   --window-size WIDTHxHEIGHT  The window's size when it opens, in points
                               (e.g. 1920x1080; at least 480x320).
                               Default: 1280x800
@@ -251,21 +252,25 @@ pub fn parse(
     }
     // The flag, else the variable, else the platform's place; `none`
     // turns autosave off, and so does a platform that names no place.
-    options.recovery_dir = match recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR")) {
+    let recovery_given = recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR"));
+    let own_recovery = recovery_given.is_none();
+    options.recovery_dir = match recovery_given {
         Some(none) if none == "none" => None,
         Some(dir) => Some(PathBuf::from(dir)),
         None => craft3d_engine::default_recovery_directory(env),
     };
-    // Beside the recovery directory, so a window given a directory of its
-    // own (a test's) keeps its list there too, and a window without
-    // autosave (one to throw away) keeps none, unless told where.
+    // Beside the default recovery directory only: a window given a
+    // recovery directory of its own (a test's, an agent's, or none) keeps
+    // the list for its run only, unless told where, so it neither litters
+    // the folder above that directory nor changes the person's list.
     options.recent_file = match recent_file.or_else(|| from_env("CRAFT3D_RECENT_FILE")) {
         Some(none) if none == "none" => None,
         Some(file) => Some(PathBuf::from(file)),
-        None => options
+        None if own_recovery => options
             .recovery_dir
             .as_deref()
             .and_then(crate::places::recent_file_beside),
+        None => None,
     };
     if options.control.is_some() && options.token_file.is_none() {
         return Err(
@@ -489,9 +494,10 @@ mod tests {
             default.recent_file,
             Some(recovery.parent().unwrap().join("recent-files.json"))
         );
+        // A recovery directory of its own: the list for the run only.
         assert_eq!(
             with(&home, &["--recovery-dir", "/t/w/recovery"]).recent_file,
-            Some(PathBuf::from("/t/w/recent-files.json"))
+            None
         );
         assert_eq!(
             with(&home, &["--recent-file", "/tmp/r.json"]).recent_file,

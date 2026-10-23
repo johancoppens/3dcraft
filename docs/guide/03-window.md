@@ -23,13 +23,15 @@ give your client (chapter 1), with this window's own port and token file when it
   Save As (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S), and **Recent files**: the last ten files opened or
   saved (by you or by an agent), newest first; one that is not there any more is greyed out, and **Clear
   recent** empties the list. The list is kept in `3dcraft/recent-files.json` in your state directory,
-  beside the recovery directory (`--recent-file` names another file; a window started with `--recovery-dir
-  none` keeps none). The browser
-  keeps no recent files.
+  beside the recovery directory; two windows open at once each keep what the other added. `--recent-file`
+  names another file; a window started with a `--recovery-dir` of its own (or `none`) keeps the list for
+  that run only. The browser keeps no recent files.
 - **The Help menu**: **User guide** opens this guide in your browser, **Keyboard shortcuts** (also F1)
-  lists every key and mouse action, **Open data folder** shows the folder with the autosaves, what can be
-  recovered after a crash and the recent files (not in the browser), and **About 3DCraft** gives the
-  version, the licence (MIT), the links to the guide and the source, and the renderer in use.
+  lists every key and mouse action, **Open data folder** shows 3DCraft's folder in your state directory,
+  with the autosaves, what can be recovered after a crash and the recent files (not in the browser, and
+  not for a window started with folders of its own), and **About 3DCraft** gives the version and the
+  commit it was built from, the platform, the licence (MIT), the links to the guide and the source, and
+  the renderer in use; **Copy system info** copies those lines for a bug report.
 - **The feature tree** on the left: the history, in order. Each feature has a mark: ✔ built, ⚠ failed
   (the reason under it; *caused by …* when it failed because a feature it is made from failed: click that
   one), ⏸ suppressed, ○ after the rollback marker. Under the features, the **assertions**, failed ones in

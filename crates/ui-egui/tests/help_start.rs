@@ -239,8 +239,16 @@ fn opened_and_saved_files_become_recent_and_the_list_survives_a_restart() {
     shell.sync(&mut session);
     assert_eq!(shell.take_recent_changed(), None);
 
-    // A file that went away is listed as missing.
+    // A file that went away is listed as missing, once the window looks
+    // again (when the menu opens or the start screen comes up; not every
+    // frame).
     std::fs::remove_file(dir.join("a.3dcraft")).unwrap();
+    let cached = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        cached["recent"][1]["exists"], true,
+        "not looked at again yet"
+    );
+    shell.refresh_recent();
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["recent"][0]["name"], "b.3dcraft");
     assert_eq!(got["recent"][1]["exists"], false);
@@ -263,6 +271,66 @@ fn opened_and_saved_files_become_recent_and_the_list_survives_a_restart() {
         RecentFiles::default()
     );
     assert_eq!(again.take_open_recent(), None);
+}
+
+#[test]
+fn a_file_saved_beneath_another_root_is_recent_by_its_own_place() {
+    let dir = workdir("roots");
+    let (read, write) = (dir.join("in"), dir.join("out"));
+    std::fs::create_dir_all(&read).unwrap();
+    std::fs::create_dir_all(&write).unwrap();
+    // The same relative name beneath both roots, a different file each.
+    let mut maker = rooted(&read);
+    run(&mut maker, "file.new", json!({}));
+    run(&mut maker, "file.save", json!({"path": "part.3dcraft"}));
+    let mut session = Session::new(Workspace {
+        read: Access::Root(read.clone()),
+        write: Access::Root(write.clone()),
+    });
+    let mut shell = Shell::new();
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "file.save", json!({"path": "part.3dcraft"}));
+    shell.sync(&mut session);
+    let recent = shell.recent_files();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(
+        PathBuf::from(&recent[0].path),
+        std::path::absolute(write.join("part.3dcraft")).unwrap(),
+        "where it was written, not the read root's file of that name"
+    );
+    run(&mut session, "file.open", json!({"path": "part.3dcraft"}));
+    shell.sync(&mut session);
+    assert_eq!(
+        PathBuf::from(&shell.recent_files()[0].path),
+        std::path::absolute(read.join("part.3dcraft")).unwrap()
+    );
+}
+
+#[test]
+fn an_agent_is_told_only_of_recent_files_beneath_its_roots() {
+    let dir = workdir("told");
+    let mut session = rooted(&dir);
+    let mut shell = Shell::new();
+    run(&mut session, "file.new", json!({}));
+    run(&mut session, "file.save", json!({"path": "mine.3dcraft"}));
+    shell.sync(&mut session);
+    shell.set_recent_files(RecentFiles::from_json(
+        r#"{"recent": ["/somewhere/else/private.3dcraft"]}"#,
+    ));
+    // The window lists both.
+    assert_eq!(shell.recent_files().len(), 2);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let told: Vec<&str> = got["recent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(told, ["mine.3dcraft"]);
+    // Without any root nothing is told.
+    let mut closed = Session::new(Workspace::none());
+    let got = call(&mut shell, &mut closed, "ui.get", json!({}));
+    assert_eq!(got["recent"], json!([]));
 }
 
 #[test]
