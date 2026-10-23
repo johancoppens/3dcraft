@@ -449,6 +449,9 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     let mut outline = Map::new();
     // How finely a mesh follows the model, besides the tolerance.
     let mut mesh = Map::new();
+    // How a .dxf or .svg drawing of the model as seen (a projected view)
+    // looks at it.
+    let mut view = Map::new();
     let parsed = parse_simple(
         args,
         &[
@@ -461,8 +464,15 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
             "--set",
             "--width",
             "--gap",
+            "--view",
+            "--projection",
+            "--hidden",
         ],
         |name, value| {
+            if matches!(name, "--view" | "--projection" | "--hidden") {
+                view.insert(name.trim_start_matches('-').to_string(), value.into());
+                return Ok(());
+            }
             if name == "--quality" {
                 mesh.insert("quality".to_string(), value.into());
                 return Ok(());
@@ -535,13 +545,21 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("dxf") || e.eq_ignore_ascii_case("svg"));
-    if drawing
-        && !["sketch", "face", "set"]
-            .iter()
-            .any(|k| outline.contains_key(*k))
-    {
+    // Without --sketch, --face or --set a .dxf or .svg file is a drawing
+    // of the model as seen, as file.export makes it; --view, --projection
+    // and --hidden say how it is seen.
+    let outlined = ["sketch", "face", "set"]
+        .iter()
+        .any(|k| outline.contains_key(*k));
+    if !view.is_empty() && (!drawing || outlined) {
         return Err(CliError::Usage(
-            "a .dxf or .svg file is the flat outline of a sketch, of a flat face or of a sheet of flat faces: give `--sketch S` (a sketch's id or name), `--face F` (a face name; with `--feature B` when several bodies have it) or `--set S` (a named set of faces: all its flat faces on one sheet); `craft3d-cli info IN` lists the features"
+            "`--view`, `--projection` and `--hidden` are for a drawing of the model as seen: a .dxf or .svg file without `--sketch`, `--face` or `--set`"
+                .to_string(),
+        ));
+    }
+    if drawing && !outlined && outline.contains_key("feature") {
+        return Err(CliError::Usage(
+            "`--feature` says which body has the face of `--face F`: give it with `--face`"
                 .to_string(),
         ));
     }
@@ -558,6 +576,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
             params.insert("tolerance".into(), tolerance.into());
         }
         params.extend(mesh);
+        params.extend(view);
         execute(&mut session, "file.export", &Value::Object(params))?
     };
     print_json(&result).map(Parsed::Run)

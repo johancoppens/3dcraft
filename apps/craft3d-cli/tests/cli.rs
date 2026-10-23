@@ -293,11 +293,21 @@ fn other_usage_errors_exit_with_2() {
             "`--out` was given twice",
         ),
         (vec!["convert", &part], "IN OUT"),
-        // A drawing says which flags name what it is the outline of.
-        (vec!["convert", &part, "a.dxf"], "give `--sketch S`"),
+        // How a drawing of the model as seen looks at it: only for such
+        // a drawing.
         (
-            vec!["convert", &part, "a.svg"],
-            "`--face F` (a face name; with `--feature B` when several bodies have it) or `--set S`",
+            vec!["convert", &part, "a.stl", "--view", "top"],
+            "`--view`, `--projection` and `--hidden` are for a drawing of the model as seen",
+        ),
+        (
+            vec![
+                "convert", &part, "a.dxf", "--sketch", "S", "--hidden", "dashed",
+            ],
+            "without `--sketch`, `--face` or `--set`",
+        ),
+        (
+            vec!["convert", &part, "a.svg", "--feature", "Pin"],
+            "give it with `--face`",
         ),
         (
             vec!["convert", &part, "a.stl", "b.stl"],
@@ -597,16 +607,68 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
     );
     let text = std::fs::read_to_string(&svg).unwrap();
     assert!(text.contains("width=\"8mm\" height=\"8mm\""), "{text}");
-    // Without a sketch or a face there is nothing to draw, and the other
-    // formats do not take one. Missing, it is a usage error that names
-    // the CLI's flags (until 2026-10-22 the engine's error, exit 1, which
-    // named the parameters `sketch` and `face`; wording only, no oracle).
-    let ran = cli(&["convert", &part, &path(&dir, "none.dxf")]).failed(2);
+    // Without a sketch, a face or a set a drawing is of the model as
+    // seen, as file.export makes it (until 2026-10-23 convert refused it
+    // as a usage error): seen from the front, orthographic, the plate
+    // (40 wide, 5 high) with the pin (20 high) on it is 40 × 25 at true
+    // size, nothing behind a face drawn.
+    let front = path(&dir, "front.dxf");
+    let exported = cli(&["convert", &part, &front, "--view", "front"])
+        .ok()
+        .json_lines()
+        .remove(0);
+    assert_eq!(exported["view"], "front", "{exported}");
+    assert_eq!(exported["projection"], "orthographic", "{exported}");
+    assert_eq!(exported["hiddenLines"], 0, "{exported}");
+    let bbox: Vec<f64> = exported["bbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
     assert!(
-        ran.stderr.contains("`--sketch S`") && ran.stderr.contains("`--face F`"),
-        "{}",
-        ran.stderr
+        (bbox[2] - bbox[0] - 40.0).abs() < 1e-6 && (bbox[3] - bbox[1] - 25.0).abs() < 1e-6,
+        "{exported}"
     );
+    assert!(
+        std::fs::read_to_string(&front)
+            .unwrap()
+            .ends_with("  0\nEOF\n")
+    );
+    // From the default iso view with what lies behind dashed: the plate's
+    // edges at the back are drawn, on the layer hidden.
+    let iso = path(&dir, "iso.svg");
+    let exported = cli(&[
+        "convert",
+        &part,
+        &iso,
+        "--hidden",
+        "dashed",
+        "--projection",
+        "perspective",
+    ])
+    .ok()
+    .json_lines()
+    .remove(0);
+    assert_eq!(exported["view"], "iso", "{exported}");
+    assert_eq!(exported["projection"], "perspective", "{exported}");
+    assert!(exported["hiddenLines"].as_u64().unwrap() > 0, "{exported}");
+    assert!(
+        exported["layers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("hidden"))
+    );
+    // A view the engine does not know is its error (exit 1).
+    let ran = cli(&[
+        "convert",
+        &part,
+        &path(&dir, "none.dxf"),
+        "--view",
+        "sideways",
+    ])
+    .failed(1);
+    assert!(ran.stderr.contains("sideways"), "{}", ran.stderr);
     let ran = cli(&[
         "convert",
         &part,

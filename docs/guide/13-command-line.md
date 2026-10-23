@@ -62,11 +62,15 @@ craft3d-cli convert panel.3dcraft panel.svg --face 'F2:endCap()'
 craft3d-cli convert box.3dcraft box.svg --set 'Cut sheet' --width '600 mm' --gap '8 mm'
 ```
 
-For a DXF or SVG file, `convert` needs `--sketch`, `--face` or `--set`. A drawing of the model as seen
-([chapter 12](12-files.md#drawings-of-the-model-as-seen)) is made with the command `file.export` instead:
+A DXF or SVG file with `--sketch`, `--face` or `--set` is a flat outline at true size. Without them it
+is a drawing of the model as seen ([chapter 12](12-files.md#drawings-of-the-model-as-seen)), as
+`file.export` makes it: `--view` picks the side (`iso`, the default, `front`, `back`, `left`, `right`,
+`top` or `bottom`), `--projection` is `orthographic` (to scale, the default) or `perspective`, and
+`--hidden dashed` draws what lies behind a face dashed instead of leaving it out:
 
 ```sh
-craft3d-cli run bracket.3dcraft --cmd file.export --params '{"path": "bracket.svg", "view": "iso", "hidden": "dashed"}'
+craft3d-cli convert bracket.3dcraft bracket.svg --hidden dashed
+craft3d-cli convert bracket.3dcraft bracket-front.dxf --view front
 ```
 
 ## Looking inside a file: `info`

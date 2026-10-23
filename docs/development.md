@@ -140,6 +140,7 @@ craft3d-cli replay bracket.3dcraft --out bracket.mp4 --size 1280x720 --frames-pe
 craft3d-cli score plate-holes --script mine.json              # scorecard of a script for a task of docs/tasks (testing.md, The task set)
 craft3d-cli check-range box.3dcraft --samples 100 --seed 7    # a Jig over its parameter range (document.sample); exit 1 on a failing point
 craft3d-cli convert box.3dcraft cut.dxf --set "Cut sheet" --width "600 mm" --gap "4 mm"   # every flat face of a named set on one sheet, a layer per body, rows at most 600 mm wide
+craft3d-cli convert bracket.3dcraft front.svg --view front --hidden dashed   # without --sketch, --face or --set: a drawing of the model as seen (file.export's projected view)
 craft3d-cli commands --filter fillet                          # the command registry with params docs
 craft3d-cli serve                                             # JSON lines on stdio (see control-protocol.md)
 craft3d-cli mcp --automation-read-root work --automation-write-root work
