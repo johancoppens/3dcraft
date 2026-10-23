@@ -1,0 +1,61 @@
+//! `feature.when`: a feature switched on or off by a condition.
+//!
+//! The condition is an expression kept with the feature
+//! (`craft3d_doc::Feature::when`); regeneration evaluates it every time
+//! and builds the feature only when it is a number other than zero
+//! (`craft3d_regen`, `pass`). A feature whose condition is zero is
+//! *inactive*: it behaves exactly as a suppressed one, passing on the body
+//! it changes. A public parameter (a boolean, a choice) then switches
+//! features from a form: `when: "lid"`, `when: "profile == 2"`.
+
+use crate::commands::{Run, add_failed, edit, fail, failing, feature_ref, feature_result, spec};
+use crate::params::Params;
+use crate::{CommandSpec, Session};
+use craft3d_doc::Expr;
+use serde_json::Value;
+
+pub(crate) static SPECS: &[CommandSpec] = &[spec!(
+    "feature.when",
+    "Switch Feature by Condition",
+    r#"{"feature": id or name, "expr": string or number or null}"#,
+    "Gives a feature a condition that switches it on and off: it is built when expr evaluates to a plain number other than zero (a comparison such as profile == 2, a boolean public parameter such as lid, && || !, if), and is inactive when it is zero. Inactive behaves exactly as suppressed (feature.suppress): a feature that changes a body passes it on unchanged, one that makes a body makes none, and a boolean whose tool is inactive passes its target on. The condition is evaluated at every regeneration, so changing a variable (param.set on a Jig) switches the feature; a condition that does not evaluate, or has a unit, fails the feature with the reason. A suppressed feature stays off whatever its condition. expr null takes the condition away (always on). Renaming a variable rewrites the conditions that use it. One undo step. Returns the feature with its status (ok, inactive, ...), its when, what it passes on (passesOn, passesNothing), and under failed the features the change made fail.",
+    doc: true,
+    feature_when
+)];
+
+fn feature_when(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "feature.when";
+    let p = Params::new(ID, params, &["feature", "expr"])?;
+    let id = feature_ref(session.document()?.history.current(), &p, ID, "feature")?;
+    // `null` is a value here (no condition), not a missing parameter.
+    let when = match params.get("expr") {
+        None => return Err(p.missing("expr")),
+        Some(Value::Null) => None,
+        Some(value) => {
+            let source = p.expr_of("expr", value)?;
+            if let Err(error) = craft3d_expr::Expr::parse(&source) {
+                return fail(format!("{ID}: `expr`: `{source}`: {error}"));
+            }
+            Some(Expr::new(source))
+        }
+    };
+    let name = session
+        .document()?
+        .history
+        .current()
+        .feature(id)
+        .map(|f| f.name.clone())
+        .unwrap_or_default();
+    let label = match &when {
+        Some(when) => format!("Switch {name} by {}", when.source()),
+        None => format!("Switch {name} always on"),
+    };
+    let before = failing(session)?;
+    edit(session, ID, &label, |doc| {
+        doc.feature_mut(id)?.when = when;
+        Ok(())
+    })?;
+    let mut result = feature_result(session, id)?;
+    add_failed(session, &before, Some(id), &mut result)?;
+    Ok(result)
+}

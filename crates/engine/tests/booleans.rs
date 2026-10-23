@@ -715,10 +715,23 @@ fn operands_are_taken_once_unless_the_tool_is_kept() {
     );
     assert_eq!(body_names(&mut s), ["Other", "First"]);
     run(&mut s, "edit.undo", json!({}));
-    // What happens to an operand happens to the result.
+    // A suppressed tool is no tool: the boolean passes its target on
+    // unchanged, and the boolean after it, without a tool either, too.
     run(&mut s, "feature.suppress", json!({"feature": "Drill"}));
-    assert_failed(&mut s, "First", &["tool", "Drill", "suppressed"]);
-    assert_eq!(body_names(&mut s), ["Plate", "Other"]);
+    let first = feature(&mut s, "First");
+    assert_eq!(first["status"], "ok", "{first}");
+    assert_eq!(first["passesOn"], "F2", "{first}");
+    assert_eq!(body_names(&mut s), ["First", "Second"]);
+    assert_volume(&mut s, "First", 19200.0);
+    assert_volume(&mut s, "Second", 19200.0);
+    run(&mut s, "edit.undo", json!({}));
+    // Suppressed itself, the boolean passes its target on and leaves the
+    // tool alone; the second one still drills the other plate.
+    run(&mut s, "feature.suppress", json!({"feature": "First"}));
+    assert_eq!(feature(&mut s, "First")["status"], "suppressed");
+    assert_eq!(body_names(&mut s), ["First", "Second"]);
+    assert_volume(&mut s, "First", 19200.0);
+    assert_volume(&mut s, "Second", drilled);
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "feature.delete", json!({"feature": "Plate"}));
     assert_failed(&mut s, "First", &["target", "no feature F2"]);

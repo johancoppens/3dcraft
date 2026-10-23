@@ -391,7 +391,13 @@ impl Document {
             }
         }
         for feature in &self.features {
-            if feature.kind.exprs().iter().any(|(_, e)| uses(e)) {
+            let formulas = feature.kind.formula_exprs();
+            if feature
+                .exprs()
+                .iter()
+                .chain(formulas.iter())
+                .any(|(_, e)| uses(e))
+            {
                 users.push(format!("feature {} ({})", feature.id, feature.name));
             }
         }
@@ -446,7 +452,11 @@ impl Document {
             }
         }
         for feature in &mut doc.features {
-            for expr in feature.kind.exprs_mut() {
+            for expr in feature.exprs_mut() {
+                rename(expr)?;
+            }
+            // The formulas of curves look tables up as any expression does.
+            for expr in feature.kind.formula_exprs_mut() {
                 rename(expr)?;
             }
         }

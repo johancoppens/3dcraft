@@ -313,6 +313,10 @@ pub struct Feature {
     /// Always written; absent means not suppressed.
     #[serde(default)]
     pub suppressed: bool,
+    /// The condition that switches the feature on (an expression); absent
+    /// means always on. Since format 34.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
     pub kind: FeatureKind,
 }
 
@@ -1086,6 +1090,24 @@ pub enum SketchGeometry {
         of: u64,
         pattern: u64,
         index: InstanceIndex,
+    },
+    /// A curve given by formulas (format version 35): the point (`x`(t),
+    /// `y`(t)) for `t` from `from` to `to`, ending on the points `start`
+    /// and `end` (one point for a closed curve). Fitted at every
+    /// regeneration; nothing of the fit is stored.
+    Formula {
+        x: String,
+        y: String,
+        from: String,
+        to: String,
+        start: u64,
+        end: u64,
+    },
+    /// A B-spline through the points `through`, fitted again at every
+    /// regeneration (format version 35).
+    Interpolated {
+        degree: u32,
+        through: Vec<u64>,
     },
 }
 

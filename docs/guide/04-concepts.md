@@ -17,9 +17,12 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   and its name; it also repairs a feature that lost what it was made from (give the new sketch, target or
   edges). A parameter given as a plain number (`"count": 8`) replaces the expression that was there: the
   feature no longer follows the variable.
-- `feature.suppress` switches a feature off without deleting it; what is made from it fails until it is
-  switched on again. That includes a suppressed boolean, fillet or chamfer: it does not hand the body it
-  changes on to the features after it, so they fail too (other modellers pass the body through).
+- `feature.suppress` switches a feature off without deleting it, and the features after it go on as if
+  it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
+  change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
+  tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
+  and a feature that names it fails saying so. `feature.when` does the same by a condition (chapter 6,
+  *Switching a feature on or off*).
 - `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
   list of features (sketches and datums count); one moved before what it is made from fails and says so.
 - `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
@@ -132,6 +135,48 @@ says otherwise), names the rows.
 - A cell is a number or a short text (at most 64 characters, no quotes); at most 10 000 rows and 64
   columns. A table and a variable never share a name.
 
+### Curves from formulas
+
+`sketch.curve` draws the curve `x(t)`, `y(t)` for `t` over a range, in the sketch's axes. `x` and `y` are
+expressions in `t` and the document's variables; inside them `t` is the curve's own parameter, also when
+a variable is called `t` (that variable is not reached there, and a variable used there cannot be renamed
+to `t`). The range `t: [from, to]` is two expressions in the variables, both plain numbers, both angles
+or both lengths. A plain `t` inside `sin`, `cos` and `tan` is in radians. An Archimedean spiral of one
+turn, closed along the x axis:
+
+```json
+[
+ ["variable.set", {"name": "a", "expr": "10 mm"}],
+ ["variable.set", {"name": "b", "expr": "3 mm"}],
+ ["sketch.create", {"name": "Spiral"}],
+ ["sketch.curve", {"sketch": "Spiral", "x": "(a + b * t) * cos(t)", "y": "(a + b * t) * sin(t)", "t": [0, "2 * pi"]}],
+ ["sketch.line", {"sketch": "Spiral", "from": "e2", "to": "e1"}],
+ ["feature.extrude", {"sketch": "Spiral", "distance": "2 mm"}]
+]
+```
+
+The flank of an involute gear tooth, from the base circle `rb` to the tip circle `ra`, is
+`x = rb (cos(t) + t sin(t))`, `y = rb (sin(t) - t cos(t))` for `t` from 0 to `sqrt((ra / rb)^2 - 1)`;
+the [gear example](../examples/gear.json) turns it to its place by adding an angle `g` to `t` inside the
+`sin` and `cos`, and mirrors it for the other flank.
+
+- The curve is fitted again at every regeneration, so it follows the variables: a cubic B-spline within
+  half the document's tolerance of the formulas at every point checked (three in every span between
+  samples, refined until they hold), with its ends exactly where the formulas put them. `sketch.curve`
+  and `sketch.inspect` give the `fit`: `controlPoints` and `deviation`, the largest distance found.
+- It ends on two points (`e1` and `e2` above; or `start` and `end`, existing points), which the curve holds
+  in place: lines, arcs and splines built on them close a profile with it. A constraint that would move
+  them fails the sketch. When the ends meet the curve is closed (one point) and a profile on its own.
+- A formula that fails somewhere in the range (`1 / (t - 1)`), is not finite, gives a single point, or
+  jumps cannot be fitted: the command, or later the sketch, says why and near which `t`. A kink is
+  rounded within the tolerance or refused; split the curve there into two for a sharp corner.
+- A formula curve has no unknowns and takes no `tangent` or `pointOn` constraint yet.
+
+**A spline through computed points.** `sketch.spline` with `"live": true` and `through` keeps the points
+as they are and fits the spline through them again at every regeneration, so points held by expressions
+(`["r * cos(30 deg)", "r * sin(30 deg)"]`) or by constraints move it; without `live` the spline is fitted
+once and then shaped by its control points.
+
 ## Sketches and constraints
 
 A sketch is a flat drawing on a plane: `xy`, `yz` or `zx` (each with an optional `offset`), a datum plane
@@ -144,8 +189,9 @@ placing anything on a face. To cut through a part from below, a sketch on the `x
 simpler.
 
 Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,
-`sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline` and `sketch.pattern`. Each gets an
-id, `e1`, `e2`, …, returned by the command. Then constraints (`sketch.constrain`) tie them down:
+`sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline`, `sketch.curve` (a curve from
+formulas, above) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
+constraints (`sketch.constrain`) tie them down:
 `coincident`, `pointOn`, `horizontal`, `vertical`, `parallel`, `perpendicular`, `tangent`, `equal`,
 `concentric`, `symmetric`, `midpoint`, `fixed`, `x`, `y`, `distance`, `angle`, `radius`, `diameter`.
 3DCraft's own solver solves the sketch at every regeneration.

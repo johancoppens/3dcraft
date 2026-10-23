@@ -1,6 +1,6 @@
 # Example models
 
-Nine small parts, each a command script (a JSON list of `[command, params]` steps) that builds a
+Ten small parts, each a command script (a JSON list of `[command, params]` steps) that builds a
 `.3dcraft` document. Every one is driven by variables and ends with assertions, at least its volume
 worked out by hand, so it checks itself; `crates/engine/tests/guide_examples.rs` runs them all at every
 gate. The pictures are the CPU renderer's (`craft3d-cli render`). See the [user guide](../guide/README.md).
@@ -27,3 +27,4 @@ An agent can run the same steps through `command_batch`, or be asked to open the
 | ![Hopper](hopper.png) | **[Hopper](hopper.json)**: two squares, one on `xy` and one on an offset plane (`sketch.rect`, `sketch.create` with `offset`), joined by a ruled `feature.loft`. Asserts the volume of the frustum, h/3 (A₁ + A₂ + √(A₁A₂)). |
 | ![Perforated panel](panel.png) | **[Perforated panel](panel.json)**: an outline and one circle in a sketch, the circle repeated in a 5 × 3 grid by `sketch.pattern`, extruded once. Asserts the volume and the number of holes. Export its outline for a laser cutter with `craft3d-cli convert panel.3dcraft panel.dxf --sketch Outline`. |
 | ![Wedge](wedge.png) | **[Wedge](wedge.json)**: a block cut by a sheet (`feature.fill`) on a datum plane tilted 15° about a datum axis (`datum.axis`, `datum.plane`); `intersect` keeps the part under the sheet. Asserts the volume, which follows the tilt through `tan`. |
+| ![Involute gear](gear.png) | **[Involute gear](gear.json)**: one tooth whose flanks are curves from formulas (`sketch.curve`: the involute `x = rb (cos(g + t) + t sin(g + t))`, its mirror for the other flank), closed by the tip arc and an arc inside the root circle; extruded, repeated `z` times round the axis (`feature.pattern`) and joined to the root disc. The flanks are fitted again whenever `module`, `z` or `alpha` change. Asserts the volume in closed form (the area an involute sweeps from the centre is `rb² t³ / 6`) and that it is one body. |

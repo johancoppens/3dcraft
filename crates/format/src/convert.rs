@@ -460,12 +460,14 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
         id: doc::FeatureId(id),
         name,
         suppressed,
+        when,
         kind,
     } = feature;
     manifest::Feature {
         id: *id,
         name: name.clone(),
         suppressed: *suppressed,
+        when: when.as_ref().map(|when| when.source().to_string()),
         kind: match kind {
             doc::FeatureKind::Block(doc::Block {
                 position,
@@ -1266,6 +1268,27 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                 degree: *degree,
                 control: control.iter().map(raw).collect(),
             },
+            doc::Geometry::Formula {
+                x,
+                y,
+                from,
+                to,
+                start,
+                end,
+            } => manifest::SketchGeometry::Formula {
+                x: x.source().to_string(),
+                y: y.source().to_string(),
+                from: from.source().to_string(),
+                to: to.source().to_string(),
+                start: raw(start),
+                end: raw(end),
+            },
+            doc::Geometry::Interpolated { degree, through } => {
+                manifest::SketchGeometry::Interpolated {
+                    degree: *degree,
+                    through: through.iter().map(raw).collect(),
+                }
+            }
             doc::Geometry::Image {
                 of,
                 pattern: doc::PatternId(pattern),
@@ -1505,6 +1528,27 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
                 degree,
                 control: control.into_iter().map(Id).collect(),
             },
+            manifest::SketchGeometry::Formula {
+                x,
+                y,
+                from,
+                to,
+                start,
+                end,
+            } => doc::Geometry::Formula {
+                x: doc::Expr::new(x),
+                y: doc::Expr::new(y),
+                from: doc::Expr::new(from),
+                to: doc::Expr::new(to),
+                start: Id(start),
+                end: Id(end),
+            },
+            manifest::SketchGeometry::Interpolated { degree, through } => {
+                doc::Geometry::Interpolated {
+                    degree,
+                    through: through.into_iter().map(Id).collect(),
+                }
+            }
             manifest::SketchGeometry::Image { of, pattern, index } => doc::Geometry::Image {
                 of: Id(of),
                 pattern: doc::PatternId(pattern),
@@ -1691,12 +1735,14 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
         id,
         name,
         suppressed,
+        when,
         kind,
     } = feature;
     doc::Feature {
         id: doc::FeatureId(id),
         name,
         suppressed,
+        when: when.map(doc::Expr),
         kind: match kind {
             manifest::FeatureKind::Block {
                 position,

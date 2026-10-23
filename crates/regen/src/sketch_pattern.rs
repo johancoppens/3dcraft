@@ -677,6 +677,28 @@ impl<'a, F: Fn(EntityId) -> Option<[f64; 2]>> Placer<'a, F> {
         Ok(self.place(key))
     }
 
+    /// Where an instance puts any point `at` of its seed (a control point
+    /// of a fitted curve, which is no entity): the map of each level, the
+    /// innermost first, as [`Placer::at`] applies them to a point's place.
+    pub(crate) fn carry(
+        &mut self,
+        at: [f64; 2],
+        levels: &[(usize, (u32, u32))],
+    ) -> Result<Option<[f64; 2]>, String> {
+        let mut place = at;
+        for &(level, instance) in levels {
+            if instance == (0, 0) {
+                continue;
+            }
+            let ends = self.ends(level, 0)?;
+            match self.apply(level, place, instance, ends) {
+                Some(next) => place = next,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(place))
+    }
+
     /// For a ring of runs that makes a whole turn: whether its last joint,
     /// as the turns put it, lies within `linear` of its first.
     pub(crate) fn ring_closes(&mut self, level: usize, linear: f64) -> bool {
@@ -1011,6 +1033,39 @@ pub(crate) fn instance_curves(
                 Curve2::Spline(Spline2 {
                     degree,
                     knots,
+                    control,
+                })
+            }
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+                // The seed's fit, moved by the instance's own map (rigid):
+                // its control points as the pattern places any point, its
+                // ends exactly where the instance's end points are.
+                let seed = &solved
+                    .curve(entity.id)
+                    .ok_or_else(|| format!("{} has no fitted curve", entity.id))?
+                    .spline;
+                let (first, last) = entity
+                    .geometry
+                    .ends()
+                    .ok_or_else(|| format!("{} has no end points", entity.id))?;
+                let (s1, e1) = (at(first)?, at(last)?);
+                let mut control = Vec::with_capacity(seed.control.len());
+                for p in &seed.control {
+                    control.push(
+                        placer
+                            .carry(*p, levels)?
+                            .ok_or_else(|| format!("{} cannot be placed", name()))?,
+                    );
+                }
+                if let Some(first) = control.first_mut() {
+                    *first = s1;
+                }
+                if let Some(last) = control.last_mut() {
+                    *last = e1;
+                }
+                Curve2::Spline(Spline2 {
+                    degree: seed.degree,
+                    knots: seed.knots.clone(),
                     control,
                 })
             }

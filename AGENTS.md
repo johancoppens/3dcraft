@@ -125,6 +125,7 @@ Then append a terse entry to `log/devlog.md` (what landed, numbers, what's still
 
 ## 6. Parallel agents
 
+- **Heavy builds and tests run on the Strix, not on the developer's laptop** (the developer, 2026-10-23). Push your commit to `check/<your-name>` (`git push origin HEAD:refs/heads/check/<name>`; never to `main` or anyone else's branch) and run `gh workflow run Check --ref check/<name> -f sha=$(git rev-parse HEAD) -f cargo="test -p <crate>"` (any `test`, `clippy`, `check`, `fmt`, `build`, or `xtask layers|wasm|freecad` arguments), then `gh run watch <id> --exit-status` and `gh run view <id> --log-failed`. Locally, keep to editing, `cargo fmt` and a quick `cargo check`. The full gate stays the coordinator's (`Gate` workflow).
 - Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) to avoid the Cargo build lock, and edit only the files you own. Shared files (`engine/src/lib.rs` with the list of `SPECS` in `Session::commands`, `engine/src/commands.rs`, `ui-egui/src/state.rs`) get small, surgical edits; re-read before editing.
 - Put new commands in a **new module** (`engine/src/<area>_cmds.rs` with its own `SPECS`) rather than growing a shared file.
 - If someone else's in-progress edit breaks the build, wait and retry; don't fix their files.

@@ -354,7 +354,7 @@ Headless, as the build was checked: `google-chrome --headless=new --enable-unsaf
 
 ## Example thumbnails
 
-The start screen shows the nine example models of the guide as cards with a picture each. The pictures are
+The start screen shows nine of the example models of the guide (all but the gear) as cards with a picture each. The pictures are
 PNGs in `docs/examples/thumbs/`, built into the program (`include_bytes!` in `crates/ui-egui/src/shell/start.rs`,
 with the logo from `packaging/icons/craft3d-128.png`), so the window and the web build show them without
 rendering anything at the start.
@@ -362,7 +362,7 @@ rendering anything at the start.
 `cargo xtask example-thumbs` makes them again: it builds `craft3d-cli`, runs every `docs/examples/<id>.json` in a
 new document in millimetres, renders it with `view.render` (the CPU renderer; iso, perspective, 160 × 120,
 zoom 1.2: `RENDER` in `xtask/src/thumbs.rs`), cuts the picture to at most 128 colours (the most common ones,
-each pixel to the nearest) and writes an indexed PNG, about 1 to 6 kB each (21 kB for the nine). It also
+each pixel to the nearest) and writes an indexed PNG, about 1 to 6 kB each (23 kB for the ten; the gear's is made too, though the start screen does not show it). It also
 writes `docs/examples/thumbs/STAMPS.txt`: per example a hash of its script, the render settings and the
 method. The pixels are not compared, since the renderer's last bits may differ between platforms; the stamp
 says what they were made from. `cargo test -p xtask` (`the_thumbnails_are_up_to_date`) recomputes the stamps

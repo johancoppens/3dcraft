@@ -55,6 +55,7 @@ mod selection;
 mod set_cmds;
 mod sheet_cmds;
 mod sketch_cmds;
+mod sketch_curve_cmds;
 mod sketch_path_cmds;
 mod sketch_pattern_cmds;
 mod sketch_spline_cmds;
@@ -69,6 +70,7 @@ mod verify;
 mod verify_cmds;
 mod view_export;
 mod visibility_cmds;
+mod when_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
@@ -287,7 +289,7 @@ impl OpenDocument {
             regen.features.iter().any(|f| {
                 f.body.is_none()
                     && f.consumed_by.is_some()
-                    && matches!(f.status, craft3d_regen::Status::Ok)
+                    && f.is_built()
                     && match need {
                         Need::Bodies => false,
                         Need::All => true,
@@ -428,6 +430,7 @@ impl Session {
                 sketch_path_cmds::SPECS,
                 sketch_pattern_cmds::SPECS,
                 sketch_spline_cmds::SPECS,
+                sketch_curve_cmds::SPECS,
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
                 sweep_path_cmds::SPECS,
@@ -454,6 +457,7 @@ impl Session {
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
+                when_cmds::SPECS,
                 scrub::SPECS,
                 report::SPECS,
             ]

@@ -225,6 +225,8 @@ pub struct TreeRow {
     /// Something of it can be shown and flown to (a double click, the
     /// row's zoom icon): [`zoomable`](crate::shell::zoomable).
     pub zoomable: bool,
+    /// The condition that switches it on (`feature.when`), as written.
+    pub when: Option<String>,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -239,7 +241,9 @@ pub fn tree_mark(state: FeatureState) -> String {
     match state {
         FeatureState::Ok => ok,
         FeatureState::Failed => failed,
-        FeatureState::Suppressed => suppressed,
+        // Switched off as by suppression: the same mark; the row says
+        // `when` beside it.
+        FeatureState::Suppressed | FeatureState::Inactive => suppressed,
         FeatureState::RolledBack => rolled_back,
     }
     .to_string()
@@ -805,6 +809,7 @@ fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> Stri
         (FeatureState::Ok, _, _) => "ok".to_string(),
         (FeatureState::Failed, _, _) => "failed".to_string(),
         (FeatureState::Suppressed, _, _) => "suppressed".to_string(),
+        (FeatureState::Inactive, _, _) => "inactive".to_string(),
         (FeatureState::RolledBack, _, _) => "rolled back".to_string(),
     }
 }
@@ -1674,6 +1679,7 @@ impl Shell {
                 hidden: f.hidden,
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
                 zoomable: false,
+                when: f.when.clone(),
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -2301,9 +2307,9 @@ impl Shell {
                             let tint = match row.state {
                                 FeatureState::Ok => tokens.ok,
                                 FeatureState::Failed => tokens.failed,
-                                FeatureState::Suppressed | FeatureState::RolledBack => {
-                                    tokens.inactive
-                                }
+                                FeatureState::Suppressed
+                                | FeatureState::Inactive
+                                | FeatureState::RolledBack => tokens.inactive,
                             };
                             let mark = tree_mark(row.state);
                             let mut name = egui::RichText::new(&row.name);
@@ -2313,6 +2319,11 @@ impl Shell {
                                 FeatureState::Suppressed => {
                                     name = name.color(color(tokens.inactive)).strikethrough();
                                 }
+                                // Off by its condition: greyed, not struck
+                                // through (nobody switched it off by hand).
+                                FeatureState::Inactive => {
+                                    name = name.color(color(tokens.inactive));
+                                }
                                 FeatureState::RolledBack => {
                                     name = name.color(color(tokens.inactive)).italics()
                                 }
@@ -2320,9 +2331,13 @@ impl Shell {
                             let hover = match (&row.error, row.state) {
                                 (Some(error), _) => error.clone(),
                                 (None, FeatureState::Suppressed) => {
-                                    "Suppressed: not built, and what is made from it fails."
+                                    "Suppressed: not built; what it changes is passed on unchanged."
                                         .to_string()
                                 }
+                                (None, FeatureState::Inactive) => format!(
+                                    "Inactive: its condition {} is 0; not built, what it changes is passed on unchanged.",
+                                    row.when.as_deref().unwrap_or("")
+                                ),
                                 (None, FeatureState::RolledBack)
                                     if row.status == timeline::AFTER_SCRUB =>
                                 {
@@ -2359,6 +2374,12 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                                // A condition: a small mark, the expression on
+                                // hover.
+                                if let Some(when) = &row.when {
+                                    ui.colored_label(dim, egui::RichText::new("when").small())
+                                        .on_hover_text(format!("Built when {when} is not 0"));
+                                }
                                 let row_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 if let Some(icon) =
                                     views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)

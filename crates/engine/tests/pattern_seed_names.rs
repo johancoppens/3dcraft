@@ -96,8 +96,9 @@ fn fillet_angle(session: &mut Session, k: f64, what: &str) -> f64 {
     let state = feature(session, "Roots");
     assert_eq!(state["status"], "ok", "{what}: {state}");
     let after = volume_and_moment(&body(session, "Roots"));
+    // Suppressed, the fillet passes the union's body on unchanged.
     run(session, "feature.suppress", json!({"feature": "Roots"}));
-    let before = volume_and_moment(&body(session, "U"));
+    let before = volume_and_moment(&body(session, "Roots"));
     run(
         session,
         "feature.suppress",

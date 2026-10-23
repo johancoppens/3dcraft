@@ -459,6 +459,7 @@ mod native {
             let status = match regen.feature(feature.id).map(|o| &o.status) {
                 Some(Status::Ok) => "ok",
                 Some(Status::Suppressed) => "suppressed",
+                Some(Status::Inactive) => "inactive",
                 Some(Status::RolledBack) => "rolledBack",
                 Some(Status::Failed(_)) => "failed",
                 None => "unknown",

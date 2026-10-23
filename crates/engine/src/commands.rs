@@ -81,7 +81,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
-        "Switches a feature off (or back on) without deleting it. What is made from its body fails until it is switched on again: a suppressed boolean, fillet or chamfer does not pass the body it changes on to the features after it. The result lists the features that fail under failed.", doc: true, feature_suppress),
+        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, and a boolean with that body as its tool passes its target on (passesNothing says why there is no body). A reference to a face or edge only the suppressed feature makes (a fillet's face) fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
         "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
@@ -365,6 +365,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
             map.insert("causedBy".into(), root.to_string().into());
         }
+        add_switch(map, feature, outcome);
         if let Some(report) = &outcome.sweep {
             map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
@@ -379,10 +380,38 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
     Ok(result)
 }
 
+/// The condition of a feature (`when`, as written) and, for one switched
+/// off or with an operand switched off, what it passes on to the features
+/// after it: `passesOn` the id of the feature whose body it passes on
+/// unchanged, `passesNothing` why it passes no body on (as it should),
+/// `cannotPass` why the body it would pass on cannot be had.
+pub(crate) fn add_switch(
+    map: &mut serde_json::Map<String, Value>,
+    feature: &Feature,
+    outcome: &craft3d_regen::FeatureResult,
+) {
+    if let Some(when) = &feature.when {
+        map.insert("when".into(), when.source().into());
+    }
+    match &outcome.passed {
+        Some(craft3d_regen::Passed::Body(from)) => {
+            map.insert("passesOn".into(), from.to_string().into());
+        }
+        Some(craft3d_regen::Passed::Nothing(why)) => {
+            map.insert("passesNothing".into(), why.clone().into());
+        }
+        Some(craft3d_regen::Passed::Broken(why)) => {
+            map.insert("cannotPass".into(), why.clone().into());
+        }
+        None => {}
+    }
+}
+
 fn status_json(status: &Status) -> (&'static str, Option<&str>) {
     match status {
         Status::Ok => ("ok", None),
         Status::Suppressed => ("suppressed", None),
+        Status::Inactive => ("inactive", None),
         Status::RolledBack => ("rolledBack", None),
         Status::Failed(reason) => ("failed", Some(reason)),
     }
@@ -1485,10 +1514,17 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
         }
     }
     for feature in &doc.features {
-        let params: Vec<String> = feature
+        // In the formulas of a curve the parameter is not the variable of
+        // its name.
+        let formulas = feature
             .kind
+            .formula_exprs()
+            .into_iter()
+            .filter(|_| name != craft3d_doc::FORMULA_PARAMETER);
+        let params: Vec<String> = feature
             .exprs()
             .into_iter()
+            .chain(formulas)
             .filter(|(_, expr)| mentions(expr.source(), name))
             .map(|(param, _)| param)
             .collect();
@@ -2644,6 +2680,9 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
+        if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome) {
+            add_switch(map, feature, outcome);
+        }
         // Hidden in the view (`feature.visible`): said only when it is.
         if let Some(map) = entry.as_object_mut()
             && doc.is_hidden(feature.id)
@@ -3034,21 +3073,44 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         if only.is_some() {
             // What was asked about is not built: say so rather than "ok,
             // no bodies".
-            let not_built = match outcome.status {
-                Status::Suppressed => Some("suppressed"),
-                Status::RolledBack => Some("after the rollback marker"),
+            // One switched off is not built, also when it passes a body on
+            // (that body is the one of the feature that made it, and is
+            // checked with that feature).
+            let off = match &outcome.status {
+                Status::Suppressed => Some("is suppressed"),
+                Status::Inactive => Some("is inactive (its condition is 0)"),
+                Status::RolledBack => Some("is after the rollback marker"),
                 Status::Ok | Status::Failed(_) => None,
+            };
+            let passes = match &outcome.passed {
+                Some(craft3d_regen::Passed::Body(from)) => {
+                    let by = doc
+                        .feature(*from)
+                        .map_or_else(|| from.to_string(), |f| f.name.clone());
+                    format!(
+                        "; it passes the body of `{by}` ({from}) on unchanged, which is checked with the feature that made it"
+                    )
+                }
+                _ => String::new(),
+            };
+            let not_built = match (off, &outcome.passed) {
+                (Some(why), _) => Some(format!("{why}: nothing is built to check{passes}")),
+                (None, Some(craft3d_regen::Passed::Nothing(why))) => Some(format!(
+                    "passes no body on ({why}): nothing is built to check"
+                )),
+                (None, _) => None,
             };
             if let Some(why) = not_built {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name,
-                    "problem": format!("the feature is {why}: nothing is built to check"),
+                    "problem": format!("the feature {why}"),
                 }));
             }
             status = Some(match &outcome.status {
                 Status::Ok => "ok",
                 Status::Failed(_) => "failed",
                 Status::Suppressed => "suppressed",
+                Status::Inactive => "inactive",
                 Status::RolledBack => "rolledBack",
             });
         }
@@ -3069,7 +3131,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             booleans_checked +=
                 boolean_check(doc, &regen, outcome, &name, &tolerance, &mut problems);
         }
-        if let Some(body) = outcome.own_body() {
+        // Asked about one feature that is off: what it passes on is not
+        // its own, and is not checked here.
+        let passed_only = only.is_some() && outcome.is_off();
+        if let Some(body) = outcome.own_body().filter(|_| !passed_only) {
             checked += 1;
             // Entities with a tolerance of their own (a boolean on loose
             // operands, an import) are said, not hidden.
