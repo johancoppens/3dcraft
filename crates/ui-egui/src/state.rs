@@ -20,6 +20,8 @@ pub const MIN_FOV: f64 = 1.0;
 pub const MAX_FOV: f64 = 120.0;
 /// Longest caption, in characters. A longer one is cut.
 pub const MAX_NOTICE_CHARS: usize = 200;
+/// Most groups of parameters kept folded shut.
+pub const MAX_COLLAPSED: usize = 512;
 /// Longest feature reference kept as the selection.
 pub const MAX_SELECTION_CHARS: usize = 128;
 /// Longest persistent name kept in a highlight or a pick. A name is a
@@ -518,6 +520,19 @@ pub struct UiState {
     /// `ui.set {"show": {"datums": false}}` hides the datums,
     /// `{"show": {"sketches": false}}` the sketches.
     pub show: Show,
+    /// The Parameters tab of the side panel (`shell/params.rs`).
+    pub parameters: ParametersView,
+}
+
+/// The Parameters tab beside the feature list: whether it is the one
+/// shown (a Jig opens on it; each document keeps its choice), and the
+/// groups of parameters that are folded shut. `ui.set {"parameters":
+/// {"open": true}}` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ParametersView {
+    pub open: bool,
+    pub collapsed: Vec<String>,
 }
 
 /// What each document tab keeps of the view: the fields of [`UiState`]
@@ -654,6 +669,10 @@ impl UiState {
         self.transparency = finite("transparency", self.transparency)?.clamp(0.0, MAX_TRANSPARENCY);
         self.section = self.section.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
+        self.parameters.collapsed.truncate(MAX_COLLAPSED);
+        for group in &mut self.parameters.collapsed {
+            *group = one_line(group, MAX_SELECTION_CHARS);
+        }
         self.selected_feature = self
             .selected_feature
             .map(|id| cut(&id, MAX_SELECTION_CHARS))
@@ -885,6 +904,11 @@ mod tests {
                 datums: false,
                 sketches: false,
             },
+            // Added with the Jigs' parameter form (2026-10-23).
+            parameters: ParametersView {
+                open: true,
+                collapsed: vec!["Finish".to_string()],
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -912,6 +936,7 @@ mod tests {
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
                 "show": {"datums": false, "sketches": false},
+                "parameters": {"open": true, "collapsed": ["Finish"]},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

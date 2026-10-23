@@ -240,6 +240,9 @@ enum Waiting {
     Request(Request),
     /// A file chosen in a dialog: the outcome goes to the status bar.
     File(&'static str),
+    /// A command the shell asked for (the Parameters tab's `param.set`):
+    /// the outcome goes back to the shell and to the status bar.
+    Command(&'static str),
     /// Only the scene the window shows.
     Scene,
 }
@@ -615,6 +618,17 @@ impl Desk {
                 host.report(label, &outcome);
                 (None, None)
             }
+            Waiting::Command(label) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report(label, &outcome);
+                host.shell.command_done(outcome);
+                (None, None)
+            }
             Waiting::Scene => (None, None),
         };
         // The camera follows the model, the tree its features: from the
@@ -684,6 +698,21 @@ impl Desk {
         }
         if let Some(action) = self.host.shell.take_doc_action() {
             self.doc_action(action);
+            return true;
+        }
+        if let Some(asked) = self.host.shell.take_command() {
+            let label = asked.command;
+            self.start(
+                Waiting::Command(label),
+                label.to_string(),
+                Box::new(move |session| {
+                    Outcome::Ran(
+                        session
+                            .execute(asked.command, &asked.params)
+                            .map_err(|e| e.message().to_string()),
+                    )
+                }),
+            );
             return true;
         }
         false
@@ -1610,5 +1639,93 @@ mod tests {
         let message = window_error(&other);
         assert!(message.contains("the shell fell over"), "{message}");
         assert!(!message.contains("lavapipe"));
+    }
+
+    /// A frame of the window, then a turn of the desk, as the event loop
+    /// has them.
+    fn draw(desk: &mut Desk, ctx: &egui::Context, time: &mut f64, events: Vec<egui::Event>) {
+        *time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            time: Some(*time),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            if desk.away() {
+                desk.host.shell.ui_away(ui);
+            } else {
+                let Host { session, shell, .. } = &mut desk.host;
+                shell.ui(ui, session);
+            }
+        });
+        output.textures_delta.clear();
+        desk.turn();
+    }
+
+    /// The Parameters tab's commit runs on the engine thread, as every
+    /// command, and comes back to the form: Reset all, clicked in the
+    /// window, sets a Jig's parameter back and the status bar says so.
+    #[test]
+    fn the_parameter_form_commits_on_the_engine_thread() {
+        let (requests, incoming) = mpsc::channel::<Request>();
+        drop(requests);
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+            ("param.set", json!({"values": {"w": 70}})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let host = Host::new(session);
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        for _ in 0..6 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+        }
+        let reset = desk
+            .host
+            .shell
+            .parameter_hits()
+            .iter()
+            .find(|(name, _)| name == "Reset all")
+            .map(|(_, rect)| rect.center())
+            .unwrap();
+        for pressed in [true, false] {
+            draw(
+                &mut desk,
+                &ctx,
+                &mut time,
+                vec![egui::Event::PointerButton {
+                    pos: reset,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        for _ in 0..500 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+            if !desk.away() && !desk.host.shell.parameters_busy() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let list = desk.host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 40.0, "{list}");
+        let report = desk.host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "param.set");
+        assert!(report.ok, "{}", report.text);
     }
 }

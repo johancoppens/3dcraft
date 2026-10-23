@@ -94,3 +94,43 @@ A document may hold any number of bodies; every feature that does not consume an
 `body.split` splits a body that fell into pieces (a cut through the middle) into one body per piece.
 `body.appearance` and `face.appearance` give colours, `body.material` a density (then `document.inspect`
 gives the mass), `document.interference` says whether bodies overlap.
+
+## Jigs: parameters
+
+A **Jig** is a document that others set without knowing how it is modelled: a box sized by its width,
+depth and height, a pulley by its tooth count. You make one by **publishing** the variables that drive it.
+A published variable is a public parameter, with a label, a group, a range and a step:
+
+```json
+[
+  ["variable.publish", {"name": "width", "label": "Width", "description": "Outside width", "group": "Size",
+                        "min": "40 mm", "max": "120 mm", "step": "1 mm"}],
+  ["variable.publish", {"name": "lid", "label": "Thick lid", "group": "Finish", "kind": "boolean"}],
+  ["variable.publish", {"name": "corners", "label": "Corners", "group": "Finish", "kind": "choice",
+                        "choices": ["sharp", "round"]}],
+  ["document.info", {"title": "Storage box", "author": "You", "licence": "CC-BY-4.0"}]
+]
+```
+
+`kind` is `number` (a value of its unit), `integer`, `boolean` (0 or 1) or `choice` (1 for the first
+label). Its value must be a value (`40 mm`), not a formula; other variables may be formulas of it
+(`radius = 0.5 mm + (corners - 1) * 4.5 mm`). `param.list` lists the parameters as a form shows them;
+`param.set {"values": {"width": 90}}` sets several at once and **refuses** a value outside its range, with
+the range, so an agent can correct it; `variable.unpublish` makes one an ordinary variable again.
+
+**In the window** a Jig opens on its **Parameters** tab, beside **Features**: the title and description
+from `document.info`, the groups (click a group to fold it), and a field per parameter. Drag a number
+across its field (the bar is where it lies in its range; Shift is finer, Ctrl goes in steps), click the
+‹ › at its ends, or press Enter over it and type a value with or without its unit. A boolean is a
+checkbox, a choice a list. The model follows as you drag; the whole drag is **one undo step**. In the
+browser the model follows when you let go, because there a regeneration holds up the page.
+
+The form keeps a value in its range: typing 150 into a width that goes up to 120 sets 120 and says
+*clamped to 120 mm* under the field for a few seconds (and *rounded to …* for a value between two steps).
+A parameter that is not at its default has a ↺ to put it back; **Reset all** puts them all back
+(`param.set {"reset": true}`).
+
+When a value breaks the model (a fillet that no longer fits, a shell thicker than the box, an assertion
+that fails) the field turns red with the reason, the viewport keeps showing the **last good model**, and
+**Back to last good** sets the values that built. A parameter whose range no longer works (a variable it
+used was deleted) shows the problem under its field in the attention colour.

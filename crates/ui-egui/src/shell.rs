@@ -27,6 +27,7 @@ mod controls;
 mod icons;
 mod layout;
 pub mod number_field;
+mod params;
 mod report;
 mod selection;
 mod tabs;
@@ -34,6 +35,10 @@ mod views;
 
 pub use controls::ControlsLayout;
 pub use layout::{ControlWidths, controls_layout, triad_side};
+pub use params::{
+    Baseline, DEBOUNCE, NOTE_SECONDS, Pacer, Param, ParamKind, ParamList, Settled, ShellCommand,
+    Verdict, settle, verdict,
+};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -606,6 +611,9 @@ pub struct Shell {
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
     tree_view: Option<egui::Rect>,
+    /// The Parameters tab: its list, the field being changed, the commit
+    /// waiting for the host (`shell/params.rs`).
+    params: params::ParamForm,
 }
 
 impl Default for Shell {
@@ -842,6 +850,7 @@ impl Shell {
             tab_switched: false,
             tree_row_hits: Vec::new(),
             tree_view: None,
+            params: params::ParamForm::default(),
         }
     }
 
@@ -1476,6 +1485,7 @@ impl Shell {
         self.follow_active_tab(session);
         let scene = self.sync_scene(session);
         self.assertion_rows = session.assertion_states();
+        self.sync_params(session, scene.as_ref());
         self.sync_tabs(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
@@ -1638,6 +1648,7 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
+        self.mark_pending_drawn(ui.ctx());
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
@@ -1715,8 +1726,10 @@ impl Shell {
                 .resizable(true)
                 .default_size(260.0)
                 .frame(frame)
-                .show(ui, |ui| self.tree(ui, status.is_some()));
+                .show(ui, |ui| self.side_panel(ui, status.is_some()));
         }
+        // While a parameter's value broke the model, the last good one.
+        let scene = self.held_scene().or(scene);
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
         // A number typed into a field of the viewport, once Enter was
         // pressed: evaluated with the document's variables, shown next
@@ -1724,6 +1737,10 @@ impl Shell {
         if let Some(session) = session.as_deref() {
             let before = self.typing.clone();
             self.resolve_typing(session);
+            self.resolve_param_typing(Some(session));
+            if self.command_waiting() {
+                ui.ctx().request_repaint();
+            }
             if self.typing != before {
                 ui.ctx().request_repaint();
             }
@@ -2133,9 +2150,6 @@ impl Shell {
     fn tree(&mut self, ui: &mut egui::Ui, has_document: bool) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
-        ui.add_space(tokens.inset * 0.5);
-        ui.label(egui::RichText::new("Features").strong());
-        ui.separator();
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."

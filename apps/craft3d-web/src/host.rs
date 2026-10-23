@@ -250,6 +250,14 @@ impl WebHost {
             outcome.downloads.extend(more.downloads);
             outcome.ask = outcome.ask.or(more.ask);
         }
+        // The Parameters tab's param.set: the frame before this one
+        // showed that it is regenerating, now the page's one thread does
+        // it.
+        if let Some(asked) = self.shell.take_command() {
+            let done = self.run(asked.command, &asked.params);
+            self.shell.command_done(done.clone());
+            self.finish(asked.command, &done);
+        }
         outcome
     }
 
@@ -676,5 +684,77 @@ mod tests {
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
         assert_eq!(host.file_action(FileAction::Open).ask, Some(Ask::Open));
         assert_eq!(host.file_action(FileAction::Import).ask, Some(Ask::Import));
+    }
+
+    /// The Parameters tab on the page: its commit waits for a frame that
+    /// says it is regenerating, then runs in the pump (one thread), and
+    /// the form and the status bar hear how it went.
+    #[test]
+    fn the_parameter_form_commits_in_the_pump_after_a_busy_frame() {
+        let mut host = host();
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+            ("param.set", json!({"values": {"w": 70}})),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut frame = |host: &mut WebHost, events: Vec<egui::Event>| {
+            time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            host.pump();
+            let mut output = ctx.run_ui(input, |ui| {
+                let WebHost { session, shell, .. } = host;
+                shell.ui(ui, session);
+            });
+            output.textures_delta.clear();
+        };
+        for _ in 0..4 {
+            frame(&mut host, Vec::new());
+        }
+        let reset = host
+            .shell
+            .parameter_hits()
+            .iter()
+            .find(|(name, _)| name == "Reset all")
+            .map(|(_, rect)| rect.center())
+            .unwrap();
+        for pressed in [true, false] {
+            frame(
+                &mut host,
+                vec![egui::Event::PointerButton {
+                    pos: reset,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        // Asked, not run yet: the next frame shows it is busy first.
+        assert!(host.shell.parameters_busy());
+        frame(&mut host, Vec::new());
+        assert!(host.shell.parameters_busy(), "drawn busy, not yet run");
+        frame(&mut host, Vec::new());
+        assert!(!host.shell.parameters_busy());
+        let list = host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 40.0, "{list}");
+        let report = host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "param.set");
+        assert!(report.ok, "{}", report.text);
     }
 }

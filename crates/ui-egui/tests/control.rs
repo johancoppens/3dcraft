@@ -176,6 +176,7 @@ fn only_ui_methods_are_handled_and_each_listed_one_exists() {
             "ui.select",
             "ui.fit",
             "ui.screenshot",
+            "ui.param",
             "ui.notice",
             "ui.quit"
         ]
