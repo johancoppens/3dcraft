@@ -71,7 +71,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `automation` | L7 | the line-based control server and the MCP server over one `Session` | adds behaviour of its own |
 | `testkit` | dev | reference solids, mesh checks, image diff, fixtures | is a normal dependency |
 | `apps/craft3d` | L8 | the window: eframe, the engine thread, the control listener, file dialogs | holds modelling logic |
-| `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `commands`, `serve`, `mcp` | holds modelling logic |
+| `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `check-range`, `commands`, `serve`, `mcp` | holds modelling logic |
 | `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
 | `apps/craft3d-web` | L8 | the page: eframe's web runner, the session's files in memory, the file chooser and downloads, preferences in `localStorage` | holds modelling logic; starts a thread |
 | `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz` | is shipped |

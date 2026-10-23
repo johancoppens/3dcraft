@@ -43,6 +43,7 @@ mod recovery_cmds;
 mod recovery_store;
 mod replay_cmds;
 mod report;
+mod sample_cmds;
 mod scene;
 mod scene_box;
 mod section;
@@ -385,6 +386,7 @@ impl Session {
                 select_cmds::SPECS,
                 set_cmds::SPECS,
                 param_cmds::SPECS,
+                sample_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 report::SPECS,

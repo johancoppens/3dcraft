@@ -40,6 +40,10 @@ commands` lists every command with its parameters and summary (`--filter fillet`
   `ffmpeg`; without it, PNG frames).
 - `craft3d-cli score TASK --script FILE`: scores a script against a task of the task set
   (`docs/tasks/`), the benchmark 3DCraft is measured by.
+- `craft3d-cli check-range FILE [--samples N] [--seed S] [--deep]`: proves a Jig (a document
+  with public parameters) over its parameter range: the defaults, the corners of the ranges and
+  seeded random points, each regenerated and checked as `document.check` checks; it lists every
+  failing point with the values that reproduce it, and exits with 1 when there is one.
 - `craft3d-cli serve`: the JSON-lines protocol on standard input and output, for programs:
   `{"id": 1, "method": "engine.execute", "params": {"command": "feature.block", "params": {...}}}`.
   The window speaks the same protocol on a TCP port (`craft3d --control`), with a token; see

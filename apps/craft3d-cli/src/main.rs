@@ -11,6 +11,7 @@
 //! one line; there is no panic path.
 
 mod args;
+mod check_range;
 mod local;
 mod replay;
 mod score;
@@ -63,6 +64,7 @@ Subcommands:
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
   replay     Make a video (MP4, GIF) or frames of how a document is built
   score      Run a script for a task of the task set and print its scorecard
+  check-range  Check a Jig over its parameter range; exit 1 if a point fails
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
@@ -131,7 +133,7 @@ Options:
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--tolerance T]
-                           [--sketch S | --face F [--feature B]]
+                           [--sketch S | --face F [--feature B] | --set S]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
@@ -148,7 +150,10 @@ Options:
   --sketch S      For .dxf and .svg: the sketch to draw, by id or name
   --face F        For .dxf and .svg: the flat face to draw, by its name
                   from `info` (faceNames), e.g. 'F2:endCap(e1,e2,e3,e4)'
-  --feature B     With --face: the body that has the face, when several do";
+  --feature B     With --face: the body that has the face, when several do
+  --set S         For .dxf and .svg: every flat face the named set S holds
+                  (set.define), on one sheet, a layer per body: the cut
+                  sheet of a laser-cut design";
 
 const HELP_REPLAY: &str = "\
 Usage: craft3d-cli replay FILE --out OUT [--size WxH] [--view V] [--orbit DEG]
@@ -209,6 +214,39 @@ Options:
 
 Example:
   craft3d-cli score plate-holes --script my-plate.json";
+
+const HELP_CHECK_RANGE: &str = "\
+Usage: craft3d-cli check-range FILE [--samples N] [--seed S] [--deep]
+                               [--budget-ms M] [--max-corners N]
+                               [--no-corners] [--json]
+
+Proves the Jig FILE (a .3dcraft file with public parameters) over its
+parameter range (the command document.sample): on a copy, its parameters
+are set to their defaults, to the corners of the box of their ranges, to
+every other choice of a choice, and to N random points chosen by the seed;
+each point is regenerated from nothing and checked as document.check
+checks (no failed feature, valid bodies, no broken assertion, no invalid
+parameter). Prints a report, one block per failing point with the values
+that reproduce it (param.set), and exits with 1 when any point fails. The
+same seed gives the same points and the same verdict; times are reported
+and only --budget-ms makes them part of the verdict.
+
+Options:
+  --samples N       Random points, at most 10000. Default 32
+  --seed S          Seed of the random points and of a subset of corners.
+                    Default 1
+  --deep            Check each point as document.check --deep does
+                    (self-intersection, booleans held to their operands)
+  --budget-ms M     A point whose regeneration takes longer than M
+                    milliseconds fails
+  --max-corners N   Corners tried: all 2^n while that is at most N, else N
+                    of them chosen by the seed (at most 4096). Default 64
+  --no-corners      Only the defaults, the choices and the random points
+  --json            Print the result of document.sample as one line of
+                    JSON instead of the report
+
+Example:
+  craft3d-cli check-range box.3dcraft --samples 100 --seed 7 --deep";
 
 const HELP_SERVE: &str = "\
 Usage: craft3d-cli serve [--automation-read-root DIR]
@@ -273,6 +311,7 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ("convert", HELP_CONVERT),
     ("replay", HELP_REPLAY),
     ("score", HELP_SCORE),
+    ("check-range", HELP_CHECK_RANGE),
     ("serve", HELP_SERVE),
     ("mcp", HELP_MCP),
 ];
@@ -376,6 +415,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
         "convert" => local::convert(args),
         "replay" => replay::replay(args),
         "score" => score::score(args),
+        "check-range" => check_range::check_range(args),
         "serve" => server::serve(args, server::Protocol::JsonLines),
         "mcp" => server::serve(args, server::Protocol::Mcp),
         _ => return Err(unknown_subcommand(&name)),
