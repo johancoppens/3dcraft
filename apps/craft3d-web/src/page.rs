@@ -544,9 +544,8 @@ impl Page {
     /// The file input for `ask`.
     fn choose(&mut self, ask: Ask) {
         if let Err(why) = choose(ask, &self.inbox, &self.ctx) {
-            self.host.note(
+            self.host.note_error(
                 "file",
-                false,
                 format!("the file chooser could not be shown: {why}"),
             );
         }
@@ -681,9 +680,8 @@ impl Page {
                     if let Some(id) = download.document {
                         self.host.write_failed(id);
                     }
-                    self.host.note(
+                    self.host.note_error(
                         "download",
-                        false,
                         format!("`{}` could not be downloaded: {why}", download.name),
                     );
                 }

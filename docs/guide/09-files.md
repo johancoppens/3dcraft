@@ -46,13 +46,28 @@ is refused with the list of bodies there are. In the window, Export… with bodi
 ```json
 [
  ["file.export", {"path": "part.3mf"}],
+ ["file.export", {"path": "part.stl", "quality": "fine"}],
  ["file.export", {"path": "part.stl", "tolerance": 0.01}]
 ]
 ```
 
-`tolerance` is how far the triangles may lie from the true surface, in the document's unit (chosen from
-the model's size by default). The result says how many meshes are `closed` (watertight). 3MF carries the
-unit, the bodies' names and colours; STL carries triangles only (`"format": "stl-ascii"` for text).
+`quality` is `coarse`, `normal` (the default) or `fine`: how closely the triangles follow the model.
+Each sets a distance chosen from the model's size (2, 1 or ¼ thousandth of it) and an angle (20°, 10°
+or 5°): no triangle's side turns the surface by more, so small holes and thin bent tubes stay round on a
+big part. `tolerance` (in the document's unit) and `angle` (degrees; 0 for none, else 1 to 90) set either one
+yourself; a `tolerance` alone, with no `quality` or `angle`, makes the mesh it always made (no angle).
+The result says `tolerance`, `angle`, `quality` and how many meshes are `closed` (watertight). 3MF
+carries the unit, the bodies' names and colours; STL carries triangles only (`"format": "stl-ascii"` for
+text). A mesh of more than 20 million triangles, all bodies together, is refused: choose a coarser
+quality. In the window, Export… to a mesh asks for the quality (Coarse, Normal, Fine; the last one you
+chose is offered) before it writes; `craft3d-cli convert part.3dcraft part.stl --quality fine` (or
+`--angle`, `--tolerance`) does the same from a shell.
+
+When the selection does not fit the format you chose (a face selected and a STEP or STL file chosen),
+the window says so before anything is written and offers **Export all bodies**; for DXF or SVG with no
+flat face or sketch selected it says what to select. A failed Open, Save, Import or Export in the window
+opens a dialog with what went wrong and **Copy details** (the report for a bug); what an agent's command
+did stays in the status bar.
 
 ## Flat outlines: DXF and SVG
 

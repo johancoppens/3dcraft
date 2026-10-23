@@ -240,9 +240,15 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
                "status": "ok", "error": null, "causedBy": null, "selected": false,
                "hidden": false,
                // Added with the list following the selection (2026-10-23).
-               "madeSelection": false})
+               "madeSelection": false,
+               // Added with the row's zoom icon (2026-10-23).
+               "zoomable": true})
     );
     assert_eq!(features[2]["state"], "failed");
+    assert_eq!(
+        features[2]["zoomable"], false,
+        "a failed feature cannot be flown to"
+    );
     assert!(features[2]["error"].as_str().unwrap().contains("nope"));
     // The camera followed the model: it looks at the middle of its box.
     assert_eq!(got["state"]["camera"]["target"], json!([30.0, 20.0, 19.0]));

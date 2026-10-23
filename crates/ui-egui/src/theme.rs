@@ -237,6 +237,9 @@ pub struct Tokens {
     pub slider_width: f32,
     /// Space between the viewport's edge and what floats over it.
     pub inset: f32,
+    /// The widest a dialog over the window (an error, the export's
+    /// options) lays its text out, in points.
+    pub dialog_width: f32,
     /// Work in progress over the viewport: the spinner and the part of
     /// the progress bar that is done, the rest of the bar, the spinner's
     /// width and the bar's height, in points.
@@ -431,6 +434,7 @@ impl Tokens {
             field_bar_radius: 1,
             slider_width: 90.0,
             inset: 10.0,
+            dialog_width: 420.0,
             work_accent: [201, 138, 30],
             work_track: [220, 215, 207],
             work_spinner_width: 2.5,

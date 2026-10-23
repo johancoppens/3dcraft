@@ -435,6 +435,10 @@ pub struct SceneFeature {
     /// Hidden in the view (`feature.visible`): its body, sketch or datum
     /// is not in the scene, though it is built.
     pub hidden: bool,
+    /// Built, with something of its own to draw: a body that no later
+    /// feature took, a sketch, a datum. What showing a hidden feature
+    /// brings into view; a viewer offers to fly to it by this.
+    pub draws: bool,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -1396,6 +1400,10 @@ fn build(
             caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
                 .map(|root| root.to_string()),
             hidden: doc.is_hidden(feature.id),
+            draws: state == FeatureState::Ok
+                && (outcome.and_then(|o| o.own_body()).is_some()
+                    || solved.is_some()
+                    || outcome.and_then(|o| o.datum).is_some()),
         });
         // Hidden in the view: a row of the tree, and nothing drawn.
         if doc.is_hidden(feature.id) {

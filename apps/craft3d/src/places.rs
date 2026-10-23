@@ -263,7 +263,7 @@ impl Host {
                     self.recent_baseline = merged;
                 }
                 Err(e) => {
-                    self.report("recent files", &Err(e));
+                    self.report_notice("recent files", &e);
                     did = true;
                 }
             }

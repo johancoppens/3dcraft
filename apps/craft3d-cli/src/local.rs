@@ -444,10 +444,34 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     let mut tolerance: Option<f64> = None;
     // What a .dxf or .svg file is the outline of.
     let mut outline = Map::new();
+    // How finely a mesh follows the model, besides the tolerance.
+    let mut mesh = Map::new();
     let parsed = parse_simple(
         args,
-        &["--tolerance", "--sketch", "--face", "--feature"],
+        &[
+            "--tolerance",
+            "--sketch",
+            "--face",
+            "--feature",
+            "--quality",
+            "--angle",
+        ],
         |name, value| {
+            if name == "--quality" {
+                mesh.insert("quality".to_string(), value.into());
+                return Ok(());
+            }
+            if name == "--angle" {
+                return match value.parse::<f64>() {
+                    Ok(a) if a.is_finite() => {
+                        mesh.insert("angle".to_string(), a.into());
+                        Ok(())
+                    }
+                    _ => Err(CliError::Usage(format!(
+                        "`--angle` must be a number of degrees, got `{value}`"
+                    ))),
+                };
+            }
             if name != "--tolerance" {
                 outline.insert(name.trim_start_matches('-').to_string(), value.into());
                 return Ok(());
@@ -481,9 +505,9 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("step") || e.eq_ignore_ascii_case("stp"));
-    if (native || exact) && tolerance.is_some() {
+    if (native || exact) && (tolerance.is_some() || !mesh.is_empty()) {
         return Err(CliError::Usage(
-            "`--tolerance` applies to mesh output (.stl, .3mf, .obj), not to .3dcraft or STEP"
+            "`--tolerance`, `--quality` and `--angle` apply to mesh output (.stl, .3mf, .obj), not to .3dcraft or STEP"
                 .to_string(),
         ));
     }
@@ -515,6 +539,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         if let Some(tolerance) = tolerance {
             params.insert("tolerance".into(), tolerance.into());
         }
+        params.extend(mesh);
         execute(&mut session, "file.export", &Value::Object(params))?
     };
     print_json(&result).map(Parsed::Run)

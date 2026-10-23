@@ -216,9 +216,259 @@ pub fn export_selection(
     }
 }
 
+/// How finely a mesh export follows the model, as the export dialog
+/// offers it (`file.export {quality}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExportQuality {
+    Coarse,
+    #[default]
+    Normal,
+    Fine,
+}
+
+impl ExportQuality {
+    /// Every quality, coarsest first.
+    pub const ALL: [ExportQuality; 3] = [Self::Coarse, Self::Normal, Self::Fine];
+
+    /// What `file.export` calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Coarse => "coarse",
+            Self::Normal => "normal",
+            Self::Fine => "fine",
+        }
+    }
+
+    /// What the dialog calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Coarse => "Coarse",
+            Self::Normal => "Normal",
+            Self::Fine => "Fine",
+        }
+    }
+
+    /// What the dialog says of it under the pointer.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Coarse => {
+                "Fewer triangles: a small file, curves in visible steps (20° per chord)"
+            }
+            Self::Normal => "Round to the eye and to a printer (10° per chord); the default",
+            Self::Fine => "Smooth up close: four times finer, 5° per chord, a larger file",
+        }
+    }
+}
+
+/// How the person chose to export, in the export dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ExportPlan {
+    /// How finely a mesh follows the model (STL, 3MF, OBJ).
+    pub quality: ExportQuality,
+    /// Every body, whatever is selected: the way out the dialog offers
+    /// when the selection does not fit the format.
+    pub all_bodies: bool,
+}
+
+/// Whether a file of this name is a mesh (`quality` applies).
+pub fn is_mesh(name: &str) -> bool {
+    matches!(extension_of(name).as_deref(), Some("stl" | "3mf" | "obj"))
+}
+
+/// What the export dialog knows before an export to `name`, from the
+/// window's selection ([`export_selection`]): whether it is a mesh, and
+/// why the selection cannot go into the file, if it cannot.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ExportCheck {
+    pub kind: Option<ExportKind>,
+    pub mesh: bool,
+    /// Why the selection does not fit the format, said for the person.
+    pub problem: Option<String>,
+}
+
+impl ExportCheck {
+    /// Every body can be exported instead of the selection: a STEP or
+    /// mesh file whose selection does not fit.
+    pub fn offers_all_bodies(&self) -> bool {
+        self.kind == Some(ExportKind::Bodies) && self.problem.is_some()
+    }
+
+    /// The export dialog is to be shown before the file is written: a
+    /// mesh (its quality) or a selection that does not fit a STEP file.
+    pub fn asks(&self) -> bool {
+        self.mesh || self.offers_all_bodies()
+    }
+}
+
+/// The text of an error without the command's name in front of it
+/// (`file.export: a .step file …` → `A .step file …`), for a person.
+pub fn plain_message(text: &str) -> String {
+    let mut rest = text.trim();
+    // `file.export: file.export: …`: a command's id from the registry,
+    // a few deep; any other text before a colon is the message's own.
+    for _ in 0..4 {
+        match rest.split_once(": ") {
+            Some((head, tail)) if head.contains('.') && Session::command(head).is_some() => {
+                rest = tail.trim_start();
+            }
+            _ => break,
+        }
+    }
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => text.to_string(),
+    }
+}
+
+/// [`ExportCheck`] for an export to `name` with what is selected now.
+pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
+    let kind = export_kind(name);
+    let problem = export_selection(session, name)
+        .err()
+        .map(|why| plain_message(&why));
+    ExportCheck {
+        kind,
+        mesh: is_mesh(name),
+        problem,
+    }
+}
+
+/// The parameters `file.export` is given besides `path` for an export
+/// to `name` as `plan` says: the selection's (unless every body was
+/// chosen) and the quality of a mesh. An error when the selection does
+/// not fit and every body was not chosen.
+pub fn export_params(
+    session: &mut Session,
+    name: &str,
+    plan: ExportPlan,
+) -> Result<Vec<(&'static str, Value)>, String> {
+    let mut params = Vec::new();
+    let all = plan.all_bodies && export_kind(name) == Some(ExportKind::Bodies);
+    if !all && let Some((key, value)) = export_selection(session, name)? {
+        params.push((key, value));
+    }
+    if is_mesh(name) {
+        params.push(("quality", Value::String(plan.quality.name().to_string())));
+    }
+    Ok(params)
+}
+
+/// The quality choice and the selection's warning of the export dialog,
+/// for `check`, changing `plan`; the desktop's dialog and the browser's
+/// draw the same.
+pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
+    if check.mesh {
+        ui.horizontal(|ui| {
+            ui.label("Quality:");
+            for quality in ExportQuality::ALL {
+                ui.radio_value(&mut plan.quality, quality, quality.label())
+                    .on_hover_text(quality.hint());
+            }
+        });
+    }
+    if let Some(problem) = &check.problem {
+        ui.add(egui::Label::new(problem.as_str()).wrap());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_lose_the_command_in_front() {
+        assert_eq!(
+            plain_message("file.export: a .step file holds bodies"),
+            "A .step file holds bodies"
+        );
+        assert_eq!(
+            plain_message("file.open: file.open: no such file: x"),
+            "No such file: x"
+        );
+        assert_eq!(plain_message("Disk full"), "Disk full");
+        // Only a command's id is taken off, not any word before a colon.
+        assert_eq!(plain_message("download: blocked"), "Download: blocked");
+        assert_eq!(
+            plain_message("part.step: not found"),
+            "Part.step: not found"
+        );
+        assert_eq!(plain_message(""), "");
+        assert_eq!(
+            plain_message("the path C:\\a: is odd"),
+            "The path C:\\a: is odd"
+        );
+    }
+
+    #[test]
+    fn the_export_check_and_params_follow_the_selection() {
+        let mut session = Session::new(craft3d_engine::Workspace::memory());
+        guarded(&mut session, "file.new", &json!({})).unwrap();
+        guarded(&mut session, "feature.block", &json!({"size": [1, 2, 3]})).unwrap();
+        guarded(
+            &mut session,
+            "feature.block",
+            &json!({"size": [1, 1, 1], "position": [5, 0, 0]}),
+        )
+        .unwrap();
+        // Nothing selected: a mesh asks for its quality, STEP nothing.
+        let stl = export_check(&mut session, "a.stl");
+        assert!(stl.mesh && stl.asks() && stl.problem.is_none());
+        let step = export_check(&mut session, "a.step");
+        assert!(!step.asks());
+        let plan = ExportPlan {
+            quality: ExportQuality::Fine,
+            all_bodies: false,
+        };
+        assert_eq!(
+            export_params(&mut session, "a.stl", plan).unwrap(),
+            vec![("quality", json!("fine"))]
+        );
+        assert!(
+            export_params(&mut session, "a.step", plan)
+                .unwrap()
+                .is_empty()
+        );
+        // A face selected: STEP cannot hold it; every body instead.
+        guarded(
+            &mut session,
+            "select.set",
+            &json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
+        )
+        .unwrap();
+        let step = export_check(&mut session, "a.step");
+        assert!(step.asks() && step.offers_all_bodies(), "{step:?}");
+        assert!(
+            step.problem.as_deref().unwrap().starts_with("A .step file"),
+            "{step:?}"
+        );
+        assert!(export_params(&mut session, "a.step", plan).is_err());
+        let all = ExportPlan {
+            all_bodies: true,
+            ..plan
+        };
+        assert!(
+            export_params(&mut session, "a.step", all)
+                .unwrap()
+                .is_empty()
+        );
+        // An outline cannot be every body.
+        guarded(&mut session, "select.set", &json!({"mode": "clear"})).unwrap();
+        let dxf = export_check(&mut session, "a.dxf");
+        assert!(dxf.problem.is_some() && !dxf.offers_all_bodies() && !dxf.asks());
+        assert!(export_params(&mut session, "a.dxf", all).is_err());
+        // One body of two selected: those bodies, and the quality.
+        guarded(
+            &mut session,
+            "select.set",
+            &json!({"items": [{"kind": "body", "feature": "F2"}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            export_params(&mut session, "a.3mf", plan).unwrap(),
+            vec![("bodies", json!([2])), ("quality", json!("fine"))]
+        );
+    }
 
     #[test]
     fn names_are_proposed_from_the_document() {

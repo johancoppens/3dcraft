@@ -48,7 +48,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.fit",
         params: r#"{"view": "iso|front|back|right|left|top|bottom", "feature": id or name, "selection": boolean = false}"#,
-        summary: "Frames everything (bodies and sketches), from the named view when one is given, and keeps following the model as it grows. With feature it frames instead what that feature made: the faces whose persistent names say it made them, wherever they are now (a hole's wall in the plate it was cut into), else its body, its sketch or its datum; with selection: true, what is selected (ui.select, select.get). Then the camera stays where it is put as the model grows (autoFit false), a hidden sketch or datum framed is shown again, and a section that cuts away all of it is switched off. This is what a double click on a row of the feature list does in the window, and F with something selected, there as a flight of 0.3 s. An error (nothing of the feature is shown, nothing is selected) changes nothing.",
+        summary: "Frames everything (bodies and sketches), from the named view when one is given, and keeps following the model as it grows. With feature it frames instead what that feature made: the faces whose persistent names say it made them, wherever they are now (a hole's wall in the plate it was cut into), else its body, its sketch or its datum; with selection: true, what is selected (ui.select, select.get); either from the view that sees it best (the current one or one of the eight iso views, not hidden behind the rest of the model) and with at least a fifth of the diagonal of its body around it. Then the camera stays where it is put as the model grows (autoFit false), a hidden sketch or datum framed is shown again, and a section that cuts away all of it is switched off. This is what a double click on a row of the feature list does in the window, and F with something selected, there as a flight of 0.3 s. An error (nothing of the feature is shown, nothing is selected) changes nothing.",
     },
     UiMethod {
         name: "ui.screenshot",
@@ -266,6 +266,7 @@ impl Shell {
                     "selected": row.selected,
                     "hidden": row.hidden,
                     "madeSelection": row.made_selection,
+                    "zoomable": row.zoomable,
                 })
             })
             .collect();

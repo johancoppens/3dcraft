@@ -37,6 +37,7 @@ use crate::control::Wake;
 use crate::host::Host;
 use craft3d_engine::{Access, CommandError, Session, Workspace};
 use craft3d_ui_egui::files::ExportKind;
+pub use craft3d_ui_egui::files::ExportPlan;
 use craft3d_ui_egui::{CommandReport, FileAction};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -337,12 +338,25 @@ pub fn run_as_user(
     write: bool,
     extra: Option<(&str, Value)>,
 ) -> Result<Value, String> {
+    run_as_user_with(session, command, path, write, extra.into_iter().collect())
+}
+
+/// [`run_as_user`] with any number of parameters besides `path`.
+pub fn run_as_user_with(
+    session: &mut Session,
+    command: &str,
+    path: &Path,
+    write: bool,
+    extra: Vec<(&str, Value)>,
+) -> Result<Value, String> {
     let (grant, text) = grant(path, write).map_err(|e| format!("{command}: {e}"))?;
     let automation = session.workspace().clone();
     session.set_workspace(grant);
     let mut params = json!({ "path": text });
-    if let (Some((key, value)), Some(map)) = (extra, params.as_object_mut()) {
-        map.insert(key.to_string(), value);
+    if let Some(map) = params.as_object_mut() {
+        for (key, value) in extra {
+            map.insert(key.to_string(), value);
+        }
     }
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         session.execute(command, &params)
@@ -388,23 +402,26 @@ fn export_kind(path: &Path) -> Option<ExportKind> {
     craft3d_ui_egui::files::export_kind(&path.to_string_lossy())
 }
 
-/// The parameter `file.export` is given for the window's selection
-/// ([`craft3d_ui_egui::files::export_selection`]).
-fn export_selection(
-    session: &mut Session,
-    path: &Path,
-) -> Result<Option<(&'static str, Value)>, String> {
-    craft3d_ui_egui::files::export_selection(session, &path.to_string_lossy())
-}
-
 /// Exports to the file the person chose, in the format its extension
 /// names, with the person's own access to its folder (`file.export`):
 /// every body, or the bodies or faces or sketch selected as far as
 /// `file.export` can take them
-/// ([`export_selection`]).
+/// ([`craft3d_ui_egui::files::export_selection`]), a mesh at the normal
+/// quality.
 pub fn export_as_user(session: &mut Session, path: &Path) -> Result<Value, String> {
-    let extra = export_selection(session, path)?;
-    run_as_user(session, "file.export", path, true, extra)
+    export_planned(session, path, ExportPlan::default())
+}
+
+/// [`export_as_user`] as the export dialog was answered: the quality of a
+/// mesh, and every body instead of a selection the format cannot hold
+/// ([`craft3d_ui_egui::files::export_params`]).
+pub fn export_planned(
+    session: &mut Session,
+    path: &Path,
+    plan: ExportPlan,
+) -> Result<Value, String> {
+    let extra = craft3d_ui_egui::files::export_params(session, &path.to_string_lossy(), plan)?;
+    run_as_user_with(session, "file.export", path, true, extra)
 }
 
 /// What Save As does with the file named in the dialog: the dialog asked
@@ -412,10 +429,26 @@ pub fn export_as_user(session: &mut Session, path: &Path) -> Result<Value, Strin
 pub const CONFIRMED: (&str, bool) = ("overwrite", true);
 
 impl Host {
+    /// A failure the person did not cause (the list of recent files could
+    /// not be written): in the status bar only, no dialog.
+    pub(crate) fn report_notice(&mut self, label: &str, error: &str) {
+        self.shell.last_command = Some(CommandReport {
+            label: label.to_string(),
+            ok: false,
+            text: error.chars().take(160).collect(),
+        });
+    }
+
+    /// Shows what an action the person started did in the status bar, and
+    /// a failure in the error dialog as well (every caller is the person's:
+    /// an agent's requests are reported by the control channel).
     pub(crate) fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
         let (ok, text) = match outcome {
             Ok(result) => (true, result.to_string()),
-            Err(error) => (false, error.clone()),
+            Err(error) => {
+                self.shell.show_error(label, error);
+                (false, error.clone())
+            }
         };
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
@@ -497,8 +530,13 @@ impl Host {
 
     /// Exports to the file the person chose: [`export_as_user`].
     pub fn export_as_user(&mut self, path: &Path) -> Result<Value, String> {
+        self.export_planned(path, ExportPlan::default())
+    }
+
+    /// Exports as the export dialog was answered: [`export_planned`].
+    pub fn export_planned(&mut self, path: &Path, plan: ExportPlan) -> Result<Value, String> {
         self.note_export(path);
-        let outcome = export_as_user(&mut self.session, path);
+        let outcome = export_planned(&mut self.session, path, plan);
         self.report("file.export", &outcome);
         self.shell.sync(&mut self.session);
         outcome
@@ -511,6 +549,30 @@ impl Host {
         self.report("jig.export", &outcome);
         self.shell.sync(&mut self.session);
         outcome
+    }
+
+    /// The file the person chose to export to: what needs choosing first
+    /// is asked in the export dialog (a mesh's quality, every body for a
+    /// selection a STEP file cannot hold); a selection an outline cannot
+    /// hold is said in the error dialog, before anything is written. True
+    /// when the export can go ahead as it is.
+    pub fn export_chosen(&mut self, path: &Path) -> bool {
+        let name = path.to_string_lossy().to_string();
+        let check = craft3d_ui_egui::files::export_check(&mut self.session, &name);
+        if check.asks() {
+            if !self.shell.ask_export(name, check) {
+                self.report_notice(
+                    "file.export",
+                    "an export is being asked already: answer that one first",
+                );
+            }
+            return false;
+        }
+        if let Some(problem) = check.problem {
+            self.report("file.export", &Err(problem));
+            return false;
+        }
+        true
     }
 
     /// Keeps the extension of a file chosen to export to, for the next
@@ -620,7 +682,9 @@ impl Host {
                 let _ = self.import_as_user(&path);
             }
             Ok(Choice::Export(path)) => {
-                let _ = self.export_as_user(&path);
+                if self.export_chosen(&path) {
+                    let _ = self.export_as_user(&path);
+                }
             }
             Ok(Choice::ExportJig(path)) => {
                 let _ = self.export_jig_as_user(&path);
@@ -658,6 +722,10 @@ impl Host {
         let mut did = false;
         if let Some(choice) = picker.poll() {
             self.file_choice(choice);
+            did = true;
+        }
+        if let Some((path, plan)) = self.shell.take_export_answer() {
+            let _ = self.export_planned(Path::new(&path), plan);
             did = true;
         }
         if let Some(action) = self.shell.take_file_action() {
@@ -1735,7 +1803,7 @@ mod tests {
         // file reads back to the cylinder's volume.
         select(&mut host, &["F2"]);
         assert_eq!(
-            export_selection(&mut host.session, &stl),
+            craft3d_ui_egui::files::export_selection(&mut host.session, &stl.to_string_lossy()),
             Ok(Some(("bodies", json!([2]))))
         );
         let pins = ["pin.step", "pin.stl", "pin.3mf", "pin.obj"];
@@ -1823,12 +1891,31 @@ mod tests {
         let choice = dialogs.wait().unwrap();
         assert_eq!(choice, Ok(Choice::Export(mine.join("part.stl"))));
         host.file_choice(choice);
+        // A mesh: the export dialog asks for its quality first (since
+        // 2026-10-23), and nothing is written until it is answered.
+        let asked = host.shell.export_dialog().unwrap().clone();
+        assert!(asked.check.mesh && asked.check.problem.is_none());
+        assert!(listing(&mine).is_empty());
+        host.shell.answer_export(Some(ExportPlan {
+            quality: craft3d_ui_egui::files::ExportQuality::Fine,
+            all_bodies: false,
+        }));
+        assert!(host.pump_files(&mut dialogs));
         assert!(last(&host).1, "{:?}", last(&host));
+        assert!(last(&host).2.contains("\"angle\":5.0"), "{:?}", last(&host));
         assert_eq!(listing(&mine), ["part.stl"]);
         // Exporting is not saving: the document still has changes.
         assert!(host.session.document_status().unwrap().dirty);
-        // The next export proposes the format of the last one.
+        // The next export proposes the format of the last one, and the
+        // dialog the quality of the last one.
         act(&mut host, &mut dialogs, FileAction::Export);
+        assert_eq!(
+            host.shell.export_dialog().unwrap().plan.quality,
+            craft3d_ui_egui::files::ExportQuality::Fine
+        );
+        host.shell
+            .answer_export(Some(host.shell.export_dialog().unwrap().plan));
+        assert!(host.pump_files(&mut dialogs));
         // A name without an extension: file.export says which it knows.
         act(&mut host, &mut dialogs, FileAction::Export);
         let (label, ok, said) = last(&host);
@@ -1845,6 +1932,74 @@ mod tests {
         );
         assert_eq!(listing(&mine), ["again.stl", "part.stl"]);
         assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The person's failures open the error dialog; a selection the
+    /// format cannot hold is said before anything is written, with the
+    /// way out where there is one (2026-10-23).
+    #[test]
+    fn failures_open_the_error_dialog_and_a_misfit_selection_is_said_first() {
+        let dir = workdir("error-dialog");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        two_bodies(&mut host);
+        // A face selected and a STEP file chosen: the dialog warns and
+        // offers every body; nothing is written before it is answered.
+        select(&mut host, &["F1:face(0)"]);
+        let step = mine.join("part.step");
+        host.file_choice(Ok(Choice::Export(step.clone())));
+        let asked = host.shell.export_dialog().unwrap().clone();
+        assert!(asked.check.offers_all_bodies(), "{asked:?}");
+        assert!(!asked.check.mesh);
+        assert!(
+            asked
+                .check
+                .problem
+                .as_deref()
+                .unwrap()
+                .starts_with("A .step file"),
+            "{asked:?}"
+        );
+        assert_eq!(
+            craft3d_ui_egui::shell::export_verb(&asked.check),
+            "Export all bodies"
+        );
+        assert!(listing(&mine).is_empty());
+        assert!(host.shell.error_dialog().is_none());
+        host.shell.answer_export(Some(ExportPlan {
+            all_bodies: true,
+            ..ExportPlan::default()
+        }));
+        let nobody = Person::who_answers(&[]);
+        let mut dialogs = picker(&nobody);
+        assert!(host.pump_files(&mut dialogs));
+        let (label, ok, said) = last(&host);
+        assert!(ok && label == "file.export", "{said}");
+        assert!(said.contains("\"bodies\":2"), "{said}");
+        assert_eq!(listing(&mine), ["part.step"]);
+        // Cancelled: nothing, no error dialog.
+        host.file_choice(Ok(Choice::Export(mine.join("other.step"))));
+        host.shell.answer_export(None);
+        assert!(!host.pump_files(&mut dialogs) || listing(&mine) == ["part.step"]);
+        assert_eq!(listing(&mine), ["part.step"]);
+        assert!(host.shell.error_dialog().is_none());
+        // An outline with nothing it can hold: said at once, in the
+        // error dialog, and nothing written.
+        select(&mut host, &[]);
+        host.file_choice(Ok(Choice::Export(mine.join("part.dxf"))));
+        assert!(host.shell.export_dialog().is_none());
+        let error = host.shell.error_dialog().unwrap().clone();
+        assert_eq!(error.title, "Could not export");
+        assert!(error.message.starts_with("A .dxf file"), "{error:?}");
+        assert_eq!(listing(&mine), ["part.step"]);
+        host.shell.close_error_dialog();
+        // A file that cannot be opened.
+        let missing = dir.join("missing.3dcraft");
+        let _ = host.open_as_user(&missing);
+        let error = host.shell.error_dialog().unwrap();
+        assert_eq!(error.title, "Could not open the file");
+        assert!(!error.message.starts_with("file.open"), "{error:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

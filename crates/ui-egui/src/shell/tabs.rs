@@ -584,6 +584,12 @@ impl Shell {
             self.closing_hits.clear();
             return;
         };
+        // One modal at a time: an error or export dialog first (a Save as
+        // model… that failed says why), the question after it.
+        if self.dialog_open() {
+            self.closing_hits.clear();
+            return;
+        }
         let tokens = self.tokens;
         let more = self
             .tabs
