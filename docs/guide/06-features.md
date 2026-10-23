@@ -131,6 +131,7 @@ A parameter that is not at its default has a ↺ to put it back; **Reset all** p
 (`param.set {"reset": true}`).
 
 When a value breaks the model (a fillet that no longer fits, a shell thicker than the box, an assertion
-that fails) the field turns red with the reason, the viewport keeps showing the **last good model**, and
-**Back to last good** sets the values that built. A parameter whose range no longer works (a variable it
+that fails) the field turns red with the reason, and a banner over the model says *This value breaks the
+model* with a **Back to last good** button that sets the values that built. The viewport shows the model
+as it is, broken or not. A parameter whose range no longer works (a variable it
 used was deleted) shows the problem under its field in the attention colour.

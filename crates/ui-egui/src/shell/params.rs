@@ -179,7 +179,7 @@ pub fn decimals_of(value: f64) -> usize {
     for decimals in 0..MAX_DECIMALS {
         let scale = 10f64.powi(decimals as i32);
         let scaled = value * scale;
-        if (scaled - scaled.round()).abs() <= 1e-6 * scale.max(1.0) * value.abs().max(1.0) / scale {
+        if (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0) {
             return decimals;
         }
     }
@@ -210,6 +210,10 @@ fn text(value: Option<&Value>) -> String {
         .and_then(Value::as_str)
         .map(|s| s.chars().take(MAX_TEXT).collect())
         .unwrap_or_default()
+}
+
+fn capped(text: &str) -> String {
+    text.chars().take(MAX_TEXT).collect()
 }
 
 fn number(value: Option<&Value>) -> Option<f64> {
@@ -246,8 +250,8 @@ impl ParamList {
                             expr: text(get("expr")),
                             value: number(get("value")),
                             error: get("error").map(|e| text(Some(e))),
-                            unit: get("unit").and_then(Value::as_str).map(str::to_string),
-                            unit_text: get("unitText").and_then(Value::as_str).map(str::to_string),
+                            unit: get("unit").and_then(Value::as_str).map(capped),
+                            unit_text: get("unitText").and_then(Value::as_str).map(capped),
                             default_expr: text(get("default").and_then(|d| d.get("expr"))),
                             at_default: get("atDefault").and_then(Value::as_bool).unwrap_or(true),
                             min: bound(get("min")),
@@ -425,6 +429,16 @@ impl Pacer {
 
 // --------------------------------------------------------------- results
 
+/// `ui.param` asked: the command to run and what the reply says of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamAsk {
+    pub command: ShellCommand,
+    /// The value given to `param.set`.
+    pub sent: Value,
+    /// What the form said of it (`clamped to 120 mm`).
+    pub note: Option<String>,
+}
+
 /// A command the shell asks its host to run on the session, where the
 /// host runs commands (the desktop's engine thread), and to report back
 /// with [`Shell::command_done`].
@@ -434,74 +448,96 @@ pub struct ShellCommand {
     pub params: Value,
 }
 
-/// How many features failed and assertions were broken in a state the
-/// form took as good: a commit that ends with more is a failure.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Baseline {
-    pub features: usize,
-    pub assertions: usize,
+/// What is wrong with the model in one state: the failing features (by
+/// id, with `name: error`) and the broken assertions (by name, with their
+/// message). Assertions still being measured are in neither: they are
+/// judged once they are measured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Faults {
+    pub features: BTreeMap<String, String>,
+    pub assertions: BTreeMap<String, String>,
+}
+
+impl Faults {
+    /// The first fault of `self` that `baseline` does not have.
+    pub fn new_since(&self, baseline: &Faults) -> Option<String> {
+        self.features
+            .iter()
+            .find(|(id, _)| !baseline.features.contains_key(*id))
+            .or_else(|| {
+                self.assertions
+                    .iter()
+                    .find(|(name, _)| !baseline.assertions.contains_key(*name))
+            })
+            .map(|(_, message)| message.clone())
+    }
+
+    /// `other`'s faults added to these.
+    pub fn joined(mut self, other: Faults) -> Faults {
+        self.features.extend(other.features);
+        self.assertions.extend(other.assertions);
+        self
+    }
 }
 
 /// What a commit did to the model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verdict {
-    /// The model is as good as before.
+    /// Nothing went wrong that was not wrong before.
     Good,
     /// `param.set` refused the value: nothing changed.
     Refused(String),
     /// The value was set and broke the model: a feature fails or an
-    /// assertion is broken that was not before.
+    /// assertion is broken that was not in the last good state.
     Broke(String),
 }
 
-/// The verdict on a commit's `result`, the features that fail after it
-/// (`(name, error)`), against the `baseline` of the last good state.
-pub fn verdict(
-    result: &Result<Value, String>,
-    failing: &[(String, String)],
-    baseline: Baseline,
-) -> Verdict {
-    let value = match result {
-        Err(error) => return Verdict::Refused(error.clone()),
-        Ok(value) => value,
-    };
-    let new_failures: Vec<String> = value
+/// The faults a commit's `result` reports itself: the features it made
+/// fail (`failed`) and the assertions it found broken (`assertions.broken`).
+pub fn reported_faults(result: &Value) -> Faults {
+    let mut faults = Faults::default();
+    for f in result
         .get("failed")
         .and_then(Value::as_array)
-        .map(|all| {
-            all.iter()
-                .map(|f| {
-                    let name = text(f.get("feature"));
-                    let error = text(f.get("error"));
-                    if name.is_empty() {
-                        error
-                    } else {
-                        format!("{name}: {error}")
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let broken: Vec<String> = value
+        .into_iter()
+        .flatten()
+    {
+        let id = text(f.get("id"));
+        let name = text(f.get("feature"));
+        let error = text(f.get("error"));
+        let message = if name.is_empty() {
+            error
+        } else {
+            format!("{name}: {error}")
+        };
+        faults
+            .features
+            .insert(if id.is_empty() { name } else { id }, message);
+    }
+    for b in result
         .get("assertions")
         .and_then(|a| a.get("broken"))
         .and_then(Value::as_array)
-        .map(|all| all.iter().map(|b| text(b.get("message"))).collect())
-        .unwrap_or_default();
-    if let Some(first) = new_failures.first() {
-        return Verdict::Broke(first.clone());
-    }
-    if failing.len() > baseline.features
-        && let Some((name, error)) = failing.first()
+        .into_iter()
+        .flatten()
     {
-        return Verdict::Broke(format!("{name}: {error}"));
+        faults
+            .assertions
+            .insert(text(b.get("name")), text(b.get("message")));
     }
-    if broken.len() > baseline.assertions
-        && let Some(message) = broken.first()
-    {
-        return Verdict::Broke(message.clone());
+    faults
+}
+
+/// The verdict on a commit's `result`, with the model's faults after it
+/// (`now`, those the result reports included), against the faults of the
+/// last good state: broke when the set of faults gained one.
+pub fn verdict(result: &Result<Value, String>, now: &Faults, baseline: &Faults) -> Verdict {
+    match result {
+        Err(error) => Verdict::Refused(error.clone()),
+        Ok(_) => now
+            .new_since(baseline)
+            .map_or(Verdict::Good, Verdict::Broke),
     }
-    Verdict::Good
 }
 
 /// What went wrong with the last commit, at the field it came from.
@@ -510,17 +546,34 @@ pub struct Trouble {
     /// The parameter, or none for Reset all and Back to last good.
     pub name: Option<String>,
     pub message: String,
-    /// The model broke (the viewport keeps the last good one); false when
-    /// the command refused the value and nothing changed.
+    /// The model broke (the viewport says so over the model, with Back to
+    /// last good); false when the command refused the value and nothing
+    /// changed.
     pub broke: bool,
 }
 
-/// The last state the form took as good.
-#[derive(Clone)]
+/// The last state the form took as good: the parameters' expressions
+/// then (Back to last good sets them) and the model's faults then (a
+/// commit that adds one broke the model).
+#[derive(Clone, Debug, Default)]
 struct LastGood {
-    scene: Option<Arc<Scene>>,
-    /// The parameters' expressions then: Back to last good sets them.
     values: Map<String, Value>,
+    faults: Faults,
+}
+
+/// A commit the host runs: the document it is for and its field.
+#[derive(Clone, Debug, PartialEq)]
+struct InFlight {
+    doc: Option<u64>,
+    field: Option<String>,
+}
+
+/// A commit judged good while assertions it may break were still being
+/// measured: judged again, against the last good state, once they are.
+#[derive(Clone, Debug)]
+struct Judging {
+    doc: u64,
+    field: Option<String>,
 }
 
 /// A note under a field.
@@ -556,14 +609,15 @@ pub struct ParamForm {
     doc: Option<u64>,
     live: Option<Live>,
     pending: Option<Pending>,
-    /// A commit the host took and has not reported yet: its field.
-    in_flight: Option<Option<String>>,
+    /// A commit the host took and has not reported yet.
+    in_flight: Option<InFlight>,
     /// The result of the last commit, waiting for the next sync.
-    done: Option<(Option<String>, Result<Value, String>)>,
+    done: Option<(InFlight, Result<Value, String>)>,
+    /// A commit judged good while assertions were still being measured.
+    judging: Option<Judging>,
     note: Option<Note>,
     trouble: Option<Trouble>,
     last_good: Option<LastGood>,
-    baseline: Baseline,
     /// The drag and focus of the number fields, and the field typed into,
     /// with which parameter they belong to.
     memory: FieldMemory,
@@ -572,6 +626,8 @@ pub struct ParamForm {
     pacer: Option<Pacer>,
     /// Where the last frame drew each parameter's widget, and Reset all.
     hits: Vec<(String, egui::Rect)>,
+    /// Where the last frame drew Back to last good over the viewport.
+    banner_hit: Option<egui::Rect>,
 }
 
 impl ParamForm {
@@ -637,6 +693,65 @@ impl ParamForm {
         });
     }
 
+    /// The commit that waits, joined with `values`: its own values and
+    /// these (these win), its reset kept, never merged into an undo step
+    /// before it. Taken from the queue.
+    fn joined_with(&mut self, values: Map<String, Value>) -> (ShellCommand, Option<String>) {
+        let mut params = match self.pending.take() {
+            Some(pending) => pending.command.params,
+            None => json!({}),
+        };
+        if let Some(map) = params.as_object_mut() {
+            let mut all = map
+                .get("values")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let field = (values.len() == 1 && all.is_empty())
+                .then(|| values.keys().next().cloned())
+                .flatten();
+            all.extend(values);
+            map.insert("values".into(), Value::Object(all));
+            map.remove("merge");
+            return (
+                ShellCommand {
+                    command: "param.set",
+                    params,
+                },
+                field,
+            );
+        }
+        (
+            ShellCommand {
+                command: "param.set",
+                params: json!({ "values": values }),
+            },
+            None,
+        )
+    }
+
+    /// Commits the dirty value of a field that is not `name` before
+    /// `name`'s change replaces it: joined to what waits.
+    fn flush_other(&mut self, name: &str) {
+        let Some(live) = self.live.take() else {
+            return;
+        };
+        if live.name == name || !live.dirty {
+            if live.name == name {
+                self.live = Some(live);
+            }
+            return;
+        }
+        if let Some(p) = self
+            .list
+            .as_ref()
+            .and_then(|l| l.param(&live.name))
+            .cloned()
+        {
+            self.commit(&p, live.value, live.committed);
+        }
+    }
+
     /// Commits `value` of `p`: one `param.set`, folded into the last undo
     /// step with `merge`.
     fn commit(&mut self, p: &Param, value: f64, merge: bool) {
@@ -669,8 +784,9 @@ impl ParamForm {
         if !pacer.due(live, now, busy) {
             return;
         }
+        // Folded into the drag's undo step only once a commit of the drag
+        // changed the document (set when its result comes back).
         let merge = live.committed;
-        live.committed = true;
         live.dirty = false;
         live.last_sent = now;
         let (name, value) = (live.name.clone(), live.value);
@@ -701,24 +817,47 @@ impl Shell {
             return None;
         }
         let pending = self.params.pending.take()?;
-        self.params.in_flight = Some(pending.field);
+        self.params.in_flight = Some(InFlight {
+            doc: self.params.doc,
+            field: pending.field,
+        });
         Some(pending.command)
     }
 
-    /// The result of a command from [`Self::take_command`]: judged at the
-    /// next [`Self::sync`], against the model it leaves.
+    /// The result of a command from [`Self::take_command`] (or
+    /// [`Self::ui_param_ask`]): judged at the next [`Self::sync`], against
+    /// the model it leaves; dropped there when another document is shown
+    /// by then.
     pub fn command_done(&mut self, result: Result<Value, String>) {
-        let field = self.params.in_flight.take().flatten();
-        self.params.done = Some((field, result));
+        let flight = self.params.in_flight.take().unwrap_or(InFlight {
+            doc: self.params.doc,
+            field: None,
+        });
+        self.params.done = Some((flight, result));
     }
 
     /// A commit asked for before this frame is drawn in it as busy: the
-    /// host may take it after the frame ([`Self::take_command`]). Called
-    /// as a frame begins.
-    pub(super) fn mark_pending_drawn(&mut self, ctx: &egui::Context) {
+    /// host may take it after the frame ([`Self::take_command`]); and the
+    /// note under a field goes after its time, whichever tab is shown.
+    /// Called as a frame begins.
+    pub(super) fn params_frame(&mut self, ctx: &egui::Context) {
         if let Some(pending) = self.params.pending.as_mut() {
             pending.drawn = true;
             ctx.request_repaint();
+        }
+        let now = ctx.input(|i| i.time);
+        if let Some(note) = self.params.note.as_mut() {
+            match note.until {
+                None => note.until = Some(now + NOTE_SECONDS),
+                Some(until) if now >= until => self.params.note = None,
+                Some(until) => {
+                    if let Ok(left) = std::time::Duration::try_from_secs_f64(
+                        (until - now).clamp(0.0, NOTE_SECONDS),
+                    ) {
+                        ctx.request_repaint_after(left);
+                    }
+                }
+            }
         }
     }
 
@@ -730,8 +869,12 @@ impl Shell {
     /// Where the last frame drew each parameter's widget (by its name),
     /// and the buttons `Reset all` and `Back to last good` (by those
     /// names): for tests that drive the form with the mouse.
-    pub fn parameter_hits(&self) -> &[(String, egui::Rect)] {
-        &self.params.hits
+    pub fn parameter_hits(&self) -> Vec<(String, egui::Rect)> {
+        let mut hits = self.params.hits.clone();
+        if let Some(rect) = self.params.banner_hit {
+            hits.push(("Back to last good".to_string(), rect));
+        }
+        hits
     }
 
     /// Commits the drag of a parameter at most once per [`DEBOUNCE`]
@@ -746,14 +889,28 @@ impl Shell {
         self.params.busy()
     }
 
-    /// The scene the viewport draws instead of the active document's, while
-    /// the last commit broke the model: the last good one.
-    pub(super) fn held_scene(&self) -> Option<Arc<Scene>> {
-        let trouble = self.params.trouble.as_ref()?;
-        if !trouble.broke {
-            return None;
+    /// What is wrong with the model as the last sync left it: the failing
+    /// rows of the feature list and the assertions measured broken.
+    fn faults_now(&self) -> (Faults, bool) {
+        use craft3d_engine::AssertionStatus as A;
+        let mut faults = Faults::default();
+        for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
+            let error = row.error.clone().unwrap_or_default();
+            faults
+                .features
+                .insert(row.id.clone(), format!("{}: {error}", row.name));
         }
-        self.params.last_good.as_ref()?.scene.clone()
+        let mut pending = false;
+        for a in &self.assertion_rows {
+            match a.status {
+                A::Failed | A::Error => {
+                    faults.assertions.insert(a.name.clone(), a.message.clone());
+                }
+                A::Pending => pending = true,
+                A::Passed | A::NotProven => {}
+            }
+        }
+        (faults, pending)
     }
 
     /// Reads `param.list` again when the active document or its revision
@@ -774,9 +931,19 @@ impl Shell {
             form.note = None;
             form.trouble = None;
             form.last_good = None;
+            form.judging = None;
             form.memory = FieldMemory::default();
             form.typing = None;
             form.active = None;
+        }
+        // The result of a commit for a document no longer shown says
+        // nothing about this one.
+        if form
+            .done
+            .as_ref()
+            .is_some_and(|(flight, _)| flight.doc != doc)
+        {
+            form.done = None;
         }
         let Some(doc) = doc else {
             return;
@@ -797,84 +964,87 @@ impl Shell {
             }
             form.list = Some(list);
             form.read_for = Some((doc, revision));
-            // The value the field showed during the drag is the
-            // document's now.
-            if form.live.as_ref().is_some_and(|l| !l.dragging && !l.dirty) && !form.busy() {
-                form.live = None;
-            }
         }
-        let failing: Vec<(String, String)> = self
-            .rows
-            .iter()
-            .filter(|r| r.state == FeatureState::Failed)
-            .map(|r| (r.name.clone(), r.error.clone().unwrap_or_default()))
-            .collect();
-        let broken_now = self
-            .assertion_rows
-            .iter()
-            .filter(|a| {
-                use craft3d_engine::AssertionStatus as A;
-                matches!(a.status, A::Failed | A::Error | A::Pending)
-            })
-            .count();
+        let (faults, measuring) = self.faults_now();
         let form = &mut self.params;
-        if let Some((field, result)) = form.done.take() {
-            match verdict(&result, &failing, form.baseline) {
+        let baseline = form
+            .last_good
+            .as_ref()
+            .map(|g| g.faults.clone())
+            .unwrap_or_default();
+        if let Some((flight, result)) = form.done.take() {
+            let reported = result.as_ref().map(reported_faults).unwrap_or_default();
+            let now = faults.clone().joined(reported);
+            let did_change = result
+                .as_ref()
+                .is_ok_and(|v| v.get("changed").and_then(Value::as_bool) == Some(true));
+            // The field shows the document's value again unless it is
+            // still being changed; a drag folds into its undo step only
+            // after a commit of it changed the document.
+            if let Some(live) = form.live.as_mut() {
+                if live.dirty || live.dragging {
+                    if did_change && flight.field.as_deref() == Some(live.name.as_str()) {
+                        live.committed = true;
+                    }
+                } else {
+                    form.live = None;
+                }
+            }
+            match verdict(&result, &now, &baseline) {
                 Verdict::Good => {
                     form.trouble = None;
-                    form.baseline = Baseline {
-                        features: failing.len(),
-                        assertions: result
-                            .as_ref()
-                            .ok()
-                            .and_then(|v| v.get("assertions"))
-                            .and_then(|a| a.get("broken"))
-                            .and_then(Value::as_array)
-                            .map_or(0, Vec::len),
-                    };
+                    form.judging = measuring.then(|| Judging {
+                        doc,
+                        field: flight.field.clone(),
+                    });
                 }
                 Verdict::Refused(message) => {
                     form.trouble = Some(Trouble {
-                        name: field,
+                        name: flight.field,
                         message,
                         broke: false,
                     });
                 }
                 Verdict::Broke(message) => {
+                    form.judging = None;
                     form.trouble = Some(Trouble {
-                        name: field,
+                        name: flight.field,
                         message,
                         broke: true,
                     });
                 }
             }
-        } else if changed
-            && !form.busy()
-            && form.trouble.as_ref().is_some_and(|t| t.broke)
-            && failing.len() <= form.baseline.features
+        } else if let Some(judging) = form.judging.clone()
+            && !measuring
         {
-            // Mended elsewhere (an undo, an agent): good again.
-            form.trouble = None;
-        } else if changed && !form.busy() && form.trouble.as_ref().is_some_and(|t| !t.broke) {
-            form.trouble = None;
-        }
-        if form.trouble.is_none() && !form.busy() {
-            if changed {
-                form.baseline = Baseline {
-                    features: failing.len(),
-                    assertions: broken_now,
-                };
+            // The assertions a good commit left being measured are
+            // measured now.
+            form.judging = None;
+            if judging.doc == doc
+                && let Some(message) = faults.new_since(&baseline)
+            {
+                form.trouble = Some(Trouble {
+                    name: judging.field,
+                    message,
+                    broke: true,
+                });
             }
+        } else if changed && !form.busy() {
+            match &form.trouble {
+                // Mended elsewhere (an undo, an agent): good again.
+                Some(t) if t.broke && faults.new_since(&baseline).is_none() => form.trouble = None,
+                Some(t) if !t.broke => form.trouble = None,
+                _ => {}
+            }
+        }
+        if form.trouble.is_none() && !form.busy() && form.judging.is_none() && !measuring {
             let values: Map<String, Value> = form
                 .list
                 .iter()
                 .flat_map(|l| &l.params)
                 .map(|p| (p.name.clone(), Value::String(p.expr.clone())))
                 .collect();
-            form.last_good = Some(LastGood {
-                scene: scene.cloned(),
-                values,
-            });
+            form.last_good = Some(LastGood { values, faults });
         }
     }
 
@@ -897,20 +1067,23 @@ impl Shell {
             })),
             "note": form.note.as_ref().map(|n| json!({"name": n.name, "text": n.text})),
             "trouble": form.trouble.as_ref().map(|t| json!({
-                "name": t.name, "message": t.message, "holding": t.broke && self.held_scene().is_some(),
+                "name": t.name, "message": t.message, "broke": t.broke,
             })),
         })
     }
 
-    /// `ui.param`: sets one parameter as the form does, clamped to its
-    /// range and snapped to its step (`note` says so), and runs it at once
-    /// on `session`. `value` is a number in its unit, true or false, or a
-    /// choice's label.
-    pub(crate) fn ui_param(
+    /// `ui.param`, up to the command: checks its params, reads the active
+    /// document's parameters, settles the value as the form does (clamped
+    /// to its range, snapped to its step; the note under the field says
+    /// so) and joins it to a commit of the form that waits. The command is
+    /// then the host's to run (the desktop runs it on its engine thread)
+    /// and hand back with [`Self::command_done`], and
+    /// [`Self::ui_param_answer`] makes the reply.
+    pub fn ui_param_ask(
         &mut self,
         session: &mut Session,
         params: Option<&Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<ParamAsk, String> {
         let method = "ui.param";
         let map = match params {
             Some(Value::Object(map)) => map,
@@ -973,28 +1146,79 @@ impl Shell {
             ));
         }
         self.params.say(&p.name, settled.note.clone());
-        self.params.pending = None;
-        self.params.commit(&p, settled.value, false);
-        let pending = self.params.pending.take();
-        let mut result = Value::Null;
-        if let Some(pending) = pending {
-            self.params.in_flight = Some(pending.field);
-            let outcome = session
-                .execute(pending.command.command, &pending.command.params)
-                .map_err(|e| e.message().to_string());
-            result = match &outcome {
+        // A field being changed is committed with it.
+        self.params.flush_other(&p.name);
+        if self.params.live.as_ref().is_some_and(|l| l.name == p.name) {
+            self.params.live = None;
+        }
+        let sent = sent_value(&p, settled.value);
+        let mut values = Map::new();
+        values.insert(p.name.clone(), sent.clone());
+        let (command, _) = self.params.joined_with(values);
+        self.params.in_flight = Some(InFlight {
+            doc: self.params.doc,
+            field: Some(p.name.clone()),
+        });
+        Ok(ParamAsk {
+            command,
+            sent,
+            note: settled.note,
+        })
+    }
+
+    /// The reply of `ui.param` once its command ran and the window synced.
+    pub fn ui_param_answer(&self, ask: &ParamAsk, outcome: &Result<Value, String>) -> Value {
+        json!({
+            "sent": ask.sent,
+            "note": ask.note,
+            "result": match outcome {
                 Ok(v) => v.clone(),
                 Err(e) => json!({ "error": e }),
-            };
-            self.command_done(outcome);
-            self.sync(session);
-        }
+            },
+            "parameters": self.parameters_report(),
+        })
+    }
+
+    /// `ui.param` queued as the form's commit instead of run (the desktop
+    /// window's MCP `control_call`, whose reply cannot wait for the engine
+    /// thread): the host runs it like a commit of the form. The reply says
+    /// `queued`; `ui.get` › `parameters` and `param.list` tell the outcome.
+    pub fn ui_param_queue(
+        &mut self,
+        session: &mut Session,
+        params: Option<&Value>,
+    ) -> Result<Value, String> {
+        let ask = self.ui_param_ask(session, params)?;
+        let field = self.params.in_flight.take().and_then(|f| f.field);
+        self.params.pending = Some(Pending {
+            command: ask.command.clone(),
+            drawn: true,
+            field,
+        });
         Ok(json!({
-            "sent": sent_value(&p, settled.value),
-            "note": settled.note,
-            "result": result,
+            "sent": ask.sent,
+            "note": ask.note,
+            "queued": true,
             "parameters": self.parameters_report(),
         }))
+    }
+
+    /// `ui.param` where the session is at hand and no engine thread runs
+    /// commands (tests, a host without one): asked, run and answered at
+    /// once. The desktop window answers `ui.param` itself, running the
+    /// command on its engine thread.
+    pub(crate) fn ui_param(
+        &mut self,
+        session: &mut Session,
+        params: Option<&Value>,
+    ) -> Result<Value, String> {
+        let ask = self.ui_param_ask(session, params)?;
+        let outcome = session
+            .execute(ask.command.command, &ask.command.params)
+            .map_err(|e| e.message().to_string());
+        self.command_done(outcome.clone());
+        self.sync(session);
+        Ok(self.ui_param_answer(&ask, &outcome))
     }
 
     /// The header of the side panel: the Parameters and Features tabs
@@ -1088,19 +1312,6 @@ impl Shell {
             self.trouble_line(ui, &trouble);
         }
         ui.separator();
-        // The note goes after its time.
-        if let Some(note) = self.params.note.as_mut() {
-            match note.until {
-                None => note.until = Some(now + NOTE_SECONDS),
-                Some(until) if now >= until => self.params.note = None,
-                Some(until) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs_f64(
-                            (until - now).clamp(0.0, NOTE_SECONDS),
-                        ));
-                }
-            }
-        }
         egui::ScrollArea::vertical()
             .id_salt(("craft3d-params", self.viewing))
             .auto_shrink([false, false])
@@ -1156,14 +1367,14 @@ impl Shell {
         self.params.pace(now);
         if self.params.pending.is_some() {
             ui.ctx().request_repaint();
-        } else if self.params.live.as_ref().is_some_and(|l| l.dirty) {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f64(DEBOUNCE));
+        } else if self.params.live.as_ref().is_some_and(|l| l.dirty)
+            && let Ok(wait) = std::time::Duration::try_from_secs_f64(DEBOUNCE)
+        {
+            ui.ctx().request_repaint_after(wait);
         }
     }
 
-    /// The trouble of the last commit, with Back to last good when the
-    /// model broke.
+    /// The trouble of the last commit, at its field.
     fn trouble_line(&mut self, ui: &mut egui::Ui, trouble: &Trouble) {
         let tokens = self.tokens;
         ui.add(
@@ -1174,17 +1385,60 @@ impl Shell {
             )
             .wrap(),
         );
-        if trouble.broke
-            && let Some(values) = self.params.last_good.as_ref().map(|g| g.values.clone())
-            && !values.is_empty()
-        {
-            let back = ui
-                .small_button("Back to last good")
-                .on_hover_text("Sets the parameters back to the last values that built");
-            self.params
-                .hits
-                .push(("Back to last good".to_string(), back.rect));
-            if back.clicked() {
+    }
+
+    /// Over the viewport while the last commit broke the model: what broke
+    /// it, and Back to last good (a `param.set` of the last good values).
+    /// The viewport shows the document as it is.
+    pub(super) fn trouble_banner(&mut self, ui: &egui::Ui) {
+        self.params.banner_hit = None;
+        let Some(trouble) = self.params.trouble.clone().filter(|t| t.broke) else {
+            return;
+        };
+        let Some(view) = self.rect else {
+            return;
+        };
+        let tokens = self.tokens;
+        let values = self
+            .params
+            .last_good
+            .as_ref()
+            .map(|g| g.values.clone())
+            .filter(|v| !v.is_empty());
+        let width = (view.width() - 2.0 * tokens.inset).clamp(120.0, 560.0);
+        let at = egui::pos2(view.center().x - width * 0.5, view.top() + tokens.inset);
+        let mut back = None;
+        egui::Area::new(egui::Id::new("craft3d-param-trouble"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(color_alpha(tokens.notice_fill, tokens.notice_opacity))
+                    .corner_radius(egui::CornerRadius::same(tokens.notice_radius))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_max_width(width);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "This value breaks the model: {}",
+                                    number_field::shortened(&trouble.message, 400)
+                                ))
+                                .color(color(tokens.chrome_failed)),
+                            )
+                            .wrap(),
+                        );
+                        if let Some(values) = values {
+                            let button = ui.button("Back to last good").on_hover_text(
+                                "Sets the parameters back to the last values that built",
+                            );
+                            back = Some((button.rect, button.clicked(), values));
+                        }
+                    });
+            });
+        if let Some((rect, clicked, values)) = back {
+            self.params.banner_hit = Some(rect);
+            if clicked {
                 self.params.ask(json!({ "values": values }), None);
             }
         }
@@ -1363,6 +1617,8 @@ impl Shell {
             let Some(settled) = settle(p, wanted) else {
                 return;
             };
+            // Another field's value that was not sent yet goes first.
+            self.params.flush_other(&p.name);
             if dragging {
                 let live = match self.params.live.take() {
                     Some(live) if live.name == p.name && live.dragging => live,
@@ -1687,8 +1943,12 @@ mod tests {
             first.command.params,
             json!({"values": {"width": 90.0}, "merge": false})
         );
-        // The next ones fold into it.
+        // Before its result came back the drag has changed nothing: a next
+        // commit would not fold. Once it changed the document, the next
+        // ones fold into it.
+        assert!(!form.live.as_ref().unwrap().committed);
         if let Some(live) = form.live.as_mut() {
+            live.committed = true;
             live.value = 95.0;
             live.dirty = true;
         }
@@ -1725,53 +1985,110 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_that_breaks_the_model_is_marked_and_a_refusal_is_said() {
-        let base = Baseline::default();
-        assert_eq!(verdict(&Ok(json!({"set": []})), &[], base), Verdict::Good);
+    fn another_fields_unsent_value_goes_first_and_ui_param_joins_what_waits() {
+        let depth = Param {
+            name: "depth".into(),
+            ..width()
+        };
+        let mut form = ParamForm {
+            list: Some(ParamList {
+                jig: true,
+                groups: vec![String::new()],
+                params: vec![width(), depth],
+                info: DocInfo::default(),
+            }),
+            ..ParamForm::default()
+        };
+        form.live = Some(Live {
+            name: "width".into(),
+            value: 90.0,
+            range: [20.0, 120.0],
+            dragging: false,
+            dirty: true,
+            committed: false,
+            last_sent: 0.0,
+        });
+        // The same field: kept.
+        form.flush_other("width");
+        assert!(form.live.is_some() && form.pending.is_none());
+        // Another field: width's value is committed first.
+        form.flush_other("depth");
+        assert!(form.live.is_none());
+        let pending = form.pending.clone().unwrap();
         assert_eq!(
-            verdict(&Err("param.set: nothing was changed".into()), &[], base),
+            pending.command.params,
+            json!({"values": {"width": 90.0}, "merge": false})
+        );
+        // ui.param takes what waits with it, never merged.
+        let mut values = Map::new();
+        values.insert("depth".into(), json!(40.0));
+        let (command, _) = form.joined_with(values);
+        assert!(form.pending.is_none());
+        assert_eq!(
+            command.params,
+            json!({"values": {"width": 90.0, "depth": 40.0}})
+        );
+        // A Reset all that waits keeps its reset.
+        form.ask(json!({"reset": true}), None);
+        let mut values = Map::new();
+        values.insert("depth".into(), json!(41.0));
+        let (command, field) = form.joined_with(values);
+        assert_eq!(
+            command.params,
+            json!({"reset": true, "values": {"depth": 41.0}})
+        );
+        assert_eq!(field.as_deref(), Some("depth"));
+    }
+
+    #[test]
+    fn a_commit_that_breaks_the_model_is_marked_and_a_refusal_is_said() {
+        let none = Faults::default();
+        assert_eq!(
+            verdict(&Ok(json!({"set": []})), &none, &none),
+            Verdict::Good
+        );
+        assert_eq!(
+            verdict(&Err("param.set: nothing was changed".into()), &none, &none),
             Verdict::Refused("param.set: nothing was changed".into())
         );
-        let broke = Ok(json!({"failed": [{"feature": "Fillet1", "error": "radius too large"}]}));
+        let result =
+            json!({"failed": [{"feature": "Fillet1", "id": "F2", "error": "radius too large"}]});
+        let reported = reported_faults(&result);
         assert_eq!(
-            verdict(
-                &broke,
-                &[("Fillet1".into(), "radius too large".into())],
-                base
-            ),
+            reported.features.get("F2").map(String::as_str),
+            Some("Fillet1: radius too large")
+        );
+        assert_eq!(
+            verdict(&Ok(result), &reported, &none),
             Verdict::Broke("Fillet1: radius too large".into())
         );
-        // Still failing after a later commit of the same drag (no new
-        // failure, but more than the last good state had).
+        // Still failing after a later commit of the same drag: no new
+        // failure reported, but a fault the last good state did not have.
         assert_eq!(
-            verdict(
-                &Ok(json!({})),
-                &[("Fillet1".into(), "radius too large".into())],
-                base
-            ),
+            verdict(&Ok(json!({})), &reported, &none),
             Verdict::Broke("Fillet1: radius too large".into())
         );
         // A document that failed before the form touched it is its
-        // baseline, not a failure of the form.
-        let failing_before = Baseline {
-            features: 1,
-            assertions: 0,
-        };
+        // baseline, not a failure of the form; one feature mended and
+        // another broken is a failure, though the count is the same.
+        let mut old = Faults::default();
+        old.features.insert("F1".into(), "Old: x".into());
+        assert_eq!(verdict(&Ok(json!({})), &old, &old), Verdict::Good);
+        let mut swapped = Faults::default();
+        swapped.features.insert("F3".into(), "New: y".into());
         assert_eq!(
-            verdict(
-                &Ok(json!({})),
-                &[("Old".into(), "x".into())],
-                failing_before
-            ),
-            Verdict::Good
+            verdict(&Ok(json!({})), &swapped, &old),
+            Verdict::Broke("New: y".into())
         );
-        let assertion = Ok(json!({"assertions": {"count": 1, "passed": 0,
+        let assertion = json!({"assertions": {"count": 1, "passed": 0,
             "broken": [{"name": "wall", "message": "wall is 1 mm, must be ≥ 2 mm"}],
-            "unproven": [], "pending": 0}}));
+            "unproven": [], "pending": 0}});
+        let faults = reported_faults(&assertion);
         assert_eq!(
-            verdict(&assertion, &[], base),
+            verdict(&Ok(assertion), &faults, &none),
             Verdict::Broke("wall is 1 mm, must be ≥ 2 mm".into())
         );
+        assert_eq!(verdict(&Ok(json!({})), &faults, &faults), Verdict::Good);
     }
 
     #[test]

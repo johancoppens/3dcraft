@@ -97,6 +97,11 @@ fn mcp_message(
         );
     };
     let mut handle = |session: &mut Session, method: &str, params: Option<&Value>| {
+        // Not regenerated on the window's thread: queued as the form's
+        // commit, which the engine thread runs.
+        if method == "ui.param" {
+            return Some(shell.ui_param_queue(session, params));
+        }
         shell.handle_method(session, method, params)
     };
     let mut extension = Extension {

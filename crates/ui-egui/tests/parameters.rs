@@ -328,7 +328,7 @@ fn a_typed_value_out_of_range_is_clamped_and_said() {
 }
 
 #[test]
-fn a_value_that_breaks_the_model_keeps_the_last_good_one_until_back() {
+fn a_value_that_breaks_the_model_is_said_over_the_viewport_until_back() {
     let (mut session, mut shell, mut window) = started(jig());
     let good = shell.shown_scene_arc().unwrap().revision;
     // Through the control channel, as the form does it: 15 mm rounds the
@@ -346,7 +346,7 @@ fn a_value_that_breaks_the_model_keeps_the_last_good_one_until_back() {
     window.idle(&mut shell, &mut session, 3);
     let shown = form(&mut shell, &mut session);
     assert_eq!(shown["trouble"]["name"], "r");
-    assert_eq!(shown["trouble"]["holding"], true);
+    assert_eq!(shown["trouble"]["broke"], true);
     assert!(
         shown["trouble"]["message"]
             .as_str()
@@ -354,7 +354,8 @@ fn a_value_that_breaks_the_model_keeps_the_last_good_one_until_back() {
             .starts_with("Round:"),
         "{shown}"
     );
-    // The session's scene is the failed one; the viewport keeps the good.
+    // The viewport shows the document as it is: the failed state, with
+    // the banner over it.
     assert_ne!(shell.shown_scene_arc().unwrap().revision, good);
     // Back to last good sets the radius back.
     let back = hit(&shell, "Back to last good");
@@ -380,7 +381,14 @@ fn a_value_that_breaks_the_model_keeps_the_last_good_one_until_back() {
     assert_eq!(window.ran.last().unwrap()["values"]["r"], "3 kg");
     let shown = form(&mut shell, &mut session);
     assert_eq!(shown["trouble"]["name"], "r", "{shown}");
-    assert_eq!(shown["trouble"]["holding"], false, "{shown}");
+    assert_eq!(shown["trouble"]["broke"], false, "{shown}");
+    assert!(
+        !shell
+            .parameter_hits()
+            .iter()
+            .any(|(n, _)| n == "Back to last good"),
+        "no banner for a refusal"
+    );
     assert_eq!(value(&mut session, "r"), 2.0, "nothing changed");
     let answer = shell
         .handle_method(
@@ -452,4 +460,45 @@ fn ui_param_refuses_what_it_cannot_set_and_never_panics() {
         )
         .unwrap();
     assert!(answer.is_err());
+}
+
+#[test]
+fn a_step_that_changes_nothing_shows_the_documents_value_again() {
+    let (mut session, mut shell, mut window) = started(jig());
+    run(
+        &mut session,
+        "param.set",
+        json!({"values": {"w": "100 mm"}}),
+    );
+    window.idle(&mut shell, &mut session, 3);
+    // The › at the right end of a field at its maximum: a commit that
+    // changes nothing.
+    let field = hit(&shell, "w");
+    let arrow = pos2(field.right() - 4.0, field.center().y);
+    window.click(&mut shell, &mut session, arrow);
+    assert_eq!(window.ran.last().unwrap()["values"]["w"], 100.0);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["live"], Value::Null, "{shown}");
+    assert_eq!(shown["busy"], false);
+    assert_eq!(shown["trouble"], Value::Null);
+}
+
+#[test]
+fn a_result_for_another_document_is_dropped() {
+    let (mut session, mut shell, mut window) = started(jig());
+    let ask = shell
+        .ui_param_ask(&mut session, Some(&json!({"name": "r", "value": 15})))
+        .unwrap();
+    assert_eq!(ask.command.params, json!({"values": {"r": 15.0}}));
+    // Another document is shown before the result comes back.
+    run(&mut session, "file.new", json!({}));
+    shell.command_done(Err("param.set: refused".to_string()));
+    window.idle(&mut shell, &mut session, 2);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["trouble"], Value::Null, "{shown}");
+    assert_eq!(shown["busy"], false);
+    // And back on the Jig nothing is said either.
+    run(&mut session, "file.activate", json!({"document": 0}));
+    window.idle(&mut shell, &mut session, 2);
+    assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
 }

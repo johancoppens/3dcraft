@@ -12,7 +12,7 @@ use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
-use craft3d_ui_egui::{DocAction, Shell, window_title};
+use craft3d_ui_egui::{DocAction, ParamAsk, Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
 use serde_json::{Value, json};
@@ -243,6 +243,9 @@ enum Waiting {
     /// A command the shell asked for (the Parameters tab's `param.set`):
     /// the outcome goes back to the shell and to the status bar.
     Command(&'static str),
+    /// `ui.param`: its command's outcome goes back to the shell, then the
+    /// reply, made once the window has synced, to the request.
+    Param(Request, Box<ParamAsk>),
     /// Only the scene the window shows.
     Scene,
 }
@@ -417,6 +420,12 @@ impl Desk {
                 let Some(request) = self.intercept_capture(request) else {
                     continue;
                 };
+                // `ui.param` is settled here and regenerates on the
+                // engine thread, as the form's commits do.
+                if is_method(&request.line, "ui.param") {
+                    self.ask_param(request);
+                    continue;
+                }
                 match route(&request.line) {
                     Route::Engine => {
                         let label = request_label(&request.line);
@@ -587,6 +596,7 @@ impl Desk {
 
     fn finish(&mut self, waiting: Waiting, outcome: Outcome) {
         let host = &mut self.host;
+        let mut param_reply = None;
         let (reply_to, reply) = match waiting {
             Waiting::Request(request) => {
                 let reply = match outcome {
@@ -629,6 +639,18 @@ impl Desk {
                 host.shell.command_done(outcome);
                 (None, None)
             }
+            Waiting::Param(request, ask) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report("ui.param", &outcome);
+                host.shell.command_done(outcome.clone());
+                param_reply = Some((request, ask, outcome));
+                (None, None)
+            }
             Waiting::Scene => (None, None),
         };
         // The camera follows the model, the tree its features: from the
@@ -642,6 +664,45 @@ impl Desk {
         if let Some(reply_to) = reply_to {
             // A requester that has gone away is not an error.
             let _ = reply_to.send(reply);
+        }
+        // `ui.param` says what the form shows now that the window synced.
+        if let Some((request, ask, outcome)) = param_reply {
+            let id = request_id(&request.line);
+            let reply = rpc::ok_reply(&id, &host.shell.ui_param_answer(&ask, &outcome));
+            let _ = request.reply.send(Some(reply));
+        }
+    }
+
+    /// `ui.param`: settled and joined to the form's waiting commit here
+    /// (it reads `param.list`), then run on the engine thread; the reply
+    /// comes once it is done. What it refuses is answered at once.
+    fn ask_param(&mut self, request: Request) {
+        let parsed: Value = serde_json::from_str(&request.line).unwrap_or(Value::Null);
+        let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+        let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host
+                .shell
+                .ui_param_ask(&mut self.host.session, parsed.get("params"))
+        }))
+        .unwrap_or_else(|_| Err(PANICKED.to_string()));
+        match asked {
+            Err(error) => {
+                let _ = request.reply.send(Some(rpc::error_reply(&id, &error)));
+            }
+            Ok(ask) => {
+                let command = ask.command.clone();
+                self.start(
+                    Waiting::Param(request, Box::new(ask)),
+                    "param.set".to_string(),
+                    Box::new(move |session| {
+                        Outcome::Ran(
+                            session
+                                .execute(command.command, &command.params)
+                                .map_err(|e| e.message().to_string()),
+                        )
+                    }),
+                );
+            }
         }
     }
 
@@ -922,6 +983,19 @@ impl Desk {
 }
 
 /// True for a `ui.screenshot` request.
+/// Whether `line` is a request of `method`.
+fn is_method(line: &str, method: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| {
+            request
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|m| m == method)
+        })
+        .unwrap_or(false)
+}
+
 fn is_screenshot(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
         .ok()
@@ -1664,6 +1738,54 @@ mod tests {
         });
         output.textures_delta.clear();
         desk.turn();
+    }
+
+    /// `ui.param` is settled on the window's thread and regenerates on the
+    /// engine thread; the reply comes once the window has synced, with the
+    /// form's state. What it refuses is answered at once.
+    #[test]
+    fn ui_param_regenerates_on_the_engine_thread() {
+        let (requests, incoming) = mpsc::channel::<Request>();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let answer = ask(
+            &requests,
+            r#"{"id":7,"method":"ui.param","params":{"name":"w","value":500}}"#,
+        );
+        let reply: Value = serde_json::from_str(&turn_until(&mut desk, &answer).unwrap()).unwrap();
+        assert_eq!(reply["id"], 7, "{reply}");
+        let result = &reply["result"];
+        assert_eq!(result["sent"], 90.0, "{reply}");
+        assert_eq!(result["note"], "clamped to 90 mm");
+        assert_eq!(result["result"]["changed"], true, "{reply}");
+        assert_eq!(result["parameters"]["busy"], false, "{reply}");
+        assert!(!desk.away());
+        let list = desk.host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 90.0);
+        let answer = ask(
+            &requests,
+            r#"{"id":8,"method":"ui.param","params":{"name":"nope","value":1}}"#,
+        );
+        let reply: Value = serde_json::from_str(&turn_until(&mut desk, &answer).unwrap()).unwrap();
+        assert!(
+            reply["error"]
+                .to_string()
+                .contains("not a public parameter"),
+            "{reply}"
+        );
     }
 
     /// The Parameters tab's commit runs on the engine thread, as every

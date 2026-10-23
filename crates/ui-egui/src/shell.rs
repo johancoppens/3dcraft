@@ -36,8 +36,8 @@ mod views;
 pub use controls::ControlsLayout;
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use params::{
-    Baseline, DEBOUNCE, NOTE_SECONDS, Pacer, Param, ParamKind, ParamList, Settled, ShellCommand,
-    Verdict, settle, verdict,
+    DEBOUNCE, Faults, NOTE_SECONDS, Pacer, Param, ParamAsk, ParamKind, ParamList, Settled,
+    ShellCommand, Verdict, reported_faults, settle, verdict,
 };
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
@@ -1648,7 +1648,7 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
-        self.mark_pending_drawn(ui.ctx());
+        self.params_frame(ui.ctx());
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
@@ -1728,9 +1728,9 @@ impl Shell {
                 .frame(frame)
                 .show(ui, |ui| self.side_panel(ui, status.is_some()));
         }
-        // While a parameter's value broke the model, the last good one.
-        let scene = self.held_scene().or(scene);
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // A parameter's value that broke the model, and the way back.
+        self.trouble_banner(ui);
         // A number typed into a field of the viewport, once Enter was
         // pressed: evaluated with the document's variables, shown next
         // frame (or its error is).
