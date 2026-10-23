@@ -285,9 +285,12 @@ fn plain_f(input: &egui::InputState) -> bool {
     }) && input.modifiers.is_none()
 }
 
-/// Room the rows of the feature list keep on their right, in points,
-/// for the scroll bar that lies over them against the panel's edge.
-const TREE_BAR_ROOM: i8 = 12;
+/// The side panel's inset, in points: its content keeps it from the
+/// panel's left edge and from the split on its right (where the lists'
+/// scroll bars lie, over that room), the same on both sides.
+pub(crate) fn side_inset(tokens: &Tokens) -> i8 {
+    tokens.inset.round().clamp(0.0, 64.0) as i8
+}
 
 /// How long the camera takes to turn to the view a click on the view
 /// cube asked for.
@@ -1770,7 +1773,7 @@ impl Shell {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
-                left: 8,
+                left: side_inset(&tokens),
                 right: 0,
                 top: 2,
                 bottom: 2,
@@ -2227,7 +2230,11 @@ impl Shell {
         // The timeline at the foot of the panel, under the list.
         egui::Panel::bottom("craft3d-timeline")
             .resizable(false)
-            .show(ui, |ui| self.timeline_ui(ui));
+            .show(ui, |ui| {
+                // Clear of the split, as the rows above.
+                ui.set_max_width((ui.available_width() - f32::from(side_inset(&tokens))).max(40.0));
+                self.timeline_ui(ui);
+            });
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."
@@ -2262,7 +2269,7 @@ impl Shell {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 0,
-                        right: TREE_BAR_ROOM,
+                        right: side_inset(&tokens),
                         top: 0,
                         bottom: 0,
                     })

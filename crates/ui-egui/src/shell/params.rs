@@ -1315,94 +1315,118 @@ impl Shell {
             ui.add(egui::Label::new(egui::RichText::new(NO_PARAMETERS).color(dim)).wrap());
             return;
         }
-        if !list.info.title.is_empty() {
-            ui.label(egui::RichText::new(&list.info.title).heading());
-        }
-        if !list.info.description.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(&list.info.description).color(dim)).wrap());
-        }
-        // A Jig in use changes only through its parameters; editing it
-        // takes a model of its own.
-        if self.jig_in_use() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(dim, "A Jig: set its parameters.");
-                let edit = ui
-                    .small_button("Open for editing")
-                    .on_hover_text("A new untitled model of it, as it is set, to edit (jig.edit)");
-                self.params
-                    .hits
-                    .push(("Open for editing".to_string(), edit.rect));
-                if edit.clicked() {
-                    self.request_file_action(crate::shell::FileAction::OpenForEditing);
+        // The form keeps clear of the split on its right as it does of
+        // the panel's edge on its left.
+        let room = crate::shell::side_inset(&tokens);
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - f32::from(room)).max(40.0));
+            if !list.info.title.is_empty() {
+                ui.label(egui::RichText::new(&list.info.title).heading());
+            }
+            if !list.info.description.is_empty() {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&list.info.description).color(dim)).wrap(),
+                );
+            }
+            // A Jig in use changes only through its parameters; editing it
+            // takes a model of its own.
+            if self.jig_in_use() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(dim, "A Jig: set its parameters.");
+                    let edit = ui.small_button("Open for editing").on_hover_text(
+                        "A new untitled model of it, as it is set, to edit (jig.edit)",
+                    );
+                    self.params
+                        .hits
+                        .push(("Open for editing".to_string(), edit.rect));
+                    if edit.clicked() {
+                        self.request_file_action(crate::shell::FileAction::OpenForEditing);
+                    }
+                });
+            }
+            let busy = self.params.busy();
+            ui.horizontal(|ui| {
+                let any_off = list.params.iter().any(|p| !p.at_default);
+                let reset = ui
+                    .add_enabled(any_off, egui::Button::new("Reset all"))
+                    .on_hover_text("Every parameter back to its default (param.set reset)");
+                self.params.hits.push(("Reset all".to_string(), reset.rect));
+                if reset.clicked() {
+                    self.params.ask(json!({ "reset": true }), None);
+                }
+                if busy {
+                    ui.add(egui::Spinner::new());
+                    ui.colored_label(dim, "Regenerating…");
                 }
             });
-        }
-        let busy = self.params.busy();
-        ui.horizontal(|ui| {
-            let any_off = list.params.iter().any(|p| !p.at_default);
-            let reset = ui
-                .add_enabled(any_off, egui::Button::new("Reset all"))
-                .on_hover_text("Every parameter back to its default (param.set reset)");
-            self.params.hits.push(("Reset all".to_string(), reset.rect));
-            if reset.clicked() {
-                self.params.ask(json!({ "reset": true }), None);
+            // What went wrong with a commit that came from no field.
+            if let Some(trouble) = self.params.trouble.clone()
+                && trouble.name.is_none()
+            {
+                self.trouble_line(ui, &trouble);
             }
-            if busy {
-                ui.add(egui::Spinner::new());
-                ui.colored_label(dim, "Regenerating…");
-            }
+            ui.separator();
         });
-        // What went wrong with a commit that came from no field.
-        if let Some(trouble) = self.params.trouble.clone()
-            && trouble.name.is_none()
-        {
-            self.trouble_line(ui, &trouble);
-        }
-        ui.separator();
         egui::ScrollArea::vertical()
             .id_salt(("craft3d-params", self.viewing))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for group in &list.groups {
-                    let members: Vec<&Param> =
-                        list.params.iter().filter(|p| &p.group == group).collect();
-                    if group.is_empty() {
-                        for p in members {
-                            self.param_row(ui, p, now);
-                        }
-                        continue;
-                    }
-                    let collapsed = self.state.parameters.collapsed.contains(group);
-                    let header = egui::CollapsingHeader::new(egui::RichText::new(group).strong())
-                        .id_salt(("craft3d-param-group", group))
-                        .open(Some(!collapsed))
-                        .show(ui, |ui| {
-                            for p in &members {
-                                self.param_row(ui, p, now);
+                // The plates stop clear of the split, and of the scroll
+                // bar that lies against it.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: room,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        for group in &list.groups {
+                            let members: Vec<&Param> =
+                                list.params.iter().filter(|p| &p.group == group).collect();
+                            if group.is_empty() {
+                                for p in members {
+                                    self.param_row(ui, p, now);
+                                }
+                                continue;
                             }
-                        });
-                    if header.header_response.clicked() {
-                        let collapsed = &mut self.state.parameters.collapsed;
-                        if let Some(at) = collapsed.iter().position(|g| g == group) {
-                            collapsed.remove(at);
-                        } else if collapsed.len() < MAX_PARAMS {
-                            collapsed.push(group.clone());
+                            let collapsed = self.state.parameters.collapsed.contains(group);
+                            let header =
+                                egui::CollapsingHeader::new(egui::RichText::new(group).strong())
+                                    .id_salt(("craft3d-param-group", group))
+                                    .open(Some(!collapsed))
+                                    .show(ui, |ui| {
+                                        for p in &members {
+                                            self.param_row(ui, p, now);
+                                        }
+                                    });
+                            if header.header_response.clicked() {
+                                let collapsed = &mut self.state.parameters.collapsed;
+                                if let Some(at) = collapsed.iter().position(|g| g == group) {
+                                    collapsed.remove(at);
+                                } else if collapsed.len() < MAX_PARAMS {
+                                    collapsed.push(group.clone());
+                                }
+                            }
                         }
-                    }
-                }
-                let footer: Vec<&str> = [list.info.author.as_str(), list.info.licence.as_str()]
-                    .into_iter()
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !footer.is_empty() {
-                    ui.add_space(tokens.inset);
-                    let text = if list.info.author.is_empty() {
-                        footer.join(" · ")
-                    } else {
-                        format!("by {}", footer.join(" · "))
-                    };
-                    ui.add(egui::Label::new(egui::RichText::new(text).small().color(dim)).wrap());
-                }
+                        let footer: Vec<&str> =
+                            [list.info.author.as_str(), list.info.licence.as_str()]
+                                .into_iter()
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                        if !footer.is_empty() {
+                            ui.add_space(tokens.inset);
+                            let text = if list.info.author.is_empty() {
+                                footer.join(" · ")
+                            } else {
+                                format!("by {}", footer.join(" · "))
+                            };
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).small().color(dim))
+                                    .wrap(),
+                            );
+                        }
+                    });
             });
         // A drag that ended: its last value goes now.
         if self.params.memory.drag.is_none()
