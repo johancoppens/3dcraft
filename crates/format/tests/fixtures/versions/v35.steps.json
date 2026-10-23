@@ -1,0 +1,13 @@
+[
+  ["variable.set", {"name": "f", "expr": "10 mm"}],
+  ["variable.set", {"name": "a", "expr": "20 mm"}],
+  ["variable.set", {"name": "h", "expr": "8 mm"}],
+  ["sketch.create", {"name": "Dish"}],
+  ["sketch.curve", {"sketch": "Dish", "x": "t", "y": "t^2 / (4 * f)", "t": ["-a", "a"]}],
+  ["sketch.line", {"sketch": "Dish", "from": "e2", "to": "e1"}],
+  ["feature.extrude", {"sketch": "Dish", "distance": "5 mm", "name": "Segment"}],
+  ["sketch.create", {"name": "Arch", "offset": "10 mm"}],
+  ["sketch.spline", {"sketch": "Arch", "through": [["0 mm", "0 mm"], ["10 mm", "h"], ["25 mm", "h / 2"], ["30 mm", "0 mm"]], "live": true}],
+  ["sketch.line", {"sketch": "Arch", "from": "e4", "to": "e1"}],
+  ["feature.extrude", {"sketch": "Arch", "distance": "3 mm", "name": "Arch"}]
+]

@@ -1091,9 +1091,7 @@ pub enum SketchGeometry {
         pattern: u64,
         index: InstanceIndex,
     },
-    /// A curve given by formulas (the next format version, still to be
-    /// raised: files are written as the current version until then): the
-    /// point (`x`(t),
+    /// A curve given by formulas (format version 35): the point (`x`(t),
     /// `y`(t)) for `t` from `from` to `to`, ending on the points `start`
     /// and `end` (one point for a closed curve). Fitted at every
     /// regeneration; nothing of the fit is stored.
@@ -1106,7 +1104,7 @@ pub enum SketchGeometry {
         end: u64,
     },
     /// A B-spline through the points `through`, fitted again at every
-    /// regeneration (the next format version, as above).
+    /// regeneration (format version 35).
     Interpolated {
         degree: u32,
         through: Vec<u64>,

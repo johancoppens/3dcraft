@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 34,
+  "format_version": 35,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 35"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 36"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 35,
+            file: 36,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 35")
+        text.contains("version 36")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1690,7 +1690,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 34);
+    assert_eq!(value["format_version"], 35);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1876,7 +1876,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 34);
+    assert_eq!(value["format_version"], 35);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2892,7 +2892,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 34);
+    assert_eq!(value["format_version"], 35);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3864,7 +3864,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 34);
+    assert_eq!(value["format_version"], 35);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3977,7 +3977,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4023,7 +4023,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4081,7 +4081,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -4136,7 +4136,7 @@ fn an_import_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     assert_eq!(
         value["document"]["features"][2]["kind"],
         serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
@@ -4348,7 +4348,7 @@ fn hidden_features_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     assert_eq!(value["document"]["hidden"], serde_json::json!([1]));
     let read = from_manifest_json(json.as_bytes()).unwrap();
     assert_eq!(read, doc);
@@ -4413,7 +4413,7 @@ fn tables_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     assert_eq!(
         value["document"]["tables"],
         serde_json::json!([{"name": "belt", "key": "profile",
@@ -4450,7 +4450,7 @@ fn a_condition_is_written_like_this_and_round_trips() {
     doc.feature_mut(id).unwrap().when = Some(Expr::new("lid && 2 > 1"));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(FORMAT_VERSION, 34);
+    assert_eq!(FORMAT_VERSION, 35);
     assert_eq!(value["document"]["features"][0]["when"], "lid && 2 > 1");
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
@@ -4459,5 +4459,53 @@ fn a_condition_is_written_like_this_and_round_trips() {
     // A condition that is no text is refused.
     let mut wrong = value.clone();
     wrong["document"]["features"][0]["when"] = serde_json::json!(1);
+    assert!(from_manifest_json(wrong.to_string().as_bytes()).is_err());
+}
+
+/// Curves from formulas and live splines (version 35): written as their
+/// expressions and point ids, without their fits, and read back the same.
+#[test]
+fn formula_curves_and_live_splines_are_written_like_this_and_round_trip() {
+    let mut doc = small();
+    let sketch = doc
+        .add_feature(Some("S"), FeatureKind::Sketch(Sketch::default()))
+        .unwrap();
+    doc.edit_sketch(sketch, |s| {
+        let a = s.add_point(0.0, 0.0)?;
+        let b = s.add_point(1.0, 1.0)?;
+        let c = s.add_point(2.0, 0.0)?;
+        s.add_formula(
+            [
+                Expr::new("t"),
+                Expr::new("t^2"),
+                Expr::new("0"),
+                Expr::new("1"),
+            ],
+            a,
+            b,
+            false,
+        )?;
+        s.add_interpolated(2, vec![a, b, c], true)
+    })
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(FORMAT_VERSION, 35);
+    let entities = &value["document"]["features"][1]["kind"]["entities"];
+    assert_eq!(
+        entities[3]["geometry"],
+        serde_json::json!({"type": "formula", "x": "t", "y": "t^2", "from": "0", "to": "1", "start": 1, "end": 2})
+    );
+    assert_eq!(
+        entities[4]["geometry"],
+        serde_json::json!({"type": "interpolated", "degree": 2, "through": [1, 2, 3]})
+    );
+    assert_eq!(entities[4]["construction"], true);
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A formula curve that ends on no point is refused.
+    let mut wrong = value.clone();
+    wrong["document"]["features"][1]["kind"]["entities"][3]["geometry"]["end"] =
+        serde_json::json!(99);
     assert!(from_manifest_json(wrong.to_string().as_bytes()).is_err());
 }
