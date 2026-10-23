@@ -22,7 +22,7 @@
 | Script | What it plays |
 |---|---|
 | [`a1-constraints.json`](scripts/a1-constraints.json), [`a2-constraints.json`](scripts/a2-constraints.json) | Every one of the 18 constraint kinds of `sketch.constrain`, on free points, with `dof` read after each |
-| [`b-conflicts.json`](scripts/b-conflicts.json) | Redundant, conflicting and impossible constraints, an impossible triangle, an under-constrained profile, wrong entity kinds and values; recovery |
+| [`b-conflicts.json`](scripts/b-conflicts.json) | Redundant, conflicting and impossible constraints, an impossible triangle, an under-constrained profile, wrong entity kinds and values; recovery (a record of the session, not run by a test: since 2026-10-23 its negative and wrong-unit literal values are refused by `sketch.constrain` instead of failing the sketch, conflicts name what they contradict, and `document.check` warns about the under-constrained profile) |
 | [`c1-history.json`](scripts/c1-history.json), [`c2-history.json`](scripts/c2-history.json) | Undo and redo, suppress, rollback with an insert, move, rename, `feature.edit`, delete, a redundant constraint turned conflicting by a variable |
 | [`d1-units.json`](scripts/d1-units.json), [`d2-units.json`](scripts/d2-units.json) | An inch document, cm and m documents, mixed units, angles in degrees and radians, misspelled units, counts |
 | [`e1-negative.json`](scripts/e1-negative.json), [`e2-negative.json`](scripts/e2-negative.json) | Negative and zero extrusions, `reversed`, a rectangle drawn backwards, held coordinates going negative and to zero, negative radii and walls |

@@ -67,7 +67,8 @@ contradicts (`"conflicts": [{"constraint": "c10", "contradicts": ["c3"]}]`). Cha
 (`sketch.edit` with `constraint` and `value`) or delete it (`sketch.delete` with `constraint`). A
 contradiction the solver can meet by shrinking a line to nothing (a line both `horizontal` and
 `vertical`) solves, but the sketch command's result lists the line under `collapsed` with the constraints
-that did it, and `document.check` reports it as a problem.
+that did it (`contradiction: true`), and `document.check` reports it as a problem. A line with no length
+under one direction only is a warning there (`kind: "collapsedLine"`).
 
 ## Pictures
 

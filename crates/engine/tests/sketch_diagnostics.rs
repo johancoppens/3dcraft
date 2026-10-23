@@ -132,10 +132,26 @@ fn horizontal_and_vertical_on_one_line_are_reported_as_a_contradiction() {
             .contains("has shrunk to a point"),
         "{check}"
     );
+    assert_eq!(both["collapsed"][0]["contradiction"], true, "{both}");
     // A line of its own length with one direction is fine.
     run(&mut s, "edit.undo", json!({}));
     let one = constrain(&mut s, "distance", json!(["e3"]), Some("5 mm"));
     assert!(one.get("collapsed").is_none(), "{one}");
+    // One direction on a line given no length is not a contradiction: a
+    // warning of document.check, not a problem.
+    run(&mut s, "edit.undo", json!({}));
+    let none = constrain(&mut s, "distance", json!(["e3"]), Some("0 mm"));
+    assert_eq!(none["collapsed"][0]["contradiction"], false, "{none}");
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
+    let collapsed: Vec<&Value> = check["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"] == "collapsedLine")
+        .collect();
+    assert_eq!(collapsed.len(), 1, "{check}");
+    assert_eq!(collapsed[0]["line"], "e3", "{check}");
 }
 
 #[test]
@@ -147,13 +163,17 @@ fn an_under_constrained_sketch_is_a_warning_of_document_check() {
     assert_eq!(check["ok"], true, "{check}");
     let warnings = check["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{check}");
-    assert_eq!(warnings[0]["feature"], "F1");
-    assert_eq!(warnings[0]["dof"], 2);
+    assert_eq!(warnings[0]["kind"], "underConstrained");
+    assert_eq!(
+        warnings[0]["sketches"],
+        json!([{"feature": "F1", "name": "S", "dof": 2}]),
+        "{check}"
+    );
     assert!(
         warnings[0]["warning"]
             .as_str()
             .unwrap()
-            .contains("2 degrees of freedom left"),
+            .contains("1 sketch is under-constrained"),
         "{check}"
     );
     // Fully constrained: no warning.
