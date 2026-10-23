@@ -1,4 +1,7 @@
-# 5. A first part, step by step
+# 7. A first part, command by command
+
+*Build an L-bracket with a rounded corner and two holes, one command at a time, and see what each one
+does. This is what an agent sends for you, written out.*
 
 An L-shaped angle bracket of 4 mm stock, 25 mm wide, legs of 40 mm (flat, along X) and 30 mm (upright,
 along Z) measured to the outside of the corner at the origin, a 3 mm round in the inside corner and a
@@ -6,7 +9,7 @@ along Z) measured to the outside of the corner at the origin, a 3 mm round in th
 the example [`bracket.json`](../examples/bracket.json).
 
 Ask an agent for it in those words and it sends commands like the ones below. Here they are one by one,
-with what each does; to run them yourself, see chapter 10 (`craft3d-cli run --script`), or paste them into
+with what each does; to run them yourself, see [chapter 13](13-command-line.md) (`craft3d-cli run --script`), or paste them into
 `command_batch` (each `[id, params]` becomes `{"id": …, "params": …}`).
 
 ![The bracket](../examples/bracket.png)
@@ -104,8 +107,8 @@ answers `"ok": true`, three assertions passed.
 
 The flat leg is now 60 mm; the round is still in the corner, the hole moved to the middle of the longer
 leg (its centre is written in `leg_x`), and the result of the command says the three assertions still
-pass (volume 8491.206 mm³). With `inner_r` set to 30 mm the round no longer fits: chapter 4, *Failed
-features*, shows what 3DCraft answers.
+pass (volume 8491.206 mm³). With `inner_r` set to 30 mm the round no longer fits: [chapter 6, *Failed
+features*](06-concepts.md#failed-features), shows what 3DCraft answers.
 
 ## 7. Save and export
 
@@ -116,3 +119,8 @@ features*, shows what 3DCraft answers.
  ["file.export", {"path": "bracket.3mf"}]
 ]
 ```
+
+Open `bracket.3dcraft` in the window and play its history ([chapter 4](04-window.md#the-history-player)) to see the
+steps above one by one.
+
+**Next:** [Formulas, tables and conditions](08-formulas.md).

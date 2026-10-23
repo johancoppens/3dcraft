@@ -1,7 +1,24 @@
-# 11. Troubleshooting
+# 14. Troubleshooting
+
+*What to do when 3DCraft says no, when something does not show, after a crash, and how to report a
+problem.*
 
 3DCraft does not crash on bad input, and does not build a wrong solid when it cannot build the right one:
-it says no, with a reason. Reading the reason is nearly always the way forward.
+it says no, with a reason. Reading the reason is nearly always the way forward; when an agent works for
+you, ask it to read the reason to you.
+
+## Quick answers
+
+| Problem | Look at |
+|---|---|
+| The window does not start | [The window](#the-window) |
+| The agent's changes do not show in the window | [The window](#the-window) |
+| A feature has a ⚠ in the feature list | [A feature fails](#a-feature-fails) |
+| An assertion is red | [A broken assertion](#a-broken-assertion) |
+| A Jig's field turned red | [Jigs](#jigs) |
+| The web version is slow, blank or will not save | [The web version](#the-web-version) |
+| 3DCraft closed unexpectedly | [After a crash](#after-a-crash) |
+| Something is wrong and you want to tell us | [Reporting a problem](#reporting-a-problem) |
 
 ## A command fails
 
@@ -53,12 +70,14 @@ in its result under `failed`, each with its `error`.
 The model was built, but does not meet what was asked. `assert.list` shows what was measured and what was
 expected. Either the design changed in a way you did not want (undo it), or the assertion needs to be
 written differently (`assert.edit`). *notProven* is not a failure: the value found is fine but the proof
-did not reach the bound (chapter 7).
+did not reach the bound ([chapter 10](10-measure.md)).
 
 ## Undo
 
 `edit.undo` undoes one change (a batch of ten steps is ten changes); `edit.redo` redoes it. Undo also
-brings back a deleted feature or variable. The selection is not part of the history and is not undone.
+brings back a deleted feature or variable. The selection is not part of the history and is not undone. The window
+has no Undo key or menu yet: ask the agent to undo, or, in a Jig, use ↺, **Reset all** or **Back to last
+good**.
 
 ## A sketch does not do what you meant
 
@@ -79,23 +98,59 @@ If a face is hard to identify, render with `mode: "ids"` (one flat colour per fa
 for a close-up with `projection: "orthographic"` and a `box`. `view.render` and `doc_render_preview` use
 the CPU renderer, which is the reference for what the window shows.
 
+## Jigs
+
+- **A field turned red** and the banner says *This value breaks the model*: that combination of values
+  cannot be built (the reason is under the field). Click **Back to last good**, or change the value back.
+  Tell the Jig's maker: a Jig's ranges should always build.
+- **A value jumped** after you typed it: it was outside the parameter's range, or between two steps. The
+  note under the field (*clamped to …*, *rounded to …*) says what was set.
+- **An agent cannot change the Jig's features**: in a Jig only the parameters change. Use **Open for
+  editing** to get a model you can change.
+
 ## The window
 
-- **It does not start**: it needs a graphics adapter; install Mesa's lavapipe for a software one, or work
-  headless with `craft3d-cli`.
-- **The agent's changes do not show**: the MCP server must run with `--bridge PORT --control-token-file
-  FILE`, the same port and token file the window was started with.
-- **After a crash**: start the window again and choose *Recover* in the recovery bar. A window started
-  for tests or scripts should get `--recovery-dir none`, so that what it leaves behind does not appear in
-  your own recovery bar.
+- **It does not start**, and a terminal says *no graphics adapter can show it*: 3DCraft's window is drawn
+  through Vulkan, Metal, DirectX 12 or OpenGL. On a computer without a suitable graphics card, install a
+  software one: on Linux Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe for OpenGL; on Windows update
+  the graphics driver. Everything else works without it: `craft3d-cli` can still model, render and export.
+- **The agent's changes do not show**: the window must have been started with `--control PORT
+  --control-token-file FILE`, and the agent's MCP server with `--bridge PORT --control-token-file FILE`,
+  the same port and the same file ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)). A window
+  started from the menu does not listen.
+- **The agent cannot open or save a file**: the path is outside the folders the window was given
+  (`--automation-read-root`, `--automation-write-root`); the error says so. Save from the File menu
+  yourself, or start the window with a root that holds the file.
+- **The model looks rough while it is still being refined**: a heavy model first shows a quick picture
+  and then the sharp one; the status bar says `refining` meanwhile.
 
-## Logs
+## The web version
 
-The window writes its log to `~/.config/craft3d/logs/craft3d.log` on Linux (`RUST_LOG=debug` for more).
+- **It is slow on a big model**: in the browser 3DCraft works on one thread, so a long rebuild holds up
+  the page until it is done. Jigs rebuild when you let go of a field for that reason.
+- **The page stays blank or the model does not show**: the page needs WebGPU or WebGL2. Try a recent
+  Chrome, Edge or Firefox; add `?webgl` to the address to use WebGL2 instead of WebGPU.
+- **Save makes a download** instead of asking where: that is how Firefox and Safari work
+  ([chapter 12](12-files.md#files-in-the-web-version)).
+- **Copy details does not copy**: browsers let a page use the clipboard only over https (or from your own
+  computer); select the text in the details window and copy it yourself.
+
+## After a crash
+
+Start 3DCraft again: a bar under the menu says *3DCraft did not close properly* and offers what was
+autosaved. **Recover** opens it as an unsaved document (save it under a name); **Discard** throws it away
+(click twice); **Later** keeps it for next time. The autosaves are in 3DCraft's data folder (**Help ›
+Open data folder**). The web version has no autosave: save often.
+
+A window started for tests or scripts should get `--recovery-dir none`, so that what it leaves behind does
+not appear in your own recovery bar.
 
 ## Reporting a problem
 
-When a command fails in the window, the status bar at the bottom shows the command in red, its message,
+![An error dialog with Copy details](images/error-dialog.png)
+
+When a file action fails, a dialog says what went wrong, with **Copy details**. When a command fails in
+the window, the status bar at the bottom shows the command in red, its message,
 and a **Copy details** button. It copies a short plain-text report to the clipboard: the 3DCraft version
 and the commit it was built from, your system, the graphics card and how 3DCraft draws with it, and the
 command that failed with its parameters and the whole message. A window shows the same text, so you can
@@ -107,3 +162,9 @@ served over https or from localhost; elsewhere, select the text in that window a
 An agent gets the same report from the command `session.report` (its `text`), so you can also ask it:
 *"something went wrong; give me the bug report"*. When the agent works in the window, the report names
 the graphics card too.
+
+Report problems, with what you were trying to do and the copied details, on
+[GitHub](https://github.com/johancoppens/3dcraft/issues), or to whoever gave you 3DCraft. Every refusal
+you report helps: in 3DCraft, a refusal is work still to do.
+
+**See also:** [the reference](15-reference.md), for every command, key and unit.

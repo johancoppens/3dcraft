@@ -1,6 +1,6 @@
 # Contributing
 
-> **Last updated:** 2026-10-12 · **Status:** pre-M0
+> **Last updated:** 2026-10-23 · **Status:** in force; the checklists below match the code of 0.1.0
 
 - **Language:** Rust only. No JavaScript or TypeScript. On the web, `wasm-bindgen` generates a small loader; never hand-write JS.
 - **Repository language:** English for everything committed (code, comments, docs, commit messages, error messages), whatever language the conversation with the developer is in.
@@ -21,21 +21,23 @@
 
 1. **Pick the id.** `<family>.<verbNoun>` in the style of the existing ones ([`design/engine.md`](design/engine.md)), stable once released. No menu path is needed in phase 1.
 2. **Algorithm** goes in the lowest crate that fits (`geom`, `topo`, `solve`, `kernel`, `tess`, `expr`), as a pure function with unit tests. It takes its tolerance as an argument, handles every geometry kind or returns `Unsupported`, and is deterministic.
-3. **Command** goes in an engine module (`crates/engine/src/<area>_cmds.rs`) exposing `specs()`, registered with `v.extend(...)` in `commands.rs`. Fill in:
+3. **Command** goes in an engine module (`crates/engine/src/<area>_cmds.rs`, a new module for a new area) with its own `pub(crate) static SPECS: &[CommandSpec]`, each made with the `spec!` macro of `commands.rs`; a new module's `SPECS` is added to the list in `Session::commands` (`crates/engine/src/lib.rs`). Fill in:
    - `id`, `label`,
-   - a params doc string such as `{"sketch":name,"distance":expr="10 mm","direction":"normal|reverse|symmetric"="normal"}` (this is what agents read through `commands` / `command_list`),
-   - an `enabled` predicate with a reason when disabled,
-   - `run`, which validates params, records exactly **one** history step and returns a JSON result an agent can verify (ids and names of what was created, feature status).
+   - a params doc string such as `{"sketch": id or name, "distance": expr, "symmetric": boolean = false}` (this is what agents read through `craft3d-cli commands` and the MCP tool `command_list`, and what `panic_hunt` and the guide's test read the parameter names from),
+   - a summary that says what the command does, what it returns and what it refuses, written for an agent to act on,
+   - `doc: true` when it needs an open document (the only "enabled" condition there is; `command_list` then says why it is disabled),
+   - `run`, which validates params (`Params::new` names the keys it takes, so an unknown key is refused), records exactly **one** history step and returns a JSON result an agent can verify (ids and names of what was created, feature status, `failed` for features the change broke).
 4. **Lengths and angles are expressions.** A numeric parameter that belongs to the design accepts an expression string (`"width / 2"`, `"25 mm"`); the command stores the source text.
 5. **Tests** in the module: behaviour (checked through `document.inspect` / mass properties, not internals), undo/redo, disabled states, bad params (empty, out of range, wrong type → `Err`), a save → load → regenerate round trip.
-6. Run the quick check per commit and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5), including `panic_hunt` when commands changed.
+6. **Docs:** a command a user or an agent will use gets its place in the [user guide](guide/README.md) (its chapter, and the command list of [`guide/15-reference.md`](guide/15-reference.md)); `guide_examples` then checks the id and every parameter of the JSON steps the guide writes ([`testing.md`](testing.md) › *The user guide and its examples*). A `ui.*` method or field goes into [`control-protocol.md`](control-protocol.md).
+7. Run the quick check per commit (heavy runs through the `Check` workflow on the Strix) and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5 and §6), including `panic_hunt` when commands changed; it picks a new command up from its params string.
 
 ## Adding a feature type
 
 A feature type is data in the document plus an evaluation in the kernel.
 
 1. **Data:** add the variant and its parameter struct to `FeatureKind` in `crates/doc`. Parameters are expressions and references (`Ref`), never resolved geometry.
-2. **Format:** the build now fails in `crates/format` on purpose. Add the fields to `manifest.rs` and `convert.rs` with `#[serde(default)]`; add a fixture of the previous format version to the migration tests.
+2. **Format:** the build now fails in `crates/format` on purpose. Add the fields to `manifest.rs` and `convert.rs` with `#[serde(default)]`; bump `FORMAT_VERSION` with a migration when the meaning of existing data changes, and keep the frozen fixture of every released format version opening and regenerating to what it made ([`file-formats.md`](file-formats.md) › *The promise*).
 3. **Kernel:** implement the operation in `crates/kernel`, returning the body **and the origin map** for persistent naming. Tests per [`testing.md`](testing.md): mass properties, validity, identities, failure cases.
 4. **Regeneration:** evaluate the variant in `crates/regen` (resolve references, evaluate expressions, call the kernel, map errors to a feature status). Add its cache key. Add scenarios to the topological naming suite if the feature creates or consumes named entities.
 5. **Commands:** create/edit commands per the checklist above.

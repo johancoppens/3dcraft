@@ -1,6 +1,10 @@
-# 4. Concepts
+# 6. How 3DCraft thinks
 
-A few ideas explain nearly everything 3DCraft does, and nearly every message it gives.
+*The few ideas behind nearly everything 3DCraft does, and nearly every message it gives: the history,
+variables and units, sketches, features, names that stay put, and failed features.*
+
+You can use 3DCraft with an agent or a Jig without reading this chapter. Read it when you want to
+understand what the agent is doing, or to model by hand.
 
 ## The history is the source of truth
 
@@ -21,8 +25,7 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
   change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
   tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
-  and a feature that names it fails saying so. `feature.when` does the same by a condition (chapter 6,
-  *Switching a feature on or off*).
+  and a feature that names it fails saying so. `feature.when` does the same by a condition ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
 - `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
   list of features (sketches and datums count); one moved before what it is made from fails and says so.
 - `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
@@ -65,119 +68,17 @@ Every length, angle and count may be an **expression** in the document's variabl
 - **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's) is
   in degrees. `pi` is a plain number, so `2 * pi / n` there is a few degrees, not a turn: write
   `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`; a
-plain number there larger than a full turn in radians (`sin(30)`) gives the variable's result a `warning`
-that says so. An angle
-  variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
+  plain number there larger than a full turn in radians (`sin(30)`) gives the variable's result a
+  `warning` that says so. An angle variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
 - The variables and their values are listed by `document.inspect` (`variables`); there is no separate
   list command.
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
   `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, the conditions
-  below, the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
+  of [chapter 8](08-formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
   a plain number).
 
-### Conditions
-
-A comparison (`<`, `<=`, `>`, `>=`, `==`, `!=`) is 1 when it holds and 0 when it does not; both sides
-have the same dimension. `&&` (and), `||` (or) and `!` (not) combine them. Three functions choose:
-
-```json
-[
- ["variable.set", {"name": "length", "expr": "240 mm"}],
- ["variable.set", {"name": "size", "expr": "2"}],
- ["variable.set", {"name": "ribs", "expr": "if(length > 200 mm, 4, 2)"}],
- ["variable.set", {"name": "wall", "expr": "clamp(length / 50, 1.2 mm, 5 mm)"}],
- ["variable.set", {"name": "bore", "expr": "choose(size, 3 mm, 4 mm, 5 mm)"}]
-]
-```
-
-- `if(condition, a, b)` is `a` when the condition holds, else `b`. Only the chosen one is worked out, so
-  the other may fail: `if(n > 0, total / n, 0 mm)` does not divide by zero. `a` and `b` have the same
-  dimension; the branch not taken is only checked for that when it can be worked out. A name that is
-  no variable at all (a typo) is refused in either branch, so it shows before the condition flips.
-- `clamp(x, low, high)` keeps `x` between the bounds; `low` may not be above `high`.
-- `choose(i, a, b, ...)` is the `i`-th value, counted from 1 (`i` a whole number).
-- `==` treats two values as equal when they differ by less than a part in 10^12, so `0.1 + 0.2 == 0.3`
-  holds. Compare values with each other, not their difference with zero: `sin(pi) == 0` is false.
-- Order, loosest first: `||`, then `&&`, then `!`, then the comparisons, then `+ -`, `* /` and `^`:
-  `a > 1 && b > 1 || c` is `((a > 1) && (b > 1)) || c`, `!a > b` is `!(a > b)` and `!a + b` is
-  `!(a + b)`: put the operand of `!` in parentheses when you mean less (`(!a) + b`). `a < b < c` is
-  refused: write `a < b && b < c`.
-- `variable.set` on an existing name changes it, and every feature that uses it is rebuilt.
-  `variable.rename` renames it everywhere it is used. `variable.delete` refuses a variable that is still
-  used and names what uses it; with `"force": true` it deletes it anyway, and what used it then fails
-  (undo brings it back).
-
-### Tables
-
-A **table** holds values a model looks up by row: the sizes of a belt profile, a series of standard
-modules. Each column has a name and, for numbers, a unit; one column, the key (the first unless `key`
-says otherwise), names the rows.
-
-```json
-[
- ["table.set", {"name": "belt", "columns": ["profile", {"name": "pitch", "unit": "mm"}, "teeth"],
-                "rows": [["GT2", 2, 20], ["HTD3", 3, 30]]}],
- ["variable.set", {"name": "profile", "expr": "1"}],
- ["variable.set", {"name": "pitch", "expr": "belt[profile].pitch"}],
- ["variable.set", {"name": "teeth", "expr": "belt[\"HTD3\"].teeth"}],
- ["variable.publish", {"name": "profile", "kind": "choice", "choicesFrom": "belt"}]
-]
-```
-
-- `belt[profile].pitch` is the `pitch` of row `profile`, counted from 1; `belt["HTD3"].pitch` finds the row
-  by its key. The value has the column's unit, so `pitch` is a length here. A row the table does not have,
-  a column it does not have, or a text where a number is needed fails the variable with that reason.
-- `table.set` replaces the whole table in one undo step, and everything that uses its values is rebuilt.
-  `table.list` shows the tables and what uses them; `table.rename` renames a table everywhere;
-  `table.delete` refuses a table that is still used (with `"force": true` it deletes it anyway).
-- A choice parameter with `choicesFrom` offers the table's keys (here GT2 and HTD3) and follows the table
-  when it changes: it keeps its key when rows move, and when its key is removed it becomes 0 (no choice) and
-  `table.set` warns under `parameterWarnings`. `param.set` takes a key as the value; a JSON number is always
-  the row's number. Keys that are numbers are looked up by how they are written: `t["2.5"]`.
-- A cell is a number or a short text (at most 64 characters, no quotes); at most 10 000 rows and 64
-  columns. A table and a variable never share a name.
-
-### Curves from formulas
-
-`sketch.curve` draws the curve `x(t)`, `y(t)` for `t` over a range, in the sketch's axes. `x` and `y` are
-expressions in `t` and the document's variables; inside them `t` is the curve's own parameter, also when
-a variable is called `t` (that variable is not reached there, and a variable used there cannot be renamed
-to `t`). The range `t: [from, to]` is two expressions in the variables, both plain numbers, both angles
-or both lengths. A plain `t` inside `sin`, `cos` and `tan` is in radians. An Archimedean spiral of one
-turn, closed along the x axis:
-
-```json
-[
- ["variable.set", {"name": "a", "expr": "10 mm"}],
- ["variable.set", {"name": "b", "expr": "3 mm"}],
- ["sketch.create", {"name": "Spiral"}],
- ["sketch.curve", {"sketch": "Spiral", "x": "(a + b * t) * cos(t)", "y": "(a + b * t) * sin(t)", "t": [0, "2 * pi"]}],
- ["sketch.line", {"sketch": "Spiral", "from": "e2", "to": "e1"}],
- ["feature.extrude", {"sketch": "Spiral", "distance": "2 mm"}]
-]
-```
-
-The flank of an involute gear tooth, from the base circle `rb` to the tip circle `ra`, is
-`x = rb (cos(t) + t sin(t))`, `y = rb (sin(t) - t cos(t))` for `t` from 0 to `sqrt((ra / rb)^2 - 1)`;
-the [gear example](../examples/gear.json) turns it to its place by adding an angle `g` to `t` inside the
-`sin` and `cos`, and mirrors it for the other flank.
-
-- The curve is fitted again at every regeneration, so it follows the variables: a cubic B-spline within
-  half the document's tolerance of the formulas at every point checked (three in every span between
-  samples, refined until they hold), with its ends exactly where the formulas put them. `sketch.curve`
-  and `sketch.inspect` give the `fit`: `controlPoints` and `deviation`, the largest distance found.
-- It ends on two points (`e1` and `e2` above; or `start` and `end`, existing points), which the curve holds
-  in place: lines, arcs and splines built on them close a profile with it. A constraint that would move
-  them fails the sketch. When the ends meet the curve is closed (one point) and a profile on its own.
-- A formula that fails somewhere in the range (`1 / (t - 1)`), is not finite, gives a single point, or
-  jumps cannot be fitted: the command, or later the sketch, says why and near which `t`. A kink is
-  rounded within the tolerance or refused; split the curve there into two for a sharp corner.
-- A formula curve has no unknowns and takes no `tangent` or `pointOn` constraint yet.
-
-**A spline through computed points.** `sketch.spline` with `"live": true` and `through` keeps the points
-as they are and fits the spline through them again at every regeneration, so points held by expressions
-(`["r * cos(30 deg)", "r * sin(30 deg)"]`) or by constraints move it; without `live` the spline is fitted
-once and then shaped by its control points.
+Conditions (`if`, `choose`, comparisons), tables of values and curves drawn from formulas have a chapter of
+their own: [chapter 8](08-formulas.md).
 
 ## Sketches and constraints
 
@@ -192,7 +93,7 @@ simpler.
 
 Entities are added with `sketch.point`, `sketch.line`, `sketch.polyline`, `sketch.rect`, `sketch.circle`,
 `sketch.arc`, `sketch.path` (lines and arcs end to end), `sketch.spline`, `sketch.curve` (a curve from
-formulas, above) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
+formulas, [chapter 8](08-formulas.md#curves-from-formulas)) and `sketch.pattern`. Each gets an id, `e1`, `e2`, …, returned by the command. Then
 constraints (`sketch.constrain`) tie them down:
 `coincident`, `pointOn`, `horizontal`, `vertical`, `parallel`, `perpendicular`, `tangent`, `equal`,
 `concentric`, `symmetric`, `midpoint`, `fixed`, `x`, `y`, `distance`, `angle`, `radius`, `diameter`.
@@ -224,7 +125,7 @@ A feature makes or changes a body: primitives (`feature.block`, `feature.cylinde
 `feature.sweep`, `feature.loft`, `feature.fill`), combinations (`feature.boolean`, `feature.pattern`,
 `feature.mirror`, `feature.transform`), and operations on faces and edges (`feature.fillet`,
 `feature.chamfer`, `feature.shell`, `feature.offsetFace`, `feature.moveFace`, `feature.draft`,
-`feature.deleteFace`, `feature.thicken`, `feature.thread`). Chapter 6 goes through them.
+`feature.deleteFace`, `feature.thicken`, `feature.thread`). [Chapter 9](09-features.md) goes through them.
 
 Each feature has an id (`F1`, `F2`, … in order) and a name (given with `name`, or made up). Most take the
 body of another feature and *consume* it: after `feature.boolean {"target": "Disc", "tool": "Bore", "name":
@@ -251,7 +152,7 @@ on the flange after two booleans).
 
 You rarely type these: `document.inspect` lists every body's `faceNames`, a click in the window gives the
 name of the face, and `select.query` finds faces by what they are (`{"hole": true, "radius": "4 mm"}`,
-chapter 8).
+[chapter 11](11-selection.md)).
 
 **What happens when you edit upstream.** Because names come from how a face was made, an edit upstream
 (a longer leg, more holes, a different radius) keeps every name that still means something, and the
@@ -274,3 +175,5 @@ document.check
 
 The reason starts with the parameter at fault (`radius`, `edges.0`, `target`), and `causedBy` points at the
 first failure in a chain: fix that one (here, a smaller `inner_r`, or `edit.undo`) and the rest is rebuilt.
+
+**Next:** [A first part, command by command](07-first-part.md).

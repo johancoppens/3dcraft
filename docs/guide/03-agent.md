@@ -1,8 +1,11 @@
-# 2. Working with an agent
+# 3. Working with an AI agent
 
-An agent connected to 3DCraft (chapter 1) builds a model the way a careful draughtsman would: it names the
-dimensions as variables, adds features one by one, and reads back what it built. Your part is to say what
-you want, to watch, and to check.
+*Describe a part, let the agent build it in 3DCraft while you watch, and check what it made.*
+
+An agent connected to 3DCraft ([chapter 1](01-install.md#connect-an-ai-agent-over-mcp)) builds a model the
+way a careful draughtsman would: it names the sizes as variables, adds features one by one, and reads back
+what it built. Your part is to say what you want, to watch, and to check. You do not need to know the
+commands: the agent looks them up itself.
 
 ## What to ask
 
@@ -15,15 +18,29 @@ are measured from:
 
 Things that help:
 
-- **Name the variables** you want to change later (`n`, `thickness`), and say where the part sits ("the
-  corner at the origin", "the bottom on the XY plane"). 3DCraft's axes are X, Y and Z, Z up.
-- **Ask for assertions** (chapter 7): "the volume must be …", "the holes must go through", "the wall at
-  least 2 mm". An assertion is checked again after every change, by 3DCraft, not by the agent's memory.
-- **Ask for a check and a picture** at the end: `document.check` and `doc_render_preview`.
+- **Name the sizes** you want to change later ("the thickness", "the number of holes"), and say where the
+  part sits ("the corner at the origin", "the bottom on the XY plane"). 3DCraft's axes are X, Y and Z,
+  with Z up.
+- **Ask for checks** ([chapter 10](10-measure.md)): "the volume must be …", "the holes must go through",
+  "the wall at least 2 mm". 3DCraft keeps them as *assertions* in the document and checks them again
+  after every change, so they do not depend on the agent's memory.
+- **Ask for a check and a picture** at the end ("run document.check and show me a preview").
 - **Point instead of describing** when it is easier: click a face in the window and say "this face"
-  (chapter 3).
-- **Change by variables**: "make it 8 holes" is one `variable.set`; everything that depends on `n`
+  ([chapter 4](04-window.md#pointing-at-things)).
+- **Change by sizes**: "make it 8 holes" is one change of a variable; everything that depends on it
   follows.
+
+### More things to ask
+
+| You say | The agent … |
+|---|---|
+| "Round the outside edges of the top by 2 mm." | adds a fillet on the edges it finds by their shape and place |
+| "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
+| "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
+| "Show me the history step by step." | plays the history in your window |
+| "Make this a Jig with width, depth and height between 50 and 200 mm." | publishes those variables as parameters and exports a `.3dcraftjig` ([chapter 5](05-jigs.md)) |
+| "Export the outline of the top for the laser cutter." | writes a DXF or SVG of that face at true size ([chapter 12](12-files.md)) |
+| "Something went wrong; give me the bug report." | returns the report of the last failed command ([chapter 14](14-troubleshooting.md#reporting-a-problem)) |
 
 ## A full session
 
@@ -134,9 +151,39 @@ command_run {"id": "file.export", "params": {"path": "flange.step"}}
 The [flange example](../examples/flange.json) is the same part with a chamfer and a named set of bolt
 holes.
 
-## Reading what the agent gets back
+## Checking the agent's work
 
-Every command answers with JSON. The parts worth knowing:
+Do not take "done" on trust; 3DCraft gives you the means to check, without reading code:
+
+1. **The feature list** in the window ([chapter 4](04-window.md)): every feature built (✔), none failed
+   (⚠), every assertion passed.
+2. **The assertions**: they are the agent's claims about the part, written as numbers you can read
+   ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
+3. **Your own numbers**: ask for `measure.distance`, `measure.thickness`, `measure.through` between the
+   faces you point at, or for `document.inspect`'s volume and bounding box, and compare with what you
+   expect.
+4. **Change a variable** and see that the part follows (and the assertions still pass).
+5. **Look**: the window, or `doc_render_preview` with `projection: "orthographic"` and a `view` such as
+   `top` for a picture to scale, or `mode: "ids"` (one colour per face) to see which face is which.
+6. **Reopen the file** (`file.open`): a `.3dcraft` file regenerates bit for bit to the same bodies.
+7. **Play the history** (the player under the feature list, or ask the agent to play it): each step should
+   make sense on its own.
+
+## Tips for a good session
+
+- **Start simple, then add.** "A plate 100 × 60 × 5 mm" first, then "four holes 10 mm from the corners",
+  then "round the corners". Each step is easy to check.
+- **Keep the window in sight.** You see every step appear, and you can stop the agent when it goes the
+  wrong way.
+- **Ask it to save** now and then, under a name you choose. The agent can also undo (`edit.undo`), one
+  step at a time, if something goes wrong.
+- **When 3DCraft refuses something,** the message says why, and often what would work. Ask the agent to
+  read it to you; it is meant to be read.
+
+## What the agent gets back
+
+You do not need this to work with an agent, but it helps to read along. Every command answers with JSON.
+The parts worth knowing:
 
 - **A command that fails** changes nothing and returns an error that starts with the command and the
   parameter, such as *feature.boolean: there is no feature named 'Sheet'; features: Block*. Over MCP it is a tool
@@ -145,7 +192,7 @@ Every command answers with JSON. The parts worth knowing:
 - **A feature that fails** is different: the command succeeded (the feature is in the history) but the
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the parameter,
   the entities and often the largest value that would fit ("the largest radius that fits there is below
-  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See chapter 4. A
+  26 mm"). Features built from it fail too, each with `causedBy`: the one to fix. See [chapter 6](06-concepts.md#failed-features). A
   `command_batch` with `terse` lists under `featuresFailed` the features that still fail when the batch
   ends and that one of its steps added, edited or broke (each with that step and its `causedBy`); they are
   not counted in its `failed`, which counts commands that were refused. A failed assertion is not listed
@@ -167,17 +214,4 @@ Every command answers with JSON. The parts worth knowing:
   broken assertions (`ok` is false), and assertions not proven (warnings). `{"deep": true}` checks more
   (self-intersections, every boolean against its operands) and takes longer.
 
-## Checking the agent's work
-
-Do not take "done" on trust; 3DCraft gives you the means to check, without reading code:
-
-1. **The tree** in the window (chapter 3): every feature built (✔), none failed (⚠).
-2. **The assertions**: they are the agent's claims about the part, written as numbers you can read
-   ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
-3. **Your own numbers**: ask for `measure.distance`, `measure.thickness`, `measure.through` between the
-   faces you point at, or for `document.inspect`'s volume and bounding box, and compare with what you
-   expect.
-4. **Change a variable** and see that the part follows (and the assertions still pass).
-5. **Look**: the window, or `doc_render_preview` with `projection: "orthographic"` and a `view` such as
-   `top` for a picture to scale, or `mode: "ids"` (one colour per face) to see which face is which.
-6. **Reopen the file** (`file.open`): a `.3dcraft` file regenerates bit for bit to the same bodies.
+**Next:** [the window](04-window.md), or straight to [Jigs](05-jigs.md).

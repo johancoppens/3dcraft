@@ -1,51 +1,58 @@
-# 1. Install and connect an agent
+# 1. Install 3DCraft and connect an AI agent
 
-## Install 3DCraft
+*Get 3DCraft running on your computer (or in your browser) and give your AI agent access to it.*
 
-3DCraft is two programs:
+## What you get
 
-- **`craft3d`**, the window. It shows a document and lets you look at it, click on it and open and save
-  files. It does not model by itself: models change through commands.
-- **`craft3d-cli`**, the headless tool: it runs commands, renders pictures, converts files and serves
-  MCP, the connection your AI agent uses (`craft3d-cli --help`, `craft3d-cli <subcommand> --help`). It
-  needs no graphics card.
+3DCraft comes as two programs, and every installer has both:
 
-Every installer has both. Download the one for your computer from the release page you were given
-(the files are named after the version, here 0.1.0):
+- **`craft3d`**, the **window**. It shows your design, lets you look around, click on faces, play the
+  history, set a Jig's parameters, and open, save and export files.
+- **`craft3d-cli`**, the **command line**. It runs commands and scripts, renders pictures, converts files,
+  and is the **MCP server** your AI agent connects through. It needs no graphics card.
+
+There is also a **web version**: 3DCraft in your browser, with nothing to install (see
+[below](#in-the-browser-nothing-to-install)).
+
+## Download
+
+Download the installer for your computer from the release page you were given. The files carry the
+version number, here 0.1.0:
 
 | Your computer | Download | Where `craft3d-cli` ends up |
 |---|---|---|
-| Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself (`… cli`), or `~/.local/bin/craft3d-cli` |
+| Windows (64-bit) | `3DCraft-0.1.0-x86_64.msi`, or `3dcraft-0.1.0-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on your `PATH`), or the unzipped folder |
 | macOS (Apple Silicon: M1 or later) | `3DCraft-0.1.0-aarch64.dmg` | `/Applications/3DCraft.app/Contents/MacOS/craft3d-cli` |
-| Windows (64-bit) | `3DCraft-0.1.0-x86_64.msi`, or `3dcraft-0.1.0-x86_64-windows.zip` | `C:\Program Files\3DCraft\craft3d-cli.exe` (on `PATH`), or the unzipped folder |
-| Any computer, nothing to install | the web version (below) | none: the web version has no MCP |
+| Linux (64-bit Intel or AMD) | `3DCraft-0.1.0-x86_64.AppImage`, or `3dcraft-0.1.0-x86_64-linux.tar.gz` | the AppImage itself (`… cli`), or `~/.local/bin/craft3d-cli` |
+| Any computer, nothing to install | the web version | none: the web version has no MCP |
 
 ### Why your computer warns you
 
-This first release is **not signed**: we have not yet bought the certificates from Apple and Microsoft
-that tell your computer who made a program. So the first time you open 3DCraft, Windows or macOS
-says it does not know the program and stops it. That is expected, and you only have to get past it
-once. The steps below are all it takes; nothing is switched off for other programs.
+This first release is **not signed**: 3DCraft does not yet have the certificates from Apple and Microsoft
+that tell your computer who made a program. So the first time you open it, Windows or macOS says it
+does not know the program and stops it. That is expected, and you only have to get past it once. The
+steps below are all it takes; nothing is switched off for other programs.
 
-### Windows
+## Windows
 
 1. Double-click `3DCraft-0.1.0-x86_64.msi`.
-2. A blue box appears: **"Windows protected your PC"** (Microsoft Defender SmartScreen prevented an
-   unrecognised app from starting). Click **More info**, check that the app is `3DCraft-0.1.0-x86_64.msi`
-   with publisher *Unknown publisher*, and click **Run anyway**.
+2. A blue box appears: **"Windows protected your PC"**. Click **More info**, check that the app is
+   `3DCraft-0.1.0-x86_64.msi` with publisher *Unknown publisher*, and click **Run anyway**.
 3. The installer may ask for an administrator's permission (it installs for all users into
-   `C:\Program Files\3DCraft`). Then 3DCraft is in the Start menu, `.3dcraft` files open with it, and
-   `craft3d-cli` works in a new terminal window.
+   `C:\Program Files\3DCraft`).
 
-Prefer not to install? Unzip `3dcraft-0.1.0-x86_64-windows.zip` anywhere and start `craft3d.exe` from
-the folder; SmartScreen asks the same question the first time (More info › Run anyway).
+3DCraft is now in the Start menu, `.3dcraft` and `.3dcraftjig` files open with it, and `craft3d-cli`
+works in a new terminal window.
 
-### macOS
+> **Prefer not to install?** Unzip `3dcraft-0.1.0-x86_64-windows.zip` anywhere and start `craft3d.exe`
+> from the folder. SmartScreen asks the same question the first time (More info › Run anyway).
+
+## macOS
 
 1. Open `3DCraft-0.1.0-aarch64.dmg` and drag **3DCraft** onto the **Applications** folder beside it.
 2. Open 3DCraft from Applications. macOS refuses the first time, with a message such as *"3DCraft"
    cannot be opened because Apple cannot check it for malicious software*, or *"3DCraft" Not Opened*.
-   Click **Done** (or **OK**); do not move it to the Bin.
+   Click **Done** (or **OK**). Do not move it to the Bin.
 3. Allow it once, in one of two ways:
    - **System Settings › Privacy & Security**: scroll down to *"3DCraft" was blocked to protect your
      Mac* and click **Open Anyway**, then confirm with your password and click **Open**. This works on
@@ -53,52 +60,175 @@ the folder; SmartScreen asks the same question the first time (More info › Run
    - On macOS 14 (Sonoma) and earlier you can instead **right-click** (or Control-click) 3DCraft in
      Applications, choose **Open**, and click **Open** in the question that follows.
 
-From then on 3DCraft opens normally. If you prefer the terminal, this does the same as step 3:
-`xattr -dr com.apple.quarantine /Applications/3DCraft.app`. To use `craft3d-cli` by name, link it onto
-your `PATH`, for example `ln -s /Applications/3DCraft.app/Contents/MacOS/craft3d-cli /usr/local/bin/`.
+From then on 3DCraft opens normally.
 
-### Linux
+> **Terminal users:** `xattr -dr com.apple.quarantine /Applications/3DCraft.app` does the same as
+> step 3. To use `craft3d-cli` by name, link it onto your `PATH`:
+> `ln -s /Applications/3DCraft.app/Contents/MacOS/craft3d-cli /usr/local/bin/`.
 
-Linux does not warn about unsigned programs, but a downloaded file is not allowed to run until you say
-so.
+## Linux
 
-- **AppImage** (one file, nothing installed): make it executable, then start it.
+Linux does not warn about unsigned programs, but a downloaded file may not run until you allow it.
+Both packages need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
 
-  ```sh
-  chmod +x 3DCraft-0.1.0-x86_64.AppImage
-  ./3DCraft-0.1.0-x86_64.AppImage                # the window
-  ./3DCraft-0.1.0-x86_64.AppImage cli --version  # craft3d-cli
-  ```
+**AppImage** (one file, nothing installed):
 
-  In a file manager: right-click › Properties › Permissions › *Allow executing file as program*. A link
-  named `craft3d-cli` that points at the AppImage starts the command line too. If it complains about
-  FUSE, install your distribution's `fuse` (or `libfuse2`) package, or run it with
-  `APPIMAGE_EXTRACT_AND_RUN=1`.
-- **Tarball** (installs for your user into `~/.local`, with a menu entry and the `.3dcraft` file type):
+1. Make it executable: in a file manager, right-click › Properties › Permissions › *Allow executing file
+   as program*; or in a terminal:
 
-  ```sh
-  tar -xzf 3dcraft-0.1.0-x86_64-linux.tar.gz
-  cd 3dcraft-0.1.0-x86_64-linux
-  ./install.sh            # or ./install.sh /some/prefix; uninstall.sh removes it again
-  ```
+   ```sh
+   chmod +x 3DCraft-0.1.0-x86_64.AppImage
+   ```
 
-  Make sure `~/.local/bin` is on your `PATH` (most distributions do this already).
+2. Start it: double-click it, or `./3DCraft-0.1.0-x86_64.AppImage` for the window and
+   `./3DCraft-0.1.0-x86_64.AppImage cli --version` for the command line. A link named `craft3d-cli` that
+   points at the AppImage starts the command line too.
 
-Both need a Linux from about 2022 or newer (glibc 2.35, as in Ubuntu 22.04).
+If it complains about FUSE, install your distribution's `fuse` (or `libfuse2`) package, or run it with
+`APPIMAGE_EXTRACT_AND_RUN=1`.
 
-### In the browser: nothing to install
+**Tarball** (installs for your user into `~/.local`, with a menu entry and the `.3dcraft` file type):
 
-The web version is 3DCraft as a web page: open the address you were given in a recent Chrome, Edge,
-Firefox or Safari. It opens, shows, saves, imports and exports `.3dcraft` and STEP files (drop a file on
-the page, or use the File menu), so it is the quickest way to look at a model someone sent you. It has
-no MCP and no command line, so **an AI agent cannot drive it**: for working with an agent, install one
-of the programs above. Files you open stay in the page's memory: save before you close the tab. It
-draws with WebGPU where the browser has it and WebGL2 otherwise (add `?webgl` to the address to force
-WebGL2).
+```sh
+tar -xzf 3dcraft-0.1.0-x86_64-linux.tar.gz
+cd 3dcraft-0.1.0-x86_64-linux
+./install.sh            # or ./install.sh /some/prefix; uninstall.sh removes it again
+```
 
-### Build from source
+Make sure `~/.local/bin` is on your `PATH` (most distributions do this already).
 
-To build 3DCraft yourself you need [Rust](https://rustup.rs) (rustup installs the pinned toolchain by
+## In the browser: nothing to install
+
+The web version is 3DCraft as a web page. Open the address you were given in a recent Chrome, Edge,
+Firefox or Safari. It can:
+
+- open, show, save, import and export `.3dcraft`, `.3dcraftjig` and STEP files (drop a file on the page,
+  or use the File menu);
+- **use Jigs**: set a Jig's parameters and export the result, so you can make a laser-cut box or a
+  3D-printable pulley without installing anything ([chapter 5](05-jigs.md));
+- build the example models from its start screen.
+
+It has no MCP and no command line, so **an AI agent cannot drive it yet**: for working with an agent,
+install one of the programs above. The web version keeps nothing on a server: files are read from and
+written to your computer ([chapter 12](12-files.md#files-in-the-web-version)). It draws with WebGPU where the
+browser has it and WebGL2 otherwise.
+
+## Check that it works
+
+Start **3DCraft** from your Start menu, Applications folder or app launcher. The window opens on the
+start screen. Click an example card, such as **L-bracket**: it is built in a new tab. That is all it
+takes; [chapter 2](02-first-steps.md) shows you around.
+
+To check the command line too, open a terminal and type (write the full path of `craft3d-cli` from the
+table above when it is not on your `PATH`):
+
+```sh
+craft3d-cli --version
+craft3d-cli run --new '{"units":"mm"}' \
+    --cmd feature.block --params '{"size":["40 mm","20 mm","10 mm"]}' --out box.3dcraft
+craft3d-cli render box.3dcraft --out box.png
+```
+
+This makes a 40 × 20 × 10 mm block, saves it as `box.3dcraft` and draws it into `box.png`.
+
+> **The window needs a graphics adapter**: a graphics card, or a software one such as Mesa's lavapipe on
+> Linux. Without one it says so when it starts. Everything in `craft3d-cli` runs on any computer.
+
+## Connect an AI agent over MCP
+
+An AI agent works with 3DCraft through **MCP** (the Model Context Protocol), which most AI tools support:
+Claude Code, Claude Desktop and other MCP clients. `craft3d-cli mcp` is the MCP server; your AI tool
+starts it, and through it the agent can run every 3DCraft command.
+
+There are two ways to connect. The first is the one to use: **the agent models in the window you are
+watching**.
+
+### Bridged to the window (recommended)
+
+The window listens for the agent on a port on your own computer, protected by a secret token in a file.
+
+1. **Start the window so that it listens.** Open the start screen (close every tab, or start 3DCraft
+   without a file) and look at **Connect an AI agent**: it shows the two command lines for your
+   computer. The first starts the window:
+
+   ```sh
+   craft3d --control 7878 --control-token-file ~/.config/craft3d-control.token \
+       --automation-read-root ~/3dcraft-work --automation-write-root ~/3dcraft-work
+   ```
+
+   The token file is created the first time. The read and write roots are the folders the agent may
+   read and write files in (step 3).
+2. **Give your AI tool the server.** On the start screen of the window you just started, click **Copy
+   configuration** and paste it into your MCP client's configuration (its file and where it lives depend
+   on the client; Claude Desktop calls it `claude_desktop_config.json`). It looks like this, with full
+   paths:
+
+   ```text
+   {
+     "mcpServers": {
+       "craft3d": {
+         "command": "/full/path/to/craft3d-cli",
+         "args": ["mcp", "--bridge", "7878", "--control-token-file",
+                  "/home/me/.config/craft3d-control.token"]
+       }
+     }
+   }
+   ```
+
+   For **Claude Code**, click **Copy for Claude Code** instead and paste the line into a terminal:
+
+   ```sh
+   claude mcp add craft3d -- /full/path/to/craft3d-cli mcp \
+       --bridge 7878 --control-token-file /home/me/.config/craft3d-control.token
+   ```
+
+3. **Ask the agent something** ([chapter 3](03-agent.md)): "Make a 40 × 20 × 10 mm block in 3DCraft". The block appears
+   in the window.
+
+The window must have been started from a terminal with these options (step 1); a window started from the
+menu does not listen. `craft3d` lives next to `craft3d-cli`: on macOS
+`/Applications/3DCraft.app/Contents/MacOS/craft3d`, on Windows `craft3d.exe`, and the AppImage without
+`cli` is the window.
+
+> **Which files can the agent touch?** Only files beneath the read and write roots given to the window
+> (`file.open`, `file.save`, `file.export`, `file.import` and `view.render` refuse any other path). Give the
+> agent a working folder of its own. Without a root, the agent can read or write no file at all, but it
+> can still model and you can save from the File menu.
+
+If the window is not running, the bridged server answers every request with an error that says how to
+start it, and keeps serving: start the window and ask again.
+
+### Headless (no window)
+
+The agent gets a document of its own and shows you pictures it renders:
+
+```sh
+craft3d-cli mcp --automation-read-root /path/to/work --automation-write-root /path/to/work
+```
+
+In the client's configuration, put `"args": ["mcp", "--automation-read-root", "/path/to/work",
+"--automation-write-root", "/path/to/work"]`. Useful on a server, or to let the agent work while you do
+something else; open the file it saved in the window afterwards.
+
+### What the agent gets
+
+The server gives the agent these tools, and tells it how to start when it connects:
+
+| Tool | What it does |
+|---|---|
+| `command_list` | The commands, with their parameters and a summary each (`filter` narrows it) |
+| `command_run` | Runs one command: `{"id": "feature.block", "params": {...}}` |
+| `command_batch` | Runs up to 256 commands in order (`terse: true` returns only failures and the last result) |
+| `doc_inspect` | The whole document: variables, features with their status, bodies with volume, area, faces |
+| `doc_render_preview` | A picture of the model (`view`, `projection`, `box`, `zoom`, `mode: "ids"`) |
+| `selection_get` | What is selected, including what you clicked in the window |
+| `control_call` | Bridged only: a method of the window (`ui.get`, `ui.highlight`, `ui.screenshot`, …) |
+
+The agent needs nothing else: the command summaries and the error messages are written for it to read.
+
+## Build from source
+
+To build 3DCraft yourself you need [Rust](https://rustup.rs) (rustup installs the right toolchain by
 itself on the first build) and, on Linux, the windowing packages:
 
 ```sh
@@ -114,90 +244,4 @@ cargo build --release -p craft3d -p craft3d-cli
 
 This puts both programs in `target/release/`.
 
-## Check that it works
-
-In a terminal (write the full path of `craft3d-cli` from the table above when it is not on your `PATH`;
-for a build from source it is `target/release/craft3d-cli`):
-
-```sh
-craft3d-cli --version
-craft3d-cli commands --filter feature.block
-craft3d-cli run --new '{"units":"mm"}' \
-    --cmd feature.block --params '{"size":["40 mm","20 mm","10 mm"]}' --out box.3dcraft
-craft3d-cli render box.3dcraft --out box.png
-craft3d box.3dcraft
-```
-
-The window needs a graphics adapter (a GPU, or a software one such as Mesa's lavapipe); everything in
-`craft3d-cli` runs on any machine.
-
-## Connect an AI agent over MCP
-
-`craft3d-cli mcp` is an MCP server on standard input and output, so any MCP client that starts local
-(stdio) servers can use it. There are two ways to run it.
-
-**Headless** (the agent has a document of its own; you look at pictures it renders):
-
-```sh
-craft3d-cli mcp --automation-read-root /path/to/work --automation-write-root /path/to/work
-```
-
-**Bridged to the window** (the agent models in the window you are watching: recommended):
-
-```sh
-# 1. start the window with a control port and a private token file (created if missing)
-craft3d --control 7878 --control-token-file ~/.config/craft3d-control.token \
-    --automation-read-root /path/to/work --automation-write-root /path/to/work
-# 2. the MCP server your client starts passes every message to that window
-craft3d-cli mcp --bridge 7878 --control-token-file ~/.config/craft3d-control.token
-```
-
-The window is started from a terminal here, so that it gets these options: `craft3d` is next to
-`craft3d-cli` (on macOS `/Applications/3DCraft.app/Contents/MacOS/craft3d`, on Windows
-`craft3d.exe`; the AppImage without `cli` is the window).
-
-The read and write roots are the only directories a command may read or write files in (`file.open`,
-`file.save`, `file.export`, `file.import`, `view.render`); a path outside them, or any path when a root is
-not given, is refused. Give the agent a working directory of its own. With `--bridge` the roots are the
-window's.
-
-Most MCP clients take a JSON configuration of this shape (the file and its location depend on the
-client; use absolute paths):
-
-```text
-{
-  "mcpServers": {
-    "craft3d": {
-      "command": "/full/path/to/craft3d-cli",
-      "args": ["mcp", "--bridge", "7878", "--control-token-file", "/home/me/.config/craft3d-control.token"]
-    }
-  }
-}
-```
-
-For a headless server, put `"args": ["mcp", "--automation-read-root", "/path/to/work",
-"--automation-write-root", "/path/to/work"]` instead. One concrete example, for a client with a command
-line to add servers (Claude Code):
-
-```sh
-claude mcp add craft3d -- /full/path/to/craft3d-cli mcp \
-    --bridge 7878 --control-token-file /home/me/.config/craft3d-control.token
-```
-
-The server gives the agent these tools:
-
-| Tool | What it does |
-|---|---|
-| `command_list` | The commands, with their parameters and a summary each (`filter` narrows it) |
-| `command_run` | Runs one command: `{"id": "feature.block", "params": {...}}` |
-| `command_batch` | Runs up to 256 commands in order (`terse: true` returns only failures and the last result) |
-| `doc_inspect` | The whole document: variables, features with their status, bodies with volume, area, faces |
-| `doc_render_preview` | A picture of the model (`view`, `projection`, `box`, `zoom`, `mode: "ids"`) |
-| `selection_get` | What is selected, including what you clicked in the window |
-| `control_call` | Bridged only: a method of the window (`ui.get`, `ui.highlight`, `ui.screenshot`, …) |
-
-The server also tells the client, when it connects, how to start (`command_list`, then `file.new`). An
-agent needs nothing else: the command summaries and the error messages are written to be read by it.
-
-If the window is not running, a bridged server answers every request with an error that says how to
-start it, and keeps serving: start the window and ask again.
+**Next:** [Your first five minutes](02-first-steps.md).

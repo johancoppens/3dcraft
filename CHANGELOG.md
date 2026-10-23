@@ -4,37 +4,38 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
-### Added
-
-- **Switch features on and off by a condition.** `feature.when` gives a feature a condition such as `lid` or `profile == 2`; a yes/no or choice parameter of a Jig then switches parts of the model on and off. Such a feature is shown greyed as *inactive*.
-
-### Changed
-
-- **Suppressing a feature no longer breaks what comes after it.** A suppressed boolean, fillet, chamfer, shell or pattern passes the body on unchanged, as other modellers do; a boolean whose tool is suppressed keeps its target. Only what the suppressed feature itself made (a fillet's rounded face) is gone, and a feature that used it says so.
-
-- **Files in the browser.** In Chrome, Edge and on Chromebooks, Open, Save As, Import and Export show your system's file dialog, and Save writes back to the file the document came from. Elsewhere files are downloads, and the status bar says where each file went.
-
 ## [0.1.0] - 2026-10-23
 
-The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Everything can also be done from the command line or a script.
+The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Ready-made designs called Jigs need no AI at all: set their sizes in a form and export. Everything can also be done from the command line or a script, and 3DCraft runs in the browser too.
 
 ### Added
 
-- **Drive it with an AI agent.** A built-in MCP server (`craft3d-cli mcp`) that any MCP client can start: headless, or bridged to the open window so you see every step as the agent works. Every action is a command with a name and plain JSON parameters; the same commands run from the command line, a script or the JSON control channel.
-- **Parametric modelling.** Variables with units and formulas, and an ordered feature history: change a value and the model rebuilds. Undo and redo, roll back, suppress, edit, rename and delete features; a feature that fails says why and can be repaired.
-- **Sketches with a constraint solver.** Lines, arcs, circles, rectangles, splines and patterns, held by dimensions and geometric constraints and solved by 3DCraft's own solver; a sketch that cannot be solved names the constraint at fault.
-- **Features.** Blocks, cylinders, cones, spheres and tori; extrude, revolve, sweep and loft from sketches; patterns, mirror and move; shell, draft, thicken and other face operations; threads and helices; datum planes, axes and points; sheet bodies; several bodies in one document.
-- **Booleans.** Union, subtract and intersect between bodies of any shape, including curved and freeform faces. When an operation cannot be done exactly it refuses with a clear message instead of producing a broken solid.
-- **Fillets and chamfers** on edges, chosen by name or by pointing at them; names stay stable when an earlier feature changes, so a fillet does not jump to another edge.
-- **Measuring and design checks.** Volume, area, mass and inertia, distances, clearance, thickness and symmetry; assertions kept in the document ("this wall is at least 2 mm") are checked at every rebuild. Selection queries and named sets.
-- **Colours and materials** per body and per face, shown in the window and kept in exports.
-- **Files.** The native `.3dcraft` format, with a promise: every file a released version saves opens in every later version. Import STEP; export STEP (the exact geometry), STL, 3MF and OBJ (meshes, with colours), and DXF and SVG (flat outlines of a sketch or a face, for laser cutting and drawings).
-- **Autosave and crash recovery.** Unsaved work is saved in the background; after a crash the window offers to recover it. Closing the window asks before unsaved changes are lost.
-- **The window.** A viewer with a view cube, a feature tree, tabs for open documents, clicking to point at faces, edges and corners, see-through bodies and a section plane, and Open, Save, Import and Export in the File menu. It draws with your graphics card, or on the processor when there is none.
-- **Copy details.** When a command fails, the status bar offers *Copy details*: a short report (version, platform, graphics, the command and the error) to paste into a bug report. An agent gets the same report from the `session.report` command.
-- **Installers.** Linux (AppImage, and a tarball with an install script), macOS (a `.dmg` for Apple Silicon) and Windows (a `.msi` installer, and a zip). They are not signed yet: the user guide explains the warning your system shows and how to get past it.
-- **3DCraft in the browser.** The same program as a web page (WebGPU, or WebGL2), with nothing to install; files stay in the page's memory.
-- **A user guide** (`docs/guide/`) written for working with an AI agent, from installing and connecting an agent to modelling, measuring, files and troubleshooting, with nine example models that check their own volume.
+- **Drive it with an AI agent.** A built-in MCP server (`craft3d-cli mcp`) that any MCP client can start: headless, or bridged to the open window so you see every step as the agent works. The start screen shows the configuration for your computer, with *Copy configuration* and *Copy for Claude Code*. Every action is one of 111 commands with a name and plain JSON parameters; the same commands run from the command line, a script or the JSON control channel, and the agent can light up faces, fly the camera, play the history and take pictures of the window.
+- **Parametric modelling.** Variables with units and formulas, and an ordered feature history: change a value and the model rebuilds. Undo and redo, roll back, suppress, edit, move, rename and delete features; a feature that fails says why (often with the largest size that fits) and can be repaired; features made from it name it as the cause.
+- **Formulas that decide.** Comparisons, `and`, `or` and `not`, `if`, `choose` and `clamp` in any expression; tables of values looked up by row or key (`belt["GT2"].pitch`); features switched on and off by a condition (`feature.when`), so a yes-or-no parameter adds or removes a lid; curves drawn from formulas in a sketch (`sketch.curve`), fitted again whenever the variables change, as in the involute gear example.
+- **Sketches with a constraint solver.** Lines, arcs, circles, rectangles, paths, splines (also through computed points), curves from formulas and patterns, held by dimensions and geometric constraints and solved by 3DCraft's own solver. A sketch that cannot be solved names the constraint at fault and the ones it contradicts; a line squeezed to nothing and a sketch with freedom left are reported.
+- **Features.** Blocks, cylinders, cones, spheres and tori; extrude, revolve, sweep (along a path or a helix) and loft from sketches; patterns, mirror and move; shell, draft, offset, move and delete faces, thicken; ISO metric threads (cosmetic or modelled); datum planes, axes, points and helices; sheet bodies; several bodies in one document.
+- **Booleans.** Union, subtract and intersect between bodies of any shape, including curved and freeform faces, and cuts by sheets. When an operation cannot be done exactly it refuses with a clear message instead of producing a broken solid.
+- **Fillets and chamfers** on edges, chosen by name, by description or by pointing at them; names stay stable when an earlier feature changes, so a fillet does not jump to another edge.
+- **Measuring and design checks.** Volume, area, mass and inertia, distances, clearance, wall thickness, holes that go through, rays and symmetry; assertions kept in the document ("this wall is at least 2 mm") are checked at every rebuild and shown in the window. Selection queries ("every 8 mm hole"), a selection shared between you and the agent, and named sets.
+- **Jigs: designs anyone can set without AI.** Publish the variables that drive a design as parameters (number, whole number, yes or no, a choice; with a label, group, range and step), give it a title and description, and export it as a `.3dcraftjig` (File › Export as Jig…). Opening a Jig shows its **Parameters** tab: drag or type values and the model follows; values are kept in range and the form says so; reset one or all; a value that breaks the model is marked with *Back to last good*. A Jig is never overwritten: Save saves the result as a model, *Open for editing* makes an editable copy, and closing a changed Jig offers to save the result. `craft3d-cli check-range` proves a Jig over its whole parameter range. Three Jigs to try (a laser-cut box, a welding table and a GT2 pulley) are in the separate 3DCraft Jigs collection.
+- **Colours and materials** per body and per face, shown in the window and kept in 3MF, OBJ and STEP exports.
+- **Files.** The native `.3dcraft` format, with a promise: every file a released version saves opens in every later version and rebuilds to the same bodies. Import STEP (solids, sheets and assemblies, with colours). Export STEP (the exact geometry), STL, 3MF and OBJ (meshes at Coarse, Normal or Fine quality, with colours), and DXF and SVG: the flat outline of a sketch or of faces at true size, a whole cut sheet of a named set laid out to your laser's width, or a drawing of the model as seen (orthographic to scale or perspective, hidden lines left out or dashed).
+- **The window.** A start screen with the example models as cards, recent files and how to connect an agent; tabs with a view of their own each; a feature list with an eye to hide a feature and a double click (or ⌖, or F) that flies the camera to it; a history player like a video player (play, step, speed, loop, orbit; Space and the arrow keys); a view cube, see-through bodies and a section plane; the File menu with Open, Save, Import, Export and Export as Jig; a Help menu with this guide, keyboard shortcuts (F1), About and the data folder. It draws with your graphics card, or on the processor when there is none.
+- **Autosave and crash recovery.** Unsaved work is saved in the background; after a crash the window offers to recover it. Closing the window or a tab asks before unsaved changes are lost.
+- **Clear errors and bug reports.** A failed Open, Save, Import or Export shows a dialog with what went wrong. After any failed command the status bar offers *Copy details*: a short report (version, platform, graphics, the command and the error) to paste into a bug report. An agent gets the same report from `session.report`.
+- **Installers.** Linux (AppImage, and a tarball with an install script), macOS (a `.dmg` for Apple Silicon) and Windows (a `.msi` installer, and a zip), with the `.3dcraft` and `.3dcraftjig` file types. They are not signed yet: the user guide explains the warning your system shows and how to get past it.
+- **3DCraft in the browser.** The same program as a web page (WebGPU, or WebGL2), with nothing to install: open, save, import and export with your system's file dialogs in Chrome, Edge and on Chromebooks, as downloads elsewhere; use Jigs; build the examples. A Jig on the same site opens with `?open=`.
+- **The command line.** `craft3d-cli` runs commands and scripts, prints a document's state, renders pictures, converts files, makes a video of how a design is built, proves a Jig over its range, and serves MCP and a JSON-lines protocol.
+- **A user guide** (`docs/guide/`) for first-time users: three ways to use 3DCraft, your first five minutes, working with an AI agent, the window, Jigs, formulas, features, measuring, files and troubleshooting, with pictures, a reference, and ten example models (from an L-bracket to an involute gear) that check their own volume.
+
+### Known limitations
+
+- The installers are not signed, so Windows and macOS warn the first time (the guide shows how to open them).
+- An AI agent cannot drive the web version yet; the web version works on one thread, so a long rebuild holds up the page.
+- The window has no Undo key or menu yet; an agent undoes with `edit.undo`, and a Jig's form has reset and *Back to last good*.
+- Curved edges in drawings of the model as seen are written as fine straight pieces.
+- Some modelling cases are refused rather than built (the message says which); every refusal reported helps.
 
 [Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0

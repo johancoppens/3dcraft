@@ -1,6 +1,6 @@
 # AGENTS.md: guide for AI agents and contributors
 
-3DCraft is an open-source, native, parametric 3D CAD modeller built for AI: every action is a command, so the same engine is driven from the UI, the CLI, a JSON control channel or an MCP server. It is written in **Rust only** (no JavaScript or TypeScript), with its **own CAD kernel, sketch constraint solver and tessellator**: no OpenCascade, Parasolid, ACIS, CGAL or other C/C++ geometry kernel, and no third-party constraint solver (SolveSpace, PlaneGCS, …), in any form. **No Tauri, Electron or webview shells:** the desktop app is native egui/eframe on wgpu, and a later web build is the same Rust compiled to WebAssembly. Never add Tauri (or any webview/JS UI framework) as a dependency, build step or packaging target.
+3DCraft is an open-source, native, parametric 3D CAD modeller built for AI: every action is a command, so the same engine is driven from the UI, the CLI, a JSON control channel or an MCP server. It is written in **Rust only** (no JavaScript or TypeScript), with its **own CAD kernel, sketch constraint solver and tessellator**: no OpenCascade, Parasolid, ACIS, CGAL or other C/C++ geometry kernel, and no third-party constraint solver (SolveSpace, PlaneGCS, …), in any form. **No Tauri, Electron or webview shells:** the desktop app is native egui/eframe on wgpu, and the web build (`apps/craft3d-web`) is the same Rust compiled to WebAssembly. Never add Tauri (or any webview/JS UI framework) as a dependency, build step or packaging target.
 
 3DCraft follows the principles of the storytold `*Craft` apps (PhotoCraft, VectorCraft, …). The product name is always written **3DCraft** in user-facing text: UI, window titles, docs prose. Machine names are lowercase and use the prefix **`craft3d`**, because a Rust crate name cannot start with a digit: crates (`craft3d-*`), binaries (`craft3d`, `craft3d-cli`), environment variables (`CRAFT3D_*`). The native file extension is `.3dcraft`.
 
@@ -22,7 +22,8 @@ Read this file first, then `docs/`.
 | `docs/testing.md` | The AI test loop and the oracles that make a CAD kernel checkable without a human |
 | `docs/contributing.md` | Rules: clean-room, tests, layering, style, commits; the "add a command" checklist |
 | `docs/control-protocol.md` | JSON control channel and MCP: how agents drive and screenshot the running app |
-| `docs/file-formats.md` | The native `.3dcraft` format, STEP export, STL/3MF/OBJ export, and the specs they come from |
+| `docs/file-formats.md` | The native `.3dcraft` format (and `.3dcraftjig`), STEP import and export, STL/3MF/OBJ, DXF/SVG, and the specs they come from |
+| `docs/guide/` | The user guide, for people who use 3DCraft (with an AI agent, with Jigs, by hand); its commands and examples are checked by `guide_examples` |
 | `docs/roadmap.md` | Milestones, **current focus**, definition of done per milestone |
 | `docs/decisions.md` | Decisions taken, and the open ones only the developer can settle |
 | `log/devlog.md` *(local, gitignored)* | What the previous agent landed and what is still open |
@@ -48,14 +49,14 @@ crates/
   testkit                    test helpers (analytic solids, mesh checks, image diff)
 apps/
   craft3d                    desktop app (eframe/wgpu): viewer in phase 1, TCP control server
-  craft3d-cli                headless CLI (convert/info/run/commands/serve/mcp)
+  craft3d-cli                headless CLI (run/info/render/convert/replay/score/check-range/commands/serve/mcp)
   craft3d-fuzz               random multi-step designs, one seed per process (cargo xtask fuzz)
   craft3d-web                the same app in the browser (WebAssembly, one thread; `cargo xtask package --formats web`)
-xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | fuzz | package | web-size
-packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source
+xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus | fuzz | actions | package | web-size | example-thumbs
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source, the web page and its hosting notes
+```
 
-**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio` and `drawing` depend on nothing in the workspace. Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
+**Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio`, `drawing`, `zipstore` and `buildinfo` depend on nothing in the workspace (except `meshio` on `zipstore`, for 3MF). Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
 
 ## 3. Golden rules
 
@@ -115,7 +116,7 @@ cargo test -p craft3d-engine --test panic_hunt                # if you added/cha
 **Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
 
 - **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, `cargo test -p <crates you touched>`, and the tests of the crates that depend on them when you changed behaviour or a public API. A commit that changes only docs, comments or the data of one test needs just the tests it can affect. Such commits go on a work branch, not on `main`.
-- **Before `main` moves, the full gate:** `cargo xtask ci` on the exact commit, once per finished piece of work (a merged branch, a finished round), not once per commit. `main` only fast-forwards to a commit the full gate passed. Run it on a separate checkout so work can go on meanwhile, and read its exit status, not its last lines. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
+- **Before `main` moves, the full gate:** `cargo xtask ci` on the exact commit, once per finished piece of work (a merged branch, a finished round), not once per commit. `main` only fast-forwards to a commit the full gate passed. It runs on the Strix as the `Gate` workflow (`.github/workflows/gate.yml`: `cargo xtask ci`, then `cargo xtask freecad`, and beside them the web module's size, `cargo xtask web-size`), so work can go on meanwhile; read its exit status, not its last lines. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
 
 While iterating, run less and keep the full commands above as the final gate: `cargo test -p <crate> --lib --tests` skips examples and doctests, and `cargo test -p <crate> --test <file>` runs one integration-test file.
 
