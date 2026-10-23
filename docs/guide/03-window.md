@@ -7,15 +7,42 @@ click and select.
 
 ![The 3DCraft window](../img/viewer.png)
 
+## Starting
+
+Without a document the viewport shows the **start screen**: **New document** and **Open…**, the
+[example models](../examples/README.md) (a click builds one in a new document, from the same command script
+the guide's examples use), your **recent files**, and **Connect an AI agent**: the MCP configuration to
+give your client (chapter 1), with this window's own port and token file when it was started with
+`--control`. **Copy configuration** puts it on the clipboard; **Copy for Claude Code** copies the
+`claude mcp add` line. In the browser the start screen says that an agent cannot drive 3DCraft there yet.
+
 ## What you see
 
 - **Tabs** along the top, one per open document; a dot marks unsaved changes. Ctrl+Tab goes to the next,
   Ctrl+W closes one (asking first if it has unsaved changes). The **File** menu has New, Open, Save and
-  Save As (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S).
+  Save As (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S), and **Recent files**: the last ten files opened or
+  saved (by you or by an agent), newest first; one that is not there any more is greyed out, and **Clear
+  recent** empties the list. The list is kept in `3dcraft/recent-files.json` in your state directory,
+  beside the recovery directory; two windows open at once each keep what the other added. `--recent-file`
+  names another file; a window started with a `--recovery-dir` of its own (or `none`) keeps the list for
+  that run only. The browser keeps no recent files.
+- **The Help menu**: **User guide** opens this guide in your browser, **Keyboard shortcuts** (also F1)
+  lists every key and mouse action, **Open data folder** shows 3DCraft's folder in your state directory,
+  with the autosaves, what can be recovered after a crash and the recent files (not in the browser, and
+  not for a window started with folders of its own), and **About 3DCraft** gives the version and the
+  commit it was built from, the platform, the licence (MIT), the links to the guide and the source, and
+  the renderer in use; **Copy system info** copies those lines for a bug report.
 - **The feature tree** on the left: the history, in order. Each feature has a mark: ✔ built, ⚠ failed
   (the reason under it; *caused by …* when it failed because a feature it is made from failed: click that
   one), ⏸ suppressed, ○ after the rollback marker. Under the features, the **assertions**, failed ones in
-  the failed colour with their message.
+  the failed colour with their message. The **eye** at the end of a feature's row hides its body, sketch
+  or datum in the view (click again to show it); the model itself does not change. A double click on a
+  hidden feature's row shows it again and flies to it.
+- **The timeline** under the *Features* heading: drag it to see the model as it was after any step of the
+  history; the features after that step are greyed. Looking back changes nothing in the document.
+  **Roll back here** puts the rollback marker on that step (new features then go in after it), **To end**
+  takes the marker away and shows the whole model again. While you look back, clicks in the viewport do
+  not select (go **To end** first), and a double click on a greyed row goes back to the end and flies to it.
 - **The viewport**: bodies shaded with their edges, sketches as lines, datum planes as translucent squares.
   The model updates after every command the agent runs; a heavy model first shows a quick picture, then
   the sharp one (the status bar says `refining`).
@@ -29,9 +56,13 @@ click and select.
 | Drag with the left button | Orbit |
 | Drag with the right or middle button, or Shift and the left | Pan |
 | Wheel, or a pinch on a touchpad | Zoom about the point under the pointer |
-| F, or **Fit** | Frame the whole model |
+| F | Fly to the selection, or frame the whole model when nothing is selected |
+| **Fit** | Frame the whole model |
+| Double-click a feature in the tree | Select it and fly to what it made |
 | **Iso**, or a click on a face, edge or corner of the view cube | A standard view |
 | **Persp** / **Ortho** | Perspective or orthographic (to scale) |
+
+F1 (or Help, Keyboard shortcuts) lists all of them.
 
 The bar at the bottom of the viewport switches **Sketches** and **Datums** on and off, makes the bodies
 **See-through** (to look at pockets and cavities), and turns on a **Section**: a plane across X, Y or Z,

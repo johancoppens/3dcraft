@@ -18,6 +18,7 @@ pub mod datum;
 pub mod name;
 pub mod sets;
 pub mod sketch;
+pub mod visibility;
 
 pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
 pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
@@ -1474,6 +1475,10 @@ pub struct Document {
     /// defined ([`sets`]). Not part of the history either.
     #[serde(default)]
     pub sets: Vec<NamedSet>,
+    /// The features hidden in the view, in ascending order of id
+    /// ([`visibility`]): view data, not part of the history either.
+    #[serde(default)]
+    pub hidden: Vec<FeatureId>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1679,6 +1684,7 @@ impl Document {
         self.validate_faces()?;
         self.validate_assertions()?;
         self.validate_sets()?;
+        self.validate_hidden()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1953,6 +1959,7 @@ impl Document {
         }
         self.bodies.retain(|entry| entry.feature != id);
         self.faces.retain(|entry| entry.feature != id);
+        self.hidden.retain(|hidden| *hidden != id);
         Ok(self.features.remove(index))
     }
 

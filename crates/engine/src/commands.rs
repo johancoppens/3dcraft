@@ -556,6 +556,7 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
+    open.file = file_on_disk(in_memory, &resolved);
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
     // What reading the file changed (a tolerance outside the range a
@@ -564,6 +565,17 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
         map.insert("warnings".into(), read.into());
     }
     Ok(result)
+}
+
+/// The absolute path of the file at `resolved`, for
+/// [`crate::DocumentStatus::file`]; `None` for a file in memory.
+fn file_on_disk(in_memory: bool, resolved: &std::path::Path) -> Option<String> {
+    if in_memory {
+        return None;
+    }
+    std::path::absolute(resolved)
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
 }
 
 fn file_save(session: &mut Session, params: &Value) -> Run {
@@ -608,6 +620,7 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
+    open.file = file_on_disk(in_memory, &resolved);
     open.recovered = None;
     Ok(json!({ "path": kept }))
 }
@@ -2394,6 +2407,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         });
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
+        }
+        // Hidden in the view (`feature.visible`): said only when it is.
+        if let Some(map) = entry.as_object_mut()
+            && doc.is_hidden(feature.id)
+        {
+            map.insert("hidden".into(), true.into());
         }
         // Failed because something it is made from failed: the feature at
         // the start of that chain, the one to fix.

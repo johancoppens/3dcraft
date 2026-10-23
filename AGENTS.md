@@ -51,7 +51,7 @@ apps/
   craft3d-cli                headless CLI (convert/info/run/commands/serve/mcp)
   craft3d-fuzz               random multi-step designs, one seed per process (cargo xtask fuzz)
   craft3d-web                the same app in the browser (WebAssembly, one thread; `cargo xtask package --formats web`)
-xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | fuzz | package
+xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad | fuzz | package | web-size
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source
 packaging/                   what the installers carry: icons, desktop entry and MIME type, Info.plist, WiX source, the web page and its hosting notes
 

@@ -1,0 +1,9 @@
+[
+  ["variable.set", {"name": "side", "expr": "20 mm"}],
+  ["feature.block", {"size": ["side", "side", "5 mm"], "name": "Plate"}],
+  ["sketch.create", {"name": "Marks"}],
+  ["sketch.circle", {"sketch": "Marks", "center": [0, 0], "radius": "3 mm"}],
+  ["feature.cylinder", {"radius": "2 mm", "height": "10 mm", "position": ["side / 2", "side / 2", "5 mm"], "name": "Peg"}],
+  ["feature.boolean", {"op": "union", "target": "Plate", "tool": "Peg", "keepTool": true, "name": "Joined"}],
+  ["feature.visible", {"feature": ["Marks", "Peg"], "visible": false}]
+]
