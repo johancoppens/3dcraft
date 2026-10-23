@@ -381,7 +381,16 @@ fn commands_prints_the_registry_and_filters_it() {
         .lines()
         .filter(|line| !line.starts_with(' ') && !line.is_empty())
         .collect();
-    assert_eq!(ids, ["variable.set", "variable.delete", "variable.rename"]);
+    assert_eq!(
+        ids,
+        [
+            "variable.set",
+            "variable.delete",
+            "variable.rename",
+            "variable.publish",
+            "variable.unpublish"
+        ]
+    );
     // By label: "Roll Back".
     assert!(
         cli(&["commands", "--filter=roll b"])
