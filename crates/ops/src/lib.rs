@@ -22,6 +22,9 @@ struct Step {
     label: String,
     before: Arc<Document>,
     after: Arc<Document>,
+    /// What a later step may be merged into this one by
+    /// ([`History::apply_merging`]); `None` takes no merge.
+    key: Option<String>,
 }
 
 /// A document with its undo and redo stacks.
@@ -70,14 +73,55 @@ impl History {
         label: &str,
         edit: impl FnOnce(&mut Document) -> Result<T, E>,
     ) -> Result<T, E> {
+        self.apply_merging(label, None, false, edit)
+    }
+
+    /// [`History::apply`] for a step with a `key` (what it changed, such
+    /// as the parameters a form set). With `merge`, when the last step has
+    /// the same key and nothing was undone since, the change is folded
+    /// into that step instead of making a new one, so a run of edits of
+    /// the same thing (a slider dragged) is one undo step; the merged step
+    /// keeps the first one's label, and goes away when the run ends where
+    /// it started. No clock is involved: the caller says when a run goes
+    /// on, so the history stays deterministic.
+    pub fn apply_merging<T, E>(
+        &mut self,
+        label: &str,
+        key: Option<&str>,
+        merge: bool,
+        edit: impl FnOnce(&mut Document) -> Result<T, E>,
+    ) -> Result<T, E> {
         let mut next = (*self.current).clone();
         let value = edit(&mut next)?;
-        if next != *self.current {
+        if next == *self.current {
+            return Ok(value);
+        }
+        let mergeable = merge
+            && key.is_some()
+            && self.redo.is_empty()
+            && self
+                .undo
+                .last()
+                .is_some_and(|last| last.key.as_deref() == key);
+        if mergeable && let Some(last) = self.undo.last_mut() {
+            let after = Arc::new(next);
+            if *after == *last.before {
+                self.current = Arc::clone(&last.before);
+                self.undo.pop();
+            } else {
+                last.after = Arc::clone(&after);
+                self.current = after;
+            }
+            self.revision += 1;
+            return Ok(value);
+        }
+        {
             let after = Arc::new(next);
             self.undo.push(Step {
                 label: label.to_string(),
                 before: Arc::clone(&self.current),
                 after: Arc::clone(&after),
+                key: key.map(str::to_string),
             });
             if self.undo.len() > self.limit {
                 self.undo.remove(0);
@@ -218,5 +262,51 @@ mod tests {
         assert_eq!(h.revision(), 3);
         h.redo();
         assert_eq!(h.revision(), 3);
+    }
+
+    fn merge(h: &mut History, key: Option<&str>, expr: &str) {
+        h.apply_merging::<(), DocError>("Set a", key, true, |doc| doc.set_variable("a", expr))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_run_of_edits_with_the_same_key_is_one_step() {
+        let mut h = history();
+        set(&mut h, "a", "1 mm").unwrap();
+        let start = Arc::clone(h.current());
+        // The first of a run has the key but is not merged itself.
+        h.apply_merging::<(), DocError>("Set a", Some("a"), false, |doc| {
+            doc.set_variable("a", "1.5 mm")
+        })
+        .unwrap();
+        merge(&mut h, Some("a"), "2 mm");
+        merge(&mut h, Some("a"), "3 mm");
+        merge(&mut h, Some("a"), "4 mm");
+        assert_eq!(h.undo_labels().count(), 2);
+        assert_eq!(h.current().variables[0].expr.source(), "4 mm");
+        h.undo();
+        assert!(Arc::ptr_eq(h.current(), &start));
+        // Another key, no key, or an undo in between start a new step.
+        h.redo();
+        merge(&mut h, Some("b"), "5 mm");
+        merge(&mut h, None, "6 mm");
+        merge(&mut h, Some("b"), "7 mm");
+        assert_eq!(h.undo_labels().count(), 5);
+        h.undo();
+        merge(&mut h, Some("b"), "8 mm");
+        assert_eq!(h.undo_labels().count(), 5);
+    }
+
+    #[test]
+    fn a_run_that_ends_where_it_started_leaves_no_step() {
+        let mut h = history();
+        set(&mut h, "a", "1 mm").unwrap();
+        let start = Arc::clone(h.current());
+        let revision = h.revision();
+        merge(&mut h, Some("a"), "2 mm");
+        merge(&mut h, Some("a"), "1 mm");
+        assert!(Arc::ptr_eq(h.current(), &start));
+        assert_eq!(h.undo_labels().count(), 1);
+        assert!(h.revision() > revision);
     }
 }

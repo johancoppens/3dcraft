@@ -1,0 +1,552 @@
+//! Public parameters, document info and the thumbnail (Jigs, phase 1;
+//! docs/decisions.md 2026-10-23, docs/design/document.md › *Public
+//! parameters*). The oracles: a block's volume is the product of the
+//! parameters that size it; the range, the kind and the dimension of
+//! every value are checked before anything changes; a saved Jig opens to
+//! the same document, and the same document draws the same thumbnail.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+mod common;
+
+use common::plain::{assert_close, refused, run, session, session_in, workdir};
+use craft3d_engine::Session;
+use serde_json::{Value, json};
+
+/// A block `w` × `d` × `h` with `w` at most twice `d`, all public, and
+/// an integer, a boolean and a choice that drive nothing.
+fn jig(s: &mut Session) {
+    run(s, "file.new", json!({"units": "mm"}));
+    for (name, expr) in [
+        ("w", "40 mm"),
+        ("d", "20 mm"),
+        ("h", "5 mm"),
+        ("n", "3"),
+        ("lid", "1"),
+        ("style", "2"),
+        ("area", "w * d"),
+    ] {
+        run(s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        s,
+        "feature.block",
+        json!({"name": "Plate", "size": ["w", "d", "h"]}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "w", "label": "Width", "group": "Size", "min": "10 mm", "max": "2 * d", "step": "1 mm", "order": 1}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "d", "label": "Depth", "group": "Size", "min": "5 mm", "max": "100 mm", "order": 2}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "h", "label": "Thickness", "min": "1 mm", "max": "20 mm", "unit": "in"}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "n", "kind": "integer", "min": 1, "max": 6, "group": "Holes"}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "lid", "kind": "boolean", "group": "Holes"}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "style", "kind": "choice", "choices": ["Plain", "Slotted", "Round"]}),
+    );
+}
+
+fn volume(s: &mut Session) -> f64 {
+    run(s, "document.measure", json!({}))["volume"]
+        .as_f64()
+        .unwrap()
+}
+
+fn param<'a>(list: &'a Value, name: &str) -> &'a Value {
+    list["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == name)
+        .unwrap_or_else(|| panic!("no parameter {name} in {list}"))
+}
+
+#[test]
+fn a_jig_lists_its_parameters_in_order_with_ranges_evaluated() {
+    let mut s = session();
+    jig(&mut s);
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(list["jig"], true);
+    let names: Vec<&str> = list["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    // By order, ties by the variables' order; the derived `area` is not
+    // public.
+    assert_eq!(names, ["h", "n", "lid", "style", "w", "d"]);
+    assert_eq!(list["groups"], json!(["", "Holes", "Size"]));
+    let w = param(&list, "w");
+    assert_eq!(w["label"], "Width");
+    assert_eq!(w["kind"], "number");
+    assert_eq!(w["unit"], "mm");
+    assert_close(&w["value"], 40.0, "w");
+    assert_eq!(w["max"]["expr"], "2 * d");
+    assert_close(&w["max"]["value"], 40.0, "max of w");
+    assert_close(&w["step"]["value"], 1.0, "step of w");
+    assert_eq!(w["atDefault"], true);
+    assert_eq!(w["valid"], true);
+    // Shown in its own unit: 5 mm in inches.
+    let h = param(&list, "h");
+    assert_eq!(h["unit"], "in");
+    assert_close(&h["value"], 5.0 / 25.4, "h in inches");
+    assert_close(&h["max"]["value"], 20.0 / 25.4, "max of h");
+    let style = param(&list, "style");
+    assert_eq!(style["choices"], json!(["Plain", "Slotted", "Round"]));
+    assert_eq!(style["choice"], "Slotted");
+    assert_eq!(style["unit"], Value::Null);
+    // Without a label, the name.
+    assert_eq!(param(&list, "n")["label"], "n");
+    // document.inspect carries the description too.
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let w = inspect["variables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == "w")
+        .unwrap();
+    assert_eq!(w["public"]["label"], "Width");
+    assert_eq!(w["public"]["kind"], "number");
+}
+
+#[test]
+fn param_set_applies_a_batch_in_one_step_and_regenerates_once() {
+    let mut s = session();
+    jig(&mut s);
+    assert_close(&json!(volume(&mut s)), 40.0 * 20.0 * 5.0, "start");
+    let undo_before =
+        run(&mut s, "document.inspect", json!({"measures": false}))["history"]["undo"]
+            .as_array()
+            .unwrap()
+            .len();
+    let result = run(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": "30 mm", "w": 50, "h": "0.25 in", "lid": false}}),
+    );
+    assert_eq!(result["changed"], true);
+    assert!(result.get("failed").is_none(), "{result}");
+    assert_close(&json!(volume(&mut s)), 50.0 * 30.0 * 6.35, "after");
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "w")["expr"], "50 mm");
+    assert_eq!(param(&list, "lid")["expr"], "0");
+    assert_eq!(param(&list, "w")["atDefault"], false);
+    let undo = run(&mut s, "document.inspect", json!({"measures": false}))["history"]["undo"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(undo.len(), undo_before + 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_close(&json!(volume(&mut s)), 40.0 * 20.0 * 5.0, "undone");
+    run(&mut s, "edit.redo", json!({}));
+
+    // A reset goes back to every default in one step.
+    run(&mut s, "param.set", json!({"reset": true}));
+    assert_close(&json!(volume(&mut s)), 40.0 * 20.0 * 5.0, "reset");
+    let list = run(&mut s, "param.list", json!({}));
+    assert!(
+        list["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["atDefault"] == true),
+        "{list}"
+    );
+    // Setting what is there already changes nothing and adds no step.
+    let again = run(&mut s, "param.set", json!({"values": {"w": "40 mm"}}));
+    assert_eq!(again["changed"], false);
+}
+
+#[test]
+fn a_drag_merges_into_one_undo_step() {
+    let mut s = session();
+    jig(&mut s);
+    let steps = |s: &mut Session| {
+        run(s, "document.inspect", json!({"measures": false}))["history"]["undo"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let start = steps(&mut s);
+    run(&mut s, "param.set", json!({"values": {"w": 30}}));
+    for w in [31, 32, 33] {
+        run(
+            &mut s,
+            "param.set",
+            json!({"values": {"w": w}, "merge": true}),
+        );
+    }
+    assert_eq!(steps(&mut s), start + 1);
+    // Other parameters do not merge into it.
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": 25}, "merge": true}),
+    );
+    assert_eq!(steps(&mut s), start + 2);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_close(&json!(volume(&mut s)), 40.0 * 20.0 * 5.0, "undone drag");
+}
+
+#[test]
+fn param_set_refuses_what_a_form_would_clamp_and_changes_nothing() {
+    let mut s = session();
+    jig(&mut s);
+    let cases: &[(Value, &str)] = &[
+        (
+            json!({"w": "50 mm"}),
+            "outside its range, from 10 mm to 40 mm (`2 * d`)",
+        ),
+        (json!({"w": "5 mm"}), "outside its range"),
+        (
+            json!({"w": "5"}),
+            "is a length, and `5` gives a plain number",
+        ),
+        (json!({"w": "30 deg"}), "is a length"),
+        (json!({"w": "d + 1 mm"}), "takes a value, not a formula"),
+        (json!({"w": "((("}), "does not read"),
+        (json!({"area": "5 mm"}), "`area` is not a public parameter"),
+        (json!({"nope": 1}), "not a public parameter"),
+        (json!({"n": 2.5}), "not a whole number"),
+        (json!({"n": 7}), "outside its range"),
+        (json!({"lid": 2}), "not 0 (off) or 1 (on)"),
+        (
+            json!({"style": 4}),
+            "not a choice: a whole number from 1 to 3",
+        ),
+        (json!({"style": 0}), "not a choice"),
+        (json!({"w": true}), "not a boolean"),
+        (json!({"w": [1]}), "must be a string"),
+        // Moving d would leave w above its range of 2 * d.
+        (json!({"d": "15 mm"}), "would make `w` invalid"),
+    ];
+    let before = run(&mut s, "document.inspect", json!({"measures": false}));
+    for (values, expected) in cases {
+        let e = refused(&mut s, "param.set", json!({ "values": values }));
+        assert!(e.contains(expected), "{values}: {e}");
+        assert!(
+            e.contains("nothing was changed") || !e.contains("outside"),
+            "{e}"
+        );
+    }
+    let after = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(before["variables"], after["variables"]);
+    assert_eq!(before["history"], after["history"]);
+    // Both at once is fine.
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": "15 mm", "w": "30 mm"}}),
+    );
+    assert_close(&json!(volume(&mut s)), 30.0 * 15.0 * 5.0, "both");
+    // Bad shapes of the params.
+    for params in [
+        json!({"values": [1]}),
+        json!({"values": {"w": 1}, "reset": "yes"}),
+        json!({"other": 1}),
+    ] {
+        refused(&mut s, "param.set", params);
+    }
+}
+
+#[test]
+fn publishing_is_refused_with_a_reason_an_agent_can_act_on() {
+    let mut s = session();
+    jig(&mut s);
+    let cases: &[(Value, &str)] = &[
+        (json!({"name": "ghost"}), "there is no variable `ghost`"),
+        (json!({"name": "area"}), "is `w * d`, a formula"),
+        (json!({"name": "d", "max": "10 mm"}), "outside its range"),
+        (json!({"name": "d", "min": "w / 0"}), "does not evaluate"),
+        (json!({"name": "d", "min": "nothere"}), "does not evaluate"),
+        (json!({"name": "d", "max": "d * 2"}), "uses `d` itself"),
+        (
+            json!({"name": "d", "min": "5 deg"}),
+            "is an angle, and its value a length",
+        ),
+        (json!({"name": "d", "step": "-1 mm"}), "not positive"),
+        (
+            json!({"name": "d", "min": "50 mm", "max": "10 mm"}),
+            "range is empty",
+        ),
+        (
+            json!({"name": "d", "unit": "deg"}),
+            "its unit deg is not one of a length",
+        ),
+        (json!({"name": "d", "unit": "furlong"}), "is not a unit"),
+        (
+            json!({"name": "d", "kind": "integer"}),
+            "not a whole number",
+        ),
+        (json!({"name": "d", "kind": "weird"}), "unknown kind"),
+        (
+            json!({"name": "d", "default": "500 mm"}),
+            "its default 500 mm is outside",
+        ),
+        (json!({"name": "d", "default": "w"}), "is a formula"),
+        (json!({"name": "n", "kind": "choice"}), "at least one label"),
+        (
+            json!({"name": "n", "kind": "choice", "choices": ["a", "b"]}),
+            "is not a choice",
+        ),
+        (
+            json!({"name": "n", "kind": "number", "choices": ["a"]}),
+            "only a choice has choices",
+        ),
+        (json!({"name": "n", "choices": "a"}), "list of labels"),
+        (
+            json!({"name": "n", "order": 1.5}),
+            "`order` must be a whole number",
+        ),
+        (
+            json!({"name": "n", "label": "x".repeat(300)}),
+            "at most 256 bytes",
+        ),
+    ];
+    let before = run(&mut s, "param.list", json!({}));
+    for (params, expected) in cases {
+        let e = refused(&mut s, "variable.publish", params.clone());
+        assert!(e.contains(expected), "{params}: {e}");
+    }
+    assert_eq!(run(&mut s, "param.list", json!({})), before);
+    // On an empty document there is nothing to publish.
+    let mut empty = session();
+    run(&mut empty, "file.new", json!({}));
+    let e = refused(&mut empty, "variable.publish", json!({"name": "w"}));
+    assert!(e.contains("has no variables"), "{e}");
+    let e = refused(&mut empty, "param.set", json!({"values": {}}));
+    assert!(e.contains("no public parameters"), "{e}");
+}
+
+#[test]
+fn republishing_changes_only_what_is_given_and_unpublish_keeps_the_value() {
+    let mut s = session();
+    jig(&mut s);
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "w", "description": "Across the plate", "max": null}),
+    );
+    let w = param(&run(&mut s, "param.list", json!({})), "w").clone();
+    assert_eq!(w["label"], "Width");
+    assert_eq!(w["description"], "Across the plate");
+    assert_eq!(w["max"], Value::Null);
+    assert_close(&w["min"]["value"], 10.0, "min kept");
+    // A choice that becomes a number loses its choices.
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "style", "kind": "number"}),
+    );
+    let style = param(&run(&mut s, "param.list", json!({})), "style").clone();
+    assert!(style.get("choices").is_none(), "{style}");
+    let r = run(&mut s, "variable.unpublish", json!({"name": "w"}));
+    assert_eq!(r["changed"], true);
+    let r = run(&mut s, "variable.unpublish", json!({"name": "w"}));
+    assert_eq!(r["changed"], false);
+    refused(&mut s, "variable.unpublish", json!({"name": "ghost"}));
+    let list = run(&mut s, "param.list", json!({}));
+    assert!(
+        list["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["name"] != "w")
+    );
+    assert_close(&json!(volume(&mut s)), 40.0 * 20.0 * 5.0, "value kept");
+}
+
+#[test]
+fn variable_commands_respect_public_parameters() {
+    let mut s = session();
+    jig(&mut s);
+    // A form can only set a value: a formula is refused while public.
+    let e = refused(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "2 * d"}),
+    );
+    assert!(e.contains("variable.unpublish"), "{e}");
+    // variable.set is the designer's tool and does not check ranges;
+    // document.check says so.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "90 mm"}),
+    );
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], false);
+    let problem = check["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["parameter"] == "w")
+        .unwrap();
+    assert!(
+        problem["problem"]
+            .as_str()
+            .unwrap()
+            .contains("outside its range"),
+        "{problem}"
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "w")["valid"], false);
+    // A param.set of another parameter is not blocked by w being off
+    // already, but one that leaves it off is.
+    run(&mut s, "param.set", json!({"values": {"h": "6 mm"}}));
+    run(&mut s, "param.set", json!({"values": {"w": "40 mm"}}));
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+    // The range of w names d: deleting d says so.
+    let e = refused(&mut s, "variable.delete", json!({"name": "d"}));
+    assert!(e.contains("the parameter `w` (max)"), "{e}");
+    // A rename follows into the range and keeps the description.
+    run(
+        &mut s,
+        "variable.rename",
+        json!({"name": "d", "to": "depth"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "w")["max"]["expr"], "2 * depth");
+    assert_eq!(param(&list, "depth")["label"], "Depth");
+    assert_eq!(param(&list, "w")["valid"], true);
+}
+
+#[test]
+fn document_info_is_set_cleared_and_shown() {
+    let mut s = session();
+    jig(&mut s);
+    let empty = run(&mut s, "document.info", json!({}));
+    assert_eq!(empty["title"], "");
+    assert!(
+        run(&mut s, "document.inspect", json!({"measures": false}))
+            .get("info")
+            .is_none()
+    );
+    let info = run(
+        &mut s,
+        "document.info",
+        json!({"title": "Plate", "author": "Test", "licence": "CC-BY-4.0", "tags": ["plate", "laser"]}),
+    );
+    assert_eq!(info["title"], "Plate");
+    assert_eq!(info["tags"], json!(["plate", "laser"]));
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(inspect["info"]["licence"], "CC-BY-4.0");
+    assert_eq!(
+        run(&mut s, "param.list", json!({}))["info"]["author"],
+        "Test"
+    );
+    let info = run(&mut s, "document.info", json!({"tags": null, "author": ""}));
+    assert_eq!(info["tags"], json!([]));
+    assert_eq!(info["author"], "");
+    assert_eq!(info["title"], "Plate");
+    for params in [
+        json!({"tags": "plate"}),
+        json!({"tags": [" padded"]}),
+        json!({"title": 3}),
+        json!({"title": "x".repeat(2000)}),
+        json!({"colour": "red"}),
+    ] {
+        refused(&mut s, "document.info", params);
+    }
+}
+
+#[test]
+fn a_jig_saves_and_opens_with_its_parameters_info_and_a_thumbnail() {
+    let dir = workdir("jig-params", "save");
+    let mut s = session_in(&dir);
+    jig(&mut s);
+    run(
+        &mut s,
+        "document.info",
+        json!({"title": "Plate", "licence": "MIT", "tags": ["plate"]}),
+    );
+    let saved = run(&mut s, "file.save", json!({"path": "plate.3dcraft"}));
+    assert_eq!(saved["thumbnail"], true, "{saved}");
+    let before = run(&mut s, "param.list", json!({}));
+    let bytes = std::fs::read(dir.join("plate.3dcraft")).unwrap();
+    let png = craft3d_format::thumbnail(&bytes).unwrap().unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let decoder = png::Decoder::new(std::io::Cursor::new(&png));
+    let reader = decoder.read_info().unwrap();
+    assert_eq!((reader.info().width, reader.info().height), (400, 300));
+    assert!(png.len() < 64 * 1024, "{} bytes", png.len());
+
+    let mut t = session_in(&dir);
+    run(&mut t, "file.open", json!({"path": "plate.3dcraft"}));
+    assert_eq!(run(&mut t, "param.list", json!({})), before);
+    // Saved again, the same bytes: the thumbnail is deterministic.
+    run(&mut t, "file.save", json!({"path": "again.3dcraft"}));
+    assert_eq!(std::fs::read(dir.join("again.3dcraft")).unwrap(), bytes);
+    // Another value, another picture.
+    run(&mut t, "param.set", json!({"values": {"d": "60 mm"}}));
+    run(&mut t, "file.save", json!({"path": "deeper.3dcraft"}));
+    let other = craft3d_format::thumbnail(&std::fs::read(dir.join("deeper.3dcraft")).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_ne!(other, png);
+
+    // Opted out, and a plain model, have none.
+    let r = run(
+        &mut t,
+        "file.save",
+        json!({"path": "bare.3dcraft", "thumbnail": false}),
+    );
+    assert!(r.get("thumbnail").is_none(), "{r}");
+    let bare = std::fs::read(dir.join("bare.3dcraft")).unwrap();
+    assert_eq!(craft3d_format::thumbnail(&bare).unwrap(), None);
+    assert_eq!(
+        craft3d_format::from_bytes(&bare).unwrap(),
+        craft3d_format::from_bytes(&std::fs::read(dir.join("deeper.3dcraft")).unwrap()).unwrap()
+    );
+    let mut plain = session_in(&dir);
+    run(&mut plain, "file.new", json!({}));
+    run(&mut plain, "feature.block", json!({"size": [1, 2, 3]}));
+    let r = run(&mut plain, "file.save", json!({"path": "plain.3dcraft"}));
+    assert!(r.get("thumbnail").is_none(), "{r}");
+    // Asked for on a document without bodies: saved without, and said why.
+    let mut nothing = session_in(&dir);
+    run(&mut nothing, "file.new", json!({}));
+    run(
+        &mut nothing,
+        "variable.set",
+        json!({"name": "a", "expr": "1 mm"}),
+    );
+    run(&mut nothing, "variable.publish", json!({"name": "a"}));
+    let r = run(
+        &mut nothing,
+        "file.save",
+        json!({"path": "empty-jig.3dcraft"}),
+    );
+    assert_eq!(r["thumbnail"], false);
+    assert!(
+        r["thumbnailError"].as_str().unwrap().contains("no bodies"),
+        "{r}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -50,8 +50,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3. loosest is the cap on the tolerance any vertex or edge may have of its own (geometry that is not exact to the document's tolerance, as imported files bring it), at least the tolerance: an operation on a body with an entity looser than it refuses.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
-    spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
-        "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true.", doc: true, file_save),
+    spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false, "thumbnail": boolean = true for a Jig}"#,
+        "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true. With thumbnail (the default for a Jig, a document with public parameters) the file also holds thumb.png, a 400 x 300 picture of the bodies from the iso view drawn by the CPU renderer (the same document gives the same picture), for a gallery; the result says thumbnail: true when it was written, and thumbnailError why not (no bodies yet): the document is saved all the same.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
@@ -133,13 +133,27 @@ pub(crate) fn edit<T>(
     label: &str,
     change: impl FnOnce(&mut Document) -> Result<T, DocError>,
 ) -> Result<T, CommandError> {
+    edit_merging(session, command, label, None, false, change)
+}
+
+/// [`edit`] as a step with a `key`, folded into the last undo step when
+/// `merge` is true and that step has the same key
+/// (`History::apply_merging`).
+pub(crate) fn edit_merging<T>(
+    session: &mut Session,
+    command: &'static str,
+    label: &str,
+    key: Option<&str>,
+    merge: bool,
+    change: impl FnOnce(&mut Document) -> Result<T, DocError>,
+) -> Result<T, CommandError> {
     // Every edit ends with the sketches solved and their solution stored,
     // in the same undo step: a changed variable moves the sketches that
     // use it, and the next solve starts from where they are now.
     let open = session.document_mut()?;
     let cache = &mut open.cache;
     open.history
-        .apply(label, |doc| {
+        .apply_merging(label, key, merge, |doc| {
             // A file from before image places were stored: where the
             // images are now, taken before the change, so the solve after
             // it can carry the sketches along from there. Added only when
@@ -526,14 +540,16 @@ fn load_from_disk(
 fn save_to_disk(
     resolved: &std::path::Path,
     document: &craft3d_doc::Document,
+    thumbnail: Option<&[u8]>,
 ) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        craft3d_format::save(resolved, document).map_err(|e| e.to_string())
+        craft3d_format::save_with_thumbnail(resolved, document, thumbnail)
+            .map_err(|e| e.to_string())
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (resolved, document);
+        let _ = (resolved, document, thumbnail);
         Err("there is no file system here, only files in memory".to_string())
     }
 }
@@ -567,8 +583,9 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
 }
 
 fn file_save(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.save", params, &["path", "overwrite"])?;
+    let p = Params::new("file.save", params, &["path", "overwrite", "thumbnail"])?;
     let overwrite = p.bool("overwrite")?.unwrap_or(false);
+    let thumbnail = p.bool("thumbnail")?;
     let path = match (p.str("path")?, &session.document()?.path) {
         (Some(path), _) => path.to_string(),
         (None, Some(own)) => own.clone(),
@@ -593,15 +610,28 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         ));
     }
     let cannot = |e: String| CommandError::new(format!("file.save: cannot save `{path}`: {e}"));
+    // A Jig is saved with a picture for a gallery, unless told not to;
+    // one that cannot be drawn (no bodies yet) is saved without.
+    let wants_thumbnail = thumbnail.unwrap_or_else(|| open.history.current().is_jig());
+    let (png, thumbnail_error) = if wants_thumbnail {
+        match thumbnail_png(session) {
+            Ok(png) => (Some(png), None),
+            Err(e) => (None, Some(e.message().to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let open = session.document_mut()?;
+    let document = std::sync::Arc::clone(open.history.current());
     let revision = open.history.revision();
     if in_memory {
-        let bytes =
-            craft3d_format::to_bytes(open.history.current()).map_err(|e| cannot(e.to_string()))?;
+        let bytes = craft3d_format::to_bytes_with_thumbnail(&document, png.as_deref())
+            .map_err(|e| cannot(e.to_string()))?;
         session
             .write_resolved(&resolved, bytes)
             .map_err(|e| cannot(e.message().to_string()))?;
     } else {
-        save_to_disk(&resolved, open.history.current()).map_err(cannot)?;
+        save_to_disk(&resolved, &document, png.as_deref()).map_err(cannot)?;
     }
     let open = session.document_mut()?;
     open.saved_revision = Some(revision);
@@ -609,7 +639,16 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
     open.recovered = None;
-    Ok(json!({ "path": kept }))
+    let mut result = json!({ "path": kept });
+    if let Some(map) = result.as_object_mut()
+        && wants_thumbnail
+    {
+        map.insert("thumbnail".into(), png.is_some().into());
+        if let Some(error) = thumbnail_error {
+            map.insert("thumbnailError".into(), error.into());
+        }
+    }
+    Ok(result)
 }
 
 fn file_close(session: &mut Session, params: &Value) -> Run {
@@ -1139,6 +1178,15 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
              its new value instead{now}"
         ));
     }
+    // A public parameter is set by a form, which can only set a value.
+    if let Some(variable) = session.document()?.history.current().variable(name)
+        && variable.public.is_some()
+        && !crate::param_cmds::is_value(&expr)
+    {
+        return fail(format!(
+            "variable.set: `{name}` is a public parameter, so its expression must be a value (a number with its unit), not the formula `{expr}`; variable.unpublish it first to give it a formula"
+        ));
+    }
     let before = failing(session)?;
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)
@@ -1247,6 +1295,24 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
     for variable in &doc.variables {
         if variable.name != name && mentions(variable.expr.source(), name) {
             users.push(format!("the variable `{}`", variable.name));
+        }
+    }
+    for variable in &doc.variables {
+        let Some(public) = &variable.public else {
+            continue;
+        };
+        let bounds: Vec<&str> = public
+            .bounds()
+            .into_iter()
+            .filter(|(_, expr)| expr.is_some_and(|e| mentions(e.source(), name)))
+            .map(|(what, _)| what)
+            .collect();
+        if !bounds.is_empty() {
+            users.push(format!(
+                "the parameter `{}` ({})",
+                variable.name,
+                bounds.join(", ")
+            ));
         }
     }
     for feature in &doc.features {
@@ -2361,7 +2427,21 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     let variables: Vec<Value> = regen
         .variables
         .iter()
-        .map(|v| variable_json(&regen, &v.name, unit))
+        .map(|v| {
+            let mut entry = variable_json(&regen, &v.name, unit);
+            // A public parameter: how a form shows it (param.list has it
+            // evaluated).
+            if let (Some(map), Some(public)) = (
+                entry.as_object_mut(),
+                doc.variable(&v.name).and_then(|d| d.public.as_ref()),
+            ) {
+                map.insert(
+                    "public".into(),
+                    serde_json::to_value(public).unwrap_or(Value::Null),
+                );
+            }
+            entry
+        })
         .collect();
     let mut features = Vec::new();
     let mut bodies = Vec::new();
@@ -2591,6 +2671,13 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 .collect();
             map.insert("sets".into(), sets.into());
         }
+        // What a gallery shows of it (document.info): only when set.
+        if !doc.info.is_empty() {
+            map.insert(
+                "info".into(),
+                serde_json::to_value(&doc.info).unwrap_or(Value::Null),
+            );
+        }
     }
     // The assertions and how each stands: only when there are any.
     let states: Vec<crate::AssertionState> = session
@@ -2748,6 +2835,13 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     for variable in regen.variables.iter().filter(|_| only.is_none()) {
         if let Err(error) = &variable.value {
             problems.push(json!({ "variable": variable.name, "problem": error }));
+        }
+    }
+    // A public parameter out of its range or not of its kind (variable.set
+    // does not check them; param.set does).
+    if only.is_none() {
+        for (name, problem) in crate::param_cmds::parameter_problems(doc) {
+            problems.push(json!({ "parameter": name, "problem": problem }));
         }
     }
     let mut checked = 0;
@@ -3196,26 +3290,63 @@ impl Framing {
     }
 }
 
+/// The parameters of `view.render`.
+const VIEW_RENDER_PARAMS: &[&str] = &[
+    "path",
+    "width",
+    "height",
+    "view",
+    "projection",
+    "zoom",
+    "box",
+    "mode",
+    "section",
+    "tolerance",
+];
+
 fn view_render(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new(
-        "view.render",
-        params,
-        &[
-            "path",
-            "width",
-            "height",
-            "view",
-            "projection",
-            "zoom",
-            "box",
-            "mode",
-            "section",
-            "tolerance",
-        ],
-    )?;
+    let p = Params::new("view.render", params, VIEW_RENDER_PARAMS)?;
+    let path = p.str("path")?;
+    let resolved = path
+        .map(|path| session.workspace.resolve_write(path))
+        .transpose()?;
+    let (mut result, png) = render_picture(session, &p)?;
+    let Some(map) = result.as_object_mut() else {
+        return Ok(result);
+    };
+    match (path, resolved) {
+        (Some(path), Some(resolved)) => {
+            session.write_resolved(&resolved, png)?;
+            map.insert("path".into(), path.into());
+        }
+        _ => {
+            map.insert("mime".into(), "image/png".into());
+            map.insert("base64".into(), base64::encode(&png).into());
+        }
+    }
+    Ok(result)
+}
+
+/// Size of the thumbnail a Jig is saved with, in pixels.
+pub(crate) const THUMBNAIL_SIZE: (u32, u32) = (400, 300);
+
+/// The thumbnail of the active document: a PNG of the bodies from the
+/// default view (iso, perspective, the whole model) at
+/// [`THUMBNAIL_SIZE`], with the CPU renderer, so the same document gives
+/// the same bytes.
+pub(crate) fn thumbnail_png(session: &mut Session) -> Result<Vec<u8>, CommandError> {
+    let (width, height) = THUMBNAIL_SIZE;
+    let params = json!({ "width": width, "height": height });
+    let p = Params::new("view.render", &params, VIEW_RENDER_PARAMS)?;
+    render_picture(session, &p).map(|(_, png)| png)
+}
+
+/// The picture of `view.render` with what it says about it; its `path`
+/// is left to the caller.
+fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>), CommandError> {
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
     let height = p.integer("height", 16, 4096)?.unwrap_or(600);
-    let framing = Framing::from_params(&p, "view.render")?;
+    let framing = Framing::from_params(p, "view.render")?;
     let (view, orthographic, zoom, look_at) = (
         framing.view,
         framing.orthographic,
@@ -3231,11 +3362,6 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
-    let path = p.str("path")?;
-    let resolved = path
-        .map(|path| session.workspace.resolve_write(path))
-        .transpose()?;
-
     // The picture's scene: at the tolerance given, or at a quarter to half
     // a pixel where the picture shows the model, never finer than the
     // display's floor, within a total budget (`Session::picture_scene`).
@@ -3314,10 +3440,7 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         "maxAngle": scene.max_angle.map(f64::to_degrees),
         "coarsened": scene.coarsened,
     });
-    let Some(map) = result.as_object_mut() else {
-        return Ok(result);
-    };
-    if let Some((plane, _)) = &section {
+    if let (Some((plane, _)), Some(map)) = (&section, result.as_object_mut()) {
         map.insert(
             "section".into(),
             json!({
@@ -3328,17 +3451,7 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             }),
         );
     }
-    match (path, resolved) {
-        (Some(path), Some(resolved)) => {
-            session.write_resolved(&resolved, png)?;
-            map.insert("path".into(), path.into());
-        }
-        _ => {
-            map.insert("mime".into(), "image/png".into());
-            map.insert("base64".into(), base64::encode(&png).into());
-        }
-    }
-    Ok(result)
+    Ok((result, png))
 }
 
 #[cfg(test)]

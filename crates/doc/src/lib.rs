@@ -16,6 +16,7 @@ pub mod assertion;
 pub mod blob;
 pub mod datum;
 pub mod name;
+pub mod public;
 pub mod sets;
 pub mod sketch;
 
@@ -30,6 +31,10 @@ pub use name::{
     CurveIndex, CurvePath, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
     OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation, offset_groups,
+};
+pub use public::{
+    DocInfo, MAX_CHOICES, MAX_DESCRIPTION, MAX_INFO_TEXT, MAX_PARAM_TEXT, MAX_TAGS, ParamKind,
+    PublicParam,
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 
@@ -214,6 +219,9 @@ impl Expr {
 pub struct Variable {
     pub name: String,
     pub expr: Expr,
+    /// Set when the variable is a public parameter ([`public`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicParam>,
 }
 
 /// How a primitive is turned: its local z axis points along `axis`, and it
@@ -1474,6 +1482,10 @@ pub struct Document {
     /// defined ([`sets`]). Not part of the history either.
     #[serde(default)]
     pub sets: Vec<NamedSet>,
+    /// What a gallery shows of the document ([`public`]). Not part of the
+    /// history either.
+    #[serde(default)]
+    pub info: DocInfo,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1679,6 +1691,7 @@ impl Document {
         self.validate_faces()?;
         self.validate_assertions()?;
         self.validate_sets()?;
+        self.validate_public()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1710,6 +1723,7 @@ impl Document {
             None => self.variables.push(Variable {
                 name: name.to_string(),
                 expr: Expr::new(expr),
+                public: None,
             }),
         }
         Ok(())
@@ -1742,12 +1756,30 @@ impl Document {
             }
             renamed_features.push(kind);
         }
+        // The public descriptions go with their variables, and the
+        // ranges in them are expressions like any other.
+        let mut publics = std::collections::BTreeMap::new();
+        for variable in &self.variables {
+            if let Some(public) = &variable.public {
+                let mut public = public.clone();
+                for expr in public.exprs_mut() {
+                    *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
+                }
+                let name = if variable.name == old {
+                    new
+                } else {
+                    variable.name.as_str()
+                };
+                publics.insert(name.to_string(), public);
+            }
+        }
         self.variables = table
             .variables()
             .iter()
             .map(|v| Variable {
                 name: v.name().to_string(),
                 expr: Expr::new(v.source()),
+                public: publics.remove(v.name()),
             })
             .collect();
         let mut renamed_assertions = self.assertions.clone();
@@ -1780,6 +1812,13 @@ impl Document {
                     .into_iter()
                     .map(str::to_string),
             );
+            for expr in variable.public.iter().flat_map(PublicParam::exprs) {
+                used.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
         }
         for feature in &mut self.features {
             for expr in feature.kind.exprs_mut() {
@@ -1821,6 +1860,11 @@ impl Document {
             };
             for variable in &mut self.variables {
                 rename(&mut variable.expr)?;
+                if let Some(public) = &mut variable.public {
+                    for expr in public.exprs_mut() {
+                        rename(expr)?;
+                    }
+                }
             }
             for feature in &mut self.features {
                 for expr in feature.kind.exprs_mut() {
@@ -2027,6 +2071,7 @@ mod tests {
         doc.variables.push(Variable {
             name: "rise".to_string(),
             expr: Expr::new("100 mm"),
+            public: None,
         });
         doc.add_feature(None, block(["10", "10", "10"])).unwrap();
         let circular = |step: Option<&str>| {
@@ -2079,6 +2124,7 @@ mod tests {
             doc.variables.push(Variable {
                 name: name.to_string(),
                 expr: Expr::new(expr),
+                public: None,
             });
         }
         doc.add_feature(None, block(["floor", "mod*floor", "floor_1"]))
@@ -2124,10 +2170,12 @@ mod tests {
         doc.variables.push(Variable {
             name: "floor".to_string(),
             expr: Expr::new("3 mm"),
+            public: None,
         });
         doc.variables.push(Variable {
             name: "a".to_string(),
             expr: Expr::new("floor_1 + 1 mm"),
+            public: None,
         });
         doc.add_feature(None, block(["floor", "floor_2", "1 mm"]))
             .unwrap();

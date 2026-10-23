@@ -33,6 +33,7 @@ mod mass;
 mod memory_files;
 mod meshes;
 mod offset_cmds;
+mod param_cmds;
 mod params;
 mod pick_cmds;
 mod query_cmds;
@@ -379,6 +380,7 @@ impl Session {
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
                 set_cmds::SPECS,
+                param_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 report::SPECS,

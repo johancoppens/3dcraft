@@ -43,6 +43,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         faces,
         assertions,
         sets,
+        info,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -73,10 +74,11 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         variables: variables
             .iter()
             .map(|variable| {
-                let doc::Variable { name, expr } = variable;
+                let doc::Variable { name, expr, public } = variable;
                 manifest::Variable {
                     name: name.clone(),
                     expr: expr_to_manifest(expr),
+                    public: public.as_ref().map(public_to_manifest),
                 }
             })
             .collect(),
@@ -93,6 +95,113 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
             })
             .collect(),
         assertions: assertions.iter().map(assertion_to_manifest).collect(),
+        info: (!info.is_empty()).then(|| info_to_manifest(info)),
+    }
+}
+
+fn public_to_manifest(public: &doc::PublicParam) -> manifest::PublicParam {
+    let doc::PublicParam {
+        label,
+        description,
+        group,
+        order,
+        kind,
+        choices,
+        min,
+        max,
+        step,
+        unit,
+        default,
+    } = public;
+    manifest::PublicParam {
+        label: label.clone(),
+        description: description.clone(),
+        group: group.clone(),
+        order: *order,
+        kind: match kind {
+            doc::ParamKind::Number => manifest::ParamKind::Number,
+            doc::ParamKind::Integer => manifest::ParamKind::Integer,
+            doc::ParamKind::Boolean => manifest::ParamKind::Boolean,
+            doc::ParamKind::Choice => manifest::ParamKind::Choice,
+        },
+        choices: choices.clone(),
+        min: min.as_ref().map(expr_to_manifest),
+        max: max.as_ref().map(expr_to_manifest),
+        step: step.as_ref().map(expr_to_manifest),
+        unit: unit.clone(),
+        default: expr_to_manifest(default),
+    }
+}
+
+fn public_to_doc(public: manifest::PublicParam) -> doc::PublicParam {
+    let manifest::PublicParam {
+        label,
+        description,
+        group,
+        order,
+        kind,
+        choices,
+        min,
+        max,
+        step,
+        unit,
+        default,
+    } = public;
+    doc::PublicParam {
+        label,
+        description,
+        group,
+        order,
+        kind: match kind {
+            manifest::ParamKind::Number => doc::ParamKind::Number,
+            manifest::ParamKind::Integer => doc::ParamKind::Integer,
+            manifest::ParamKind::Boolean => doc::ParamKind::Boolean,
+            manifest::ParamKind::Choice => doc::ParamKind::Choice,
+        },
+        choices,
+        min: min.map(doc::Expr),
+        max: max.map(doc::Expr),
+        step: step.map(doc::Expr),
+        unit,
+        default: doc::Expr(default),
+    }
+}
+
+fn info_to_manifest(info: &doc::DocInfo) -> manifest::DocInfo {
+    let doc::DocInfo {
+        title,
+        description,
+        author,
+        licence,
+        url,
+        tags,
+    } = info;
+    manifest::DocInfo {
+        title: title.clone(),
+        description: description.clone(),
+        author: author.clone(),
+        licence: licence.clone(),
+        url: url.clone(),
+        tags: tags.clone(),
+    }
+}
+
+fn info_to_doc(info: manifest::DocInfo) -> doc::DocInfo {
+    let manifest::DocInfo {
+        title,
+        description,
+        author,
+        licence,
+        url,
+        tags,
+    } = info;
+    doc::DocInfo {
+        title,
+        description,
+        author,
+        licence,
+        url,
+        tags,
     }
 }
 
@@ -1450,6 +1559,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         faces,
         assertions,
         sets,
+        info,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1476,10 +1586,11 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         variables: variables
             .into_iter()
             .map(|variable| {
-                let manifest::Variable { name, expr } = variable;
+                let manifest::Variable { name, expr, public } = variable;
                 doc::Variable {
                     name,
                     expr: doc::Expr(expr),
+                    public: public.map(public_to_doc),
                 }
             })
             .collect(),
@@ -1496,6 +1607,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
             .into_iter()
             .map(|manifest::NamedSet { name, query }| doc::NamedSet { name, query })
             .collect(),
+        info: info.map(info_to_doc).unwrap_or_default(),
     }
 }
 

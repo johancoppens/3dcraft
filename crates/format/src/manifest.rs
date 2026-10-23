@@ -65,6 +65,29 @@ pub struct Document {
     /// version 28).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assertions: Vec<Assertion>,
+    /// What a gallery shows of the document. Absent when every field is
+    /// empty (and in files before version 32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<DocInfo>,
+}
+
+/// The document info: every field optional, absent when empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocInfo {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// An SPDX identifier.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub licence: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// One assertion: what is measured (the JSON object `assert.add` was
@@ -194,6 +217,52 @@ pub struct Tolerance {
 pub struct Variable {
     pub name: String,
     pub expr: String,
+    /// Set for a public parameter; absent otherwise (and in files before
+    /// version 32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicParam>,
+}
+
+/// How a public parameter is shown and set. `min`, `max`, `step` and
+/// `default` are expressions; `unit` a unit symbol (`mm`, `deg`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicParam {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub order: i32,
+    pub kind: ParamKind,
+    /// The labels of a choice, the value 1 first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub default: String,
+}
+
+fn is_zero(n: &i32) -> bool {
+    *n == 0
+}
+
+/// What kind of value a public parameter holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParamKind {
+    Number,
+    Integer,
+    Boolean,
+    Choice,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
