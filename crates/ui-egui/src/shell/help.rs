@@ -147,7 +147,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         keys(
             History,
             bare(player::END_KEY),
-            "To end: the whole history, without the rollback marker",
+            "The end of the history (the view only: the rollback marker stays)",
         ),
         mouse("Drag", "Orbit"),
         mouse("Right or middle drag, Shift+drag", "Pan"),

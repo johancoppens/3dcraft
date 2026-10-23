@@ -77,7 +77,7 @@ player takes the keys of a video player:
 | Space | Play or pause the history |
 | ← / → | A step back / forward |
 | Home | The first step |
-| End | To end: the whole history, without the rollback marker |
+| End | The end of the history, in the view only (the rollback marker stays; the **To end** button removes it) |
 
 F1 (or Help, Keyboard shortcuts) lists all of them.
 

@@ -4,20 +4,26 @@
 //! step back, play or pause, a step forward, to the end, the speed, loop
 //! and orbit), and the keys work like a video player's while the pointer
 //! is over the viewport or the feature panel and no text field has the
-//! keyboard: Space plays or pauses, the arrows step, Home goes to the
-//! first step and End to the end ("To end").
+//! keyboard and no dialog is open: Space plays or pauses, the arrows
+//! step, Home goes to the first step and End shows the end. The keys only
+//! change the view: the "To end" button also removes the rollback marker,
+//! an edit, which no bare key makes (decided 2026-10-23).
 //!
 //! Playing is view state ([`Playback`] in the UI state, so `ui.set` starts
 //! it for the person watching): every step is a `view.scrub`, asked for
 //! the way the slider asks. The next step is asked for only once the
 //! scene of the step shown is there (a sync with the session found no
-//! scrub waiting and the view at that step) and the step has been shown
-//! for [`Playback::dwell`], so a heavy model never skips a step: the
-//! player waits for the engine thread instead. Time is egui's input time,
-//! which the browser has too. At the last step it stops, or starts again
+//! scrub waiting: whatever step the view settled on, the player's or one
+//! an agent or a flight asked for, it goes on from there) and the step has
+//! been drawn for [`Playback::dwell`], counted from the frame after the
+//! one that drew it, so a heavy model never skips a step and a slow frame
+//! does not eat the dwell. Time is egui's input time, which the browser
+//! has too. At the last step it stops, or starts again
 //! at the first with `loop`; an edit of the document, another tab, "To
 //! end" or "Roll back here" stops it, and a failed scrub too. With orbit
-//! the camera of the tab turns slowly about the vertical while it plays.
+//! the camera of the tab turns slowly about the vertical while it plays
+//! (at most 30 frames a second, sharp unless a frame turns it more than a
+//! degree), and waits while a turn, a flight or a drag has the camera.
 //!
 //! While the view is scrubbed or playing, the viewport shows the step's
 //! caption, the one `view.replay` writes ([`craft3d_engine::step_caption`]).
@@ -34,6 +40,13 @@ use serde_json::{Value, json};
 /// degrees a second: once round in half a minute.
 pub(crate) const ORBIT_DEGREES_PER_SECOND: f64 = 12.0;
 
+/// The frames a second the orbit asks for.
+const ORBIT_FPS: f64 = 30.0;
+
+/// A turn per frame above this many degrees is drawn as a moving camera
+/// (coarser, `MOVING_DIVISOR`); a slower orbit is drawn sharp.
+const ORBIT_MOVING_DEGREES: f64 = 1.0;
+
 /// Space: play or pause.
 pub(crate) const PLAY_KEY: egui::Key = egui::Key::Space;
 /// Left arrow: a step back.
@@ -42,7 +55,9 @@ pub(crate) const BACK_KEY: egui::Key = egui::Key::ArrowLeft;
 pub(crate) const FORWARD_KEY: egui::Key = egui::Key::ArrowRight;
 /// Home: the first step.
 pub(crate) const START_KEY: egui::Key = egui::Key::Home;
-/// End: to the end, as "To end" does.
+/// End: the view at the end of the history (`view.scrub` with null). The
+/// view only: unlike the "To end" button it leaves the rollback marker
+/// where it is, for no bare key edits the document.
 pub(crate) const END_KEY: egui::Key = egui::Key::End;
 
 /// What the player keeps between frames besides its settings.
@@ -52,8 +67,12 @@ pub(crate) struct Player {
     was_playing: bool,
     /// The step asked for whose scene is not shown yet.
     waiting: Option<usize>,
-    /// When the step shown was first seen built, in egui's input time.
+    /// When the step shown had been drawn, in egui's input time.
     since: Option<f64>,
+    /// The step asked for was reached in this frame's sync: the frame that
+    /// draws it is still being made, so the dwell starts at the next one
+    /// (whose input time is after this frame, however long it took).
+    reached: bool,
     /// The input time of the last frame that turned the camera.
     turned: Option<f64>,
     /// The document's revision at the last sync: another one is an edit.
@@ -80,14 +99,18 @@ impl Player {
         self.was_playing = false;
         self.waiting = None;
         self.since = None;
+        self.reached = false;
         self.turned = None;
     }
 
-    /// The view shows `step` with its scene built.
-    pub(crate) fn shown(&mut self, step: usize) {
-        if self.waiting == Some(step) {
-            self.waiting = None;
+    /// No scrub waits to be run and the view's scene is built: the step
+    /// asked for is reached. Whichever step the view settled on counts (an
+    /// agent's `view.scrub` or a flight's may have landed instead of the
+    /// player's): the player goes on from there, a whole dwell later.
+    pub(crate) fn settled(&mut self) {
+        if self.waiting.take().is_some() {
             self.since = None;
+            self.reached = true;
         }
     }
 
@@ -96,6 +119,7 @@ impl Player {
     pub(crate) fn went_to(&mut self, step: usize) {
         self.waiting = Some(step);
         self.since = None;
+        self.reached = false;
     }
 
     /// One tick at input time `now`, with the view at step `shown` of
@@ -117,6 +141,10 @@ impl Player {
         if starting && shown >= steps {
             self.went_to(1);
             return Tick::Go(1);
+        }
+        if std::mem::take(&mut self.reached) {
+            // This frame draws the step: the dwell starts at the next.
+            return Tick::Wait(Some(0.0));
         }
         let since = *self.since.get_or_insert(now);
         let left = since + play.dwell() - now;
@@ -179,7 +207,7 @@ impl Shell {
 
     /// "To end": the whole history, without the rollback marker; stops
     /// playing.
-    pub(crate) fn go_to_end(&mut self) {
+    pub(crate) fn go_to_end_and_unroll(&mut self) {
         self.stop_playing();
         if self.timeline.rollback.is_some() {
             self.timeline
@@ -188,9 +216,21 @@ impl Shell {
         self.timeline.queue("view.scrub", json!({"feature": null}));
     }
 
+    /// The view at the end of the history, without touching the document
+    /// (the End key): stops playing.
+    pub(crate) fn view_end(&mut self) {
+        self.stop_playing();
+        self.timeline.queue("view.scrub", json!({"feature": null}));
+    }
+
     /// Whether "To end" has anything to do.
     pub(crate) fn at_end(&self) -> bool {
         self.timeline.position.is_none() && self.timeline.rollback.is_none()
+    }
+
+    /// Whether the active document has a step to play.
+    pub(crate) fn has_steps(&self) -> bool {
+        self.timeline.steps > 0
     }
 
     pub(crate) fn stop_playing(&mut self) {
@@ -216,8 +256,7 @@ impl Shell {
         }
         self.player.revision = Some(revision);
         if !self.timeline.scrub_waiting() {
-            let shown = self.timeline.shown_step();
-            self.player.shown(shown);
+            self.player.settled();
         }
     }
 
@@ -251,18 +290,30 @@ impl Shell {
             Tick::Stop => self.stop_playing(),
         }
         self.orbiting = false;
-        if let Some(degrees) = self.player.orbit(self.state.timeline, now) {
-            let camera = &mut self.state.camera;
-            camera.yaw = (camera.yaw + degrees + 180.0).rem_euclid(360.0) - 180.0;
-            self.orbiting = true;
-            ctx.request_repaint();
+        // A turn or a flight of the camera, or a drag, has the camera to
+        // itself: the orbit waits (and does not jump afterwards).
+        let busy = self.turn.is_some() || self.drag_from.is_some() || self.cube_drag_from.is_some();
+        let degrees = self.player.orbit(self.state.timeline, now);
+        if let Some(degrees) = degrees {
+            if !busy {
+                let camera = &mut self.state.camera;
+                camera.yaw = (camera.yaw + degrees + 180.0).rem_euclid(360.0) - 180.0;
+                // A slow turn is drawn at full quality; only a large step
+                // per frame is drawn as a moving camera.
+                self.orbiting = degrees > ORBIT_MOVING_DEGREES;
+            }
+            // At most ORBIT_FPS frames a second, not as fast as egui can.
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / ORBIT_FPS));
         }
     }
 
     /// The player's keys, while the pointer is over the viewport or the
     /// feature panel and no text field has the keyboard.
     pub(crate) fn player_keys(&mut self, ctx: &egui::Context) {
-        if self.timeline.steps == 0 || ctx.egui_wants_keyboard_input() {
+        // Not under a dialog: the closing question or a Help window.
+        let modal =
+            self.closing.is_some() || self.state.dialogs.about || self.state.dialogs.shortcuts;
+        if self.timeline.steps == 0 || modal || ctx.egui_wants_keyboard_input() {
             return;
         }
         let over = ctx.pointer_hover_pos().is_some_and(|at| {
@@ -283,9 +334,7 @@ impl Shell {
         } else if plain(START_KEY) {
             self.go_to_step(1);
         } else if plain(END_KEY) {
-            if !self.at_end() {
-                self.go_to_end();
-            }
+            self.view_end();
         } else {
             return;
         }
@@ -315,13 +364,13 @@ impl Shell {
         let at_end = self.at_end();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if icon_button(ui, Icon::Start, false, shown > 1, &tokens)
+            if icon_button(ui, Icon::Start, "First step", false, shown > 1, &tokens)
                 .on_hover_text("First step (Home)")
                 .clicked()
             {
                 self.go_to_step(1);
             }
-            if icon_button(ui, Icon::StepBack, false, shown > 1, &tokens)
+            if icon_button(ui, Icon::StepBack, "Step back", false, shown > 1, &tokens)
                 .on_hover_text("Step back (←)")
                 .clicked()
             {
@@ -335,25 +384,28 @@ impl Shell {
                     "Play the history step by step (Space). Each step waits until its model is built.",
                 )
             };
-            if icon_button(ui, icon, false, true, &tokens)
+            let name = if play.playing { "Pause" } else { "Play" };
+            if icon_button(ui, icon, name, false, true, &tokens)
                 .on_hover_text(tip)
                 .clicked()
             {
                 self.toggle_playing();
             }
-            if icon_button(ui, Icon::StepForward, false, shown < steps, &tokens)
+            if icon_button(ui, Icon::StepForward, "Step forward", false, shown < steps, &tokens)
                 .on_hover_text("Step forward (→)")
                 .clicked()
             {
                 self.go_to_step(shown.saturating_add(1));
             }
-            if icon_button(ui, Icon::End, false, !at_end, &tokens)
+            if icon_button(ui, Icon::End, "To end", false, !at_end, &tokens)
                 .on_hover_text(
-                    "To end (End): show the whole history again and take the rollback marker away.",
+                    "To end: show the whole history again and remove the rollback marker \
+                     (an edit of the document, undone with Undo). The End key shows the end \
+                     in the view only and leaves the marker.",
                 )
                 .clicked()
             {
-                self.go_to_end();
+                self.go_to_end_and_unroll();
             }
             ui.add_space(4.0);
             let speed = speed_text(play.speed);
@@ -367,13 +419,13 @@ impl Shell {
             {
                 self.state.timeline.speed = play.next_speed();
             }
-            if icon_button(ui, Icon::Loop, play.looping, true, &tokens)
+            if icon_button(ui, Icon::Loop, "Loop", play.looping, true, &tokens)
                 .on_hover_text("Loop: start again at the first step after the last")
                 .clicked()
             {
                 self.state.timeline.looping = !play.looping;
             }
-            if icon_button(ui, Icon::Orbit, play.orbit, true, &tokens)
+            if icon_button(ui, Icon::Orbit, "Orbit", play.orbit, true, &tokens)
                 .on_hover_text("Orbit: turn the camera slowly while it plays")
                 .clicked()
             {
@@ -393,10 +445,13 @@ fn button_side(ui: &egui::Ui) -> f32 {
     (ui.spacing().interact_size.y + 6.0).max(22.0)
 }
 
-/// A small button with a painted icon; `on` marks a toggle that is on.
+/// A small button with a painted icon, called `name` for screen readers
+/// and tests; `on` marks a toggle that is on (Loop, Orbit: they say
+/// whether they are selected).
 fn icon_button(
     ui: &mut egui::Ui,
     icon: Icon,
+    name: &str,
     on: bool,
     enabled: bool,
     tokens: &Tokens,
@@ -423,6 +478,14 @@ fn icon_button(
         color(tokens.text_dim)
     };
     icons::paint(painter, icon, rect.shrink(side * 0.17), ink, tokens);
+    let toggle = matches!(icon, Icon::Loop | Icon::Orbit);
+    response.widget_info(|| {
+        if toggle {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name)
+        } else {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name)
+        }
+    });
     response
 }
 
@@ -431,6 +494,7 @@ fn icon_button(
 mod tests {
     use super::{Player, Tick};
     use crate::state::Playback;
+    use serde_json::json;
 
     fn playing() -> Playback {
         Playback {
@@ -450,15 +514,21 @@ mod tests {
         // The scene of step 2 is not there: it waits, however long.
         assert_eq!(p.tick(play, 11.0, 1, 3), Tick::Wait(None));
         assert_eq!(p.tick(play, 99.0, 2, 3), Tick::Wait(None));
-        // Built: a dwell from when it was seen, not from when it was asked.
-        p.shown(2);
-        assert!(matches!(p.tick(play, 100.0, 2, 3), Tick::Wait(Some(_))));
-        assert!(matches!(p.tick(play, 100.7, 2, 3), Tick::Wait(Some(_))));
-        assert_eq!(p.tick(play, 100.81, 2, 3), Tick::Go(3));
-        p.shown(3);
-        assert!(matches!(p.tick(play, 101.0, 3, 3), Tick::Wait(Some(_))));
+        // Built: the frame that draws it does not count (it may have been
+        // a slow one); the dwell runs from the frame after it.
+        p.settled();
+        assert_eq!(p.tick(play, 100.0, 2, 3), Tick::Wait(Some(0.0)));
+        assert!(matches!(p.tick(play, 100.5, 2, 3), Tick::Wait(Some(_))));
+        assert!(matches!(p.tick(play, 101.2, 2, 3), Tick::Wait(Some(_))));
+        assert_eq!(p.tick(play, 101.31, 2, 3), Tick::Go(3));
+        p.settled();
+        assert_eq!(p.tick(play, 102.0, 3, 3), Tick::Wait(Some(0.0)));
+        assert!(matches!(p.tick(play, 102.1, 3, 3), Tick::Wait(Some(_))));
         // At the end without loop: it stops.
-        assert_eq!(p.tick(play, 102.0, 3, 3), Tick::Stop);
+        assert_eq!(p.tick(play, 103.0, 3, 3), Tick::Stop);
+        // Settling with nothing asked for changes nothing.
+        p.settled();
+        assert_eq!(p.tick(play, 104.0, 3, 3), Tick::Stop);
     }
 
     #[test]
@@ -471,14 +541,17 @@ mod tests {
         };
         // Play at the end: from the first step again, at once.
         assert_eq!(p.tick(fast, 0.0, 3, 3), Tick::Go(1));
-        p.shown(1);
+        p.settled();
+        p.tick(fast, 1.0, 1, 3);
         assert!(matches!(p.tick(fast, 1.0, 1, 3), Tick::Wait(Some(_))));
         // Twice as fast: 0.4 s.
         assert_eq!(p.tick(fast, 1.41, 1, 3), Tick::Go(2));
-        p.shown(2);
+        p.settled();
+        p.tick(fast, 2.0, 2, 3);
         p.tick(fast, 2.0, 2, 3);
         assert_eq!(p.tick(fast, 2.41, 2, 3), Tick::Go(3));
-        p.shown(3);
+        p.settled();
+        p.tick(fast, 3.0, 3, 3);
         p.tick(fast, 3.0, 3, 3);
         // Loop: after the last, the first.
         assert_eq!(p.tick(fast, 3.41, 3, 3), Tick::Go(1));
@@ -519,5 +592,133 @@ mod tests {
             super::ORBIT_DEGREES_PER_SECOND * 0.1
         ));
         assert_eq!(p.orbit(Playback::default(), 2.0), None);
+    }
+
+    /// A box, a ball and a rod in a shell, played from the end with loop.
+    struct Played {
+        shell: crate::Shell,
+        session: craft3d_engine::Session,
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Played {
+        fn new(play: Playback) -> Self {
+            let mut session = craft3d_engine::Session::new(craft3d_engine::Workspace::none());
+            for (id, params) in [
+                ("file.new", json!({})),
+                (
+                    "feature.block",
+                    json!({"size": [10, 10, 10], "name": "Box"}),
+                ),
+                ("feature.sphere", json!({"radius": 3, "name": "Ball"})),
+                (
+                    "feature.cylinder",
+                    json!({"radius": 1, "height": 30, "name": "Rod"}),
+                ),
+            ] {
+                session.execute(id, &params).unwrap();
+            }
+            let mut played = Self {
+                shell: crate::Shell::new(),
+                session,
+                ctx: egui::Context::default(),
+                time: 0.0,
+            };
+            played.frame();
+            played.shell.state.timeline = play;
+            played
+        }
+
+        fn frame(&mut self) {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                time: Some(self.time),
+                ..Default::default()
+            };
+            let Self { shell, session, .. } = self;
+            let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+            output.textures_delta.clear();
+        }
+
+        fn shown(&self) -> usize {
+            self.shell.timeline.shown_step()
+        }
+
+        /// Frames until `done`, at most `seconds`; true when it came.
+        fn until(&mut self, seconds: f64, done: impl Fn(&Self) -> bool) -> bool {
+            let end = self.time + seconds;
+            while self.time < end {
+                self.frame();
+                if done(self) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+
+    fn looping() -> Playback {
+        Playback {
+            looping: true,
+            ..playing()
+        }
+    }
+
+    #[test]
+    fn another_scrub_landing_first_does_not_hang_the_player() {
+        // An agent's view.scrub runs after the player's, before its scene
+        // was seen: the player goes on from where the view settled.
+        let mut p = Played::new(looping());
+        assert!(p.until(2.0, |p| p.shown() == 1));
+        p.shell.player.went_to(2);
+        p.session
+            .execute("view.scrub", &json!({"step": 3}))
+            .unwrap();
+        assert!(p.until(0.2, |p| p.shown() == 3));
+        assert!(p.until(3.0, |p| p.shown() == 1), "the player hung");
+        assert!(p.shell.state.timeline.playing);
+
+        // A flight's scrub (to the end, to show its feature) replaces the
+        // player's while it waits to be run.
+        let mut p = Played::new(looping());
+        assert!(p.until(2.0, |p| p.shown() == 1));
+        p.shell.timeline.queue("view.scrub", json!({"step": 2}));
+        p.shell.player.went_to(2);
+        p.shell
+            .request_fly(super::super::FlyTo::Feature("Rod".to_string()));
+        assert!(p.until(1.0, |p| p.shell.timeline.position.is_none()));
+        assert!(p.until(3.0, |p| p.shown() == 1), "the player hung");
+        assert!(p.shell.state.timeline.playing);
+    }
+
+    #[test]
+    fn a_view_cube_turn_while_orbiting_reaches_its_target() {
+        let mut p = Played::new(Playback {
+            orbit: true,
+            ..looping()
+        });
+        p.frame();
+        p.frame();
+        let from = p.shell.state.camera;
+        let mut to = from;
+        to.set_view("top").unwrap();
+        p.shell.turn = Some(super::super::Turn {
+            from,
+            to,
+            started: p.time,
+            last: from,
+            seconds: 0.25,
+        });
+        assert!(p.until(1.0, |p| p.shell.turn.is_none()));
+        assert_eq!(p.shell.state.camera, to, "the turn was cut short");
+        // Then the orbit goes on.
+        p.frame();
+        p.frame();
+        assert_ne!(p.shell.state.camera.yaw, to.yaw);
     }
 }

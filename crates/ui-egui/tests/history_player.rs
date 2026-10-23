@@ -369,6 +369,85 @@ fn keys_like_a_video_player_over_the_viewport() {
 }
 
 #[test]
+fn no_bare_key_edits_the_document() {
+    // With the rollback marker on the second step, the End key shows the
+    // end in the view and leaves the marker and the document as they are.
+    let mut session = three_steps();
+    run(&mut session, "history.rollback", json!({"feature": "Ball"}));
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, 0.0, Vec::new());
+    let revision = session.document_revision();
+    for key in [
+        egui::Key::Home,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowLeft,
+        egui::Key::Space,
+        egui::Key::Space,
+        egui::Key::End,
+    ] {
+        window.key(&mut shell, &mut session, key);
+    }
+    assert_eq!(session.document_revision(), revision);
+    let t = timeline(&mut shell, &mut session);
+    assert_eq!(t["rollback"], 2);
+    assert_eq!(t["scrub"], json!(null));
+    assert_eq!(t["playing"], false);
+}
+
+#[test]
+fn keys_do_not_reach_the_player_under_a_dialog() {
+    let mut session = three_steps();
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.frame(&mut shell, &mut session, 0.0, Vec::new());
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"dialogs": {"shortcuts": true}}),
+    );
+    window.key(&mut shell, &mut session, egui::Key::Home);
+    assert_eq!(timeline(&mut shell, &mut session)["shown"], 3);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"dialogs": {"shortcuts": false}}),
+    );
+    window.key(&mut shell, &mut session, egui::Key::Home);
+    assert_eq!(timeline(&mut shell, &mut session)["shown"], 1);
+}
+
+#[test]
+fn nothing_to_play_is_refused() {
+    let play = json!({"timeline": {"playing": true}});
+    // No document.
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    let refused = shell
+        .handle_method(&mut session, "ui.set", Some(&play))
+        .unwrap();
+    assert!(refused.unwrap_err().contains("no document"));
+    assert!(!shell.state.timeline.playing);
+    // A document without features.
+    run(&mut session, "file.new", json!({}));
+    let refused = shell
+        .handle_method(&mut session, "ui.set", Some(&play))
+        .unwrap();
+    assert!(refused.unwrap_err().contains("no features"));
+    assert_eq!(timeline(&mut shell, &mut session)["playing"], false);
+    // The other settings may be set without one.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"timeline": {"loop": true, "speed": 2}}),
+    );
+    assert_eq!(timeline(&mut shell, &mut session)["loop"], true);
+}
+
+#[test]
 fn the_assertions_heading_is_there_with_a_hint_while_there_are_none() {
     let mut session = three_steps();
     let mut shell = Shell::new();

@@ -3280,8 +3280,6 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
     })
 }
 
-/// The frame of a chrome bar (the menu bar, the status bar): `fill`, with
-/// the margins of egui's own side panels.
 /// What the feature panel says under "Assertions" while the document has
 /// none: what they are for, and how to get one.
 pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
@@ -3304,6 +3302,8 @@ fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
     }
 }
 
+/// The frame of a chrome bar (the menu bar, the status bar): `fill`, with
+/// the margins of egui's own side panels.
 fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
     egui::Frame::new()
         .fill(color(fill))
