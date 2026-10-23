@@ -476,7 +476,7 @@ fn the_file_menu_lists_the_documents_and_a_click_activates_one() {
     // Down the open File menu, row by row: the documents come after the
     // file actions and Close, in their order.
     let mut found = Vec::new();
-    for row in 0..30 {
+    for row in 0..36 {
         window.click(&mut shell, &mut session, pos2(20.0, 10.0));
         let at = pos2(40.0, 30.0 + 8.0 * row as f32);
         window.click(&mut shell, &mut session, at);

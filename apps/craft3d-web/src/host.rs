@@ -250,6 +250,17 @@ impl WebHost {
             outcome.downloads.extend(more.downloads);
             outcome.ask = outcome.ask.or(more.ask);
         }
+        // An example from the start screen, built in a new document.
+        if let Some(example) = self.shell.take_example() {
+            let session = &mut self.session;
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft3d_ui_egui::shell::run_example(session, example)
+            }))
+            .unwrap_or_else(|_| {
+                Err("internal error (a bug in 3DCraft, please report it)".to_string())
+            });
+            self.finish("example", &built);
+        }
         outcome
     }
 
@@ -676,5 +687,19 @@ mod tests {
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
         assert_eq!(host.file_action(FileAction::Open).ask, Some(Ask::Open));
         assert_eq!(host.file_action(FileAction::Import).ask, Some(Ask::Import));
+    }
+
+    #[test]
+    fn an_example_from_the_start_screen_is_built_in_a_new_document() {
+        let mut host = host();
+        let example = &craft3d_ui_egui::shell::EXAMPLES[0];
+        host.shell.choose_example(example);
+        host.pump();
+        assert_eq!(host.session.document_statuses().len(), 1);
+        let report = host.shell.last_command.as_ref().unwrap();
+        assert!(report.ok, "{}", report.text);
+        // Nothing is left in memory, and nothing is recent in the browser.
+        assert!(host.session.file_names().is_empty());
+        assert!(host.shell.recent_files().is_empty());
     }
 }

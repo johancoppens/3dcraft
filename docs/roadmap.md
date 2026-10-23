@@ -475,6 +475,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - Installers for Linux (tarball, AppImage), macOS (`.dmg`, Apple Silicon) and Windows (zip, `.msi`), built by `cargo xtask package` and `.github/workflows/release.yml` on GitHub's runners, each started once with `--version` and `commands` (run 39835637182); not signed or notarised ([`development.md`](development.md) › *Packaging*) (2026-10-22)
 - `craft3d-web`, 3DCraft in the browser (the developer's request: in R1, packaged as the other Craft apps): the viewer, Open, Save, Export and Import as the same commands on files in the session's memory, WebGPU or WebGL2 with the same shaders, one thread, `cargo xtask package --formats web` making `3dcraft-web-<version>.zip` with `SHA256SUMS.txt`, built by the Release workflow ([`development.md`](development.md) › *Web build*) (2026-10-22)
 - A view per document tab (camera, section, see-through, highlight), a double click on a feature or F flying the camera to what it made or to the selection (`ui.fit {feature | selection}` for agents), the feature list scrolled to the feature that made what is selected in the viewport, and its scroll bar against the panel's edge ([`control-protocol.md`](control-protocol.md) › *A view per tab*, *Flying to a feature*) (2026-10-23)
+- A Help menu (About 3DCraft, the user guide, keyboard shortcuts on F1 from one table the key handling uses, the data folder), recent files in the File menu kept per user, and a start screen without a document (New, Open, the guide's examples, recent files, the MCP configuration that connects an agent to this window) ([`control-protocol.md`](control-protocol.md) › *Help, recent files and the start screen*, [guide chapter 3](guide/03-window.md)) (2026-10-23)
 
 #### Open
 - [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
@@ -587,6 +588,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | R1: Help menu, recent files, keyboard shortcuts window and a start screen in the window |
 | 2026-10-22 | minor | `craft3d-web` moved from M10 to R1 (the developer's request): 3DCraft in the browser on one thread, packaged as `3dcraft-web-<version>.zip` like the other Craft apps |
 | 2026-10-22 | minor | R1: the second field test (history, conflicts, constraints, negative values, units, a change request, the guide); its open findings added under R1 › Open |
 | 2026-10-22 | minor | R1: installers (`cargo xtask package`, `release.yml`), the Linux ones checked; macOS and Windows wait for a first run of the workflow |

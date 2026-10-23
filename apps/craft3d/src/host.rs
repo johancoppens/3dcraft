@@ -38,6 +38,9 @@ pub struct Host {
     /// The extension of the file last exported from the dialog: the next
     /// export proposes it again.
     pub(crate) export_extension: Option<String>,
+    /// Where the recent files are kept between runs; `None` keeps them
+    /// for this run only (`places.rs`).
+    pub(crate) recent_file: Option<std::path::PathBuf>,
 }
 
 fn methods() -> &'static [Method] {
@@ -344,6 +347,7 @@ impl Host {
             shell: Shell::new(),
             close_after_save: false,
             export_extension: None,
+            recent_file: None,
         }
     }
 

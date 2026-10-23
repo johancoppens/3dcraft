@@ -24,15 +24,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
+pub mod help;
 mod icons;
 mod layout;
 pub mod number_field;
+pub mod recent;
 mod selection;
+pub mod start;
 mod tabs;
 mod views;
 
 pub use controls::ControlsLayout;
+pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
+pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
+pub use start::{AgentSetup, EXAMPLES, Example, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -582,6 +588,10 @@ pub struct Shell {
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
     tree_view: Option<egui::Rect>,
+    /// The Help menu, the recent files and the start screen.
+    help: help::HelpMemory,
+    recent: recent::RecentMemory,
+    start: start::StartMemory,
 }
 
 impl Default for Shell {
@@ -815,6 +825,9 @@ impl Shell {
             tree_scroll: None,
             tree_row_hits: Vec::new(),
             tree_view: None,
+            help: help::HelpMemory::default(),
+            recent: recent::RecentMemory::default(),
+            start: start::StartMemory::default(),
         }
     }
 
@@ -1450,6 +1463,7 @@ impl Shell {
         let scene = self.sync_scene(session);
         self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
+        self.note_recent(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
         scene
@@ -1619,6 +1633,7 @@ impl Shell {
         };
         self.file_shortcuts(ui, status.is_some());
         self.tab_shortcuts(ui);
+        self.help_keys(ui);
         let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1708,6 +1723,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.closing_dialog(ui);
+        self.help_windows(ui);
     }
 
     /// The File shortcuts, wherever the pointer is.
@@ -1744,9 +1760,11 @@ impl Shell {
                         ui.close();
                     }
                 }
+                self.recent_menu(ui);
                 ui.separator();
                 self.menu_documents(ui);
             });
+            self.help_menu(ui);
         });
     }
 
@@ -2080,7 +2098,7 @@ impl Shell {
         // F over the list as over the viewport: to the selection.
         let fit = ui.rect_contains_pointer(ui.max_rect())
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.is_none());
+            && ui.input(|i| i.key_pressed(help::FIT_KEY) && i.modifiers.is_none());
         // Each document keeps where its list was scrolled to. The bar
         // lies against the panel's edge: the area takes the whole width
         // and the rows keep clear of the bar.
@@ -2409,7 +2427,7 @@ impl Shell {
         }
         if response.contains_pointer()
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
         {
             self.escape_selection();
             ui.ctx().request_repaint();
@@ -2511,8 +2529,9 @@ impl Shell {
                 color(tokens.text_dim),
             );
         };
+        let start = scene.is_none() && self.problem().is_none() && self.work.is_none();
         match (scene, self.problem()) {
-            (None, None) => hint("No document. Run file.new or file.open."),
+            (None, None) if self.work.is_some() => hint("No document."),
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
@@ -2543,10 +2562,22 @@ impl Shell {
 
         // The box being dragged, and the "select other" list.
         self.paint_selecting(ui);
-        // The view cube, the triad and the controls over the viewport.
-        self.viewport_controls(ui, rect, scene);
+        // The view cube, the triad and the controls over the viewport;
+        // the start screen instead while there is no document.
+        if start {
+            self.controls_layout = None;
+        } else {
+            self.viewport_controls(ui, rect, scene);
+        }
         if let Some(problem) = self.problem().map(str::to_string) {
             self.problem_text(&painter, rect, &problem);
+        }
+        // No document: New, Open, the examples, the recent files and how
+        // to connect an agent (`start.rs`).
+        if start {
+            self.start_screen(ui, rect);
+        } else {
+            self.no_start_screen();
         }
     }
 
@@ -2685,7 +2716,7 @@ impl Shell {
                         f64::from(i.smooth_scroll_delta().y)
                     },
                     f64::from(i.zoom_delta()),
-                    i.key_pressed(egui::Key::F) && !typing,
+                    i.key_pressed(help::FIT_KEY) && !typing,
                     pointer,
                 )
             });
