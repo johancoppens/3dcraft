@@ -23,8 +23,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
-    spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
+    spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false, "clamp": boolean = false}"#,
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}), as a parameter form does. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
         "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
@@ -959,6 +959,24 @@ pub(crate) fn prepare_set(
     given: &Map<String, Value>,
     reset: bool,
 ) -> Result<Prepared, CommandError> {
+    prepare_set_clamping(command, doc, given, reset, false).map(|(prepared, _)| prepared)
+}
+
+/// The parameters `param.set` with `clamp` moved into their new range,
+/// each with the value it got (`bore`, `3.1 mm`).
+pub(crate) type Clamped = Vec<(String, String)>;
+
+/// [`prepare_set`], and with `clamp` every other parameter the change
+/// would put outside its range (one whose range uses a parameter set)
+/// moved to the nearest value of its new range instead of refusing: set
+/// in the same edit and listed.
+pub(crate) fn prepare_set_clamping(
+    command: &str,
+    doc: &Document,
+    given: &Map<String, Value>,
+    reset: bool,
+    clamp: bool,
+) -> Result<(Prepared, Clamped), CommandError> {
     let values_before = evaluation(doc);
     let before = evaluate_all(doc, values_before.as_ref());
     if before.is_empty() {
@@ -994,6 +1012,23 @@ pub(crate) fn prepare_set(
     for (name, source) in &sources {
         next.set_variable(name, source)
             .map_err(doc_error(command))?;
+    }
+    let mut clamped: Clamped = Vec::new();
+    if clamp {
+        // A clamped parameter may move the range of another: again until
+        // nothing moves, at most once per parameter.
+        for _ in 0..=before.len() {
+            let moved = clamped_into_range(&before, &sources, &next);
+            if moved.is_empty() {
+                break;
+            }
+            for (name, source) in moved {
+                next.set_variable(&name, &source)
+                    .map_err(doc_error(command))?;
+                sources.push((name.clone(), source.clone()));
+                clamped.push((name, source));
+            }
+        }
     }
     let values_after = evaluation(&next);
     let after = evaluate_all(&next, values_after.as_ref());
@@ -1040,7 +1075,7 @@ pub(crate) fn prepare_set(
             refusals.push(format!("`{}`: {problems}", e.name));
         } else {
             refusals.push(format!(
-                "this would make `{}` invalid ({problems}); set it in the same param.set",
+                "this would make `{}` invalid ({problems}); set it in the same param.set, or give clamp: true to move it into its new range",
                 e.name
             ));
         }
@@ -1051,7 +1086,89 @@ pub(crate) fn prepare_set(
             refusals.join("; ")
         ));
     }
-    Ok((sources, warnings))
+    Ok(((sources, warnings), clamped))
+}
+
+/// The parameters of `next` not among `sources` that were valid in the
+/// document before (`before`) and are outside their range now, each with
+/// the source of the nearest value in its range: on its step where that
+/// stays in the range, a whole number for a whole kind, a short decimal
+/// where that stays in the range. A parameter whose trouble is not its
+/// range (or whose range is empty) is left for the refusal to name.
+fn clamped_into_range(
+    before: &[Evaluated],
+    sources: &[(String, String)],
+    next: &Document,
+) -> Vec<(String, String)> {
+    let values = evaluation(next);
+    let after = evaluate_all(next, values.as_ref());
+    let ranges = ranges(next);
+    let mut moved = Vec::new();
+    for e in &after {
+        if sources.iter().any(|(n, _)| n == e.name) || e.value_problems().is_empty() {
+            continue;
+        }
+        let Some(old) = before.iter().find(|b| b.name == e.name) else {
+            continue;
+        };
+        if !old.value_problems().is_empty() {
+            continue;
+        }
+        let (Ok(q), Ok(was)) = (&e.value, &old.value) else {
+            continue;
+        };
+        let Some(range) = ranges.iter().find(|r| r.name == e.name) else {
+            continue;
+        };
+        if q.dimension != was.dimension || q.dimension != range.dimension {
+            continue;
+        }
+        let value = shown(next, *q, e.unit);
+        let Some(number) = nearest_in_range(range, value) else {
+            continue;
+        };
+        if (number - value).abs() <= 1e-12 * number.abs().max(value.abs()) {
+            continue;
+        }
+        moved.push((e.name.to_string(), value_text(range, number)));
+    }
+    moved
+}
+
+/// The value of `range` nearest `value` (both in the parameter's unit),
+/// or none when the range is empty or does not evaluate.
+fn nearest_in_range(range: &Range, value: f64) -> Option<f64> {
+    let lo = range.min.unwrap_or(f64::NEG_INFINITY);
+    let hi = range.max.unwrap_or(f64::INFINITY);
+    if !value.is_finite() || below(hi, lo) {
+        return None;
+    }
+    let inside = |x: f64| x.is_finite() && !below(x, lo) && !below(hi, x);
+    if range.kind != ParamKind::Number {
+        let number = if value < lo { lo.ceil() } else { hi.floor() };
+        return inside(number).then_some(number);
+    }
+    let mut number = value.clamp(lo, hi);
+    if let Some(step) = range.step {
+        let base = range.min.unwrap_or(0.0);
+        let mut snapped = base + ((number - base) / step).round() * step;
+        if below(hi, snapped) {
+            snapped -= step;
+        }
+        if below(snapped, lo) {
+            snapped += step;
+        }
+        if inside(snapped) {
+            number = snapped;
+        }
+    }
+    // A short decimal where it stays in the range: 3.1, not
+    // 3.1000000000000005.
+    let short = (number * 1e6).round() / 1e6;
+    if inside(short) {
+        number = short;
+    }
+    inside(number).then_some(number)
 }
 
 /// A public parameter's range as `document.sample` samples it: each
@@ -1145,9 +1262,10 @@ pub(crate) fn value_text(range: &Range, number: f64) -> String {
 
 fn param_set(session: &mut Session, params: &Value) -> Run {
     let command = "param.set";
-    let p = Params::new(command, params, &["values", "reset", "merge"])?;
+    let p = Params::new(command, params, &["values", "reset", "merge", "clamp"])?;
     let reset = p.bool("reset")?.unwrap_or(false);
     let merge = p.bool("merge")?.unwrap_or(false);
+    let clamp = p.bool("clamp")?.unwrap_or(false);
     let given: Map<String, Value> = match p.get("values") {
         None => Map::new(),
         Some(Value::Object(map)) => map.clone(),
@@ -1158,7 +1276,7 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
         }
     };
     let doc = session.document()?.history.current();
-    let (sources, warnings) = prepare_set(command, doc, &given, reset)?;
+    let ((sources, warnings), clamped) = prepare_set_clamping(command, doc, &given, reset, clamp)?;
     let mut names: Vec<&str> = sources.iter().map(|(n, _)| n.as_str()).collect();
     let mut label = names
         .iter()
@@ -1205,6 +1323,13 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
     let mut result = json!({ "set": set, "changed": changed });
     if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
         map.insert("warnings".into(), warnings.into());
+    }
+    if let (false, Some(map)) = (clamped.is_empty(), result.as_object_mut()) {
+        let clamped: Vec<Value> = clamped
+            .iter()
+            .map(|(name, expr)| json!({ "name": name, "expr": expr }))
+            .collect();
+        map.insert("clamped".into(), clamped.into());
     }
     add_failed(session, &failed_before, None, &mut result)?;
     crate::assert_cmds::add_summary(session, &mut result);

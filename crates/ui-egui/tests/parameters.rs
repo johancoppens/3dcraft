@@ -361,7 +361,10 @@ fn a_value_that_breaks_the_model_is_said_over_the_viewport_until_back() {
     let back = hit(&shell, "Back to last good");
     window.click(&mut shell, &mut session, back.center());
     // The values, evaluated, and only those that changed.
-    assert_eq!(window.ran.last().unwrap(), &json!({"values": {"r": 2.0}}));
+    assert_eq!(
+        window.ran.last().unwrap(),
+        &json!({"values": {"r": 2.0}, "clamp": true})
+    );
     assert_eq!(value(&mut session, "r"), 2.0);
     let shown = form(&mut shell, &mut session);
     assert_eq!(shown["trouble"], Value::Null, "{shown}");
@@ -421,10 +424,82 @@ fn reset_all_and_a_toggle_commit_at_once() {
     assert_eq!(value(&mut session, "lid"), 0.0);
     let reset = hit(&shell, "Reset all");
     window.click(&mut shell, &mut session, reset.center());
-    assert_eq!(window.ran.last().unwrap(), &json!({"reset": true}));
+    assert_eq!(
+        window.ran.last().unwrap(),
+        &json!({"reset": true, "clamp": true})
+    );
     assert_eq!(value(&mut session, "w"), 40.0);
     assert_eq!(value(&mut session, "d"), 20.0);
     assert_eq!(value(&mut session, "lid"), 1.0);
+}
+
+/// A value that would put another parameter outside a range that depends
+/// on it moves that one into its new range in the same `param.set`
+/// (`clamp`), and the note under the field says so: typed in the form and
+/// through `ui.param` (A1 of the R1 finishing round: the GT2 pulley's
+/// bore when its teeth go down).
+#[test]
+fn a_value_that_narrows_another_ones_range_clamps_it_and_says_so() {
+    let mut s = jig();
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "r", "max": "d / 2 - 0.5 mm"}),
+    );
+    run(&mut s, "param.set", json!({"values": {"r": "8 mm"}}));
+    let (mut session, mut shell, mut window) = started(s);
+    let field = hit(&shell, "d");
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerMoved(field.center())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Text("10".to_string())],
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    assert_eq!(window.ran.len(), 1, "{:?}", window.ran);
+    assert_eq!(window.ran[0]["clamp"], true);
+    assert_eq!(value(&mut session, "d"), 10.0);
+    assert_eq!(value(&mut session, "r"), 4.5);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(
+        shown["note"],
+        json!({"name": "d", "text": "r clamped to 4.5 mm"})
+    );
+    assert_eq!(shown["trouble"], Value::Null);
+    // ui.param: a value clamped itself and another one clamped with it.
+    run(
+        &mut session,
+        "param.set",
+        json!({"values": {"d": "40 mm", "r": "15 mm"}}),
+    );
+    window.idle(&mut shell, &mut session, 2);
+    let answer = shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "d", "value": 2})),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["sent"], 10.0);
+    assert_eq!(
+        answer["note"], "clamped to 10 mm; r clamped to 4.5 mm",
+        "{answer}"
+    );
+    assert_eq!(
+        answer["result"]["clamped"],
+        json!([{"name": "r", "expr": "4.5 mm"}])
+    );
+    assert_eq!(value(&mut session, "r"), 4.5);
+    assert_eq!(
+        answer["parameters"]["note"],
+        json!({"name": "d", "text": "clamped to 10 mm; r clamped to 4.5 mm"})
+    );
 }
 
 #[test]
@@ -491,7 +566,10 @@ fn a_result_for_another_document_is_dropped() {
     let ask = shell
         .ui_param_ask(&mut session, Some(&json!({"name": "r", "value": 15})))
         .unwrap();
-    assert_eq!(ask.command.params, json!({"values": {"r": 15.0}}));
+    assert_eq!(
+        ask.command.params,
+        json!({"values": {"r": 15.0}, "clamp": true})
+    );
     // Another document is shown before the result comes back.
     run(&mut session, "file.new", json!({}));
     shell.command_done(Err("param.set: refused".to_string()));

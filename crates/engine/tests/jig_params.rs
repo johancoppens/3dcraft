@@ -275,6 +275,55 @@ fn param_set_refuses_what_a_form_would_clamp_and_changes_nothing() {
     }
 }
 
+/// With `clamp`, a change that would put another parameter outside a
+/// range that depends on it moves that one to the nearest value of its
+/// new range, on its step, in the same edit and one undo step, and says
+/// so; what is wrong with a value given is still refused.
+#[test]
+fn param_set_with_clamp_moves_a_dependent_parameter_into_its_new_range() {
+    let mut s = session();
+    jig(&mut s);
+    // w is 40 mm, at most 2 * d; d to 15.3 mm makes that 30.6 mm, and w's
+    // step of 1 mm from 10 mm puts it at 30 mm.
+    let before = volume(&mut s);
+    let result = run(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": "15.3 mm"}, "clamp": true}),
+    );
+    assert_eq!(result["clamped"], json!([{"name": "w", "expr": "30 mm"}]));
+    assert_eq!(result["changed"], true);
+    assert_close(&json!(volume(&mut s)), 30.0 * 15.3 * 5.0, "clamped");
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "w")["expr"], "30 mm");
+    assert_eq!(param(&list, "w")["valid"], true);
+    // One undo step for both.
+    run(&mut s, "edit.undo", json!({}));
+    assert_close(&json!(volume(&mut s)), before, "undone");
+    // Nothing to clamp: no list.
+    let result = run(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": "30 mm"}, "clamp": true}),
+    );
+    assert!(result.get("clamped").is_none(), "{result}");
+    // A value given out of its own range is refused as before.
+    let e = refused(
+        &mut s,
+        "param.set",
+        json!({"values": {"w": "500 mm"}, "clamp": true}),
+    );
+    assert!(e.contains("outside its range"), "{e}");
+    // Without clamp the refusal says how to have it clamped.
+    let e = refused(&mut s, "param.set", json!({"values": {"d": "6 mm"}}));
+    assert!(e.contains("clamp: true"), "{e}");
+    refused(
+        &mut s,
+        "param.set",
+        json!({"values": {"d": "6 mm"}, "clamp": "yes"}),
+    );
+}
+
 #[test]
 fn publishing_is_refused_with_a_reason_an_agent_can_act_on() {
     let mut s = session();
