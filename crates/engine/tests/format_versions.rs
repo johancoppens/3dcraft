@@ -199,6 +199,33 @@ fn the_file_of_every_format_version_regenerates_to_what_its_build_made() {
                 found.push(format!("v{version}: sets {} (were {sets})", listed["sets"]));
             }
         }
+        // The public parameters and the document info (format 32): each
+        // parameter's name, kind, expression, unit and validity, as
+        // param.list gives them, and the info as kept.
+        if let Some(parameters) = want.get("parameters") {
+            let listed = run(&mut s, "param.list", json!({}));
+            let got: Vec<Value> = listed["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    json!({"name": p["name"], "kind": p["kind"], "expr": p["expr"],
+                           "unit": p["unit"], "valid": p["valid"]})
+                })
+                .collect();
+            if Value::Array(got.clone()) != *parameters {
+                found.push(format!(
+                    "v{version}: parameters {got:?} (were {parameters})"
+                ));
+            }
+            if want.get("info") != Some(&listed["info"]) {
+                found.push(format!(
+                    "v{version}: info {} (was {:?})",
+                    listed["info"],
+                    want.get("info")
+                ));
+            }
+        }
 
         // Saved again: the current version, and the same bodies, exactly.
         let again = format!("v{version}-saved.3dcraft");

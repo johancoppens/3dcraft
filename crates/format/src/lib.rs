@@ -27,9 +27,14 @@
 //!   its bytes, which the manifest's feature names. A blob the manifest
 //!   names must be there and hash to its name, or the file is refused; a
 //!   blob nobody names is not read.
+//! - **A thumbnail may be stored beside the manifest** (format version
+//!   32): the entry `thumb.png`, a small picture of the model for a
+//!   gallery or a file browser, given by the caller
+//!   ([`to_bytes_with_thumbnail`]; the engine renders it for a Jig). It is
+//!   derived data: loading ignores it, as an older build does, and
+//!   [`thumbnail`] reads it.
 //! - **Other ZIP entries are ignored on load and not preserved on save.**
-//!   Later versions add `thumb.png`, which is derived data. Until then,
-//!   re-saving a file that has extra entries writes a file without them.
+//!   Re-saving a file that has extra entries writes a file without them.
 //! - **A loaded document obeys the model's rules:** it has passed
 //!   `Document::validate`, so a file edited by hand cannot smuggle in
 //!   duplicate ids or a dangling rollback marker. Saving validates too, so
@@ -40,8 +45,7 @@
 //!   [`MAX_MANIFEST_BYTES`]) before anything is parsed, and no input makes
 //!   this crate panic.
 //!
-//! Not here yet: the directory form of a document, the thumbnail and the
-//! blob store (docs/file-formats.md).
+//! Not here yet: the directory form of a document (docs/file-formats.md).
 
 mod convert;
 pub mod manifest;
@@ -56,7 +60,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 31;
+pub const FORMAT_VERSION: u32 = 32;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -83,6 +87,13 @@ pub const EXTENSION: &str = "3dcraft";
 
 /// Name of the ZIP entry that holds the document.
 pub const MANIFEST_NAME: &str = "manifest.json";
+
+/// Name of the ZIP entry that holds the thumbnail, a PNG picture.
+pub const THUMBNAIL_NAME: &str = "thumb.png";
+
+/// Largest thumbnail that is written or read: 4 MiB. The engine's are a
+/// few tens of kilobytes.
+pub const MAX_THUMBNAIL_BYTES: usize = 4 * 1024 * 1024;
 
 /// Where the bytes of imported files are: `blobs/<sha256>.step`.
 pub const BLOB_DIR: &str = "blobs/";
@@ -311,13 +322,37 @@ pub fn to_manifest_json(document: &Document) -> Result<String, FormatError> {
 /// The bytes of a `.3dcraft` file for a document. Deterministic: the same
 /// document gives the same bytes, on every platform.
 pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
+    to_bytes_with_thumbnail(document, None)
+}
+
+/// [`to_bytes`] with a thumbnail, the bytes of a PNG picture stored as
+/// the entry [`THUMBNAIL_NAME`] right after the manifest. Deterministic
+/// as `to_bytes` is, for the same thumbnail bytes; whether the picture
+/// itself is the same on every platform is the renderer's matter (the
+/// engine promises it on one platform and build only).
+pub fn to_bytes_with_thumbnail(
+    document: &Document,
+    thumbnail: Option<&[u8]>,
+) -> Result<Vec<u8>, FormatError> {
     let json = to_manifest_json(document)?;
     let blobs = blobs_of(document);
+    if let Some(png) = thumbnail
+        && png.len() > MAX_THUMBNAIL_BYTES
+    {
+        return Err(too_large(
+            "the thumbnail",
+            png.len(),
+            MAX_THUMBNAIL_BYTES as u64,
+        ));
+    }
     // A file larger than this crate reads would be a document that cannot
     // be opened again: refused before anything is written.
     let size = file_size(
         json.len(),
-        blobs.iter().map(|(name, blob)| (name.len(), blob.len())),
+        thumbnail
+            .map(|png| (THUMBNAIL_NAME.len(), png.len()))
+            .into_iter()
+            .chain(blobs.iter().map(|(name, blob)| (name.len(), blob.len()))),
     );
     if size > MAX_FILE_BYTES {
         return Err(FormatError::TooLarge {
@@ -327,6 +362,9 @@ pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
         });
     }
     let mut entries: Vec<(&str, &[u8])> = vec![(MANIFEST_NAME, json.as_bytes())];
+    if let Some(png) = thumbnail {
+        entries.push((THUMBNAIL_NAME, png));
+    }
     entries.extend(
         blobs
             .iter()
@@ -418,6 +456,23 @@ pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatE
         }
     }
     read_manifest(manifest.data, &raw)
+}
+
+/// The thumbnail of a `.3dcraft` file ([`THUMBNAIL_NAME`]): the bytes of
+/// its PNG picture, or `None` when the file has none (or one larger than
+/// [`MAX_THUMBNAIL_BYTES`]). The manifest is not read, so this works on a
+/// file of any format version.
+pub fn thumbnail(bytes: &[u8]) -> Result<Option<Vec<u8>>, FormatError> {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
+        return Err(too_large("the file", bytes.len(), MAX_FILE_BYTES));
+    }
+    let entries = craft3d_zipstore::read_stored(bytes)
+        .map_err(|error| foreign(bytes).unwrap_or(FormatError::Zip(error)))?;
+    Ok(entries
+        .iter()
+        .find(|entry| entry.name == THUMBNAIL_NAME)
+        .filter(|entry| entry.data.len() <= MAX_THUMBNAIL_BYTES)
+        .map(|entry| entry.data.to_vec()))
 }
 
 /// What a file that is not a ZIP archive is instead, by how it starts.
@@ -641,4 +696,4 @@ fn shape_error(manifest: &Value, whole: &serde_json::Error) -> FormatError {
 #[cfg(not(target_arch = "wasm32"))]
 mod disk;
 #[cfg(not(target_arch = "wasm32"))]
-pub use disk::{load, load_noted, save};
+pub use disk::{load, load_noted, save, save_with_thumbnail};

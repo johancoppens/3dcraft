@@ -1,0 +1,18 @@
+[
+  ["variable.set", {"name": "width", "expr": "40 mm"}],
+  ["variable.set", {"name": "depth", "expr": "24 mm"}],
+  ["variable.set", {"name": "bore", "expr": "6 mm"}],
+  ["variable.set", {"name": "fixing", "expr": "2"}],
+  ["variable.set", {"name": "thick", "expr": "if(fixing == 1, 6 mm, 8 mm)"}],
+  ["sketch.create", {"name": "Base"}],
+  ["sketch.rect", {"sketch": "Base", "from": ["-width / 2", "-depth / 2"], "to": ["width / 2", "depth / 2"]}],
+  ["sketch.circle", {"sketch": "Base", "center": ["-width / 4", 0], "radius": "bore / 2"}],
+  ["feature.extrude", {"sketch": "Base", "distance": "thick", "name": "Plate"}],
+  ["feature.chamfer", {"edges": [["F2:endCap()", "F2:side(e5)"]], "distance": "1 mm", "name": "Edge"}],
+  ["variable.publish", {"name": "width", "label": "Width", "group": "Size", "min": "30 mm", "max": "80 mm", "step": "1 mm", "description": "Across the plate", "order": 1}],
+  ["variable.publish", {"name": "depth", "label": "Depth", "group": "Size", "min": "2 * bore + 4 mm", "max": "60 mm", "unit": "in", "order": 2}],
+  ["variable.publish", {"name": "bore", "label": "Bore", "min": "2 mm", "max": "depth / 2"}],
+  ["variable.publish", {"name": "fixing", "label": "Fixing", "kind": "choice", "choices": ["Thin", "Thick"]}],
+  ["document.info", {"title": "Plate with a bore", "description": "The format-32 fixture: a small Jig.", "author": "3DCraft tests", "licence": "MIT", "url": "https://github.com/johancoppens/3dcraft", "tags": ["plate", "fixture"]}],
+  ["param.set", {"values": {"width": "50 mm", "bore": 5, "fixing": "Thin"}}]
+]

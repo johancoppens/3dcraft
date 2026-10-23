@@ -1,0 +1,76 @@
+{
+  "format_version": 32,
+  "written_by": "f414fcbce53e5e4d6da56cd407489b12c6f5f15c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v32.steps.json --out v32.3dcraft, then info v32.3dcraft, and param.list of it for parameters and info",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Base",
+      "status": "ok",
+      "dof": 0
+    },
+    {
+      "id": "F2",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Edge",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 8,
+      "edges": 17,
+      "vertices": 12,
+      "volume": 7057.190275490386,
+      "area": 3312.6885495564793
+    }
+  ],
+  "parameters": [
+    {
+      "name": "bore",
+      "kind": "number",
+      "expr": "5 mm",
+      "unit": "mm",
+      "valid": true
+    },
+    {
+      "name": "fixing",
+      "kind": "choice",
+      "expr": "1",
+      "unit": null,
+      "valid": true
+    },
+    {
+      "name": "width",
+      "kind": "number",
+      "expr": "50 mm",
+      "unit": "mm",
+      "valid": true
+    },
+    {
+      "name": "depth",
+      "kind": "number",
+      "expr": "24 mm",
+      "unit": "in",
+      "valid": true
+    }
+  ],
+  "info": {
+    "author": "3DCraft tests",
+    "description": "The format-32 fixture: a small Jig.",
+    "licence": "MIT",
+    "tags": [
+      "plate",
+      "fixture"
+    ],
+    "title": "Plate with a bore",
+    "url": "https://github.com/johancoppens/3dcraft"
+  }
+}

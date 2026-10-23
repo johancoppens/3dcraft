@@ -33,6 +33,7 @@ mod mass;
 mod memory_files;
 mod meshes;
 mod offset_cmds;
+mod param_cmds;
 mod params;
 mod pick_cmds;
 mod query_cmds;
@@ -91,7 +92,7 @@ pub use scene::{
     SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
     SketchCurve, arc_segments, base64 as encode_base64,
 };
-pub use scrub::ScrubPosition;
+pub use scrub::{ScrubPosition, step_caption};
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
@@ -182,6 +183,9 @@ pub(crate) struct OpenDocument {
     /// Where the view is in the history (`view.scrub`): view state, not
     /// saved and not undone (`scrub.rs`).
     pub(crate) scrub: scrub::Scrub,
+    /// The thumbnail drawn for a save, with the revision it shows, so a
+    /// Jig saved again unchanged is not drawn again (`file.save`).
+    pub(crate) thumbnail: Option<(u64, Arc<Vec<u8>>)>,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -225,6 +229,7 @@ impl OpenDocument {
             selection: selection::Selection::default(),
             assertions: assert_check::Checks::default(),
             scrub: scrub::Scrub::default(),
+            thumbnail: None,
         }
     }
 
@@ -391,6 +396,7 @@ impl Session {
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
                 set_cmds::SPECS,
+                param_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
