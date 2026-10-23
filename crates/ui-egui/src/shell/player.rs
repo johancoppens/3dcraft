@@ -209,7 +209,9 @@ impl Shell {
     /// playing.
     pub(crate) fn go_to_end_and_unroll(&mut self) {
         self.stop_playing();
-        if self.timeline.rollback.is_some() {
+        // A Jig in use has no marker to take away: it changes only through
+        // its parameters (the command would be refused).
+        if self.timeline.rollback.is_some() && !self.jig_in_use() {
             self.timeline
                 .queue("history.rollback", json!({"feature": null}));
         }

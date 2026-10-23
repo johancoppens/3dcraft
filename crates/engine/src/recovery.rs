@@ -366,8 +366,12 @@ impl Clone for RecoveryHandle {
 #[cfg(not(target_arch = "wasm32"))]
 fn worth(open: &OpenDocument) -> bool {
     let document = open.history.current();
-    open.dirty()
-        && (open.path.is_some() || !document.features.is_empty() || !document.variables.is_empty())
+    // A Jig in use whose parameters changed: its values are kept too.
+    open.parameters_changed()
+        || (open.dirty()
+            && (open.path.is_some()
+                || !document.features.is_empty()
+                || !document.variables.is_empty()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

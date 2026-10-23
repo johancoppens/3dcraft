@@ -117,7 +117,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
     };
     let mut rows: Vec<Shortcut> = FileAction::ALL
         .iter()
-        .map(|action| {
+        .filter_map(|action| {
             let what = match action {
                 FileAction::New => "New document",
                 FileAction::Open => "Open a document",
@@ -125,8 +125,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
                 FileAction::SaveAs => "Save as",
                 FileAction::Import => "Import a STEP file",
                 FileAction::Export => "Export the bodies or the selection",
+                FileAction::ExportJig | FileAction::OpenForEditing => "",
             };
-            keys(Files, action.shortcut(), what)
+            action
+                .shortcut()
+                .map(|shortcut| keys(Files, shortcut, what))
         })
         .collect();
     rows.extend([
@@ -427,7 +430,9 @@ mod tests {
         };
         let bare = |key| egui::KeyboardShortcut::new(egui::Modifiers::NONE, key);
         for action in FileAction::ALL {
-            assert!(has(action.shortcut()), "{action:?}");
+            if let Some(shortcut) = action.shortcut() {
+                assert!(has(shortcut), "{action:?}");
+            }
         }
         for shortcut in [
             close_shortcut(),

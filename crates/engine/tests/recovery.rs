@@ -846,3 +846,66 @@ fn a_clone_of_a_session_has_no_store() {
     assert_eq!(s.recovery_overview().writes, 1);
     assert_eq!(kinds(&dir), ["3dcraft", "json", "lock"]);
 }
+
+/// A Jig in use whose parameters were changed is worth a recovery file;
+/// it comes back as a model with those values and no file of its own
+/// (docs/decisions.md, 2026-10-23).
+#[test]
+fn a_jig_in_use_comes_back_as_a_model_with_its_values() {
+    let dir = workdir("jig-in-use");
+    let (mut first, clock) = session(&dir);
+    run(&mut first, "file.new", json!({"units": "mm"}));
+    run(
+        &mut first,
+        "variable.set",
+        json!({"name": "w", "expr": "40 mm"}),
+    );
+    run(
+        &mut first,
+        "feature.block",
+        json!({"name": "Plate", "size": ["w", 20, 5]}),
+    );
+    run(
+        &mut first,
+        "variable.publish",
+        json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+    );
+    run(
+        &mut first,
+        "jig.export",
+        json!({"path": "plate.3dcraftjig"}),
+    );
+    run(&mut first, "file.close", json!({"discard": true}));
+    run(&mut first, "file.open", json!({"path": "plate.3dcraftjig"}));
+    // Opened and not changed: nothing to keep.
+    clock.advance(INTERVAL);
+    first.autosave_poll();
+    assert!(
+        kinds(&dir).iter().all(|k| k != "3dcraft"),
+        "{:?}",
+        kinds(&dir)
+    );
+    run(&mut first, "param.set", json!({"values": {"w": 70}}));
+    clock.advance(INTERVAL);
+    first.autosave_poll();
+    drop(first);
+    assert!(kinds(&dir).contains(&"3dcraft".to_string()));
+
+    let (mut second, _) = session(&dir);
+    let listed = run(&mut second, "recovery.list", json!({}));
+    let id = documents(&listed)[0]["id"].as_str().unwrap().to_string();
+    let opened = run(&mut second, "recovery.open", json!({ "id": id }));
+    assert_eq!(opened["asModel"], true, "{opened}");
+    let status = second.document_status().unwrap();
+    assert!(!status.jig_in_use && status.path.is_none() && status.dirty);
+    let volume = run(&mut second, "document.measure", json!({}))["volume"]
+        .as_f64()
+        .unwrap();
+    assert!((volume - 70.0 * 20.0 * 5.0).abs() < 1e-6, "{volume}");
+    // A model: edited as any other.
+    run(
+        &mut second,
+        "variable.set",
+        json!({"name": "w", "expr": "50 mm"}),
+    );
+}

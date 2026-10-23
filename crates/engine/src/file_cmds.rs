@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.list", "List Open Documents", "{}",
-        "Lists the open documents in order: number, path (null when never saved), whether it has unsaved changes, how many features and variables it has, its length unit, which one is active, and recovered: true for one that recovery.open took from a recovery file and that was not saved since.", doc: false, file_list),
+        "Lists the open documents in order: number, path (null when never saved), whether it has unsaved changes, how many features and variables it has, its length unit, which one is active, recovered: true for one that recovery.open took from a recovery file and that was not saved since, and jigInUse: true for a published Jig (.3dcraftjig) opened to be used.", doc: false, file_list),
     spec!("file.activate", "Activate Document", r#"{"document": integer, "path": string}"#,
         "Makes another open document the active one, by its number from file.list or by the path it was opened from or saved to. Give one of the two.", doc: true, file_activate),
 ];
@@ -40,6 +40,12 @@ fn listing(session: &Session) -> Value {
                 && let Some(map) = row.as_object_mut()
             {
                 map.insert("recovered".into(), true.into());
+            }
+            // A published Jig opened to be used says so (`jig_cmds.rs`).
+            if open.jig_in_use
+                && let Some(map) = row.as_object_mut()
+            {
+                map.insert("jigInUse".into(), true.into());
             }
             row
         })

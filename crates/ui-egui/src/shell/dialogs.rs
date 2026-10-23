@@ -194,6 +194,12 @@ impl Shell {
         self.dialogs.quality = quality;
     }
 
+    /// An error or export dialog is open: the question before closing a
+    /// document waits for it (one modal at a time).
+    pub(super) fn dialog_open(&self) -> bool {
+        self.dialogs.error.is_some() || self.dialogs.export.is_some()
+    }
+
     /// Draws the open dialog, the error first (one at a time): call it
     /// before anything else in the frame reads Enter or Escape.
     pub(super) fn dialogs_ui(&mut self, ctx: &egui::Context) {

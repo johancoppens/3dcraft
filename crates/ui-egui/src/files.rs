@@ -10,6 +10,12 @@ use std::path::Path;
 /// The extension of the native format.
 pub const EXTENSION: &str = "3dcraft";
 
+/// The extension of a published Jig: the same format, opened to be used.
+pub const JIG_EXTENSION: &str = "3dcraftjig";
+
+/// The extensions Open reads: a document and a published Jig.
+pub const OPEN_EXTENSIONS: [&str; 2] = [EXTENSION, JIG_EXTENSION];
+
 /// The extensions `file.import` reads (STEP), in both cases for the
 /// dialogs that filter by case.
 pub const IMPORT_EXTENSIONS: [&str; 4] = ["step", "stp", "STEP", "STP"];
@@ -27,12 +33,34 @@ pub const EXPORT_FORMATS: [(&str, &[&str]); 6] = [
 ];
 
 /// The name a dialog proposes for a document saved for the first time or
-/// under another name.
+/// under another name: a Jig in use (`x.3dcraftjig`) is saved as a model,
+/// `x.3dcraft`.
 pub fn suggested_name(path: Option<&str>) -> String {
-    path.and_then(|path| Path::new(path).file_name())
+    let name = path
+        .and_then(|path| Path::new(path).file_name())
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-        .map_or_else(|| format!("untitled.{EXTENSION}"), str::to_string)
+        .map_or_else(|| format!("untitled.{EXTENSION}"), str::to_string);
+    if extension_of(&name).as_deref() == Some(JIG_EXTENSION) {
+        let stem = Path::new(&name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("untitled");
+        format!("{stem}.{EXTENSION}")
+    } else {
+        name
+    }
+}
+
+/// The name Export as Jig proposes: the document's file's, as a
+/// `.3dcraftjig`.
+pub fn suggested_jig_name(path: Option<&str>) -> String {
+    let stem = path
+        .and_then(|path| Path::new(path).file_stem())
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("untitled");
+    format!("{stem}.{JIG_EXTENSION}")
 }
 
 /// The name the export dialog proposes: the document's file's, with the
@@ -445,6 +473,9 @@ mod tests {
     #[test]
     fn names_are_proposed_from_the_document() {
         assert_eq!(suggested_name(None), "untitled.3dcraft");
+        assert_eq!(suggested_name(Some("jigs/box.3dcraftjig")), "box.3dcraft");
+        assert_eq!(suggested_jig_name(Some("w/box.3dcraft")), "box.3dcraftjig");
+        assert_eq!(suggested_jig_name(None), "untitled.3dcraftjig");
         assert_eq!(suggested_name(Some("parts/a.3dcraft")), "a.3dcraft");
         assert_eq!(suggested_export_name(None, None), "untitled.step");
         assert_eq!(
