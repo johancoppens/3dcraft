@@ -719,6 +719,7 @@ impl<'a> Resolver<'a> {
         let name = self.called(id);
         match &self.regen.feature(id)?.status {
             Status::Suppressed => Some(format!("`{name}` is suppressed")),
+            Status::Inactive => Some(format!("`{name}` is inactive")),
             Status::RolledBack => Some(format!("`{name}` is rolled back")),
             Status::Failed(why) => Some(format!("`{name}` failed: {}", cut(why))),
             Status::Ok => None,

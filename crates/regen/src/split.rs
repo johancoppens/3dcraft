@@ -42,6 +42,7 @@ use crate::derive::source_body_shared;
 use crate::entity::sort_in_space;
 use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, PersistentName, Split};
+use craft3d_expr::Evaluation;
 use craft3d_kernel::lumps::{Lump, lumps};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, ShellId, mass_properties, shell_alone, shells_alone};
@@ -151,16 +152,22 @@ pub fn siblings(doc: &Document, results: &[FeatureResult], source: FeatureId) ->
 }
 
 /// The splits of the body of `source` in the document, in history
-/// order, each with whether it is built: not suppressed and not after
-/// the rollback marker (a feature that is not built names no lump).
-fn group(doc: &Document, source: FeatureId) -> Vec<(&Feature, bool)> {
+/// order, each with whether it is built: switched on (not suppressed,
+/// its condition not 0 and not failing) and not after the rollback marker
+/// (a feature that is not built names no lump).
+fn group<'a>(
+    doc: &'a Document,
+    variables: &Evaluation,
+    source: FeatureId,
+) -> Vec<(&'a Feature, bool)> {
     let mut rolled_back = false;
     let mut out = Vec::new();
     for feature in &doc.features {
         if let FeatureKind::Split(split) = &feature.kind
             && split.source == source
         {
-            out.push((feature, !rolled_back && !feature.suppressed));
+            let on = matches!(crate::pass::switch(variables, feature), Ok(None));
+            out.push((feature, !rolled_back && on));
         }
         if doc.rollback == Some(feature.id) {
             rolled_back = true;
@@ -173,9 +180,13 @@ fn group(doc: &Document, source: FeatureId) -> Vec<(&Feature, bool)> {
 /// source: the other splits of the same body as they stand (each as
 /// stated, and whether it is built), for the cache to compare. Empty
 /// for a feature that is no split.
-pub(crate) fn group_state(doc: &Document, feature: &Feature) -> Vec<(Feature, bool)> {
+pub(crate) fn group_state(
+    doc: &Document,
+    variables: &Evaluation,
+    feature: &Feature,
+) -> Vec<(Feature, bool)> {
     match &feature.kind {
-        FeatureKind::Split(split) => group(doc, split.source)
+        FeatureKind::Split(split) => group(doc, variables, split.source)
             .into_iter()
             .map(|(f, built)| (f.clone(), built))
             .collect(),
@@ -420,7 +431,12 @@ pub fn split_plan(
     let made_by = doc
         .feature(source)
         .map_or_else(|| source.to_string(), |f| f.name.clone());
-    let members: Vec<&Feature> = group(doc, source)
+    // Which splits are on depends on the variables (their conditions).
+    let variables = doc
+        .variable_table()
+        .map(|table| table.evaluate())
+        .unwrap_or_else(|_| craft3d_expr::VariableTable::new().evaluate());
+    let members: Vec<&Feature> = group(doc, &variables, source)
         .into_iter()
         .filter_map(|(f, built)| built.then_some(f))
         .collect();
@@ -450,6 +466,7 @@ pub fn split_plan(
 /// source's body it names, with the names of its entities as copies.
 pub(crate) fn build(
     doc: &Document,
+    variables: &Evaluation,
     feature: &Feature,
     split: &Split,
     earlier: &[FeatureResult],
@@ -501,7 +518,7 @@ pub(crate) fn build(
     // built answers for the lumps none names (a cut that makes one lump
     // more, a split deleted), so that no material goes missing in
     // silence; `body.split` on the source adds the splits they lack.
-    let members: Vec<&Feature> = group(doc, split.source)
+    let members: Vec<&Feature> = group(doc, variables, split.source)
         .into_iter()
         .filter_map(|(f, built)| built.then_some(f))
         .collect();

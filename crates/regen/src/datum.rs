@@ -95,6 +95,7 @@ pub(crate) fn datum_of(
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
+        Status::Inactive => return Err(format!("{role}: `{name}` is inactive")),
         Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
         Status::Failed(_) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
     }
@@ -193,14 +194,28 @@ pub(crate) fn named_body_of<'a>(
             crate::comes_after(doc, earlier, first.feature)
         ));
     };
+    // A feature that is off passes on only the body it changes: what it
+    // would have made is not there.
+    if let Some(off) = std::iter::once(first)
+        .chain(second)
+        .find_map(|n| crate::pass::lost(outcome, n))
+    {
+        return Err(format!("{role}: `{made_by}`, which makes {name}, is {off}"));
+    }
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
+        if let Some(why) = crate::pass::absent(earlier, first.feature) {
+            return Err(format!("{role}: `{made_by}`, which makes {name}, has no body: {why}"));
+        }
         return Err(match &outcome.status {
             Status::Ok => format!(
                 "{role}: `{made_by}` is a {}, which has no named faces, edges or vertices",
                 source.kind.type_name()
             ),
-            Status::Suppressed => {
-                format!("{role}: `{made_by}`, which makes {name}, is suppressed")
+            status @ (Status::Suppressed | Status::Inactive) => {
+                format!(
+                    "{role}: `{made_by}`, which makes {name}, is {}",
+                    crate::pass::word(status)
+                )
             }
             Status::RolledBack => {
                 format!("{role}: `{made_by}`, which makes {name}, is rolled back")

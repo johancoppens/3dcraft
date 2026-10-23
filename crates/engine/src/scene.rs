@@ -398,6 +398,8 @@ pub struct SceneDatum {
 pub enum FeatureState {
     Ok,
     Suppressed,
+    /// Switched off by its condition (`when` is 0).
+    Inactive,
     RolledBack,
     Failed,
 }
@@ -408,6 +410,7 @@ impl FeatureState {
         match self {
             FeatureState::Ok => "ok",
             FeatureState::Suppressed => "suppressed",
+            FeatureState::Inactive => "inactive",
             FeatureState::RolledBack => "rolledBack",
             FeatureState::Failed => "failed",
         }
@@ -439,6 +442,8 @@ pub struct SceneFeature {
     /// feature took, a sketch, a datum. What showing a hidden feature
     /// brings into view; a viewer offers to fly to it by this.
     pub draws: bool,
+    /// The condition that switches it on (`feature.when`), as written.
+    pub when: Option<String>,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -1381,6 +1386,7 @@ fn build(
         let (state, error) = match outcome.map(|o| &o.status) {
             Some(Status::Ok) => (FeatureState::Ok, None),
             Some(Status::Suppressed) => (FeatureState::Suppressed, None),
+            Some(Status::Inactive) => (FeatureState::Inactive, None),
             Some(Status::RolledBack) => (FeatureState::RolledBack, None),
             Some(Status::Failed(reason)) => (FeatureState::Failed, Some(reason.clone())),
             None => (
@@ -1400,7 +1406,9 @@ fn build(
             caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
                 .map(|root| root.to_string()),
             hidden: doc.is_hidden(feature.id),
-            draws: state == FeatureState::Ok
+            when: feature.when.as_ref().map(|when| when.source().to_string()),
+            // A feature switched off that passes a body on draws it.
+            draws: outcome.is_some_and(craft3d_regen::FeatureResult::is_built)
                 && (outcome.and_then(|o| o.own_body()).is_some()
                     || solved.is_some()
                     || outcome.and_then(|o| o.datum).is_some()),
