@@ -1,56 +1,80 @@
 # 3DCraft
 
-A parametric 3D CAD modeller built for AI, in pure Rust, with its own B-rep kernel, constraint solver,
-tessellator and renderers: no OpenCascade, no Parasolid, no third-party geometry of any kind. Every action
-is a command, so the same engine is driven from the window, the command line, a JSON control channel or an
-MCP server, and an agent can build a model in the window you are watching.
+**A parametric 3D CAD modeller built for AI.** Describe a part, and an AI agent builds it in the 3DCraft
+window while you watch, point at faces and check the result. Or open a ready-made **Jig**, set its sizes
+in a form and export it, no AI needed. Or write the commands yourself.
 
-![The 3DCraft window: tabs of five open documents, the feature tree of a socket head cap screw with a cut M10 thread, the view cube, and the controls for sketches, datums, the section plane and see-through](docs/img/viewer.png)
+![The 3DCraft window: four documents open, the feature list and history player of a socket head cap screw with a cut thread, the view cube and the display bar](docs/img/viewer.png)
 
-**New here?** The [user guide](docs/guide/README.md) explains how to set up an AI agent with 3DCraft, watch it work and check what it built; the [example models](docs/examples/README.md) are small parts that check their own volume.
+Every action in 3DCraft is a command with a name and a few values, so the same engine is driven from the
+window, the command line, a script, a JSON control channel or an MCP server. It is written in pure Rust,
+with its own B-rep kernel, constraint solver, tessellator and renderers: no OpenCascade, no Parasolid, no
+third-party geometry of any kind. Licence: [MIT](LICENSE).
 
-## What it does today
+## Get started
 
-- **Parametric modelling.** Variables and formulas drive everything; sketches of lines, arcs, circles and
-  B-splines under sixteen kinds of constraint, solved by 3DCraft's own solver. Change one number and the
-  model regenerates, only from the feature the change touches.
-- **Features.** Extrude (to a distance, symmetric, through all, up to a face), revolve, loft, sweep along
-  a path or a helix, booleans, mirror and patterns, chamfers and fillets, offset face, shell, delete face,
-  and ISO metric threads (cut, or cosmetic as other modellers default to). Datum planes, axes, points and
-  helices.
-- **Stable references.** Every face, edge and vertex has a persistent name made of where it came from, so a
-  fillet stays on its edge through upstream edits and booleans; a feature that loses its edge fails, names
-  what it lost and the feature that caused it, and is repaired with `feature.edit`.
-- **A boolean kernel that is checked, not hoped.** Booleans of every analytic surface kind and of polynomial
-  and rational freeform faces agree with a reference kernel in 11,573 of 11,988 cases of a corpus, with
-  none wrong; the rest are refused by name rather than answered badly.
-- **Formats.** `.3dcraft` (the history, not the geometry: it regenerates bit for bit), STEP AP214 export that
-  FreeCAD reads back as valid solids of our volume, STL, 3MF and OBJ, and DXF and SVG of sketches and flat faces.
-- **A native window** (egui on wgpu; Vulkan, Metal, DX12 or OpenGL) that stays responsive while a heavy model
-  regenerates, shows a quick picture first and the sharp one after, and keeps a tab per open document; a view
-  cube, a section plane, see-through bodies, and the feature tree with what failed and why.
-- **Never crashes.** A bad file, a bad parameter or a degenerate model gives an error you can act on; a fuzzing
-  test runs every command with hostile input.
+- **[Install 3DCraft](docs/guide/01-install.md)**: installers for Windows, macOS and Linux (version
+  0.1.0), or the web version with nothing to install.
+- **[Your first five minutes](docs/guide/02-first-steps.md)**: open an example, play its history, try a
+  Jig, export for a 3D printer.
+- **[The user guide](docs/guide/README.md)**: working with an AI agent, the window, Jigs, formulas,
+  modelling, measuring, files and a reference of every command.
+- **[Example models](docs/examples/README.md)** that check their own volume, and the
+  **[Jigs collection](https://github.com/johancoppens/3dcraft-jigs)**: a laser-cut box, a welding table
+  and a GT2 pulley.
+- **What changed:** [`CHANGELOG.md`](CHANGELOG.md).
+
+## What it does
+
+- **Works with your AI agent.** A built-in MCP server lets Claude or any other MCP client model in the
+  window you are watching; the agent reads what you selected, and can light up faces, fly the camera and
+  play the history for you.
+- **Parametric and smart.** Variables and formulas drive everything, with conditions, tables and parts
+  switched on and off; sketches under sixteen kinds of constraint, solved by 3DCraft's own solver; curves
+  drawn from formulas (an involute gear is exact). Change one number and the model rebuilds, only from
+  the feature the change touches.
+- **Features.** Extrude, revolve, loft, sweep along a path or a helix, booleans, mirror and patterns,
+  chamfers and fillets, shell, draft, offset, move and delete face, thicken, ISO metric threads, datums
+  and sheets.
+- **Stable references.** Every face, edge and vertex has a persistent name made of where it came from, so
+  a fillet stays on its edge through upstream edits; a feature that loses its edge fails, names what it
+  lost and is repaired, never silently moved.
+- **Checked, not hoped.** Volumes, distances, wall thickness and clearances from the exact geometry, and
+  design rules kept in the document that are checked at every change. The boolean kernel agrees with a
+  reference kernel on a corpus of about twelve thousand cases with none wrong; what it cannot do yet it
+  refuses by name rather than answering badly.
+- **Jigs.** Publish a design's sizes as parameters and share it as a `.3dcraftjig`: anyone sets them in a
+  form, on the desktop or in the browser, and `check-range` proves the design over its whole range.
+- **Files.** `.3dcraft` (the history: it rebuilds bit for bit, and every released version's files keep
+  opening); STEP import and export; STL, 3MF and OBJ for printing; DXF and SVG of outlines, whole cut
+  sheets for a laser, and drawings of the model with hidden lines.
+- **A native window and a web version.** egui on wgpu (Vulkan, Metal, DX12 or OpenGL) on the desktop,
+  WebGPU or WebGL2 in the browser; a start screen, tabs, a view cube, section and see-through, a history
+  player, and a Parameters tab for Jigs.
+- **Never crashes.** A bad file, a bad parameter or a degenerate model gives an error you can act on, and
+  an autosave brings your work back after a crash.
+
+## Build from source
 
 ```sh
-cargo build --release -p craft3d-cli
-target/release/craft3d-cli run --new '{}' \
+cargo build --release -p craft3d -p craft3d-cli
+target/release/craft3d-cli run --new '{"units":"mm"}' \
     --cmd variable.set  --params '{"name":"width","expr":"60 mm"}' \
     --cmd feature.block --params '{"size":["width","width * 2 / 3","8 mm"]}' \
-    --cmd document.measure --out part.3dcraft
+    --out part.3dcraft
 target/release/craft3d-cli render part.3dcraft --out part.png
-target/release/craft3d-cli convert part.3dcraft part.step
-target/release/craft3d-cli commands          # every command, with its parameters
+target/release/craft3d part.3dcraft
 ```
 
 The window, and an agent driving it over MCP:
 
 ```sh
-cargo build --release -p craft3d -p craft3d-cli
 target/release/craft3d --control 7878 --control-token-file .private/control.token &
 claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
+
+Contributors and agents working on 3DCraft: read [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/README.md).
 
 ## One variable, three screws
 
