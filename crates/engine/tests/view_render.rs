@@ -12,12 +12,14 @@
 mod common;
 
 use common::plain::run;
-use craft3d_engine::{Access, DISPLAY_RELATIVE_TOLERANCE, Session, Workspace};
+use craft3d_engine::{
+    Access, DARK_BACKGROUND, DISPLAY_RELATIVE_TOLERANCE, Session, VIEWPORT_BACKGROUND, Workspace,
+};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// The renderer's default background.
-const BACKGROUND: [u8; 3] = [30, 33, 40];
+/// The background of a picture by default: the window's viewport.
+const BACKGROUND: [u8; 3] = VIEWPORT_BACKGROUND;
 
 fn refused(session: &mut Session, params: Value) -> String {
     match session.execute("view.render", &params) {
@@ -536,6 +538,33 @@ fn bad_params_are_errors_that_say_what_to_give() {
     assert_eq!(result["path"], "a.png");
     assert!(dir.join("a.png").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A picture is drawn on the window's light viewport background unless
+/// it asks for the dark one; another background is refused.
+#[test]
+fn the_background_is_the_viewports_unless_dark_is_asked() {
+    let mut s = plate_post_and_wall();
+    let params = |background: Option<&str>| {
+        let mut p = json!({"width": 64, "height": 48});
+        if let Some(b) = background {
+            p["background"] = json!(b);
+        }
+        p
+    };
+    let light = shoot(&mut s, params(None));
+    assert_eq!(VIEWPORT_BACKGROUND, [235, 233, 229]);
+    assert_eq!(light.pixel(0, 0), VIEWPORT_BACKGROUND);
+    assert_eq!(shoot(&mut s, params(Some("light"))).png, light.png);
+    let dark = shoot(&mut s, params(Some("dark")));
+    assert_eq!(dark.pixel(0, 0), DARK_BACKGROUND);
+    assert_eq!(dark.pixel(63, 47), DARK_BACKGROUND);
+    // The model is drawn the same on both: only the background differs.
+    assert_eq!(light.coverage(), dark.coverage());
+    for bad in [json!("pink"), json!(3), json!([0, 0, 0])] {
+        let error = refused(&mut s, json!({"background": bad}));
+        assert!(error.contains("background"), "{bad}: {error}");
+    }
 }
 
 #[test]
