@@ -42,6 +42,7 @@ mod recovery_cmds;
 mod recovery_store;
 mod replay_cmds;
 mod scene;
+mod scene_box;
 mod section;
 mod select_cmds;
 mod selection;
@@ -140,8 +141,8 @@ pub struct CommandSpec {
 #[derive(Clone)]
 pub(crate) struct OpenDocument {
     /// Which open document this is, within the process: never reused, so
-    /// a recovery file is never taken for another document's.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// a recovery file is never taken for another document's, and a
+    /// window's view of a tab stays with its document.
     pub id: u64,
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.

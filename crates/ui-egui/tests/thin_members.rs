@@ -125,6 +125,9 @@ fn measure(
     name: &str,
 ) -> Vec<Point> {
     let tokens = shell.tokens;
+    // The shell keeps a view per document (2026-10-23): it takes this
+    // session's document up first, so the camera set next is its own.
+    shell.sync(session);
     shell.state.camera = camera;
     let (w, h) = (1000u32, 700u32);
     let mut window = common_window(w as f32, h as f32);

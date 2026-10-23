@@ -1159,6 +1159,7 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
     use craft3d_engine::DocumentStatus;
     let status = |path: Option<&str>, dirty: bool| DocumentStatus {
         index: 0,
+        id: 1,
         open: 1,
         path: path.map(str::to_string),
         dirty,

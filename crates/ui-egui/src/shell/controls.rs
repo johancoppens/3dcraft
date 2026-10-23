@@ -7,7 +7,7 @@
 //! read and write [`crate::state::UiState`].
 
 use super::number_field::{self, FieldOutcome, NumberField, Typing};
-use super::{Shell, Turn};
+use super::{Shell, TURN_SECONDS, Turn};
 use crate::state::ProjectionKind;
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -607,6 +607,7 @@ impl Shell {
                 to,
                 started: ui.input(|i| i.time),
                 last: self.state.camera,
+                seconds: TURN_SECONDS,
             });
             ui.ctx().request_repaint();
         }
