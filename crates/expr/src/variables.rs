@@ -378,8 +378,21 @@ impl VariableTable {
                 .unwrap_or_else(|| Arc::from(Vec::new()));
             return Err(ExprError::new(pos, ErrorKind::Cycle { names }));
         }
+        let value = expr.eval(|name| {
+            let j = *plan.index.get(name)?;
+            match results.get(j) {
+                Some(Some(Ok(value))) => Some(*value),
+                _ => None,
+            }
+        });
+        if value.is_ok() {
+            // A dependency without a value that only a branch not taken
+            // refers to (`if`, `choose`, `&&`, `||`) does not count.
+            return value;
+        }
         // A dependency without a value: either it failed, or (for the
-        // variables behind a cycle) it never got a turn.
+        // variables behind a cycle) it never got a turn. That is the error,
+        // rather than what evaluating without it gave.
         for (name, pos) in expr.variable_refs() {
             let failed = plan
                 .index
@@ -394,13 +407,7 @@ impl VariableTable {
                 ));
             }
         }
-        expr.eval(|name| {
-            let j = *plan.index.get(name)?;
-            match results.get(j) {
-                Some(Some(Ok(value))) => Some(*value),
-                _ => None,
-            }
-        })
+        value
     }
 
     /// Dependency graph, evaluation order and cycles. Everything here is
@@ -710,7 +717,7 @@ mod tests {
         let mut reserved = vec!["pi"];
         reserved.extend(Unit::ALL.iter().map(|u| u.symbol()));
         reserved.extend(Function::ALL.iter().map(|f| f.name()));
-        assert_eq!(reserved.len(), 1 + 8 + 16);
+        assert_eq!(reserved.len(), 1 + 8 + 26);
         for name in reserved {
             assert!(is_reserved_name(name));
             assert_eq!(
@@ -1226,5 +1233,56 @@ mod tests {
         t.rename("loop_", "spin").unwrap();
         assert_eq!(sources(&t), [("a", "1"), ("spin", "spin + a"), ("z", "2")]);
         assert_eq!(kind(&t.evaluate(), "spin"), cycle(&["spin"]));
+    }
+
+    // --- conditions ---
+
+    /// A reference in a branch that is not taken is still a dependency:
+    /// the order puts it first and a cycle through it is a cycle, so the
+    /// table does not change shape when a condition flips.
+    #[test]
+    fn a_cycle_through_a_branch_not_taken_is_a_cycle() {
+        let t = table(&[
+            ("big", "0"),
+            ("a", "if(big > 0, b, 1 mm)"),
+            ("b", "a + 1 mm"),
+        ]);
+        let e = t.evaluate();
+        assert_eq!(kind(&e, "a"), cycle(&["a", "b"]));
+        assert_eq!(kind(&e, "b"), cycle(&["a", "b"]));
+        let t = table(&[("n", "choose(1, 2, n)")]);
+        assert_eq!(kind(&t.evaluate(), "n"), cycle(&["n"]));
+        let t = table(&[("c", "1 || c")]);
+        assert_eq!(kind(&t.evaluate(), "c"), cycle(&["c"]));
+    }
+
+    #[test]
+    fn dependencies_of_every_branch_come_first() {
+        let t = table(&[
+            ("pick", "if(flag, early, late)"),
+            ("late", "2 mm"),
+            ("flag", "1"),
+            ("early", "1 mm"),
+        ]);
+        assert_eq!(t.evaluation_order(), ["late", "flag", "early", "pick"]);
+        assert_eq!(t.evaluate().get("pick"), Some(&length(1.0)));
+    }
+
+    #[test]
+    fn a_failed_variable_in_a_branch_not_taken_does_not_count() {
+        let t = table(&[
+            ("count", "0"),
+            ("total", "12 mm"),
+            ("share", "total / count"),
+            ("each", "if(count > 0, share, total)"),
+            ("other", "if(count == 0, share, total)"),
+        ]);
+        let e = t.evaluate();
+        assert_eq!(kind(&e, "share"), ErrorKind::DivisionByZero);
+        assert_eq!(e.get("each"), Some(&length(12.0)));
+        assert_eq!(
+            e.get("other"),
+            Some(&Err(ExprError::new(15, dependency_failed("share"))))
+        );
     }
 }

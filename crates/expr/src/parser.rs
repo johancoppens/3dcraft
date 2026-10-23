@@ -3,13 +3,22 @@
 //! Grammar (lowest precedence first):
 //!
 //! ```text
-//! expression = term   { ("+" | "-") term }          left-associative
+//! expression = and        { "||" and }              left-associative
+//! and        = not        { "&&" not }              left-associative
+//! not        = { "!" } comparison                   so !a < b = !(a < b)
+//! comparison = sum [ CMP sum ]                      not chained: a < b < c is an error
+//! sum        = term   { ("+" | "-") term }          left-associative
 //! term       = unary  { ("*" | "/") unary }         left-associative
 //! unary      = { "-" } power                        so -2 ^ 2 = -(2 ^ 2)
 //! power      = primary [ "^" [ "-" ] NUMBER ]       integer literal, not chained
 //! primary    = NUMBER [ UNIT ] | "pi" | NAME | NAME "(" [ expression { "," expression } ] ")"
 //!            | "(" expression ")"
+//! CMP        = "<" | "<=" | ">" | ">=" | "==" | "!="
 //! ```
+//!
+//! `!` binds looser than a comparison and tighter than `&&`, as `not` does
+//! in Python: a condition is negated whole. `2 * !c` is therefore a parse
+//! error; write `2 * (!c)`.
 //!
 //! The tree is stored flat: a `Vec<Node>` in which every node comes after
 //! its operands. Evaluating and dropping it are therefore loops, not
@@ -31,6 +40,17 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    /// The comparisons: operands of the same dimension, result 1 or 0.
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    Equal,
+    NotEqual,
+    /// `&&` and `||`: dimensionless operands, result 1 or 0. The right
+    /// operand only counts when the left one does not decide.
+    And,
+    Or,
 }
 
 impl BinaryOp {
@@ -40,7 +60,28 @@ impl BinaryOp {
             BinaryOp::Sub => "-",
             BinaryOp::Mul => "*",
             BinaryOp::Div => "/",
+            BinaryOp::Less => "<",
+            BinaryOp::LessEq => "<=",
+            BinaryOp::Greater => ">",
+            BinaryOp::GreaterEq => ">=",
+            BinaryOp::Equal => "==",
+            BinaryOp::NotEqual => "!=",
+            BinaryOp::And => "&&",
+            BinaryOp::Or => "||",
         }
+    }
+
+    /// The comparison a token stands for, if it is one.
+    fn comparison(kind: TokenKind) -> Option<BinaryOp> {
+        Some(match kind {
+            TokenKind::Less => BinaryOp::Less,
+            TokenKind::LessEq => BinaryOp::LessEq,
+            TokenKind::Greater => BinaryOp::Greater,
+            TokenKind::GreaterEq => BinaryOp::GreaterEq,
+            TokenKind::EqEq => BinaryOp::Equal,
+            TokenKind::NotEq => BinaryOp::NotEqual,
+            _ => return None,
+        })
     }
 }
 
@@ -62,10 +103,20 @@ pub enum Function {
     Round,
     Trunc,
     Mod,
+    Exp,
+    Ln,
+    Log10,
+    Pow,
+    Sinh,
+    Cosh,
+    Tanh,
+    If,
+    Clamp,
+    Choose,
 }
 
 impl Function {
-    pub const ALL: [Function; 16] = [
+    pub const ALL: [Function; 26] = [
         Function::Sin,
         Function::Cos,
         Function::Tan,
@@ -82,6 +133,16 @@ impl Function {
         Function::Round,
         Function::Trunc,
         Function::Mod,
+        Function::Exp,
+        Function::Ln,
+        Function::Log10,
+        Function::Pow,
+        Function::Sinh,
+        Function::Cosh,
+        Function::Tanh,
+        Function::If,
+        Function::Clamp,
+        Function::Choose,
     ];
 
     pub fn name(self) -> &'static str {
@@ -102,6 +163,16 @@ impl Function {
             Function::Round => "round",
             Function::Trunc => "trunc",
             Function::Mod => "mod",
+            Function::Exp => "exp",
+            Function::Ln => "ln",
+            Function::Log10 => "log10",
+            Function::Pow => "pow",
+            Function::Sinh => "sinh",
+            Function::Cosh => "cosh",
+            Function::Tanh => "tanh",
+            Function::If => "if",
+            Function::Clamp => "clamp",
+            Function::Choose => "choose",
         }
     }
 
@@ -114,8 +185,12 @@ impl Function {
     /// prose for the error message.
     fn check_argument_count(self, count: usize) -> Result<(), &'static str> {
         match self {
-            Function::Atan2 | Function::Mod if count != 2 => Err("2"),
-            Function::Atan2 | Function::Mod => Ok(()),
+            Function::Atan2 | Function::Mod | Function::Pow if count != 2 => Err("2"),
+            Function::Atan2 | Function::Mod | Function::Pow => Ok(()),
+            Function::If | Function::Clamp if count != 3 => Err("3"),
+            Function::If | Function::Clamp => Ok(()),
+            Function::Choose if count < 2 => Err("at least 2"),
+            Function::Choose => Ok(()),
             // `floor(x)` of a plain number, `floor(x, step)` to a multiple
             // of a step of any dimension.
             Function::Floor | Function::Ceil | Function::Round | Function::Trunc
@@ -142,6 +217,8 @@ pub enum NodeKind {
     Pi,
     Variable(String),
     Neg(NodeId),
+    /// `!x`: 1 when `x` is 0, else 0.
+    Not(NodeId),
     Binary {
         op: BinaryOp,
         left: NodeId,
@@ -366,6 +443,75 @@ impl Parser<'_> {
     }
 
     fn expression(&mut self) -> Result<NodeId, ExprError> {
+        let mut left = self.and()?;
+        loop {
+            let token = self.peek();
+            if token.kind != TokenKind::OrOr {
+                return Ok(left);
+            }
+            self.advance();
+            let right = self.and()?;
+            left = self.push(
+                NodeKind::Binary {
+                    op: BinaryOp::Or,
+                    left,
+                    right,
+                },
+                token.pos,
+            );
+        }
+    }
+
+    fn and(&mut self) -> Result<NodeId, ExprError> {
+        let mut left = self.not()?;
+        loop {
+            let token = self.peek();
+            if token.kind != TokenKind::AndAnd {
+                return Ok(left);
+            }
+            self.advance();
+            let right = self.not()?;
+            left = self.push(
+                NodeKind::Binary {
+                    op: BinaryOp::And,
+                    left,
+                    right,
+                },
+                token.pos,
+            );
+        }
+    }
+
+    /// A run of `!` is consumed in a loop, as a run of minus signs is.
+    fn not(&mut self) -> Result<NodeId, ExprError> {
+        let mut bang_positions = Vec::new();
+        while self.peek().kind == TokenKind::Bang {
+            bang_positions.push(self.peek().pos);
+            self.advance();
+        }
+        let mut node = self.comparison()?;
+        for pos in bang_positions.into_iter().rev() {
+            node = self.push(NodeKind::Not(node), pos);
+        }
+        Ok(node)
+    }
+
+    fn comparison(&mut self) -> Result<NodeId, ExprError> {
+        let left = self.sum()?;
+        let token = self.peek();
+        let Some(op) = BinaryOp::comparison(token.kind) else {
+            return Ok(left);
+        };
+        self.advance();
+        let right = self.sum()?;
+        let after = self.peek();
+        if BinaryOp::comparison(after.kind).is_some() {
+            return Err(ExprError::new(after.pos, ErrorKind::ChainedComparison));
+        }
+        Ok(self.push(NodeKind::Binary { op, left, right }, token.pos))
+    }
+
+    fn sum(&mut self) -> Result<NodeId, ExprError> {
         let mut left = self.term()?;
         loop {
             let token = self.peek();
@@ -664,7 +810,7 @@ mod tests {
 
     #[test]
     fn the_unknown_function_message_lists_every_function() {
-        let message = err("sinh(2)").to_string();
+        let message = err("sine(2)").to_string();
         for function in Function::ALL {
             assert!(
                 message.contains(&format!(" {},", function.name()))
@@ -678,11 +824,11 @@ mod tests {
     #[test]
     fn unknown_function() {
         assert_eq!(
-            err("1 + sinh(2)"),
+            err("1 + sine(2)"),
             ExprError::new(
                 4,
                 ErrorKind::UnknownFunction {
-                    name: "sinh".into()
+                    name: "sine".into()
                 }
             )
         );
@@ -718,12 +864,105 @@ mod tests {
         assert_eq!(count("atan2(1, 2, 3)"), (0, "atan2", "2", 3));
         assert_eq!(count("min()"), (0, "min", "at least 1", 0));
         assert_eq!(count("max()"), (0, "max", "at least 1", 0));
+        assert_eq!(count("pow(2)"), (0, "pow", "2", 1));
+        assert_eq!(count("if(1, 2)"), (0, "if", "3", 2));
+        assert_eq!(count("if(1, 2, 3, 4)"), (0, "if", "3", 4));
+        assert_eq!(count("clamp(1, 2)"), (0, "clamp", "3", 2));
+        assert_eq!(count("choose(1)"), (0, "choose", "at least 2", 1));
         for function in Function::ALL {
             let one = Expr::parse(&format!("{}(1)", function.name()));
-            let two_only = matches!(function, Function::Atan2 | Function::Mod);
-            assert_eq!(one.is_ok(), !two_only, "{function:?}");
+            let more_than_one = matches!(
+                function,
+                Function::Atan2
+                    | Function::Mod
+                    | Function::Pow
+                    | Function::If
+                    | Function::Clamp
+                    | Function::Choose
+            );
+            assert_eq!(one.is_ok(), !more_than_one, "{function:?}");
         }
         assert!(Expr::parse("min(1, 2, 3, 4)").is_ok());
+        assert!(Expr::parse("choose(2, 1, 2, 3, 4)").is_ok());
+    }
+
+    /// The tree of `source` written out with every operation in
+    /// parentheses, to read precedence and associativity off it.
+    fn tree(source: &str) -> String {
+        fn show(expr: &Expr, id: NodeId) -> String {
+            match &expr.nodes()[id].kind {
+                NodeKind::Binary { op, left, right } => {
+                    format!(
+                        "({} {} {})",
+                        show(expr, *left),
+                        op.symbol(),
+                        show(expr, *right)
+                    )
+                }
+                NodeKind::Not(inner) => format!("!{}", show(expr, *inner)),
+                NodeKind::Neg(inner) => format!("-{}", show(expr, *inner)),
+                NodeKind::Pow { base, exponent } => format!("({} ^ {exponent})", show(expr, *base)),
+                NodeKind::Variable(name) => name.clone(),
+                NodeKind::Number { value, .. } => value.to_string(),
+                NodeKind::Call { function, args } => {
+                    let args: Vec<String> = args.iter().map(|&a| show(expr, a)).collect();
+                    format!("{}({})", function.name(), args.join(", "))
+                }
+                NodeKind::Pi => "pi".to_string(),
+            }
+        }
+        let expr = Expr::parse(source).unwrap();
+        show(&expr, expr.nodes().len() - 1)
+    }
+
+    #[test]
+    fn precedence_of_comparisons_and_logic() {
+        assert_eq!(tree("a + 1 < b * 2"), "((a + 1) < (b * 2))");
+        assert_eq!(tree("a < b && c > d"), "((a < b) && (c > d))");
+        assert_eq!(tree("a || b && c"), "(a || (b && c))");
+        assert_eq!(tree("a && b || c"), "((a && b) || c)");
+        assert_eq!(tree("a || b || c"), "((a || b) || c)");
+        assert_eq!(tree("a && b && c"), "((a && b) && c)");
+        assert_eq!(tree("!a < b"), "!(a < b)");
+        assert_eq!(tree("!a && b"), "(!a && b)");
+        assert_eq!(tree("!!a"), "!!a");
+        assert_eq!(tree("-a == b"), "(-a == b)");
+        assert_eq!(tree("a != b ^ 2"), "(a != (b ^ 2))");
+        assert_eq!(tree("(a < b) < c"), "((a < b) < c)");
+        assert_eq!(tree("2 * (!c)"), "(2 * !c)");
+        assert_eq!(tree("if(a >= b, a, b)"), "if((a >= b), a, b)");
+        for op in ["<", "<=", ">", ">=", "==", "!="] {
+            assert_eq!(tree(&format!("a {op} b")), format!("(a {op} b)"));
+        }
+    }
+
+    #[test]
+    fn comparisons_do_not_chain() {
+        assert_eq!(
+            err("a < b < c"),
+            ExprError::new(6, ErrorKind::ChainedComparison)
+        );
+        assert_eq!(
+            err("1 == 1 != 0"),
+            ExprError::new(7, ErrorKind::ChainedComparison)
+        );
+        assert!(err("a < b < c").to_string().contains("a < b && b < c"));
+    }
+
+    #[test]
+    fn logic_needs_operands() {
+        assert_eq!(err("a &&"), expected(4, OPERAND, END));
+        assert_eq!(err("|| a"), expected(0, OPERAND, "`||`"));
+        assert_eq!(err("a <"), expected(3, OPERAND, END));
+        assert_eq!(err("2 * !c"), expected(4, OPERAND, "`!`"));
+        assert_eq!(err("!"), expected(1, OPERAND, END));
+        assert!(matches!(err("a = b").kind, ErrorKind::LoneOperator { .. }));
+    }
+
+    #[test]
+    fn variables_of_every_branch_are_listed() {
+        let expr = Expr::parse("if(a > 0, b, c) + choose(n, d, e) + (f || g) * 0").unwrap();
+        assert_eq!(expr.variables(), ["a", "b", "c", "n", "d", "e", "f", "g"]);
     }
 
     #[test]
@@ -876,9 +1115,9 @@ mod tests {
         );
         assert!(err("width * mm").to_string().contains("as in `1 mm`"));
         assert!(
-            err("sinh(1)")
+            err("sine(1)")
                 .to_string()
-                .contains("unknown function `sinh`")
+                .contains("unknown function `sine`")
         );
         assert!(
             err("atan2(1)")
