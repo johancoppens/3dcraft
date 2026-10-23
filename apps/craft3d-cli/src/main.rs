@@ -138,7 +138,8 @@ Options:
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
-                           [--sketch S | --face F [--feature B] | --set S]
+                           [--sketch S | --face F [--feature B]
+                            | --set S [--width W] [--gap G]]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
@@ -163,7 +164,12 @@ Options:
   --feature B     With --face: the body that has the face, when several do
   --set S         For .dxf and .svg: every flat face the named set S holds
                   (set.define), on one sheet, a layer per body: the cut
-                  sheet of a laser-cut design";
+                  sheet of a laser-cut design
+  --width W       With --set: the sheet's widest row, an expression in
+                  the document's units (e.g. '600 mm'); faces that do
+                  not fit start a new row. Default: one row
+  --gap G         With --set: the space between faces on the sheet, an
+                  expression. Default: 5 mm";
 
 const HELP_REPLAY: &str = "\
 Usage: craft3d-cli replay FILE --out OUT [--size WxH] [--view V] [--orbit DEG]

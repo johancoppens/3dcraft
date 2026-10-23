@@ -861,3 +861,71 @@ fn errors_explain_themselves() {
         assert_eq!(e.to_string(), text);
     }
 }
+
+/// An arc's end held at both coordinates (what `sketch.arc` makes of an
+/// end written as expressions) is determined, not redundant: the arc's
+/// own equation makes the second coordinate dependent to first order, but
+/// that coordinate is what picks the end among the two on the circle
+/// (the gt2-pulley Jig, 2026-10-23). A coordinate the person's own
+/// constraints already imply is still redundant, and the solution is the
+/// same either way.
+#[test]
+fn an_arc_end_held_at_both_coordinates_is_not_redundant() {
+    let r = 5.0f64;
+    let t = 0.7f64;
+    let build = |extra: bool| {
+        let mut s = Sketch::new();
+        let c = s.add_point(0.0, 0.0);
+        let a = s.add_point(r + 0.1, 0.2);
+        let e = s.add_point(4.0, 3.5);
+        s.add_arc(c, a, e);
+        s.add_constraint(C::Fixed {
+            point: c,
+            at: Some([0.0, 0.0]),
+        });
+        s.add_constraint(C::Fixed {
+            point: a,
+            at: Some([r, 0.0]),
+        });
+        s.add_constraint(C::CoordinateX {
+            point: e,
+            value: r * t.cos(),
+        });
+        s.add_constraint(C::CoordinateY {
+            point: e,
+            value: r * t.sin(),
+        });
+        if extra {
+            s.add_constraint(C::CoordinateY {
+                point: e,
+                value: r * t.sin(),
+            });
+        }
+        (s, e)
+    };
+    let (s, e) = build(false);
+    let sol = solved(&s);
+    assert_eq!(statuses(&sol), [Satisfied, Satisfied, Satisfied, Satisfied]);
+    assert_eq!(sol.dof, 0);
+    let [x, y] = sol.point(e).unwrap();
+    assert!(dist([x, y], [r * t.cos(), r * t.sin()]) < 1e-9);
+    let (s, _) = build(true);
+    let twice = solved(&s);
+    assert_eq!(
+        statuses(&twice),
+        [Satisfied, Satisfied, Satisfied, Satisfied, Redundant]
+    );
+    assert_eq!(twice.point(e), sol.point(e));
+    // Without the arc nothing changes: x and y pin the point.
+    let mut s = Sketch::new();
+    let p = s.add_point(1.0, 1.0);
+    s.add_constraint(C::CoordinateX {
+        point: p,
+        value: 2.0,
+    });
+    s.add_constraint(C::CoordinateY {
+        point: p,
+        value: 3.0,
+    });
+    assert_eq!(statuses(&solved(&s)), [Satisfied, Satisfied]);
+}

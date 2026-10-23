@@ -456,6 +456,8 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
             "--quality",
             "--angle",
             "--set",
+            "--width",
+            "--gap",
         ],
         |name, value| {
             if name == "--quality" {
@@ -514,7 +516,15 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     }
     if native && !outline.is_empty() {
         return Err(CliError::Usage(
-            "`--sketch`, `--face`, `--feature` and `--set` say what a .dxf or .svg file is the outline of"
+            "`--sketch`, `--face`, `--feature`, `--set`, `--width` and `--gap` say what a .dxf or .svg file is the outline of and how its sheet is laid out"
+                .to_string(),
+        ));
+    }
+    if (outline.contains_key("width") || outline.contains_key("gap"))
+        && !outline.contains_key("set")
+    {
+        return Err(CliError::Usage(
+            "`--width` and `--gap` lay out the sheet of a named set: give them with `--set S`"
                 .to_string(),
         ));
     }

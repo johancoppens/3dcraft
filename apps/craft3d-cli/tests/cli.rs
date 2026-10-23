@@ -1575,3 +1575,61 @@ fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `convert --set S --width W --gap G` is `file.export {set, width, gap}`:
+/// three 30 × 20 panels whose top faces fill one row without a width, and
+/// rows of two on a sheet 70 mm wide (30 + 10 + 30).
+#[test]
+fn convert_set_takes_the_sheet_width_and_gap() {
+    let dir = workdir("convert-set");
+    let file = path(&dir, "panels.3dcraft");
+    let script = path(&dir, "panels.json");
+    let steps = json!([
+        ["feature.block", {"name": "A", "size": [30, 20, 3]}],
+        ["feature.block", {"name": "B", "size": [30, 20, 3], "position": [0, 50, 0]}],
+        ["feature.block", {"name": "C", "size": [30, 20, 3], "position": [0, 100, 0]}],
+        ["set.define", {"name": "Cut sheet", "kind": "face",
+                        "where": {"normal": {"along": "z"}}}],
+    ]);
+    std::fs::write(&script, steps.to_string()).unwrap();
+    cli(&[
+        "run",
+        "--new",
+        r#"{"units": "mm"}"#,
+        "--script",
+        &script,
+        "--out",
+        &file,
+    ])
+    .ok();
+    let sheet = |name: &str, extra: &[&str]| -> Value {
+        let out = path(&dir, name);
+        let mut args = vec!["convert", file.as_str(), out.as_str(), "--set", "Cut sheet"];
+        args.extend_from_slice(extra);
+        cli(&args).ok().json_lines().remove(0)
+    };
+    let one_row = sheet("row.svg", &["--gap", "10 mm"]);
+    println!("{one_row}");
+    assert_eq!(one_row["sheet"].as_array().unwrap().len(), 3, "{one_row}");
+    assert_eq!(one_row["rows"], 1, "{one_row}");
+    // 30 + 10 + 30 + 10 + 30 by 20.
+    assert_eq!(one_row["bbox"], json!([0.0, 0.0, 110.0, 20.0]), "{one_row}");
+    assert_eq!(one_row["gap"], 10.0, "{one_row}");
+    let narrow = sheet("rows.dxf", &["--gap", "10", "--width", "70 mm"]);
+    println!("{narrow}");
+    assert_eq!(narrow["gap"], 10.0, "{narrow}");
+    // Two 30 mm faces and a 10 mm gap fill a 70 mm row.
+    // Rows of two and one: 70 by 20 + 10 + 20.
+    assert_eq!(narrow["rows"], 2, "{narrow}");
+    assert_eq!(narrow["bbox"], json!([0.0, 0.0, 70.0, 50.0]), "{narrow}");
+    // A negative gap is the engine's error (1); --width or --gap without
+    // --set, or for a .3dcraft, a usage error (2).
+    let out = path(&dir, "bad.svg");
+    let ran = cli(&["convert", &file, &out, "--set", "Cut sheet", "--gap", "-1"]).failed(1);
+    assert!(ran.stderr.contains("`gap`"), "{}", ran.stderr);
+    let ran = cli(&["convert", &file, &out, "--sketch", "S1", "--width", "70"]).failed(2);
+    assert!(ran.stderr.contains("`--set S`"), "{}", ran.stderr);
+    let copy = path(&dir, "copy.3dcraft");
+    cli(&["convert", &file, &copy, "--gap", "3"]).failed(2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
