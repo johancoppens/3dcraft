@@ -106,6 +106,47 @@ document and undone like a colour; `document.inspect` marks it `"hidden": true`.
 `{"feature": null}` shows it as it is again), without changing the document: the timeline in the window
 does the same. To build on from that step, move the real marker there with `history.rollback`.
 
+## Switching a feature on or off
+
+`feature.suppress {"feature": "Round"}` switches a feature off by hand; `"suppressed": false` switches it
+on again. `feature.when` switches it by a **condition**, an expression kept with the feature and
+evaluated at every regeneration: the feature is built when it is a number other than zero, and is
+**inactive** when it is zero.
+
+```json
+[
+  ["feature.when", {"feature": "Lid", "expr": "lid"}],
+  ["feature.when", {"feature": "LidFillet", "expr": "lid"}],
+  ["feature.when", {"feature": "GT2 tooth", "expr": "profile == 1"}],
+  ["feature.when", {"feature": "Flange", "expr": "flanges && teeth < 40"}]
+]
+```
+
+A boolean public parameter (`lid`) or a choice (`profile == 2`) then switches parts of the model from a
+form, with `param.set`. `"expr": null` takes the condition away. Comparisons, `&&`, `||`, `!` and `if`
+work as in any expression; a condition with a unit (`3 mm`), or one that does not evaluate, fails the
+feature with the reason. A suppressed feature stays off whatever its condition. `variable.rename` and
+`table.rename` rewrite conditions too, and `variable.delete` names a feature whose condition uses it.
+
+Off, by hand or by its condition, a feature behaves as if it were not in the history:
+
+- one that **changes** a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a
+  transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from
+  the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
+- one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
+  A boolean that used it as its tool passes its target on; one that used it as its target makes no body
+  and leaves its tool alone; a pattern, transform, mirror or shell of it makes none either
+  (`passesNothing` says why);
+- what only the switched-off feature makes is gone: a chamfer of an edge of a fillet's face, a sketch on
+  that face or a face of a pattern's second instance fails, naming the feature that is off. Give it the
+  same condition (`"expr": "lid"` on the lid and on its fillet), so they come and go together.
+
+A sketch or a datum that is off is not there for what refers to it: an extrusion of a sketch that is off
+fails, so give the extrusion the same condition. In `document.inspect`, `ui.get` and the feature list an
+inactive feature has the status `inactive`, distinct from `suppressed`; the list shows it greyed with a
+*when* mark, and its condition on hover. Switched on again, the feature gives exactly the bodies it gave
+before.
+
 ## Jigs: parameters
 
 A **Jig** is a document that others set without knowing how it is modelled: a box sized by its width,

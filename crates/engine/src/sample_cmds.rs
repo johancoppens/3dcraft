@@ -486,7 +486,7 @@ fn body_kinds(regen: &craft3d_regen::Regen) -> Vec<(FeatureId, BodyKind)> {
     regen
         .features
         .iter()
-        .filter(|f| matches!(f.status, craft3d_regen::Status::Ok))
+        .filter(|f| f.is_built())
         .filter_map(|f| f.own_body().map(|b| (f.id, b.kind)))
         .collect()
 }

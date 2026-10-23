@@ -52,8 +52,11 @@ fn body_split(session: &mut Session, params: &Value) -> Run {
             return fail(format!("{ID}: there is no feature {source}"));
         };
         match &outcome.status {
+            // Switched off, it passes on the body it changes.
+            _ if outcome.is_built() => {}
             Status::Ok => {}
             Status::Suppressed => return fail(format!("{ID}: `{made_by}` is suppressed")),
+            Status::Inactive => return fail(format!("{ID}: `{made_by}` is inactive")),
             Status::RolledBack => return fail(format!("{ID}: `{made_by}` is rolled back")),
             Status::Failed(reason) => {
                 return fail(format!("{ID}: `{made_by}` failed ({reason}); fix it first"));

@@ -503,7 +503,45 @@ pub enum Geometry {
         pattern: PatternId,
         index: InstanceIndex,
     },
+    /// A curve given by formulas: the point (`x`(t), `y`(t)) in sketch
+    /// coordinates for the parameter [`FORMULA_PARAMETER`] from `from` to
+    /// `to`. `x` and `y` are expressions in that parameter and the
+    /// document's variables (inside them the parameter shadows a variable
+    /// of the same name); `from` and `to` are expressions in the variables
+    /// alone, of one dimension (a plain number, an angle, a length).
+    ///
+    /// The curve has no unknowns: regeneration evaluates it with the
+    /// current variables and fits a B-spline to it within the document's
+    /// tolerance. Its ends are the point entities `start` (at `from`) and
+    /// `end` (at `to`), which the regeneration holds where the formulas
+    /// put them, so other curves can end on them; the same point for both
+    /// is a closed curve.
+    Formula {
+        x: Expr,
+        y: Expr,
+        from: Expr,
+        to: Expr,
+        start: EntityId,
+        end: EntityId,
+    },
+    /// A B-spline of `degree` through the points `through`, in order,
+    /// fitted again at every regeneration from where the solve puts them
+    /// (on clamped uniform knots, each point at the Greville abscissa of
+    /// its control point, as `sketch.spline {through}` fits once). It has
+    /// no unknowns of its own: the points shape it, also points held by
+    /// formulas. With the first point also as the last it closes.
+    Interpolated {
+        degree: u32,
+        through: Vec<EntityId>,
+    },
 }
+
+/// Expressions with the names of their parameters.
+pub type NamedExprs<'a> = Vec<(String, &'a Expr)>;
+
+/// The name of the free parameter in the formulas of a
+/// [`Geometry::Formula`] curve.
+pub const FORMULA_PARAMETER: &str = "t";
 
 /// The knots of a sketch spline: `degree + 1` zeros, the inner knots evenly
 /// spaced, `degree + 1` ones (`count + degree + 1` in all). Empty when
@@ -535,6 +573,8 @@ impl Geometry {
             Geometry::Arc { .. } => "arc",
             Geometry::Spline { .. } => "spline",
             Geometry::Image { .. } => "image",
+            Geometry::Formula { .. } => "formula",
+            Geometry::Interpolated { .. } => "interpolated",
         }
     }
 
@@ -546,6 +586,14 @@ impl Geometry {
             Geometry::Circle { center, .. } => vec![*center],
             Geometry::Arc { center, start, end } => vec![*center, *start, *end],
             Geometry::Spline { control, .. } => control.clone(),
+            Geometry::Formula { start, end, .. } => {
+                if start == end {
+                    vec![*start]
+                } else {
+                    vec![*start, *end]
+                }
+            }
+            Geometry::Interpolated { through, .. } => through.clone(),
         }
     }
 
@@ -557,7 +605,31 @@ impl Geometry {
                 Some((*start, *end))
             }
             Geometry::Spline { control, .. } => Some((*control.first()?, *control.last()?)),
+            Geometry::Formula { start, end, .. } => Some((*start, *end)),
+            Geometry::Interpolated { through, .. } => Some((*through.first()?, *through.last()?)),
         }
+    }
+
+    /// The formulas of a formula curve, with the names of their parameters
+    /// (`e7.x`, `e7.y`), in which [`FORMULA_PARAMETER`] is bound; and its
+    /// range (`e7.from`, `e7.to`), in which it is not.
+    pub fn formula_exprs(&self, id: EntityId) -> (NamedExprs<'_>, NamedExprs<'_>) {
+        match self {
+            Geometry::Formula { x, y, from, to, .. } => (
+                vec![(format!("{id}.x"), x), (format!("{id}.y"), y)],
+                vec![(format!("{id}.from"), from), (format!("{id}.to"), to)],
+            ),
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// True for the curves regeneration fits (a formula curve, a live
+    /// spline): they have no unknowns, and no constraint takes them yet.
+    pub fn is_fitted(&self) -> bool {
+        matches!(
+            self,
+            Geometry::Formula { .. } | Geometry::Interpolated { .. }
+        )
     }
 
     /// Why a spline of this degree on these points cannot be, if it cannot:
@@ -731,6 +803,8 @@ pub enum Role {
     /// A circle or an arc.
     Round,
     Spline,
+    /// A formula curve or a live spline, which no constraint takes yet.
+    Fitted,
 }
 
 impl Role {
@@ -740,6 +814,7 @@ impl Role {
             Geometry::Line { .. } => Role::Line,
             Geometry::Circle { .. } | Geometry::Arc { .. } => Role::Round,
             Geometry::Spline { .. } => Role::Spline,
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => Role::Fitted,
         }
     }
 
@@ -749,6 +824,7 @@ impl Role {
             Role::Line => "a line",
             Role::Round => "a circle or arc",
             Role::Spline => "a spline",
+            Role::Fitted => "a formula curve or live spline",
         }
     }
 }
@@ -1298,6 +1374,89 @@ impl Sketch {
         self.push(Geometry::Spline { degree, control }, construction)
     }
 
+    /// A curve given by formulas ([`Geometry::Formula`]) from the existing
+    /// point `start` to the existing point `end` (the same point for a
+    /// closed curve).
+    pub fn add_formula(
+        &mut self,
+        formulas: [Expr; 4],
+        start: EntityId,
+        end: EntityId,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
+        let [x, y, from, to] = formulas;
+        let geometry = Geometry::Formula {
+            x,
+            y,
+            from,
+            to,
+            start,
+            end,
+        };
+        if let Some(fault) = self.formula_fault(&geometry) {
+            return invalid(fault);
+        }
+        self.push(geometry, construction)
+    }
+
+    /// A spline of `degree` through the existing points `through`, fitted
+    /// again at every regeneration ([`Geometry::Interpolated`]). Closed
+    /// when the first point is also the last.
+    pub fn add_interpolated(
+        &mut self,
+        degree: u32,
+        through: Vec<EntityId>,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
+        if let Some(fault) = Geometry::spline_fault(degree, &through) {
+            return invalid(fault);
+        }
+        self.push(Geometry::Interpolated { degree, through }, construction)
+    }
+
+    /// Why a formula curve cannot be, if it cannot: its ends are points
+    /// with coordinates (an image point follows its pattern, the curve its
+    /// formulas, and both cannot hold it), and its formulas are written.
+    fn formula_fault(&self, geometry: &Geometry) -> Option<String> {
+        let Geometry::Formula {
+            x,
+            y,
+            from,
+            to,
+            start,
+            end,
+        } = geometry
+        else {
+            return None;
+        };
+        for (what, expr) in [("x", x), ("y", y), ("from", from), ("to", to)] {
+            if expr.source().trim().is_empty() {
+                return Some(format!("the formula curve has no `{what}`"));
+            }
+            if expr.source().len() > craft3d_expr::MAX_SOURCE_LEN {
+                return Some(format!(
+                    "`{what}` of the formula curve is longer than {} bytes",
+                    craft3d_expr::MAX_SOURCE_LEN
+                ));
+            }
+        }
+        for point in [start, end] {
+            match self.entity(*point).map(|e| &e.geometry) {
+                Ok(Geometry::Point { .. }) => {}
+                Ok(Geometry::Image { .. }) => {
+                    return Some(format!(
+                        "{point} is an image point; a formula curve ends on points with coordinates of their own"
+                    ));
+                }
+                Ok(other) => {
+                    return Some(format!("{point} is a {}, not a point", other.type_name()));
+                }
+                Err(e) => return Some(e.to_string()),
+            }
+        }
+        None
+    }
+
     /// Checks that the constraint's entities exist, are different from each
     /// other and are of a kind the constraint accepts.
     pub fn check_constraint(&self, kind: &ConstraintKind) -> Result<(), SketchError> {
@@ -1606,6 +1765,32 @@ impl Sketch {
         for pattern in &self.patterns {
             out.extend(pattern.exprs());
         }
+        // The ranges of formula curves; their formulas, in which the
+        // parameter is bound, are [`Sketch::formula_exprs`].
+        for entity in &self.entities {
+            out.extend(entity.geometry.formula_exprs(entity.id).1);
+        }
+        out
+    }
+
+    /// The formulas `x` and `y` of the formula curves, named `e7.x` and
+    /// `e7.y`: expressions in [`FORMULA_PARAMETER`] (which shadows a
+    /// variable of that name) and the variables.
+    pub fn formula_exprs(&self) -> Vec<(String, &Expr)> {
+        self.entities
+            .iter()
+            .flat_map(|e| e.geometry.formula_exprs(e.id).0)
+            .collect()
+    }
+
+    /// The formulas of [`Sketch::formula_exprs`], to rewrite.
+    pub(crate) fn formula_exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = Vec::new();
+        for entity in &mut self.entities {
+            if let Geometry::Formula { x, y, .. } = &mut entity.geometry {
+                out.extend([x, y]);
+            }
+        }
         out
     }
 
@@ -1618,6 +1803,11 @@ impl Sketch {
         );
         for pattern in &mut self.patterns {
             out.extend(pattern.exprs_mut());
+        }
+        for entity in &mut self.entities {
+            if let Geometry::Formula { from, to, .. } = &mut entity.geometry {
+                out.extend([from, to]);
+            }
         }
         out
     }
@@ -2280,9 +2470,18 @@ impl Sketch {
                     }
                 }
                 Geometry::Line { .. } | Geometry::Arc { .. } => {}
-                Geometry::Spline { degree, control } => {
+                Geometry::Spline { degree, control }
+                | Geometry::Interpolated {
+                    degree,
+                    through: control,
+                } => {
                     spline = true;
                     if let Some(fault) = Geometry::spline_fault(*degree, control) {
+                        return invalid(format!("{id}: {fault}"));
+                    }
+                }
+                Geometry::Formula { .. } => {
+                    if let Some(fault) = self.formula_fault(&entity.geometry) {
                         return invalid(format!("{id}: {fault}"));
                     }
                 }
@@ -3425,5 +3624,64 @@ mod tests {
             assert!(damaged.validate().is_err(), "{what}");
         }
         assert_eq!(s.pattern(p).map(|p| p.layout.type_name()), Some("circular"));
+    }
+
+    #[test]
+    fn formula_curves_and_live_splines_are_checked() {
+        let mut s = Sketch::default();
+        let a = s.add_point(0.0, 0.0).unwrap();
+        let b = s.add_point(1.0, 0.0).unwrap();
+        let c = s.add_point(2.0, 1.0).unwrap();
+        let e = |t: &str| Expr::new(t);
+        let formulas = || [e("t"), e("t^2"), e("0"), e("1")];
+        let curve = s.add_formula(formulas(), a, b, false).unwrap();
+        assert_eq!(s.entity(curve).unwrap().geometry.type_name(), "formula");
+        assert_eq!(s.entity(curve).unwrap().geometry.points(), [a, b]);
+        assert_eq!(s.entity(curve).unwrap().geometry.ends(), Some((a, b)));
+        // One point for both ends: closed.
+        let closed = s.add_formula(formulas(), c, c, false).unwrap();
+        assert_eq!(s.entity(closed).unwrap().geometry.points(), [c]);
+        // A formula left empty, or ends that are no points of their own.
+        assert!(
+            s.add_formula([e(" "), e("t"), e("0"), e("1")], a, b, false)
+                .is_err()
+        );
+        assert!(s.add_formula(formulas(), a, curve, false).is_err());
+        assert!(s.add_formula(formulas(), a, EntityId(99), false).is_err());
+        let long = "t + ".repeat(craft3d_expr::MAX_SOURCE_LEN);
+        assert!(
+            s.add_formula([e(&long), e("t"), e("0"), e("1")], a, b, false)
+                .is_err()
+        );
+        // The range is among the expressions, the formulas apart.
+        let named: Vec<String> = s.exprs().into_iter().map(|(n, _)| n).collect();
+        assert!(named.contains(&format!("{curve}.from")), "{named:?}");
+        assert!(!named.contains(&format!("{curve}.x")), "{named:?}");
+        let formulas: Vec<String> = s.formula_exprs().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(formulas[..2], [format!("{curve}.x"), format!("{curve}.y")]);
+        // A live spline is checked as a spline is.
+        let live = s.add_interpolated(2, vec![a, b, c], false).unwrap();
+        assert_eq!(s.entity(live).unwrap().geometry.type_name(), "interpolated");
+        assert!(s.add_interpolated(3, vec![a, b, c], false).is_err());
+        assert!(s.add_interpolated(1, vec![a, a], false).is_err());
+        // No constraint takes them yet, and a point they end on stays.
+        for kind in [
+            ConstraintKind::PointOn { point: c, curve },
+            ConstraintKind::Tangent { a: curve, b: live },
+        ] {
+            let refused = s.add_constraint(kind).unwrap_err().to_string();
+            assert!(refused.contains("formula curve"), "{refused}");
+        }
+        assert!(matches!(s.remove_entity(a), Err(SketchError::InUse { .. })));
+        s.validate().unwrap();
+        // A file with a formula that ends on an image point, or with no
+        // formula, is refused when read.
+        let mut damaged = s.clone();
+        if let Some(entity) = damaged.entities.iter_mut().find(|x| x.id == curve)
+            && let Geometry::Formula { x, .. } = &mut entity.geometry
+        {
+            *x = e("");
+        }
+        assert!(damaged.validate().is_err());
     }
 }

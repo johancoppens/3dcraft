@@ -121,6 +121,7 @@ volume, area and centroid.";
 
 const HELP_RENDER: &str = "\
 Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
+                          [--background B]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
 window, no GPU) and prints what it drew as one line of JSON. The bodies are
@@ -134,7 +135,8 @@ Options:
   --out PNG     The image file to write (required)
   --size WxH    Image size in pixels, each 16 to 4096. Default 800x600
   --view V      iso, front, back, left, right, top or bottom. Default iso
-  --mode M      shaded, or ids (one flat colour per face). Default shaded";
+  --mode M      shaded, or ids (one flat colour per face). Default shaded
+  --background B  light (the window's viewport, the default) or dark";
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]

@@ -4,7 +4,13 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Switch features on and off by a condition.** `feature.when` gives a feature a condition such as `lid` or `profile == 2`; a yes/no or choice parameter of a Jig then switches parts of the model on and off. Such a feature is shown greyed as *inactive*.
+
 ### Changed
+
+- **Suppressing a feature no longer breaks what comes after it.** A suppressed boolean, fillet, chamfer, shell or pattern passes the body on unchanged, as other modellers do; a boolean whose tool is suppressed keeps its target. Only what the suppressed feature itself made (a fillet's rounded face) is gone, and a feature that used it says so.
 
 - **Files in the browser.** In Chrome, Edge and on Chromebooks, Open, Save As, Import and Export show your system's file dialog, and Save writes back to the file the document came from. Elsewhere files are downloads, and the status bar says where each file went.
 

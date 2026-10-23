@@ -491,12 +491,15 @@ fn what_happens_to_the_source_happens_to_what_is_made_from_it() {
         json!({"sketch": "Profile", "entity": "e3", "at": [30, 4]}),
     );
     assert_body(&mut s, "Row", 720.0, [15.0, 12.0, 1.0]);
+    // A suppressed source makes no body, and the pattern of it passes
+    // nothing on (docs/design/regeneration.md › Switched off).
+    run(&mut s, "feature.suppress", json!({"feature": "Bar"}));
+    let row = feature(&mut s, "Row");
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(row["passesNothing"], "`Bar` is suppressed", "{row}");
+    assert!(body_names(&mut s).is_empty());
+    run(&mut s, "edit.undo", json!({}));
     for (command, params, words) in [
-        (
-            "feature.suppress",
-            json!({"feature": "Bar"}),
-            vec!["Bar", "suppressed"],
-        ),
         (
             "feature.delete",
             json!({"feature": "Bar"}),
@@ -518,10 +521,13 @@ fn what_happens_to_the_source_happens_to_what_is_made_from_it() {
         run(&mut s, "edit.undo", json!({}));
         assert_body(&mut s, "Row", 720.0, [15.0, 12.0, 1.0]);
     }
-    // A suppressed pattern gives the bar its body back.
+    // A suppressed pattern passes the bar's body on unchanged: one bar,
+    // where it was, held by the pattern for what comes after it.
     run(&mut s, "feature.suppress", json!({"feature": "Row"}));
-    assert_eq!(body_names(&mut s), ["Bar"]);
-    assert!(feature(&mut s, "Bar").get("bodyUsedBy").is_none());
+    assert_eq!(body_names(&mut s), ["Row"]);
+    assert_eq!(feature(&mut s, "Row")["passesOn"], "F2");
+    let one = body(&mut s, "Row").unwrap()["volume"].as_f64().unwrap();
+    assert!((one - 240.0).abs() <= 1e-9 * 240.0, "{one}");
     run(&mut s, "edit.undo", json!({}));
     // So does a rolled-back one, and a failed one.
     run(&mut s, "history.rollback", json!({"feature": "Bar"}));

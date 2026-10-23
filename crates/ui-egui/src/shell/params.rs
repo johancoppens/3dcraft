@@ -796,6 +796,44 @@ impl ParamForm {
     }
 }
 
+/// `command` as the form sends it: a `param.set` with `clamp`, so a
+/// change that would put another parameter outside a range that depends
+/// on it moves that one into its new range in the same edit instead of
+/// being refused ([`clamped_note`] says so under the field).
+pub fn clamping(mut command: ShellCommand) -> ShellCommand {
+    if command.command == "param.set"
+        && let Some(map) = command.params.as_object_mut()
+    {
+        map.insert("clamp".into(), Value::Bool(true));
+    }
+    command
+}
+
+/// What the form says of the parameters a `param.set` with `clamp` moved
+/// into their new range (`bore clamped to 3.1 mm`), from its result.
+pub fn clamped_note(result: &Value) -> Option<String> {
+    let parts: Vec<String> = result
+        .get("clamped")
+        .and_then(Value::as_array)?
+        .iter()
+        .take(16)
+        .filter_map(|c| {
+            let name = c.get("name").and_then(Value::as_str)?;
+            let expr = c.get("expr").and_then(Value::as_str)?;
+            Some(capped(&format!("{name} clamped to {expr}")))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// Two notes as one: `clamped to 12; bore clamped to 3.1 mm`.
+fn joined_notes(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    }
+}
+
 /// A value typed into a parameter's field: a number in its unit, or the
 /// number with that unit after it. None for anything else (an expression,
 /// another unit), which needs the document's units.
@@ -821,7 +859,7 @@ impl Shell {
             doc: self.params.doc,
             field: pending.field,
         });
-        Some(pending.command)
+        Some(clamping(pending.command))
     }
 
     /// The result of a command from [`Self::take_command`] (or
@@ -997,6 +1035,27 @@ impl Shell {
             let did_change = result
                 .as_ref()
                 .is_ok_and(|v| v.get("changed").and_then(Value::as_bool) == Some(true));
+            // Parameters moved into their new range: said under the field
+            // that was changed (after what was said of it), else under
+            // the first one moved.
+            if let Some(text) = result.as_ref().ok().and_then(clamped_note) {
+                let name = flight.field.clone().or_else(|| {
+                    result
+                        .as_ref()
+                        .ok()
+                        .and_then(|v| v.pointer("/clamped/0/name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+                if let Some(name) = name {
+                    let said = form.note.take().filter(|n| n.name == name).map(|n| n.text);
+                    form.note = Some(Note {
+                        name,
+                        text: joined_notes(said, Some(text)).unwrap_or_default(),
+                        until: None,
+                    });
+                }
+            }
             // The field shows the document's value again unless it is
             // still being changed; a drag folds into its undo step only
             // after a commit of it changed the document.
@@ -1191,7 +1250,7 @@ impl Shell {
             field,
         });
         Ok(ParamAsk {
-            command,
+            command: clamping(command),
             sent,
             note: settled.note,
         })
@@ -1199,9 +1258,10 @@ impl Shell {
 
     /// The reply of `ui.param` once its command ran and the window synced.
     pub fn ui_param_answer(&self, ask: &ParamAsk, outcome: &Result<Value, String>) -> Value {
+        let clamped = outcome.as_ref().ok().and_then(clamped_note);
         json!({
             "sent": ask.sent,
-            "note": ask.note,
+            "note": joined_notes(ask.note.clone(), clamped),
             "result": match outcome {
                 Ok(v) => v.clone(),
                 Err(e) => json!({ "error": e }),

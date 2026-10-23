@@ -6,7 +6,7 @@
 //! document's bodies, unless the feature keeps it.
 
 use crate::cause::FIX_IT_FIRST;
-use crate::{Contributors, FeatureResult, Kept, Names, Status, angle, length, number};
+use crate::{Contributors, FeatureResult, Kept, Names, Passed, Status, angle, length, number};
 use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, PatternLayout, PersistentName};
 use craft3d_expr::Evaluation;
 use craft3d_math::{Transform, Vec3};
@@ -62,11 +62,23 @@ pub(crate) fn source_body_shared<'a>(
             crate::comes_after(doc, earlier, id)
         ));
     };
-    match &outcome.status {
-        Status::Ok => {}
-        Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
-        Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
-        Status::Failed(_) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
+    // A feature that is off passes on the body it changes, when it can
+    // (`crate::pass`).
+    match (&outcome.status, &outcome.passed) {
+        (_, Some(Passed::Body(_))) => {}
+        (_, Some(Passed::Nothing(why))) => return Err(format!("{role}: {why}")),
+        (status, Some(Passed::Broken(why))) => {
+            return Err(format!(
+                "{role}: `{name}` is {} and {}: {why}",
+                crate::pass::word(status),
+                crate::cause::CANNOT_PASS
+            ));
+        }
+        (Status::Ok, None) => {}
+        (Status::Suppressed, None) => return Err(format!("{role}: `{name}` is suppressed")),
+        (Status::Inactive, None) => return Err(format!("{role}: `{name}` is inactive")),
+        (Status::RolledBack, None) => return Err(format!("{role}: `{name}` is rolled back")),
+        (Status::Failed(_), None) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
     }
     if outcome.body.is_none() {
         return Err(format!(

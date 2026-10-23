@@ -184,6 +184,7 @@ pub(crate) fn drawn<'a>(
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("sketch: `{name}` is suppressed")),
+        Status::Inactive => return Err(format!("sketch: `{name}` is inactive")),
         Status::RolledBack => return Err(format!("sketch: `{name}` is rolled back")),
         Status::Failed(_) => {
             return Err(format!("sketch: `{name}` {FIX_IT_FIRST} (sketch.inspect)"));
@@ -233,6 +234,13 @@ pub(crate) fn drawn<'a>(
                     format!("sketch `{name}`: {} has no solved radius", entity.id)
                 })?,
             },
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => Curve2::Spline(
+                solved
+                    .curve(entity.id)
+                    .ok_or_else(|| format!("sketch `{name}`: {} has no fitted curve", entity.id))?
+                    .spline
+                    .clone(),
+            ),
         };
         curves.push(SketchCurve {
             id: entity.id.0,
@@ -277,6 +285,7 @@ fn offset_drawn<'a>(
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("sketch: `{name}` is suppressed")),
+        Status::Inactive => return Err(format!("sketch: `{name}` is inactive")),
         Status::RolledBack => return Err(format!("sketch: `{name}` is rolled back")),
         Status::Failed(_) => return Err(format!("sketch: `{name}` {FIX_IT_FIRST}")),
     }
@@ -356,14 +365,27 @@ fn target<'a>(
             crate::comes_after(doc, earlier, name.feature)
         ));
     };
+    if let Some(off) = crate::pass::lost(outcome, name) {
+        return Err(format!(
+            "upTo: `{made_by}`, which makes the face {name}, is {off}"
+        ));
+    }
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
+        if let Some(why) = crate::pass::absent(earlier, name.feature) {
+            return Err(format!(
+                "upTo: `{made_by}`, which makes the face {name}, has no body: {why}"
+            ));
+        }
         return Err(match &outcome.status {
             Status::Ok => format!(
                 "upTo: `{made_by}` is a {}, which has no named faces",
                 source.kind.type_name()
             ),
-            Status::Suppressed => {
-                format!("upTo: `{made_by}`, which makes the face {name}, is suppressed")
+            status @ (Status::Suppressed | Status::Inactive) => {
+                format!(
+                    "upTo: `{made_by}`, which makes the face {name}, is {}",
+                    crate::pass::word(status)
+                )
             }
             Status::RolledBack => {
                 format!("upTo: `{made_by}`, which makes the face {name}, is rolled back")
@@ -434,7 +456,7 @@ fn through_all(
     let mut bodies = 0_usize;
     for body in earlier
         .iter()
-        .filter(|r| r.status == Status::Ok)
+        .filter(|r| r.is_built())
         .filter_map(FeatureResult::own_body)
     {
         bodies += 1;

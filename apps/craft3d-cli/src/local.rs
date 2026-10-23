@@ -396,9 +396,12 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
     let mut params = Map::new();
     let parsed = parse_simple(
         args,
-        &["--out", "--size", "--view", "--mode"],
+        &["--out", "--size", "--view", "--mode", "--background"],
         |name, value| {
             match name {
+                "--background" => {
+                    params.insert("background".into(), value.into());
+                }
                 "--out" => {
                     params.insert("path".into(), value.into());
                 }

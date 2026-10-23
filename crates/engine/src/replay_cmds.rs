@@ -459,6 +459,7 @@ mod native {
             let status = match regen.feature(feature.id).map(|o| &o.status) {
                 Some(Status::Ok) => "ok",
                 Some(Status::Suppressed) => "suppressed",
+                Some(Status::Inactive) => "inactive",
                 Some(Status::RolledBack) => "rolledBack",
                 Some(Status::Failed(_)) => "failed",
                 None => "unknown",
@@ -563,6 +564,7 @@ mod native {
         let render_params = RenderParams {
             width: width as u32,
             height: height as u32,
+            background: crate::commands::VIEWPORT_BACKGROUND,
             ..RenderParams::default()
         };
 

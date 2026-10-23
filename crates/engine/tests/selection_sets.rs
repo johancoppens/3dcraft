@@ -374,13 +374,15 @@ fn a_selection_follows_its_faces_into_a_later_boolean() {
     );
     assert_eq!(followed["count"], 1, "{followed}");
 
-    // Suppressed, the boolean takes nothing: the faces are the plate's
-    // and the drill's again (the bottom stays gone: it dropped out).
+    // Suppressed, the boolean passes the plate on unchanged and leaves
+    // the drill alone: the plate's faces are followed into its body as
+    // before, the drill's are the drill's again (the bottom stays gone:
+    // it dropped out).
     run(&mut s, "feature.suppress", json!({"feature": "Cut"}));
     let back = items(&run(&mut s, "select.get", json!({})));
-    assert_eq!(back[0], item("face", "F1", "F1:face(1)"));
-    assert_eq!(back[1].1, "F1");
-    assert_eq!(back[2], item("body", "F1", "Plate"));
+    assert_eq!(back[0], item("face", "F3", "F3:copy(0)/F1:face(1)"));
+    assert_eq!(back[1].1, "F3");
+    assert_eq!(back[2], item("body", "F3", "Cut"));
     assert_eq!(back[3], item("face", "F2", "F2:face(0)"));
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(items(&run(&mut s, "select.get", json!({}))), now);

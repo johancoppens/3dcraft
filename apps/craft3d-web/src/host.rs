@@ -25,7 +25,7 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_check, export_kind,
+    EXPORT_FORMATS, EXTENSION, ExportCheck, ExportPlan, JIG_EXTENSION, export_check, export_kind,
     export_options_ui, export_params, extension_of, guarded, suggested_export_name,
     suggested_jig_name, suggested_name,
 };
@@ -315,19 +315,42 @@ pub struct WebHost {
     /// dialog ([`WebHost::companion_ui`]): a browser shows one file dialog
     /// per click.
     pub companion: Option<Download>,
+    /// What the export dialog knows of the name it shows
+    /// ([`export_check`]), made again only when the name changes and
+    /// dropped when the dialog closes: it lists the document's sets.
+    export_check: Option<(String, ExportCheck)>,
 }
 
+/// The budget of scenes the page keeps (`Session::set_scene_budget`),
+/// where the desktop's default is 1.5 GiB: the scenes of other documents
+/// and of earlier states (undo steps) are let go, least recently shown
+/// first, until the scenes kept are within it, and the meshes of bodies
+/// are kept within a budget of the same size. The active document's own
+/// scenes are always kept, beyond the budget if they must be: a document
+/// whose scene alone is larger takes what it needs. A WebAssembly module
+/// has 4 GiB of memory at most and never gives any back, and with the
+/// desktop's budget the scene of every undo step was kept: a Jig's
+/// parameters set some hundred times filled it (R1 B7, 2026-10-23: a tab
+/// of 9.1 GB after 1 h 20 min). A state let go is meshed again when it is
+/// shown again (an undo).
+pub const WEB_SCENE_BUDGET: usize = 256 << 20;
+
 impl WebHost {
-    /// A host whose session keeps its files in memory, around `shell`.
+    /// A host whose session keeps its files in memory, around `shell`,
+    /// within the page's memory budgets ([`WEB_SCENE_BUDGET`]; the bodies
+    /// a regeneration keeps have their own wasm budget in `craft3d_regen`).
     pub fn new(shell: Shell) -> Self {
+        let mut session = Session::new(Workspace::memory());
+        session.set_scene_budget(WEB_SCENE_BUDGET);
         Self {
-            session: Session::new(Workspace::memory()),
+            session,
             shell,
             export_extension: None,
             dialog: None,
             pickers: false,
             writable: BTreeSet::new(),
             companion: None,
+            export_check: None,
         }
     }
 
@@ -817,6 +840,7 @@ impl WebHost {
             quality: self.shell.export_quality(),
             all_bodies: false,
             drawing: self.shell.export_drawing(),
+            sheet: self.shell.export_sheet(),
         };
         self.export_with(name, plan)
     }
@@ -832,7 +856,7 @@ impl WebHost {
         if export_kind(&name).is_some() {
             self.export_extension = extension_of(&name);
         }
-        let exported = export_params(&mut self.session, &name, plan).and_then(|extra| {
+        let exported = export_params(&mut self.session, &name, &plan).and_then(|extra| {
             let mut params = json!({ "path": name });
             if let Some(map) = params.as_object_mut() {
                 for (key, value) in extra {
@@ -880,6 +904,7 @@ impl WebHost {
                     quality: self.shell.export_quality(),
                     all_bodies: export_check(&mut self.session, &dialog.name).offers_all_bodies(),
                     drawing: self.shell.export_drawing(),
+                    sheet: self.shell.export_sheet(),
                 };
                 let files = self.export_with(&dialog.name, plan);
                 if self.pickers {
@@ -960,12 +985,13 @@ impl WebHost {
         };
         // What the export dialog says of the format and the selection,
         // and the quality chosen last (`craft3d_ui_egui::files`).
-        let check = (dialog.purpose == Purpose::Export)
-            .then(|| export_check(&mut self.session, &dialog.name));
+        let check =
+            (dialog.purpose == Purpose::Export).then(|| self.cached_export_check(&dialog.name));
         let mut plan = ExportPlan {
             quality: self.shell.export_quality(),
             all_bodies: false,
             drawing: self.shell.export_drawing(),
+            sheet: self.shell.export_sheet(),
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -987,7 +1013,7 @@ impl WebHost {
                     });
                     if matches!(extension_of(&dialog.name).as_deref(), Some("dxf" | "svg")) {
                         ui.label(
-                            "DXF and SVG hold the outline of the selected flat faces or sketch, or with nothing selected a drawing of the model as seen.",
+                            "DXF and SVG hold the outline of the selected flat faces or sketch, with nothing selected a drawing of the model as seen, or a sheet of a named set's flat faces.",
                         );
                     }
                     if let Some(check) = &check {
@@ -1024,13 +1050,32 @@ impl WebHost {
             });
         self.shell.set_export_quality(plan.quality);
         self.shell.set_export_drawing(plan.drawing);
+        self.shell.set_export_sheet(plan.sheet);
         match answer {
-            Some(confirmed) => self.answer(dialog, confirmed),
+            Some(confirmed) => {
+                self.export_check = None;
+                self.answer(dialog, confirmed)
+            }
             None => {
                 self.dialog = Some(dialog);
                 Outcome::default()
             }
         }
+    }
+}
+
+impl WebHost {
+    /// [`export_check`] for `name`, as made for the dialog's last frame
+    /// when the name is the same.
+    fn cached_export_check(&mut self, name: &str) -> ExportCheck {
+        if let Some((cached, check)) = &self.export_check
+            && cached == name
+        {
+            return check.clone();
+        }
+        let check = export_check(&mut self.session, name);
+        self.export_check = Some((name.to_string(), check.clone()));
+        check
     }
 }
 

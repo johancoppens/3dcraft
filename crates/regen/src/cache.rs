@@ -12,7 +12,7 @@
 //! [`crate::regenerate_cached`] returns exactly what [`crate::regenerate`]
 //! does.
 
-use crate::sketch::{Placement, SketchResult, solve_sketch};
+use crate::sketch::{FormulaFits, Placement, SketchResult, formula_fits, solve_sketch};
 use crate::{FeatureResult, Status};
 use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, Sketch, Tolerance, Units};
 use craft3d_expr::{Dimension, Evaluation};
@@ -105,6 +105,112 @@ struct Solve {
     outcome: (Status, Option<SketchResult>),
 }
 
+/// The formula curves of a sketch as they were fitted, and what they were
+/// fitted with: their definitions, the value of every name their
+/// expressions mention (bit for bit), the units and the tolerance.
+#[derive(Clone)]
+struct Fitted {
+    formulas: Vec<craft3d_doc::Entity>,
+    inputs: Vec<(String, Option<Evaluated>)>,
+    /// The tables those expressions look values up in, as they were.
+    tables: Vec<(String, Option<craft3d_expr::Table>)>,
+    units: Units,
+    tolerance: (u64, u64),
+    fits: Arc<FormulaFits>,
+}
+
+/// Every name the expressions of `formulas` mention, with its value as a
+/// variable (`None` for a name that is no variable: `t`, a function, a
+/// unit, a table: the tables are [`fit_tables`]).
+fn fit_inputs(
+    variables: &Evaluation,
+    formulas: &[craft3d_doc::Entity],
+) -> Vec<(String, Option<Evaluated>)> {
+    let mut names = BTreeSet::new();
+    for entity in formulas {
+        if let craft3d_doc::Geometry::Formula { x, y, from, to, .. } = &entity.geometry {
+            for expr in [x, y, from, to] {
+                names.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let value = variables.get(&name).map(|result| {
+                result
+                    .as_ref()
+                    .map(|q| (q.value.to_bits(), q.dimension))
+                    .map_err(ToString::to_string)
+            });
+            (name, value)
+        })
+        .collect()
+}
+
+/// The tables the expressions of `formulas` look values up in, each with
+/// its contents (`None` for a table that is not there).
+fn fit_tables(
+    variables: &Evaluation,
+    formulas: &[craft3d_doc::Entity],
+) -> Vec<(String, Option<craft3d_expr::Table>)> {
+    let mut names = BTreeSet::new();
+    for entity in formulas {
+        if let craft3d_doc::Geometry::Formula { x, y, from, to, .. } = &entity.geometry {
+            for expr in [x, y, from, to] {
+                if let Ok(parsed) = craft3d_expr::Expr::parse(expr.source()) {
+                    names.extend(parsed.tables().into_iter().map(str::to_string));
+                }
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let table = variables.table(&name).cloned();
+            (name, table)
+        })
+        .collect()
+}
+
+/// The formula curves of a sketch, as compared for a fit.
+fn formulas(sketch: &Sketch) -> Vec<craft3d_doc::Entity> {
+    sketch
+        .entities
+        .iter()
+        .filter(|e| matches!(e.geometry, craft3d_doc::Geometry::Formula { .. }))
+        .cloned()
+        .collect()
+}
+
+/// The fits as values a cache entry is keyed on: every bit of every
+/// control point and knot, or the reason a curve has no fit. A formula
+/// curve's expressions cannot be evaluated without its parameter, so its
+/// fit stands for them.
+fn fit_values(fits: &FormulaFits) -> Vec<Evaluated> {
+    let mut out = Vec::new();
+    for (_, fit) in fits {
+        match fit {
+            Ok(fit) => {
+                let spline = &fit.spline;
+                out.extend(
+                    spline
+                        .knots
+                        .iter()
+                        .chain(spline.control.iter().flatten())
+                        .map(|v| Ok((v.to_bits(), Dimension::LENGTH))),
+                );
+            }
+            Err(reason) => out.push(Err(reason.clone())),
+        }
+    }
+    out
+}
+
 /// What one document's last regeneration found, per feature. Keep one per
 /// open document and pass it to every regeneration of that document; using
 /// it for another document is safe (everything is compared), only useless.
@@ -112,6 +218,7 @@ struct Solve {
 pub struct RegenCache {
     entries: BTreeMap<FeatureId, Entry>,
     solves: BTreeMap<FeatureId, Solve>,
+    fits: BTreeMap<FeatureId, Fitted>,
     next_stamp: u64,
     /// What the last regeneration found of each feature, in the order of
     /// its history: what the next one compares with to know, without
@@ -241,6 +348,47 @@ impl RegenCache {
             })
     }
 
+    /// The fits of the formula curves of sketch `id`, or the last ones when
+    /// nothing they are fitted with has changed.
+    pub(crate) fn formula_fits(
+        &mut self,
+        id: FeatureId,
+        doc: &Document,
+        variables: &Evaluation,
+        sketch: &Sketch,
+    ) -> Arc<FormulaFits> {
+        let now = formulas(sketch);
+        if now.is_empty() {
+            self.fits.remove(&id);
+            return Arc::new(Vec::new());
+        }
+        let tolerance = bits(doc.tolerance);
+        let inputs = fit_inputs(variables, &now);
+        let tables = fit_tables(variables, &now);
+        if let Some(fitted) = self.fits.get(&id)
+            && fitted.units == doc.units
+            && fitted.tolerance == tolerance
+            && fitted.formulas == now
+            && fitted.inputs == inputs
+            && fitted.tables == tables
+        {
+            return Arc::clone(&fitted.fits);
+        }
+        let fits = Arc::new(formula_fits(doc, variables, sketch));
+        self.fits.insert(
+            id,
+            Fitted {
+                formulas: now,
+                inputs,
+                tables,
+                units: doc.units,
+                tolerance,
+                fits: Arc::clone(&fits),
+            },
+        );
+        fits
+    }
+
     /// Solves `sketch` on the flat plane, or returns how it solved the
     /// last time when nothing it depends on has changed.
     pub(crate) fn solve(
@@ -250,7 +398,9 @@ impl RegenCache {
         variables: &Evaluation,
         sketch: &Sketch,
     ) -> (Status, Option<SketchResult>) {
-        let values = evaluated(variables, &sketch.exprs());
+        let fits = self.formula_fits(id, doc, variables, sketch);
+        let mut values = evaluated(variables, &sketch.exprs());
+        values.extend(fit_values(&fits));
         let tolerance = bits(doc.tolerance);
         if let Some(solve) = self.solves.get(&id)
             && solve.units == doc.units
@@ -260,7 +410,7 @@ impl RegenCache {
         {
             return solve.outcome.clone();
         }
-        let outcome = solve_sketch(doc, variables, sketch, Ok(Placement::FLAT));
+        let outcome = solve_sketch(doc, variables, sketch, Ok(Placement::FLAT), &fits);
         self.solves.insert(
             id,
             Solve {
@@ -279,6 +429,7 @@ impl RegenCache {
         let present: BTreeSet<FeatureId> = doc.features.iter().map(|f| f.id).collect();
         self.entries.retain(|id, _| present.contains(id));
         self.solves.retain(|id, _| present.contains(id));
+        self.fits.retain(|id, _| present.contains(id));
     }
 }
 
@@ -566,7 +717,12 @@ pub(crate) fn features(
                 && (all_before || !f.kind.uses_all_earlier())
         };
         let stated_before = made_before(stated);
-        let followed = if rolled_back || stated.suppressed {
+        // Switched off (suppressed, or its condition is 0): its names are
+        // still followed, since it passes on the body they are of
+        // (`crate::pass`); one that cannot be followed passes on what its
+        // names name as given, or says why it cannot.
+        let off = !rolled_back && matches!(crate::pass::switch(variables, stated), Ok(Some(_)));
+        let followed = if rolled_back {
             Ok(None)
         } else if let Some(entry) = cache.entries.get(&stated.id).filter(|entry| {
             // Following names reads the results before this feature and
@@ -585,12 +741,23 @@ pub(crate) fn features(
         } else {
             crate::follow::feature(doc, &results, stated)
         };
+        let followed = match followed {
+            Err(_) if off => Ok(None),
+            other => other,
+        };
         let feature = match &followed {
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
-        let values = evaluated(variables, &feature.kind.exprs());
-        let group = crate::split::group_state(doc, stated);
+        // Its condition with the rest: a change of what it evaluates to
+        // switches the feature on or off.
+        let mut values = evaluated(variables, &feature.exprs());
+        if let FeatureKind::Sketch(sketch) = &feature.kind {
+            values.extend(fit_values(
+                &cache.formula_fits(feature.id, doc, variables, sketch),
+            ));
+        }
+        let group = crate::split::group_state(doc, variables, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature
                 .kind
@@ -669,6 +836,7 @@ pub(crate) fn features(
                                 offset: None,
                                 consumed_by: None,
                                 followed: None,
+                                passed: None,
                             },
                             Ok(as_built) => {
                                 rederive(doc, &mut results, &at, cache, &mut build, feature);
@@ -713,13 +881,18 @@ pub(crate) fn features(
         };
         // A feature made from another one's body takes that body, on a
         // reused result as on a rebuilt one.
+        // One that passes a body on (`crate::pass`) takes that body only.
         let mut takes = Vec::new();
-        if matches!(result.status, Status::Ok) {
-            for (source, keep) in feature.kind.sources() {
-                if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
-                    taken.consumed_by = Some(feature.id);
-                    takes.push(source);
-                }
+        let sources = match &result.passed {
+            Some(crate::Passed::Body(source)) => vec![(*source, false)],
+            Some(_) => Vec::new(),
+            None if matches!(result.status, Status::Ok) => feature.kind.sources(),
+            None => Vec::new(),
+        };
+        for (source, keep) in sources {
+            if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
+                taken.consumed_by = Some(feature.id);
+                takes.push(source);
             }
         }
         let step = Step {
@@ -817,7 +990,7 @@ fn rederive_all(
         let entry = cache.entries.get(&id).filter(|entry| entry.evicted)?;
         let index = *at.get(&id)?;
         let result = results.get(index)?;
-        if result.body.is_some() || !matches!(result.status, Status::Ok) {
+        if result.body.is_some() || !result.is_built() {
             return None;
         }
         Some(
