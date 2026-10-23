@@ -952,7 +952,8 @@ fn to_document(quantity: Quantity, doc: &Document) -> Value {
 /// is taken to be in that unit, as when typing a dimension in a CAD
 /// system.
 fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
-    let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+    let quantity = variables
+        .evaluate(expr.source())
         .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
     if quantity.dimension == Dimension::LENGTH {
         Ok(to_document(quantity, doc).value)
@@ -1023,7 +1024,8 @@ pub(crate) fn collapse_runs(
 
 /// Evaluates a plain number: a direction component.
 fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
-    let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+    let quantity = variables
+        .evaluate(expr.source())
         .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
     if quantity.dimension.is_dimensionless() {
         Ok(quantity.value)
@@ -1040,7 +1042,8 @@ fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String
 /// Evaluates an angle, in radians. A bare number is taken in the
 /// document's angle unit.
 fn angle(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
-    let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+    let quantity = variables
+        .evaluate(expr.source())
         .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
     if quantity.dimension == Dimension::ANGLE {
         Ok(quantity.value)

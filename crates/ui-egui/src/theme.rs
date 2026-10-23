@@ -358,7 +358,7 @@ impl Tokens {
             failed: [195, 54, 43],
             inactive: [157, 152, 144],
             attention: [168, 106, 18],
-            selection_fill: [241, 227, 211],
+            selection_fill: [236, 192, 135],
             notice_fill: [18, 18, 18],
             notice_text: [247, 242, 230],
             notice_opacity: 215,

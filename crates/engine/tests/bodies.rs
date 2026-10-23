@@ -264,6 +264,59 @@ fn a_linear_pattern_repeats_the_body_along_the_step() {
     assert_body(&mut s, "Row", 320.0, [35.0, 2.0, 8.5]);
 }
 
+/// Conditions in expressions (format 31): a pattern's count chosen by
+/// `if` from a variable, the count following when the condition flips,
+/// and a branch not taken that would divide by zero.
+#[test]
+fn a_pattern_count_chosen_by_a_condition_follows_its_variable() {
+    let mut s = bar(0.0, 0.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "150 mm"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "gaps", "expr": "0"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "n", "expr": "if(length > 200 mm, 4, if(gaps > 0, 12 / gaps, 2))"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pitch", "expr": "clamp(length / 5, 12 mm, 20 mm)"}),
+    );
+    let made = run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bar", "count": "n", "step": ["pitch", 0, 0], "name": "Row"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    // Two bars of 80 mm³, 20 mm apart (150 / 5 = 30, clamped to 20).
+    assert_body(&mut s, "Row", 160.0, [15.0, 2.0, 1.0]);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "250 mm"}),
+    );
+    assert_body(&mut s, "Row", 320.0, [35.0, 2.0, 1.0]);
+    // The other branch: 12 / 4 = 3 bars, at the pitch clamped from below.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "50 mm"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "gaps", "expr": "4"}));
+    assert_body(&mut s, "Row", 240.0, [17.0, 2.0, 1.0]);
+    // The count is directly a condition as well.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "count": "choose(gaps / 2, 5, 2)"}),
+    );
+    assert_body(&mut s, "Row", 160.0, [11.0, 2.0, 1.0]);
+}
+
 #[test]
 fn a_circular_pattern_goes_round_the_axis() {
     // The bar from x = 20 to 30, 4 wide about the X axis: far enough from
