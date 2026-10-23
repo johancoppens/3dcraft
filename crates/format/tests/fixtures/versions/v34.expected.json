@@ -1,0 +1,66 @@
+{
+  "format_version": 34,
+  "written_by": "6a72473be0222c4c63a221cf08d62de05dd52b5b",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v34.steps.json --out v34.3dcraft, then info v34.3dcraft, and param.list of it for parameters and info",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Round",
+      "status": "suppressed"
+    },
+    {
+      "id": "F3",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Cut",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Lid",
+      "status": "inactive"
+    },
+    {
+      "id": "F6",
+      "name": "Top",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F6",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 7717.25666117692,
+      "area": 2931.946891450772
+    }
+  ],
+  "parameters": [
+    {
+      "name": "lid",
+      "kind": "boolean",
+      "expr": "0",
+      "unit": null,
+      "valid": true
+    }
+  ],
+  "info": {
+    "author": "",
+    "description": "",
+    "licence": "",
+    "tags": [],
+    "title": "",
+    "url": ""
+  }
+}
