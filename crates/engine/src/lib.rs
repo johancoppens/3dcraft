@@ -69,6 +69,7 @@ mod verify;
 mod verify_cmds;
 mod view_export;
 mod visibility_cmds;
+mod when_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
@@ -286,7 +287,7 @@ impl OpenDocument {
             regen.features.iter().any(|f| {
                 f.body.is_none()
                     && f.consumed_by.is_some()
-                    && matches!(f.status, craft3d_regen::Status::Ok)
+                    && f.is_built()
                     && match need {
                         Need::Bodies => false,
                         Need::All => true,
@@ -453,6 +454,7 @@ impl Session {
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
+                when_cmds::SPECS,
                 scrub::SPECS,
                 report::SPECS,
             ]

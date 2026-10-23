@@ -394,7 +394,7 @@ pub const ZOOM_TOOLTIP: &str = "Double-click or ⌖: zoom to this feature";
 pub fn zoomable(row: &super::TreeRow, shown: &BTreeSet<String>) -> bool {
     use craft3d_engine::FeatureState as S;
     match row.state {
-        S::Failed | S::Suppressed => false,
+        S::Failed | S::Suppressed | S::Inactive => false,
         S::RolledBack => row.error.is_none() && row.status == super::timeline::AFTER_SCRUB,
         S::Ok => shown.contains(&row.id),
     }

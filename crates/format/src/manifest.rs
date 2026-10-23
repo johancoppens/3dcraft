@@ -313,6 +313,10 @@ pub struct Feature {
     /// Always written; absent means not suppressed.
     #[serde(default)]
     pub suppressed: bool,
+    /// The condition that switches the feature on (an expression); absent
+    /// means always on. Since format 34.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
     pub kind: FeatureKind,
 }
 

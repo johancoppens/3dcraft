@@ -35,6 +35,7 @@ mod loft;
 mod move_face;
 mod offset_face;
 mod offset_profile;
+mod pass;
 pub mod progress;
 mod query;
 mod revolve;
@@ -63,6 +64,7 @@ pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
+pub use pass::Passed;
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, image_places_to_record, record_image_places,
@@ -117,6 +119,9 @@ pub enum Status {
     Ok,
     /// Switched off by the user.
     Suppressed,
+    /// Switched off by its condition (`when` is 0): behaves exactly as
+    /// `Suppressed`.
+    Inactive,
     /// After the rollback marker.
     RolledBack,
     /// Could not be built; the text names the parameter and the reason.
@@ -891,9 +896,33 @@ pub struct FeatureResult {
     /// was built, its names followed to the newest body (`follow`). `None`
     /// when the feature was built as it stands in the document.
     pub followed: Option<Arc<Feature>>,
+    /// For a feature switched off (suppressed or inactive), and for one
+    /// that is on but reads an operand that is absent: what it passes on
+    /// to the features after it (`pass`). Its `body` and `names` are then
+    /// the body passed on, when it is one. `None` for a feature built as
+    /// usual, and for the kinds that pass nothing on when off (a sketch, a
+    /// datum, an offset of profiles, a split).
+    pub passed: Option<Passed>,
 }
 
 impl FeatureResult {
+    /// True when the result holds what it stands for: the feature was
+    /// built (`Ok`, with or without a body), or it is off and passes a
+    /// body on. A body of such a result that the cache let go of is
+    /// derived again like any other.
+    pub fn is_built(&self) -> bool {
+        match &self.passed {
+            Some(Passed::Body(_)) => true,
+            Some(Passed::Nothing(_) | Passed::Broken(_)) => false,
+            None => self.status == Status::Ok,
+        }
+    }
+
+    /// True for a feature switched off, by the user or by its condition.
+    pub fn is_off(&self) -> bool {
+        matches!(self.status, Status::Suppressed | Status::Inactive)
+    }
+
     /// The body, when it is this feature's still: not taken by a later
     /// feature.
     pub fn own_body(&self) -> Option<&Arc<Body>> {
@@ -1316,6 +1345,17 @@ pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
 /// where the cache had let go of them to stay within its budget
 /// ([`RegenCache::set_body_budget`]): with [`Need::All`] the result is
 /// that of [`regenerate`] body for body.
+/// The variables as the features are built with them: those of the
+/// document, or none when its table is invalid (a hand-edited file), when
+/// every feature that uses one fails. What regeneration and every reader
+/// that evaluates a feature's expression the same way (`split_plan`) use.
+pub(crate) fn feature_variables(doc: &Document) -> Evaluation {
+    match doc.variable_table() {
+        Ok(table) => table.evaluate(),
+        Err(_) => craft3d_expr::VariableTable::new().evaluate(),
+    }
+}
+
 pub fn regenerate_cached_needing(doc: &Document, cache: &mut RegenCache, need: Need) -> Regen {
     let evaluation = match doc.variable_table() {
         Ok(table) => table.evaluate(),
@@ -1334,12 +1374,7 @@ pub fn regenerate_cached_needing(doc: &Document, cache: &mut RegenCache, need: N
                 .collect();
             return Regen {
                 variables,
-                features: features(
-                    doc,
-                    &craft3d_expr::VariableTable::new().evaluate(),
-                    cache,
-                    need,
-                ),
+                features: features(doc, &feature_variables(doc), cache, need),
             };
         }
     };
@@ -1468,10 +1503,39 @@ fn build_feature(
     let mut followed = None;
     let mut threaded = None;
     let mut outline = None;
+    let mut passed = None;
+    let switch = if rolled_back {
+        Ok(None)
+    } else {
+        pass::switch(variables, feature)
+    };
     let (status, body) = if rolled_back {
         (Status::RolledBack, None)
-    } else if feature.suppressed {
-        (Status::Suppressed, None)
+    } else if let Err(reason) = &switch {
+        (Status::Failed(reason.clone()), None)
+    } else if let Ok(Some(off)) = switch {
+        // Not built: what it changes goes on unchanged (`pass`).
+        let why = pass::off_reason(feature, &off);
+        match pass::switched_off(doc, feature, &why, earlier) {
+            Some(through) => {
+                names = through.names;
+                instances = through.instances;
+                passed = Some(through.passed);
+                (off, through.body)
+            }
+            None => (off, None),
+        }
+    } else if let Some(through) = pass::operand_absent(doc, feature, earlier) {
+        // On, with an operand that is off: identity on what it changes.
+        match through.passed {
+            pass::Passed::Broken(reason) => (Status::Failed(reason), None),
+            other => {
+                names = through.names;
+                instances = through.instances;
+                passed = Some(other);
+                (Status::Ok, through.body)
+            }
+        }
     } else if let FeatureKind::Sketch(sketch) = &feature.kind {
         // Where a sketch lies does not change how it solves: it is solved
         // flat (and that is remembered), then put in its place.
@@ -1742,7 +1806,7 @@ fn build_feature(
             Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Split(split) = &feature.kind {
-        match split::build(doc, feature, split, earlier)
+        match split::build(doc, variables, feature, split, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
         {
             Ok((body, made_names)) => {
@@ -1792,6 +1856,7 @@ fn build_feature(
             offset: outline,
             consumed_by: None,
             followed: None,
+            passed,
         },
         taken,
     )

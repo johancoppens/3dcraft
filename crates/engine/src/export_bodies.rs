@@ -100,6 +100,7 @@ fn feature(
     ) {
         (Some(Status::Failed(_)), _) => "it failed (document.check says why)".to_string(),
         (Some(Status::Suppressed), _) => "it is suppressed".to_string(),
+        (Some(Status::Inactive), _) => "it is inactive (its condition is 0)".to_string(),
         (Some(Status::RolledBack), _) => "it is after the rollback marker".to_string(),
         (_, Some(later)) => {
             // The splits of a body took it together: all of them.

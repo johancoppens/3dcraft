@@ -1391,7 +1391,37 @@ pub struct Feature {
     pub name: String,
     #[serde(default)]
     pub suppressed: bool,
+    /// The condition that switches the feature on: it is built when this
+    /// evaluates to a number other than zero (dimensionless), and
+    /// otherwise behaves exactly as when suppressed (inactive). `None`:
+    /// always on. Evaluated again at every regeneration, so a public
+    /// parameter (a boolean, a choice) can switch features on and off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Expr>,
     pub kind: FeatureKind,
+}
+
+impl Feature {
+    /// Every expression of the feature with the name of its parameter, in
+    /// a fixed order: those of its kind ([`FeatureKind::exprs`]), then its
+    /// condition as `when`.
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        let mut out = self.kind.exprs();
+        if let Some(when) = &self.when {
+            out.push(("when".to_string(), when));
+        }
+        out
+    }
+
+    /// Every expression of the feature, to rewrite (a rename): those of
+    /// its kind, then its condition.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = self.kind.exprs_mut();
+        if let Some(when) = &mut self.when {
+            out.push(when);
+        }
+        out
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1777,11 +1807,11 @@ impl Document {
         table.rename(old, new)?;
         let mut renamed_features = Vec::with_capacity(self.features.len());
         for feature in &self.features {
-            let mut kind = feature.kind.clone();
-            for expr in kind.exprs_mut() {
+            let mut renamed = feature.clone();
+            for expr in renamed.exprs_mut() {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
-            renamed_features.push(kind);
+            renamed_features.push(renamed);
         }
         // The public descriptions go with their variables, and the
         // ranges in them are expressions like any other.
@@ -1815,9 +1845,7 @@ impl Document {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
         }
-        for (feature, kind) in self.features.iter_mut().zip(renamed_features) {
-            feature.kind = kind;
-        }
+        self.features = renamed_features;
         self.assertions = renamed_assertions;
         Ok(())
     }
@@ -1853,7 +1881,7 @@ impl Document {
             }
         }
         for feature in &mut self.features {
-            for expr in feature.kind.exprs_mut() {
+            for expr in feature.exprs_mut() {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -1908,7 +1936,7 @@ impl Document {
                 }
             }
             for feature in &mut self.features {
-                for expr in feature.kind.exprs_mut() {
+                for expr in feature.exprs_mut() {
                     rename(expr)?;
                 }
             }
@@ -2009,6 +2037,7 @@ impl Document {
             id,
             name,
             suppressed: false,
+            when: None,
             kind,
         });
         Ok(id)

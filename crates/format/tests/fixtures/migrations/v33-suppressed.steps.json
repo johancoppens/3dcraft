@@ -1,0 +1,16 @@
+[
+  ["feature.block", {"size": ["40 mm", "20 mm", "10 mm"], "name": "Plate"}],
+  ["body.appearance", {"body": "Plate", "color": "#c8102e"}],
+  ["feature.fillet", {"edges": [["F1:face(0)", "F1:face(2)"]], "radius": "2 mm", "name": "Round"}],
+  ["feature.suppress", {"feature": "Round"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "30 mm", "position": ["10 mm", "10 mm", "-5 mm"], "name": "Drill"}],
+  ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Cut"}],
+  ["feature.block", {"size": ["4 mm", "4 mm", "4 mm"], "position": ["60 mm", "0 mm", "0 mm"], "name": "Peg"}],
+  ["feature.pattern", {"source": "Peg", "count": 3, "step": ["10 mm", "0 mm", "0 mm"], "name": "Row"}],
+  ["feature.suppress", {"feature": "Row"}],
+  ["feature.transform", {"source": "Peg", "translate": ["0 mm", "0 mm", "20 mm"], "name": "Lift"}],
+  ["feature.block", {"size": ["5 mm", "5 mm", "5 mm"], "position": ["0 mm", "40 mm", "0 mm"], "name": "Spare"}],
+  ["feature.chamfer", {"edges": [["F8:face(0)", "F8:face(2)"]], "distance": "1 mm", "name": "Bev"}],
+  ["feature.suppress", {"feature": "Bev"}],
+  ["feature.visible", {"feature": "Spare", "visible": false}]
+]

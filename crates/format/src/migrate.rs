@@ -33,7 +33,7 @@ const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
-    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33,
+    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -440,6 +440,192 @@ fn v32_to_v33(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
+/// Version 34 adds conditions: `when` on a feature, an expression that
+/// switches it on (not 0) and off (0, inactive), written only when set; a
+/// file of version 33 has none, which is what its absence reads as.
+///
+/// It also changes what `suppressed` means (docs/design/regeneration.md ›
+/// *Switched off*): a suppressed feature that changes a body (a boolean's
+/// target, a fillet, a chamfer, a face operation, a shell, a thread, a
+/// pattern, a transform or mirror without `keep`) now passes that body on
+/// and takes it, where version 33 left it free. A later feature that named
+/// that body as a body parameter (a boolean's `target` or `tool`, the
+/// `source` of a transform, mirror, pattern, shell or split) would then
+/// find it gone into the suppressed feature. Such a parameter is pointed
+/// at the suppressed feature instead: the same body, unchanged, so the
+/// document regenerates to the same bodies. Names of faces and edges need
+/// nothing: they are followed through the feature that took the body. A
+/// body hidden in the view stays hidden: the suppressed feature that holds
+/// it now is hidden too.
+fn v33_to_v34(mut manifest: Value) -> Result<Value, String> {
+    let Some(document) = manifest.get_mut("document").and_then(Value::as_object_mut) else {
+        return Ok(manifest);
+    };
+    let mut hidden: Vec<u64> = document
+        .get("hidden")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default();
+    let Some(features) = document.get_mut("features").and_then(Value::as_array_mut) else {
+        return Ok(manifest);
+    };
+    // Which feature took the body of which, as version 34 builds the
+    // history: what a name of an earlier body is followed to.
+    let mut taker: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+    let steps = features.len();
+    let newest = |taker: &std::collections::BTreeMap<u64, u64>, id: u64| {
+        let mut at = id;
+        // Each step goes to a later feature: no more steps than features.
+        for _ in 0..=steps {
+            match taker.get(&at) {
+                Some(next) if *next != at => at = *next,
+                _ => break,
+            }
+        }
+        at
+    };
+    let mut hide = Vec::new();
+    for index in 0..steps {
+        let Some(feature) = features.get(index) else {
+            break;
+        };
+        let Some(id) = feature.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let suppressed = feature.get("suppressed").and_then(Value::as_bool) == Some(true);
+        let kind = feature.get("kind").cloned().unwrap_or(Value::Null);
+        if suppressed {
+            let Some((source, by_name)) = v34_passed_source(&kind) else {
+                continue;
+            };
+            // A body parameter names the body itself; a name is followed
+            // to the newest body of its chain.
+            let from = if by_name {
+                newest(&taker, source)
+            } else {
+                source
+            };
+            if taker.contains_key(&from) {
+                // Gone into another feature already: version 34 cannot
+                // pass it on either, and says why.
+                continue;
+            }
+            for later in features.iter_mut().skip(index.saturating_add(1)) {
+                if let Some(kind) = later.get_mut("kind") {
+                    v34_point_body_params(kind, from, id);
+                }
+            }
+            taker.insert(from, id);
+            if (hidden.contains(&from) || hide.contains(&from)) && !hidden.contains(&id) {
+                hide.push(id);
+            }
+        } else {
+            for (source, by_name) in v34_taken_sources(&kind) {
+                let from = if by_name {
+                    newest(&taker, source)
+                } else {
+                    source
+                };
+                taker.entry(from).or_insert(id);
+            }
+        }
+    }
+    if !hide.is_empty() {
+        hidden.extend(hide);
+        hidden.sort_unstable();
+        hidden.dedup();
+        document.insert(
+            "hidden".to_string(),
+            Value::Array(hidden.into_iter().map(Value::from).collect()),
+        );
+    }
+    Ok(manifest)
+}
+
+/// The feature named by a name (`{"feature": 3, ...}`) in a version-33
+/// manifest.
+fn v34_name_feature(name: Option<&Value>) -> Option<u64> {
+    name?.get("feature")?.as_u64()
+}
+
+/// The feature a name-based kind is made from: the one its first name is
+/// of (the first face of a fillet's or a chamfer's first edge, the first
+/// face of a face operation, the face of a thread).
+fn v34_named_source(kind: &Value) -> Option<u64> {
+    match kind.get("type")?.as_str()? {
+        "chamfer" | "fillet" => {
+            v34_name_feature(kind.get("edges")?.as_array()?.first()?.as_array()?.first())
+        }
+        "offsetFace" | "moveFace" | "draft" | "deleteFace" | "thicken" => {
+            v34_name_feature(kind.get("faces")?.as_array()?.first())
+        }
+        "thread" => v34_name_feature(kind.get("face")),
+        _ => None,
+    }
+}
+
+/// The body a suppressed feature of this kind passes on in version 34,
+/// with whether it is given by a name (followed) rather than by a body
+/// parameter; `None` for a kind that passes nothing on.
+fn v34_passed_source(kind: &Value) -> Option<(u64, bool)> {
+    let keep = kind.get("keep").and_then(Value::as_bool) == Some(true);
+    match kind.get("type")?.as_str()? {
+        "boolean" => Some((kind.get("target")?.as_u64()?, false)),
+        "transform" | "mirror" if !keep => Some((kind.get("source")?.as_u64()?, false)),
+        "pattern" | "shell" => Some((kind.get("source")?.as_u64()?, false)),
+        "chamfer" | "fillet" | "offsetFace" | "moveFace" | "draft" | "deleteFace" | "thread" => {
+            Some((v34_named_source(kind)?, true))
+        }
+        _ => None,
+    }
+}
+
+/// The bodies a feature that is on takes (as version 33 and 34 alike
+/// build it), each with whether it is given by a name.
+fn v34_taken_sources(kind: &Value) -> Vec<(u64, bool)> {
+    let flag = |key: &str| kind.get(key).and_then(Value::as_bool) == Some(true);
+    let id = |key: &str| kind.get(key).and_then(Value::as_u64);
+    let Some(kind_type) = kind.get("type").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    match kind_type {
+        "boolean" => {
+            let mut out: Vec<(u64, bool)> = id("target").map(|t| (t, false)).into_iter().collect();
+            if !flag("keep_tool") {
+                out.extend(id("tool").map(|t| (t, false)));
+            }
+            out
+        }
+        "transform" | "mirror" if flag("keep") => Vec::new(),
+        "transform" | "mirror" | "pattern" | "shell" | "split" => {
+            id("source").map(|s| (s, false)).into_iter().collect()
+        }
+        "chamfer" | "fillet" | "offsetFace" | "moveFace" | "draft" | "deleteFace" | "thread" => {
+            v34_named_source(kind)
+                .map(|s| (s, true))
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Points the body parameters of `kind` that name `from` at `to`.
+fn v34_point_body_params(kind: &mut Value, from: u64, to: u64) {
+    let keys: &[&str] = match kind.get("type").and_then(Value::as_str) {
+        Some("boolean") => &["target", "tool"],
+        Some("transform" | "mirror" | "pattern" | "shell" | "split") => &["source"],
+        _ => &[],
+    };
+    for key in keys {
+        if let Some(value) = kind.get_mut(*key)
+            && value.as_u64() == Some(from)
+        {
+            *value = Value::from(to);
+        }
+    }
+}
+
 // One step per version after the first: forgetting either half of a
 // version bump does not compile.
 const _: () = assert!(STEPS.len() + 1 == FORMAT_VERSION as usize);
@@ -645,5 +831,68 @@ mod tests {
             migrate_with(json!({}), 1, broken),
             Err(FormatError::Migration { from: 1, .. })
         ));
+    }
+
+    /// A face name of feature `f` in a version-33 manifest.
+    fn face(f: u64, k: u64) -> Value {
+        json!({"feature": f, "role": "face", "sources": [k]})
+    }
+
+    fn feature(id: u64, suppressed: bool, kind: Value) -> Value {
+        json!({"id": id, "name": format!("F{id}"), "suppressed": suppressed, "kind": kind})
+    }
+
+    /// Version 34: a later body parameter that named the body a suppressed
+    /// feature now passes on names that feature, through a chain of
+    /// suppressed features, a name followed through an active one, a kept
+    /// copy, and a hidden body; what no suppressed feature passes on, and
+    /// a suppressed copy that keeps its source, are left alone.
+    #[test]
+    fn version_34_points_later_body_parameters_at_the_suppressed_feature() {
+        let block = json!({"type": "block"});
+        let manifest = json!({"document": {"hidden": [1], "features": [
+            feature(1, false, block.clone()),
+            // A suppressed fillet and chamfer of the plate, one after the
+            // other: the plate goes into 2, then 3.
+            feature(2, true, json!({"type": "fillet", "edges": [[face(1, 0), face(1, 2)]]})),
+            feature(3, true, json!({"type": "chamfer", "edges": [[face(1, 1), face(1, 3)]]})),
+            feature(4, false, block.clone()),
+            // Was the plate: now the chamfer that holds it.
+            feature(5, false, json!({"type": "boolean", "target": 1, "tool": 4})),
+            // A suppressed boolean on the cut: what names the cut after it
+            // names the boolean; a kept copy too.
+            feature(6, true, json!({"type": "boolean", "target": 5, "tool": 4})),
+            feature(7, false, json!({"type": "transform", "source": 5, "keep": true})),
+            feature(8, false, json!({"type": "pattern", "source": 5})),
+            // A suppressed copy that keeps its source passes nothing on.
+            feature(9, true, json!({"type": "mirror", "source": 7, "keep": true})),
+            feature(10, false, json!({"type": "shell", "source": 7})),
+            // A suppressed block passes nothing on either.
+            feature(11, true, block.clone()),
+            feature(12, false, json!({"type": "boolean", "target": 11, "tool": 10})),
+        ]}});
+        let migrated = v33_to_v34(manifest).unwrap();
+        let features = migrated["document"]["features"].as_array().unwrap();
+        let kind = |i: usize| &features[i]["kind"];
+        assert_eq!(
+            (kind(4)["target"].as_u64(), kind(4)["tool"].as_u64()),
+            (Some(3), Some(4))
+        );
+        assert_eq!(kind(5)["target"], 5);
+        assert_eq!(kind(6)["source"], 6);
+        assert_eq!(kind(7)["source"], 6);
+        assert_eq!(kind(9)["source"], 7);
+        assert_eq!(
+            (kind(11)["target"].as_u64(), kind(11)["tool"].as_u64()),
+            (Some(11), Some(10))
+        );
+        // The plate was hidden: so are the features that hold its body now.
+        assert_eq!(migrated["document"]["hidden"], json!([1, 2, 3]));
+        // Nothing to do without suppressed features.
+        let plain = json!({"document": {"features": [
+            feature(1, false, block.clone()),
+            feature(2, false, json!({"type": "fillet", "edges": [[face(1, 0), face(1, 2)]]})),
+        ]}});
+        assert_eq!(v33_to_v34(plain.clone()).unwrap(), plain);
     }
 }

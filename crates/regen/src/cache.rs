@@ -566,7 +566,12 @@ pub(crate) fn features(
                 && (all_before || !f.kind.uses_all_earlier())
         };
         let stated_before = made_before(stated);
-        let followed = if rolled_back || stated.suppressed {
+        // Switched off (suppressed, or its condition is 0): its names are
+        // still followed, since it passes on the body they are of
+        // (`crate::pass`); one that cannot be followed passes on what its
+        // names name as given, or says why it cannot.
+        let off = !rolled_back && matches!(crate::pass::switch(variables, stated), Ok(Some(_)));
+        let followed = if rolled_back {
             Ok(None)
         } else if let Some(entry) = cache.entries.get(&stated.id).filter(|entry| {
             // Following names reads the results before this feature and
@@ -585,12 +590,18 @@ pub(crate) fn features(
         } else {
             crate::follow::feature(doc, &results, stated)
         };
+        let followed = match followed {
+            Err(_) if off => Ok(None),
+            other => other,
+        };
         let feature = match &followed {
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
-        let values = evaluated(variables, &feature.kind.exprs());
-        let group = crate::split::group_state(doc, stated);
+        // Its condition with the rest: a change of what it evaluates to
+        // switches the feature on or off.
+        let values = evaluated(variables, &feature.exprs());
+        let group = crate::split::group_state(doc, variables, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature
                 .kind
@@ -669,6 +680,7 @@ pub(crate) fn features(
                                 offset: None,
                                 consumed_by: None,
                                 followed: None,
+                                passed: None,
                             },
                             Ok(as_built) => {
                                 rederive(doc, &mut results, &at, cache, &mut build, feature);
@@ -713,13 +725,18 @@ pub(crate) fn features(
         };
         // A feature made from another one's body takes that body, on a
         // reused result as on a rebuilt one.
+        // One that passes a body on (`crate::pass`) takes that body only.
         let mut takes = Vec::new();
-        if matches!(result.status, Status::Ok) {
-            for (source, keep) in feature.kind.sources() {
-                if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
-                    taken.consumed_by = Some(feature.id);
-                    takes.push(source);
-                }
+        let sources = match &result.passed {
+            Some(crate::Passed::Body(source)) => vec![(*source, false)],
+            Some(_) => Vec::new(),
+            None if matches!(result.status, Status::Ok) => feature.kind.sources(),
+            None => Vec::new(),
+        };
+        for (source, keep) in sources {
+            if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
+                taken.consumed_by = Some(feature.id);
+                takes.push(source);
             }
         }
         let step = Step {
@@ -817,7 +834,7 @@ fn rederive_all(
         let entry = cache.entries.get(&id).filter(|entry| entry.evicted)?;
         let index = *at.get(&id)?;
         let result = results.get(index)?;
-        if result.body.is_some() || !matches!(result.status, Status::Ok) {
+        if result.body.is_some() || !result.is_built() {
             return None;
         }
         Some(

@@ -1,0 +1,90 @@
+{
+  "format_version": 33,
+  "written_by": "49805136a9945699abeadd860113afb4f84b363c",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v33-suppressed.steps.json --out v33-suppressed.3dcraft, then info v33-suppressed.3dcraft. Not one of the frozen fixtures of tests/fixtures/versions: the case version 34's migration (v33_to_v34) is for, held by crates/engine/tests/switched_off.rs",
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Round",
+      "status": "suppressed"
+    },
+    {
+      "id": "F3",
+      "name": "Drill",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Cut",
+      "status": "ok"
+    },
+    {
+      "id": "F5",
+      "name": "Peg",
+      "status": "ok"
+    },
+    {
+      "id": "F6",
+      "name": "Row",
+      "status": "suppressed"
+    },
+    {
+      "id": "F7",
+      "name": "Lift",
+      "status": "ok"
+    },
+    {
+      "id": "F8",
+      "name": "Spare",
+      "status": "ok"
+    },
+    {
+      "id": "F9",
+      "name": "Bev",
+      "status": "suppressed"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F4",
+      "name": "Cut",
+      "kind": "solid",
+      "faces": 7,
+      "edges": 14,
+      "vertices": 10,
+      "volume": 7717.25666117692,
+      "area": 2931.946891450772,
+      "appearance": {
+        "color": "#c8102e"
+      }
+    },
+    {
+      "feature": "F7",
+      "name": "Lift",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 64.00000000000001,
+      "area": 96.00000000000003
+    },
+    {
+      "feature": "F8",
+      "name": "Spare",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 125.00000000000006,
+      "area": 150.00000000000014
+    }
+  ],
+  "hidden": [
+    "F8"
+  ]
+}

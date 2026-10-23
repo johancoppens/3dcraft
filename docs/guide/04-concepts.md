@@ -17,9 +17,12 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   and its name; it also repairs a feature that lost what it was made from (give the new sketch, target or
   edges). A parameter given as a plain number (`"count": 8`) replaces the expression that was there: the
   feature no longer follows the variable.
-- `feature.suppress` switches a feature off without deleting it; what is made from it fails until it is
-  switched on again. That includes a suppressed boolean, fillet or chamfer: it does not hand the body it
-  changes on to the features after it, so they fail too (other modellers pass the body through).
+- `feature.suppress` switches a feature off without deleting it, and the features after it go on as if
+  it were not there: a suppressed boolean, fillet, chamfer, shell or pattern hands the body it would
+  change on unchanged; a suppressed block or extrusion makes no body, and a boolean that used it as its
+  tool keeps its target as it was. Only what the feature itself makes (a fillet's rounded face) is gone,
+  and a feature that names it fails saying so. `feature.when` does the same by a condition (chapter 6,
+  *Switching a feature on or off*).
 - `feature.move {"feature": "Round", "position": 3}` moves a feature to that index in `document.inspect`'s
   list of features (sketches and datums count); one moved before what it is made from fails and says so.
 - `feature.rename` renames a feature or a sketch (sketches are features); `variable.rename` a variable,
