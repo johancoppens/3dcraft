@@ -76,6 +76,35 @@ fn a_conflicting_constraint_names_the_ones_it_contradicts() {
     assert!(fine.get("conflicts").is_none(), "{fine}");
 }
 
+/// When no single constraint is to blame (each one it contradicts is
+/// said twice), `contradicts` is empty and `reason` says why.
+#[test]
+fn a_conflict_no_single_constraint_explains_says_why() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "S", "plane": "xy"}));
+    run(&mut s, "sketch.point", json!({"sketch": "S", "at": [0, 0]}));
+    run(&mut s, "sketch.point", json!({"sketch": "S", "at": [5, 1]}));
+    for _ in 0..2 {
+        constrain(&mut s, "fixed", json!(["e1"]), None);
+        constrain(&mut s, "x", json!(["e2"]), Some("5 mm"));
+        constrain(&mut s, "y", json!(["e2"]), Some("0 mm"));
+    }
+    let bad = constrain(&mut s, "distance", json!(["e1", "e2"]), Some("20 mm"));
+    assert_eq!(bad["conflicting"], json!(["c7"]), "{bad}");
+    let entry = &bad["conflicts"][0];
+    assert_eq!(entry["constraint"], "c7", "{bad}");
+    assert_eq!(entry["contradicts"], json!([]), "{bad}");
+    assert!(
+        entry["reason"]
+            .as_str()
+            .unwrap()
+            .contains("several of them together"),
+        "{bad}"
+    );
+    assert!(entry.get("truncated").is_none(), "{bad}");
+}
+
 #[test]
 fn horizontal_and_vertical_on_one_line_are_reported_as_a_contradiction() {
     let mut s = session();

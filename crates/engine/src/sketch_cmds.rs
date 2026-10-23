@@ -533,10 +533,13 @@ pub(crate) fn sketch_result(
                 .map(|c| c.id)
                 .collect();
             if !conflicting.is_empty() {
-                let doc = session.document()?.history.current().clone();
-                let found = crate::sketch_conflicts::contradictions(&doc, id, &conflicting);
-                if !found.is_empty() {
-                    map.insert("conflicts".into(), found.into());
+                let found =
+                    crate::sketch_conflicts::contradictions(session.document()?, id, &conflicting);
+                if !found.entries.is_empty() {
+                    map.insert("conflicts".into(), found.entries.into());
+                }
+                if found.truncated {
+                    map.insert("conflictsTruncated".into(), true.into());
                 }
             }
             // A line shrunk to a point under directions: a contradiction
