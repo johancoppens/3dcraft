@@ -23,10 +23,11 @@ use std::sync::Mutex;
 static IN_FLIGHT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
 /// Commands whose valid cases draw pictures or rebuild the document many
-/// times (a replay renders a frame per step: about 160 MB each). They run
-/// one at a time, whatever the number of cores: on 32 threads the replays
-/// running together made the hunt's peak 5.2 GB (2026-10-23); the other
-/// cases still run on every core, and every case still runs.
+/// times (a replay renders a frame per step: about 160 MB each). At most
+/// [`HEAVY_AT_ONCE`] of them run at a time, whatever the number of cores:
+/// on 32 threads the replays running together made the hunt's peak
+/// 5.2 GB (2026-10-23); the other cases still run on every core, and
+/// every case still runs.
 const HEAVY: &[&str] = &[
     "view.replay",
     "view.render",
@@ -34,8 +35,41 @@ const HEAVY: &[&str] = &[
     "document.sample",
 ];
 
-/// Held while a [`HEAVY`] command runs.
-static HEAVY_LOCK: Mutex<()> = Mutex::new(());
+/// How many [`HEAVY`] commands run at once.
+const HEAVY_AT_ONCE: usize = 2;
+
+/// How many [`HEAVY`] commands are running, and the wait for a turn.
+static HEAVY_RUNNING: Mutex<usize> = Mutex::new(0);
+static HEAVY_TURN: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A turn to run a [`HEAVY`] command, given back when dropped (also when
+/// the case panics).
+struct HeavyTurn;
+
+impl HeavyTurn {
+    fn take() -> Self {
+        let mut running = HEAVY_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *running >= HEAVY_AT_ONCE {
+            running = HEAVY_TURN
+                .wait(running)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *running += 1;
+        HeavyTurn
+    }
+}
+
+impl Drop for HeavyTurn {
+    fn drop(&mut self) {
+        let mut running = HEAVY_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *running = running.saturating_sub(1);
+        HEAVY_TURN.notify_one();
+    }
+}
 
 /// The process's resident memory in kB (Linux; `None` elsewhere).
 fn resident_kb() -> Option<u64> {
@@ -547,13 +581,8 @@ fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(me.clone(), format!("{id} in state {state} on {}", shown()));
-    // A heavy command waits for the one before it (a panic in one is
-    // caught by `Session::execute`; a poisoned lock is still a lock).
-    let _heavy = HEAVY.contains(&id).then(|| {
-        HEAVY_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    });
+    // A heavy command waits for its turn.
+    let _heavy = HEAVY.contains(&id).then(HeavyTurn::take);
     let outcome = s.execute(id, params);
     match &outcome {
         Err(e) => {
