@@ -640,16 +640,42 @@ fn what_reads_a_body_that_cannot_be_passed_on_is_caused_by_the_failure() {
     assert_eq!(row["causedBy"], "F1", "{row}");
 }
 
-/// `document.check` of one feature: one switched off that passes a body
-/// on is checked as its body; one that passes no body on says so.
+/// `document.check` of one feature: one switched off is not built (not
+/// ok, no body checked), and says which body it passes on; one that is on
+/// but passes no body on says so.
 #[test]
 fn checking_one_feature_that_is_off() {
     let mut s = session();
     chain(&mut s, 1.0, None);
     run(&mut s, "feature.suppress", json!({"feature": "Round"}));
     let check = run(&mut s, "document.check", json!({"feature": "Round"}));
-    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["ok"], false, "{check}");
     assert_eq!(check["status"], "suppressed", "{check}");
+    assert_eq!(check["bodiesChecked"], 0, "{check}");
+    let problem = check["problems"][0]["problem"].as_str().unwrap();
+    assert!(
+        problem.starts_with("the feature is suppressed: nothing is built to check")
+            && problem.contains("passes the body of `Plate` (F1) on unchanged"),
+        "{problem}"
+    );
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Round", "expr": "0"}),
+    );
+    run(
+        &mut s,
+        "feature.suppress",
+        json!({"feature": "Round", "suppressed": false}),
+    );
+    let check = run(&mut s, "document.check", json!({"feature": "Round"}));
+    assert_eq!(check["ok"], false, "{check}");
+    assert_eq!(check["status"], "inactive", "{check}");
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Round", "expr": null}),
+    );
     run(&mut s, "feature.suppress", json!({"feature": "Plate"}));
     run(&mut s, "feature.suppress", json!({"feature": "Round"}));
     run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
