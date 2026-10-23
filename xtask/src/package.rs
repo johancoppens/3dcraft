@@ -350,6 +350,11 @@ impl Packer {
         self.packaging(&format!("icons/craft3d-{size}.png"))
     }
 
+    /// The icon of a published Jig (`.3dcraftjig`).
+    fn jig_icon(&self, size: u32) -> PathBuf {
+        self.packaging(&format!("icons/craft3d-jig-{size}.png"))
+    }
+
     fn binary(&self, name: &str) -> Result<PathBuf, String> {
         let file = self
             .bin_dir
@@ -397,6 +402,22 @@ impl Packer {
         copy(
             &self.packaging("icons/craft3d.svg"),
             &share.join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg")),
+            false,
+        )?;
+        // The Jig's file type has an icon of its own, named as the MIME
+        // type's `icon` element says.
+        for size in ICON_SIZES.iter().filter(|s| **s <= 512) {
+            copy(
+                &self.jig_icon(*size),
+                &share.join(format!(
+                    "icons/hicolor/{size}x{size}/mimetypes/{APP_ID}-jig.png"
+                )),
+                false,
+            )?;
+        }
+        copy(
+            &self.packaging("icons/craft3d-jig.svg"),
+            &share.join(format!("icons/hicolor/scalable/mimetypes/{APP_ID}-jig.svg")),
             false,
         )
     }
@@ -508,6 +529,8 @@ impl Packer {
         write(&contents.join("PkgInfo"), b"APPL????")?;
         let icns = icns(&self.icon_pngs(&ICNS_SIZES)?)?;
         write(&contents.join("Resources").join("craft3d.icns"), &icns)?;
+        let jig = icns_of(&self.jig_icon_pngs(&ICNS_SIZES)?)?;
+        write(&contents.join("Resources").join("craft3d-jig.icns"), &jig)?;
         copy(
             &self.repo.join("LICENSE"),
             &contents.join("Resources").join("LICENSE"),
@@ -575,6 +598,8 @@ impl Packer {
         copy(&self.repo.join("LICENSE"), &dir.join("LICENSE.txt"), false)?;
         let ico = ico(&self.icon_pngs(&ICO_SIZES)?)?;
         write(&dir.join("craft3d.ico"), &ico)?;
+        let jig = ico_of(&self.jig_icon_pngs(&ICO_SIZES)?)?;
+        write(&dir.join("craft3d-jig.ico"), &jig)?;
         Ok(dir)
     }
 
@@ -626,6 +651,8 @@ impl Packer {
                 .arg("-d")
                 .arg(format!("Icon={}", dir.join("craft3d.ico").display()))
                 .arg("-d")
+                .arg(format!("JigIcon={}", dir.join("craft3d-jig.ico").display()))
+                .arg("-d")
                 .arg(format!("Licence={}", dir.join("LICENSE.txt").display()))
                 .arg("-o")
                 .arg(&file),
@@ -638,6 +665,19 @@ impl Packer {
     fn icon_pngs(&self, sizes: &[u32]) -> Result<Vec<Vec<u8>>, String> {
         sizes.iter().map(|s| read(&self.icon(*s))).collect()
     }
+
+    fn jig_icon_pngs(&self, sizes: &[u32]) -> Result<Vec<Vec<u8>>, String> {
+        sizes.iter().map(|s| read(&self.jig_icon(*s))).collect()
+    }
+}
+
+/// [`ico`] and [`icns`] under names a local of theirs does not hide.
+fn ico_of(pngs: &[Vec<u8>]) -> Result<Vec<u8>, String> {
+    ico(pngs)
+}
+
+fn icns_of(pngs: &[Vec<u8>]) -> Result<Vec<u8>, String> {
+    icns(pngs)
 }
 
 /// The width and height of a PNG, from its IHDR chunk.
@@ -914,6 +954,18 @@ mod tests {
             u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize,
             icns.len()
         );
+        // The Jig's icon likewise.
+        let jig = |sizes: &[u32]| -> Vec<Vec<u8>> {
+            sizes
+                .iter()
+                .map(|n| std::fs::read(root.join(format!("craft3d-jig-{n}.png"))).unwrap())
+                .collect()
+        };
+        assert_eq!(
+            usize::from(ico_of(&jig(&ICO_SIZES)).unwrap()[4]),
+            ICO_SIZES.len()
+        );
+        assert_eq!(&icns_of(&jig(&ICNS_SIZES)).unwrap()[..4], b"icns");
     }
 
     /// The files the packages carry are in the repository and agree with
@@ -924,20 +976,36 @@ mod tests {
         for size in ICON_SIZES {
             let png = std::fs::read(root.join(format!("icons/craft3d-{size}.png"))).unwrap();
             assert_eq!(png_size(&png).unwrap(), (size, size), "icon {size}");
+            let png = std::fs::read(root.join(format!("icons/craft3d-jig-{size}.png"))).unwrap();
+            assert_eq!(png_size(&png).unwrap(), (size, size), "Jig icon {size}");
         }
         let desktop =
             std::fs::read_to_string(root.join(format!("linux/{APP_ID}.desktop"))).unwrap();
         assert!(desktop.contains(&format!("Icon={APP_ID}\n")));
-        assert!(desktop.contains("MimeType=application/x-craft3d;"));
+        assert!(desktop.contains("MimeType=application/x-craft3d;application/x-craft3d-jig;"));
         let mime = std::fs::read_to_string(root.join(format!("linux/{APP_ID}.xml"))).unwrap();
         assert!(mime.contains("type=\"application/x-craft3d\""));
-        assert!(mime.contains("*.3dcraft"));
+        assert!(mime.contains("*.3dcraft\""));
+        // The published Jig: its own type, glob and icon (docs/decisions.md,
+        // 2026-10-23).
+        assert!(mime.contains("type=\"application/x-craft3d-jig\""));
+        assert!(mime.contains("*.3dcraftjig\""));
+        assert!(mime.contains(&format!("<icon name=\"{APP_ID}-jig\"/>")));
         let plist = std::fs::read_to_string(root.join("macos/Info.plist")).unwrap();
         assert!(plist.contains(&format!("<string>{APP_ID}</string>")));
         assert!(plist.contains("<string>3dcraft</string>"));
+        assert!(plist.contains("<string>3dcraftjig</string>"));
+        assert!(plist.contains(&format!("<string>{APP_ID}.jig</string>")));
+        assert!(plist.contains("<string>craft3d-jig</string>"));
         assert!(plist.contains("@VERSION@"));
         let wxs = std::fs::read_to_string(root.join("windows/craft3d.wxs")).unwrap();
         assert!(wxs.contains("Extension Id=\"3dcraft\""));
+        assert!(
+            wxs.contains("Extension Id=\"3dcraftjig\" ContentType=\"application/x-craft3d-jig\"")
+        );
+        assert!(wxs.contains("$(var.JigIcon)"));
+        let install = std::fs::read_to_string(root.join("linux/install.sh")).unwrap();
+        assert!(install.contains("mimetypes/$id-jig.*"));
         // The window's app id is the desktop file's name, so a Wayland
         // compositor finds the icon and the entry.
         let app = std::fs::read_to_string(repo_root().join("apps/craft3d/src/app.rs")).unwrap();
@@ -950,7 +1018,12 @@ mod tests {
     /// Shell shows an empty tile wherever it picks the scalable icon.
     #[test]
     fn svg_icons_open_with_the_svg_element() {
-        for name in ["craft3d.svg", "craft3d-small.svg"] {
+        for name in [
+            "craft3d.svg",
+            "craft3d-small.svg",
+            "craft3d-jig.svg",
+            "craft3d-jig-small.svg",
+        ] {
             let svg =
                 std::fs::read_to_string(repo_root().join("packaging/icons").join(name)).unwrap();
             let start = svg.find("<svg").unwrap();

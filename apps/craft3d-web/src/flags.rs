@@ -16,7 +16,7 @@ pub struct Flags {
     /// chosen with the page's file input, also where the browser has the
     /// system's file dialogs (the File System Access API).
     pub download: bool,
-    /// `?open=<url>`: a `.3dcraft` or STEP file of the same site, opened
+    /// `?open=<url>`: a `.3dcraft`, `.3dcraftjig` or STEP file of the same site, opened
     /// at the start.
     pub open: Option<String>,
 }

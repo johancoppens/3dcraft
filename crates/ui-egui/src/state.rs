@@ -20,6 +20,8 @@ pub const MIN_FOV: f64 = 1.0;
 pub const MAX_FOV: f64 = 120.0;
 /// Longest caption, in characters. A longer one is cut.
 pub const MAX_NOTICE_CHARS: usize = 200;
+/// Most groups of parameters kept folded shut.
+pub const MAX_COLLAPSED: usize = 512;
 /// Longest feature reference kept as the selection.
 pub const MAX_SELECTION_CHARS: usize = 128;
 /// Longest persistent name kept in a highlight or a pick. A name is a
@@ -236,6 +238,9 @@ pub struct DocTab {
     /// Closing it from its tab asks first (Save, Discard, Cancel): what
     /// `file.close` would refuse without `discard`.
     pub asks_to_close: bool,
+    /// A published Jig opened to be used (`.3dcraftjig`): closing it after
+    /// its parameters changed asks whether to save them as a model.
+    pub jig_in_use: bool,
 }
 
 /// The question the window asks before it closes a document with unsaved
@@ -255,6 +260,10 @@ pub struct Closing {
     /// unsaved changes is asked about after this one, and the
     /// application stops once none is left; Cancel keeps the window.
     pub quitting: bool,
+    /// It is a Jig in use whose parameters were changed: the question is
+    /// whether to save the result as a model (Save as model…, Close,
+    /// Cancel); the Jig's own file is never written.
+    pub jig: bool,
 }
 
 /// What the viewport draws besides the bodies and their edges.
@@ -599,6 +608,19 @@ pub struct UiState {
     pub dialogs: Dialogs,
     /// The history player.
     pub timeline: Playback,
+    /// The Parameters tab of the side panel (`shell/params.rs`).
+    pub parameters: ParametersView,
+}
+
+/// The Parameters tab beside the feature list: whether it is the one
+/// shown (a Jig opens on it; each document keeps its choice), and the
+/// groups of parameters that are folded shut. `ui.set {"parameters":
+/// {"open": true}}` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ParametersView {
+    pub open: bool,
+    pub collapsed: Vec<String>,
 }
 
 /// What each document tab keeps of the view: the fields of [`UiState`]
@@ -736,6 +758,10 @@ impl UiState {
         self.section = self.section.validated()?;
         self.timeline = self.timeline.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
+        self.parameters.collapsed.truncate(MAX_COLLAPSED);
+        for group in &mut self.parameters.collapsed {
+            *group = one_line(group, MAX_SELECTION_CHARS);
+        }
         self.selected_feature = self
             .selected_feature
             .map(|id| cut(&id, MAX_SELECTION_CHARS))
@@ -979,6 +1005,11 @@ mod tests {
                 looping: true,
                 orbit: false,
             },
+            // Added with the Jigs' parameter form (2026-10-23).
+            parameters: ParametersView {
+                open: true,
+                collapsed: vec!["Finish".to_string()],
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1006,6 +1037,7 @@ mod tests {
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
                 "show": {"datums": false, "sketches": false},
+                "parameters": {"open": true, "collapsed": ["Finish"]},
                 "dialogs": {"about": true, "shortcuts": false},
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
             })

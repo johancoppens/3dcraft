@@ -12,7 +12,7 @@ use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
-use craft3d_ui_egui::{DocAction, Shell, window_title};
+use craft3d_ui_egui::{DocAction, FileAction, ParamAsk, Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
 use serde_json::{Value, json};
@@ -240,6 +240,12 @@ enum Waiting {
     Request(Request),
     /// A file chosen in a dialog: the outcome goes to the status bar.
     File(&'static str),
+    /// A command the shell asked for (the Parameters tab's `param.set`):
+    /// the outcome goes back to the shell and to the status bar.
+    Command(&'static str),
+    /// `ui.param`: its command's outcome goes back to the shell, then the
+    /// reply, made once the window has synced, to the request.
+    Param(Request, Box<ParamAsk>),
     /// Only the scene the window shows.
     Scene,
 }
@@ -414,6 +420,12 @@ impl Desk {
                 let Some(request) = self.intercept_capture(request) else {
                     continue;
                 };
+                // `ui.param` is settled here and regenerates on the
+                // engine thread, as the form's commits do.
+                if is_method(&request.line, "ui.param") {
+                    self.ask_param(request);
+                    continue;
+                }
                 match route(&request.line) {
                     Route::Engine => {
                         let label = request_label(&request.line);
@@ -584,6 +596,7 @@ impl Desk {
 
     fn finish(&mut self, waiting: Waiting, outcome: Outcome) {
         let host = &mut self.host;
+        let mut param_reply = None;
         let (reply_to, reply) = match waiting {
             Waiting::Request(request) => {
                 let reply = match outcome {
@@ -615,6 +628,29 @@ impl Desk {
                 host.report(label, &outcome);
                 (None, None)
             }
+            Waiting::Command(label) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report(label, &outcome);
+                host.shell.command_done(outcome);
+                (None, None)
+            }
+            Waiting::Param(request, ask) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report("ui.param", &outcome);
+                host.shell.command_done(outcome.clone());
+                param_reply = Some((request, ask, outcome));
+                (None, None)
+            }
             Waiting::Scene => (None, None),
         };
         // The camera follows the model, the tree its features: from the
@@ -628,6 +664,45 @@ impl Desk {
         if let Some(reply_to) = reply_to {
             // A requester that has gone away is not an error.
             let _ = reply_to.send(reply);
+        }
+        // `ui.param` says what the form shows now that the window synced.
+        if let Some((request, ask, outcome)) = param_reply {
+            let id = request_id(&request.line);
+            let reply = rpc::ok_reply(&id, &host.shell.ui_param_answer(&ask, &outcome));
+            let _ = request.reply.send(Some(reply));
+        }
+    }
+
+    /// `ui.param`: settled and joined to the form's waiting commit here
+    /// (it reads `param.list`), then run on the engine thread; the reply
+    /// comes once it is done. What it refuses is answered at once.
+    fn ask_param(&mut self, request: Request) {
+        let parsed: Value = serde_json::from_str(&request.line).unwrap_or(Value::Null);
+        let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+        let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host
+                .shell
+                .ui_param_ask(&mut self.host.session, parsed.get("params"))
+        }))
+        .unwrap_or_else(|_| Err(PANICKED.to_string()));
+        match asked {
+            Err(error) => {
+                let _ = request.reply.send(Some(rpc::error_reply(&id, &error)));
+            }
+            Ok(ask) => {
+                let command = ask.command.clone();
+                self.start(
+                    Waiting::Param(request, Box::new(ask)),
+                    "param.set".to_string(),
+                    Box::new(move |session| {
+                        Outcome::Ran(
+                            session
+                                .execute(command.command, &command.params)
+                                .map_err(|e| e.message().to_string()),
+                        )
+                    }),
+                );
+            }
         }
     }
 
@@ -664,6 +739,13 @@ impl Desk {
                     "file.import".to_string(),
                     Box::new(move |session| Outcome::Ran(files::import_as_user(session, &path))),
                 ),
+                Ok(Choice::ExportJig(path)) => self.start(
+                    Waiting::File("jig.export"),
+                    "jig.export".to_string(),
+                    Box::new(move |session| {
+                        Outcome::Ran(files::run_as_user(session, "jig.export", &path, true, None))
+                    }),
+                ),
                 Ok(Choice::Export(path)) => {
                     self.host.note_export(&path);
                     if self.host.export_chosen(&path) {
@@ -679,6 +761,22 @@ impl Desk {
             return true;
         }
         if let Some(action) = self.host.shell.take_file_action() {
+            // A model of a Jig in use is made on the engine thread, as
+            // every command that builds a document's scene.
+            if action == FileAction::OpenForEditing {
+                self.start(
+                    Waiting::File("jig.edit"),
+                    "jig.edit".to_string(),
+                    Box::new(|session| {
+                        Outcome::Ran(
+                            session
+                                .execute("jig.edit", &json!({}))
+                                .map_err(|e| e.message().to_string()),
+                        )
+                    }),
+                );
+                return true;
+            }
             self.host.file_action(action, &mut self.picker);
             return true;
         }
@@ -693,6 +791,21 @@ impl Desk {
                 "file.open".to_string(),
                 Box::new(move |session| {
                     Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
+                }),
+            );
+            return true;
+        }
+        if let Some(asked) = self.host.shell.take_command() {
+            let label = asked.command;
+            self.start(
+                Waiting::Command(label),
+                label.to_string(),
+                Box::new(move |session| {
+                    Outcome::Ran(
+                        session
+                            .execute(asked.command, &asked.params)
+                            .map_err(|e| e.message().to_string()),
+                    )
                 }),
             );
             return true;
@@ -730,7 +843,7 @@ impl Desk {
             let DocAction::SaveAndClose(document) = action else {
                 return;
             };
-            self.host.ask_name_then_close(&mut self.picker);
+            self.host.ask_name_then_close(&mut self.picker, document);
             self.start(
                 Waiting::File("file.activate"),
                 "file.activate".to_string(),
@@ -924,6 +1037,19 @@ impl Desk {
 }
 
 /// True for a `ui.screenshot` request.
+/// Whether `line` is a request of `method`.
+fn is_method(line: &str, method: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| {
+            request
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|m| m == method)
+        })
+        .unwrap_or(false)
+}
+
 fn is_screenshot(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
         .ok()
@@ -1659,5 +1785,177 @@ mod tests {
         let message = window_error(&other);
         assert!(message.contains("the shell fell over"), "{message}");
         assert!(!message.contains("lavapipe"));
+    }
+
+    /// A frame of the window, then a turn of the desk, as the event loop
+    /// has them.
+    fn draw(desk: &mut Desk, ctx: &egui::Context, time: &mut f64, events: Vec<egui::Event>) {
+        *time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            time: Some(*time),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            if desk.away() {
+                desk.host.shell.ui_away(ui);
+            } else {
+                let Host { session, shell, .. } = &mut desk.host;
+                shell.ui(ui, session);
+            }
+        });
+        output.textures_delta.clear();
+        desk.turn();
+    }
+
+    /// `ui.param` is settled on the window's thread and regenerates on the
+    /// engine thread; the reply comes once the window has synced, with the
+    /// form's state. What it refuses is answered at once.
+    #[test]
+    fn ui_param_regenerates_on_the_engine_thread() {
+        let (requests, incoming) = mpsc::channel::<Request>();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let answer = ask(
+            &requests,
+            r#"{"id":7,"method":"ui.param","params":{"name":"w","value":500}}"#,
+        );
+        let reply: Value = serde_json::from_str(&turn_until(&mut desk, &answer).unwrap()).unwrap();
+        assert_eq!(reply["id"], 7, "{reply}");
+        let result = &reply["result"];
+        assert_eq!(result["sent"], 90.0, "{reply}");
+        assert_eq!(result["note"], "clamped to 90 mm");
+        assert_eq!(result["result"]["changed"], true, "{reply}");
+        assert_eq!(result["parameters"]["busy"], false, "{reply}");
+        assert!(!desk.away());
+        let list = desk.host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 90.0);
+        let answer = ask(
+            &requests,
+            r#"{"id":8,"method":"ui.param","params":{"name":"nope","value":1}}"#,
+        );
+        let reply: Value = serde_json::from_str(&turn_until(&mut desk, &answer).unwrap()).unwrap();
+        assert!(
+            reply["error"]
+                .to_string()
+                .contains("not a public parameter"),
+            "{reply}"
+        );
+    }
+
+    /// Open for Editing makes the model of a Jig on the engine thread,
+    /// as opening a file does.
+    #[test]
+    fn open_for_editing_runs_on_the_engine_thread() {
+        let (_requests, incoming) = mpsc::channel::<Request>();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::memory());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            ("variable.publish", json!({"name": "w"})),
+            ("jig.export", json!({"path": "p.3dcraftjig"})),
+            ("file.open", json!({"path": "p.3dcraftjig"})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.host
+            .shell
+            .request_file_action(FileAction::OpenForEditing);
+        for _ in 0..500 {
+            desk.turn();
+            if !desk.away() && desk.host.session.document_statuses().len() == 3 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let status = desk.host.session.document_status().unwrap();
+        assert!(!status.jig_in_use && status.path.is_none(), "{status:?}");
+        let report = desk.host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "jig.edit");
+        assert!(report.ok, "{}", report.text);
+    }
+
+    /// The Parameters tab's commit runs on the engine thread, as every
+    /// command, and comes back to the form: Reset all, clicked in the
+    /// window, sets a Jig's parameter back and the status bar says so.
+    #[test]
+    fn the_parameter_form_commits_on_the_engine_thread() {
+        let (requests, incoming) = mpsc::channel::<Request>();
+        drop(requests);
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+            ("param.set", json!({"values": {"w": 70}})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let host = Host::new(session);
+        let mut desk = Desk::new(host, incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        for _ in 0..6 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+        }
+        let reset = desk
+            .host
+            .shell
+            .parameter_hits()
+            .iter()
+            .find(|(name, _)| name == "Reset all")
+            .map(|(_, rect)| rect.center())
+            .unwrap();
+        for pressed in [true, false] {
+            draw(
+                &mut desk,
+                &ctx,
+                &mut time,
+                vec![egui::Event::PointerButton {
+                    pos: reset,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        for _ in 0..500 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+            if !desk.away() && !desk.host.shell.parameters_busy() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let list = desk.host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 40.0, "{list}");
+        let report = desk.host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "param.set");
+        assert!(report.ok, "{}", report.text);
     }
 }

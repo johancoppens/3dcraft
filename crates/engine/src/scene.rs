@@ -564,6 +564,9 @@ pub struct DocumentStatus {
     pub close_asks: bool,
     pub length_unit: &'static str,
     pub angle_unit: &'static str,
+    /// A published Jig opened to be used (`.3dcraftjig`): only its
+    /// parameters change, and Save saves it as a model.
+    pub jig_in_use: bool,
 }
 
 /// A scene, or why it could not be built.
@@ -2255,6 +2258,7 @@ impl Session {
             file: open.file.clone(),
             dirty: open.dirty(),
             close_asks: open.close_asks(),
+            jig_in_use: open.jig_in_use,
             length_unit: doc.units.length.symbol(),
             angle_unit: match doc.units.angle {
                 AngleUnit::Degree => "deg",
