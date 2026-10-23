@@ -57,7 +57,7 @@ pub(crate) fn collapsed_lines(
             continue;
         };
         let length = (bx - ax).hypot(by - ay);
-        if !(length <= tolerance) {
+        if length.is_nan() || length > tolerance {
             continue;
         }
         let constraints = direction_constraints(sketch, entity.id, start, end);
