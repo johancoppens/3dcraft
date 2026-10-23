@@ -201,6 +201,9 @@ pub struct Desk {
     capture: Option<Capture>,
     /// How long a capture waits for a frame ([`CAPTURE_DEADLINE`]).
     capture_deadline: Duration,
+    /// Wakes the thread that serves the desk, frame or no frame: what a
+    /// capture's deadline rings ([`Self::with_wake`]).
+    wake: Option<Wake>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -230,6 +233,9 @@ const CAPTURE_RETRY_FRAMES: u32 = 30;
 /// How long a picture of the window waits for a frame before it is
 /// answered with an error.
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(8);
+
+/// How long after a capture's deadline its timer wakes the desk.
+const DEADLINE_GRACE: Duration = Duration::from_millis(20);
 
 /// The error of a picture of the window that got no frame in time.
 const NO_FRAME: &str = "ui.screenshot: the window drew no frame in time; is it minimised, hidden or on another workspace?";
@@ -278,7 +284,19 @@ impl Desk {
             patience: PATIENCE,
             capture: None,
             capture_deadline: CAPTURE_DEADLINE,
+            wake: None,
         }
+    }
+
+    /// Wakes the desk with `wake` when a picture of the window reaches
+    /// its deadline: a window that draws no frames (hidden, minimised, on
+    /// another workspace) sends no event that would serve it, and the
+    /// request would wait past its deadline for the next one. Set by
+    /// [`Self::with_engine_thread`] too.
+    #[must_use]
+    pub fn with_wake(mut self, wake: Wake) -> Self {
+        self.wake = Some(wake);
+        self
     }
 
     /// Runs commands on an engine thread of their own from now on, which
@@ -286,6 +304,7 @@ impl Desk {
     /// cannot be started they run where the desk is served, as before.
     #[must_use]
     pub fn with_engine_thread(mut self, wake: Wake) -> Self {
+        self.wake = Some(Arc::clone(&wake));
         self.worker = Worker::start(Arc::clone(&wake)).ok();
         if self.worker.is_some() {
             // Coarse first, then sharp: the engine thread builds the quick
@@ -1012,6 +1031,7 @@ impl Desk {
                     since: Instant::now(),
                     image: None,
                 });
+                self.ring_at_deadline();
                 None
             }
             Some(Err(error)) => {
@@ -1021,6 +1041,25 @@ impl Desk {
             }
             None => Some(request),
         }
+    }
+
+    /// Wakes the desk once the capture's deadline has passed, from a
+    /// thread of its own: the deadline is kept without frames
+    /// ([`Self::with_wake`]). Without a wake, or when no thread can be
+    /// started, the deadline is kept at the next turn as before.
+    fn ring_at_deadline(&self) {
+        let Some(wake) = self.wake.clone() else {
+            return;
+        };
+        // A little after the deadline, so the turn it wakes finds it
+        // passed.
+        let at = self.capture_deadline.saturating_add(DEADLINE_GRACE);
+        let _ = std::thread::Builder::new()
+            .name("craft3d-capture-deadline".to_string())
+            .spawn(move || {
+                std::thread::sleep(at);
+                wake();
+            });
     }
 
     /// Answers the queued `ui.get` and `ui.quit` now, from the session
@@ -1677,6 +1716,56 @@ mod tests {
             );
             let reply = turn_until(&mut desk, &after).unwrap();
             assert!(reply.contains(r#""ok":true"#), "{reply}");
+            assert!(desk.capture.is_none());
+        }
+    }
+
+    /// A picture of a window that draws no frame at all (hidden, on
+    /// another workspace: no frame and no event comes) is still answered
+    /// at its deadline: a timer wakes the desk, and the turn that wake
+    /// brings answers it with the documented error (R1 B8: agents saw it
+    /// hang past its 8 s).
+    #[test]
+    fn a_window_picture_is_answered_at_its_deadline_without_any_frame() {
+        for engine in [true, false] {
+            let (requests, incoming) = mpsc::channel();
+            let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+            let host = Host::new(Session::new(Workspace::none()));
+            let (rang, rings) = mpsc::channel();
+            let rang = Mutex::new(rang);
+            let wake: Wake = Arc::new(move || {
+                let _ = rang.lock().unwrap().send(());
+            });
+            let mut desk =
+                Desk::new(host, incoming, picker).with_capture_deadline(Duration::from_millis(200));
+            desk = if engine {
+                desk.with_engine_thread(wake)
+            } else {
+                desk.with_wake(wake)
+            };
+            let shot = ask(
+                &requests,
+                r#"{"id":1,"method":"ui.screenshot","params":{"window":true}}"#,
+            );
+            let started = Instant::now();
+            desk.turn();
+            assert!(desk.capture.is_some(), "engine {engine}");
+            // No frame, no request: only the deadline's timer wakes it.
+            loop {
+                rings
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the deadline wakes the desk");
+                if started.elapsed() >= Duration::from_millis(200) {
+                    break;
+                }
+            }
+            desk.turn();
+            let reply = shot.try_recv().unwrap().unwrap();
+            assert!(
+                reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
+                "{reply}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(3));
             assert!(desk.capture.is_none());
         }
     }
