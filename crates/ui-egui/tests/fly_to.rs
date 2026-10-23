@@ -302,3 +302,23 @@ fn only_rows_that_can_be_shown_have_a_zoom_icon_and_fly() {
             .any(|r| r.id == "F4" && r.hidden && r.zoomable)
     );
 }
+
+/// The zoom icon's tooltip names the icon by its glyph, which the
+/// default fonts must have (a missing one is drawn as a box).
+#[test]
+fn the_zoom_tooltip_is_in_the_fonts() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    let body = egui::FontId::proportional(14.0);
+    let glyph = |c: char| {
+        ctx.fonts_mut(|f| {
+            let galley = f.layout_no_wrap(c.to_string(), body.clone(), egui::Color32::WHITE);
+            galley.rows[0].glyphs[0].uv_rect
+        })
+    };
+    let missing = glyph('\u{10FFFD}');
+    for c in ZOOM_TOOLTIP.chars().filter(|c| !c.is_ascii()) {
+        assert_ne!(glyph(c), missing, "{c}");
+    }
+}
