@@ -1,10 +1,14 @@
 # Decisions
 
-> **Last updated:** 2026-10-22
+> **Last updated:** 2026-10-23
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-23: Jigs, parametric generators that run without AI (decided by the developer)
+
+Generators (a gear, a toothed-belt pulley, a laser-cut box, a welding table) are called **Jigs**. A Jig is made once, by an AI or by hand, and then runs without AI: the user sets its public parameters in a form inside 3DCraft and the model regenerates deterministically. Jigs are never part of 3DCraft: 3DCraft gets the general mechanism (public parameters, the form, a Jig package to export and open, a check over the parameter range), the Jigs themselves live with their makers or in a community collection. Jigs run in the web build too. Level 1 comes first: a Jig is a `.3dcraft` document whose public variables drive it, with no code of its own; scripted Jigs (logic in a sandbox) come later, only if level 1 cannot carry the pilots (the pulley, the laser box).
 
 ### 2026-10-22: Identifiers and installers (decided by an agent; the developer may overturn)
 
