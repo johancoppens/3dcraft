@@ -3065,22 +3065,37 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         if only.is_some() {
             // What was asked about is not built: say so rather than "ok,
             // no bodies".
-            // One switched off that passes a body on holds that body,
-            // which is checked as any other.
-            let not_built = match (&outcome.status, &outcome.passed) {
-                _ if outcome.is_built() => None,
-                (Status::Suppressed, _) => Some("is suppressed".to_string()),
-                (Status::Inactive, _) => Some("is inactive (its condition is 0)".to_string()),
-                (Status::RolledBack, _) => Some("is after the rollback marker".to_string()),
-                (Status::Ok, Some(craft3d_regen::Passed::Nothing(why))) => {
-                    Some(format!("passes no body on ({why})"))
+            // One switched off is not built, also when it passes a body on
+            // (that body is the one of the feature that made it, and is
+            // checked with that feature).
+            let off = match &outcome.status {
+                Status::Suppressed => Some("is suppressed"),
+                Status::Inactive => Some("is inactive (its condition is 0)"),
+                Status::RolledBack => Some("is after the rollback marker"),
+                Status::Ok | Status::Failed(_) => None,
+            };
+            let passes = match &outcome.passed {
+                Some(craft3d_regen::Passed::Body(from)) => {
+                    let by = doc
+                        .feature(*from)
+                        .map_or_else(|| from.to_string(), |f| f.name.clone());
+                    format!(
+                        "; it passes the body of `{by}` ({from}) on unchanged, which is checked with the feature that made it"
+                    )
                 }
-                (Status::Ok | Status::Failed(_), _) => None,
+                _ => String::new(),
+            };
+            let not_built = match (off, &outcome.passed) {
+                (Some(why), _) => Some(format!("{why}: nothing is built to check{passes}")),
+                (None, Some(craft3d_regen::Passed::Nothing(why))) => Some(format!(
+                    "passes no body on ({why}): nothing is built to check"
+                )),
+                (None, _) => None,
             };
             if let Some(why) = not_built {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name,
-                    "problem": format!("the feature {why}: nothing is built to check"),
+                    "problem": format!("the feature {why}"),
                 }));
             }
             status = Some(match &outcome.status {
@@ -3108,7 +3123,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             booleans_checked +=
                 boolean_check(doc, &regen, outcome, &name, &tolerance, &mut problems);
         }
-        if let Some(body) = outcome.own_body() {
+        // Asked about one feature that is off: what it passes on is not
+        // its own, and is not checked here.
+        let passed_only = only.is_some() && outcome.is_off();
+        if let Some(body) = outcome.own_body().filter(|_| !passed_only) {
             checked += 1;
             // Entities with a tolerance of their own (a boolean on loose
             // operands, an import) are said, not hidden.
