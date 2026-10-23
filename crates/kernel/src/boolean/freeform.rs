@@ -73,8 +73,10 @@ const MAX_LEAVES: usize = 1 << 15;
 /// than this halves a piece that is short one way only across the other
 /// ([`long_ways`]); smaller trees are quartered throughout, as they were
 /// before 2026-10-23, so that what they answer stays the same to the bit.
-/// The strips of fitted formula curves (30 spans and more) are halved.
-const HALVED_FROM: usize = 1 << 14;
+/// The strips of fitted formula curves (30 spans and more, quartered
+/// four or five times) are halved; a single span (a fillet's surface, a
+/// patch) is quartered.
+const HALVED_FROM: usize = 1 << 12;
 /// How far apart the weights of one Bézier span of a rational surface may
 /// be. Every bound on its derivatives carries a power of the ratio within
 /// a piece, so the bounds are taken from pieces small enough for their
