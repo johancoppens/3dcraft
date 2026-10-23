@@ -643,12 +643,16 @@ fn layer_name(name: &str, taken: &[String]) -> String {
 /// The flat faces a named set holds now (`file.export {set}`), in
 /// document order (bodies in history order, faces in body order): each
 /// its persistent name, its body and the name of that body. The faces it
-/// holds that are not flat, and how many items of other kinds it holds,
-/// are said in the result and left off the sheet.
+/// holds that are not flat, and how many items of each other kind it
+/// holds, are said in the result and left off the sheet. A body hidden in
+/// the view (`feature.visible`) is drawn all the same: what is shown is
+/// view data, what is cut is the set.
 struct SetFaces {
     flat: Vec<(String, craft3d_doc::FeatureId, String)>,
     not_flat: Vec<Value>,
-    others: usize,
+    /// Items of other kinds by kind, those counted (a kind too many to
+    /// look through on a large model is left out, not refused).
+    others: Map<String, Value>,
 }
 
 fn set_faces(session: &mut Session, name: &str) -> Result<SetFaces, CommandError> {
@@ -679,7 +683,16 @@ fn set_faces(session: &mut Session, name: &str) -> Result<SetFaces, CommandError
             .and_then(|q| run_query(doc, &regen, q, limit, false))
             .map_err(|e| CommandError::new(format!("{ID}: the set `{name}`: {e}")))
     };
-    let (_, all) = run(json!({ "where": { "set": name } }), 0)?;
+    // Counted kind by kind, each as far as it can be: only to say so.
+    let mut others = Map::new();
+    for kind in ["body", "edge", "vertex", "feature", "sketch", "datum"] {
+        if let Ok((_, count)) = run(json!({ "kind": kind, "where": { "set": name } }), 0)
+            && count > 0
+        {
+            others.insert(kind.into(), count.into());
+        }
+    }
+    let other_count: u64 = others.values().filter_map(Value::as_u64).sum();
     let (faces, face_count) = run(
         json!({ "kind": "face", "where": { "set": name } }),
         MAX_SHEET_FACES.saturating_add(1),
@@ -716,20 +729,21 @@ fn set_faces(session: &mut Session, name: &str) -> Result<SetFaces, CommandError
         return fail(format!(
             "{ID}: the set `{name}` holds no flat face to draw ({face_count} faces, {} of them not flat, and {} other items); a sheet is of flat faces",
             not_flat.len(),
-            all.saturating_sub(face_count)
+            other_count
         ));
     }
     Ok(SetFaces {
         flat,
         not_flat,
-        others: all.saturating_sub(face_count),
+        others,
     })
 }
 
 /// Several flat faces on one sheet: each drawn in its own frame, as a
 /// layer of its own, and set side by side in rows by their bounding
 /// boxes, `gap` apart, in the order given; or every flat face a named
-/// set holds now (`set`), each on a layer named after its body.
+/// set holds now (`set`), the faces of one body on one layer named after
+/// it. Faces given the same layer share it.
 fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
     let set_name = match p.get("set") {
         None => None,
@@ -792,6 +806,8 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
     let mut wanted = Vec::with_capacity(entries.len());
     let mut layers: Vec<Option<String>> = Vec::with_capacity(entries.len());
     let mut bases: Vec<&str> = Vec::with_capacity(entries.len());
+    // A set's faces: a layer per body, named after it.
+    let mut body_layers: Vec<(craft3d_doc::FeatureId, String)> = Vec::new();
     for (index, (face, id, body)) in from_set.iter().flat_map(|s| s.flat.iter()).enumerate() {
         wanted.push(Wanted {
             given: face,
@@ -799,7 +815,16 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             axes: axes(x_axis),
             role: format!("`set` face {index}"),
         });
-        layers.push(None);
+        let layer = match body_layers.iter().find(|(b, _)| b == id) {
+            Some((_, layer)) => layer.clone(),
+            None => {
+                let taken: Vec<String> = body_layers.iter().map(|(_, l)| l.clone()).collect();
+                let layer = layer_name(body, &taken);
+                body_layers.push((*id, layer.clone()));
+                layer
+            }
+        };
+        layers.push(Some(layer));
         bases.push(body);
     }
     for (index, entry) in entries.iter().enumerate() {
@@ -899,11 +924,15 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         json.insert("at".into(), json!(at));
         json.insert("bbox".into(), json!([x, y, x + w, y + h]));
         sheet_json.push(Value::Object(json));
-        placed.push(Layer {
-            name: layer,
-            color: Color::Black,
-            paths,
-        });
+        // Faces on one layer (a body's, in a set) share it.
+        match placed.iter_mut().find(|l: &&mut Layer| l.name == layer) {
+            Some(shared) => shared.paths.extend(paths),
+            None => placed.push(Layer {
+                name: layer,
+                color: Color::Black,
+                paths,
+            }),
+        }
         x += w + gap;
         row_height = row_height.max(h);
         in_row += 1;
@@ -920,7 +949,7 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             {
                 map.insert("set".into(), name.into());
                 map.insert("notFlat".into(), set.not_flat.clone().into());
-                map.insert("others".into(), set.others.into());
+                map.insert("others".into(), Value::Object(set.others.clone()));
             }
             json
         },

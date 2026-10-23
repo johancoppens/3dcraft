@@ -325,6 +325,14 @@ impl Session {
     /// held, also those that went into later features, so that an edit
     /// further down finds the trees of what it starts from. Results do not
     /// change: a tree is a function of its surface.
+    /// [`Session::release_unused_trees`] even when no open document
+    /// changed: after work in a session of its own (`document.sample`'s
+    /// points), whose bodies are gone.
+    pub(crate) fn release_trees_now(&mut self) {
+        self.trees_held_for.clear();
+        self.release_unused_trees();
+    }
+
     fn release_unused_trees(&mut self) {
         let now: Vec<(u64, Option<u64>)> = self
             .documents

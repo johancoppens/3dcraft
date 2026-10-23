@@ -328,10 +328,143 @@ fn bad_params_and_a_document_without_parameters_are_refused() {
         (json!({"budgetMs": 0}), "budgetMs"),
         (json!({"budgetMs": "fast"}), "budgetMs"),
         (json!({"seed": 1.5}), "seed"),
+        (json!({"timeLimitMs": 0}), "timeLimitMs"),
+        (json!({"timeLimitMs": "long"}), "timeLimitMs"),
         (json!({"deep": "yes"}), "deep"),
         (json!({"nonsense": 1}), "nonsense"),
     ] {
         let error = refused(&mut s, "document.sample", params.clone());
         assert!(error.contains(word), "{params}: {error}");
     }
+}
+
+/// The kinds and values of a run's points of `kind`.
+fn values_of(result: &Value, kind: &str) -> Vec<Value> {
+    result["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["kind"] == kind)
+        .map(|p| p["values"].clone())
+        .collect()
+}
+
+#[test]
+fn the_random_points_do_not_depend_on_the_corners_asked_for() {
+    let mut s = session();
+    jig(&mut s, "6 mm");
+    let with = sample(&mut s, json!({"samples": 6, "seed": 9, "values": true}));
+    let without = sample(
+        &mut s,
+        json!({"samples": 6, "seed": 9, "corners": false, "values": true}),
+    );
+    let fewer = sample(
+        &mut s,
+        json!({"samples": 6, "seed": 9, "maxCorners": 8, "values": true}),
+    );
+    assert_eq!(values_of(&with, "random").len(), 6);
+    assert_eq!(values_of(&with, "random"), values_of(&without, "random"));
+    assert_eq!(values_of(&with, "random"), values_of(&fewer, "random"));
+    assert_eq!(fewer["counts"]["corner"], 8);
+    assert_eq!(fewer["counts"]["allCorners"], false);
+}
+
+#[test]
+fn a_range_that_ends_at_zero_is_stepped_to_zero_not_past_it() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "off", "expr": "-0.1 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["5 mm + off", "5 mm", "5 mm"]}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "off", "min": "-0.3 mm", "max": "0 mm", "step": "0.1 mm"}),
+    );
+    let result = sample(&mut s, json!({"samples": 40, "seed": 3, "values": true}));
+    assert_eq!(result["ok"], true, "{result}");
+    let offs: Vec<f64> = result["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| number(&p["values"]["off"]))
+        .collect();
+    assert!(offs.iter().all(|v| (-0.3..=0.0).contains(v)), "{offs:?}");
+    // The high corner is exactly the end of the range.
+    assert!(offs.contains(&0.0) && offs.contains(&-0.3), "{offs:?}");
+}
+
+#[test]
+fn ranges_that_push_each_other_on_fail_the_point_with_the_last_values() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "variable.set", json!({"name": "a", "expr": "5 mm"}));
+    run(&mut s, "variable.set", json!({"name": "b", "expr": "5 mm"}));
+    run(&mut s, "feature.block", json!({"size": ["a", "b", "1 mm"]}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "a", "min": "1 mm", "max": "b"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "b", "min": "1 mm", "max": "a + 1 mm"}),
+    );
+    let result = sample(&mut s, json!({"samples": 0}));
+    assert_eq!(result["ok"], false, "{result}");
+    let unsettled: Vec<&Value> = result["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            f["problems"]
+                .to_string()
+                .contains("did not settle after 3 rounds")
+        })
+        .collect();
+    // Both at their high end: a = b, b = a + 1, on and on.
+    assert!(!unsettled.is_empty(), "{result}");
+    assert!(unsettled[0]["values"]["a"].is_string(), "{result}");
+}
+
+#[test]
+fn a_time_limit_stops_the_run_without_calling_it_ok() {
+    let mut s = session();
+    jig(&mut s, "10 mm");
+    let stopped = sample(&mut s, json!({"samples": 50, "timeLimitMs": 1e-9}));
+    assert_eq!(stopped["complete"], false);
+    assert_eq!(stopped["stoppedBy"], "timeLimit");
+    assert_eq!(stopped["ok"], Value::Null);
+    // The first point is always checked.
+    assert_eq!(stopped["counts"]["points"], 1);
+    // A failure found before the limit makes it false, not null: the
+    // defaults themselves fail (a pin of height -1 mm).
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "t", "default": "9 mm"}),
+    );
+    let failing = sample(&mut s, json!({"samples": 50, "timeLimitMs": 1e-9}));
+    assert_eq!(failing["ok"], false, "{failing}");
+    assert_eq!(failing["complete"], false);
+    // null is no limit; the default is a minute.
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "t", "default": "2 mm"}),
+    );
+    let unlimited = sample(&mut s, json!({"samples": 2, "timeLimitMs": null}));
+    assert_eq!(unlimited["complete"], true);
+    assert_eq!(unlimited["timeLimitMs"], Value::Null);
+    let default = sample(&mut s, json!({"samples": 2}));
+    assert_eq!(default["timeLimitMs"], 60000.0);
+    assert_eq!(default["complete"], true);
 }

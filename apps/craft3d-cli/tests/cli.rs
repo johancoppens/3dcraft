@@ -1528,16 +1528,25 @@ fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
     ])
     .failed(1);
 
-    // Usage errors, and a file without parameters.
+    // A time limit that stops the run: 4 when nothing failed so far, 1
+    // when a point did.
+    let ran = cli(&["check-range", &good, "--time-limit-ms", "0.000001"]).failed(4);
+    assert!(ran.stdout.contains("INCOMPLETE"), "{}", ran.stdout);
+    cli(&["check-range", &bad, "--time-limit-ms", "100000"]).failed(1);
+
+    // Usage errors (2, the caps included), and files that cannot be
+    // checked (3).
     cli(&["check-range"]).failed(2);
     cli(&["check-range", &good, "--samples", "many"]).failed(2);
     cli(&["check-range", &good, "--budget-ms", "-3"]).failed(2);
+    cli(&["check-range", &good, "--time-limit-ms", "0"]).failed(2);
     cli(&["check-range", &good, "--deep=yes"]).failed(2);
     cli(&["check-range", &good, &good]).failed(2);
-    cli(&["check-range", &good, "--samples", "20000"]).failed(1);
-    cli(&["check-range", &path(&dir, "missing.3dcraft")]).failed(1);
+    cli(&["check-range", &good, "--samples", "20000"]).failed(2);
+    cli(&["check-range", &good, "--max-corners", "5000"]).failed(2);
+    cli(&["check-range", &path(&dir, "missing.3dcraft")]).failed(3);
     let part = build_part(&dir);
-    let ran = cli(&["check-range", &part]).failed(1);
+    let ran = cli(&["check-range", &part]).failed(3);
     assert!(
         ran.stderr.contains("no public parameters"),
         "{}",

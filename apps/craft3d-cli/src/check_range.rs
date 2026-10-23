@@ -1,7 +1,11 @@
 //! `craft3d-cli check-range`: proves a Jig over its parameter range
-//! (the command `document.sample`) and exits non-zero when any point
-//! fails, for a Jig repository's CI. The work is the engine's; this file
-//! reads the flags and writes the report.
+//! (the command `document.sample`) for a Jig repository's CI. The work is
+//! the engine's; this file reads the flags and writes the report.
+//!
+//! Exit codes: 0 every point passed; 1 a point failed; 2 a usage error
+//! (the caps included); 3 the file could not be opened or checked; 4 the
+//! run stopped at `--time-limit-ms` before every point was checked, with
+//! none failing so far.
 
 use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed, print};
@@ -15,10 +19,37 @@ struct Options {
     json: bool,
 }
 
-fn whole(flag: &str, text: &str) -> Result<Value, CliError> {
-    text.parse::<u64>()
+/// The caps of `document.sample`, checked here so that going past one is
+/// a usage error.
+const MAX_SAMPLES: u64 = 10_000;
+const MAX_CORNERS: u64 = 4096;
+
+/// Exit codes beyond the usage error.
+const EXIT_ERROR: u8 = 3;
+const EXIT_INCOMPLETE: u8 = 4;
+
+fn whole(flag: &str, text: &str, max: u64) -> Result<Value, CliError> {
+    match text.parse::<u64>() {
+        Ok(n) if n <= max => Ok(Value::from(n)),
+        Ok(n) => Err(CliError::Usage(format!(
+            "`{flag}` is at most {max}, got {n}"
+        ))),
+        Err(_) => Err(CliError::Usage(format!(
+            "`{flag}` must be a whole number, got `{text}`"
+        ))),
+    }
+}
+
+fn positive_ms(flag: &str, text: &str) -> Result<Value, CliError> {
+    text.parse::<f64>()
+        .ok()
+        .filter(|ms| ms.is_finite() && *ms > 0.0)
         .map(Value::from)
-        .map_err(|_| CliError::Usage(format!("`{flag}` must be a whole number, got `{text}`")))
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "`{flag}` must be a positive number of milliseconds, got `{text}`"
+            ))
+        })
 }
 
 fn parse(mut args: Args) -> Result<Parsed<Options>, CliError> {
@@ -49,22 +80,15 @@ fn parse(mut args: Args) -> Result<Parsed<Options>, CliError> {
                     "--seed" => "seed",
                     "--max-corners" => "maxCorners",
                     "--budget-ms" => "budgetMs",
+                    "--time-limit-ms" => "timeLimitMs",
                     _ => return Err(CliError::Usage(format!("unknown flag `{name}`"))),
                 };
                 let value = args.value(&name, inline)?;
-                let value = if key == "budgetMs" {
-                    value
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|ms| ms.is_finite() && *ms > 0.0)
-                        .map(Value::from)
-                        .ok_or_else(|| {
-                            CliError::Usage(format!(
-                                "`{name}` must be a positive number of milliseconds, got `{value}`"
-                            ))
-                        })?
-                } else {
-                    whole(&name, &value)?
+                let value = match key {
+                    "budgetMs" | "timeLimitMs" => positive_ms(&name, &value)?,
+                    "samples" => whole(&name, &value, MAX_SAMPLES)?,
+                    "maxCorners" => whole(&name, &value, MAX_CORNERS)?,
+                    _ => whole(&name, &value, u64::MAX)?,
                 };
                 if params.insert(key.into(), value).is_some() {
                     return Err(CliError::Usage(format!("`{name}` was given twice")));
@@ -78,6 +102,8 @@ fn parse(mut args: Args) -> Result<Parsed<Options>, CliError> {
         }
     }
     let file = file.ok_or_else(|| CliError::Usage("missing FILE".to_string()))?;
+    // At the command line a run has no time limit unless one is asked for.
+    params.entry("timeLimitMs").or_insert(Value::Null);
     Ok(Parsed::Run(Options { file, params, json }))
 }
 
@@ -113,6 +139,12 @@ fn report(file: &str, result: &Value) -> String {
         n(field(result, "passed")),
         n(field(result, "failed")),
     )];
+    if field(result, "complete") == false {
+        lines.push(format!(
+            "INCOMPLETE: stopped by {} before every point was checked",
+            field(result, "stoppedBy").as_str().unwrap_or("?")
+        ));
+    }
     let timing = field(result, "timing");
     if !timing.is_null() {
         lines.push(format!(
@@ -175,13 +207,15 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
         Parsed::Run(options) => options,
         Parsed::Help => return Ok(Parsed::Help),
     };
+    let error =
+        |e: craft3d_engine::CommandError| CliError::Code(EXIT_ERROR, e.message().to_string());
     let mut session = Session::new(Workspace::unrestricted());
     session
         .execute("file.open", &json!({ "path": options.file }))
-        .map_err(|e| CliError::Failed(e.message().to_string()))?;
+        .map_err(error)?;
     let result = session
         .execute("document.sample", &Value::Object(options.params))
-        .map_err(|e| CliError::Failed(e.message().to_string()))?;
+        .map_err(error)?;
     let text = if options.json {
         serde_json::to_string(&result)
             .map_err(|e| CliError::Failed(format!("cannot write the result as JSON: {e}")))?
@@ -189,13 +223,21 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
         report(&options.file, &result)
     };
     print(&text)?;
-    if field(&result, "ok") == true {
-        Ok(Parsed::Run(()))
-    } else {
+    let failed = field(&result, "failed").as_u64().unwrap_or(0);
+    let points = field(field(&result, "counts"), "points");
+    if failed > 0 {
         Err(CliError::Failed(format!(
-            "{} of {} points fail",
-            field(&result, "failed"),
-            field(field(&result, "counts"), "points")
+            "{failed} of {points} points fail"
         )))
+    } else if field(&result, "complete") != true || field(&result, "ok") != true {
+        Err(CliError::Code(
+            EXIT_INCOMPLETE,
+            format!(
+                "the run stopped ({}) after {points} points, none failing: not every point was checked",
+                field(&result, "stoppedBy").as_str().unwrap_or("early")
+            ),
+        ))
+    } else {
+        Ok(Parsed::Run(()))
     }
 }

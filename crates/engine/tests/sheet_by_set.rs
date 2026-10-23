@@ -77,13 +77,13 @@ fn a_set_puts_every_flat_face_it_holds_on_one_sheet() {
         println!("{by_set}");
         assert_eq!(by_set["set"], "Cut sheet");
         assert_eq!(by_set["notFlat"], json!([]));
-        assert_eq!(by_set["others"], 0);
+        assert_eq!(by_set["others"], json!({}));
         // The bottom and the pattern of sides: the pattern is one body
-        // with two lumps, so two top faces of one body.
+        // with two lumps, so two top faces of one body, on its layer.
         let sheet = by_set["sheet"].as_array().unwrap();
         assert_eq!(sheet.len(), 3, "{by_set}");
         assert_eq!(by_set["closed"], 3);
-        assert_eq!(layers(&by_set), ["Bottom", "Sides", "Sides-2"]);
+        assert_eq!(layers(&by_set), ["Bottom", "Sides", "Sides"]);
         // The same faces given one by one draw the same sheet.
         let faces: Vec<Value> = sheet
             .iter()
@@ -102,7 +102,9 @@ fn a_set_puts_every_flat_face_it_holds_on_one_sheet() {
         );
         if format == "svg" {
             let text = std::fs::read_to_string(dir.join("set.svg")).unwrap();
-            assert_eq!(text.matches("<path").count(), 3, "{text}");
+            // One path per layer: the bottom, and both sides together.
+            assert_eq!(text.matches("<path").count(), 2, "{text}");
+            assert!(text.contains("id=\"layer-Sides\""), "{text}");
         }
     }
     // The set follows the design: four sides, five panels.
@@ -144,10 +146,12 @@ fn faces_that_are_not_flat_and_other_items_are_said_and_left_off() {
     );
     println!("{result}");
     // The pin's two caps and the bottom's top are flat; its side is not;
-    // the pin body, its edges and its vertices are other kinds of item.
+    // the pin body, its edges and its vertices are other kinds of item,
+    // counted kind by kind.
     assert_eq!(result["sheet"].as_array().unwrap().len(), 3, "{result}");
     assert_eq!(result["notFlat"].as_array().unwrap().len(), 1, "{result}");
-    assert!(result["others"].as_u64().unwrap() >= 3, "{result}");
+    assert_eq!(result["others"]["body"], 1, "{result}");
+    assert!(result["others"]["edge"].as_u64().unwrap() >= 2, "{result}");
     run(
         &mut s,
         "set.define",

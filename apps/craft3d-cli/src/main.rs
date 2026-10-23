@@ -29,12 +29,16 @@ pub(crate) enum CliError {
     Usage(String),
     /// The command line was right and the work failed. Exit code 1.
     Failed(String),
+    /// A failure with an exit code of its own (`check-range`: 3, 4).
+    Code(u8, String),
 }
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CliError::Usage(message) | CliError::Failed(message) => f.write_str(message),
+            CliError::Usage(message) | CliError::Failed(message) | CliError::Code(_, message) => {
+                f.write_str(message)
+            }
         }
     }
 }
@@ -68,7 +72,8 @@ Subcommands:
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
-Exit codes: 0 success, 1 failure, 2 usage error.";
+Exit codes: 0 success, 1 failure, 2 usage error (check-range also 3 and 4:
+see its help).";
 
 const HELP_COMMANDS: &str = "\
 Usage: craft3d-cli commands [--filter TEXT]
@@ -217,8 +222,8 @@ Example:
 
 const HELP_CHECK_RANGE: &str = "\
 Usage: craft3d-cli check-range FILE [--samples N] [--seed S] [--deep]
-                               [--budget-ms M] [--max-corners N]
-                               [--no-corners] [--json]
+                               [--budget-ms M] [--time-limit-ms M]
+                               [--max-corners N] [--no-corners] [--json]
 
 Proves the Jig FILE (a .3dcraft file with public parameters) over its
 parameter range (the command document.sample): on a copy, its parameters
@@ -227,9 +232,14 @@ every other choice of a choice, and to N random points chosen by the seed;
 each point is regenerated from nothing and checked as document.check
 checks (no failed feature, valid bodies, no broken assertion, no invalid
 parameter). Prints a report, one block per failing point with the values
-that reproduce it (param.set), and exits with 1 when any point fails. The
-same seed gives the same points and the same verdict; times are reported
-and only --budget-ms makes them part of the verdict.
+that reproduce it (param.set). The same seed gives the same points and
+the same verdict; times are reported and only --budget-ms makes them part
+of the verdict. There is no time limit unless --time-limit-ms is given.
+
+Exit codes: 0 every point passed; 1 a point failed; 2 a usage error (also
+--samples above 10000 or --max-corners above 4096); 3 the file could not
+be opened or checked (no public parameters, say); 4 the run stopped at
+--time-limit-ms before every point was checked, none failing so far.
 
 Options:
   --samples N       Random points, at most 10000. Default 32
@@ -239,6 +249,8 @@ Options:
                     (self-intersection, booleans held to their operands)
   --budget-ms M     A point whose regeneration takes longer than M
                     milliseconds fails
+  --time-limit-ms M Stop the whole run after M milliseconds (exit 4 when
+                    no point failed). Default: no limit
   --max-corners N   Corners tried: all 2^n while that is at most N, else N
                     of them chosen by the seed (at most 4096). Default 64
   --no-corners      Only the defaults, the choices and the random points
@@ -443,6 +455,7 @@ fn main() -> ExitCode {
             match error {
                 CliError::Usage(_) => ExitCode::from(2),
                 CliError::Failed(_) => ExitCode::FAILURE,
+                CliError::Code(code, _) => ExitCode::from(code),
             }
         }
     }
