@@ -96,6 +96,17 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
             }
         }
     }
+    // The features hidden in the view (format 30), as listed.
+    if let Some(hidden) = want.get("hidden") {
+        let got: Vec<Value> = features
+            .iter()
+            .filter(|f| f["hidden"] == true)
+            .map(|f| f["id"].clone())
+            .collect();
+        if Value::Array(got.clone()) != *hidden {
+            found.push(format!("{tag}: hidden {got:?} (were {hidden})"));
+        }
+    }
     // The colours given to faces (format 26), as listed, none of them lost.
     if let Some(faces) = want.get("faceAppearances") {
         // A name read in the long form and the short one is the same name
