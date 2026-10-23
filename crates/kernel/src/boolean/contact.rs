@@ -81,6 +81,16 @@ pub fn interference(
     b: &Body,
     tolerance: &Tolerance,
 ) -> Result<Interference, KernelError> {
+    super::freeform::holding(|| interference_held(a, b, tolerance))
+}
+
+/// [`interference`], its trees held to a budget
+/// ([`super::freeform::holding`]).
+fn interference_held(
+    a: &Body,
+    b: &Body,
+    tolerance: &Tolerance,
+) -> Result<Interference, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
         return Err(KernelError::InvalidSize {

@@ -1640,6 +1640,11 @@ pub struct PartsTouch {
 /// **Errors.** [`KernelError::InvalidSize`] for a tolerance that is not
 /// positive and finite.
 pub fn parts_touch(body: &Body, tolerance: &Tolerance) -> Result<Option<PartsTouch>, KernelError> {
+    freeform::holding(|| parts_touch_held(body, tolerance))
+}
+
+/// [`parts_touch`], its trees held to a budget ([`freeform::holding`]).
+fn parts_touch_held(body: &Body, tolerance: &Tolerance) -> Result<Option<PartsTouch>, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -1982,6 +1987,17 @@ pub fn boolean_with(
     tolerance: &Tolerance,
     options: &BooleanOptions,
 ) -> Result<BooleanResult, KernelError> {
+    freeform::holding(|| boolean_with_held(a, b, op, tolerance, options))
+}
+
+/// [`boolean_with`], its trees held to a budget ([`freeform::holding`]).
+fn boolean_with_held(
+    a: &Body,
+    b: &Body,
+    op: BooleanOp,
+    tolerance: &Tolerance,
+    options: &BooleanOptions,
+) -> Result<BooleanResult, KernelError> {
     crate::work::boolean();
     if a.is_tolerant() || b.is_tolerant() {
         // Loose entities: at the operands' largest tolerance, the result's
@@ -2040,6 +2056,15 @@ fn exact(
 /// count of sampled points a measure of a body's volume that is
 /// independent of it.
 pub fn contains_points(
+    body: &Body,
+    points: &[Vec3],
+    tolerance: &Tolerance,
+) -> Result<Vec<Option<bool>>, KernelError> {
+    freeform::holding(|| contains_points_held(body, points, tolerance))
+}
+
+/// [`contains_points`], its trees held to a budget ([`freeform::holding`]).
+fn contains_points_held(
     body: &Body,
     points: &[Vec3],
     tolerance: &Tolerance,
@@ -2103,6 +2128,15 @@ pub enum Place {
 /// [`contains_points`] that tells a point on the boundary from one no ray
 /// could place.
 pub fn classify_points(
+    body: &Body,
+    points: &[Vec3],
+    tolerance: &Tolerance,
+) -> Result<Vec<Place>, KernelError> {
+    freeform::holding(|| classify_points_held(body, points, tolerance))
+}
+
+/// [`classify_points`], its trees held to a budget ([`freeform::holding`]).
+fn classify_points_held(
     body: &Body,
     points: &[Vec3],
     tolerance: &Tolerance,
