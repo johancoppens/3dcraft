@@ -1345,6 +1345,17 @@ pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
 /// where the cache had let go of them to stay within its budget
 /// ([`RegenCache::set_body_budget`]): with [`Need::All`] the result is
 /// that of [`regenerate`] body for body.
+/// The variables as the features are built with them: those of the
+/// document, or none when its table is invalid (a hand-edited file), when
+/// every feature that uses one fails. What regeneration and every reader
+/// that evaluates a feature's expression the same way (`split_plan`) use.
+pub(crate) fn feature_variables(doc: &Document) -> Evaluation {
+    match doc.variable_table() {
+        Ok(table) => table.evaluate(),
+        Err(_) => craft3d_expr::VariableTable::new().evaluate(),
+    }
+}
+
 pub fn regenerate_cached_needing(doc: &Document, cache: &mut RegenCache, need: Need) -> Regen {
     let evaluation = match doc.variable_table() {
         Ok(table) => table.evaluate(),
@@ -1363,12 +1374,7 @@ pub fn regenerate_cached_needing(doc: &Document, cache: &mut RegenCache, need: N
                 .collect();
             return Regen {
                 variables,
-                features: features(
-                    doc,
-                    &craft3d_expr::VariableTable::new().evaluate(),
-                    cache,
-                    need,
-                ),
+                features: features(doc, &feature_variables(doc), cache, need),
             };
         }
     };

@@ -432,10 +432,7 @@ pub fn split_plan(
         .feature(source)
         .map_or_else(|| source.to_string(), |f| f.name.clone());
     // Which splits are on depends on the variables (their conditions).
-    let variables = doc
-        .variable_table()
-        .map(|table| table.evaluate())
-        .unwrap_or_else(|_| craft3d_expr::VariableTable::new().evaluate());
+    let variables = crate::feature_variables(doc);
     let members: Vec<&Feature> = group(doc, &variables, source)
         .into_iter()
         .filter_map(|(f, built)| built.then_some(f))

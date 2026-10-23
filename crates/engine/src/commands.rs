@@ -3065,16 +3065,22 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         if only.is_some() {
             // What was asked about is not built: say so rather than "ok,
             // no bodies".
-            let not_built = match outcome.status {
-                Status::Suppressed => Some("suppressed"),
-                Status::Inactive => Some("inactive (its condition is 0)"),
-                Status::RolledBack => Some("after the rollback marker"),
-                Status::Ok | Status::Failed(_) => None,
+            // One switched off that passes a body on holds that body,
+            // which is checked as any other.
+            let not_built = match (&outcome.status, &outcome.passed) {
+                _ if outcome.is_built() => None,
+                (Status::Suppressed, _) => Some("is suppressed".to_string()),
+                (Status::Inactive, _) => Some("is inactive (its condition is 0)".to_string()),
+                (Status::RolledBack, _) => Some("is after the rollback marker".to_string()),
+                (Status::Ok, Some(craft3d_regen::Passed::Nothing(why))) => {
+                    Some(format!("passes no body on ({why})"))
+                }
+                (Status::Ok | Status::Failed(_), _) => None,
             };
             if let Some(why) = not_built {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name,
-                    "problem": format!("the feature is {why}: nothing is built to check"),
+                    "problem": format!("the feature {why}: nothing is built to check"),
                 }));
             }
             status = Some(match &outcome.status {

@@ -241,8 +241,8 @@ pub(crate) fn word(status: &Status) -> &'static str {
 }
 
 /// For a name looked up in the result of a feature that is off and passes
-/// a body on: the word for its state when the body has no face of that
-/// name, which is then one the feature would have made (a fillet's face,
+/// a body on: the word for its state when the body has no face, edge or
+/// vertex of that name (each looked for as its kind is), which is then one the feature would have made (a fillet's face,
 /// an instance of a pattern other than the first). Such a reference
 /// fails naming the feature that is off; it never lands on another face.
 pub(crate) fn lost(
@@ -252,10 +252,20 @@ pub(crate) fn lost(
     if !outcome.is_off() || name.feature != outcome.id {
         return None;
     }
-    let found = name.role == craft3d_doc::NameRole::Copy
-        && outcome
-            .names
-            .as_deref()
-            .is_some_and(|names| (0..names.faces.len()).any(|f| names.face_answers_to(f, name)));
+    let found = outcome.names.as_deref().is_some_and(|names| {
+        if name.is_vertex() || name.is_edge() {
+            // Names of edges and vertices let go of with an evicted body
+            // cannot be told: left to the lookup that reads the body.
+            !names.has_entities()
+                || if name.is_vertex() {
+                    names.vertex_named(name).is_some()
+                } else {
+                    names.edge_named(name).is_some()
+                }
+        } else {
+            name.role == craft3d_doc::NameRole::Copy
+                && (0..names.faces.len()).any(|f| names.face_answers_to(f, name))
+        }
+    });
     (!found).then(|| word(&outcome.status))
 }

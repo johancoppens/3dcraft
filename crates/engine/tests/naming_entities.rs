@@ -1202,6 +1202,7 @@ fn an_edit_that_removes_an_entity_fails_the_references_to_it_and_no_others() {
     // The feature that made the hole is switched off: what lay on the
     // hole is gone with the name lost, and the rest of the part's
     // corners are found.
+    let corners = known_corners(&mut s, &values);
     run(&mut s, "feature.suppress", json!({"feature": "Hole"}));
     let lost = lost_marks(&mut s);
     // (Suppressed, the hole passes the base on unchanged: since
@@ -1213,6 +1214,19 @@ fn an_edit_that_removes_an_entity_fails_the_references_to_it_and_no_others() {
     );
     for (mark, reason) in &lost {
         assert!(reason.contains(&names[*mark]), "{reason}");
+    }
+    // The other eight are where they were: the part without the hole is
+    // the part with it, but for the hole.
+    for (index, (name, expected)) in corners.iter().enumerate() {
+        if lost.contains_key(&index) {
+            continue;
+        }
+        let datum = feature(&mut s, &format!("Mark {index}"));
+        let at = vector(&datum["datum"]["at"]);
+        assert!(
+            distance(at, *expected) <= 1e-9,
+            "{name} is at {at:?}, not at {expected:?} with the hole suppressed"
+        );
     }
     run(
         &mut s,

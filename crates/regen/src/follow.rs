@@ -195,6 +195,13 @@ pub(crate) fn face(
         return Ok(None);
     }
     let start = called(doc, name.feature);
+    // A face only a feature that is off makes is not there: said so, not
+    // as a face its body lacks.
+    if let Some(outcome) = earlier.iter().find(|r| r.id == name.feature)
+        && let Some(off) = crate::pass::lost(outcome, name)
+    {
+        return Err(format!("{role}: `{start}`, which makes {name}, is {off}"));
+    }
     // The face has to be one of the body it says it is of: otherwise the
     // name is wrong, not lost on the way.
     let made = earlier

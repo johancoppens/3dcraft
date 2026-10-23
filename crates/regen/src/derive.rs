@@ -69,8 +69,9 @@ pub(crate) fn source_body_shared<'a>(
         (_, Some(Passed::Nothing(why))) => return Err(format!("{role}: {why}")),
         (status, Some(Passed::Broken(why))) => {
             return Err(format!(
-                "{role}: `{name}` is {} and cannot pass its body on: {why}",
-                crate::pass::word(status)
+                "{role}: `{name}` is {} and {}: {why}",
+                crate::pass::word(status),
+                crate::cause::CANNOT_PASS
             ));
         }
         (Status::Ok, None) => {}

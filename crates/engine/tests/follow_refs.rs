@@ -444,6 +444,8 @@ fn a_feature_inserted_between_is_followed_through_and_a_move_changes_the_chain()
         feature(&mut s, "Foot")["followed"]["edges"],
         json!([["F2:copy(0)/F1:face(0)", "F2:copy(0)/F1:face(2)"]])
     );
+    // The round and the foot alone, for the bevel suppressed below.
+    let without_bevel = bodies(&mut s)[0]["volume"].as_f64().unwrap();
     // Rolled back to the round, a chamfer goes in after it: the foot,
     // after the marker, is not built.
     run(&mut s, "history.rollback", json!({"feature": "Round"}));
@@ -537,6 +539,11 @@ fn a_feature_inserted_between_is_followed_through_and_a_move_changes_the_chain()
     );
     assert_eq!(feature(&mut s, "Bevel")["passesOn"], "F2");
     assert_eq!(feature(&mut s, "Foot")["status"], "ok");
+    let now = bodies(&mut s)[0]["volume"].as_f64().unwrap();
+    assert!(
+        (now - without_bevel).abs() <= 1e-9 * without_bevel,
+        "{now} {without_bevel}"
+    );
 }
 
 #[test]

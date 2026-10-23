@@ -479,3 +479,262 @@ fn bad_params_are_refused() {
         refused(&mut s, "feature.when", params);
     }
 }
+
+/// A plate (40 × 20 × 10) and a chamfer `Bevel` of its edge between faces
+/// 0 and 2.
+fn bevelled(s: &mut Session) {
+    new_document(s, 1.0);
+    built(
+        s,
+        "feature.block",
+        json!({"size": [40, 20, 10], "name": "Plate"}),
+    );
+    built(
+        s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(0)", "F1:face(2)"]], "distance": 2, "name": "Bevel"}),
+    );
+}
+
+/// A vertex or an edge of the body a switched-off feature passes on is
+/// found by its name as a copy, as when the feature is built; one of what
+/// only the feature makes (the second instance of a pattern) fails naming
+/// it.
+#[test]
+fn a_vertex_of_a_passed_body_is_found_and_one_only_the_feature_makes_is_not() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 4, 4], "name": "Bar"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bar", "count": 3, "step": [10, 0, 0], "name": "Row"}),
+    );
+    for (name, vertex) in [
+        ("Here", "F2:copy(0)/F1:vertex(6)"),
+        ("There", "F2:copy(1)/F1:vertex(6)"),
+    ] {
+        run(
+            &mut s,
+            "datum.point",
+            json!({"vertex": vertex, "name": name}),
+        );
+    }
+    let here = feature(&mut s, "Here")["datum"]["at"].clone();
+    let there = feature(&mut s, "There")["datum"]["at"].clone();
+    assert_ne!(here, there);
+    run(&mut s, "feature.suppress", json!({"feature": "Row"}));
+    let state = feature(&mut s, "Here");
+    assert_eq!(state["status"], "ok", "{state}");
+    assert_eq!(state["datum"]["at"], here);
+    let lost = feature(&mut s, "There");
+    assert_eq!(lost["status"], "failed", "{lost}");
+    let reason = lost["error"].as_str().unwrap();
+    assert!(
+        reason.contains("`Row`, which makes F2:copy(1)/F1:vertex(6)")
+            && reason.ends_with("is suppressed"),
+        "{reason}"
+    );
+}
+
+/// A fillet of an edge of a face a suppressed chamfer makes fails naming
+/// the chamfer: right after it, and with a cut in between, through which
+/// its names are followed.
+#[test]
+fn a_fillet_on_an_edge_of_a_suppressed_chamfer_fails_naming_it() {
+    for between in [false, true] {
+        let mut s = session();
+        bevelled(&mut s);
+        if between {
+            built(
+                &mut s,
+                "feature.cylinder",
+                json!({"radius": 3, "height": 30, "position": [20, 10, -5], "name": "Drill"}),
+            );
+            built(
+                &mut s,
+                "feature.boolean",
+                json!({"op": "subtract", "target": "Bevel", "tool": "Drill", "name": "Cut"}),
+            );
+        }
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["F2:chamfer(0)", "F1:face(0)"]], "radius": 0.5, "name": "Soft"}),
+        );
+        run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
+        let soft = feature(&mut s, "Soft");
+        assert_eq!(soft["status"], "failed", "{soft}");
+        let reason = soft["error"].as_str().unwrap();
+        assert!(
+            reason.starts_with("edges")
+                && reason.contains("`Bevel`, which makes F2:chamfer(0)")
+                && reason.contains("is suppressed"),
+            "between {between}: {reason}"
+        );
+        run(
+            &mut s,
+            "feature.suppress",
+            json!({"feature": "Bevel", "suppressed": false}),
+        );
+        assert_eq!(status(&mut s, "Soft"), "ok");
+    }
+}
+
+/// A switched-off feature that cannot pass its body on (its target
+/// failed): what reads it fails, caused by the feature that failed.
+#[test]
+fn what_reads_a_body_that_cannot_be_passed_on_is_caused_by_the_failure() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "40 mm"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": ["w", 20, 10], "name": "Plate"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 30, "position": [20, 10, -5], "name": "Drill"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Cut"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Cut", "count": 2, "step": [0, 30, 0], "name": "Row"}),
+    );
+    run(&mut s, "feature.suppress", json!({"feature": "Cut"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "-1 mm"}),
+    );
+    let cut = feature(&mut s, "Cut");
+    assert_eq!(cut["status"], "suppressed", "{cut}");
+    assert!(
+        cut["cannotPass"].as_str().unwrap().contains("Plate"),
+        "{cut}"
+    );
+    let row = feature(&mut s, "Row");
+    assert_eq!(row["status"], "failed", "{row}");
+    assert!(
+        row["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot pass its body on"),
+        "{row}"
+    );
+    assert_eq!(row["causedBy"], "F1", "{row}");
+}
+
+/// `document.check` of one feature: one switched off that passes a body
+/// on is checked as its body; one that passes no body on says so.
+#[test]
+fn checking_one_feature_that_is_off() {
+    let mut s = session();
+    chain(&mut s, 1.0, None);
+    run(&mut s, "feature.suppress", json!({"feature": "Round"}));
+    let check = run(&mut s, "document.check", json!({"feature": "Round"}));
+    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["status"], "suppressed", "{check}");
+    run(&mut s, "feature.suppress", json!({"feature": "Plate"}));
+    run(&mut s, "feature.suppress", json!({"feature": "Round"}));
+    run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
+    let check = run(&mut s, "document.check", json!({"feature": "Cut"}));
+    assert_eq!(check["ok"], false, "{check}");
+    let problem = check["problems"][0]["problem"].as_str().unwrap();
+    assert!(
+        problem.contains("passes no body on (`Plate` is suppressed)"),
+        "{problem}"
+    );
+}
+
+/// A version-33 file (written by the build of 49805136) with suppressed
+/// features that change a body, and later features that name that body
+/// as a body parameter: opened under version 34, the migration points
+/// those at the suppressed features, and the document regenerates to the
+/// bodies version 33 made, with the same colours, and a body hidden there
+/// is hidden still.
+#[test]
+fn a_version_33_file_with_suppressed_features_regenerates_to_the_same_bodies() {
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../format/tests/fixtures/migrations");
+    let dir = workdir("switched-off", "v33");
+    std::fs::copy(
+        fixtures.join("v33-suppressed.3dcraft"),
+        dir.join("v33-suppressed.3dcraft"),
+    )
+    .unwrap();
+    let expected: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("v33-suppressed.expected.json")).unwrap(),
+    )
+    .unwrap();
+    let mut s = common::session_in(&dir);
+    run(
+        &mut s,
+        "file.open",
+        json!({"path": "v33-suppressed.3dcraft"}),
+    );
+    let state = inspect(&mut s);
+    assert_eq!(state["ok"], true, "{state}");
+    // Every feature has the state it had.
+    let statuses: Vec<(Value, Value)> = state["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].clone(), f["status"].clone()))
+        .collect();
+    let was: Vec<(Value, Value)> = expected["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].clone(), f["status"].clone()))
+        .collect();
+    assert_eq!(statuses, was);
+    // The same bodies, in the same order, held now by the suppressed
+    // feature that passes each on.
+    let got = state["bodies"].as_array().unwrap();
+    let want = expected["bodies"].as_array().unwrap();
+    assert_eq!(got.len(), want.len(), "{got:?}");
+    for (body, wanted) in got.iter().zip(want) {
+        for key in ["kind", "faces", "edges", "vertices"] {
+            assert_eq!(body[key], wanted[key], "{key}: {body} {wanted}");
+        }
+        for key in ["volume", "area"] {
+            let (a, b) = (body[key].as_f64().unwrap(), wanted[key].as_f64().unwrap());
+            assert!((a - b).abs() <= 1e-9 * b, "{key}: {a} {b}");
+        }
+    }
+    let holder = |name: &str| {
+        got.iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no body {name}: {got:?}"))
+            .clone()
+    };
+    // The cut was made from the plate as the round suppressed passes it on.
+    assert_eq!(feature(&mut s, "Cut")["params"]["target"], 2);
+    assert_eq!(feature(&mut s, "Lift")["params"]["source"], 6);
+    // The plate's colour is the cut's still.
+    assert_eq!(
+        holder("Cut")["appearance"],
+        expected["bodies"][0]["appearance"],
+        "{}",
+        holder("Cut")
+    );
+    // The spare block was hidden; the chamfer that holds its body now is.
+    assert_eq!(feature(&mut s, "Bev")["hidden"], true);
+    assert_eq!(holder("Bev")["faces"], 6);
+}

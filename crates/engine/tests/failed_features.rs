@@ -1156,7 +1156,9 @@ fn every_failure_has_a_reason(document: &Value, context: &str) {
         }
         // A feature that waits for a failed one says which to fix: an
         // earlier feature that failed for a reason of its own.
-        let waits = reason.contains("fix it first");
+        // So does one that waits for a feature switched off that cannot
+        // pass its body on: that feature, or what it could not have.
+        let waits = reason.contains("fix it first") || reason.contains("cannot pass its body on");
         match entry.get("causedBy") {
             None => assert!(!waits, "{context}: {entry}"),
             Some(root) => {
@@ -1164,7 +1166,10 @@ fn every_failure_has_a_reason(document: &Value, context: &str) {
                 let found = features.iter().position(|f| &f["id"] == root).unwrap();
                 assert!(found < at, "{context}: {entry}");
                 let root = &features[found];
-                assert_eq!(root["status"], "failed", "{context}: {entry}");
+                assert!(
+                    root["status"] == "failed" || root.get("cannotPass").is_some(),
+                    "{context}: {entry}"
+                );
                 assert_eq!(root.get("causedBy"), None, "{context}: {root}");
             }
         }
