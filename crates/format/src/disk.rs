@@ -1,7 +1,7 @@
 //! Reading and writing `.3dcraft` files on disk. Not compiled for wasm,
 //! where the platform hands the app bytes instead of paths.
 
-use crate::{FormatError, MAX_FILE_BYTES, to_bytes};
+use crate::{FormatError, MAX_FILE_BYTES, to_bytes_with_thumbnail};
 use craft3d_doc::Document;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -25,8 +25,17 @@ const TEMP_NAME_ATTEMPTS: u32 = 16;
 /// The directory must exist. The new file gets default permissions, not
 /// those of the file it replaces.
 pub fn save(path: &Path, document: &Document) -> Result<(), FormatError> {
+    save_with_thumbnail(path, document, None)
+}
+
+/// [`save`] with a thumbnail ([`crate::to_bytes_with_thumbnail`]).
+pub fn save_with_thumbnail(
+    path: &Path,
+    document: &Document,
+    thumbnail: Option<&[u8]>,
+) -> Result<(), FormatError> {
     // Serialise first: a document that cannot be saved touches nothing.
-    let bytes = to_bytes(document)?;
+    let bytes = to_bytes_with_thumbnail(document, thumbnail)?;
     write_atomically(path, &bytes).map_err(|error| FormatError::Io {
         action: "save",
         path: path.to_path_buf(),
