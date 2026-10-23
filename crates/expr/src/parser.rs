@@ -12,6 +12,7 @@
 //! unary      = { "-" } power                        so -2 ^ 2 = -(2 ^ 2)
 //! power      = primary [ "^" [ "-" ] NUMBER ]       integer literal, not chained
 //! primary    = NUMBER [ UNIT ] | "pi" | NAME | NAME "(" [ expression { "," expression } ] ")"
+//!            | NAME "[" ( expression | TEXT ) "]" "." NAME      a table lookup
 //!            | "(" expression ")"
 //! CMP        = "<" | "<=" | ">" | ">=" | "==" | "!="
 //! ```
@@ -219,6 +220,12 @@ pub enum NodeKind {
     Neg(NodeId),
     /// `!x`: 1 when `x` is 0, else 0.
     Not(NodeId),
+    /// `table[row].column`: a cell of a table.
+    Lookup {
+        table: String,
+        row: LookupRow,
+        column: String,
+    },
     Binary {
         op: BinaryOp,
         left: NodeId,
@@ -232,6 +239,15 @@ pub enum NodeKind {
         function: Function,
         args: Vec<NodeId>,
     },
+}
+
+/// How a lookup names its row.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LookupRow {
+    /// An expression whose value is the row's number, counted from 1.
+    Number(NodeId),
+    /// The row's key, written in quotes.
+    Key(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -269,6 +285,27 @@ impl Expr {
             NodeKind::Variable(name) => Some((name.as_str(), node.pos)),
             _ => None,
         })
+    }
+
+    /// Every lookup's table, with the byte offset of its name, in source
+    /// order.
+    pub fn table_refs(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.nodes.iter().filter_map(|node| match &node.kind {
+            NodeKind::Lookup { table, .. } => Some((table.as_str(), node.pos)),
+            _ => None,
+        })
+    }
+
+    /// The distinct tables the expression looks values up in, in order of
+    /// first appearance.
+    pub fn tables(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for (name, _) in self.table_refs() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
 
     /// The distinct variable names the expression refers to, in order of
@@ -612,6 +649,9 @@ impl Parser<'_> {
                 if self.peek().kind == TokenKind::LParen {
                     return self.call(token);
                 }
+                if self.peek().kind == TokenKind::LBracket {
+                    return self.lookup(token);
+                }
                 let name = self.text(token);
                 let kind = if name == "pi" {
                     NodeKind::Pi
@@ -641,6 +681,46 @@ impl Parser<'_> {
             }
             _ => Err(self.expected("a number, a variable, a function or `(`", token)),
         }
+    }
+
+    /// `name` has been consumed and the next token is `[`: a lookup
+    /// `name[row].column`.
+    fn lookup(&mut self, name: Token) -> Result<NodeId, ExprError> {
+        let table = self.text(name).to_string();
+        if crate::is_reserved_name(&table) {
+            return Err(self.expected("a table name before `[`", name));
+        }
+        self.enter(self.peek().pos)?;
+        self.advance();
+        let first = self.peek();
+        let row = if first.kind == TokenKind::Text {
+            self.advance();
+            let key = self
+                .source
+                .get(first.pos + 1..first.end.saturating_sub(1))
+                .unwrap_or("");
+            LookupRow::Key(key.to_string())
+        } else {
+            LookupRow::Number(self.expression()?)
+        };
+        let close = self.peek();
+        if close.kind != TokenKind::RBracket {
+            return Err(self.expected("an operator or `]`", close));
+        }
+        self.advance();
+        self.leave();
+        let dot = self.peek();
+        if dot.kind != TokenKind::Dot {
+            return Err(self.expected("`.` and a column name after `]`", dot));
+        }
+        self.advance();
+        let column = self.peek();
+        if column.kind != TokenKind::Ident {
+            return Err(self.expected("a column name after `.`", column));
+        }
+        self.advance();
+        let column = self.text(column).to_string();
+        Ok(self.push(NodeKind::Lookup { table, row, column }, name.pos))
     }
 
     /// `name` has been consumed and the next token is `(`.
@@ -781,6 +861,7 @@ mod tests {
         assert_eq!(err("2 pi"), expected(2, operator, "`pi`"));
         assert_eq!(err("1.2.3"), expected(3, operator, "`.3`"));
         assert_eq!(err("(1) (2)"), expected(4, operator, "`(`"));
+        assert_eq!(err("1 . 2"), expected(2, operator, "`.`"));
         assert_eq!(err("1, 2"), expected(1, operator, "`,`"));
     }
 
@@ -909,6 +990,10 @@ mod tests {
                     format!("{}({})", function.name(), args.join(", "))
                 }
                 NodeKind::Pi => "pi".to_string(),
+                NodeKind::Lookup { table, row, column } => match row {
+                    LookupRow::Number(id) => format!("{table}[{}].{column}", show(expr, *id)),
+                    LookupRow::Key(key) => format!("{table}[{key:?}].{column}"),
+                },
             }
         }
         let expr = Expr::parse(source).unwrap();
@@ -934,6 +1019,43 @@ mod tests {
         for op in ["<", "<=", ">", ">=", "==", "!="] {
             assert_eq!(tree(&format!("a {op} b")), format!("(a {op} b)"));
         }
+    }
+
+    #[test]
+    fn table_lookups() {
+        assert_eq!(tree("belt[2].pitch"), "belt[2].pitch");
+        assert_eq!(tree("belt[\"GT2\"].pitch"), "belt[\"GT2\"].pitch");
+        assert_eq!(
+            tree("2 * belt[n + 1].pitch ^ 2"),
+            "(2 * (belt[(n + 1)].pitch ^ 2))"
+        );
+        assert_eq!(tree("t[t[1].i].x"), "t[t[1].i].x");
+        // A column may share a variable's or a unit's name.
+        assert_eq!(tree("t[1].mm + mm_x"), "(t[1].mm + mm_x)");
+        let expr = Expr::parse("belt[profile].pitch + gear[1].m * belt[2].x").unwrap();
+        assert_eq!(expr.tables(), ["belt", "gear"]);
+        assert_eq!(expr.variables(), ["profile"]);
+        let refs: Vec<(&str, usize)> = expr.table_refs().collect();
+        assert_eq!(refs, [("belt", 0), ("gear", 22), ("belt", 34)]);
+        for (source, pos) in [
+            ("belt[1]", 7),
+            ("belt[1].", 8),
+            ("belt[1].2", 7),
+            ("belt[1 .x", 7),
+            ("belt[].x", 5),
+            ("sin[1].x", 0),
+            ("mm[1].x", 0),
+        ] {
+            assert_eq!(err(source).pos, pos, "{source}");
+        }
+        assert!(Expr::parse("belt[1].x").is_ok());
+        // Nesting counts against the depth.
+        let deep = format!(
+            "{}1{}",
+            "t[".repeat(MAX_DEPTH + 1),
+            "].x".repeat(MAX_DEPTH + 1)
+        );
+        assert!(matches!(err(&deep).kind, ErrorKind::TooDeep { .. }));
     }
 
     #[test]

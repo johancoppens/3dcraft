@@ -19,14 +19,14 @@ use craft3d_expr::{Dimension, Evaluation, Quantity, Unit};
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
-        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
+    spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "choicesFrom": table name or null, "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
+        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false}"#,
         "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label. A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
-        "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices, its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
+        "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
         "Sets what a gallery shows of the document: title, description, author, licence (an SPDX identifier, such as CC-BY-4.0 or MIT), url and tags; only what is given changes, and an empty string, an empty list or null clears a field. Saved with the document; one undo step. Without params it changes nothing and returns the info.", doc: true, document_info),
 ];
@@ -234,7 +234,7 @@ fn value_problems(
             }
         }
         ParamKind::Choice => {
-            let n = public.choices.len();
+            let n = doc.choices_of(public).len();
             if !(plain && whole(value.value) && value.value >= 1.0 && value.value <= n as f64) {
                 problems.push(format!(
                     "{what} {} is not a choice: a whole number from 1 to {n}",
@@ -450,8 +450,12 @@ fn param_json(doc: &Document, e: &Evaluated) -> Value {
     out.insert("group".into(), public.group.clone().into());
     out.insert("order".into(), public.order.into());
     out.insert("kind".into(), public.kind.name().into());
+    let choices = doc.choices_of(public);
     if public.kind == ParamKind::Choice {
-        out.insert("choices".into(), public.choices.clone().into());
+        out.insert("choices".into(), choices.clone().into());
+        if let Some(table) = &public.choices_from {
+            out.insert("choicesFrom".into(), table.clone().into());
+        }
     }
     out.insert("expr".into(), e.expr.into());
     match &e.value {
@@ -463,7 +467,7 @@ fn param_json(doc: &Document, e: &Evaluated) -> Value {
                 && let Some(label) = whole(value)
                     .then(|| value.round() as i64)
                     .and_then(|k| usize::try_from(k.checked_sub(1)?).ok())
-                    .and_then(|k| public.choices.get(k))
+                    .and_then(|k| choices.get(k))
             {
                 out.insert("choice".into(), label.clone().into());
             }
@@ -602,6 +606,7 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
             "order",
             "kind",
             "choices",
+            "choicesFrom",
             "min",
             "max",
             "step",
@@ -672,9 +677,22 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
             }
         };
     }
+    if p.has("choicesFrom") {
+        public.choices_from = p.str("choicesFrom")?.map(str::to_string);
+        if public.choices_from.is_some() && !p.has("choices") {
+            // The table's keys take the place of the labels.
+            public.choices.clear();
+        }
+    } else if p.has("choices") && !public.choices.is_empty() {
+        // Labels given take the place of a table.
+        public.choices_from = None;
+    }
     if public.kind != ParamKind::Choice && !p.has("choices") {
         // Choices left from when it was a choice go with the kind.
         public.choices.clear();
+    }
+    if public.kind != ParamKind::Choice && !p.has("choicesFrom") {
+        public.choices_from = None;
     }
     optional_expr(&p, "min", &mut public.min)?;
     optional_expr(&p, "max", &mut public.max)?;
@@ -830,11 +848,10 @@ fn value_source(
             .to_string())
         }
         Value::String(label)
-            if kind == ParamKind::Choice && e.public.choices.iter().any(|c| c == label) =>
+            if kind == ParamKind::Choice && doc.choices_of(e.public).iter().any(|c| c == label) =>
         {
-            let at = e
-                .public
-                .choices
+            let at = doc
+                .choices_of(e.public)
                 .iter()
                 .position(|c| c == label)
                 .unwrap_or_default();
@@ -873,8 +890,8 @@ fn value_source(
             if !uses.is_empty() && kind == ParamKind::Choice {
                 return fail(format!(
                     "{command}: `{name}` is a choice: give one of its choices ({}) or its number from 1 to {}; `{source}` is none of them",
-                    e.public.choices.join(", "),
-                    e.public.choices.len()
+                    doc.choices_of(e.public).join(", "),
+                    doc.choices_of(e.public).len()
                 ));
             }
             if !uses.is_empty() && kind == ParamKind::Boolean {
@@ -899,8 +916,8 @@ fn value_source(
                 ParamKind::Boolean => "true or false (or 1 or 0)".to_string(),
                 ParamKind::Choice => format!(
                     "one of its choices ({}) or its number from 1 to {}",
-                    e.public.choices.join(", "),
-                    e.public.choices.len()
+                    doc.choices_of(e.public).join(", "),
+                    doc.choices_of(e.public).len()
                 ),
                 ParamKind::Integer => "a whole number".to_string(),
                 ParamKind::Number =>

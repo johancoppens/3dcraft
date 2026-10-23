@@ -77,6 +77,32 @@ fn exercise(source: &str) -> bool {
     for (name, pos) in expr.variable_refs() {
         assert_eq!(source.get(pos..pos + name.len()), Some(name));
     }
+    // With a table to look in as well.
+    let table = crate::Table {
+        name: "t".into(),
+        columns: vec![
+            crate::Column {
+                name: "k".into(),
+                unit: None,
+            },
+            crate::Column {
+                name: "x".into(),
+                unit: Some(Unit::Inch),
+            },
+        ],
+        key: 0,
+        rows: vec![
+            vec![crate::Cell::Text("GT2".into()), crate::Cell::Number(2.5)],
+            vec![crate::Cell::Number(7.0), crate::Cell::Number(-1.0)],
+        ],
+    };
+    match expr.eval_with(lookup, std::slice::from_ref(&table)) {
+        Ok(q) => assert!(q.value.is_finite(), "{source:?} gave {q:?}"),
+        Err(e) => {
+            check_error(&e);
+            assert!(e.kind != ErrorKind::Internal, "{source:?}");
+        }
+    }
     match expr.eval(lookup) {
         Ok(q) => {
             assert!(q.value.is_finite(), "{source:?} gave {q:?}");
@@ -96,7 +122,7 @@ fn random_bytes_never_panic() {
     // Mostly bytes that mean something to the lexer, so that the parser
     // gets past the first token; plus raw bytes, which become U+FFFD and
     // the occasional real multi-byte character.
-    let alphabet = b"0123456789.eE+-*/^(), \t\nabmnpitz_dgrsqxc<>=!&|f";
+    let alphabet = b"0123456789.eE+-*/^(), \t\nabmnpitz_dgrsqxc<>=!&|f[].\"";
     for _ in 0..100_000 {
         let len = rng.below(40);
         let bytes: Vec<u8> = (0..len)
@@ -170,6 +196,12 @@ const TOKENS: &[&str] = &[
     "!=",
     "&&",
     "||",
+    "[",
+    "]",
+    ".",
+    "t[1].x",
+    "\"GT2\"",
+    "\"",
     "!",
     "&",
     "|",

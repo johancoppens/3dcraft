@@ -15,7 +15,8 @@
 //! operands of `&&` and `||` must be dimensionless.
 
 use crate::error::{ErrorKind, ExprError};
-use crate::parser::{BinaryOp, Expr, Function, Node, NodeId, NodeKind};
+use crate::parser::{BinaryOp, Expr, Function, LookupRow, Node, NodeId, NodeKind};
+use crate::tables::{RowRef, Table};
 use crate::units::{Dimension, Quantity};
 
 /// What a node evaluated to: a value, or the index of its error in the
@@ -47,13 +48,24 @@ impl Expr {
     /// taken.
     pub fn eval(
         &self,
+        lookup: impl FnMut(&str) -> Option<Quantity>,
+    ) -> Result<Quantity, ExprError> {
+        self.eval_with(lookup, &[])
+    }
+
+    /// [`Expr::eval`] with tables to look values up in
+    /// (`belt[2].pitch`); a lookup in a table not among them is an
+    /// [`ErrorKind::UnknownTable`].
+    pub fn eval_with(
+        &self,
         mut lookup: impl FnMut(&str) -> Option<Quantity>,
+        tables: &[Table],
     ) -> Result<Quantity, ExprError> {
         let nodes = self.nodes();
         let mut slots: Vec<Slot> = Vec::with_capacity(nodes.len());
         let mut errors: Vec<ExprError> = Vec::new();
         for node in nodes {
-            let slot = match eval_node(node, &slots, &mut lookup) {
+            let slot = match eval_node(node, &slots, &mut lookup, tables) {
                 Ok(value) => Slot::Value(value),
                 Err(Fail::Operand(error)) => Slot::Failed(error),
                 Err(Fail::Here(kind)) => {
@@ -93,6 +105,7 @@ fn operation_name(kind: &NodeKind) -> &'static str {
         NodeKind::Binary { op, .. } => op.symbol(),
         NodeKind::Pow { .. } => "^",
         NodeKind::Call { function, .. } => function.name(),
+        NodeKind::Lookup { .. } => "[ ]",
     }
 }
 
@@ -111,9 +124,22 @@ fn eval_node(
     node: &Node,
     slots: &[Slot],
     lookup: &mut impl FnMut(&str) -> Option<Quantity>,
+    tables: &[Table],
 ) -> Result<Quantity, Fail> {
     let operand = |id: NodeId| operand(slots, id);
     let result = match &node.kind {
+        NodeKind::Lookup { table, row, column } => {
+            let found = tables.iter().find(|t| t.name == *table).ok_or_else(|| {
+                ErrorKind::UnknownTable {
+                    name: table.clone(),
+                }
+            })?;
+            let row = match row {
+                LookupRow::Number(id) => RowRef::Number(operand(*id)?),
+                LookupRow::Key(key) => RowRef::Key(key),
+            };
+            found.lookup(&row, column)?
+        }
         NodeKind::Number { value, unit: None } => Quantity::dimensionless(*value),
         NodeKind::Number {
             value,
@@ -1682,5 +1708,139 @@ mod tests {
         check("if(width > 200 mm, 4, 2)", 2.0, NONE);
         check("choose(if(width > 30 mm, 2, 1), 3, 6)", 6.0, NONE);
         check("max(2, floor(width / 12 mm)) * (wall < 3 mm)", 3.0, NONE);
+    }
+
+    // --- tables ---
+
+    fn belt() -> Vec<Table> {
+        use crate::tables::{Cell, Column};
+        let column = |name: &str, unit| Column {
+            name: name.into(),
+            unit,
+        };
+        vec![Table {
+            name: "belt".into(),
+            columns: vec![
+                column("profile", None),
+                column("pitch", Some(Unit::Millimetre)),
+                column("angle", Some(Unit::Degree)),
+                column("teeth", None),
+            ],
+            key: 0,
+            rows: vec![
+                vec![
+                    Cell::Text("GT2".into()),
+                    Cell::Number(2.0),
+                    Cell::Number(40.0),
+                    Cell::Number(20.0),
+                ],
+                vec![
+                    Cell::Text("HTD3".into()),
+                    Cell::Number(0.3),
+                    Cell::Number(0.0),
+                    Cell::Text("none".into()),
+                ],
+            ],
+        }]
+    }
+
+    fn eval_t(source: &str) -> Result<Quantity, ExprError> {
+        let tables = belt();
+        Expr::parse(source)?.eval_with(vars, &tables)
+    }
+
+    #[test]
+    fn lookups_take_the_dimension_of_their_column() {
+        let q = eval_t("belt[1].pitch").unwrap();
+        assert_eq!(q, Quantity::new(2.0, LENGTH));
+        let q = eval_t("belt[\"HTD3\"].pitch * 10").unwrap();
+        assert!((q.value - 3.0).abs() < 1e-12 && q.dimension == LENGTH);
+        let q = eval_t("belt[n / 3].pitch").unwrap();
+        assert_eq!(q.value, 0.3);
+        let q = eval_t("belt[1].angle").unwrap();
+        assert!((q.value - 40f64.to_radians()).abs() < 1e-15 && q.dimension == ANGLE);
+        assert_eq!(
+            eval_t("belt[1].teeth").unwrap(),
+            Quantity::dimensionless(20.0)
+        );
+        assert_eq!(eval_t("width + belt[1].pitch").unwrap().value, 42.0);
+        assert_eq!(
+            eval_t("if(n > 10, belt[9].pitch, belt[1].pitch)")
+                .unwrap()
+                .value,
+            2.0
+        );
+    }
+
+    #[test]
+    fn lookups_that_find_nothing_say_why() {
+        let kind = |source: &str| eval_t(source).unwrap_err().kind;
+        assert_eq!(
+            kind("belt[3].pitch"),
+            ErrorKind::RowOutOfRange {
+                table: "belt".into(),
+                index: 3.0,
+                rows: 2
+            }
+        );
+        assert!(matches!(
+            kind("belt[0].pitch"),
+            ErrorKind::RowOutOfRange { .. }
+        ));
+        assert!(matches!(
+            kind("belt[-1].pitch"),
+            ErrorKind::RowOutOfRange { .. }
+        ));
+        assert!(matches!(
+            kind("belt[1.5].pitch"),
+            ErrorKind::NotWholeNumber { .. }
+        ));
+        assert!(matches!(
+            kind("belt[1 mm].pitch"),
+            ErrorKind::ArgumentDimension { .. }
+        ));
+        assert_eq!(
+            kind("belt[1].width"),
+            ErrorKind::UnknownColumn {
+                table: "belt".into(),
+                column: "width".into()
+            }
+        );
+        assert_eq!(
+            kind("belt[\"T5\"].pitch"),
+            ErrorKind::UnknownKey {
+                table: "belt".into(),
+                key: "T5".into()
+            }
+        );
+        assert_eq!(
+            kind("belt[2].teeth"),
+            ErrorKind::TextCell {
+                table: "belt".into(),
+                column: "teeth".into()
+            }
+        );
+        assert_eq!(
+            kind("belt[1].profile"),
+            ErrorKind::TextCell {
+                table: "belt".into(),
+                column: "profile".into()
+            }
+        );
+        assert_eq!(
+            kind("gear[1].m"),
+            ErrorKind::UnknownTable {
+                name: "gear".into()
+            }
+        );
+        // Without tables at all.
+        assert!(matches!(
+            err("belt[1].pitch").kind,
+            ErrorKind::UnknownTable { .. }
+        ));
+        assert_eq!(
+            eval_t("belt[3].pitch").unwrap_err().to_string(),
+            "at byte 0: table `belt` has 2 row(s), numbered from 1, so there is no row 3"
+        );
     }
 }

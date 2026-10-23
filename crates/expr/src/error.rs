@@ -38,6 +38,11 @@ pub enum ErrorKind {
     },
     /// A number literal too large for an `f64` (with its unit applied).
     NumberOutOfRange,
+    /// A text in quotes that is not closed, too long or holds a character
+    /// a text may not.
+    BadText {
+        reason: &'static str,
+    },
     /// A lone `=`, `&` or `|`; `meant` is the operator that exists
     /// (`==`, `&&`, `||`).
     LoneOperator {
@@ -144,6 +149,31 @@ pub enum ErrorKind {
         index: f64,
         count: usize,
     },
+    /// A lookup in a table the document does not have.
+    UnknownTable {
+        name: String,
+    },
+    /// A lookup of a column the table does not have.
+    UnknownColumn {
+        table: String,
+        column: String,
+    },
+    /// A row number outside 1..=`rows`.
+    RowOutOfRange {
+        table: String,
+        index: f64,
+        rows: usize,
+    },
+    /// A key in quotes that no row of the table has.
+    UnknownKey {
+        table: String,
+        key: String,
+    },
+    /// The cell looked up holds a text, which is not a value.
+    TextCell {
+        table: String,
+        column: String,
+    },
     /// The result (or a variable's value) is NaN or infinite.
     /// `operation` is the operator, function or "variable".
     NonFinite {
@@ -184,9 +214,11 @@ impl fmt::Display for ErrorKind {
                 f,
                 "unexpected character {ch:?}; an expression consists of numbers, units, \
                  names (ASCII letters, digits, `_`), `+ - * / ^`, the comparisons \
-                 `< <= > >= == !=`, `&& || !`, parentheses and commas"
+                 `< <= > >= == !=`, `&& || !`, parentheses, commas and table lookups \
+                 (`belt[2].pitch`)"
             ),
             ErrorKind::NumberOutOfRange => write!(f, "the number is too large"),
+            ErrorKind::BadText { reason } => write!(f, "a text in quotes is refused: {reason}"),
             ErrorKind::LoneOperator { found, meant } => {
                 write!(f, "`{found}` alone is not an operator; write `{meant}`")
             }
@@ -291,6 +323,21 @@ impl fmt::Display for ErrorKind {
             ErrorKind::ChoiceOutOfRange { index, count } => write!(
                 f,
                 "`choose` has {count} choice(s), numbered from 1, so there is no choice {index}"
+            ),
+            ErrorKind::UnknownTable { name } => write!(f, "unknown table `{name}`"),
+            ErrorKind::UnknownColumn { table, column } => {
+                write!(f, "table `{table}` has no column `{column}`")
+            }
+            ErrorKind::RowOutOfRange { table, index, rows } => write!(
+                f,
+                "table `{table}` has {rows} row(s), numbered from 1, so there is no row {index}"
+            ),
+            ErrorKind::UnknownKey { table, key } => {
+                write!(f, "table `{table}` has no row with the key \"{key}\"")
+            }
+            ErrorKind::TextCell { table, column } => write!(
+                f,
+                "column `{column}` of table `{table}` holds a text there, not a number"
             ),
             ErrorKind::NonFinite { operation } => write!(
                 f,
