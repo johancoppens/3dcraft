@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/johancoppens/3dcraft"
@@ -31,6 +31,7 @@ craft3d-drawing = { path = "crates/drawing" }
 craft3d-step = { path = "crates/step" }
 craft3d-stepread = { path = "crates/stepread" }
 craft3d-zipstore = { path = "crates/zipstore" }
+craft3d-buildinfo = { path = "crates/buildinfo" }
 craft3d-io = { path = "crates/io" }
 # Not modelling code: image encoding only (decisions.md, D10).
 png = "0.17"

@@ -323,6 +323,7 @@ impl Shell {
             "lastCommand": self.last_command.as_ref().map(|report| json!({
                 "label": report.label, "ok": report.ok, "text": report.text,
             })),
+            "report": self.error_report(),
             "recovery": self.recovery().to_json(),
             "problem": self.problem(),
             "work": self.work(),

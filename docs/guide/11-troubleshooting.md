@@ -87,3 +87,18 @@ the CPU renderer, which is the reference for what the window shows.
 ## Logs
 
 The window writes its log to `~/.config/craft3d/logs/craft3d.log` on Linux (`RUST_LOG=debug` for more).
+
+## Reporting a problem
+
+When a command fails in the window, the status bar at the bottom shows the command in red, its message,
+and a **Copy details** button. It copies a short plain-text report to the clipboard: the 3DCraft version
+and the commit it was built from, your system, the graphics card and how 3DCraft draws with it, and the
+command that failed with its parameters and the whole message. A window shows the same text, so you can
+read it first: **it contains file paths and the values you or your agent gave, so read it before you post
+it publicly.** Paste it into your bug report, together with what you were trying to do (and the
+`.3dcraft` file, if you can share it). In the web version the browser only lets a page copy when it is
+served over https or from localhost; elsewhere, select the text in that window and copy it yourself.
+
+An agent gets the same report from the command `session.report` (its `text`), so you can also ask it:
+*"something went wrong; give me the bug report"*. When the agent works in the window, the report names
+the graphics card too.
