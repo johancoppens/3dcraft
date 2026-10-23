@@ -91,6 +91,14 @@ pub struct ScrubPosition {
     pub steps: usize,
 }
 
+/// The caption of one step of the history, as the window's history player
+/// shows it over the viewport and `view.replay` writes it into its
+/// subtitles: `Step 3/10 · Plate · block` (the step's place, the number of
+/// steps, the feature's name and its type).
+pub fn step_caption(place: usize, count: usize, name: &str, kind: &str) -> String {
+    format!("Step {place}/{count} · {name} · {kind}")
+}
+
 /// The features of a history, by id and in order, as one number (FNV-1a
 /// over the count and the ids): a scrub holds while it stays the same.
 pub(crate) fn features_key(doc: &Document) -> u64 {
