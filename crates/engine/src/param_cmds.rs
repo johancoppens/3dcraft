@@ -24,7 +24,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false, "clamp": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}), as a parameter form does. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}) as well as under set, as a parameter form does; the undo step is named for the parameters given, so a merged drag stays one step when it starts or stops clamping. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
         "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
@@ -1143,31 +1143,47 @@ fn nearest_in_range(range: &Range, value: f64) -> Option<f64> {
     if !value.is_finite() || below(hi, lo) {
         return None;
     }
-    let inside = |x: f64| x.is_finite() && !below(x, lo) && !below(hi, x);
-    if range.kind != ParamKind::Number {
-        let number = if value < lo { lo.ceil() } else { hi.floor() };
-        return inside(number).then_some(number);
-    }
-    let mut number = value.clamp(lo, hi);
-    if let Some(step) = range.step {
-        let base = range.min.unwrap_or(0.0);
-        let mut snapped = base + ((number - base) / step).round() * step;
-        if below(hi, snapped) {
-            snapped -= step;
+    let whole_kind = range.kind != ParamKind::Number;
+    let inside =
+        |x: f64| x.is_finite() && !below(x, lo) && !below(hi, x) && (!whole_kind || whole(x));
+    let target = value.clamp(lo, hi);
+    // On the step, counted from the minimum: the step nearest the value
+    // among those within the range.
+    let base = range.min.unwrap_or(0.0);
+    let steps = range
+        .step
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .and_then(|step| {
+            // An open end is as far as a step count stays exact.
+            const FAR: f64 = 1e15;
+            let first = ((lo - base) / step).ceil().max(-FAR);
+            let last = ((hi - base) / step).floor().min(FAR);
+            (first.is_finite() && last.is_finite() && first <= last).then_some((step, first, last))
+        });
+    if let Some((step, first, last)) = steps {
+        let at = |k: f64| base + k * step;
+        let k = ((target - base) / step).round().clamp(first, last);
+        for k in [k, k - 1.0, k + 1.0] {
+            let snapped = at(k);
+            if inside(snapped) {
+                // A short decimal where it is the same step: 3.1, not
+                // 3.1000000000000005.
+                let short = (snapped * 1e6).round() / 1e6;
+                let same = (short - snapped).abs() <= 1e-9 * step;
+                return Some(if same && inside(short) {
+                    short
+                } else {
+                    snapped
+                });
+            }
         }
-        if below(snapped, lo) {
-            snapped += step;
-        }
-        if inside(snapped) {
-            number = snapped;
-        }
     }
-    // A short decimal where it stays in the range: 3.1, not
-    // 3.1000000000000005.
-    let short = (number * 1e6).round() / 1e6;
-    if inside(short) {
-        number = short;
-    }
+    let number = if whole_kind {
+        if value < lo { lo.ceil() } else { hi.floor() }
+    } else {
+        let short = (target * 1e6).round() / 1e6;
+        if inside(short) { short } else { target }
+    };
     inside(number).then_some(number)
 }
 
@@ -1277,7 +1293,18 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
     };
     let doc = session.document()?.history.current();
     let ((sources, warnings), clamped) = prepare_set_clamping(command, doc, &given, reset, clamp)?;
-    let mut names: Vec<&str> = sources.iter().map(|(n, _)| n.as_str()).collect();
+    // Named for what was asked, not for what was clamped with it: a drag
+    // that crosses the point where another parameter is clamped still
+    // folds into one undo step (`merge`).
+    let mut names: Vec<&str> = if reset {
+        sources.iter().map(|(n, _)| n.as_str()).collect()
+    } else {
+        sources
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .filter(|n| given.contains_key(*n))
+            .collect()
+    };
     let mut label = names
         .iter()
         .take(LABEL_NAMES)
@@ -1367,4 +1394,56 @@ fn document_info(session: &mut Session, params: &Value) -> Run {
     }
     edit(session, command, "Document info", |doc| doc.set_info(info))?;
     Ok(info_json(&session.document()?.history.current().info))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn range(kind: ParamKind, min: f64, max: f64, step: Option<f64>) -> Range {
+        Range {
+            name: "x".to_string(),
+            kind,
+            choices: 0,
+            default_source: String::new(),
+            default: None,
+            min: Some(min),
+            max: Some(max),
+            step,
+            unit: None,
+            dimension: Dimension::NONE,
+            length_symbol: "mm",
+        }
+    }
+
+    /// The value a clamp moves a parameter to: the nearest in its range,
+    /// on its step counted from the minimum (whole numbers too), as a
+    /// short decimal only where that is the same step.
+    #[test]
+    fn the_nearest_value_in_range_is_on_the_step() {
+        let number = |min, max, step, value| {
+            nearest_in_range(&range(ParamKind::Number, min, max, step), value)
+        };
+        assert_eq!(number(2.0, 3.131437268410976, Some(0.1), 5.0), Some(3.1));
+        assert_eq!(number(2.0, 3.131437268410976, None, 5.0), Some(3.131437));
+        assert_eq!(number(2.0, 3.0, Some(0.3), 1.0), Some(2.0));
+        assert_eq!(number(2.0, 3.0, Some(0.3), 9.0), Some(2.9));
+        // A step finer than the short decimal is kept, not rounded off.
+        assert_eq!(number(0.0, 1.0, Some(1e-7), 2.0), Some(1.0));
+        let off = number(0.000_000_05, 1.0, Some(1e-7), 2.0).unwrap();
+        assert!((off - 0.999_999_95).abs() < 1e-12, "{off}");
+        // No step within the range: the nearest value.
+        assert_eq!(number(2.0, 2.05, Some(0.1), 1.0), Some(2.0));
+        assert_eq!(number(2.01, 2.05, Some(0.1), 1.0), Some(2.01));
+        assert_eq!(number(3.0, 2.0, None, 1.0), None);
+        // Whole kinds keep their step: 2, 4, 6, 8 from a minimum of 2.
+        let integer = |min, max, step, value| {
+            nearest_in_range(&range(ParamKind::Integer, min, max, step), value)
+        };
+        assert_eq!(integer(2.0, 9.0, Some(2.0), 20.0), Some(8.0));
+        assert_eq!(integer(2.0, 9.0, Some(2.0), -5.0), Some(2.0));
+        assert_eq!(integer(2.5, 9.0, None, 1.0), Some(3.0));
+        assert_eq!(integer(2.2, 2.8, None, 1.0), None);
+    }
 }

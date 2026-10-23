@@ -66,8 +66,8 @@ pub(super) struct Dialogs {
     /// How the last drawing of the model as seen was made, likewise.
     drawing: DrawingPlan,
     /// The sheet of a named set chosen last (its set, width and gap),
-    /// likewise.
-    sheet: SheetPlan,
+    /// per document (`DocumentStatus::id`): sets are a document's own.
+    sheets: std::collections::BTreeMap<Option<u64>, SheetPlan>,
 }
 
 /// The export button of the dialog: "Export all bodies" when the
@@ -150,7 +150,7 @@ impl Shell {
                 quality: self.dialogs.quality,
                 all_bodies: false,
                 drawing: self.dialogs.drawing,
-                sheet: self.dialogs.sheet.clone(),
+                sheet: self.export_sheet(),
             },
             document: self.viewing(),
         });
@@ -178,7 +178,7 @@ impl Shell {
             Some(plan) => {
                 self.dialogs.quality = plan.quality;
                 self.dialogs.drawing = plan.drawing;
-                self.dialogs.sheet = plan.sheet.clone();
+                self.remember_sheet(ask.document, plan.sheet.clone());
                 self.dialogs.answer = Some((ask.path, plan));
             }
             None => {
@@ -219,15 +219,34 @@ impl Shell {
         self.dialogs.drawing = drawing;
     }
 
-    /// The sheet of a named set the export dialog offers next: as the
-    /// last one (DXF or SVG).
+    /// The sheet of a named set the export dialog offers next for the
+    /// document shown: as its last one (DXF or SVG).
     pub fn export_sheet(&self) -> SheetPlan {
-        self.dialogs.sheet.clone()
+        self.dialogs
+            .sheets
+            .get(&self.viewing())
+            .cloned()
+            .unwrap_or_default()
     }
 
-    /// Remembers the sheet chosen in a host's own export dialog.
+    /// Remembers the sheet chosen in a host's own export dialog, for the
+    /// document shown.
     pub fn set_export_sheet(&mut self, sheet: SheetPlan) {
-        self.dialogs.sheet = sheet;
+        self.remember_sheet(self.viewing(), sheet);
+    }
+
+    fn remember_sheet(&mut self, document: Option<u64>, sheet: SheetPlan) {
+        /// Documents whose sheet is remembered; the oldest ids go first.
+        const MOST: usize = 64;
+        let sheets = &mut self.dialogs.sheets;
+        if sheet == SheetPlan::default() {
+            sheets.remove(&document);
+        } else {
+            sheets.insert(document, sheet);
+        }
+        while sheets.len() > MOST {
+            sheets.pop_first();
+        }
     }
 
     /// An error or export dialog is open: the question before closing a

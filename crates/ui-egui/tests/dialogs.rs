@@ -360,4 +360,11 @@ fn a_named_set_is_offered_as_a_sheet_and_remembered() {
     frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
     let (_, answered) = shell.take_export_answer().unwrap();
     assert_eq!(answered.sheet.set, None);
+    // Each document keeps its own: the first one's comes back with it.
+    assert_eq!(shell.export_sheet(), SheetPlan::default());
+    session
+        .execute("file.activate", &json!({"document": 0}))
+        .unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert_eq!(shell.export_sheet(), plan.sheet);
 }

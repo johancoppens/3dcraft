@@ -324,6 +324,38 @@ fn param_set_with_clamp_moves_a_dependent_parameter_into_its_new_range() {
     );
 }
 
+/// A drag that starts or stops clamping another parameter on its way
+/// stays one undo step: the step is named for the parameter dragged.
+#[test]
+fn a_drag_across_the_clamp_stays_one_undo_step() {
+    let mut s = session();
+    jig(&mut s);
+    let steps = |s: &mut Session| {
+        run(s, "document.inspect", json!({"measures": false}))["history"]["undo"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let start = steps(&mut s);
+    let before = volume(&mut s);
+    // w is 40 mm, at most 2 * d: from d = 19 mm on, w is clamped.
+    for (i, d) in ["22 mm", "21 mm", "18 mm", "15 mm", "25 mm"]
+        .iter()
+        .enumerate()
+    {
+        run(
+            &mut s,
+            "param.set",
+            json!({"values": {"d": d}, "merge": i > 0, "clamp": true}),
+        );
+    }
+    assert_eq!(steps(&mut s), start + 1);
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "w")["expr"], "30 mm");
+    run(&mut s, "edit.undo", json!({}));
+    assert_close(&json!(volume(&mut s)), before, "the whole drag undone");
+}
+
 #[test]
 fn publishing_is_refused_with_a_reason_an_agent_can_act_on() {
     let mut s = session();

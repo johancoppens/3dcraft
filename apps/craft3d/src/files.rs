@@ -559,7 +559,7 @@ impl Host {
     pub fn export_chosen(&mut self, path: &Path) -> bool {
         let name = path.to_string_lossy().to_string();
         let check = craft3d_ui_egui::files::export_check(&mut self.session, &name);
-        if check.asks() {
+        if check.asks() || check.offers_sheet(&self.shell.export_sheet()) {
             if !self.shell.ask_export(name, check) {
                 self.report_notice(
                     "file.export",

@@ -396,8 +396,23 @@ impl ExportCheck {
     /// The export dialog is to be shown before the file is written: a
     /// mesh (its quality), a selection that does not fit a STEP file, or
     /// a drawing of the model as seen (its view).
+    /// Named sets are offered in the dialog when it is shown for an
+    /// outline that fits (a selection that does not is said at once), or
+    /// when the sheet chosen last is one of them ([`Self::offers_sheet`]).
     pub fn asks(&self) -> bool {
-        self.mesh || self.offers_all_bodies() || self.drawing || !self.sets.is_empty()
+        self.mesh
+            || self.offers_all_bodies()
+            || self.drawing
+            || (!self.sets.is_empty() && self.problem.is_none())
+    }
+
+    /// The sheet `sheet` names one of this export's sets: the dialog is
+    /// shown with it chosen, even for a selection the outline cannot hold.
+    pub fn offers_sheet(&self, sheet: &SheetPlan) -> bool {
+        sheet
+            .set
+            .as_deref()
+            .is_some_and(|set| self.sets.iter().any(|s| s == set))
     }
 
     /// The set `plan` lays out as a sheet, when it is one of this
@@ -798,7 +813,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(face_sets(&mut session), vec!["Cut sheet", "Mixed"]);
-        // An edge selected: no outline of its own, but a sheet is offered.
+        // An edge selected: no outline of its own, said at once unless a
+        // sheet of a set was chosen last; then the dialog offers it.
         guarded(
             &mut session,
             "select.query",
@@ -807,7 +823,12 @@ mod tests {
         .unwrap();
         let svg = export_check(&mut session, "a.svg");
         assert_eq!(svg.sets, vec!["Cut sheet", "Mixed"]);
-        assert!(svg.asks() && svg.problem.is_some(), "{svg:?}");
+        assert!(!svg.asks() && svg.problem.is_some(), "{svg:?}");
+        assert!(!svg.offers_sheet(&SheetPlan::default()));
+        assert!(!svg.offers_sheet(&SheetPlan {
+            set: Some("Parts".into()),
+            ..SheetPlan::default()
+        }));
         assert!(export_check(&mut session, "a.stl").sets.is_empty());
         let mut plan = ExportPlan {
             sheet: SheetPlan {
@@ -818,6 +839,7 @@ mod tests {
             ..ExportPlan::default()
         };
         assert_eq!(svg.sheet_set(&plan), Some("Cut sheet"));
+        assert!(svg.offers_sheet(&plan.sheet));
         let params = export_params(&mut session, "a.svg", &plan).unwrap();
         assert_eq!(
             params,

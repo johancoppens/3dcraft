@@ -204,6 +204,9 @@ pub struct Desk {
     /// Wakes the thread that serves the desk, frame or no frame: what a
     /// capture's deadline rings ([`Self::with_wake`]).
     wake: Option<Wake>,
+    /// The timer that rings `wake` at a capture's deadline: one thread
+    /// for the window's life, handed each deadline as it comes.
+    deadlines: Option<mpsc::Sender<Instant>>,
 }
 
 /// A request for a picture of the window: it is answered once egui hands
@@ -285,6 +288,7 @@ impl Desk {
             capture: None,
             capture_deadline: CAPTURE_DEADLINE,
             wake: None,
+            deadlines: None,
         }
     }
 
@@ -1047,19 +1051,40 @@ impl Desk {
     /// thread of its own: the deadline is kept without frames
     /// ([`Self::with_wake`]). Without a wake, or when no thread can be
     /// started, the deadline is kept at the next turn as before.
-    fn ring_at_deadline(&self) {
+    fn ring_at_deadline(&mut self) {
+        // A little after the deadline, so the turn it wakes finds it
+        // passed.
+        let Some(at) =
+            Instant::now().checked_add(self.capture_deadline.saturating_add(DEADLINE_GRACE))
+        else {
+            return;
+        };
+        if let Some(timer) = &self.deadlines
+            && timer.send(at).is_ok()
+        {
+            return;
+        }
+        // No timer yet, or it ended: one for the deadlines from now on.
         let Some(wake) = self.wake.clone() else {
             return;
         };
-        // A little after the deadline, so the turn it wakes finds it
-        // passed.
-        let at = self.capture_deadline.saturating_add(DEADLINE_GRACE);
-        let _ = std::thread::Builder::new()
+        let (deadlines, incoming) = mpsc::channel::<Instant>();
+        let started = std::thread::Builder::new()
             .name("craft3d-capture-deadline".to_string())
             .spawn(move || {
-                std::thread::sleep(at);
-                wake();
+                // Captures come one at a time, so the deadlines arrive in
+                // order; the thread ends with the desk.
+                while let Ok(at) = incoming.recv() {
+                    let now = Instant::now();
+                    if at > now {
+                        std::thread::sleep(at - now);
+                    }
+                    wake();
+                }
             });
+        if started.is_ok() && deadlines.send(at).is_ok() {
+            self.deadlines = Some(deadlines);
+        }
     }
 
     /// Answers the queued `ui.get` and `ui.quit` now, from the session
@@ -1743,30 +1768,36 @@ mod tests {
             } else {
                 desk.with_wake(wake)
             };
-            let shot = ask(
-                &requests,
-                r#"{"id":1,"method":"ui.screenshot","params":{"window":true}}"#,
-            );
-            let started = Instant::now();
-            desk.turn();
-            assert!(desk.capture.is_some(), "engine {engine}");
-            // No frame, no request: only the deadline's timer wakes it.
-            loop {
-                rings
-                    .recv_timeout(Duration::from_secs(5))
-                    .expect("the deadline wakes the desk");
-                if started.elapsed() >= Duration::from_millis(200) {
-                    break;
+            // Twice: the second deadline is rung by the same timer.
+            for id in 1..=2 {
+                let shot = ask(
+                    &requests,
+                    &format!(
+                        r#"{{"id":{id},"method":"ui.screenshot","params":{{"window":true}}}}"#
+                    ),
+                );
+                let started = Instant::now();
+                desk.turn();
+                assert!(desk.capture.is_some(), "engine {engine}");
+                // No frame, no request: only the deadline's timer wakes it.
+                loop {
+                    rings
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("the deadline wakes the desk");
+                    if started.elapsed() >= Duration::from_millis(200) {
+                        break;
+                    }
                 }
+                desk.turn();
+                let reply = shot.try_recv().unwrap().unwrap();
+                assert!(
+                    reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
+                    "{reply}"
+                );
+                assert!(started.elapsed() < Duration::from_secs(3));
+                assert!(desk.capture.is_none());
             }
-            desk.turn();
-            let reply = shot.try_recv().unwrap().unwrap();
-            assert!(
-                reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
-                "{reply}"
-            );
-            assert!(started.elapsed() < Duration::from_secs(3));
-            assert!(desk.capture.is_none());
+            assert!(desk.deadlines.is_some(), "one timer thread");
         }
     }
 

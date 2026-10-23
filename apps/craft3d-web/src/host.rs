@@ -25,7 +25,7 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_check, export_kind,
+    EXPORT_FORMATS, EXTENSION, ExportCheck, ExportPlan, JIG_EXTENSION, export_check, export_kind,
     export_options_ui, export_params, extension_of, guarded, suggested_export_name,
     suggested_jig_name, suggested_name,
 };
@@ -315,16 +315,24 @@ pub struct WebHost {
     /// dialog ([`WebHost::companion_ui`]): a browser shows one file dialog
     /// per click.
     pub companion: Option<Download>,
+    /// What the export dialog knows of the name it shows
+    /// ([`export_check`]), made again only when the name changes and
+    /// dropped when the dialog closes: it lists the document's sets.
+    export_check: Option<(String, ExportCheck)>,
 }
 
-/// Most bytes of scenes the page keeps (`Session::set_scene_budget`):
-/// the meshes of bodies are kept within as much again, so 512 MiB at most
-/// for both, where the desktop's default allows 3 GiB. A WebAssembly
-/// module has 4 GiB of memory at most and never gives any back, and the
-/// scene of every undo step was kept until the budget was reached: a
-/// Jig's parameters set some hundred times filled it (R1 B7, 2026-10-23:
-/// a tab of 9.1 GB after 1 h 20 min). Older states are meshed again when
-/// they are shown again (an undo), as on the desktop beyond its budget.
+/// The budget of scenes the page keeps (`Session::set_scene_budget`),
+/// where the desktop's default is 1.5 GiB: the scenes of other documents
+/// and of earlier states (undo steps) are let go, least recently shown
+/// first, until the scenes kept are within it, and the meshes of bodies
+/// are kept within a budget of the same size. The active document's own
+/// scenes are always kept, beyond the budget if they must be: a document
+/// whose scene alone is larger takes what it needs. A WebAssembly module
+/// has 4 GiB of memory at most and never gives any back, and with the
+/// desktop's budget the scene of every undo step was kept: a Jig's
+/// parameters set some hundred times filled it (R1 B7, 2026-10-23: a tab
+/// of 9.1 GB after 1 h 20 min). A state let go is meshed again when it is
+/// shown again (an undo).
 pub const WEB_SCENE_BUDGET: usize = 256 << 20;
 
 impl WebHost {
@@ -342,6 +350,7 @@ impl WebHost {
             pickers: false,
             writable: BTreeSet::new(),
             companion: None,
+            export_check: None,
         }
     }
 
@@ -976,8 +985,8 @@ impl WebHost {
         };
         // What the export dialog says of the format and the selection,
         // and the quality chosen last (`craft3d_ui_egui::files`).
-        let check = (dialog.purpose == Purpose::Export)
-            .then(|| export_check(&mut self.session, &dialog.name));
+        let check =
+            (dialog.purpose == Purpose::Export).then(|| self.cached_export_check(&dialog.name));
         let mut plan = ExportPlan {
             quality: self.shell.export_quality(),
             all_bodies: false,
@@ -1043,12 +1052,30 @@ impl WebHost {
         self.shell.set_export_drawing(plan.drawing);
         self.shell.set_export_sheet(plan.sheet);
         match answer {
-            Some(confirmed) => self.answer(dialog, confirmed),
+            Some(confirmed) => {
+                self.export_check = None;
+                self.answer(dialog, confirmed)
+            }
             None => {
                 self.dialog = Some(dialog);
                 Outcome::default()
             }
         }
+    }
+}
+
+impl WebHost {
+    /// [`export_check`] for `name`, as made for the dialog's last frame
+    /// when the name is the same.
+    fn cached_export_check(&mut self, name: &str) -> ExportCheck {
+        if let Some((cached, check)) = &self.export_check
+            && cached == name
+        {
+            return check.clone();
+        }
+        let check = export_check(&mut self.session, name);
+        self.export_check = Some((name.to_string(), check.clone()));
+        check
     }
 }
 
