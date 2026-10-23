@@ -1868,11 +1868,12 @@ fn keep_within_budget(shelf: &mut Shelf) {
 /// number is not: a spur gear of twenty teeth drawn from formulas, its hub
 /// covering the face the teeth end in, held 160 trees and 2.2 GB, and one
 /// of a hundred teeth took a laptop's memory (2026-10-23). The impeller of
-/// the showcase holds about 450 MB. A browser has less memory.
+/// the showcase holds about 450 MB. A browser has less memory: 512 MiB
+/// there, room for the impeller still (the developer, 2026-10-23).
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) const HELD_BYTES: usize = 2 << 30;
 #[cfg(target_arch = "wasm32")]
-pub(super) const HELD_BYTES: usize = 384 << 20;
+pub(super) const HELD_BYTES: usize = 512 << 20;
 /// [`HELD_BYTES`].
 pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
 
