@@ -333,8 +333,25 @@ pub struct DrawingPlan {
     pub dashed: bool,
 }
 
+/// A sheet of a named set's flat faces (DXF or SVG; `file.export {set,
+/// width, gap}`), as the export dialog offers it.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct SheetPlan {
+    /// The named set whose flat faces go on the sheet; none for the
+    /// selection or the view instead.
+    pub set: Option<String>,
+    /// The sheet's width as typed (`600 mm`, `600` in the document's
+    /// unit); empty for no limit.
+    pub width: String,
+    /// The gap between two outlines as typed; empty for 5 mm.
+    pub gap: String,
+}
+
+/// Longest width or gap the export dialog keeps, in characters.
+const MAX_SHEET_TEXT: usize = 200;
+
 /// How the person chose to export, in the export dialog.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ExportPlan {
     /// How finely a mesh follows the model (STL, 3MF, OBJ).
     pub quality: ExportQuality,
@@ -343,6 +360,9 @@ pub struct ExportPlan {
     pub all_bodies: bool,
     /// A drawing of the model as seen (DXF, SVG with nothing selected).
     pub drawing: DrawingPlan,
+    /// A sheet of a named set's flat faces instead of the selection or
+    /// the view (DXF, SVG).
+    pub sheet: SheetPlan,
 }
 
 /// Whether a file of this name is a mesh (`quality` applies).
@@ -361,6 +381,9 @@ pub struct ExportCheck {
     pub drawing: bool,
     /// Why the selection does not fit the format, said for the person.
     pub problem: Option<String>,
+    /// The document's named sets that may hold faces (DXF or SVG), in
+    /// their order: each can be laid out as a sheet instead.
+    pub sets: Vec<String>,
 }
 
 impl ExportCheck {
@@ -374,8 +397,43 @@ impl ExportCheck {
     /// mesh (its quality), a selection that does not fit a STEP file, or
     /// a drawing of the model as seen (its view).
     pub fn asks(&self) -> bool {
-        self.mesh || self.offers_all_bodies() || self.drawing
+        self.mesh || self.offers_all_bodies() || self.drawing || !self.sets.is_empty()
     }
+
+    /// The set `plan` lays out as a sheet, when it is one of this
+    /// export's (an outline with named sets).
+    pub fn sheet_set<'a>(&self, plan: &'a ExportPlan) -> Option<&'a str> {
+        plan.sheet
+            .set
+            .as_deref()
+            .filter(|set| self.sets.iter().any(|s| s == set))
+    }
+}
+
+/// The named sets of the active document that may hold faces (their kind
+/// is face, or a list with face, or every kind), in their order; none
+/// when there is no document or the list cannot be read.
+pub fn face_sets(session: &mut Session) -> Vec<String> {
+    let Ok(list) = guarded(session, "set.list", &json!({})) else {
+        return Vec::new();
+    };
+    let holds_faces = |kind: Option<&Value>| match kind {
+        None | Some(Value::Null) => true,
+        Some(Value::String(k)) => k == "face",
+        Some(Value::Array(kinds)) => kinds.iter().any(|k| k == "face"),
+        Some(_) => false,
+    };
+    list.get("sets")
+        .and_then(Value::as_array)
+        .map(|sets| {
+            sets.iter()
+                .filter(|set| holds_faces(set.get("kind")))
+                .filter_map(|set| set.get("name").and_then(Value::as_str))
+                .take(256)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The text of an error without the command's name in front of it
@@ -405,11 +463,17 @@ pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
     let selection = export_selection(session, name);
     let drawing = matches!(selection, Ok(Some(("view", _))));
     let problem = selection.err().map(|why| plain_message(&why));
+    let sets = if kind == Some(ExportKind::Outline) {
+        face_sets(session)
+    } else {
+        Vec::new()
+    };
     ExportCheck {
         kind,
         mesh: is_mesh(name),
         drawing,
         problem,
+        sets,
     }
 }
 
@@ -420,9 +484,22 @@ pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
 pub fn export_params(
     session: &mut Session,
     name: &str,
-    plan: ExportPlan,
+    plan: &ExportPlan,
 ) -> Result<Vec<(&'static str, Value)>, String> {
     let mut params = Vec::new();
+    if export_kind(name) == Some(ExportKind::Outline)
+        && let Some(set) = plan.sheet.set.as_deref()
+    {
+        // A sheet of the set's flat faces, whatever is selected.
+        params.push(("set", Value::String(set.to_string())));
+        for (key, text) in [("width", &plan.sheet.width), ("gap", &plan.sheet.gap)] {
+            let text = text.trim();
+            if !text.is_empty() {
+                params.push((key, Value::String(text.to_string())));
+            }
+        }
+        return Ok(params);
+    }
     let all = plan.all_bodies && export_kind(name) == Some(ExportKind::Bodies);
     let selection = if all {
         None
@@ -456,6 +533,16 @@ pub fn export_params(
 /// for `check`, changing `plan`; the desktop's dialog and the browser's
 /// draw the same.
 pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
+    // A set chosen last that this document does not have is not offered.
+    if check.sheet_set(plan).is_none() {
+        plan.sheet.set = None;
+    }
+    if !check.sets.is_empty() {
+        sheet_choice_ui(ui, check, plan);
+        if plan.sheet.set.is_some() {
+            return;
+        }
+    }
     if check.mesh {
         ui.horizontal(|ui| {
             ui.label("Quality:");
@@ -471,6 +558,50 @@ pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut Expo
     if let Some(problem) = &check.problem {
         ui.add(egui::Label::new(problem.as_str()).wrap());
     }
+}
+
+/// What goes into a DXF or SVG file when the document has named sets:
+/// the selection (or with nothing selected the view), or a sheet of a
+/// set's flat faces with its width and gap.
+fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
+    let own = if check.drawing {
+        "The view"
+    } else {
+        "The selection"
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label("What:");
+        ui.radio_value(&mut plan.sheet.set, None, own);
+        for set in &check.sets {
+            ui.radio_value(
+                &mut plan.sheet.set,
+                Some(set.clone()),
+                format!("Sheet of set: {set}"),
+            )
+            .on_hover_text("The set's flat faces laid out side by side on one sheet, at true size");
+        }
+    });
+    if plan.sheet.set.is_none() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label("Sheet width:");
+        ui.add(
+            egui::TextEdit::singleline(&mut plan.sheet.width)
+                .hint_text("no limit")
+                .char_limit(MAX_SHEET_TEXT)
+                .desired_width(90.0),
+        )
+        .on_hover_text("Rows wrap at this width: 600 mm, 24 in; empty for one row");
+        ui.label("Gap:");
+        ui.add(
+            egui::TextEdit::singleline(&mut plan.sheet.gap)
+                .hint_text("5 mm")
+                .char_limit(MAX_SHEET_TEXT)
+                .desired_width(70.0),
+        )
+        .on_hover_text("Space between two outlines");
+    });
 }
 
 /// The choices of a drawing of the model as seen: from which view, to
@@ -551,11 +682,11 @@ mod tests {
             ..ExportPlan::default()
         };
         assert_eq!(
-            export_params(&mut session, "a.stl", plan).unwrap(),
+            export_params(&mut session, "a.stl", &plan).unwrap(),
             vec![("quality", json!("fine"))]
         );
         assert!(
-            export_params(&mut session, "a.step", plan)
+            export_params(&mut session, "a.step", &plan)
                 .unwrap()
                 .is_empty()
         );
@@ -572,13 +703,13 @@ mod tests {
             step.problem.as_deref().unwrap().starts_with("A .step file"),
             "{step:?}"
         );
-        assert!(export_params(&mut session, "a.step", plan).is_err());
+        assert!(export_params(&mut session, "a.step", &plan).is_err());
         let all = ExportPlan {
             all_bodies: true,
-            ..plan
+            ..plan.clone()
         };
         assert!(
-            export_params(&mut session, "a.step", all)
+            export_params(&mut session, "a.step", &all)
                 .unwrap()
                 .is_empty()
         );
@@ -588,7 +719,7 @@ mod tests {
         let dxf = export_check(&mut session, "a.dxf");
         assert!(dxf.drawing && dxf.asks() && dxf.problem.is_none() && !dxf.offers_all_bodies());
         assert_eq!(
-            export_params(&mut session, "a.dxf", plan).unwrap(),
+            export_params(&mut session, "a.dxf", &plan).unwrap(),
             vec![
                 ("view", json!("current")),
                 ("projection", json!("orthographic")),
@@ -601,10 +732,10 @@ mod tests {
                 perspective: true,
                 dashed: true,
             },
-            ..plan
+            ..plan.clone()
         };
         assert_eq!(
-            export_params(&mut session, "a.svg", chosen).unwrap(),
+            export_params(&mut session, "a.svg", &chosen).unwrap(),
             vec![
                 ("view", json!("front")),
                 ("projection", json!("perspective")),
@@ -621,7 +752,7 @@ mod tests {
         .unwrap();
         let dxf = export_check(&mut session, "a.dxf");
         assert!(dxf.problem.is_some() && !dxf.offers_all_bodies() && !dxf.asks());
-        assert!(export_params(&mut session, "a.dxf", all).is_err());
+        assert!(export_params(&mut session, "a.dxf", &all).is_err());
         // One body of two selected: those bodies, and the quality.
         guarded(
             &mut session,
@@ -630,8 +761,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            export_params(&mut session, "a.3mf", plan).unwrap(),
+            export_params(&mut session, "a.3mf", &plan).unwrap(),
             vec![("bodies", json!([2])), ("quality", json!("fine"))]
+        );
+    }
+
+    /// A DXF or SVG export offers the document's named sets that may hold
+    /// faces; a sheet of one is `file.export {set, width, gap}` whatever
+    /// is selected, and writes the file (R1 A6).
+    #[test]
+    fn a_named_set_is_offered_as_a_sheet_for_an_outline() {
+        let mut session = Session::new(craft3d_engine::Workspace::memory());
+        guarded(&mut session, "file.new", &json!({"units": "mm"})).unwrap();
+        guarded(&mut session, "feature.block", &json!({"size": [10, 20, 3]})).unwrap();
+        guarded(
+            &mut session,
+            "feature.block",
+            &json!({"size": [30, 10, 3], "position": [40, 0, 0]}),
+        )
+        .unwrap();
+        // Without sets nothing changes.
+        let dxf = export_check(&mut session, "a.dxf");
+        assert!(dxf.sets.is_empty());
+        for (name, kind) in [("Cut sheet", json!("face")), ("Parts", json!("body"))] {
+            guarded(
+                &mut session,
+                "set.define",
+                &json!({"name": name, "kind": kind, "where": {"normal": {"along": "z"}}}),
+            )
+            .unwrap();
+        }
+        guarded(
+            &mut session,
+            "set.define",
+            &json!({"name": "Mixed", "kind": ["edge", "face"], "where": {"normal": {"along": "z"}}}),
+        )
+        .unwrap();
+        assert_eq!(face_sets(&mut session), vec!["Cut sheet", "Mixed"]);
+        // An edge selected: no outline of its own, but a sheet is offered.
+        guarded(
+            &mut session,
+            "select.query",
+            &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+        )
+        .unwrap();
+        let svg = export_check(&mut session, "a.svg");
+        assert_eq!(svg.sets, vec!["Cut sheet", "Mixed"]);
+        assert!(svg.asks() && svg.problem.is_some(), "{svg:?}");
+        assert!(export_check(&mut session, "a.stl").sets.is_empty());
+        let mut plan = ExportPlan {
+            sheet: SheetPlan {
+                set: Some("Cut sheet".into()),
+                width: " 40 mm ".into(),
+                gap: String::new(),
+            },
+            ..ExportPlan::default()
+        };
+        assert_eq!(svg.sheet_set(&plan), Some("Cut sheet"));
+        let params = export_params(&mut session, "a.svg", &plan).unwrap();
+        assert_eq!(
+            params,
+            vec![("set", json!("Cut sheet")), ("width", json!("40 mm"))]
+        );
+        let mut call = json!({"path": "a.svg"});
+        for (key, value) in params {
+            call[key] = value;
+        }
+        let written = guarded(&mut session, "file.export", &call).unwrap();
+        assert!(session.take_file("a.svg").is_some(), "{written}");
+        // A set the document does not have is not offered; a mesh ignores
+        // the sheet.
+        plan.sheet.set = Some("Gone".into());
+        assert_eq!(svg.sheet_set(&plan), None);
+        plan.all_bodies = true;
+        assert!(
+            !export_params(&mut session, "a.stl", &plan)
+                .unwrap()
+                .iter()
+                .any(|(k, _)| *k == "set")
         );
     }
 

@@ -817,6 +817,7 @@ impl WebHost {
             quality: self.shell.export_quality(),
             all_bodies: false,
             drawing: self.shell.export_drawing(),
+            sheet: self.shell.export_sheet(),
         };
         self.export_with(name, plan)
     }
@@ -832,7 +833,7 @@ impl WebHost {
         if export_kind(&name).is_some() {
             self.export_extension = extension_of(&name);
         }
-        let exported = export_params(&mut self.session, &name, plan).and_then(|extra| {
+        let exported = export_params(&mut self.session, &name, &plan).and_then(|extra| {
             let mut params = json!({ "path": name });
             if let Some(map) = params.as_object_mut() {
                 for (key, value) in extra {
@@ -880,6 +881,7 @@ impl WebHost {
                     quality: self.shell.export_quality(),
                     all_bodies: export_check(&mut self.session, &dialog.name).offers_all_bodies(),
                     drawing: self.shell.export_drawing(),
+                    sheet: self.shell.export_sheet(),
                 };
                 let files = self.export_with(&dialog.name, plan);
                 if self.pickers {
@@ -966,6 +968,7 @@ impl WebHost {
             quality: self.shell.export_quality(),
             all_bodies: false,
             drawing: self.shell.export_drawing(),
+            sheet: self.shell.export_sheet(),
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -987,7 +990,7 @@ impl WebHost {
                     });
                     if matches!(extension_of(&dialog.name).as_deref(), Some("dxf" | "svg")) {
                         ui.label(
-                            "DXF and SVG hold the outline of the selected flat faces or sketch, or with nothing selected a drawing of the model as seen.",
+                            "DXF and SVG hold the outline of the selected flat faces or sketch, with nothing selected a drawing of the model as seen, or a sheet of a named set's flat faces.",
                         );
                     }
                     if let Some(check) = &check {
@@ -1024,6 +1027,7 @@ impl WebHost {
             });
         self.shell.set_export_quality(plan.quality);
         self.shell.set_export_drawing(plan.drawing);
+        self.shell.set_export_sheet(plan.sheet);
         match answer {
             Some(confirmed) => self.answer(dialog, confirmed),
             None => {

@@ -420,7 +420,7 @@ pub fn export_planned(
     path: &Path,
     plan: ExportPlan,
 ) -> Result<Value, String> {
-    let extra = craft3d_ui_egui::files::export_params(session, &path.to_string_lossy(), plan)?;
+    let extra = craft3d_ui_egui::files::export_params(session, &path.to_string_lossy(), &plan)?;
     run_as_user_with(session, "file.export", path, true, extra)
 }
 
@@ -1916,7 +1916,7 @@ mod tests {
             craft3d_ui_egui::files::ExportQuality::Fine
         );
         host.shell
-            .answer_export(Some(host.shell.export_dialog().unwrap().plan));
+            .answer_export(Some(host.shell.export_dialog().unwrap().plan.clone()));
         assert!(host.pump_files(&mut dialogs));
         // A name without an extension: file.export says which it knows.
         act(&mut host, &mut dialogs, FileAction::Export);
@@ -1992,10 +1992,10 @@ mod tests {
         host.file_choice(Ok(Choice::Export(mine.join("seen.dxf"))));
         let asked = host.shell.export_dialog().unwrap().clone();
         assert!(asked.check.drawing && asked.check.problem.is_none());
-        let mut plan = asked.plan;
+        let mut plan = asked.plan.clone();
         plan.drawing.view = craft3d_ui_egui::files::DrawingView::Front;
         plan.drawing.dashed = true;
-        host.shell.answer_export(Some(plan));
+        host.shell.answer_export(Some(plan.clone()));
         assert!(host.pump_files(&mut dialogs));
         let (label, ok, said) = last(&host);
         assert!(ok && label == "file.export", "{said}");

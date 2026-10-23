@@ -26,7 +26,8 @@
 
 use super::Shell;
 use crate::files::{
-    DrawingPlan, ExportCheck, ExportPlan, ExportQuality, export_options_ui, plain_message,
+    DrawingPlan, ExportCheck, ExportPlan, ExportQuality, SheetPlan, export_options_ui,
+    plain_message,
 };
 
 /// An error shown in a dialog.
@@ -64,6 +65,9 @@ pub(super) struct Dialogs {
     quality: ExportQuality,
     /// How the last drawing of the model as seen was made, likewise.
     drawing: DrawingPlan,
+    /// The sheet of a named set chosen last (its set, width and gap),
+    /// likewise.
+    sheet: SheetPlan,
 }
 
 /// The export button of the dialog: "Export all bodies" when the
@@ -146,6 +150,7 @@ impl Shell {
                 quality: self.dialogs.quality,
                 all_bodies: false,
                 drawing: self.dialogs.drawing,
+                sheet: self.dialogs.sheet.clone(),
             },
             document: self.viewing(),
         });
@@ -173,6 +178,7 @@ impl Shell {
             Some(plan) => {
                 self.dialogs.quality = plan.quality;
                 self.dialogs.drawing = plan.drawing;
+                self.dialogs.sheet = plan.sheet.clone();
                 self.dialogs.answer = Some((ask.path, plan));
             }
             None => {
@@ -211,6 +217,17 @@ impl Shell {
     /// Remembers the drawing chosen in a host's own export dialog.
     pub fn set_export_drawing(&mut self, drawing: DrawingPlan) {
         self.dialogs.drawing = drawing;
+    }
+
+    /// The sheet of a named set the export dialog offers next: as the
+    /// last one (DXF or SVG).
+    pub fn export_sheet(&self) -> SheetPlan {
+        self.dialogs.sheet.clone()
+    }
+
+    /// Remembers the sheet chosen in a host's own export dialog.
+    pub fn set_export_sheet(&mut self, sheet: SheetPlan) {
+        self.dialogs.sheet = sheet;
     }
 
     /// An error or export dialog is open: the question before closing a
@@ -285,7 +302,7 @@ impl Shell {
             ui.horizontal(|ui| {
                 if ui.button(export_verb(&ask.check)).clicked() {
                     ask.plan.all_bodies = ask.check.offers_all_bodies();
-                    answer = Some(Some(ask.plan));
+                    answer = Some(Some(ask.plan.clone()));
                 }
                 if ui.button("Cancel").clicked() {
                     answer = Some(None);
@@ -293,7 +310,7 @@ impl Shell {
             });
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
                 ask.plan.all_bodies = ask.check.offers_all_bodies();
-                answer = Some(Some(ask.plan));
+                answer = Some(Some(ask.plan.clone()));
             }
         });
         if answer.is_none() && modal.should_close() {
