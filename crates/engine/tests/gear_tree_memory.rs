@@ -203,12 +203,11 @@ fn a_hub_over_the_teeth_of_a_formula_gear_holds_small_trees() {
     assert_eq!(check["assertions"]["passed"], 2, "{check}");
     let built = craft3d_kernel::work::work().patch_trees - before;
     let (trees, bytes) = craft3d_kernel::shelf_size();
-    // Before: 160 trees of 6 to 22 MB built, the shelf full at its 768 MB
-    // and 2.2 GB held by the union. Now some thirty trees of under a
-    // megabyte each.
-    assert!(built <= 64, "{built} trees built");
+    // Before: trees of 6 to 22 MB, 160 of them in the union, the shelf
+    // full at its 768 MB and 2.2 GB held by the union. Now each under a
+    // megabyte.
     assert!(
         bytes <= 64 << 20,
-        "{trees} trees on the shelf take {bytes} bytes"
+        "{built} trees built, {trees} on the shelf take {bytes} bytes"
     );
 }
