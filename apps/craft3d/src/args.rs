@@ -18,7 +18,8 @@ Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
                [--recent-file FILE|none] [--window-size WIDTHxHEIGHT]
        craft3d --version | --help
 
-Opens FILE (a .3dcraft file) when one is given, and shows the active
+Opens FILE (a .3dcraft document, or a .3dcraftjig Jig, opened to set its
+parameters) when one is given, and shows the active
 document: bodies shaded with their edges, sketches as lines. The window
 does not model; the document changes through commands, sent over the
 control channel. It does open and save files: the File menu, with the
@@ -71,7 +72,7 @@ lists every shortcut.";
 /// What to start with.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Options {
-    /// A `.3dcraft` file to open.
+    /// A `.3dcraft` document or a `.3dcraftjig` Jig to open.
     pub file: Option<String>,
     /// The port of the control listener; `None` for no listener.
     pub control: Option<u16>,

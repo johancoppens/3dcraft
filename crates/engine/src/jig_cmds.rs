@@ -32,10 +32,9 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
     let command = "jig.export";
     let p = Params::new(command, params, &["path"])?;
     let path = p.required_str("path")?.to_string();
-    if !craft3d_format::is_jig_path(&path) {
+    if session.document()?.jig_in_use {
         return fail(format!(
-            "{command}: a published Jig's file ends in .{}; give such a `path` (a .3dcraft model is saved with file.save)",
-            craft3d_format::JIG_EXTENSION
+            "{command}: this is a Jig in use, opened from its .3dcraftjig file; open it for editing first (jig.edit, File, Open for Editing) and export that model"
         ));
     }
     if !session.document()?.history.current().is_jig() {
@@ -44,13 +43,45 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
         ));
     }
     let resolved = session.workspace.resolve_write(&path)?;
+    if !craft3d_format::is_jig_path(&path)
+        || !craft3d_format::is_jig_path(&resolved.to_string_lossy())
+    {
+        return fail(format!(
+            "{command}: a published Jig's file ends in .{}; give such a `path` (a .3dcraft model is saved with file.save)",
+            craft3d_format::JIG_EXTENSION
+        ));
+    }
     let access = session.workspace.write.clone();
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
+    let absolute = std::path::absolute(&resolved)
+        .ok()
+        .and_then(|a| a.to_str().map(str::to_string));
+    // Never over a Jig that is open to be used.
+    if session.documents.iter().any(|open| {
+        open.jig_in_use
+            && (open.path.as_deref() == Some(kept.as_str())
+                || (open.file.is_some() && open.file == absolute))
+    }) {
+        return fail(format!(
+            "{command}: `{path}` is open as a Jig in use; close it first, or export under another name"
+        ));
+    }
     let in_memory = session.writes_to_memory();
-    let (png, thumbnail_error) = match thumbnail_png(session) {
+    // The Jig is published whole: a rollback marker is the designer's
+    // view of the history, not part of what is handed out.
+    let current = session.document()?.history.current();
+    let rolled_back = current.rollback.is_some();
+    let document = if rolled_back {
+        let mut whole = (**current).clone();
+        whole.rollback = None;
+        std::sync::Arc::new(whole)
+    } else {
+        std::sync::Arc::clone(current)
+    };
+    let (png, thumbnail_error) = match thumbnail_of(session, &document, rolled_back) {
         Ok(png) => (Some(png), None),
         Err(e) => (None, Some(e.message().to_string())),
     };
-    let document = std::sync::Arc::clone(session.document()?.history.current());
     let cannot = |e: String| CommandError::new(format!("{command}: cannot write `{path}`: {e}"));
     if in_memory {
         let bytes =
@@ -62,18 +93,49 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
     } else {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
-    let kept = crate::workspace::kept_path(&access, &path, &resolved);
     let mut result = json!({ "path": kept, "thumbnail": png.is_some() });
-    if let (Some(error), Some(map)) = (thumbnail_error, result.as_object_mut()) {
-        map.insert("thumbnailError".into(), error.into());
+    if let Some(map) = result.as_object_mut() {
+        if let Some(error) = thumbnail_error {
+            map.insert("thumbnailError".into(), error.into());
+        }
+        if rolled_back {
+            map.insert("rollbackCleared".into(), true.into());
+        }
     }
     Ok(result)
+}
+
+/// The thumbnail of `document`: the active document's own when it is
+/// that; else drawn from it as a document of its own for a moment (the
+/// active one with its rollback marker taken away), the active document
+/// put back whatever happens.
+fn thumbnail_of(
+    session: &mut Session,
+    document: &std::sync::Arc<craft3d_doc::Document>,
+    differs: bool,
+) -> Result<std::sync::Arc<Vec<u8>>, CommandError> {
+    if !differs {
+        return thumbnail_png(session);
+    }
+    let active = session.active;
+    let mut copy = OpenDocument::new((**document).clone(), None);
+    copy.cache = session.document()?.cache.clone();
+    session.documents.push(copy);
+    session.active = session.documents.len().saturating_sub(1);
+    let drawn = thumbnail_png(session);
+    session.documents.pop();
+    session.active = active;
+    drawn
 }
 
 fn jig_edit(session: &mut Session, params: &Value) -> Run {
     Params::new("jig.edit", params, &[])?;
     let document = (**session.document()?.history.current()).clone();
     let was_jig = session.document()?.jig_in_use;
-    let index = session.add_document(OpenDocument::new(document, None))?;
+    // What the source's regeneration found serves the copy: nothing is
+    // built again.
+    let mut copy = OpenDocument::new(document, None);
+    copy.cache = session.document()?.cache.clone();
+    let index = session.add_document(copy)?;
     Ok(json!({ "document": index, "fromJigInUse": was_jig }))
 }

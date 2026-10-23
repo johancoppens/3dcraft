@@ -90,10 +90,13 @@ pub const EXTENSION: &str = "3dcraft";
 /// edited (docs/decisions.md, 2026-10-23).
 pub const JIG_EXTENSION: &str = "3dcraftjig";
 
-/// Whether `path` names a published Jig: it ends in `.3dcraftjig`, in any
-/// case.
+/// Whether `path` names a published Jig: its file name ends in
+/// `.3dcraftjig`, in any case, trailing dots and spaces left out (Windows
+/// drops them from a name, so `box.3dcraftjig.` is that file).
 pub fn is_jig_path(path: &str) -> bool {
-    path.rsplit_once('.')
+    let trimmed = path.trim_end_matches(['.', ' ']);
+    let name = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    name.rsplit_once('.')
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(JIG_EXTENSION))
 }
 

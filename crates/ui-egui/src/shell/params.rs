@@ -1057,11 +1057,20 @@ impl Shell {
             }
         }
         if form.trouble.is_none() && !form.busy() && form.judging.is_none() && !measuring {
+            // Each parameter's value as `param.set` takes it: the number
+            // in its unit (never an expression), or for a dimension
+            // without a unit of its own (an area) its value with units.
             let values: Map<String, Value> = form
                 .list
                 .iter()
                 .flat_map(|l| &l.params)
-                .map(|p| (p.name.clone(), Value::String(p.expr.clone())))
+                .filter_map(|p| match p.value {
+                    Some(value) if p.takes_numbers() => {
+                        Some((p.name.clone(), sent_value(p, value)))
+                    }
+                    Some(_) => Some((p.name.clone(), Value::String(p.expr.clone()))),
+                    None => None,
+                })
                 .collect();
             form.last_good = Some(LastGood { values, faults });
         }
@@ -1174,10 +1183,12 @@ impl Shell {
         let sent = sent_value(&p, settled.value);
         let mut values = Map::new();
         values.insert(p.name.clone(), sent.clone());
-        let (command, _) = self.params.joined_with(values);
+        // The trouble of a commit joined to another field's goes to no
+        // one field.
+        let (command, field) = self.params.joined_with(values);
         self.params.in_flight = Some(InFlight {
             doc: self.params.doc,
-            field: Some(p.name.clone()),
+            field,
         });
         Ok(ParamAsk {
             command,
@@ -1478,7 +1489,20 @@ impl Shell {
         if let Some((rect, clicked, values)) = back {
             self.params.banner_hit = Some(rect);
             if clicked {
-                self.params.ask(json!({ "values": values }), None);
+                // Only what differs from the values set now.
+                let changed: Map<String, Value> = values
+                    .into_iter()
+                    .filter(|(name, good)| {
+                        let now = self.params.list.as_ref().and_then(|l| l.param(name));
+                        now.is_none_or(|p| match p.value {
+                            Some(value) if p.takes_numbers() => sent_value(p, value) != *good,
+                            _ => Value::String(p.expr.clone()) != *good,
+                        })
+                    })
+                    .collect();
+                if !changed.is_empty() {
+                    self.params.ask(json!({ "values": changed }), None);
+                }
             }
         }
     }

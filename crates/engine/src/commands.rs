@@ -577,8 +577,9 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
-    // A published Jig is opened to be used.
-    let jig = craft3d_format::is_jig_path(path);
+    // A published Jig is opened to be used: by the name of the file read.
+    let jig = craft3d_format::is_jig_path(path)
+        || craft3d_format::is_jig_path(&resolved.to_string_lossy());
     open.jig_in_use = jig;
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
@@ -619,7 +620,12 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         (None, Some(own)) => own.clone(),
         (None, None) => return fail("file.save: this document has no file yet; give a `path`"),
     };
-    if craft3d_format::is_jig_path(&path) {
+    if craft3d_format::is_jig_path(&path)
+        || session
+            .workspace
+            .resolve_write(&path)
+            .is_ok_and(|resolved| craft3d_format::is_jig_path(&resolved.to_string_lossy()))
+    {
         return fail(
             "file.save: a .3dcraftjig file is a published Jig and is written by jig.export (File, Export as Jig…), never saved over; give a `path` ending in .3dcraft",
         );

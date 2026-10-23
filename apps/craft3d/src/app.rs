@@ -12,7 +12,7 @@ use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
-use craft3d_ui_egui::{DocAction, ParamAsk, Shell, window_title};
+use craft3d_ui_egui::{DocAction, FileAction, ParamAsk, Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
 use serde_json::{Value, json};
@@ -761,6 +761,22 @@ impl Desk {
             return true;
         }
         if let Some(action) = self.host.shell.take_file_action() {
+            // A model of a Jig in use is made on the engine thread, as
+            // every command that builds a document's scene.
+            if action == FileAction::OpenForEditing {
+                self.start(
+                    Waiting::File("jig.edit"),
+                    "jig.edit".to_string(),
+                    Box::new(|session| {
+                        Outcome::Ran(
+                            session
+                                .execute("jig.edit", &json!({}))
+                                .map_err(|e| e.message().to_string()),
+                        )
+                    }),
+                );
+                return true;
+            }
             self.host.file_action(action, &mut self.picker);
             return true;
         }
@@ -1832,6 +1848,42 @@ mod tests {
                 .contains("not a public parameter"),
             "{reply}"
         );
+    }
+
+    /// Open for Editing makes the model of a Jig on the engine thread,
+    /// as opening a file does.
+    #[test]
+    fn open_for_editing_runs_on_the_engine_thread() {
+        let (_requests, incoming) = mpsc::channel::<Request>();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::memory());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            ("variable.publish", json!({"name": "w"})),
+            ("jig.export", json!({"path": "p.3dcraftjig"})),
+            ("file.open", json!({"path": "p.3dcraftjig"})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        desk.host
+            .shell
+            .request_file_action(FileAction::OpenForEditing);
+        for _ in 0..500 {
+            desk.turn();
+            if !desk.away() && desk.host.session.document_statuses().len() == 3 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let status = desk.host.session.document_status().unwrap();
+        assert!(!status.jig_in_use && status.path.is_none(), "{status:?}");
+        let report = desk.host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "jig.edit");
+        assert!(report.ok, "{}", report.text);
     }
 
     /// The Parameters tab's commit runs on the engine thread, as every

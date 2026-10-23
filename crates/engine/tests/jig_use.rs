@@ -151,3 +151,62 @@ fn open_for_editing_makes_a_new_model_of_the_jig_as_it_is_set() {
     assert!(u.document_status().unwrap().jig_in_use);
     assert!(refused(&mut u, "jig.edit", json!({"x": 1})).contains("x"));
 }
+
+#[test]
+fn a_jig_in_use_is_not_exported_and_never_exported_over() {
+    let dir = workdir("jig-use", "export-guard");
+    let mut s = session_in(&dir);
+    design(&mut s);
+    publish(&mut s);
+    run(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    let bytes = std::fs::read(dir.join("plate.3dcraftjig")).unwrap();
+    // The Jig opened to be used, beside its design.
+    run(&mut s, "file.open", json!({"path": "plate.3dcraftjig"}));
+    let e = refused(&mut s, "jig.export", json!({"path": "copy.3dcraftjig"}));
+    assert!(e.contains("open it for editing first"), "{e}");
+    // The design may not be exported over the Jig that is open in use.
+    run(&mut s, "file.activate", json!({"document": 0}));
+    run(&mut s, "param.set", json!({"values": {"w": 70}}));
+    let e = refused(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    assert!(e.contains("open as a Jig in use"), "{e}");
+    assert_eq!(std::fs::read(dir.join("plate.3dcraftjig")).unwrap(), bytes);
+    // Closed, it may.
+    run(&mut s, "file.close", json!({"document": 1}));
+    run(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    assert_ne!(std::fs::read(dir.join("plate.3dcraftjig")).unwrap(), bytes);
+    // Trailing dots and spaces are not part of a file's name on Windows.
+    assert!(craft3d_format::is_jig_path("a/box.3dcraftjig. "));
+    assert!(craft3d_format::is_jig_path("C:\\w\\box.3DCRAFTJIG"));
+    assert!(!craft3d_format::is_jig_path("w.3dcraftjig/box"));
+}
+
+#[test]
+fn a_jig_is_published_whole_whatever_the_rollback_marker() {
+    let dir = workdir("jig-use", "rollback");
+    let mut s = session_in(&dir);
+    design(&mut s);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Foot", "size": [5, 5, 5], "position": [0, 0, -5]}),
+    );
+    publish(&mut s);
+    run(&mut s, "history.rollback", json!({"feature": "Plate"}));
+    let exported = run(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    assert_eq!(exported["rollbackCleared"], true, "{exported}");
+    assert_eq!(exported["thumbnail"], true, "{exported}");
+    // The design keeps its marker; the Jig has none: both bodies.
+    assert_eq!(s.document_status().unwrap().index, 0);
+    assert!((volume(&mut s) - 40.0 * 20.0 * 5.0).abs() < 1e-6);
+    let mut u = session_in(&dir);
+    run(&mut u, "file.open", json!({"path": "plate.3dcraftjig"}));
+    assert!((volume(&mut u) - (40.0 * 20.0 * 5.0 + 125.0)).abs() < 1e-6);
+    assert_eq!(
+        run(&mut s, "file.list", json!({}))["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "no document left behind by the thumbnail"
+    );
+}

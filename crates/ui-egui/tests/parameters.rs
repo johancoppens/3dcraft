@@ -360,6 +360,8 @@ fn a_value_that_breaks_the_model_is_said_over_the_viewport_until_back() {
     // Back to last good sets the radius back.
     let back = hit(&shell, "Back to last good");
     window.click(&mut shell, &mut session, back.center());
+    // The values, evaluated, and only those that changed.
+    assert_eq!(window.ran.last().unwrap(), &json!({"values": {"r": 2.0}}));
     assert_eq!(value(&mut session, "r"), 2.0);
     let shown = form(&mut shell, &mut session);
     assert_eq!(shown["trouble"], Value::Null, "{shown}");
