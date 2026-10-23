@@ -110,7 +110,9 @@ left out or drawn dashed.
 Layers: `visible`, `silhouette` and `hidden`. Curves are written as fine straight pieces in this
 version. Bodies you hid with the eye are left out; the section and a rewound timeline are not
 applied: the drawing shows the whole model as it is. In the window, **Export…** to a `.dxf` or `.svg`
-file with nothing selected writes this drawing of the view on screen, to scale, without hidden lines.
+file with nothing selected makes this drawing: the export dialog asks from which view (*As in the
+viewport* or a named one), orthographic or perspective, and whether hidden lines are left out or
+dashed, and offers your last choice next time.
 
 ## From the command line
 

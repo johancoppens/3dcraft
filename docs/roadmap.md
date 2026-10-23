@@ -488,7 +488,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - A projected view to DXF and SVG: `file.export` without a sketch or face draws the model as seen (`view`, orthographic to scale or perspective, hidden lines left out or dashed), edges and silhouettes split where they go behind a face, and Export… with nothing selected draws the view on screen ([`file-formats.md`](file-formats.md) › *Projected views*) (2026-10-23)
 
 #### Open
-- [ ] Projected views: the view, projection and hidden-line choice in the window's export dialog (today Export… draws the view on screen, orthographic, without hidden lines), and edges written as the arcs, circles and ellipses they are instead of fine polylines
+- [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
 - [ ] On WebGL2 see-through bodies and the section are drawn by the CPU renderer: their passes (peel, cut) load the depth buffer without a sampler, which OpenGL ES 3.0 reads as 0; read it through a nearest sampler as the lines' distance pass does
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to

@@ -1752,6 +1752,7 @@ mod tests {
         host.shell.answer_export(Some(ExportPlan {
             quality: craft3d_ui_egui::files::ExportQuality::Fine,
             all_bodies: false,
+            ..ExportPlan::default()
         }));
         assert!(host.pump_files(&mut dialogs));
         assert!(last(&host).1, "{:?}", last(&host));
@@ -1837,9 +1838,29 @@ mod tests {
         assert!(!host.pump_files(&mut dialogs) || listing(&mine) == ["part.step"]);
         assert_eq!(listing(&mine), ["part.step"]);
         assert!(host.shell.error_dialog().is_none());
-        // An outline with nothing it can hold: said at once, in the
-        // error dialog, and nothing written.
+        // Nothing selected, to DXF: a drawing of the model as seen; the
+        // dialog asks for its view first (2026-10-23).
         select(&mut host, &[]);
+        host.file_choice(Ok(Choice::Export(mine.join("seen.dxf"))));
+        let asked = host.shell.export_dialog().unwrap().clone();
+        assert!(asked.check.drawing && asked.check.problem.is_none());
+        let mut plan = asked.plan;
+        plan.drawing.view = craft3d_ui_egui::files::DrawingView::Front;
+        plan.drawing.dashed = true;
+        host.shell.answer_export(Some(plan));
+        assert!(host.pump_files(&mut dialogs));
+        let (label, ok, said) = last(&host);
+        assert!(ok && label == "file.export", "{said}");
+        assert!(listing(&mine).contains(&"seen.dxf".to_string()));
+        std::fs::remove_file(mine.join("seen.dxf")).unwrap();
+        // An outline with nothing it can hold (an edge): said at once, in
+        // the error dialog, and nothing written.
+        host.session
+            .execute(
+                "select.query",
+                &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+            )
+            .unwrap();
         host.file_choice(Ok(Choice::Export(mine.join("part.dxf"))));
         assert!(host.shell.export_dialog().is_none());
         let error = host.shell.error_dialog().unwrap().clone();

@@ -748,6 +748,7 @@ impl WebHost {
         let plan = ExportPlan {
             quality: self.shell.export_quality(),
             all_bodies: false,
+            drawing: self.shell.export_drawing(),
         };
         self.export_with(name, plan)
     }
@@ -809,6 +810,7 @@ impl WebHost {
                 let plan = ExportPlan {
                     quality: self.shell.export_quality(),
                     all_bodies: export_check(&mut self.session, &dialog.name).offers_all_bodies(),
+                    drawing: self.shell.export_drawing(),
                 };
                 let files = self.export_with(&dialog.name, plan);
                 if self.pickers {
@@ -885,6 +887,7 @@ impl WebHost {
         let mut plan = ExportPlan {
             quality: self.shell.export_quality(),
             all_bodies: false,
+            drawing: self.shell.export_drawing(),
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -906,7 +909,7 @@ impl WebHost {
                     });
                     if matches!(extension_of(&dialog.name).as_deref(), Some("dxf" | "svg")) {
                         ui.label(
-                            "DXF and SVG hold the outline of the selected flat faces or sketch.",
+                            "DXF and SVG hold the outline of the selected flat faces or sketch, or with nothing selected a drawing of the model as seen.",
                         );
                     }
                     if let Some(check) = &check {
@@ -940,6 +943,7 @@ impl WebHost {
                 }
             });
         self.shell.set_export_quality(plan.quality);
+        self.shell.set_export_drawing(plan.drawing);
         match answer {
             Some(confirmed) => self.answer(dialog, confirmed),
             None => {
@@ -1096,11 +1100,20 @@ mod tests {
         assert_eq!(host.dialog.as_ref().unwrap().name, "untitled.svg");
         let cancelled = host.answer(host.dialog.clone().unwrap(), false);
         assert_eq!(cancelled, Outcome::default());
-        // A cancelled dialog is no error; a failed export is (2026-10-23).
+        // A cancelled dialog is no error, and every export above worked
+        // (the outlines with nothing selected are drawings of the model).
+        assert_eq!(host.shell.error_dialog().map(|e| e.title.as_str()), None);
+        // A failed export is an error: an edge selected, to an outline.
+        host.session
+            .execute(
+                "select.query",
+                &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+            )
+            .unwrap();
+        assert!(host.export_as("plate.svg").is_empty());
         assert_eq!(
             host.shell.error_dialog().map(|e| e.title.as_str()),
-            Some("Could not export"),
-            "the outlines above failed"
+            Some("Could not export")
         );
     }
 

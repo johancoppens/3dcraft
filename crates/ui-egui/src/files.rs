@@ -235,6 +235,76 @@ impl ExportQuality {
     }
 }
 
+/// The view a drawing of the model as seen is made from (DXF or SVG with
+/// nothing selected; `file.export {view}`), as the export dialog offers
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DrawingView {
+    /// The viewport's own camera.
+    #[default]
+    Current,
+    Iso,
+    Front,
+    Back,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DrawingView {
+    /// Every view, the viewport's first.
+    pub const ALL: [DrawingView; 8] = [
+        Self::Current,
+        Self::Iso,
+        Self::Front,
+        Self::Back,
+        Self::Left,
+        Self::Right,
+        Self::Top,
+        Self::Bottom,
+    ];
+
+    /// What `file.export` calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Iso => "iso",
+            Self::Front => "front",
+            Self::Back => "back",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// What the dialog calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Current => "As in the viewport",
+            Self::Iso => "Iso",
+            Self::Front => "Front",
+            Self::Back => "Back",
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Top => "Top",
+            Self::Bottom => "Bottom",
+        }
+    }
+}
+
+/// How a drawing of the model as seen is made: the view, perspective or
+/// to scale, and the hidden lines dashed or left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DrawingPlan {
+    pub view: DrawingView,
+    /// Perspective (an illustration) instead of orthographic (to scale).
+    pub perspective: bool,
+    /// The hidden lines drawn dashed instead of left out.
+    pub dashed: bool,
+}
+
 /// How the person chose to export, in the export dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct ExportPlan {
@@ -243,6 +313,8 @@ pub struct ExportPlan {
     /// Every body, whatever is selected: the way out the dialog offers
     /// when the selection does not fit the format.
     pub all_bodies: bool,
+    /// A drawing of the model as seen (DXF, SVG with nothing selected).
+    pub drawing: DrawingPlan,
 }
 
 /// Whether a file of this name is a mesh (`quality` applies).
@@ -257,6 +329,8 @@ pub fn is_mesh(name: &str) -> bool {
 pub struct ExportCheck {
     pub kind: Option<ExportKind>,
     pub mesh: bool,
+    /// A drawing of the model as seen: DXF or SVG with nothing selected.
+    pub drawing: bool,
     /// Why the selection does not fit the format, said for the person.
     pub problem: Option<String>,
 }
@@ -269,9 +343,10 @@ impl ExportCheck {
     }
 
     /// The export dialog is to be shown before the file is written: a
-    /// mesh (its quality) or a selection that does not fit a STEP file.
+    /// mesh (its quality), a selection that does not fit a STEP file, or
+    /// a drawing of the model as seen (its view).
     pub fn asks(&self) -> bool {
-        self.mesh || self.offers_all_bodies()
+        self.mesh || self.offers_all_bodies() || self.drawing
     }
 }
 
@@ -299,12 +374,13 @@ pub fn plain_message(text: &str) -> String {
 /// [`ExportCheck`] for an export to `name` with what is selected now.
 pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
     let kind = export_kind(name);
-    let problem = export_selection(session, name)
-        .err()
-        .map(|why| plain_message(&why));
+    let selection = export_selection(session, name);
+    let drawing = matches!(selection, Ok(Some(("view", _))));
+    let problem = selection.err().map(|why| plain_message(&why));
     ExportCheck {
         kind,
         mesh: is_mesh(name),
+        drawing,
         problem,
     }
 }
@@ -320,8 +396,27 @@ pub fn export_params(
 ) -> Result<Vec<(&'static str, Value)>, String> {
     let mut params = Vec::new();
     let all = plan.all_bodies && export_kind(name) == Some(ExportKind::Bodies);
-    if !all && let Some((key, value)) = export_selection(session, name)? {
-        params.push((key, value));
+    let selection = if all {
+        None
+    } else {
+        export_selection(session, name)?
+    };
+    match selection {
+        // Nothing selected, to DXF or SVG: the drawing as the dialog says.
+        Some(("view", _)) => {
+            let drawing = plan.drawing;
+            params.push(("view", Value::String(drawing.view.name().to_string())));
+            let projection = if drawing.perspective {
+                "perspective"
+            } else {
+                "orthographic"
+            };
+            params.push(("projection", Value::String(projection.to_string())));
+            let hidden = if drawing.dashed { "dashed" } else { "omit" };
+            params.push(("hidden", Value::String(hidden.to_string())));
+        }
+        Some((key, value)) => params.push((key, value)),
+        None => {}
     }
     if is_mesh(name) {
         params.push(("quality", Value::String(plan.quality.name().to_string())));
@@ -342,9 +437,41 @@ pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut Expo
             }
         });
     }
+    if check.drawing {
+        drawing_options_ui(ui, &mut plan.drawing);
+    }
     if let Some(problem) = &check.problem {
         ui.add(egui::Label::new(problem.as_str()).wrap());
     }
+}
+
+/// The choices of a drawing of the model as seen: from which view, to
+/// scale or in perspective, and what becomes of the hidden lines.
+fn drawing_options_ui(ui: &mut egui::Ui, drawing: &mut DrawingPlan) {
+    ui.label("A drawing of the model as seen: its edges and outlines.");
+    ui.horizontal(|ui| {
+        ui.label("View:");
+        egui::ComboBox::from_id_salt("craft3d-export-view")
+            .selected_text(drawing.view.label())
+            .show_ui(ui, |ui| {
+                for view in DrawingView::ALL {
+                    ui.selectable_value(&mut drawing.view, view, view.label());
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Projection:");
+        ui.radio_value(&mut drawing.perspective, false, "Orthographic")
+            .on_hover_text("To scale: one unit in the file is one unit of the model");
+        ui.radio_value(&mut drawing.perspective, true, "Perspective")
+            .on_hover_text("As the eye sees it, for an illustration: not to scale");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Hidden lines:");
+        ui.radio_value(&mut drawing.dashed, false, "Leave out");
+        ui.radio_value(&mut drawing.dashed, true, "Dashed")
+            .on_hover_text("Lines behind a face drawn dashed, on a layer of their own");
+    });
 }
 
 #[cfg(test)]
@@ -393,7 +520,7 @@ mod tests {
         assert!(!step.asks());
         let plan = ExportPlan {
             quality: ExportQuality::Fine,
-            all_bodies: false,
+            ..ExportPlan::default()
         };
         assert_eq!(
             export_params(&mut session, "a.stl", plan).unwrap(),
@@ -427,8 +554,43 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        // An outline cannot be every body.
+        // Nothing selected, to DXF or SVG: a drawing of the model as seen,
+        // whose view, projection and hidden lines the dialog asks for.
         guarded(&mut session, "select.set", &json!({"mode": "clear"})).unwrap();
+        let dxf = export_check(&mut session, "a.dxf");
+        assert!(dxf.drawing && dxf.asks() && dxf.problem.is_none() && !dxf.offers_all_bodies());
+        assert_eq!(
+            export_params(&mut session, "a.dxf", plan).unwrap(),
+            vec![
+                ("view", json!("current")),
+                ("projection", json!("orthographic")),
+                ("hidden", json!("omit")),
+            ]
+        );
+        let chosen = ExportPlan {
+            drawing: DrawingPlan {
+                view: DrawingView::Front,
+                perspective: true,
+                dashed: true,
+            },
+            ..plan
+        };
+        assert_eq!(
+            export_params(&mut session, "a.svg", chosen).unwrap(),
+            vec![
+                ("view", json!("front")),
+                ("projection", json!("perspective")),
+                ("hidden", json!("dashed")),
+            ]
+        );
+        assert!(!export_check(&mut session, "a.stl").drawing);
+        // An outline cannot be every body: an edge selected is refused.
+        guarded(
+            &mut session,
+            "select.query",
+            &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+        )
+        .unwrap();
         let dxf = export_check(&mut session, "a.dxf");
         assert!(dxf.problem.is_some() && !dxf.offers_all_bodies() && !dxf.asks());
         assert!(export_params(&mut session, "a.dxf", all).is_err());
