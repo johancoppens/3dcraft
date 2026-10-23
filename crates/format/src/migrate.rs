@@ -33,7 +33,7 @@ const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
-    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32,
+    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -393,30 +393,28 @@ fn v28_to_v29(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// PLACEHOLDER for the step of the branch that takes version 30
-/// (history-scrub); replaced by that step when the branches are merged.
+/// Version 30 adds `hidden` to the document: the ids of the features
+/// hidden in the view (`feature.visible`), view data that regeneration
+/// does not read. A file of version 29 has none, which is what a missing
+/// `hidden` reads as, so nothing changes; the version was raised so that
+/// an older build says a newer 3DCraft is needed instead of refusing an
+/// unknown field.
 fn v29_to_v30(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// PLACEHOLDER for the step of the branch that takes version 31
-/// (jigs-params); replaced by that step when the branches are merged.
-fn v30_to_v31(manifest: Value) -> Result<Value, String> {
-    Ok(manifest)
-}
-
-/// Version 32 adds conditions to expressions: the comparisons
+/// Version 31 adds conditions to expressions: the comparisons
 /// `< <= > >= == !=`, the logical operators `&& || !`, the functions `if`,
 /// `clamp` and `choose`, and `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`
 /// and `tanh`. Those function names become reserved, so a variable an
 /// older file gave one of them is renamed `ln_1` (the first free name),
 /// and every expression that refers to it with it, after the manifest is
 /// read into a document (`Document::rename_reserved_variables`, called by
-/// `from_manifest_json_noted` for a file older than 32, with a warning per
+/// `from_manifest_json_noted` for a file older than 31, with a warning per
 /// rename), as version 17 did for `floor`. So nothing changes here; the
 /// version was raised so that an older build says a newer 3DCraft is
 /// needed instead of failing the expressions that use the new syntax.
-fn v31_to_v32(manifest: Value) -> Result<Value, String> {
+fn v30_to_v31(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

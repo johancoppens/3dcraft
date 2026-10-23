@@ -264,7 +264,7 @@ fn a_linear_pattern_repeats_the_body_along_the_step() {
     assert_body(&mut s, "Row", 320.0, [35.0, 2.0, 8.5]);
 }
 
-/// Conditions in expressions (format 32): a pattern's count chosen by
+/// Conditions in expressions (format 31): a pattern's count chosen by
 /// `if` from a variable, the count following when the condition flips,
 /// and a branch not taken that would divide by zero.
 #[test]

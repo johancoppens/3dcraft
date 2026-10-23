@@ -428,8 +428,10 @@ mod native {
             Ok(craft3d_regen::regenerate_cached(doc, &mut cache))
         };
         let bodies_of = |doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen| -> Bodies {
+            // What the view hides is not drawn (`feature.visible`).
             regen
                 .bodies()
+                .filter(|(id, _)| !doc.is_hidden(*id))
                 .map(|(id, b)| {
                     let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
                         .into_iter()
@@ -480,6 +482,13 @@ mod native {
         let Some(final_regen) = final_regen else {
             return fail("view.replay: nothing to replay");
         };
+        if steps.iter().all(|s| s.bodies.is_empty()) && !doc.hidden.is_empty() {
+            let hidden: Vec<String> = doc.hidden.iter().map(ToString::to_string).collect();
+            return fail(format!(
+                "view.replay: every body of the range is hidden in the view ({}); show them with feature.visible",
+                hidden.join(", ")
+            ));
+        }
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
         let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);
         if frames > MAX_REPLAY_FRAMES {
@@ -501,7 +510,7 @@ mod native {
         };
         // Framed, as view.render frames, on the box around the bodies at
         // `to` from their B-rep.
-        let model = crate::scene::bodies_box(&final_regen);
+        let model = crate::scene::bodies_box(&doc, &final_regen);
         let aspect = width as f64 / height as f64;
         // Every step is sampled as view.render samples the state at `to`
         // (the document's own when the replay ends where it does, so that

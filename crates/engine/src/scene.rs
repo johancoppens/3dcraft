@@ -432,6 +432,9 @@ pub struct SceneFeature {
     /// the feature at the start of that chain (`F3`), the one to fix, as
     /// `document.inspect` gives it under `causedBy`.
     pub caused_by: Option<String>,
+    /// Hidden in the view (`feature.visible`): its body, sketch or datum
+    /// is not in the scene, though it is built.
+    pub hidden: bool,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -607,6 +610,10 @@ pub(crate) struct SceneCache {
     budget: usize,
     /// See [`Session::set_refine_elsewhere`].
     refine_elsewhere: bool,
+    /// The active document as it is, while its view is scrubbed to an
+    /// earlier state (`view.scrub`): its scenes are kept like the shown
+    /// state's, so going back to the end shows them at once.
+    pinned: Option<Arc<Document>>,
     /// The meshes of the bodies, by body and sampling, shared by every
     /// scene built for the session (`meshes.rs`): a scene rebuilt after
     /// an edit meshes only the bodies the edit changed. Within the same
@@ -623,6 +630,7 @@ impl Default for SceneCache {
             tick: 0,
             budget: DEFAULT_SCENE_BUDGET,
             refine_elsewhere: false,
+            pinned: None,
             meshes: MeshStore::new(DEFAULT_SCENE_BUDGET),
         }
     }
@@ -741,11 +749,13 @@ impl SceneCache {
             .fold(0usize, |n, kept| n.saturating_add(kept.bytes()));
         while total > self.budget {
             let seen = self.seen.clone();
+            let pinned = self.pinned.clone();
             let oldest = self
                 .kept
                 .iter()
                 .enumerate()
                 .filter(|(_, kept)| !seen.as_ref().is_some_and(|s| Arc::ptr_eq(s, &kept.doc)))
+                .filter(|(_, kept)| !pinned.as_ref().is_some_and(|p| Arc::ptr_eq(p, &kept.doc)))
                 .min_by_key(|(_, kept)| kept.shown)
                 .map(|(at, _)| at);
             let Some(at) = oldest else {
@@ -818,7 +828,7 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
 /// from the geometry without measuring anything), or without bodies the
 /// size [`model_size`] gives (from the sketches, which costs nothing).
 fn preview_size(regen: &Regen, doc: &Document) -> f64 {
-    let extent = bodies_box(regen);
+    let extent = bodies_box(doc, regen);
     let size = extent.diagonal();
     if size.is_finite() && size > 0.0 {
         size
@@ -832,12 +842,13 @@ fn preview_size(regen: &Regen, doc: &Document) -> f64 {
 /// a pixel cannot be seen.
 pub const PICTURE_PIXEL_SHARE: f64 = 0.5;
 
-/// The box around the bodies of `regen`, from their B-rep (a face on a
+/// The box around the bodies of `regen` that are not hidden in the view
+/// (`feature.visible`), from their B-rep (a face on a
 /// sphere or torus by what it holds, `Body::held_bbox`): empty without
 /// bodies.
-pub(crate) fn bodies_box(regen: &Regen) -> Bbox3 {
+pub(crate) fn bodies_box(doc: &Document, regen: &Regen) -> Bbox3 {
     let mut extent = Bbox3::EMPTY;
-    for (_, body) in regen.bodies() {
+    for (_, body) in regen.bodies().filter(|(id, _)| !doc.is_hidden(*id)) {
         if let Some((low, high)) = held_box(body).and_then(|b| b.corners()) {
             extent.add(low);
             extent.add(high);
@@ -900,7 +911,7 @@ pub(crate) fn picture_tolerance(
     pixel: impl FnOnce(&Bbox3) -> Option<f64>,
 ) -> f64 {
     let floor = preview_size(regen, doc) * DISPLAY_RELATIVE_TOLERANCE;
-    let model = bodies_box(regen);
+    let model = bodies_box(doc, regen);
     let Some(footprint) = pixel(&model).map(|p| p * PICTURE_PIXEL_SHARE) else {
         return floor;
     };
@@ -1339,7 +1350,7 @@ fn build(
         features: Vec::new(),
         problems: Vec::new(),
         bbox: Bbox3::EMPTY,
-        bodies_box: bodies_box(regen),
+        bodies_box: bodies_box(doc, regen),
     };
     // How much of the model is done, for the estimate when the budget is
     // exceeded: by faces, which every body has and which cost nothing to
@@ -1347,6 +1358,7 @@ fn build(
     let faces_total: usize = if budget.is_some() {
         doc.features
             .iter()
+            .filter(|f| !doc.is_hidden(f.id))
             .filter_map(|f| regen.feature(f.id).and_then(|o| o.own_body()))
             .fold(0, |n, body| n.saturating_add(body.faces.len()))
     } else {
@@ -1380,7 +1392,12 @@ fn build(
             is_sketch: matches!(feature.kind, FeatureKind::Sketch(_)),
             caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
                 .map(|root| root.to_string()),
+            hidden: doc.is_hidden(feature.id),
         });
+        // Hidden in the view: a row of the tree, and nothing drawn.
+        if doc.is_hidden(feature.id) {
+            continue;
+        }
         // A suppressed or rolled-back sketch is not drawn, like its body
         // would not be.
         if let (FeatureKind::Sketch(sketch), Some(solved)) = (&feature.kind, solved)
@@ -1581,7 +1598,7 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
         .filter_map(|feature| {
             let outcome = regen.feature(feature.id)?;
             match (&outcome.status, outcome.datum) {
-                (Status::Ok, Some(datum)) => Some((feature, datum)),
+                (Status::Ok, Some(datum)) if !doc.is_hidden(feature.id) => Some((feature, datum)),
                 _ => None,
             }
         })
@@ -1903,8 +1920,8 @@ impl Refinement {
     pub fn wanted(&self, session: &mut Session) -> bool {
         let active = session
             .documents
-            .get(session.active)
-            .map(|open| Arc::clone(open.history.current()));
+            .get_mut(session.active)
+            .map(crate::OpenDocument::shown);
         session.scene_revision();
         active.is_some_and(|doc| Arc::ptr_eq(&doc, &self.doc)) && !session.scene.has(self.key)
     }
@@ -1917,13 +1934,18 @@ impl Session {
     /// fail, leave it alone.
     ///
     /// It counts the changes this function has noticed, so two edits
-    /// between two calls move it by one.
+    /// between two calls move it by one. Scrubbing the view through the
+    /// history (`view.scrub`) changes the state shown, and moves it too.
     pub fn scene_revision(&mut self) -> u64 {
-        let current = self
-            .documents
-            .get(self.active)
-            .map(|open| open.history.current());
-        self.scene.observe(current)
+        let open = self.documents.get_mut(self.active);
+        let base = open.as_ref().map(|open| Arc::clone(open.history.current()));
+        let current = open.map(crate::OpenDocument::shown);
+        self.scene.pinned = base.filter(|base| {
+            current
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(base, current))
+        });
+        self.scene.observe(current.as_ref())
     }
 
     /// The scene of the active document, or `None` when no document is
@@ -1967,8 +1989,8 @@ impl Session {
         let Some(open) = self.documents.get_mut(self.active) else {
             return Ok(None);
         };
-        let doc = Arc::clone(open.history.current());
-        let regen = open.regen();
+        let doc = open.shown();
+        let regen = open.shown_regen();
         let tolerance = picture_tolerance(&regen, &doc, pixel);
         self.scene_with(SceneQuality::Picture(tolerance))
     }
@@ -2062,12 +2084,12 @@ impl Session {
         let Some(open) = self.documents.get_mut(self.active) else {
             return Ok(None);
         };
-        let doc = Arc::clone(open.history.current());
+        let doc = open.shown();
         // Regeneration and tessellation run here, outside any command: a
         // panic in them must not take the viewer down (AGENTS.md,
         // last-resort guard). The document is not touched either way.
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let regen = open.regen();
+            let regen = open.shown_regen();
             craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
                 phase: "measuring",
                 feature: None,
@@ -2095,8 +2117,8 @@ impl Session {
         let meshes = self.scene.meshes.clone();
         let open = self.documents.get_mut(self.active)?;
         Some(Refinement {
-            doc: Arc::clone(open.history.current()),
-            regen: open.regen(),
+            doc: open.shown(),
+            regen: open.shown_regen(),
             key,
             relative,
             max_triangles,

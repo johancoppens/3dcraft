@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 32,
+  "format_version": 31,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 33"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 32"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 33,
+            file: 32,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 33")
+        text.contains("version 32")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1690,7 +1690,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 32);
+    assert_eq!(value["format_version"], 31);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1876,7 +1876,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 32);
+    assert_eq!(value["format_version"], 31);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
         serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
@@ -2892,7 +2892,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 32);
+    assert_eq!(value["format_version"], 31);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -3710,7 +3710,7 @@ fn a_version_16_file_with_a_variable_named_like_a_new_function_opens_renamed() {
     assert!(from_manifest_json(current.as_bytes()).is_err());
 }
 
-/// Version 32 made `if`, `clamp`, `choose`, `exp`, `ln`, `log10`, `pow`,
+/// Version 31 made `if`, `clamp`, `choose`, `exp`, `ln`, `log10`, `pow`,
 /// `sinh`, `cosh` and `tanh` function names. An older file that gave a
 /// variable such a name opens with the variable renamed everywhere, and
 /// says so, naming the version that reserved each name. Never edit this
@@ -3751,9 +3751,9 @@ fn a_version_29_file_with_a_variable_named_like_a_condition_function_opens_renam
         warnings,
         [
             "variable `ln` renamed `ln_1`: `ln` is a function in expressions since format \
-             version 32",
+             version 31",
             "variable `if` renamed `if_1`: `if` is a function in expressions since format \
-             version 32"
+             version 31"
         ]
     );
     let saved = to_manifest_json(&doc).unwrap();
@@ -3769,7 +3769,7 @@ fn a_version_29_file_with_a_variable_named_like_a_condition_function_opens_renam
     assert!(from_manifest_json(current.as_bytes()).is_err());
 }
 
-/// Conditions in expressions (version 32) are stored as the source text
+/// Conditions in expressions (version 31) are stored as the source text
 /// they were written as, like every expression, and read back unchanged.
 #[test]
 fn expressions_with_conditions_round_trip() {
@@ -3851,7 +3851,7 @@ fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 32);
+    assert_eq!(value["format_version"], 31);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
     assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
@@ -3964,7 +3964,7 @@ fn a_fill_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 32);
+    assert_eq!(FORMAT_VERSION, 31);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4010,7 +4010,7 @@ fn a_screw_pattern_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 32);
+    assert_eq!(FORMAT_VERSION, 31);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[1]["kind"],
@@ -4068,7 +4068,7 @@ fn a_split_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 32);
+    assert_eq!(FORMAT_VERSION, 31);
     let features = value["document"]["features"].as_array().unwrap();
     let face_json = serde_json::json!({"feature": 3, "role": "copy", "sources": [0],
         "of": {"feature": 1, "role": "face", "sources": [4]}});
@@ -4123,7 +4123,7 @@ fn an_import_is_written_like_this_and_round_trips() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["format_version"], FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 32);
+    assert_eq!(FORMAT_VERSION, 31);
     assert_eq!(
         value["document"]["features"][2]["kind"],
         serde_json::json!({"type": "import", "file_name": "part.step", "solid": 1, "sha256": sha})
@@ -4326,4 +4326,33 @@ fn assertions_are_written_like_this_and_round_trip() {
             .len(),
         1
     );
+}
+
+#[test]
+fn hidden_features_are_written_like_this_and_round_trip() {
+    let mut doc = small();
+    doc.set_hidden(FeatureId(1), true).unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(FORMAT_VERSION, 31);
+    assert_eq!(value["document"]["hidden"], serde_json::json!([1]));
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Nothing hidden: no field at all, as before version 30.
+    let plain = to_manifest_json(&small()).unwrap();
+    assert!(!plain.contains("\"hidden\""));
+    // A list out of order, or of an id never given out, is refused.
+    let field = "\"hidden\": [\n      1\n    ]";
+    assert!(json.contains(field), "{json}");
+    for bad in ["[1, 1]", "[7]", "[0]", "[\"F1\"]"] {
+        let edited = json.replacen(field, &format!("\"hidden\": {bad}"), 1);
+        assert!(from_manifest_json(edited.as_bytes()).is_err(), "{bad}");
+    }
+    // A version-29 file opens as it was and is saved as version 30.
+    let older = to_manifest_json(&small()).unwrap();
+    let old = older.replacen(&version_field(), "\"format_version\": 29", 1);
+    assert_ne!(old, older);
+    assert_eq!(from_manifest_json(old.as_bytes()).unwrap(), small());
 }

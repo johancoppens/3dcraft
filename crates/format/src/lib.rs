@@ -56,7 +56,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 32;
+pub const FORMAT_VERSION: u32 = 31;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -66,8 +66,8 @@ const FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS: u32 = 17;
 /// The version that made the names of the condition functions (`if`,
 /// `clamp`, `choose`) and of `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`
 /// and `tanh` function names: a variable of an older file with such a
-/// name is renamed on reading (`migrate::v31_to_v32`).
-const FORMAT_VERSION_OF_CONDITION_FUNCTIONS: u32 = 32;
+/// name is renamed on reading (`migrate::v30_to_v31`).
+const FORMAT_VERSION_OF_CONDITION_FUNCTIONS: u32 = 31;
 
 /// The format version since which `name` is reserved in expressions, for
 /// the warning that a variable of an older file was renamed.
