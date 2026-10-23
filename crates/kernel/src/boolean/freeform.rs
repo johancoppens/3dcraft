@@ -69,13 +69,16 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 /// a whole surface may have.
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
-/// A surface whose spans quartered to the depth would make more leaves
-/// than this halves a piece that is short one way only across the other
-/// ([`long_ways`]); smaller trees are quartered throughout, as they were
-/// before 2026-10-23, so that what they answer stays the same to the bit.
-/// The strips of fitted formula curves (30 spans and more, quartered
-/// four or five times) are halved; a single span (a fillet's surface, a
-/// patch) is quartered.
+/// A surface whose spans times `4^depth` (the most leaves quartering to
+/// the depth could make, not the leaves it makes: a piece stops when it
+/// is small) is more than this halves a piece that is short one way only
+/// across the other ([`long_ways`]); smaller trees are quartered
+/// throughout, as they were before 2026-10-23, so that what they answer
+/// stays the same to the bit. At the full depth of five (1,024 leaves a
+/// span at most) that is five spans or more: four spans are quartered,
+/// five are halved, whatever their shape. The strips of fitted formula
+/// curves (30 spans and more) are halved; a single span (a fillet's
+/// surface, a patch) is quartered.
 const HALVED_FROM: usize = 1 << 12;
 /// How far apart the weights of one Bézier span of a rational surface may
 /// be. Every bound on its derivatives carries a power of the ratio within
@@ -148,34 +151,38 @@ struct Node {
 /// The children of a node of a [`PatchTree`]: its four quarters, or its
 /// two halves across the one direction in which it is long
 /// ([`long_ways`]).
+/// An enum, so that `Option<Kids>` takes no more room in a [`Node`] than
+/// the four indices of before.
 #[derive(Clone, Copy, Debug)]
-struct Kids {
-    ids: [usize; 4],
-    len: usize,
+enum Kids {
+    Two([usize; 2]),
+    Four([usize; 4]),
 }
 
 impl Kids {
     fn four(ids: [usize; 4]) -> Kids {
-        Kids { ids, len: 4 }
+        Kids::Four(ids)
     }
 
     fn two(a: usize, b: usize) -> Kids {
-        Kids {
-            ids: [a, b, a, b],
-            len: 2,
-        }
+        Kids::Two([a, b])
     }
 
     fn ids(&self) -> &[usize] {
-        self.ids.get(..self.len).unwrap_or(&self.ids)
+        match self {
+            Kids::Two(ids) => ids,
+            Kids::Four(ids) => ids,
+        }
     }
 }
 
 /// Whether `patch` is longer than half of `small` along u and along v: the
 /// longest of the rows of its control net that run that way, measured
-/// along the net. A box holds the net, whose points are joined by a row
-/// one way and a row the other, so a patch whose box's diagonal is more
-/// than `small` is long at least one way. Not a number counts as long.
+/// along the net. Any two points of the net are joined by a row one way
+/// and a row the other, so they are at most the two lengths apart; the
+/// box's diagonal may still be up to √3 times the farthest two points, so
+/// a piece above the leaf size can be short both ways, and is then
+/// quartered as before. Not a number counts as long.
 fn long_ways(patch: &RationalBezierPatch, small: f64) -> (bool, bool) {
     let (du, dv) = patch.degrees();
     let points = patch.control_points();
@@ -1861,11 +1868,12 @@ fn keep_within_budget(shelf: &mut Shelf) {
 /// number is not: a spur gear of twenty teeth drawn from formulas, its hub
 /// covering the face the teeth end in, held 160 trees and 2.2 GB, and one
 /// of a hundred teeth took a laptop's memory (2026-10-23). The impeller of
-/// the showcase holds about 450 MB. A browser has less memory.
+/// the showcase holds about 450 MB. A browser has less memory: 512 MiB
+/// there, room for the impeller still (the developer, 2026-10-23).
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) const HELD_BYTES: usize = 2 << 30;
 #[cfg(target_arch = "wasm32")]
-pub(super) const HELD_BYTES: usize = 384 << 20;
+pub(super) const HELD_BYTES: usize = 512 << 20;
 /// [`HELD_BYTES`].
 pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
 
@@ -1884,7 +1892,9 @@ thread_local! {
 /// tree counts by what it is made of, which depends on its surface alone,
 /// whether it was built then or found on the shelf, so the refusal is the
 /// same on every run and whatever ran before. Nested, the outermost counts.
-pub(super) fn holding<R>(work: impl FnOnce() -> R) -> R {
+pub(super) fn holding<T>(
+    work: impl FnOnce() -> Result<T, crate::KernelError>,
+) -> Result<T, crate::KernelError> {
     holding_within(HELD_BYTES, work)
 }
 
@@ -1893,10 +1903,23 @@ struct Held {
     ids: std::collections::BTreeSet<u64>,
     bytes: usize,
     limit: usize,
+    /// A tree was refused: the operation is refused whatever it made of
+    /// that (a caller that takes a face it cannot outline for one that
+    /// does not hold a point would otherwise answer wrongly).
+    refused: bool,
 }
 
 /// [`holding`] with a budget of `limit` bytes.
-fn holding_within<R>(limit: usize, work: impl FnOnce() -> R) -> R {
+///
+/// Once a tree was refused within it, the outermost operation is refused
+/// ([`TOO_MUCH_HELD`]) whatever its work returned: some callers take a
+/// face they cannot outline as one that holds nothing (`.ok()`,
+/// `is_ok_and`), which would turn the refusal into fewer contacts or a
+/// wrong side.
+fn holding_within<T>(
+    limit: usize,
+    work: impl FnOnce() -> Result<T, crate::KernelError>,
+) -> Result<T, crate::KernelError> {
     struct Leave;
     impl Drop for Leave {
         fn drop(&mut self) {
@@ -1927,11 +1950,29 @@ fn holding_within<R>(limit: usize, work: impl FnOnce() -> R) -> R {
                     ids: std::collections::BTreeSet::new(),
                     bytes: 0,
                     limit,
+                    refused: false,
                 });
             }
         });
     }
-    work()
+    let done = work();
+    if depth > 0 {
+        return done;
+    }
+    let refused = HELD.with(|held| {
+        held.try_borrow()
+            .ok()
+            .and_then(|h| h.as_ref().map(|held| held.refused))
+            .unwrap_or(false)
+    });
+    match done {
+        Ok(_) if refused => Err(crate::KernelError::Unsupported {
+            operation: super::OPERATION,
+            reason: TOO_MUCH_HELD,
+            faces: Vec::new(),
+        }),
+        other => other,
+    }
 }
 
 /// Inside [`holding`]: counts the tree `tree` (its number and bytes) when
@@ -1951,6 +1992,7 @@ fn held_within_budget(tree: Option<(u64, usize)>) -> Result<(), Reason> {
             held.bytes = held.bytes.saturating_add(size);
         }
         if held.bytes > held.limit {
+            held.refused = true;
             Err(TOO_MUCH_HELD)
         } else {
             Ok(())
@@ -2311,17 +2353,37 @@ impl PatchTree {
     /// span by span) the parameters move a thousand times faster on one
     /// side than on the other, and a stretch of a boundary along the knot
     /// takes the bound of the fast side; drawn evenly they do not.
+    ///
+    /// What is remembered with the tree is what the surface gives: the
+    /// evened tree, or none where the surface has no evened form or that
+    /// has no tree. A refusal of the operation's budget ([`holding`]) is
+    /// not remembered (it would leave later operations, in this process
+    /// only, with the uneven chart: results that depend on what ran
+    /// before); this call answers with this tree then, and the operation
+    /// is refused anyway. An evened tree remembered counts against the
+    /// budget of the operation that asks, as a tree found on the shelf.
     pub(super) fn evened(tree: &Arc<PatchTree>) -> Arc<PatchTree> {
         let made = craft3d_geom::allowance::uncounted(|| {
-            tree.evened.get_or_init(|| {
-                let Surface::Nurbs(s) = &tree.surface else {
-                    return None;
-                };
-                let even = s.evened()?;
-                // On the shelf like any other tree, so that what it holds is
-                // counted against the shelf's bytes.
-                PatchTree::shared(&Surface::Nurbs(even)).ok()
-            })
+            if let Some(made) = tree.evened.get() {
+                if let Some(even) = made {
+                    // A refusal here marks the operation refused.
+                    let _ = held_within_budget(Some((even.id, even.base_bytes)));
+                }
+                return made.clone();
+            }
+            let Surface::Nurbs(s) = &tree.surface else {
+                return tree.evened.get_or_init(|| None).clone();
+            };
+            let Some(even) = s.evened() else {
+                return tree.evened.get_or_init(|| None).clone();
+            };
+            // On the shelf like any other tree, so that what it holds is
+            // counted against the shelf's bytes.
+            match PatchTree::shared(&Surface::Nurbs(even)) {
+                Ok(even) => tree.evened.get_or_init(|| Some(even)).clone(),
+                Err(TOO_MUCH_HELD) => None,
+                Err(_) => tree.evened.get_or_init(|| None).clone(),
+            }
         });
         let even = made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone);
         // Charged as asking for a tree is, made now or before.
@@ -4823,6 +4885,7 @@ mod tests {
         assert!(each > 0);
         let limit = 5 * each + each / 2;
         let built_before = trees_built();
+        let seen = std::cell::Cell::new((0, None, 0));
         let outcome = holding_within(limit, || {
             let mut kept = Vec::new();
             for k in 0..20 {
@@ -4832,17 +4895,120 @@ mod tests {
                         PatchTree::shared(&tree.surface).unwrap();
                         kept.push(tree);
                     }
-                    Err(reason) => return (kept.len(), Some(reason), held_bytes()),
+                    Err(reason) => {
+                        seen.set((kept.len(), Some(reason), held_bytes()));
+                        // The refusal swallowed: the operation still fails.
+                        return Ok(());
+                    }
                 }
             }
-            (kept.len(), None, held_bytes())
+            Ok(())
         });
-        assert_eq!(outcome.0, 5, "{outcome:?}");
-        assert_eq!(outcome.1, Some(TOO_MUCH_HELD));
-        assert!(outcome.2 <= limit + each, "{outcome:?}");
+        let seen = seen.get();
+        assert_eq!(seen.0, 5, "{seen:?}");
+        assert_eq!(seen.1, Some(TOO_MUCH_HELD));
+        assert!(seen.2 <= limit + each, "{seen:?}");
+        match outcome {
+            Err(crate::KernelError::Unsupported { reason, .. }) => {
+                assert_eq!(reason, TOO_MUCH_HELD);
+            }
+            other => panic!("{other:?}"),
+        }
         // The refusal came before a seventh tree was built.
         assert!(trees_built() - built_before <= 6);
         assert_eq!(held_bytes(), 0);
         assert!(PatchTree::shared(&strip(30, 10.0, 10.0, 0.9)).is_ok());
+        // Within its budget, an operation answers its own answer.
+        let fine = holding_within(limit, || {
+            PatchTree::shared(&strip(30, 10.0, 10.0, 0.95)).map_err(|reason| {
+                crate::KernelError::Unsupported {
+                    operation: "test",
+                    reason,
+                    faces: Vec::new(),
+                }
+            })?;
+            Ok(7)
+        });
+        assert_eq!(fine.unwrap(), 7);
+    }
+
+    /// An evened tree is not remembered as missing when the operation's
+    /// budget refused it: the next operation, within its budget, gets it,
+    /// and a remembered one counts against the budget of whoever asks.
+    #[test]
+    fn a_refused_evened_tree_is_not_remembered() {
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                2,
+                2,
+                vec![
+                    Vec3::new(0.0, 0.0, 1.3),
+                    Vec3::new(0.0, 3.0, 1.5),
+                    Vec3::new(4.0, 0.0, 1.1),
+                    Vec3::new(4.0, 3.0, 1.3),
+                ],
+                vec![1.0, 1.0, 4.0, 4.0],
+            )
+            .unwrap(),
+        );
+        let tree = PatchTree::shared(&surface).unwrap();
+        let limit = tree.base_bytes;
+        let refused = holding_within(limit, || {
+            assert!(PatchTree::shared(&surface).is_ok());
+            let even = PatchTree::evened(&tree);
+            assert!(Arc::ptr_eq(&even, &tree));
+            Ok(())
+        });
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(tree.evened.get().is_none());
+        let even = holding(|| Ok(PatchTree::evened(&tree))).unwrap();
+        assert!(!Arc::ptr_eq(&even, &tree));
+        assert!(matches!(tree.evened.get(), Some(Some(_))));
+        // Remembered now, and still counted: refused again under the same
+        // budget, though nothing is built.
+        let again = holding_within(limit, || {
+            PatchTree::shared(&surface).ok();
+            PatchTree::evened(&tree);
+            Ok(())
+        });
+        assert!(again.is_err(), "{again:?}");
+    }
+
+    /// An interference between two freeform bodies past the budget of its
+    /// trees is refused, not answered from the faces it could outline
+    /// (`faces_at` takes a face it cannot outline as one the point is not
+    /// on): within it, the same question has an answer.
+    #[test]
+    fn an_interference_past_the_budget_is_refused_not_answered_short() {
+        let a = craft3d_testkit::trimmed::domed_block(&Frame::WORLD, 4.0, 3.0, 2.0, true)
+            .unwrap()
+            .body;
+        let at = Frame::WORLD.at(Vec3::new(1.0, 0.5, 0.0)).unwrap();
+        let b = craft3d_testkit::trimmed::domed_block(&at, 4.0, 3.0, 2.0, true)
+            .unwrap()
+            .body;
+        let tol = craft3d_math::Tolerance::default();
+        let answered = super::super::interference(&a, &b, &tol);
+        assert!(answered.is_ok(), "{answered:?}");
+        let refused = holding_within(1, || super::super::interference(&a, &b, &tol));
+        match refused {
+            Err(crate::KernelError::Unsupported { reason, .. }) => {
+                assert_eq!(reason, TOO_MUCH_HELD);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The children of a node take no more room than four indices did.
+    #[test]
+    fn a_node_did_not_grow() {
+        assert_eq!(
+            std::mem::size_of::<Option<Kids>>(),
+            std::mem::size_of::<Option<[usize; 4]>>()
+        );
     }
 }
