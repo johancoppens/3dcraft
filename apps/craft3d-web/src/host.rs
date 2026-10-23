@@ -25,9 +25,10 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, export_kind, export_selection, extension_of, guarded,
-    suggested_export_name, suggested_name,
+    EXPORT_FORMATS, EXTENSION, ExportPlan, export_check, export_kind, export_options_ui,
+    export_params, extension_of, guarded, suggested_export_name, suggested_name,
 };
+use craft3d_ui_egui::shell::export_verb;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -416,6 +417,11 @@ impl WebHost {
     /// Shows `text` in the status bar under `label`, as a command's
     /// report.
     pub fn note(&mut self, label: &str, ok: bool, text: String) {
+        // Everything the page does is the person's: a failure is shown in
+        // the error dialog too.
+        if !ok {
+            self.shell.show_error(label, &text);
+        }
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
             ok,
@@ -426,7 +432,10 @@ impl WebHost {
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
         let (ok, text) = match outcome {
             Ok(result) => (true, result.to_string()),
-            Err(error) => (false, error.clone()),
+            Err(error) => {
+                self.shell.show_error(label, error);
+                (false, error.clone())
+            }
         };
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
@@ -732,6 +741,17 @@ impl WebHost {
     /// `file.export` can take them. The file (and an OBJ's material
     /// library) are the downloads.
     pub fn export_as(&mut self, name: &str) -> Vec<Download> {
+        let plan = ExportPlan {
+            quality: self.shell.export_quality(),
+            all_bodies: false,
+        };
+        self.export_with(name, plan)
+    }
+
+    /// [`Self::export_as`] as the export dialog was answered: the quality
+    /// of a mesh, and every body instead of a selection the format cannot
+    /// hold ([`craft3d_ui_egui::files::export_params`]).
+    pub fn export_with(&mut self, name: &str, plan: ExportPlan) -> Vec<Download> {
         let Some(name) = memory_name(name) else {
             self.finish("file.export", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
@@ -739,10 +759,12 @@ impl WebHost {
         if export_kind(&name).is_some() {
             self.export_extension = extension_of(&name);
         }
-        let exported = export_selection(&mut self.session, &name).and_then(|extra| {
+        let exported = export_params(&mut self.session, &name, plan).and_then(|extra| {
             let mut params = json!({ "path": name });
-            if let (Some((key, value)), Some(map)) = (extra, params.as_object_mut()) {
-                map.insert(key.to_string(), value);
+            if let Some(map) = params.as_object_mut() {
+                for (key, value) in extra {
+                    map.insert(key.to_string(), value);
+                }
             }
             self.run("file.export", &params)
         });
@@ -777,14 +799,24 @@ impl WebHost {
         }
         match dialog.purpose {
             Purpose::Save { close } => outcome.downloads = self.save_as(&dialog.name, close),
-            Purpose::Export if self.pickers => {
-                let mut files = self.export_as(&dialog.name).into_iter();
-                if let Some(file) = files.next() {
-                    outcome.pick = Some(Pick::Export { file });
+            Purpose::Export => {
+                // The dialog's button: every body when the selection does
+                // not fit the format ("Export all bodies").
+                let plan = ExportPlan {
+                    quality: self.shell.export_quality(),
+                    all_bodies: export_check(&mut self.session, &dialog.name).offers_all_bodies(),
+                };
+                let files = self.export_with(&dialog.name, plan);
+                if self.pickers {
+                    let mut files = files.into_iter();
+                    if let Some(file) = files.next() {
+                        outcome.pick = Some(Pick::Export { file });
+                    }
+                    self.companion = files.next();
+                } else {
+                    outcome.downloads = files;
                 }
-                self.companion = files.next();
             }
-            Purpose::Export => outcome.downloads = self.export_as(&dialog.name),
         }
         outcome
     }
@@ -842,6 +874,14 @@ impl WebHost {
             Purpose::Save { .. } => "Save As",
             Purpose::Export => "Export",
         };
+        // What the export dialog says of the format and the selection,
+        // and the quality chosen last (`craft3d_ui_egui::files`).
+        let check = (dialog.purpose == Purpose::Export)
+            .then(|| export_check(&mut self.session, &dialog.name));
+        let mut plan = ExportPlan {
+            quality: self.shell.export_quality(),
+            all_bodies: false,
+        };
         egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
@@ -865,6 +905,9 @@ impl WebHost {
                             "DXF and SVG hold the outline of the selected flat faces or sketch.",
                         );
                     }
+                    if let Some(check) = &check {
+                        export_options_ui(ui, check, &mut plan);
+                    }
                 }
                 ui.label("File name:");
                 let field = ui.text_edit_singleline(&mut dialog.name);
@@ -874,10 +917,12 @@ impl WebHost {
                 ui.horizontal(|ui| {
                     // With the file dialogs, Export goes on to the
                     // system's save dialog.
-                    let verb = match dialog.purpose {
-                        Purpose::Save { .. } => "Save",
-                        Purpose::Export if self.pickers => "Export…",
-                        Purpose::Export => "Export",
+                    let verb = match (&dialog.purpose, &check) {
+                        (Purpose::Save { .. }, _) | (Purpose::Export, None) => "Save".to_string(),
+                        (Purpose::Export, Some(check)) if self.pickers => {
+                            format!("{}…", export_verb(check))
+                        }
+                        (Purpose::Export, Some(check)) => export_verb(check).to_string(),
                     };
                     if ui.button(verb).clicked() {
                         answer = Some(true);
@@ -890,6 +935,7 @@ impl WebHost {
                     answer = Some(false);
                 }
             });
+        self.shell.set_export_quality(plan.quality);
         match answer {
             Some(confirmed) => self.answer(dialog, confirmed),
             None => {
@@ -1046,6 +1092,55 @@ mod tests {
         assert_eq!(host.dialog.as_ref().unwrap().name, "untitled.svg");
         let cancelled = host.answer(host.dialog.clone().unwrap(), false);
         assert_eq!(cancelled, Outcome::default());
+        // A cancelled dialog is no error; a failed export is (2026-10-23).
+        assert_eq!(
+            host.shell.error_dialog().map(|e| e.title.as_str()),
+            Some("Could not export"),
+            "the outlines above failed"
+        );
+    }
+
+    /// The export dialog's quality and its way out of a selection the
+    /// format cannot hold (2026-10-23).
+    #[test]
+    fn the_dialog_exports_at_its_quality_and_every_body_for_a_misfit_selection() {
+        let mut host = modelled();
+        let face = |host: &mut WebHost| {
+            host.session
+                .execute(
+                    "select.set",
+                    &json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
+                )
+                .unwrap();
+        };
+        face(&mut host);
+        let check = export_check(&mut host.session, "plate.step");
+        assert!(check.offers_all_bodies());
+        assert_eq!(export_verb(&check), "Export all bodies");
+        host.shell
+            .set_export_quality(craft3d_ui_egui::files::ExportQuality::Coarse);
+        let dialog = NameDialog {
+            purpose: Purpose::Export,
+            name: "plate.step".to_string(),
+        };
+        let outcome = host.answer(dialog.clone(), true);
+        assert_eq!(outcome.downloads.len(), 1, "every body, despite the face");
+        assert!(host.shell.error_dialog().is_none());
+        // A mesh at the quality chosen: coarse, 20 degrees.
+        let outcome = host.answer(
+            NameDialog {
+                name: "plate.stl".to_string(),
+                ..dialog
+            },
+            true,
+        );
+        assert_eq!(outcome.downloads.len(), 1);
+        let report = host.shell.last_command.as_ref().unwrap();
+        assert!(
+            report.ok && report.text.contains("\"angle\":20.0"),
+            "{}",
+            report.text
+        );
     }
 
     #[test]

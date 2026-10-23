@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
+mod dialogs;
 pub mod help;
 mod icons;
 mod layout;
@@ -37,6 +38,7 @@ mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
+pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
@@ -624,6 +626,8 @@ pub struct Shell {
     tree_row_hits: Vec<(String, egui::Rect)>,
     /// Where the last frame drew the zoom icon of a row (`views.rs`).
     tree_zoom_hits: Vec<(String, egui::Rect)>,
+    /// The error and export dialogs (`dialogs.rs`).
+    dialogs: dialogs::Dialogs,
     tree_view: Option<egui::Rect>,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
@@ -867,6 +871,7 @@ impl Shell {
             shown_features: None,
             tree_row_hits: Vec::new(),
             tree_zoom_hits: Vec::new(),
+            dialogs: dialogs::Dialogs::default(),
             tree_view: None,
             help: help::HelpMemory::default(),
             recent: recent::RecentMemory::default(),
@@ -1779,6 +1784,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.closing_dialog(ui);
+        self.dialogs_ui(ui.ctx());
         self.help_windows(ui);
     }
 

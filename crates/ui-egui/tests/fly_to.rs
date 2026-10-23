@@ -250,7 +250,7 @@ fn only_rows_that_can_be_shown_have_a_zoom_icon_and_fly() {
             .map(|(row, _)| row.clone())
             .collect();
         if *can {
-            assert_eq!(icons, [id.clone()], "{id}");
+            assert_eq!(icons, std::slice::from_ref(id), "{id}");
         } else {
             assert!(icons.is_empty(), "{id}: {icons:?}");
         }
