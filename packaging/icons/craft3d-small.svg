@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The 3DCraft icon drawn for 16 pixels: the >_ of craft3d.svg simplified
-     on the pixel grid (a flat gold prompt with a one-pixel dark extrusion,
-     the tile to the edge), because the full drawing blurs at that size.
-     Original work, MIT (ATTRIBUTION.md). craft3d-16.png is rendered from
-     this file (docs/development.md, Packaging). -->
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- The 3DCraft icon drawn for 16 pixels: the >_ of craft3d.svg simplified
+       on the pixel grid (a flat gold prompt with a one-pixel dark extrusion,
+       the tile to the edge), because the full drawing blurs at that size.
+       Original work, MIT (ATTRIBUTION.md). craft3d-16.png is rendered from
+       this file (docs/development.md, Packaging). -->
   <title>3DCraft</title>
   <rect x="0" y="0" width="16" height="16" rx="3.5" fill="#151413"/>
   <path d="M3 3 L8 8 L3 13 L1.6 11.6 L5.2 8 L1.6 4.4 Z" fill="#9F6018" transform="translate(1 1)"/>

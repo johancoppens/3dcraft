@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The 3DCraft icon, "Prompt Prism": the terminal prompt >_ extruded into a
-     gold solid on a black tile, in the Mission palette of the UI theme.
-     Original work, MIT (ATTRIBUTION.md). The PNGs beside it are rendered
-     from this file, except craft3d-16.png, which is rendered from
-     craft3d-small.svg (docs/development.md, Packaging). -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- The 3DCraft icon, "Prompt Prism": the terminal prompt >_ extruded into a
+       gold solid on a black tile, in the Mission palette of the UI theme.
+       Original work, MIT (ATTRIBUTION.md). The PNGs beside it are rendered
+       from this file, except craft3d-16.png, which is rendered from
+       craft3d-small.svg (docs/development.md, Packaging). -->
   <title>3DCraft</title>
   <rect x="8" y="8" width="240" height="240" rx="56" fill="#151413"/>
   <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>

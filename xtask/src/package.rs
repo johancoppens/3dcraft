@@ -917,4 +917,17 @@ mod tests {
         assert!(app.contains(&format!("pub const APP_ID: &str = \"{APP_ID}\";")));
         assert!(app.contains(".with_app_id(APP_ID)"));
     }
+
+    /// gdk-pixbuf recognises an SVG by finding `<svg` near the start of the
+    /// file; behind a long comment it reports an unknown format, and GNOME
+    /// Shell shows an empty tile wherever it picks the scalable icon.
+    #[test]
+    fn svg_icons_open_with_the_svg_element() {
+        for name in ["craft3d.svg", "craft3d-small.svg"] {
+            let svg =
+                std::fs::read_to_string(repo_root().join("packaging/icons").join(name)).unwrap();
+            let start = svg.find("<svg").unwrap();
+            assert!(start < 64, "{name}: <svg at byte {start}");
+        }
+    }
 }
