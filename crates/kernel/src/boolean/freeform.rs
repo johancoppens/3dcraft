@@ -69,6 +69,12 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 /// a whole surface may have.
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
+/// A surface whose spans quartered to the depth would make more leaves
+/// than this halves a piece that is short one way only across the other
+/// ([`long_ways`]); smaller trees are quartered throughout, as they were
+/// before 2026-10-23, so that what they answer stays the same to the bit.
+/// The strips of fitted formula curves (30 spans and more) are halved.
+const HALVED_FROM: usize = 1 << 14;
 /// How far apart the weights of one Bézier span of a rational surface may
 /// be. Every bound on its derivatives carries a power of the ratio within
 /// a piece, so the bounds are taken from pieces small enough for their
@@ -310,6 +316,9 @@ pub(super) struct PatchTree {
     /// How many fine pieces the tree keeps at most ([`FINE_PIECES`]; less
     /// in the tests of letting them go).
     fine_cap: usize,
+    /// Whether a piece short one way is halved only across the other
+    /// ([`HALVED_FROM`]).
+    halves: bool,
     /// The leaves split further for [`Self::sigma_near`], as far as its
     /// queries called for ([`Fine`]).
     fine: Mutex<Fine>,
@@ -2132,6 +2141,7 @@ impl PatchTree {
             base_bytes: 0,
             fine_piece_bytes: 0,
             fine_cap: FINE_PIECES,
+            halves: spans.len().saturating_mul(1 << (2 * depth)) > HALVED_FROM,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
             id: craft3d_geom::allowance::number_of(&format!("{surface:?}")),
@@ -2176,7 +2186,11 @@ impl PatchTree {
             // (a flank of a gear tooth, 32 or more spans each a hundredth
             // of a millimetre wide and the face's width long) was quartered
             // into 1024 leaves a span, 22 MB a face.
-            let (long_u, long_v) = long_ways(patch, small);
+            let (long_u, long_v) = if self.halves {
+                long_ways(patch, small)
+            } else {
+                (true, true)
+            };
             if long_u && !long_v {
                 let (left, right) = patch.split_u(0.5);
                 Some(Kids::two(
