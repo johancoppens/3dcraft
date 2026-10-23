@@ -147,6 +147,21 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
         }
     };
     for item in items {
+        // A feature that made faces of its own lights those, wherever
+        // they are now (a fillet's round, not the whole part); one that
+        // made none (a boolean) lights its body, below.
+        if item.kind == SelectionKind::Feature {
+            let made = scene.feature_face_ids(&item.feature);
+            if !made.is_empty() {
+                for &id in &made {
+                    faces.insert(id);
+                    if let Some((body, index)) = scene.face_of(id) {
+                        outline(body, &|face| face == index, &mut marks);
+                    }
+                }
+                continue;
+            }
+        }
         match item.kind {
             SelectionKind::Body | SelectionKind::Feature => {
                 let Some(index) = scene.bodies.iter().position(|b| b.feature == item.feature)

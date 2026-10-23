@@ -44,9 +44,9 @@ pub mod viewport;
 pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{QuitMode, UI_METHODS, UiMethod, quit_mode};
 pub use shell::{
-    CloseAnswer, CommandReport, DocAction, FLY_SECONDS, FileAction, RecoveryAction, RenderStats,
-    STATUS_YIELD, Shell, StatusFit, StatusSlot, TabPart, TreeRow, autosave_text, doc_tabs,
-    fit_status, window_title,
+    CloseAnswer, CommandReport, DocAction, FLY_SECONDS, FileAction, MIN_FLY_CONTEXT,
+    RecoveryAction, RenderStats, STATUS_YIELD, Shell, StatusFit, StatusSlot, TabPart, TreeRow,
+    ZOOM_TOOLTIP, autosave_text, doc_tabs, fit_status, window_title,
 };
 pub use state::{
     CameraState, Closing, DocTab, Panels, ProjectionKind, Show, TabView, UiState, Work,

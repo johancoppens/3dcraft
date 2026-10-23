@@ -45,8 +45,8 @@ pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
 };
-pub use views::FLY_SECONDS;
 pub(crate) use views::FlyTo;
+pub use views::{FLY_SECONDS, MIN_FLY_CONTEXT, ZOOM_TOOLTIP, zoomable};
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -199,6 +199,9 @@ pub struct TreeRow {
     /// The first face, edge or vertex selected was made by this feature
     /// (by its persistent name): the row is marked as selected too.
     pub made_selection: bool,
+    /// Something of it can be shown and flown to (a double click, the
+    /// row's zoom icon): [`zoomable`](crate::shell::zoomable).
+    pub zoomable: bool,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -613,9 +616,14 @@ pub struct Shell {
     tree_scroll: Option<String>,
     /// The tab was switched and its selection not read yet.
     tab_switched: bool,
+    /// The features the shown scene shows something of, for the scene
+    /// (revision and sampling) it was worked out for (`views.rs`).
+    shown_features: Option<views::ShownFeatures>,
     /// Where the last frame drew the name of each row of the feature
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
+    /// Where the last frame drew the zoom icon of a row (`views.rs`).
+    tree_zoom_hits: Vec<(String, egui::Rect)>,
     tree_view: Option<egui::Rect>,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
@@ -856,7 +864,9 @@ impl Shell {
             made_selection: None,
             tree_scroll: None,
             tab_switched: false,
+            shown_features: None,
             tree_row_hits: Vec::new(),
+            tree_zoom_hits: Vec::new(),
             tree_view: None,
             help: help::HelpMemory::default(),
             recent: recent::RecentMemory::default(),
@@ -1496,6 +1506,7 @@ impl Shell {
         self.sync_timeline(session);
         let scene = self.sync_scene(session);
         self.mark_scrubbed_rows();
+        self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
         self.note_recent(session);
@@ -1616,6 +1627,7 @@ impl Shell {
                 selected: selected == Some(f.id.as_str()),
                 hidden: f.hidden,
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
+                zoomable: false,
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -2190,6 +2202,7 @@ impl Shell {
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
+        let mut zooms_drawn = Vec::new();
         // F over the list as over the viewport: to the selection.
         let fit = ui.rect_contains_pointer(ui.max_rect())
             && !ui.ctx().egui_wants_keyboard_input()
@@ -2252,9 +2265,12 @@ impl Shell {
                                     .on_hover_text(&hover);
                                 rows_drawn.push((row.id.clone(), label.rect));
                                 // The second click of a double click is a click
-                                // too: the double click wins.
+                                // too: the double click wins, and does nothing
+                                // on a row that cannot be flown to.
                                 if label.double_clicked() {
-                                    double = Some(row.id.clone());
+                                    if row.zoomable {
+                                        double = Some(row.id.clone());
+                                    }
                                 } else if label.clicked() {
                                     clicked = Some(row.id.clone());
                                 }
@@ -2268,6 +2284,15 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                                let row_hovered = ui.rect_contains_pointer(ui.max_rect());
+                                if let Some(icon) =
+                                    views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)
+                                {
+                                    zooms_drawn.push((row.id.clone(), icon.rect));
+                                    if icon.clicked() {
+                                        double = Some(row.id.clone());
+                                    }
+                                }
                                 if timeline::eye(ui, row.hidden, &tokens).clicked() {
                                     eye_clicked = Some((row.id.clone(), row.hidden));
                                 }
@@ -2359,6 +2384,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.tree_row_hits = rows_drawn;
+        self.tree_zoom_hits = zooms_drawn;
         self.tree_view = Some(list.inner_rect);
         // A double click on a row selects that feature (whatever its
         // first click did) and flies to what it made.
