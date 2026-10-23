@@ -145,9 +145,34 @@ fn the_start_screen_is_up_while_no_document_is_open() {
         call(&mut shell, &mut session, "ui.get", json!({}))["startScreen"],
         true
     );
+    // The feature list is put away: the viewport, and the welcome centred
+    // in it, take the whole width of the window.
+    assert_eq!(shell.viewport_rect().unwrap().left(), 0.0);
+    let new = shell
+        .start_hits()
+        .iter()
+        .find(|(name, _)| name == "new")
+        .map(|(_, rect)| rect.center().x)
+        .unwrap();
+    assert!(
+        (new - 550.0).abs() < 120.0,
+        "the buttons near the middle: {new}"
+    );
+    // A card for each example.
+    let cards = shell
+        .start_hits()
+        .iter()
+        .filter(|(name, _)| name.starts_with("example:"))
+        .count();
+    assert_eq!(cards, EXAMPLES.len());
     run(&mut session, "file.new", json!({}));
     window.frame(&mut shell, &mut session, Vec::new());
     assert!(!shell.start_shown());
+    assert!(
+        shell.viewport_rect().unwrap().left() > 100.0,
+        "the feature list is back"
+    );
+    assert!(shell.state.panels.tree, "the panel's setting is unchanged");
     assert_eq!(
         call(&mut shell, &mut session, "ui.get", json!({}))["startScreen"],
         false
