@@ -271,3 +271,80 @@ fn paint_eye(
         painter.add(Shape::circle_filled(c, half * 0.28, ink));
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::super::Shell;
+    use craft3d_engine::{Session, Workspace};
+    use serde_json::json;
+
+    fn frame(ctx: &egui::Context, shell: &mut Shell, session: &mut Session) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_eye_hides_and_the_timeline_scrubs_without_editing_the_history() {
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({})),
+            ("feature.block", json!({"size": [10, 10, 10], "name": "Box"})),
+            ("feature.sphere", json!({"radius": 3, "name": "Ball"})),
+            (
+                "feature.cylinder",
+                json!({"radius": 1, "height": 30, "name": "Rod"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let mut shell = Shell::new();
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut shell, &mut session);
+        assert_eq!(shell.timeline_json()["steps"], 3);
+        assert_eq!(shell.timeline_json()["shown"], 3);
+
+        // The eye of the second row.
+        shell.queue_visible("F2".to_string(), false);
+        frame(&ctx, &mut shell, &mut session);
+        frame(&ctx, &mut shell, &mut session);
+        assert!(shell.tree_rows()[1].hidden && !shell.tree_rows()[0].hidden);
+        assert_eq!(shell.shown_scene_arc().unwrap().bodies.len(), 2);
+
+        // The timeline at step 1 (only the last scrub asked for runs): the
+        // later rows are after it, and the history did not change.
+        let revision = session.document_revision();
+        shell.timeline.queue("view.scrub", json!({"step": 2}));
+        shell.timeline.queue("view.scrub", json!({"step": 1}));
+        frame(&ctx, &mut shell, &mut session);
+        frame(&ctx, &mut shell, &mut session);
+        assert_eq!(session.document_revision(), revision);
+        let rows = shell.tree_rows();
+        assert_eq!(rows[1].status, super::AFTER_SCRUB);
+        assert_eq!(rows[2].status, super::AFTER_SCRUB);
+        assert_eq!(shell.timeline_json()["scrub"]["step"], 1);
+        assert_eq!(shell.shown_scene_arc().unwrap().bodies.len(), 1);
+
+        // Roll back here, then the marker is the step shown.
+        shell
+            .timeline
+            .queue("history.rollback", json!({"feature": "F1"}));
+        shell.timeline.queue("view.scrub", json!({"feature": null}));
+        frame(&ctx, &mut shell, &mut session);
+        frame(&ctx, &mut shell, &mut session);
+        assert_eq!(shell.timeline_json()["rollback"], 1);
+        assert_eq!(shell.timeline_json()["scrub"], json!(null));
+        assert_eq!(shell.timeline_json()["shown"], 1);
+        // A command that fails is said, not a crash.
+        shell.timeline.queue("view.scrub", json!({"step": 99}));
+        frame(&ctx, &mut shell, &mut session);
+        assert!(shell.timeline_json()["problem"].is_string());
+    }
+}

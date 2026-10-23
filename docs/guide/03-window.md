@@ -15,7 +15,12 @@ click and select.
 - **The feature tree** on the left: the history, in order. Each feature has a mark: ✔ built, ⚠ failed
   (the reason under it; *caused by …* when it failed because a feature it is made from failed: click that
   one), ⏸ suppressed, ○ after the rollback marker. Under the features, the **assertions**, failed ones in
-  the failed colour with their message.
+  the failed colour with their message. The **eye** in front of a feature hides its body, sketch or datum
+  in the view (click again to show it); the model itself does not change.
+- **The timeline** under the *Features* heading: drag it to see the model as it was after any step of the
+  history; the features after that step are greyed. Looking back changes nothing in the document.
+  **Roll back here** puts the rollback marker on that step (new features then go in after it), **To end**
+  takes the marker away and shows the whole model again.
 - **The viewport**: bodies shaded with their edges, sketches as lines, datum planes as translucent squares.
   The model updates after every command the agent runs; a heavy model first shows a quick picture, then
   the sharp one (the status bar says `refining`).

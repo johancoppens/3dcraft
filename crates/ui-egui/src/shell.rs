@@ -2013,8 +2013,11 @@ impl Shell {
         let dim = color(tokens.text_dim);
         ui.add_space(tokens.inset * 0.5);
         ui.label(egui::RichText::new("Features").strong());
-        self.timeline_ui(ui);
         ui.separator();
+        // The timeline at the foot of the panel, under the list.
+        egui::Panel::bottom("craft3d-timeline")
+            .resizable(false)
+            .show(ui, |ui| self.timeline_ui(ui));
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."
@@ -2059,9 +2062,6 @@ impl Shell {
                     (None, _) => format!("{} · {}", row.kind, row.status),
                 };
                 ui.horizontal(|ui| {
-                    if timeline::eye(ui, row.hidden, &tokens).clicked() {
-                        eye_clicked = Some((row.id.clone(), row.hidden));
-                    }
                     ui.colored_label(color(tint), mark).on_hover_text(&hover);
                     if ui
                         .selectable_label(row.selected, name)
@@ -2071,6 +2071,9 @@ impl Shell {
                         clicked = Some(row.id.clone());
                     }
                     ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                    if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                        eye_clicked = Some((row.id.clone(), row.hidden));
+                    }
                 });
                 if let Some((cause, cause_name)) = &row.caused_by {
                     ui.indent(("craft3d-cause", &row.id), |ui| {
