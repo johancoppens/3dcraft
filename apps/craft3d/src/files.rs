@@ -1479,12 +1479,13 @@ mod tests {
             assert_eq!((label.as_str(), ok), ("file.export", true));
         }
 
-        // An outline needs flat faces or a sketch: nothing selected, so it
-        // is refused, and nothing is written.
-        for name in ["top.dxf", "top.svg"] {
-            let error = host.export_as_user(&mine.join(name)).unwrap_err();
-            assert!(error.contains("select the faces or the sketch"), "{error}");
-            assert!(!mine.join(name).exists());
+        // Nothing selected, to an outline format: the model as seen
+        // (the window's view, to scale; 2026-10-23, before that refused).
+        for name in ["seen.dxf", "seen.svg"] {
+            let result = host.export_as_user(&mine.join(name)).unwrap();
+            assert!(result["visible"].as_u64().unwrap_or(0) > 0, "{result}");
+            assert_eq!(result["projection"], "orthographic");
+            assert!(mine.join(name).exists());
         }
         // The block's top face selected: its outline, 10 × 10.
         select(&mut host, &["F1:face(1)"]);

@@ -51,7 +51,8 @@ pub fn suggested_export_name(path: Option<&str>, extension: Option<&str>) -> Str
 pub enum ExportKind {
     /// Bodies: every body, or those selected (STEP, STL, 3MF, OBJ).
     Bodies,
-    /// The flat outline of faces or of a sketch (DXF, SVG).
+    /// The flat outline of faces or of a sketch, or with nothing selected
+    /// the model as seen (DXF, SVG).
     Outline,
 }
 
@@ -97,7 +98,9 @@ pub fn guarded(session: &mut Session, command: &str, params: &Value) -> Result<V
 /// something else in its place.
 ///
 /// - Nothing selected: a STEP or mesh file holds every body; a DXF or SVG
-///   file needs faces or a sketch, so it is refused.
+///   file is a drawing of the model as the viewport shows it, to scale
+///   (`file.export` with `view: "current"`, the camera the window gave
+///   the session; hidden lines left out).
 /// - Bodies only, to STEP or a mesh file: those bodies (`bodies`, by the
 ///   ids of their features); every body of the document is as nothing
 ///   selected.
@@ -162,9 +165,8 @@ pub fn export_selection(
         }
         ExportKind::Outline => {
             if items.is_empty() {
-                return Err(format!(
-                    "{ID}: a .{extension} file is the outline of flat faces or of a sketch; select the faces or the sketch to export first"
-                ));
+                // The model as seen (`view_export.rs` in the engine).
+                return Ok(None);
             }
             if faces == items.len() {
                 let list: Vec<Value> = items

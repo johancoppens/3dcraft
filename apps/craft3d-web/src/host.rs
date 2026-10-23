@@ -1020,12 +1020,12 @@ mod tests {
             let extension = extensions[0];
             let downloads = host.export_as(&format!("plate.{extension}"));
             match extension {
-                // Outlines need a selected face or sketch.
+                // Nothing selected: the model as seen (2026-10-23).
                 "dxf" | "svg" => {
-                    assert!(downloads.is_empty(), "{format}");
+                    assert_eq!(downloads.len(), 1, "{format}");
                     let report = host.shell.last_command.as_ref().unwrap();
                     assert!(
-                        !report.ok && report.text.contains("select"),
+                        report.ok && report.text.contains("visible"),
                         "{}",
                         report.text
                     );
@@ -1200,7 +1200,14 @@ mod tests {
         assert_eq!(types[0].extensions, ["stl"]);
         assert!(types[0].mime.contains('/'));
         assert!(pick.accepts("part.STL") && !pick.accepts("part.step"));
-        // An export that fails shows no dialog at all.
+        // An export that fails shows no dialog at all: an edge selected
+        // cannot go to an outline.
+        host.session
+            .execute(
+                "select.query",
+                &serde_json::json!({"kind": "edge", "limit": 1, "then": "replace"}),
+            )
+            .unwrap();
         let failed = host.answer(
             NameDialog {
                 purpose: Purpose::Export,
@@ -1210,6 +1217,9 @@ mod tests {
         );
         assert_eq!(failed, Outcome::default());
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
+        host.session
+            .execute("select.set", &serde_json::json!({"mode": "clear"}))
+            .unwrap();
         // An OBJ's material library waits for its own click.
         let obj = host.answer(
             NameDialog {

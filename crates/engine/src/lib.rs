@@ -63,6 +63,7 @@ pub mod task_score;
 mod typed;
 mod verify;
 mod verify_cmds;
+mod view_export;
 mod visibility_cmds;
 mod workspace;
 
@@ -308,6 +309,9 @@ pub struct Session {
     last_failure: Option<report::FailedCommand>,
     /// What the frontend says about itself in the bug report.
     host_details: Vec<(String, String)>,
+    /// The camera of the window's viewport, for `file.export` of the view
+    /// as seen (`view: "current"`), as the window last said.
+    pub(crate) window_camera: Option<craft3d_render::Camera>,
 }
 
 /// Most documents open at once.
@@ -326,7 +330,16 @@ impl Session {
             memory: memory_files::MemoryFiles::default(),
             last_failure: None,
             host_details: Vec::new(),
+            window_camera: None,
         }
+    }
+
+    /// The camera the window's viewport shows the active document with:
+    /// what `file.export {view: "current"}` draws to DXF or SVG. A window
+    /// says it whenever it draws; without one (`None`) that view is the
+    /// iso view. View state: nothing in a document changes.
+    pub fn set_window_camera(&mut self, camera: Option<craft3d_render::Camera>) {
+        self.window_camera = camera;
     }
 
     /// Lets the kernel go of the trees it keeps for freeform surfaces that

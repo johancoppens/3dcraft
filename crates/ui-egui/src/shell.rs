@@ -1503,6 +1503,8 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.follow_active_tab(session);
+        // What `file.export` to DXF or SVG draws as the view seen.
+        session.set_window_camera(Some(self.state.camera.to_render()));
         self.sync_timeline(session);
         self.sync_player(session);
         let scene = self.sync_scene(session);

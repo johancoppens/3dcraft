@@ -31,7 +31,7 @@ pub(crate) fn wanted(format: Option<&str>, path: &str) -> Option<DrawingFormat> 
 }
 
 /// The drawing's unit for a document's.
-fn drawing_unit(unit: LengthUnit) -> Unit {
+pub(crate) fn drawing_unit(unit: LengthUnit) -> Unit {
     match unit {
         LengthUnit::Micrometre => Unit::Micron,
         LengthUnit::Millimetre => Unit::Millimeter,
@@ -70,6 +70,14 @@ pub(crate) fn export(
             None => Ok(()),
         }
     };
+    // Neither: the model as seen (`view_export.rs`).
+    if given.is_empty() {
+        return crate::view_export::export(session, p, path, resolved, format);
+    }
+    refuse(
+        &crate::view_export::VIEW_KEYS,
+        "is about a drawing of the model as seen, which is what a .dxf or .svg file holds without `sketch`, `face` or `faces`",
+    )?;
     let source = match given.as_slice() {
         [] => {
             return fail(format!(
@@ -139,6 +147,7 @@ pub(crate) fn export(
             layers.push(Layer {
                 name: name.to_string(),
                 color,
+                dash: None,
                 paths,
             });
         }
@@ -552,6 +561,7 @@ fn bbox(paths: &[DrawingPath]) -> Result<[f64; 4], CommandError> {
         layers: vec![Layer {
             name: "outline".into(),
             color: Color::Black,
+            dash: None,
             paths: paths.to_vec(),
         }],
     };
@@ -782,6 +792,7 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         placed.push(Layer {
             name: layer,
             color: Color::Black,
+            dash: None,
             paths,
         });
         x += w + gap;
