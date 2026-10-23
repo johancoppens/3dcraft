@@ -34,6 +34,7 @@ const STEPS: &[Step] = &[
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
+    v34_to_v35,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -624,6 +625,16 @@ fn v34_point_body_params(kind: &mut Value, from: u64, to: u64) {
             *value = Value::from(to);
         }
     }
+}
+
+/// Version 35 adds two kinds of sketch entity: a curve from formulas
+/// (`formula`: `x`, `y`, `from`, `to`, `start`, `end`) and a live spline
+/// (`interpolated`: `degree`, `through`), both fitted by regeneration and
+/// stored without their fits. A file of version 34 has none, so nothing
+/// changes; the version was raised so that an older build says a newer
+/// 3DCraft is needed instead of refusing an unknown kind of entity.
+fn v34_to_v35(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
 }
 
 // One step per version after the first: forgetting either half of a

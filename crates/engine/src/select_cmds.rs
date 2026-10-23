@@ -2283,7 +2283,9 @@ impl Context<'_> {
             craft3d_doc::Geometry::Circle { .. } => "circle",
             craft3d_doc::Geometry::Arc { .. } => "arc",
             craft3d_doc::Geometry::Line { .. } => "line",
-            craft3d_doc::Geometry::Spline { .. } => "spline",
+            craft3d_doc::Geometry::Spline { .. }
+            | craft3d_doc::Geometry::Formula { .. }
+            | craft3d_doc::Geometry::Interpolated { .. } => "spline",
             _ => "point",
         };
         let sid = sketch.to_string();

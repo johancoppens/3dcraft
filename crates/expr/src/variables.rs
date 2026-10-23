@@ -708,6 +708,35 @@ impl Evaluation {
         )
     }
 
+    /// Evaluates a parsed expression as [`Evaluation::evaluate`] does, with
+    /// one more name bound to `value`: the free parameter of a curve
+    /// (`t`), which shadows a variable of the same name inside `expr`.
+    /// Parse once and call this for every value of the parameter.
+    pub fn evaluate_bound(
+        &self,
+        expr: &Expr,
+        name: &str,
+        value: Quantity,
+    ) -> Result<Quantity, ExprError> {
+        evaluate_known(
+            expr,
+            &self.tables,
+            |known| known == name || self.index.contains_key(known),
+            |wanted| {
+                if wanted == name {
+                    Some(value)
+                } else {
+                    self.value(wanted)
+                }
+            },
+        )
+    }
+
+    /// The table `name` lookups are made in, if there is one.
+    pub fn table(&self, name: &str) -> Option<&Table> {
+        self.tables.iter().find(|t| t.name == name)
+    }
+
     /// Every variable of the table, in evaluation order
     /// ([`VariableTable::evaluation_order`]).
     pub fn entries(&self) -> &[EvaluatedVariable] {
@@ -744,6 +773,41 @@ mod tests {
             table.set(name, source).unwrap();
         }
         table
+    }
+
+    #[test]
+    fn a_bound_parameter_shadows_a_variable_of_its_name() {
+        let values = table(&[("rb", "20 mm"), ("t", "3 mm"), ("bad", "1 mm / 0")]).evaluate();
+        let x = Expr::parse("rb * (cos(t) + t * sin(t))").unwrap();
+        let got = values
+            .evaluate_bound(&x, "t", Quantity::dimensionless(0.5))
+            .unwrap();
+        assert_eq!(got.dimension, Dimension::LENGTH);
+        assert!((got.value - 20.0 * (0.5f64.cos() + 0.5 * 0.5f64.sin())).abs() < 1e-12);
+        // Without a variable of its name the parameter is still known.
+        let plain = table(&[("rb", "20 mm")]).evaluate();
+        assert!(
+            plain
+                .evaluate_bound(&x, "t", Quantity::dimensionless(1.0))
+                .is_ok()
+        );
+        // A typo is still an error, and a failed variable is reported as one.
+        let typo = Expr::parse("rb * tt").unwrap();
+        assert!(matches!(
+            values
+                .evaluate_bound(&typo, "t", Quantity::dimensionless(1.0))
+                .unwrap_err()
+                .kind,
+            ErrorKind::UnknownVariable { .. }
+        ));
+        let failed = Expr::parse("bad * t").unwrap();
+        assert!(matches!(
+            values
+                .evaluate_bound(&failed, "t", Quantity::dimensionless(1.0))
+                .unwrap_err()
+                .kind,
+            ErrorKind::DependencyFailed { .. }
+        ));
     }
 
     fn sources(table: &VariableTable) -> Vec<(&str, &str)> {

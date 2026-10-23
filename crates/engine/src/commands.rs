@@ -1514,9 +1514,17 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
         }
     }
     for feature in &doc.features {
+        // In the formulas of a curve the parameter is not the variable of
+        // its name.
+        let formulas = feature
+            .kind
+            .formula_exprs()
+            .into_iter()
+            .filter(|_| name != craft3d_doc::FORMULA_PARAMETER);
         let params: Vec<String> = feature
             .exprs()
             .into_iter()
+            .chain(formulas)
             .filter(|(_, expr)| mentions(expr.source(), name))
             .map(|(param, _)| param)
             .collect();

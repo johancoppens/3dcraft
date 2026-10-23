@@ -7,7 +7,7 @@
 | Doc | What it holds |
 |---|---|
 | [`guide/`](guide/README.md) | The user guide: install, working with an agent over MCP, the window, concepts, features, measuring, files, troubleshooting |
-| [`examples/`](examples/README.md) | Nine example models as command scripts, each with a picture and its volume asserted |
+| [`examples/`](examples/README.md) | Ten example models as command scripts, each with a picture and its volume asserted |
 | [`architecture.md`](architecture.md) | The map: the rules that always hold, crates and layers, data, pipelines, the kernel's methods, known structural debt |
 | [`design/`](design/README.md) | One detail document per part (geometry, topology, booleans, blends, sweeps, face operations, names, document, regeneration, tessellator, rendering, engine, files): how it works now, then its dated findings |
 | [`development.md`](development.md) | Prerequisites, build and run, CLI, driving the app, watching along, environment variables |

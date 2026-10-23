@@ -1268,6 +1268,27 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                 degree: *degree,
                 control: control.iter().map(raw).collect(),
             },
+            doc::Geometry::Formula {
+                x,
+                y,
+                from,
+                to,
+                start,
+                end,
+            } => manifest::SketchGeometry::Formula {
+                x: x.source().to_string(),
+                y: y.source().to_string(),
+                from: from.source().to_string(),
+                to: to.source().to_string(),
+                start: raw(start),
+                end: raw(end),
+            },
+            doc::Geometry::Interpolated { degree, through } => {
+                manifest::SketchGeometry::Interpolated {
+                    degree: *degree,
+                    through: through.iter().map(raw).collect(),
+                }
+            }
             doc::Geometry::Image {
                 of,
                 pattern: doc::PatternId(pattern),
@@ -1507,6 +1528,27 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
                 degree,
                 control: control.into_iter().map(Id).collect(),
             },
+            manifest::SketchGeometry::Formula {
+                x,
+                y,
+                from,
+                to,
+                start,
+                end,
+            } => doc::Geometry::Formula {
+                x: doc::Expr::new(x),
+                y: doc::Expr::new(y),
+                from: doc::Expr::new(from),
+                to: doc::Expr::new(to),
+                start: Id(start),
+                end: Id(end),
+            },
+            manifest::SketchGeometry::Interpolated { degree, through } => {
+                doc::Geometry::Interpolated {
+                    degree,
+                    through: through.into_iter().map(Id).collect(),
+                }
+            }
             manifest::SketchGeometry::Image { of, pattern, index } => doc::Geometry::Image {
                 of: Id(of),
                 pattern: doc::PatternId(pattern),

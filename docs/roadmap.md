@@ -492,12 +492,14 @@ The first version for people outside the project; it follows M9 and does not wai
 - Jigs, phase 4 and gap G7: the proof over the range, `document.sample` (defaults, the corners of the ranges, every choice, seeded random points; each set as `param.set` sets it, regenerated, timed and checked as `document.check`; ranges that depend on others evaluated per point) and `craft3d-cli check-range` (exit 1 on a failing point); `file.export {set}` and `convert --set` lay every flat face of a named set on one sheet ([`design/verification.md`](design/verification.md) › *Proof over the range*, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-23)
 - Features switched on or off by a condition (gap G4): `feature.when {feature, expr}`, status `inactive`, driven by a boolean or choice parameter; a suppressed or inactive feature passes the body it changes on unchanged (a boolean whose tool is off passes its target on), and a reference to what only it makes fails naming it ([`design/regeneration.md`](design/regeneration.md) › *Switched off*, [guide](guide/06-features.md#switching-a-feature-on-or-off)) (2026-10-23)
 
+- Curves from formulas in a sketch: `sketch.curve` (`x(t)`, `y(t)` over a range of `t` in the variables, fitted as a cubic B-spline within half the tolerance at every regeneration, its ends holding profiles closed) and live splines (`sketch.spline {live: true}`, fitted again through points held by formulas); an involute gear example ([`design/document.md`](design/document.md) › *Curves from formulas*; format 35) (2026-10-23)
 #### Open
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
 - [ ] On WebGL2 see-through bodies and the section are drawn by the CPU renderer: their passes (peel, cut) load the depth buffer without a sampler, which OpenGL ES 3.0 reads as 0; read it through a nearest sampler as the lines' distance pass does
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
 - [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
+- [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet
 - [ ] A conflicting constraint is named, the constraints it contradicts are not
 - [ ] A contradiction the solver meets by shrinking a line to a point (`horizontal` and `vertical` on one line) is reported as solved
 - [ ] An under-constrained sketch is built without a word: a warning in `document.check` (or a deliberate decision not to)

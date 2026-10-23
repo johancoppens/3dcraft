@@ -86,6 +86,10 @@ pub struct SketchOutline {
     pub degenerate: Vec<EntityId>,
 }
 
+/// A curve of a sketch as regeneration fitted it: degree, knots and
+/// control points.
+pub type FittedSpline = (usize, Vec<f64>, Vec<Point>);
+
 /// One curve of a sketch between two nodes (a node is one or more points
 /// at the same place).
 struct Link {
@@ -113,11 +117,14 @@ enum LinkCurve {
 /// meet there; a chain that comes back to its start is closed. Chains
 /// come in the order of their first entity, and run the way that entity
 /// was drawn. Construction geometry is left out unless `construction`,
-/// and then it comes apart from the rest.
+/// and then it comes apart from the rest. The curves regeneration fits (a
+/// formula curve, a live spline) are taken as `fitted` gives them: degree,
+/// knots and control points.
 pub fn sketch_outline(
     sketch: &Sketch,
     point: &dyn Fn(EntityId) -> Option<(f64, f64)>,
     radius: &dyn Fn(EntityId) -> Option<f64>,
+    fitted: &dyn Fn(EntityId) -> Option<FittedSpline>,
     construction: bool,
     tolerance: f64,
 ) -> Result<SketchOutline, IoError> {
@@ -215,13 +222,49 @@ pub fn sketch_outline(
                         .iter()
                         .map(|&id| position(id))
                         .collect::<Result<Vec<Point>, IoError>>()?;
-                    let spline = Spline::new(
-                        usize::try_from(*degree).map_err(|_| not_a_curve())?,
-                        clamped_uniform_knots(*degree, control.len()),
-                        points,
-                        None,
-                    )
+                    // A spline the caller has on knots of its own (an
+                    // instance of a fitted curve) is taken as it is.
+                    let spline = match fitted(entity.id) {
+                        Some((degree, knots, control)) => Spline::new(degree, knots, control, None),
+                        None => Spline::new(
+                            usize::try_from(*degree).map_err(|_| not_a_curve())?,
+                            clamped_uniform_knots(*degree, control.len()),
+                            points,
+                            None,
+                        ),
+                    }
                     .map_err(|_| not_a_curve())?;
+                    let (from, to) = (
+                        nodes.at(first, position(first)?),
+                        nodes.at(last, position(last)?),
+                    );
+                    links.push((
+                        index,
+                        Link {
+                            entity: entity.id,
+                            from,
+                            to,
+                            curve: LinkCurve::Spline(spline),
+                        },
+                    ));
+                }
+                Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+                    let not_a_curve = || {
+                        unsupported(format!(
+                            "the {} {} has no fitted curve (does its sketch solve?)",
+                            entity.geometry.type_name(),
+                            entity.id
+                        ))
+                    };
+                    let Some((first, last)) = entity.geometry.ends() else {
+                        return Err(not_a_curve());
+                    };
+                    let (degree, knots, control) = fitted(entity.id).ok_or_else(not_a_curve)?;
+                    if control.iter().flatten().any(|v| !v.is_finite()) {
+                        return Err(not_a_curve());
+                    }
+                    let spline =
+                        Spline::new(degree, knots, control, None).map_err(|_| not_a_curve())?;
                     let (from, to) = (
                         nodes.at(first, position(first)?),
                         nodes.at(last, position(last)?),

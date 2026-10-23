@@ -43,10 +43,10 @@ pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
-    Geometry, ImagePlace, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_DEPTH, MAX_PATTERN_INSTANCES,
-    MAX_SKETCH_PATTERNS, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, PatternId, PlaceMap, Removal,
-    SecondDirection, Sketch, SketchError, SketchPattern, SketchPatternLayout, SketchPlane,
-    WorldPlane, clamped_uniform_knots, parse_image_path, parse_image_ref,
+    FORMULA_PARAMETER, Geometry, ImagePlace, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_DEPTH,
+    MAX_PATTERN_INSTANCES, MAX_SKETCH_PATTERNS, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, PatternId,
+    PlaceMap, Removal, SecondDirection, Sketch, SketchError, SketchPattern, SketchPatternLayout,
+    SketchPlane, WorldPlane, clamped_uniform_knots, parse_image_path, parse_image_ref,
 };
 
 use craft3d_expr::{VariableError, VariableTable};
@@ -1281,6 +1281,23 @@ impl FeatureKind {
         out
     }
 
+    /// The formulas of the sketch's formula curves (`e7.x`, `e7.y`), in
+    /// which [`FORMULA_PARAMETER`] is bound: not among [`FeatureKind::exprs`],
+    /// since they cannot be evaluated with the variables alone.
+    pub fn formula_exprs(&self) -> Vec<(String, &Expr)> {
+        match self {
+            FeatureKind::Sketch(s) => s.formula_exprs(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn formula_exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            FeatureKind::Sketch(s) => s.formula_exprs_mut(),
+            _ => Vec::new(),
+        }
+    }
+
     fn exprs_mut(&mut self) -> Vec<&mut Expr> {
         fn turned(o: &mut Orientation) -> impl Iterator<Item = &mut Expr> {
             o.axis.iter_mut().chain([&mut o.angle])
@@ -1811,6 +1828,21 @@ impl Document {
             for expr in renamed.exprs_mut() {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
+            // In the formulas of a curve the parameter shadows a variable
+            // of its name: a variable called so is not renamed there, and
+            // a variable used there cannot take the parameter's name.
+            if old != FORMULA_PARAMETER {
+                for expr in renamed.kind.formula_exprs_mut() {
+                    let text = craft3d_expr::rename_variable(expr.source(), old, new)?;
+                    if new == FORMULA_PARAMETER && text != expr.source() {
+                        return Err(DocError::Invalid(format!(
+                            "`{old}` is used in a formula curve of `{}`, where `{FORMULA_PARAMETER}` is the curve's parameter; renamed to `{new}` it would become the parameter: choose another name",
+                            feature.name
+                        )));
+                    }
+                    *expr = Expr::new(text);
+                }
+            }
             renamed_features.push(renamed);
         }
         // The public descriptions go with their variables, and the
@@ -1880,8 +1912,9 @@ impl Document {
                 );
             }
         }
-        for feature in &mut self.features {
-            for expr in feature.exprs_mut() {
+        for feature in &self.features {
+            let formulas = feature.kind.formula_exprs();
+            for (_, expr) in feature.exprs().into_iter().chain(formulas) {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -1937,6 +1970,9 @@ impl Document {
             }
             for feature in &mut self.features {
                 for expr in feature.exprs_mut() {
+                    rename(expr)?;
+                }
+                for expr in feature.kind.formula_exprs_mut() {
                     rename(expr)?;
                 }
             }

@@ -22,6 +22,7 @@ mod boolean;
 mod cache;
 mod cause;
 mod chamfer;
+pub mod curve_fit;
 mod datum;
 mod delete_face;
 mod derive;
@@ -67,8 +68,8 @@ pub use offset_profile::OffsetResult;
 pub use pass::Passed;
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sketch::{
-    ConstraintResult, ConstraintState, SketchResult, image_places_to_record, record_image_places,
-    settle_sketches, settle_sketches_cached,
+    ConstraintResult, ConstraintState, FittedCurve, SketchResult, fit_formula_curve,
+    image_places_to_record, record_image_places, settle_sketches, settle_sketches_cached,
 };
 pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
 pub use split::{

@@ -55,6 +55,7 @@ mod selection;
 mod set_cmds;
 mod sheet_cmds;
 mod sketch_cmds;
+mod sketch_curve_cmds;
 mod sketch_path_cmds;
 mod sketch_pattern_cmds;
 mod sketch_spline_cmds;
@@ -428,6 +429,7 @@ impl Session {
                 sketch_path_cmds::SPECS,
                 sketch_pattern_cmds::SPECS,
                 sketch_spline_cmds::SPECS,
+                sketch_curve_cmds::SPECS,
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
                 sweep_path_cmds::SPECS,

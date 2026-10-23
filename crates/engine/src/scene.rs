@@ -824,6 +824,15 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
                 // The control points of a spline are points of the sketch,
                 // counted above, and hold the curve between them.
                 Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
+                // A fitted curve lies within its control points.
+                Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+                    for p in solved
+                        .curve(entity.id)
+                        .map_or(&[][..], |c| &c.spline.control)
+                    {
+                        extent.add(solved.to_world(p[0], p[1]));
+                    }
+                }
             }
         }
     }
@@ -1044,6 +1053,14 @@ fn sample_arc(
 fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<ScenePolyline> {
     let (curve, points) = match entity.geometry {
         Geometry::Point { .. } | Geometry::Image { .. } => return None,
+        Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+            let fitted = solved.curve(entity.id)?;
+            let points = craft3d_regen::curve_fit::polyline(&fitted.spline, tolerance)
+                .into_iter()
+                .map(|[x, y]| solved.to_world(x, y))
+                .collect();
+            (SketchCurve::Spline, points)
+        }
         Geometry::Spline {
             degree,
             ref control,

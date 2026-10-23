@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 /// The examples, as `docs/examples` names them (the start screen's
 /// order).
-pub const EXAMPLES: [&str; 9] = [
-    "bracket", "flange", "case", "bushing", "pipe", "spring", "hopper", "panel", "wedge",
+pub const EXAMPLES: [&str; 10] = [
+    "bracket", "flange", "case", "bushing", "pipe", "spring", "hopper", "panel", "wedge", "gear",
 ];
 
 /// The params of `view.render` the thumbnails are made with (without the

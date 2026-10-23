@@ -8,6 +8,7 @@
 //! the document; the engine does that as part of every edit.
 
 use crate::cause::FIX_IT_FIRST;
+use crate::curve_fit::{self, Fit, Spline2};
 use crate::sketch_pattern::{PatternResult, Placed};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
@@ -15,7 +16,7 @@ use craft3d_doc::{
     Geometry, ImagePlace, NameRole, PatternId, PersistentName, PlaceMap, Sketch, SketchPlane,
     WorldPlane,
 };
-use craft3d_expr::Evaluation;
+use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_solve as solve;
 use std::collections::BTreeMap;
@@ -71,6 +72,22 @@ pub struct SketchResult {
     /// The kernel's numbers for the curves of nested patterns
     /// ([`crate::sketch_pattern::CurveIds`]).
     pub curve_ids: crate::sketch_pattern::CurveIds,
+    /// The curves regeneration fitted (formula curves and live splines),
+    /// in the order of their ids.
+    pub curves: Vec<FittedCurve>,
+}
+
+/// A curve of a sketch as regeneration fitted it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FittedCurve {
+    pub id: EntityId,
+    /// On clamped knots; it starts and ends on the curve's end points as
+    /// solved.
+    pub spline: Spline2,
+    /// For a formula curve, the largest distance between the spline and
+    /// the formula found at the fit's checks; `None` for a live spline,
+    /// which passes through its points.
+    pub deviation: Option<f64>,
 }
 
 impl SketchResult {
@@ -88,6 +105,15 @@ impl SketchResult {
     /// it: `e7`, `e7[3]`, `e3[2][1]`.
     pub fn curve_name(&self, id: u64) -> String {
         self.curve_ids.name(id)
+    }
+
+    /// A fitted curve (a formula curve or a live spline) as the kernel
+    /// takes it.
+    pub fn curve(&self, id: EntityId) -> Option<&FittedCurve> {
+        match self.curves.binary_search_by_key(&id, |c| c.id) {
+            Ok(at) => self.curves.get(at),
+            Err(_) => None,
+        }
     }
 
     pub fn radius(&self, id: EntityId) -> Option<f64> {
@@ -142,6 +168,108 @@ struct Problem {
     left_out: Vec<(ConstraintId, String)>,
     /// The map of each image point that stands for an instance.
     image_maps: Vec<(EntityId, solve::ImageMap)>,
+    /// The ends of formula curves held where the formulas put them: one
+    /// solver constraint each, after the chains, as (curve, point).
+    pins: Vec<(EntityId, EntityId)>,
+}
+
+/// The fit of each formula curve of a sketch, in the sketch's order, or
+/// why it has none.
+pub(crate) type FormulaFits = Vec<(EntityId, Result<Fit, String>)>;
+
+/// Fits every formula curve of `sketch` with the current variables.
+pub(crate) fn formula_fits(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> FormulaFits {
+    sketch
+        .entities
+        .iter()
+        .filter_map(|e| match &e.geometry {
+            Geometry::Formula { x, y, from, to, .. } => Some((
+                e.id,
+                fit_formula_curve(doc, variables, &e.id.to_string(), [x, y, from, to]),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Fits one formula curve (`craft3d_doc::Geometry::Formula`) with the
+/// variables `variables`: evaluates its range, then its formulas with the
+/// parameter bound, in the document's length unit. `id` names the curve in
+/// messages. The method and what it guarantees: [`crate::curve_fit`].
+pub fn fit_formula_curve(
+    doc: &Document,
+    variables: &Evaluation,
+    id: &str,
+    [x, y, from, to]: [&craft3d_doc::Expr; 4],
+) -> Result<Fit, String> {
+    let range = |name: &str, expr: &craft3d_doc::Expr| {
+        variables
+            .evaluate(expr.source())
+            .map_err(|e| format!("{id}.{name}: `{}`: {e}", expr.source()))
+    };
+    let (mut start, mut end) = (range("from", from)?, range("to", to)?);
+    // An end that is exactly zero takes the other's dimension: `[0, 360
+    // deg]` is a range of angles.
+    if start.dimension != end.dimension {
+        if start.value == 0.0 {
+            start = Quantity::new(0.0, end.dimension);
+        } else if end.value == 0.0 {
+            end = Quantity::new(0.0, start.dimension);
+        }
+    }
+    if start.dimension != end.dimension {
+        return Err(format!(
+            "{id}: the range of t runs from `{}`, which is {}, to `{}`, which is {}; both ends have one dimension",
+            from.source(),
+            start.dimension.described(),
+            to.source(),
+            end.dimension.described()
+        ));
+    }
+    let dimension = start.dimension;
+    let parse = |name: &str, expr: &craft3d_doc::Expr| {
+        craft3d_expr::Expr::parse(expr.source())
+            .map_err(|e| format!("{id}.{name}: `{}`: {e}", expr.source()))
+    };
+    let (fx, fy) = (parse("x", x)?, parse("y", y)?);
+    let coordinate = |name: &str, source: &str, formula: &craft3d_expr::Expr, t: f64| {
+        let quantity = variables
+            .evaluate_bound(
+                formula,
+                craft3d_doc::FORMULA_PARAMETER,
+                Quantity::new(t, dimension),
+            )
+            .map_err(|e| format!("{id}.{name} at t = {t}: `{source}`: {e}"))?;
+        if quantity.dimension == Dimension::LENGTH {
+            Ok(crate::to_document(quantity, doc).value)
+        } else if quantity.dimension.is_dimensionless() {
+            Ok(quantity.value)
+        } else {
+            Err(format!(
+                "{id}.{name}: `{source}` is {}, but a length is needed{}",
+                quantity.dimension.described(),
+                quantity.dimension.unit_hint(source)
+            ))
+        }
+    };
+    curve_fit::fit_formula(
+        |t| {
+            Ok([
+                coordinate("x", x.source(), &fx, t)?,
+                coordinate("y", y.source(), &fy, t)?,
+            ])
+        },
+        start.value,
+        end.value,
+        doc.tolerance.linear,
+    )
+    .map_err(|e| {
+        if e.starts_with(&format!("{id}.")) {
+            e
+        } else {
+            format!("{id}: {e}")
+        }
+    })
 }
 
 /// An instance of a pattern: the pattern's place in the sketch's list and
@@ -217,6 +345,7 @@ fn problem(
     variables: &Evaluation,
     sketch: &Sketch,
     patterns: &[PatternResult],
+    fits: &FormulaFits,
 ) -> Result<Problem, String> {
     // A spline is not an entity of the solver's: its shape is that of its
     // control points, which are. So it adds no unknowns and no equations,
@@ -229,7 +358,8 @@ fn problem(
             .map_err(|_| "the sketch has too many entities".to_string())
     };
     for entity in &sketch.entities {
-        if matches!(entity.geometry, Geometry::Spline { .. }) {
+        // Nor are the curves regeneration fits.
+        if matches!(entity.geometry, Geometry::Spline { .. }) || entity.geometry.is_fitted() {
             continue;
         }
         index.insert(entity.id, position(entities.len())?);
@@ -255,7 +385,9 @@ fn problem(
     let mut image_maps = Vec::new();
     for entity in &sketch.entities {
         input.entities.push(match entity.geometry {
-            Geometry::Spline { .. } => continue,
+            Geometry::Spline { .. } | Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+                continue;
+            }
             Geometry::Image { of, .. } => {
                 let map = match images.get(&entity.id) {
                     Some(Ok((n, instance))) => match patterns.get(*n) {
@@ -325,6 +457,9 @@ fn problem(
             Geometry::Point { .. } | Geometry::Image { .. } => {
                 Err(format!("{curve} is a point, which has no direction"))
             }
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => Err(format!(
+                "{curve} is a fitted curve, which takes no tangent constraint yet"
+            )),
             Geometry::Spline { control, .. } => {
                 let leg = if control.first() == Some(&at) {
                     control.get(1)
@@ -551,6 +686,56 @@ fn problem(
         });
         chains.push(pattern.id);
     }
+    // The ends of formula curves, where the formulas put them.
+    let mut pins = Vec::new();
+    let mut held: BTreeMap<EntityId, (EntityId, [f64; 2])> = BTreeMap::new();
+    let distance2 = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+    for (curve, fit) in fits {
+        let fit = fit.as_ref().map_err(Clone::clone)?;
+        let Ok(Geometry::Formula { start, end, .. }) = sketch.entity(*curve).map(|e| &e.geometry)
+        else {
+            continue;
+        };
+        let (Some(first), Some(last)) = (fit.spline.control.first(), fit.spline.control.last())
+        else {
+            return Err(format!("{curve} has no fitted points"));
+        };
+        if start == end {
+            let gap = (first[0] - last[0]).hypot(first[1] - last[1]);
+            if gap > doc.tolerance.linear {
+                return Err(format!(
+                    "{curve} starts and ends on the one point {start}, but its formulas put its start at ({}, {}) and its end at ({}, {}), {gap:e} apart; end it on another point, or change the formulas so it closes",
+                    first[0], first[1], last[0], last[1]
+                ));
+            }
+        }
+        let mut ends = vec![(*start, *first)];
+        if start != end {
+            ends.push((*end, *last));
+        }
+        for (point, at) in ends {
+            // A point two curves end on is held once, where both put it.
+            match held.get(&point) {
+                Some(&(other, there)) => {
+                    let gap: f64 = distance2(at, there);
+                    if gap > doc.tolerance.linear {
+                        return Err(format!(
+                            "the formula curves {other} and {curve} do not meet at {point}: one ends at ({}, {}), the other at ({}, {}), {gap:e} apart; change the formulas, or end them on two points",
+                            there[0], there[1], at[0], at[1]
+                        ));
+                    }
+                }
+                None => {
+                    held.insert(point, (*curve, at));
+                    input.constraints.push(solve::Constraint::Fixed {
+                        point: find(point)?,
+                        at: Some(at),
+                    });
+                    pins.push((*curve, point));
+                }
+            }
+        }
+    }
     Ok(Problem {
         input,
         entities,
@@ -558,6 +743,7 @@ fn problem(
         chains,
         left_out,
         image_maps,
+        pins,
     })
 }
 
@@ -594,13 +780,19 @@ fn explain(error: &solve::SolveError, problem: &Problem) -> String {
     use solve::{Site, SolveError as E};
     let constraint = |i: usize| match problem.constraints.get(i) {
         Some(id) => id.to_string(),
-        None => i
-            .checked_sub(problem.constraints.len())
-            .and_then(|n| problem.chains.get(n))
-            .map_or_else(
-                || format!("constraint {i}"),
-                |p| format!("the chain of {p}"),
-            ),
+        None => {
+            let after = i.checked_sub(problem.constraints.len());
+            if let Some(p) = after.and_then(|n| problem.chains.get(n)) {
+                format!("the chain of {p}")
+            } else if let Some((curve, point)) = after
+                .and_then(|n| n.checked_sub(problem.chains.len()))
+                .and_then(|n| problem.pins.get(n))
+            {
+                format!("the end {point} of the formula curve {curve}")
+            } else {
+                format!("constraint {i}")
+            }
+        }
     };
     let entity = |i: usize| {
         problem
@@ -675,7 +867,9 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
             Geometry::Line { .. }
             | Geometry::Arc { .. }
             | Geometry::Spline { .. }
-            | Geometry::Image { .. } => {}
+            | Geometry::Image { .. }
+            | Geometry::Formula { .. }
+            | Geometry::Interpolated { .. } => {}
         }
     }
     points.sort_by_key(|(id, ..)| *id);
@@ -1149,6 +1343,7 @@ pub(crate) fn solve_sketch(
     variables: &Evaluation,
     sketch: &Sketch,
     placement: Result<Placement, String>,
+    fits: &FormulaFits,
 ) -> (Status, Option<SketchResult>) {
     crate::work::sketch_solve();
     let Placement {
@@ -1166,6 +1361,19 @@ pub(crate) fn solve_sketch(
     // The kernel's numbers for curves of nested patterns: from the counts
     // alone, before anything is solved.
     let curve_ids = crate::sketch_pattern::CurveIds::of(sketch, &patterns);
+    // The formula curves as fitted, ends where the formulas put them: what
+    // an unsolved sketch draws.
+    let fitted: Vec<FittedCurve> = fits
+        .iter()
+        .filter_map(|(id, fit)| {
+            let fit = fit.as_ref().ok()?;
+            Some(FittedCurve {
+                id: *id,
+                spline: fit.spline.clone(),
+                deviation: Some(fit.deviation),
+            })
+        })
+        .collect();
     let unsolved = |reason: String| {
         let result = SketchResult {
             origin,
@@ -1187,6 +1395,7 @@ pub(crate) fn solve_sketch(
             patterns: patterns.clone(),
             image_places: Vec::new(),
             curve_ids: curve_ids.clone().unwrap_or_default(),
+            curves: fitted.clone(),
         };
         (Status::Failed(reason), Some(result))
     };
@@ -1197,7 +1406,7 @@ pub(crate) fn solve_sketch(
         Ok(ids) => ids.clone(),
         Err(reason) => return unsolved(reason.clone()),
     };
-    let problem = match problem(doc, variables, sketch, &patterns) {
+    let problem = match problem(doc, variables, sketch, &patterns, fits) {
         Ok(problem) => problem,
         Err(reason) => return unsolved(reason),
     };
@@ -1331,7 +1540,27 @@ pub(crate) fn solve_sketch(
             shown.join("; ")
         )
     };
+    // The ends of formula curves the constraints would not leave where the
+    // formulas put them.
+    let moved_ends: Vec<String> = problem
+        .pins
+        .iter()
+        .zip(
+            solution
+                .constraints
+                .iter()
+                .skip(problem.constraints.len() + problem.chains.len()),
+        )
+        .filter(|(_, report)| report.status == solve::ConstraintStatus::Conflicting)
+        .map(|((curve, point), _)| format!("{point} (an end of {curve})"))
+        .collect();
+    let (curves, unfitted) = fitted_curves(sketch, &fitted, &points);
     let status = match conflicting.as_slice() {
+        [] if !moved_ends.is_empty() => Status::Failed(format!(
+            "the constraints move {} away from where the formulas put it; a point a formula curve ends on is placed by the curve: take those constraints off it, or tie it to the other curve with a coincident constraint",
+            moved_ends.join(", ")
+        )),
+        [] if unfitted.is_some() => Status::Failed(unfitted.unwrap_or_default()),
         [] if !broken_chains.is_empty() => Status::Failed(format!(
             "the chain of {} does not close: the end of its seed has to be its start turned by the angle about the centre, and the constraints do not let it; change or delete them, or the angle",
             broken_chains
@@ -1406,8 +1635,64 @@ pub(crate) fn solve_sketch(
         patterns,
         image_places,
         curve_ids,
+        curves,
     };
     (status, Some(result))
+}
+
+/// The fitted curves of a solved sketch, in the order of their ids: the
+/// formula curves as `fitted` has them, with their ends on the solved end
+/// points (within the tolerance of the fit's ends, as the solve holds
+/// them), and the live splines fitted through their solved points. With
+/// the first reason a live spline could not be fitted.
+fn fitted_curves(
+    sketch: &Sketch,
+    fitted: &[FittedCurve],
+    points: &Points,
+) -> (Vec<FittedCurve>, Option<String>) {
+    let solved_at = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
+        Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
+        Err(_) => None,
+    };
+    let mut curves = Vec::new();
+    let mut unfitted = None;
+    for entity in &sketch.entities {
+        match &entity.geometry {
+            Geometry::Formula { start, end, .. } => {
+                let Some(mut curve) = fitted.iter().find(|c| c.id == entity.id).cloned() else {
+                    continue;
+                };
+                if let (Some(at), Some(first)) =
+                    (solved_at(*start), curve.spline.control.first_mut())
+                {
+                    *first = at;
+                }
+                if let (Some(at), Some(last)) = (solved_at(*end), curve.spline.control.last_mut()) {
+                    *last = at;
+                }
+                curves.push(curve);
+            }
+            Geometry::Interpolated { degree, through } => {
+                let at: Option<Vec<[f64; 2]>> = through.iter().map(|id| solved_at(*id)).collect();
+                let spline = at
+                    .ok_or_else(|| "a point it passes through has no solved position".to_string())
+                    .and_then(|at| curve_fit::interpolated(*degree, &at));
+                match spline {
+                    Ok(spline) => curves.push(FittedCurve {
+                        id: entity.id,
+                        spline,
+                        deviation: None,
+                    }),
+                    Err(why) => {
+                        unfitted.get_or_insert(format!("{}: {why}", entity.id));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    curves.sort_by_key(|c| c.id);
+    (curves, unfitted)
 }
 
 /// Why a solve the sketch was not carried to all the way cannot be used,
@@ -1632,7 +1917,9 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
                 Geometry::Line { .. }
                 | Geometry::Arc { .. }
                 | Geometry::Spline { .. }
-                | Geometry::Image { .. } => {}
+                | Geometry::Image { .. }
+                | Geometry::Formula { .. }
+                | Geometry::Interpolated { .. } => {}
             }
         }
     }

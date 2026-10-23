@@ -308,7 +308,7 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
     ];
     let stored = |_| None;
     let no_radius = |_| None;
-    let error = sketch_outline(&sketch, &stored, &no_radius, false, 1e-6)
+    let error = sketch_outline(&sketch, &stored, &no_radius, &|_| None, false, 1e-6)
         .unwrap_err()
         .to_string();
     assert!(
@@ -317,7 +317,7 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
     );
     // Solved positions put them right: the arc is one open chain.
     let solved = |id: EntityId| (id == EntityId(3)).then_some((0.0, 5.0));
-    let outline = sketch_outline(&sketch, &solved, &no_radius, false, 1e-6).unwrap();
+    let outline = sketch_outline(&sketch, &solved, &no_radius, &|_| None, false, 1e-6).unwrap();
     let [
         Path::Chain {
             start,
@@ -347,7 +347,7 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
             end: EntityId(99),
         },
     ));
-    assert!(sketch_outline(&sketch, &solved, &no_radius, false, 1e-6).is_err());
+    assert!(sketch_outline(&sketch, &solved, &no_radius, &|_| None, false, 1e-6).is_err());
     sketch.entities.pop();
     let nan = |id: EntityId| {
         Some(if id == EntityId(2) {
@@ -356,7 +356,7 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
             (0.0, 5.0)
         })
     };
-    assert!(sketch_outline(&sketch, &nan, &no_radius, false, 1e-6).is_err());
+    assert!(sketch_outline(&sketch, &nan, &no_radius, &|_| None, false, 1e-6).is_err());
     sketch.entities.push(entity(
         6,
         Geometry::Circle {
@@ -364,17 +364,17 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
             radius: 0.0,
         },
     ));
-    assert!(sketch_outline(&sketch, &solved, &no_radius, false, 1e-6).is_err());
+    assert!(sketch_outline(&sketch, &solved, &no_radius, &|_| None, false, 1e-6).is_err());
     let radius = |_| Some(2.0);
     assert_eq!(
-        sketch_outline(&sketch, &solved, &radius, false, 1e-6)
+        sketch_outline(&sketch, &solved, &radius, &|_| None, false, 1e-6)
             .unwrap()
             .paths
             .len(),
         2
     );
     for tolerance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(sketch_outline(&sketch, &solved, &radius, false, tolerance).is_err());
+        assert!(sketch_outline(&sketch, &solved, &radius, &|_| None, false, tolerance).is_err());
     }
 }
 
