@@ -9,9 +9,10 @@ click and select.
 
 ## Starting
 
-Without a document the viewport shows the **start screen**: **New document** and **Open…**, the
-[example models](../examples/README.md) (a click builds one in a new document, from the same command script
-the guide's examples use), your **recent files**, and **Connect an AI agent**: the MCP configuration to
+Without a document the window shows the **start screen** in its middle (the feature list comes back with
+the first document): the logo and the version, **New document** and **Open…**, the
+[example models](../examples/README.md) as cards with a picture (a click builds one in a new document, from
+the same command script the guide's examples use), your **recent files**, and **Connect an AI agent**: the MCP configuration to
 give your client (chapter 1), with this window's own port and token file when it was started with
 `--control`. **Copy configuration** puts it on the clipboard; **Copy for Claude Code** copies the
 `claude mcp add` line. In the browser the start screen says that an agent cannot drive 3DCraft there yet.

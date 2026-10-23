@@ -349,6 +349,24 @@ Headless, as the build was checked: `google-chrome --headless=new --enable-unsaf
 
 **A web host** (`the host's own project`, nginx and `updater/updater.py`) takes the zip unchanged: it is served under `/3dcraft/` (its `^/[a-z0-9-]+craft/` location matches), the hashed names match its forever-cached `-[0-9a-f]{16}(_bg)?\.(wasm|js|ico)$`, the zip has one `index.html` in one top folder, the release has `3dcraft-web-<version>.zip` and `SHA256SUMS.txt`, our `index.html` links its own `manifest.webmanifest` (so the updater writes none and fetches no icons, which it would look for at `raw.githubusercontent.com/<owner>/3dcraft/main/assets/app-icon/…`, a path we do not have), and `HOSTING.md` mentions `?webgl` (so its start page offers the WebGL link). What the developer changes there: a line in `apps.txt`, for example `3dcraft|3DCraft|nieuw|#e0a93e|#8a5c0a|#f0c060|Parametrisch 3D-ontwerp (CAD)`; and where the releases are found. The updater reads `api.github.com/repos/<GITHUB_OWNER>/<id>/releases/latest` with one `GITHUB_OWNER` for every app (default `storytold`), and this repository is `johancoppens/3dcraft` and private. So either the releases go to a repository `storytold/3dcraft`, or the updater gets an owner per app (a column in `apps.txt`); a private repository also needs a `GITHUB_TOKEN` that can read its releases, and its assets must then be downloaded through the API (the asset's API `url` with `Accept: application/octet-stream`), since the updater sends the token to `api.github.com` only and `browser_download_url` of a private asset does not answer without it. `releases/latest` skips drafts: the release must be published.
 
+## Example thumbnails
+
+The start screen shows the nine example models of the guide as cards with a picture each. The pictures are
+PNGs in `docs/examples/thumbs/`, built into the program (`include_bytes!` in `crates/ui-egui/src/shell/start.rs`,
+with the logo from `packaging/icons/craft3d-128.png`), so the window and the web build show them without
+rendering anything at the start.
+
+`cargo xtask example-thumbs` makes them again: it builds `craft3d-cli`, runs every `docs/examples/<id>.json` in a
+new document in millimetres, renders it with `view.render` (the CPU renderer; iso, perspective, 160 × 120,
+zoom 1.2: `RENDER` in `xtask/src/thumbs.rs`), cuts the picture to at most 128 colours (the most common ones,
+each pixel to the nearest) and writes an indexed PNG, about 1 to 6 kB each (21 kB for the nine). It also
+writes `docs/examples/thumbs/STAMPS.txt`: per example a hash of its script, the render settings and the
+method. The pixels are not compared, since the renderer's last bits may differ between platforms; the stamp
+says what they were made from. `cargo test -p xtask` (`the_thumbnails_are_up_to_date`) recomputes the stamps
+and fails when an example script or the settings changed without new thumbnails: run the task and commit
+`docs/examples/thumbs`. Another test checks that every script in `docs/examples` has a thumbnail, and
+`craft3d-ui-egui`'s tests that each one decodes to 160 × 120.
+
 ## Morning health report
 
 `cargo xtask health` prints a short page of Markdown on how the project stands, for the developer in the morning: the date; the last commit of `main` and of `work`; the last gate (`gate-<n>.log` with the highest number in `.claude/worktrees/gate/target/`, or `$CRAFT3D_GATE_DIR/target`): passed or failed, on which commit, when it finished, how long it took, the failed binaries; the boolean corpus of that gate (agree, refused, unscored, mismatch, invalid, digest, from `target/evidence/booleans/corpus-score.txt`); the benchmark's work counts of that gate against the baseline ([`testing.md`](testing.md) › Performance tests); the number of commands, of tests and of lines of Rust (per crate in a folded table, as `cargo xtask stats`); the refusal sites (`::Unsupported`, `Stop::of(`, `unsupported(` in non-test code); the last random-design run (`target/fuzz/summary.json` of `cargo xtask fuzz`, [`testing.md`](testing.md) › Oracle 11: seeds, groups, the refusal rate and the three most common reasons, wrong results by oracle, crashes, timeouts, out of memory); the open findings of each showcase (`== … -> FAILED` lines in `target/work/*/findings/results.txt`); and the expectation changes logged in `log/devlog.md` since the previous report (lines that say "expectation change"; the ten most recent are quoted). It only reads, and says `unknown` for whatever is missing. The page is also kept in `target/health/<date>.md`, and the dev log line it read up to in `target/health/last.txt`.

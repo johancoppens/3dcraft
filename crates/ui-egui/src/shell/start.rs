@@ -7,6 +7,12 @@
 //! ([`Shell::take_open_recent`]), and an example is built by the host
 //! with [`run_example`] ([`Shell::take_example`]), which runs the guide's
 //! command script in a new document like any other commands.
+//!
+//! While it shows, the feature list is put away, so the welcome sits in
+//! the middle of the window. The logo and the examples' thumbnails are
+//! PNGs built into the program: the thumbnails are made by
+//! `cargo xtask example-thumbs` (docs/development.md, Example
+//! thumbnails), which a test keeps in step with the scripts.
 
 use super::{FileAction, Shell};
 use crate::theme::{color, color_alpha};
@@ -23,6 +29,8 @@ pub struct Example {
     /// What it shows, in a few words.
     pub summary: &'static str,
     script: &'static str,
+    /// Its picture, 160 × 120 (`docs/examples/thumbs`).
+    thumb: &'static [u8],
 }
 
 macro_rules! example {
@@ -32,6 +40,7 @@ macro_rules! example {
             title: $title,
             summary: $summary,
             script: include_str!(concat!("../../../../docs/examples/", $id, ".json")),
+            thumb: include_bytes!(concat!("../../../../docs/examples/thumbs/", $id, ".png")),
         }
     };
 }
@@ -48,6 +57,71 @@ pub const EXAMPLES: [Example; 9] = [
     example!("panel", "Perforated panel", "sketch pattern"),
     example!("wedge", "Wedge", "datums, fill, intersect"),
 ];
+
+/// The logo: the application's icon (`packaging/icons`).
+const LOGO: &[u8] = include_bytes!("../../../../packaging/icons/craft3d-128.png");
+
+/// Largest side of a picture built into the program that is decoded.
+const MAX_PICTURE_SIDE: u32 = 1024;
+
+/// A PNG built into the program, as an image for a texture; `None` when
+/// it does not read (the start screen then shows a plain tile).
+pub fn decode_png(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if width == 0 || height == 0 || width > MAX_PICTURE_SIDE || height > MAX_PICTURE_SIDE {
+        return None;
+    }
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    buffer.truncate(info.buffer_size());
+    let size = [usize::try_from(width).ok()?, usize::try_from(height).ok()?];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => buffer,
+        png::ColorType::Rgb => buffer
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|[r, g, b]| [*r, *g, *b, 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buffer
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|[v, a]| [*v, *v, *v, *a])
+            .collect(),
+        png::ColorType::Grayscale => buffer.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    if rgba.len() != size[0].checked_mul(size[1])?.checked_mul(4)? {
+        return None;
+    }
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, &rgba))
+}
+
+/// The logo and thumbnails as textures, made once.
+pub(crate) struct Pictures {
+    logo: Option<egui::TextureHandle>,
+    thumbs: Vec<Option<egui::TextureHandle>>,
+}
+
+impl Pictures {
+    fn load(ctx: &egui::Context) -> Self {
+        let texture = |name: String, bytes: &[u8]| {
+            decode_png(bytes)
+                .map(|image| ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
+        };
+        Self {
+            logo: texture("craft3d-logo".to_string(), LOGO),
+            thumbs: EXAMPLES
+                .iter()
+                .map(|example| texture(format!("craft3d-example-{}", example.id), example.thumb))
+                .collect(),
+        }
+    }
+}
 
 /// An example by its id.
 pub fn example(id: &str) -> Option<&'static Example> {
@@ -199,10 +273,17 @@ pub(crate) struct StartMemory {
     /// Where the last frame drew its buttons and links: `new`, `open`,
     /// and `example:<id>` for each example.
     hits: Vec<(String, egui::Rect)>,
+    /// The logo and the thumbnails, once loaded.
+    pictures: Option<Pictures>,
 }
 
 /// Widest the card is, in points.
-const CARD_WIDTH: f32 = 640.0;
+const CARD_WIDTH: f32 = 760.0;
+/// A thumbnail as the card shows it, in points, and the examples per row.
+const THUMB: egui::Vec2 = egui::vec2(128.0, 96.0);
+const PER_ROW: usize = 5;
+/// The logo's side, in points.
+const LOGO_SIDE: f32 = 64.0;
 
 impl Shell {
     /// The example chosen on the start screen, for the host to build
@@ -235,6 +316,13 @@ impl Shell {
     /// was not shown.
     pub fn start_hits(&self) -> &[(String, egui::Rect)] {
         &self.start.hits
+    }
+
+    /// True when the window shows the welcome: no document, no work
+    /// running and no problem to show. The feature list is put away
+    /// meanwhile, so the welcome sits in the middle of the window.
+    pub(super) fn welcome(&self, has_document: bool) -> bool {
+        !has_document && self.work.is_none() && self.problem.is_none()
     }
 
     pub(super) fn no_start_screen(&mut self) {
@@ -291,62 +379,64 @@ impl Shell {
             ))
             .corner_radius(egui::CornerRadius::same(tokens.nav_radius))
             .inner_margin(egui::Margin::same(24));
+        if self.start.pictures.is_none() {
+            self.start.pictures = Some(Pictures::load(ui.ctx()));
+        }
         card.show(ui, |ui| {
             ui.set_width(width - 48.0);
-            ui.label(egui::RichText::new(super::PRODUCT).size(26.0).strong());
-            ui.colored_label(
-                dim,
-                "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
-            );
-            ui.add_space(tokens.inset * 1.4);
-            ui.horizontal(|ui| {
+            ui.vertical_centered(|ui| {
+                let logo = self.start.pictures.as_ref().and_then(|p| p.logo.as_ref());
+                if let Some(logo) = logo {
+                    ui.add(egui::Image::new((logo.id(), egui::vec2(LOGO_SIDE, LOGO_SIDE))));
+                }
+                ui.label(egui::RichText::new(super::PRODUCT).size(26.0).strong());
+                ui.colored_label(dim, format!("Version {}", super::help::VERSION));
+                ui.add_space(tokens.inset * 0.4);
+                ui.colored_label(
+                    dim,
+                    "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
+                );
+                ui.add_space(tokens.inset);
+                // Centred: the two buttons laid out in a row of their own width.
                 let size = egui::vec2(0.0, 30.0);
                 let gold = egui::Button::new(
                     egui::RichText::new("New document").color(color(tokens.plate_fill)),
                 )
                 .fill(color(tokens.accent))
                 .min_size(size);
-                let new = ui.add(gold);
-                self.start.hits.push(("new".to_string(), new.rect));
-                if new.clicked() {
-                    self.request_file_action(FileAction::New);
-                }
-                let open = ui.add(egui::Button::new("Open…").min_size(size));
-                self.start.hits.push(("open".to_string(), open.rect));
-                if open.clicked() {
-                    self.request_file_action(FileAction::Open);
-                }
-            });
-            ui.add_space(tokens.inset * 1.4);
-            let half = (ui.available_width() - tokens.inset * 2.0) * 0.5;
-            ui.horizontal_top(|ui| {
+                let open = egui::Button::new("Open…").min_size(size);
+                let row = egui::vec2(240.0, 30.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(half, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
+                    row,
+                    egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        ui.set_width(half);
-                        ui.label(egui::RichText::new("Examples").strong());
-                        ui.add_space(tokens.inset * 0.3);
-                        for example in &EXAMPLES {
-                            ui.horizontal(|ui| {
-                                let link = ui.link(example.title);
-                                self.start
-                                    .hits
-                                    .push((format!("example:{}", example.id), link.rect));
-                                if link.clicked() {
-                                    self.choose_example(example);
-                                }
-                                ui.colored_label(dim, example.summary);
-                            });
+                        let new = ui.add(gold);
+                        self.start.hits.push(("new".to_string(), new.rect));
+                        if new.clicked() {
+                            self.request_file_action(FileAction::New);
+                        }
+                        let open = ui.add(open);
+                        self.start.hits.push(("open".to_string(), open.rect));
+                        if open.clicked() {
+                            self.request_file_action(FileAction::Open);
                         }
                     },
                 );
-                ui.add_space(tokens.inset * 2.0);
+            });
+            ui.add_space(tokens.inset * 1.4);
+            ui.label(egui::RichText::new("Examples").strong());
+            ui.add_space(tokens.inset * 0.4);
+            self.example_grid(ui);
+            ui.add_space(tokens.inset * 1.4);
+            ui.separator();
+            ui.add_space(tokens.inset * 0.6);
+            let left = 200.0_f32.min(ui.available_width() * 0.3);
+            ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(half, 0.0),
+                    egui::vec2(left, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_width(half);
+                        ui.set_width(left);
                         ui.label(egui::RichText::new("Recent").strong());
                         ui.add_space(tokens.inset * 0.3);
                         if cfg!(target_arch = "wasm32") {
@@ -356,12 +446,95 @@ impl Shell {
                         }
                     },
                 );
+                ui.add_space(tokens.inset * 1.5);
+                ui.vertical(|ui| self.agent_block(ui));
             });
-            ui.add_space(tokens.inset * 1.4);
-            ui.separator();
-            ui.add_space(tokens.inset * 0.6);
-            self.agent_block(ui);
         });
+    }
+
+    /// The examples as cards: the thumbnail and the name; a click builds
+    /// it in a new document.
+    fn example_grid(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let gap = tokens.inset;
+        let label_height = 22.0;
+        let card = egui::vec2(THUMB.x, THUMB.y + label_height);
+        let per_row = {
+            let fit = ((ui.available_width() + gap) / (card.x + gap)).floor();
+            if fit.is_finite() && fit >= 1.0 {
+                (fit as usize).min(PER_ROW)
+            } else {
+                1
+            }
+        };
+        let thumbs: Vec<Option<egui::TextureId>> = self
+            .start
+            .pictures
+            .as_ref()
+            .map(|p| {
+                p.thumbs
+                    .iter()
+                    .map(|t| t.as_ref().map(egui::TextureHandle::id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The rows centred as a block: a short last row lines up with the
+        // others on the left.
+        let block = per_row as f32 * card.x + (per_row as f32 - 1.0) * gap;
+        let pad = ((ui.available_width() - block) * 0.5).max(0.0);
+        for (row, examples) in EXAMPLES.chunks(per_row).enumerate() {
+            if row > 0 {
+                ui.add_space(gap);
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.spacing_mut().item_spacing.x = gap;
+                for example in examples {
+                    let index = EXAMPLES.iter().position(|e| e.id == example.id);
+                    let (rect, response) = ui.allocate_exact_size(card, egui::Sense::click());
+                    let response = response
+                        .on_hover_text(format!("{}: {}", example.title, example.summary))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let painter = ui.painter_at(rect.expand(2.0));
+                    let image = egui::Rect::from_min_size(rect.min, THUMB);
+                    let radius = egui::CornerRadius::same(tokens.radius);
+                    painter.rect_filled(image, radius, color(tokens.plate_fill));
+                    if let Some(Some(id)) = index.and_then(|i| thumbs.get(i)) {
+                        painter.image(
+                            *id,
+                            image,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    if response.hovered() {
+                        painter.rect_stroke(
+                            image,
+                            radius,
+                            egui::Stroke::new(2.0, color(tokens.accent)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    painter.text(
+                        egui::pos2(rect.min.x + 2.0, image.max.y + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        example.title,
+                        egui::FontId::proportional(13.0),
+                        color(if response.hovered() {
+                            tokens.text
+                        } else {
+                            tokens.text_dim
+                        }),
+                    );
+                    self.start
+                        .hits
+                        .push((format!("example:{}", example.id), rect));
+                    if response.clicked() {
+                        self.choose_example(example);
+                    }
+                }
+            });
+        }
     }
 
     fn agent_block(&mut self, ui: &mut egui::Ui) {
@@ -400,7 +573,7 @@ impl Shell {
             ui.set_width(ui.available_width());
             ui.label(
                 egui::RichText::new(&config)
-                    .monospace()
+                    .font(egui::FontId::monospace(11.5))
                     .color(color(tokens.plate_text)),
             );
         });
@@ -436,6 +609,7 @@ mod tests {
             id: "broken",
             title: "Broken",
             summary: "a step that fails",
+            thumb: &[],
             script: r#"[["feature.block", {"size": [1, 2, 3]}], ["feature.fillet", {"edges": "nope"}]]"#,
         };
         let mut session = Session::new(craft3d_engine::Workspace::none());
@@ -456,6 +630,21 @@ mod tests {
         };
         assert!(run_example(&mut session, &not_steps).is_err());
         assert_eq!(session.document_statuses().len(), 1);
+    }
+
+    #[test]
+    fn the_logo_and_every_thumbnail_decode() {
+        let logo = decode_png(LOGO).unwrap();
+        assert_eq!(logo.size, [128, 128]);
+        for example in &EXAMPLES {
+            let thumb = decode_png(example.thumb).unwrap();
+            assert_eq!(thumb.size, [160, 120], "{}", example.id);
+        }
+        assert!(decode_png(b"").is_none());
+        assert!(decode_png(b"not a png").is_none());
+        let mut cut = LOGO.to_vec();
+        cut.truncate(LOGO.len() / 2);
+        assert!(decode_png(&cut).is_none());
     }
 
     #[test]
