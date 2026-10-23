@@ -9,5 +9,5 @@
   ["sketch.create", {"name": "Arch", "offset": "10 mm"}],
   ["sketch.spline", {"sketch": "Arch", "through": [["0 mm", "0 mm"], ["10 mm", "h"], ["25 mm", "h / 2"], ["30 mm", "0 mm"]], "live": true}],
   ["sketch.line", {"sketch": "Arch", "from": "e4", "to": "e1"}],
-  ["feature.extrude", {"sketch": "Arch", "distance": "3 mm", "name": "Arch"}]
+  ["feature.extrude", {"sketch": "Arch", "distance": "3 mm", "name": "Bridge"}]
 ]

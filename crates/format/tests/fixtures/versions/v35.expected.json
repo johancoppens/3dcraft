@@ -1,0 +1,57 @@
+{
+  "format_version": 35,
+  "written_by": "74807087aaa87a2578b6cbc78175c5e91fbd7672",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v35.steps.json --out v35.3dcraft, then info v35.3dcraft, and param.list of it for parameters and info",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Dish",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Segment",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Arch",
+      "status": "ok"
+    },
+    {
+      "id": "F4",
+      "name": "Bridge",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 4,
+      "edges": 6,
+      "vertices": 4,
+      "volume": 1333.333327648752,
+      "area": 962.8920457273649
+    },
+    {
+      "feature": "F4",
+      "kind": "solid",
+      "faces": 4,
+      "edges": 6,
+      "vertices": 4,
+      "volume": 526.5,
+      "area": 552.908387685618
+    }
+  ],
+  "parameters": [],
+  "info": {
+    "author": "",
+    "description": "",
+    "licence": "",
+    "tags": [],
+    "title": "",
+    "url": ""
+  }
+}
