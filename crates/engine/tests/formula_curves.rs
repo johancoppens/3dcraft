@@ -67,7 +67,7 @@ fn fit_of(s: &mut Session, sketch: &str, entity: &str) -> Value {
 /// with `h = a² / (4 f)`. At three scales; and it follows `a`.
 #[test]
 fn a_parabola_segment_has_two_thirds_of_its_box() {
-    for k in [1e-3, 1.0, 1e3] {
+    for k in [1e-3, 1.0, 1e3, 1e6] {
         let mut s = session();
         new_document(&mut s, 1e-6 * k);
         set(&mut s, "f", &format!("{} mm", 10.0 * k));
@@ -647,4 +647,130 @@ fn bad_formula_curves_are_refused_with_a_reason() {
         json!({"sketch": "C", "type": "x", "entities": [curve["start"]], "value": "1 mm"}),
     );
     assert!(reason.contains("formulas put it"), "{reason}");
+}
+
+/// The area of one tooth of [`tooth_sketch`], down to `rc`.
+fn tooth_area(m: f64, z: u32) -> f64 {
+    let alpha = 20f64.to_radians();
+    let zf = f64::from(z);
+    let rp = m * zf / 2.0;
+    let rb = rp * alpha.cos();
+    let ra = rp + m;
+    let rc = rp - 1.75 * m;
+    let g = -PI / (2.0 * zf) - (alpha.tan() - alpha);
+    let ta = ((ra / rb).powi(2) - 1.0).sqrt();
+    rb * rb * ta.powi(3) / 3.0 - ra * ra * (g + ta - ta.atan()) + rc * rc * g
+}
+
+/// A tooth repeated round the centre by a sketch pattern: every instance is
+/// the seed's fit turned, and one extrusion makes them all. The outline
+/// goes to DXF with its flanks as splines, and the solid to a watertight
+/// STL.
+#[test]
+fn a_ring_of_formula_teeth_extrudes_and_exports() {
+    let dir = common::workdir("formula-curves", "ring");
+    let mut s = common::session_in(&dir);
+    new_document(&mut s, 1e-6);
+    gear_variables(&mut s, 2.0, 12);
+    tooth_sketch(&mut s, "Tooth");
+    let seed: Vec<Value> = run(&mut s, "sketch.inspect", json!({"sketch": "Tooth"}))["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] != "point")
+        .map(|e| e["id"].clone())
+        .collect();
+    assert_eq!(seed.len(), 6, "{seed:?}");
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Tooth", "entities": seed, "count": "z", "angle": "360 deg / z", "center": ["0 mm", "0 mm"]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Tooth", "distance": "width", "name": "Teeth"}),
+    );
+    let found = body(&mut s, "Teeth");
+    let volume = found["volume"].as_f64().unwrap();
+    let expected = 12.0 * tooth_area(2.0, 12) * 8.0;
+    assert!(
+        (volume - expected).abs() <= 12.0 * 20.0 * 1e-6 * 8.0,
+        "{volume} {expected}"
+    );
+    let dxf = run(
+        &mut s,
+        "file.export",
+        json!({"sketch": "Tooth", "path": "tooth.dxf"}),
+    );
+    assert_eq!(dxf["splines"], json!(24), "{dxf}");
+    assert_eq!(dxf["closed"], json!(12), "{dxf}");
+    let stl = run(&mut s, "file.export", json!({"path": "teeth.stl"}));
+    assert_eq!(stl["closed"], stl["bodies"], "{stl}");
+}
+
+/// A curve may not be held by other constraints at its ends, and takes no
+/// tangent or pointOn constraint yet: refused with the reason.
+#[test]
+fn constraints_on_formula_curves_are_refused_for_now() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    run(&mut s, "sketch.create", json!({"name": "C"}));
+    let curve = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "C", "x": "t", "y": "t^2", "t": [0, 1]}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "C", "from": curve["end"], "to": [3, 0]}),
+    );
+    for kind in ["tangent", "pointOn"] {
+        let entities = if kind == "tangent" {
+            json!([curve["entity"], line["entity"]])
+        } else {
+            json!([curve["start"], curve["entity"]])
+        };
+        let refused = error(
+            &mut s,
+            "sketch.constrain",
+            json!({"sketch": "C", "type": kind, "entities": entities}),
+        );
+        assert!(refused.contains("formula curve"), "{kind}: {refused}");
+    }
+}
+
+/// The fits of the examples, for the dev log: control points, deviation
+/// and the time a regeneration that refits them takes.
+#[test]
+fn fits_of_the_examples() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    gear_variables(&mut s, 2.0, 12);
+    let (lower, _) = tooth_sketch(&mut s, "Tooth");
+    set(&mut s, "a", "10 mm");
+    set(&mut s, "b", "3 mm");
+    run(&mut s, "sketch.create", json!({"name": "S"}));
+    let spiral = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "S", "x": "(a + b * t) * cos(t)", "y": "(a + b * t) * sin(t)", "t": [0, "6 * pi"]}),
+    );
+    for (sketch, entity) in [
+        ("Tooth", lower.as_str()),
+        ("S", spiral["entity"].as_str().unwrap()),
+    ] {
+        let fit = fit_of(&mut s, sketch, entity);
+        assert!(fit["deviation"].as_f64().unwrap() <= 0.5e-6, "{fit}");
+        println!("{sketch} {entity}: {fit}");
+    }
+    let started = std::time::Instant::now();
+    for k in 0..10 {
+        set(&mut s, "b", &format!("{} mm", 3.0 + f64::from(k) * 0.1));
+    }
+    println!(
+        "spiral of three turns refitted: {:.2} ms per edit",
+        started.elapsed().as_secs_f64() * 100.0
+    );
 }

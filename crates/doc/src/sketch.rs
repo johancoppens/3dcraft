@@ -3625,4 +3625,63 @@ mod tests {
         }
         assert_eq!(s.pattern(p).map(|p| p.layout.type_name()), Some("circular"));
     }
+
+    #[test]
+    fn formula_curves_and_live_splines_are_checked() {
+        let mut s = Sketch::default();
+        let a = s.add_point(0.0, 0.0).unwrap();
+        let b = s.add_point(1.0, 0.0).unwrap();
+        let c = s.add_point(2.0, 1.0).unwrap();
+        let e = |t: &str| Expr::new(t);
+        let formulas = || [e("t"), e("t^2"), e("0"), e("1")];
+        let curve = s.add_formula(formulas(), a, b, false).unwrap();
+        assert_eq!(s.entity(curve).unwrap().geometry.type_name(), "formula");
+        assert_eq!(s.entity(curve).unwrap().geometry.points(), [a, b]);
+        assert_eq!(s.entity(curve).unwrap().geometry.ends(), Some((a, b)));
+        // One point for both ends: closed.
+        let closed = s.add_formula(formulas(), c, c, false).unwrap();
+        assert_eq!(s.entity(closed).unwrap().geometry.points(), [c]);
+        // A formula left empty, or ends that are no points of their own.
+        assert!(
+            s.add_formula([e(" "), e("t"), e("0"), e("1")], a, b, false)
+                .is_err()
+        );
+        assert!(s.add_formula(formulas(), a, curve, false).is_err());
+        assert!(s.add_formula(formulas(), a, EntityId(99), false).is_err());
+        let long = "t + ".repeat(craft3d_expr::MAX_SOURCE_LEN);
+        assert!(
+            s.add_formula([e(&long), e("t"), e("0"), e("1")], a, b, false)
+                .is_err()
+        );
+        // The range is among the expressions, the formulas apart.
+        let named: Vec<String> = s.exprs().into_iter().map(|(n, _)| n).collect();
+        assert!(named.contains(&format!("{curve}.from")), "{named:?}");
+        assert!(!named.contains(&format!("{curve}.x")), "{named:?}");
+        let formulas: Vec<String> = s.formula_exprs().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(formulas[..2], [format!("{curve}.x"), format!("{curve}.y")]);
+        // A live spline is checked as a spline is.
+        let live = s.add_interpolated(2, vec![a, b, c], false).unwrap();
+        assert_eq!(s.entity(live).unwrap().geometry.type_name(), "interpolated");
+        assert!(s.add_interpolated(3, vec![a, b, c], false).is_err());
+        assert!(s.add_interpolated(1, vec![a, a], false).is_err());
+        // No constraint takes them yet, and a point they end on stays.
+        for kind in [
+            ConstraintKind::PointOn { point: c, curve },
+            ConstraintKind::Tangent { a: curve, b: live },
+        ] {
+            let refused = s.add_constraint(kind).unwrap_err().to_string();
+            assert!(refused.contains("formula curve"), "{refused}");
+        }
+        assert!(matches!(s.remove_entity(a), Err(SketchError::InUse { .. })));
+        s.validate().unwrap();
+        // A file with a formula that ends on an image point, or with no
+        // formula, is refused when read.
+        let mut damaged = s.clone();
+        if let Some(entity) = damaged.entities.iter_mut().find(|x| x.id == curve)
+            && let Geometry::Formula { x, .. } = &mut entity.geometry
+        {
+            *x = e("");
+        }
+        assert!(damaged.validate().is_err());
+    }
 }

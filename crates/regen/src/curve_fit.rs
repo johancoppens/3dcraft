@@ -68,7 +68,28 @@ fn distance(a: P2, b: P2) -> f64 {
 /// A2.1 and A2.2.) `None` when the knots do not fit `count` control
 /// points of this degree. `u` is clamped to the range.
 pub fn basis(degree: usize, knots: &[f64], count: usize, u: f64) -> Option<(usize, Vec<f64>)> {
-    if degree == 0 || count <= degree || knots.len() != count.checked_add(degree)?.checked_add(1)? {
+    let mut values = [0.0; BASIS_SLOTS];
+    let span = basis_into(degree, knots, count, u, &mut values)?;
+    Some((span, values.get(..=degree)?.to_vec()))
+}
+
+/// Room for the basis functions of the highest degree a spline here has.
+const BASIS_SLOTS: usize = 8;
+
+/// [`basis`] into `values` (the first `degree + 1`), without allocating:
+/// the span.
+fn basis_into(
+    degree: usize,
+    knots: &[f64],
+    count: usize,
+    u: f64,
+    values: &mut [f64; BASIS_SLOTS],
+) -> Option<usize> {
+    if degree == 0
+        || degree >= BASIS_SLOTS
+        || count <= degree
+        || knots.len() != count.checked_add(degree)?.checked_add(1)?
+    {
         return None;
     }
     let (start, end) = (*knots.get(degree)?, *knots.get(count)?);
@@ -80,8 +101,8 @@ pub fn basis(degree: usize, knots: &[f64], count: usize, u: f64) -> Option<(usiz
     // binary search, as the knots never go down.
     let inner = knots.get(degree..count)?;
     let span = degree + inner.partition_point(|k| *k <= u).saturating_sub(1);
-    let mut values = vec![0.0; degree + 1];
-    let (mut left, mut right) = (vec![0.0; degree + 1], vec![0.0; degree + 1]);
+    let (mut left, mut right) = ([0.0; BASIS_SLOTS], [0.0; BASIS_SLOTS]);
+    *values = [0.0; BASIS_SLOTS];
     *values.first_mut()? = 1.0;
     for j in 1..=degree {
         *left.get_mut(j)? = u - knots.get((span + 1).checked_sub(j)?)?;
@@ -99,13 +120,14 @@ pub fn basis(degree: usize, knots: &[f64], count: usize, u: f64) -> Option<(usiz
         }
         *values.get_mut(j)? = saved;
     }
-    Some((span, values))
+    Some(span)
 }
 
 /// The point of a clamped spline at `u`, in its knots' range.
 pub fn point(spline: &Spline2, u: f64) -> Option<P2> {
     let p = spline.degree;
-    let (span, values) = basis(p, &spline.knots, spline.control.len(), u)?;
+    let mut values = [0.0; BASIS_SLOTS];
+    let span = basis_into(p, &spline.knots, spline.control.len(), u, &mut values)?;
     let first = span.checked_sub(p)?;
     let mut at = [0.0, 0.0];
     for (value, control) in values.iter().zip(spline.control.get(first..=span)?) {
@@ -475,8 +497,13 @@ fn nearest(spline: &Spline2, d1: &Spline2, d2: &Spline2, target: P2, guess: f64)
         if !next.is_finite() || next == u {
             break;
         }
+        let step = (next - u).abs();
         u = next;
         best = best.min(distance(point(spline, u)?, target));
+        // Converged as far as the parameter can tell.
+        if step <= 1e-13 {
+            break;
+        }
     }
     Some(best)
 }
@@ -806,6 +833,24 @@ mod tests {
             let slope = point(&d1, u).unwrap();
             assert!((slope[0] - (b[0] - a[0]) / (2.0 * h)).abs() < 1e-4 * slope[0].abs().max(1.0));
             assert!((slope[1] - (b[1] - a[1]) / (2.0 * h)).abs() < 1e-4 * slope[1].abs().max(1.0));
+        }
+    }
+
+    /// A kink is fitted, rounded within the tolerance, or refused: never a
+    /// curve that is off.
+    #[test]
+    fn a_kink_is_rounded_within_the_tolerance_or_refused() {
+        match fit_formula(|t: f64| Ok([t, (t - 0.5).abs()]), 0.0, 1.0, 1e-6) {
+            Ok(fit) => {
+                for k in 0..=20000 {
+                    let p = point(&fit.spline, f64::from(k) / 20000.0).unwrap();
+                    // The distance to the two legs of the V.
+                    let d = ((p[1] - (p[0] - 0.5).abs()) / 2f64.sqrt()).abs();
+                    assert!(d <= 1e-6, "{d:e} at {p:?}");
+                }
+                println!("kink: {} control points", fit.spline.control.len());
+            }
+            Err(why) => assert!(why.contains("split"), "{why}"),
         }
     }
 
