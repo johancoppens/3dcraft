@@ -137,7 +137,7 @@ Options:
   --mode M      shaded, or ids (one flat colour per face). Default shaded";
 
 const HELP_CONVERT: &str = "\
-Usage: craft3d-cli convert IN OUT [--tolerance T]
+Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
                            [--sketch S | --face F [--feature B] | --set S]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
@@ -148,6 +148,11 @@ at true size, for laser cutting; .3dcraft writes the document again in the
 current format version.
 
 Options:
+  --quality Q     For a mesh: coarse, normal (default) or fine, how
+                  closely it follows the model (a tolerance from the
+                  model's size and 20, 10 or 5 degrees per chord)
+  --angle A       For a mesh: the most a chord turns, in degrees (0 for
+                  none, else 1 to 90). Default: the quality's
   --tolerance T   Chordal tolerance of the mesh, in document units.
                   Default: chosen from the size of the model. For .svg:
                   how far the Béziers written for a spline of a degree

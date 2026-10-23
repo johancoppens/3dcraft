@@ -357,6 +357,10 @@ pub struct Layer {
     /// every DXF release takes.
     pub name: String,
     pub color: Color,
+    /// Drawn dashed, with dashes this long (and gaps half as long) in
+    /// the drawing's unit: a DXF line type `DASHED`, an SVG
+    /// `stroke-dasharray`. `None`: a continuous line.
+    pub dash: Option<f64>,
     pub paths: Vec<Path>,
 }
 
@@ -762,6 +766,12 @@ impl Drawing {
                 .any(|other| other.name.eq_ignore_ascii_case(name));
             if name.is_empty() || name.len() > 31 || !plain || twice {
                 return Err(DrawingError::LayerName(name.chars().take(40).collect()));
+            }
+            if layer
+                .dash
+                .is_some_and(|dash| !(dash.is_finite() && dash > 0.0))
+            {
+                return Err(DrawingError::Option("a dash must be positive and finite"));
             }
             for (path_index, path) in layer.paths.iter().enumerate() {
                 path.check(index, path_index)?;

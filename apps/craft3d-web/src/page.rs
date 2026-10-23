@@ -334,7 +334,7 @@ fn choose(ask: Ask, inbox: &Inbox, ctx: &egui::Context) -> Result<(), String> {
         .map_err(|_| "no file input".to_string())?;
     input.set_type("file");
     input.set_accept(match ask {
-        Ask::Open => ".3dcraft",
+        Ask::Open => ".3dcraft,.3dcraftjig",
         Ask::Import => ".step,.stp,.STEP,.STP",
     });
     let (inbox, ctx) = (Rc::clone(inbox), ctx.clone());
@@ -544,9 +544,8 @@ impl Page {
     /// The file input for `ask`.
     fn choose(&mut self, ask: Ask) {
         if let Err(why) = choose(ask, &self.inbox, &self.ctx) {
-            self.host.note(
+            self.host.note_error(
                 "file",
-                false,
                 format!("the file chooser could not be shown: {why}"),
             );
         }
@@ -681,9 +680,8 @@ impl Page {
                     if let Some(id) = download.document {
                         self.host.write_failed(id);
                     }
-                    self.host.note(
+                    self.host.note_error(
                         "download",
-                        false,
                         format!("`{}` could not be downloaded: {why}", download.name),
                     );
                 }
@@ -874,7 +872,7 @@ impl eframe::App for Page {
             // running out of it ends the page.
             let refused = if received_kind(&name).is_none() {
                 Some(format!(
-                    "`{name}` is not a 3DCraft document (.3dcraft) or a STEP file (.step, .stp)"
+                    "`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig) or a STEP file (.step, .stp)"
                 ))
             } else {
                 match file.web_file().map(|f| f.size()) {

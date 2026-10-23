@@ -17,7 +17,7 @@
 mod common;
 
 use common::plain::run;
-use common::{refused, session};
+use common::{refused, session, session_in, workdir};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
@@ -467,4 +467,27 @@ fn a_time_limit_stops_the_run_without_calling_it_ok() {
     let default = sample(&mut s, json!({"samples": 2}));
     assert_eq!(default["timeLimitMs"], 60000.0);
     assert_eq!(default["complete"], true);
+}
+
+#[test]
+fn a_jig_in_use_is_checked_too_and_stays_as_it_was() {
+    // document.sample works on a copy: the read-only lock of a Jig opened
+    // from its .3dcraftjig file does not refuse it.
+    let dir = workdir("jig-sample", "in-use");
+    let mut s = session_in(&dir);
+    jig(&mut s, "6 mm");
+    run(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    run(&mut s, "file.open", json!({"path": "plate.3dcraftjig"}));
+    // Edits are refused: it is in use.
+    let error = refused(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "30 mm"}),
+    );
+    assert!(error.contains("this is a Jig"), "{error}");
+    let revision = s.document_revision();
+    let result = sample(&mut s, json!({"samples": 4}));
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(s.document_revision(), revision);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

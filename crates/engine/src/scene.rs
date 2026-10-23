@@ -435,6 +435,10 @@ pub struct SceneFeature {
     /// Hidden in the view (`feature.visible`): its body, sketch or datum
     /// is not in the scene, though it is built.
     pub hidden: bool,
+    /// Built, with something of its own to draw: a body that no later
+    /// feature took, a sketch, a datum. What showing a hidden feature
+    /// brings into view; a viewer offers to fly to it by this.
+    pub draws: bool,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -560,6 +564,9 @@ pub struct DocumentStatus {
     pub close_asks: bool,
     pub length_unit: &'static str,
     pub angle_unit: &'static str,
+    /// A published Jig opened to be used (`.3dcraftjig`): only its
+    /// parameters change, and Save saves it as a model.
+    pub jig_in_use: bool,
 }
 
 /// A scene, or why it could not be built.
@@ -1393,6 +1400,10 @@ fn build(
             caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
                 .map(|root| root.to_string()),
             hidden: doc.is_hidden(feature.id),
+            draws: state == FeatureState::Ok
+                && (outcome.and_then(|o| o.own_body()).is_some()
+                    || solved.is_some()
+                    || outcome.and_then(|o| o.datum).is_some()),
         });
         // Hidden in the view: a row of the tree, and nothing drawn.
         if doc.is_hidden(feature.id) {
@@ -2247,6 +2258,7 @@ impl Session {
             file: open.file.clone(),
             dirty: open.dirty(),
             close_asks: open.close_asks(),
+            jig_in_use: open.jig_in_use,
             length_unit: doc.units.length.symbol(),
             angle_unit: match doc.units.angle {
                 AngleUnit::Degree => "deg",

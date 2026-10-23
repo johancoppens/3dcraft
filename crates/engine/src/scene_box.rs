@@ -5,7 +5,6 @@
 
 use crate::scene::{Scene, SceneDatumShape};
 use crate::selection::{SelectionItem, SelectionKind};
-use craft3d_doc::PersistentName;
 use craft3d_math::{Bbox3, Vec3};
 
 impl Scene {
@@ -16,36 +15,6 @@ impl Scene {
             .find(|f| f.id == feature)
             .or_else(|| self.features.iter().find(|f| f.name == feature))
             .map(|f| f.id.as_str())
-    }
-
-    /// Where the feature of id `id` is in the history; `None` for one the
-    /// scene does not list.
-    fn feature_place(&self, id: &str) -> Option<usize> {
-        self.features.iter().position(|f| f.id == id)
-    }
-
-    /// The feature (by id, `F3`) that made the face, edge or vertex
-    /// named `name`: the feature at the end of its chain of copies
-    /// (`F4:copy(0)/F2:face(2)` was made by `F2`). An edge or a vertex
-    /// named by the faces it lies on was made by the latest of the
-    /// features that made those faces, in the order of the history: it
-    /// came to be with the last of them. `None` for text that is no
-    /// persistent name.
-    pub fn made_by(&self, name: &str) -> Option<String> {
-        let name: PersistentName = name.parse().ok()?;
-        let root = name.root();
-        if root.role.is_by_faces() {
-            let latest = root
-                .faces()
-                .iter()
-                .map(|face| face.root().feature.to_string())
-                .filter_map(|id| self.feature_place(&id).map(|place| (place, id)))
-                .max_by_key(|(place, _)| *place);
-            if let Some((_, id)) = latest {
-                return Some(id);
-            }
-        }
-        Some(root.feature.to_string())
     }
 
     /// Every corner of the triangles of [`Scene::mesh`] whose face ids
@@ -62,26 +31,6 @@ impl Scene {
                 corners.into_iter().for_each(&mut *visit);
             }
         }
-    }
-
-    /// The ids in [`Scene::mesh`] of the faces whose persistent names say
-    /// feature `id` made them, wherever they are now.
-    fn made_face_ids(&self, id: &str) -> Vec<u32> {
-        let mut ids = Vec::new();
-        for body in self.bodies.iter() {
-            for (k, name) in body.face_names.iter().enumerate() {
-                let made = name
-                    .parse::<PersistentName>()
-                    .is_ok_and(|name| name.root().feature.to_string() == id);
-                if made
-                    && let Ok(k) = u32::try_from(k)
-                    && let Some(face) = body.first_face_id.checked_add(k)
-                {
-                    ids.push(face);
-                }
-            }
-        }
-        ids
     }
 
     /// The points of the mesh of the body of feature `id`; false when
@@ -182,7 +131,7 @@ impl Scene {
                     if self.feature_id(feature).is_none() {
                         continue;
                     }
-                    let made = self.made_face_ids(id);
+                    let made = self.feature_face_ids(id);
                     if made.is_empty() {
                         let _ = self.visit_body(id, visit)
                             || self.visit_sketch(id, visit)

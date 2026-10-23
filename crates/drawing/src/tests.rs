@@ -49,6 +49,7 @@ fn drawing(paths: Vec<Path>) -> Drawing {
         layers: vec![Layer {
             name: "outline".into(),
             color: Color::Black,
+            dash: None,
             paths,
         }],
     }
@@ -539,6 +540,7 @@ fn tiny() -> Drawing {
         layers: vec![Layer {
             name: "cut".into(),
             color: Color::Red,
+            dash: None,
             paths: vec![
                 closed(
                     [0.0, 0.0],
@@ -1421,11 +1423,13 @@ fn layers_keep_their_names_and_colours() {
     drawing.layers.push(Layer {
         name: "engrave-2".into(),
         color: Color::Blue,
+        dash: None,
         paths: vec![open([1.0, 1.0], vec![line([2.0, 2.0])])],
     });
     drawing.layers.push(Layer {
         name: "empty".into(),
         color: Color::Green,
+        dash: None,
         paths: vec![],
     });
     let dxf = write_dxf(&drawing).unwrap();
@@ -1844,4 +1848,43 @@ fn a_translated_drawing_is_the_same_drawing_moved() {
     };
     assert_eq!(s.knots(), wavy().knots());
     assert_eq!(s.start(), [d[0], d[1]]);
+}
+
+#[test]
+fn a_dashed_layer_is_dashed_in_both_formats_and_others_are_as_before() {
+    let plain = drawing(vec![open([0.0, 0.0], vec![line([10.0, 0.0])])]);
+    let mut dashed = plain.clone();
+    dashed.layers.push(Layer {
+        name: "hidden".into(),
+        color: Color::Black,
+        dash: Some(2.0),
+        paths: vec![open([0.0, 5.0], vec![line([10.0, 5.0])])],
+    });
+    let before = write_dxf(&plain).unwrap();
+    assert!(!before.contains("DASHED"));
+    let dxf = write_dxf(&dashed).unwrap();
+    // The line type: 3 long, a dash of 2 and a gap of 1.
+    assert!(
+        dxf.contains("  2\nDASHED\n 70\n0\n  3\nDashed __ __ __\n 72\n65\n 73\n2\n 40\n3.0\n 49\n2.0\n 74\n0\n 49\n-1.0\n 74\n0\n"),
+        "{dxf}"
+    );
+    assert!(
+        dxf.contains("  2\nhidden\n 70\n0\n 62\n7\n  6\nDASHED\n"),
+        "{dxf}"
+    );
+    assert!(
+        dxf.contains("  2\noutline\n 70\n0\n 62\n7\n  6\nContinuous\n"),
+        "{dxf}"
+    );
+    let (svg, _) = write_svg(&dashed, &SvgOptions::default()).unwrap();
+    assert!(
+        svg.contains("id=\"layer-hidden\"") && svg.contains("stroke-dasharray=\"2 1\""),
+        "{svg}"
+    );
+    assert_eq!(svg.matches("stroke-dasharray").count(), 1);
+    // A dash that is no length is refused.
+    dashed.layers[1].dash = Some(0.0);
+    assert!(matches!(write_dxf(&dashed), Err(DrawingError::Option(_))));
+    dashed.layers[1].dash = Some(f64::NAN);
+    assert!(write_svg(&dashed, &SvgOptions::default()).is_err());
 }

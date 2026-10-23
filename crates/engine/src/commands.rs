@@ -54,8 +54,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true. With thumbnail (the default for a Jig, a document with public parameters) the file also holds thumb.png, a 400 x 300 picture of the bodies from the iso view drawn by the CPU renderer (the same document gives the same picture on one platform and build; drawn once per change), for a gallery; the result says thumbnail: true when it was written, and thumbnailError why not (no bodies yet): the document is saved all the same.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
-    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "set": name of a named set, "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
-        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; a name that is not a body now (unknown, failed, suppressed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). set does the same for every flat face a named set (set.define) holds now, in document order, the faces of one body on one layer named after it (faces given the same layer in faces share it too): one sheet of all the parts to cut, which follows the design as the set does; a body hidden in the view is drawn too (visibility is view data). The result lists under notFlat the faces of the set that are not flat and under others how many items of each other kind it holds (body, edge, ...); neither is drawn. Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = by quality, "quality": "coarse|normal|fine" = "normal", "angle": degrees = by quality, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "set": name of a named set, "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false, "view": "iso|front|back|left|right|top|bottom|current" = iso, "projection": "orthographic|perspective" = orthographic, "hidden": "omit|dashed" = omit}"#,
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: quality coarse, normal (the default) or fine sets how closely they follow the model, a chordal tolerance of 2, 1 or 0.25 thousandths of the side of a square with the bodies' area and an angle criterion of 20, 10 or 5 degrees (no chord turns an edge, no triangle side a surface's normal, by more, so small holes and thin bent tubes stay round); tolerance (in document units) and angle (degrees, 0 for none, else 1 to 90) set either one instead, and a tolerance given without quality or angle has no angle criterion, as before 2026-10-23. The result says tolerance, angle and quality, and closed counts the meshes that are watertight. A mesh of more than 20000000 triangles, all bodies together, is refused (choose a coarser quality). 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; a name that is not a body now (unknown, failed, suppressed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). set does the same for every flat face a named set (set.define) holds now, in document order, the faces of one body on one layer named after it (faces given the same layer in faces share it too): one sheet of all the parts to cut, which follows the design as the set does; a body hidden in the view is drawn too (visibility is view data). The result lists under notFlat the faces of the set that are not flat and under others how many items of each other kind it holds (body, edge, ...); neither is drawn. Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were. Without sketch, face or faces a dxf or svg file is a drawing of the model as seen (a projected view): every edge of the bodies that are not hidden and the silhouettes of curved faces, as straight pieces within tolerance (the chordal tolerance here, automatic by default), on the layer visible (silhouettes on silhouette); what lies behind a face is left out, or with hidden dashed drawn dashed on the layer hidden. view is a named view, or current: the camera of the window showing the document (iso without one; the result says so in note); the result gives the camera used; projection orthographic is to scale (one drawing unit is one model unit, in the document's unit), perspective is true size only at the depth of the camera's target. The section of the window is not applied and a scrubbed view is not followed: the bodies of the document as it is, whole. The result counts the visible, silhouette and hidden pieces.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -151,6 +151,10 @@ pub(crate) fn edit_merging<T>(
     // in the same undo step: a changed variable moves the sketches that
     // use it, and the next solve starts from where they are now.
     let open = session.document_mut()?;
+    // A Jig in use changes only through its parameters.
+    if open.jig_in_use && command != "param.set" {
+        return Err(crate::jig_cmds::in_use_refusal(command));
+    }
     let cache = &mut open.cache;
     open.history
         .apply_merging(label, key, merge, |doc| {
@@ -537,7 +541,7 @@ fn load_from_disk(
 
 /// Writes a `.3dcraft` file to disk; where there is no file system, says
 /// so.
-fn save_to_disk(
+pub(crate) fn save_to_disk(
     resolved: &std::path::Path,
     document: &craft3d_doc::Document,
     thumbnail: Option<&[u8]>,
@@ -573,8 +577,15 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
+    // A published Jig is opened to be used: by the name of the file read.
+    let jig = craft3d_format::is_jig_path(path)
+        || craft3d_format::is_jig_path(&resolved.to_string_lossy());
+    open.jig_in_use = jig;
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
+    if let (true, Some(map)) = (jig, result.as_object_mut()) {
+        map.insert("jigInUse".into(), true.into());
+    }
     // What reading the file changed (a tolerance outside the range a
     // document may have, from a file saved before 2026-10-15).
     if let (false, Some(map)) = (read.is_empty(), result.as_object_mut()) {
@@ -598,11 +609,27 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.save", params, &["path", "overwrite", "thumbnail"])?;
     let overwrite = p.bool("overwrite")?.unwrap_or(false);
     let thumbnail = p.bool("thumbnail")?;
+    let in_use = session.document()?.jig_in_use;
     let path = match (p.str("path")?, &session.document()?.path) {
         (Some(path), _) => path.to_string(),
+        (None, _) if in_use => {
+            return fail(
+                "file.save: this is a Jig in use and its .3dcraftjig file is never saved over; save it as a model: give a `path` ending in .3dcraft",
+            );
+        }
         (None, Some(own)) => own.clone(),
         (None, None) => return fail("file.save: this document has no file yet; give a `path`"),
     };
+    if craft3d_format::is_jig_path(&path)
+        || session
+            .workspace
+            .resolve_write(&path)
+            .is_ok_and(|resolved| craft3d_format::is_jig_path(&resolved.to_string_lossy()))
+    {
+        return fail(
+            "file.save: a .3dcraftjig file is a published Jig and is written by jig.export (File, Export as Jig…), never saved over; give a `path` ending in .3dcraft",
+        );
+    }
     let resolved = session.workspace.resolve_write(&path)?;
     let access = session.workspace.write.clone();
     let in_memory = session.writes_to_memory();
@@ -653,6 +680,8 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
     open.recovered = None;
+    // Saved as a model: it is edited like any other from now on.
+    open.jig_in_use = false;
     let mut result = json!({ "path": kept });
     if let Some(map) = result.as_object_mut()
         && wants_thumbnail
@@ -684,6 +713,11 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
     let Some(open) = session.documents.get(index) else {
         return fail("file.close: there is no document to close");
     };
+    if open.close_asks() && !discard && open.jig_in_use {
+        return fail(
+            "file.close: this Jig's parameters were changed; save the result as a model (file.save with a path ending in .3dcraft), or pass {\"discard\": true}",
+        );
+    }
     if open.close_asks() && !discard {
         return fail(
             "file.close: the document has unsaved changes; save it, or pass {\"discard\": true}",
@@ -704,7 +738,7 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
 
 /// A default chordal tolerance that suits the size of the model: a
 /// thousandth of the side of a square with the bodies' total area.
-fn automatic_tolerance(regen: &Regen) -> f64 {
+pub(crate) fn automatic_tolerance(regen: &Regen) -> f64 {
     let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> =
         regen.bodies().map(|(_, body)| body).collect();
     crate::mass::measure_ahead(&bodies);
@@ -720,20 +754,91 @@ fn automatic_tolerance(regen: &Regen) -> f64 {
     }
 }
 
-pub(crate) fn tolerance_param(
+/// How finely a mesh export follows the model (`file.export {quality}`):
+/// a chordal tolerance as a multiple of the automatic one (a thousandth
+/// of the side of a square with the bodies' area) and an angle criterion
+/// in degrees, as the viewport has (no chord turns an edge's tangent, no
+/// triangle side the surface's normal, by more than it: small holes and
+/// thin bent tubes stay round).
+pub const EXPORT_QUALITIES: [(&str, f64, f64); 3] = [
+    ("coarse", 2.0, 20.0),
+    ("normal", 1.0, 10.0),
+    ("fine", 0.25, 5.0),
+];
+
+/// The largest angle criterion `file.export {angle}` takes, in degrees.
+pub const MAX_EXPORT_ANGLE: f64 = 90.0;
+
+/// The smallest angle criterion `file.export {angle}` takes (besides 0,
+/// none), in degrees.
+pub const MIN_EXPORT_ANGLE: f64 = 1.0;
+
+/// The most triangles a mesh export holds, all bodies together: past it
+/// `file.export` refuses, asking for a coarser mesh, rather than write a
+/// file no program can open.
+pub const EXPORT_MAX_TRIANGLES: usize = 20_000_000;
+
+/// The tessellation of a mesh export, from `quality`, `tolerance` and
+/// `angle` (see [`EXPORT_QUALITIES`]). Without `tolerance` the quality
+/// sets both (normal by default); with it, the chordal tolerance is that
+/// and the angle is `angle`, or the quality's when `quality` is given,
+/// or none (an export with a tolerance makes the mesh it always made).
+/// Returns the parameters, the quality's name and the angle in degrees.
+fn export_tess(
     p: &Params,
-    command: &str,
     regen: &Regen,
-) -> Result<TessParams, CommandError> {
-    let chordal_tolerance = match p.number("tolerance")? {
-        Some(t) if t > 0.0 => t,
-        Some(_) => return fail(format!("{command}: `tolerance` must be positive")),
-        None => automatic_tolerance(regen),
+) -> Result<(TessParams, &'static str, Option<f64>), CommandError> {
+    let names: Vec<&str> = EXPORT_QUALITIES.iter().map(|(name, ..)| *name).collect();
+    let quality = match p.str("quality")? {
+        None => None,
+        Some(asked) => Some(
+            EXPORT_QUALITIES
+                .iter()
+                .find(|(name, ..)| *name == asked)
+                .ok_or_else(|| {
+                    CommandError::new(format!(
+                        "file.export: unknown quality `{}`; use {}",
+                        asked.chars().take(40).collect::<String>(),
+                        names.join(", ")
+                    ))
+                })?,
+        ),
     };
-    Ok(TessParams {
-        chordal_tolerance,
-        ..TessParams::default()
-    })
+    let (name, scale, degrees) = quality
+        .copied()
+        .or_else(|| EXPORT_QUALITIES.get(1).copied())
+        .unwrap_or(("normal", 1.0, 10.0));
+    let angle = match p.number("angle")? {
+        Some(a) if a != 0.0 && !(MIN_EXPORT_ANGLE..=MAX_EXPORT_ANGLE).contains(&a) => {
+            return fail(format!(
+                "file.export: `angle` is in degrees: 0 for none, or from {MIN_EXPORT_ANGLE} to {MAX_EXPORT_ANGLE} (a finer angle makes meshes too large to use)"
+            ));
+        }
+        Some(a) => Some(a),
+        None => None,
+    };
+    let given = p.number("tolerance")?;
+    let chordal_tolerance = match given {
+        Some(t) if t > 0.0 && t.is_finite() => t,
+        Some(_) => return fail("file.export: `tolerance` must be positive"),
+        None => automatic_tolerance(regen) * scale,
+    };
+    let degrees = match (angle, given, quality) {
+        (Some(a), ..) => a,
+        (None, Some(_), None) => 0.0,
+        _ => degrees,
+    };
+    let max_angle = (degrees > 0.0).then(|| degrees.to_radians());
+    Ok((
+        TessParams {
+            chordal_tolerance,
+            max_angle,
+            max_triangles: Some(EXPORT_MAX_TRIANGLES),
+            ..TessParams::default()
+        },
+        name,
+        (degrees > 0.0).then_some(degrees),
+    ))
 }
 
 /// One mesh per body, with the name of the feature that made it.
@@ -765,8 +870,17 @@ fn meshes(
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
-        let mesh = tessellate_body(body, tess)
-            .map_err(|e| CommandError::new(format!("{command}: {name}: {e}")))?;
+        // What is left of the export's triangle budget, for this body.
+        let used: usize = out.iter().map(|m: &BodyMesh| m.mesh.triangles.len()).sum();
+        let mut params = *tess;
+        params.max_triangles = tess.max_triangles.map(|cap| cap.saturating_sub(used));
+        let mesh = tessellate_body(body, &params).map_err(|e| match e {
+            craft3d_tess::TessError::OverBudget { .. } => CommandError::new(format!(
+                "{command}: the mesh would have more than {} triangles; choose a coarser quality, a larger tolerance or a larger angle",
+                tess.max_triangles.unwrap_or(0)
+            )),
+            e => CommandError::new(format!("{command}: {name}: {e}")),
+        })?;
         out.push(BodyMesh {
             name,
             mesh,
@@ -801,6 +915,11 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             "gap",
             "width",
             "bodies",
+            "view",
+            "projection",
+            "hidden",
+            "quality",
+            "angle",
         ],
     )?;
     let path = p.required_str("path")?;
@@ -810,6 +929,14 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             return fail(
                 "file.export: `bodies` is for STEP and mesh files; an outline (.dxf, .svg) takes `sketch`, `face`, `faces` or `set`",
             );
+        }
+        if let Some(key) = ["quality", "angle"]
+            .into_iter()
+            .find(|key| p.get(key).is_some())
+        {
+            return fail(format!(
+                "file.export: `{key}` is for mesh files (.stl, .3mf, .obj); an outline keeps every curve as it is"
+            ));
         }
         let resolved = session.workspace.resolve_write(path)?;
         return crate::drawing_cmds::export(session, &p, path, &resolved, format);
@@ -826,21 +953,27 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         "origin",
         "gap",
         "width",
+        "view",
+        "projection",
+        "hidden",
     ]
     .into_iter()
     .find(|key| p.has(key))
     {
         Some(key) => fail(format!(
-            "file.export: `{key}` is for the outline of a sketch or a face, which is a .dxf or .svg file; the other formats hold every body"
+            "file.export: `{key}` is for a drawing (the outline of a sketch or a face, or the model as seen), which is a .dxf or .svg file; the other formats hold every body"
         )),
         None => Ok(()),
     };
     if crate::step_cmds::wanted(p.str("format")?, path) {
         outline_only()?;
-        if p.number("tolerance")?.is_some() {
-            return fail(
-                "file.export: `tolerance` is for mesh formats; STEP is exact and carries the document's tolerance",
-            );
+        if let Some(key) = ["tolerance", "quality", "angle"]
+            .into_iter()
+            .find(|key| p.get(key).is_some())
+        {
+            return fail(format!(
+                "file.export: `{key}` is for mesh formats; STEP is exact and carries the document's tolerance"
+            ));
         }
         let resolved = session.workspace.resolve_write(path)?;
         let open = session.document_mut()?;
@@ -869,7 +1002,7 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let only = crate::export_bodies::chosen(&p, open.history.current(), &regen)?;
-    let tess = tolerance_param(&p, "file.export", &regen)?;
+    let (tess, quality, degrees) = export_tess(&p, &regen)?;
     let meshes = meshes(open, "file.export", &tess, only.as_deref())?;
     let unit = match open.history.current().units.length {
         LengthUnit::Micrometre => craft3d_meshio::Unit::Micron,
@@ -955,6 +1088,8 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         "closed": closed,
         "triangles": triangles,
         "tolerance": tess.chordal_tolerance,
+        "angle": degrees,
+        "quality": quality,
         "unit": length_unit(open.history.current()),
     }))
 }
@@ -3549,5 +3684,49 @@ mod loose_mesh_tests {
             let problem = loose_mesh_problem(&bare, tol.linear).unwrap().unwrap();
             assert!(problem.contains("points off their faces"), "{problem}");
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod export_budget_tests {
+    use super::{TessParams, meshes};
+    use crate::{Session, Workspace};
+    use serde_json::json;
+
+    /// The export's triangle budget holds for all bodies together, and a
+    /// mesh over it is refused saying what to do.
+    #[test]
+    fn a_mesh_export_over_its_triangle_budget_is_refused() {
+        let mut session = Session::new(Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        for k in 0..3 {
+            session
+                .execute(
+                    "feature.block",
+                    &json!({"size": [1, 1, 1], "position": [k * 3, 0, 0]}),
+                )
+                .unwrap();
+        }
+        let open = session.document_mut().unwrap();
+        let tess = |cap| TessParams {
+            chordal_tolerance: 0.01,
+            max_triangles: Some(cap),
+            ..TessParams::default()
+        };
+        // Three cubes of 12 triangles: 36 fit, 35 do not.
+        let made = meshes(open, "file.export", &tess(36), None).unwrap();
+        assert_eq!(
+            made.iter().map(|m| m.mesh.triangles.len()).sum::<usize>(),
+            36
+        );
+        let Err(error) = meshes(open, "file.export", &tess(35), None) else {
+            panic!("over the budget");
+        };
+        assert!(
+            error.message().contains("more than 35 triangles")
+                && error.message().contains("coarser quality"),
+            "{error}"
+        );
     }
 }

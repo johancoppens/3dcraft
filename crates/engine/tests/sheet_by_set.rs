@@ -187,7 +187,7 @@ fn a_set_that_cannot_be_drawn_is_refused_with_the_reason() {
         ),
         (
             json!({"path": "x.stl", "set": "Cut sheet"}),
-            "`set` is for the outline",
+            "`set` is for a drawing",
         ),
         (
             json!({"path": "x.svg", "faces": "Cut sheet"}),

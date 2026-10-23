@@ -226,7 +226,8 @@ fn the_tabs_are_the_open_documents_in_order_named_marked_and_in_ui_get() {
     assert_eq!(
         got["tabs"][1],
         json!({"document": 1, "name": "bracket", "path": "parts/bracket.3dcraft",
-               "dirty": true, "active": false, "asksToClose": true}),
+               "dirty": true, "active": false, "asksToClose": true,
+               "jigInUse": false}),
         "{got}"
     );
     assert_eq!(got["tabs"].as_array().unwrap().len(), 4);

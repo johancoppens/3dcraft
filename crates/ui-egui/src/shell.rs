@@ -24,10 +24,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
+mod dialogs;
 pub mod help;
 mod icons;
 mod layout;
 pub mod number_field;
+mod params;
 mod player;
 pub mod recent;
 mod report;
@@ -38,16 +40,21 @@ mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
+pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
+pub use params::{
+    DEBOUNCE, Faults, NOTE_SECONDS, Pacer, Param, ParamAsk, ParamKind, ParamList, Settled,
+    ShellCommand, Verdict, reported_faults, settle, verdict,
+};
 pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
 pub use start::{AgentSetup, EXAMPLES, Example, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
 };
-pub use views::FLY_SECONDS;
 pub(crate) use views::FlyTo;
+pub use views::{FLY_SECONDS, MIN_FLY_CONTEXT, ZOOM_TOOLTIP, zoomable};
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -103,17 +110,24 @@ pub enum FileAction {
     /// The document's bodies, or what is selected, to a file of the
     /// format its extension names (`file.export`).
     Export,
+    /// The document published as a Jig, a `.3dcraftjig` file
+    /// (`jig.export`): for a document with public parameters.
+    ExportJig,
+    /// A new untitled model of a Jig in use, to edit (`jig.edit`).
+    OpenForEditing,
 }
 
 impl FileAction {
     /// In menu order.
-    pub const ALL: [FileAction; 6] = [
+    pub const ALL: [FileAction; 8] = [
         FileAction::New,
         FileAction::Open,
+        FileAction::OpenForEditing,
         FileAction::Save,
         FileAction::SaveAs,
         FileAction::Import,
         FileAction::Export,
+        FileAction::ExportJig,
     ];
 
     pub fn label(self) -> &'static str {
@@ -124,11 +138,14 @@ impl FileAction {
             FileAction::SaveAs => "Save As…",
             FileAction::Import => "Import…",
             FileAction::Export => "Export…",
+            FileAction::ExportJig => "Export as Jig…",
+            FileAction::OpenForEditing => "Open for Editing",
         }
     }
 
-    /// Ctrl (⌘ on a Mac) with N, O, S, Shift+S, I and E.
-    pub fn shortcut(self) -> egui::KeyboardShortcut {
+    /// Ctrl (⌘ on a Mac) with N, O, S, Shift+S, I and E; the Jig's
+    /// actions have none.
+    pub fn shortcut(self) -> Option<egui::KeyboardShortcut> {
         let command = egui::Modifiers::COMMAND;
         let (modifiers, key) = match self {
             FileAction::New => (command, egui::Key::N),
@@ -137,8 +154,9 @@ impl FileAction {
             FileAction::SaveAs => (command | egui::Modifiers::SHIFT, egui::Key::S),
             FileAction::Import => (command, egui::Key::I),
             FileAction::Export => (command, egui::Key::E),
+            FileAction::ExportJig | FileAction::OpenForEditing => return None,
         };
-        egui::KeyboardShortcut::new(modifiers, key)
+        Some(egui::KeyboardShortcut::new(modifiers, key))
     }
 
     /// Saving and exporting need a document. Importing does not: without
@@ -146,7 +164,11 @@ impl FileAction {
     pub fn needs_document(self) -> bool {
         matches!(
             self,
-            FileAction::Save | FileAction::SaveAs | FileAction::Export
+            FileAction::Save
+                | FileAction::SaveAs
+                | FileAction::Export
+                | FileAction::ExportJig
+                | FileAction::OpenForEditing
         )
     }
 
@@ -200,6 +222,9 @@ pub struct TreeRow {
     /// The first face, edge or vertex selected was made by this feature
     /// (by its persistent name): the row is marked as selected too.
     pub made_selection: bool,
+    /// Something of it can be shown and flown to (a double click, the
+    /// row's zoom icon): [`zoomable`](crate::shell::zoomable).
+    pub zoomable: bool,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -265,9 +290,12 @@ fn plain_f(input: &egui::InputState) -> bool {
     }) && input.modifiers.is_none()
 }
 
-/// Room the rows of the feature list keep on their right, in points,
-/// for the scroll bar that lies over them against the panel's edge.
-const TREE_BAR_ROOM: i8 = 12;
+/// The side panel's inset, in points: its content keeps it from the
+/// panel's left edge and from the split on its right (where the lists'
+/// scroll bars lie, over that room), the same on both sides.
+pub(crate) fn side_inset(tokens: &Tokens) -> i8 {
+    tokens.inset.round().clamp(0.0, 64.0) as i8
+}
 
 /// How long the camera takes to turn to the view a click on the view
 /// cube asked for.
@@ -620,10 +648,20 @@ pub struct Shell {
     tree_scroll: Option<String>,
     /// The tab was switched and its selection not read yet.
     tab_switched: bool,
+    /// The features the shown scene shows something of, for the scene
+    /// (revision and sampling) it was worked out for (`views.rs`).
+    shown_features: Option<views::ShownFeatures>,
     /// Where the last frame drew the name of each row of the feature
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
+    /// Where the last frame drew the zoom icon of a row (`views.rs`).
+    tree_zoom_hits: Vec<(String, egui::Rect)>,
+    /// The error and export dialogs (`dialogs.rs`).
+    dialogs: dialogs::Dialogs,
     tree_view: Option<egui::Rect>,
+    /// The Parameters tab: its list, the field being changed, the commit
+    /// waiting for the host (`shell/params.rs`).
+    params: params::ParamForm,
     /// The Help menu, the recent files and the start screen.
     help: help::HelpMemory,
     recent: recent::RecentMemory,
@@ -866,8 +904,12 @@ impl Shell {
             made_selection: None,
             tree_scroll: None,
             tab_switched: false,
+            shown_features: None,
             tree_row_hits: Vec::new(),
+            tree_zoom_hits: Vec::new(),
+            dialogs: dialogs::Dialogs::default(),
             tree_view: None,
+            params: params::ParamForm::default(),
             help: help::HelpMemory::default(),
             recent: recent::RecentMemory::default(),
             start: start::StartMemory::default(),
@@ -1503,11 +1545,15 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.follow_active_tab(session);
+        // What `file.export` to DXF or SVG draws as the view seen.
+        session.set_window_camera(Some(self.state.camera.to_render()));
         self.sync_timeline(session);
         self.sync_player(session);
         let scene = self.sync_scene(session);
         self.mark_scrubbed_rows();
+        self.mark_zoomable(scene.as_deref());
         self.assertion_rows = session.assertion_states();
+        self.sync_params(session, scene.as_ref());
         self.sync_tabs(session);
         self.note_recent(session);
         self.shown_status = session.document_status();
@@ -1627,6 +1673,7 @@ impl Shell {
                 selected: selected == Some(f.id.as_str()),
                 hidden: f.hidden,
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
+                zoomable: false,
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -1672,6 +1719,10 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
+        // The dialogs first: they take Enter and Escape before anything
+        // else in the frame reads them (`dialogs.rs`).
+        self.dialogs_ui(ui.ctx());
+        self.params_frame(ui.ctx());
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
@@ -1744,7 +1795,7 @@ impl Shell {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
-                left: 8,
+                left: side_inset(&tokens),
                 right: 0,
                 top: 2,
                 bottom: 2,
@@ -1753,12 +1804,14 @@ impl Shell {
                 .resizable(true)
                 .default_size(260.0)
                 .frame(frame)
-                .show(ui, |ui| self.tree(ui, status.is_some()));
+                .show(ui, |ui| self.side_panel(ui, status.is_some()));
             self.tree_panel = Some(panel.response.rect);
         } else {
             self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // A parameter's value that broke the model, and the way back.
+        self.trouble_banner(ui);
         // Space, the arrows, Home and End over the viewport or the list.
         self.player_keys(ui.ctx());
         // A number typed into a field of the viewport, once Enter was
@@ -1767,6 +1820,10 @@ impl Shell {
         if let Some(session) = session.as_deref() {
             let before = self.typing.clone();
             self.resolve_typing(session);
+            self.resolve_param_typing(Some(session));
+            if self.command_waiting() {
+                ui.ctx().request_repaint();
+            }
             if self.typing != before {
                 ui.ctx().request_repaint();
             }
@@ -1801,7 +1858,9 @@ impl Shell {
             FileAction::Import,
             FileAction::Export,
         ] {
-            let pressed = ui.input_mut(|i| i.consume_shortcut(&action.shortcut()));
+            let pressed = action
+                .shortcut()
+                .is_some_and(|shortcut| ui.input_mut(|i| i.consume_shortcut(&shortcut)));
             if pressed && (has_document || !action.needs_document()) {
                 self.file_action = Some(action);
             }
@@ -1815,9 +1874,13 @@ impl Shell {
                     if action.starts_group() {
                         ui.separator();
                     }
-                    let shortcut = ui.ctx().format_shortcut(&action.shortcut());
+                    let shortcut = action
+                        .shortcut()
+                        .map(|shortcut| ui.ctx().format_shortcut(&shortcut))
+                        .unwrap_or_default();
                     let button = egui::Button::new(action.label()).shortcut_text(shortcut);
-                    let enabled = has_document || !action.needs_document();
+                    let enabled = (has_document || !action.needs_document())
+                        && self.file_action_available(action);
                     if ui.add_enabled(enabled, button).clicked() {
                         self.file_action = Some(action);
                         ui.close();
@@ -2186,13 +2249,14 @@ impl Shell {
     fn tree(&mut self, ui: &mut egui::Ui, has_document: bool) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
-        ui.add_space(tokens.inset * 0.5);
-        ui.label(egui::RichText::new("Features").strong());
-        ui.separator();
         // The timeline at the foot of the panel, under the list.
         egui::Panel::bottom("craft3d-timeline")
             .resizable(false)
-            .show(ui, |ui| self.timeline_ui(ui));
+            .show(ui, |ui| {
+                // Clear of the split, as the rows above.
+                ui.set_max_width((ui.available_width() - f32::from(side_inset(&tokens))).max(40.0));
+                self.timeline_ui(ui);
+            });
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."
@@ -2209,9 +2273,11 @@ impl Shell {
         let mut double = None;
         let mut followed = None;
         let mut eye_clicked = None;
+        let in_use = self.jig_in_use();
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
+        let mut zooms_drawn = Vec::new();
         // F over the list as over the viewport: to the selection.
         let fit = ui.rect_contains_pointer(ui.max_rect())
             && !ui.ctx().egui_wants_keyboard_input()
@@ -2226,7 +2292,7 @@ impl Shell {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 0,
-                        right: TREE_BAR_ROOM,
+                        right: side_inset(&tokens),
                         top: 0,
                         bottom: 0,
                     })
@@ -2274,9 +2340,12 @@ impl Shell {
                                     .on_hover_text(&hover);
                                 rows_drawn.push((row.id.clone(), label.rect));
                                 // The second click of a double click is a click
-                                // too: the double click wins.
+                                // too: the double click wins, and does nothing
+                                // on a row that cannot be flown to.
                                 if label.double_clicked() {
-                                    double = Some(row.id.clone());
+                                    if row.zoomable {
+                                        double = Some(row.id.clone());
+                                    }
                                 } else if label.clicked() {
                                     clicked = Some(row.id.clone());
                                 }
@@ -2290,7 +2359,17 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
-                                if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                                let row_hovered = ui.rect_contains_pointer(ui.max_rect());
+                                if let Some(icon) =
+                                    views::zoom_icon(ui, row.zoomable, row_hovered, &tokens)
+                                {
+                                    zooms_drawn.push((row.id.clone(), icon.rect));
+                                    if icon.clicked() {
+                                        double = Some(row.id.clone());
+                                    }
+                                }
+                                // A Jig in use is looked at, not changed.
+                                if !in_use && timeline::eye(ui, row.hidden, &tokens).clicked() {
                                     eye_clicked = Some((row.id.clone(), row.hidden));
                                 }
                             });
@@ -2377,6 +2456,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.tree_row_hits = rows_drawn;
+        self.tree_zoom_hits = zooms_drawn;
         self.tree_view = Some(list.inner_rect);
         // A double click on a row selects that feature (whatever its
         // first click did) and flies to what it made.

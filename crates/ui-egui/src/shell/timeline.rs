@@ -312,7 +312,11 @@ impl Shell {
         });
         ui.horizontal(|ui| {
             let here = ui
-                .add_enabled(scrubbed.is_some(), egui::Button::new("Roll back here"))
+                // A Jig in use is looked at and played, not changed.
+                .add_enabled(
+                    scrubbed.is_some() && !self.jig_in_use(),
+                    egui::Button::new("Roll back here"),
+                )
                 .on_hover_text(
                     "Move the rollback marker to this step: the model is built up to here, \
                      and new features go in after it.",
