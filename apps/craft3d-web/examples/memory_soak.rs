@@ -47,7 +47,7 @@ fn main() -> Result<(), String> {
             host.session
                 .execute("document.inspect", &json!({"measures": false}))
                 .ok()
-                .and_then(|v| v["history"]["undo"].as_array().map(Vec::len))
+                .and_then(|v| v.pointer("/history/undo")?.as_array().map(Vec::len))
                 .unwrap_or(0),
             rss()
         );
@@ -61,16 +61,22 @@ fn main() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     // Every number parameter with a range, swept from its minimum to its
     // maximum and back, one commit per step, in turn.
-    let sweeps: Vec<(String, f64, f64)> = list["parameters"]
-        .as_array()
+    let sweeps: Vec<(String, f64, f64)> = list
+        .get("parameters")
+        .and_then(Value::as_array)
         .map(|all| {
             all.iter()
-                .filter(|p| p["kind"] == "number" || p["kind"] == "integer")
+                .filter(|p| {
+                    matches!(
+                        p.get("kind").and_then(Value::as_str),
+                        Some("number" | "integer")
+                    )
+                })
                 .filter_map(|p| {
                     Some((
-                        p["name"].as_str()?.to_string(),
-                        p["min"]["value"].as_f64()?,
-                        p["max"]["value"].as_f64()?,
+                        p.get("name")?.as_str()?.to_string(),
+                        p.pointer("/min/value")?.as_f64()?,
+                        p.pointer("/max/value")?.as_f64()?,
                     ))
                 })
                 .collect()
