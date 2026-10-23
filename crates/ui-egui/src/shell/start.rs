@@ -357,11 +357,12 @@ impl Shell {
         &self.start.hits
     }
 
-    /// True when the window shows the welcome: no document, no work
-    /// running and no problem to show. The feature list is put away
+    /// True when the window shows the welcome: no document (as of the
+    /// last sync), no work running and no problem to show (the scene's or
+    /// the picture's). One test for both: the feature list is put away
     /// meanwhile, so the welcome sits in the middle of the window.
-    pub(super) fn welcome(&self, has_document: bool) -> bool {
-        !has_document && self.work.is_none() && self.problem.is_none()
+    pub(super) fn welcome(&self) -> bool {
+        self.shown_status.is_none() && self.work.is_none() && self.problem().is_none()
     }
 
     pub(super) fn no_start_screen(&mut self) {

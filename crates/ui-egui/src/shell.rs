@@ -1727,7 +1727,7 @@ impl Shell {
         }
         self.cause_hits.clear();
         // Put away while the welcome shows (`start.rs`).
-        if self.state.panels.tree && !self.welcome(status.is_some()) {
+        if self.state.panels.tree && !self.welcome() {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -2638,7 +2638,7 @@ impl Shell {
                 color(tokens.text_dim),
             );
         };
-        let start = scene.is_none() && self.problem().is_none() && self.work.is_none();
+        let start = self.welcome();
         match (scene, self.problem()) {
             (None, None) if self.work.is_some() => hint("No document."),
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),

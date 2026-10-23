@@ -365,7 +365,10 @@ method. The pixels are not compared, since the renderer's last bits may differ b
 says what they were made from. `cargo test -p xtask` (`the_thumbnails_are_up_to_date`) recomputes the stamps
 and fails when an example script or the settings changed without new thumbnails: run the task and commit
 `docs/examples/thumbs`. Another test checks that every script in `docs/examples` has a thumbnail, and
-`craft3d-ui-egui`'s tests that each one decodes to 160 × 120.
+`craft3d-ui-egui`'s tests that each one decodes to 160 × 120. The stamp does not see the renderer, the theme
+or the kernel: after a change to one of them that shows in pictures, run `cargo xtask example-thumbs` again
+too. Scripts are hashed with CRLF line ends read as LF, and `.gitattributes` keeps the scripts and
+`STAMPS.txt` LF in every checkout.
 
 ## Morning health report
 

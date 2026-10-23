@@ -42,8 +42,25 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `text` with every `\r\n` made `\n`: a checkout that turned the
+/// script's line ends into CRLF (git's autocrlf on Windows) stamps the
+/// same.
+fn lf(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut bytes = text.iter().peekable();
+    while let Some(&b) = bytes.next() {
+        if b == b'\r' && bytes.peek() == Some(&&b'\n') {
+            continue;
+        }
+        out.push(b);
+    }
+    out
+}
+
 /// The stamp of an example: what its thumbnail was made from.
 pub fn stamp(script: &[u8]) -> String {
+    let script = lf(script);
+    let script = script.as_slice();
     let mut all = Vec::new();
     for part in [
         METHOD.as_bytes(),
@@ -176,26 +193,60 @@ fn write_indexed(
     Ok(out)
 }
 
-/// Makes every thumbnail again, and `STAMPS.txt`.
+/// Builds `craft3d-cli` and says where cargo put it (its artifact
+/// message), as `ci.rs` finds the test binaries.
+fn build_cli() -> Result<PathBuf, String> {
+    eprintln!("$ cargo build -p craft3d-cli");
+    let output = std::process::Command::new(crate::cargo_path())
+        .args([
+            "build",
+            "-p",
+            "craft3d-cli",
+            "--message-format=json-render-diagnostics",
+        ])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("cannot run cargo: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`cargo build -p craft3d-cli` failed ({})",
+            output.status
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|m| m.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact"))
+        .filter(|m| {
+            m.get("target")
+                .and_then(|t| t.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("craft3d-cli")
+        })
+        .find_map(|m| {
+            m.get("executable")
+                .and_then(|e| e.as_str())
+                .map(PathBuf::from)
+        })
+        .ok_or_else(|| "cargo did not say where craft3d-cli is".to_string())
+}
+
+/// Makes every thumbnail again, and `STAMPS.txt`: all of them or none
+/// (each is checked against [`MAX_BYTES`] before any is written).
 pub fn run(_args: &[String]) -> Result<(), String> {
-    crate::cargo(&["build", "-p", "craft3d-cli"])?;
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
+    let cli = build_cli()?;
+    let target = cli
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| root().join("target"));
-    let target = if target.is_absolute() {
-        target
-    } else {
-        root().join(target)
-    };
-    let cli = target
-        .join("debug")
-        .join(format!("craft3d-cli{}", std::env::consts::EXE_SUFFIX));
     let work = target.join("tmp").join("example-thumbs");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let out_dir = root().join("docs/examples/thumbs");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let mut total = 0_u64;
+    let mut made = Vec::new();
     for id in EXAMPLES {
         let script = root().join("docs/examples").join(format!("{id}.json"));
         let picture = work.join(format!("{id}.png"));
@@ -223,11 +274,16 @@ pub fn run(_args: &[String]) -> Result<(), String> {
         let png = write_indexed(width, height, &palette, &indices)?;
         let size = png.len() as u64;
         total += size;
-        std::fs::write(out_dir.join(format!("{id}.png")), &png).map_err(|e| e.to_string())?;
         println!("{id}: {size} bytes");
         if size > MAX_BYTES {
-            return Err(format!("{id}: {size} bytes, more than {MAX_BYTES}"));
+            return Err(format!(
+                "{id}: {size} bytes, more than {MAX_BYTES}; nothing was written"
+            ));
         }
+        made.push((id, png));
+    }
+    for (id, png) in made {
+        std::fs::write(out_dir.join(format!("{id}.png")), &png).map_err(|e| e.to_string())?;
     }
     std::fs::write(out_dir.join("STAMPS.txt"), stamps()?).map_err(|e| e.to_string())?;
     println!("all: {total} bytes");
@@ -242,9 +298,12 @@ mod tests {
     fn the_thumbnails_are_up_to_date() {
         let dir = root().join("docs/examples/thumbs");
         let kept = std::fs::read_to_string(dir.join("STAMPS.txt")).unwrap_or_default();
+        // Line by line: a checkout with CRLF line ends reads the same.
+        let kept: Vec<&str> = kept.lines().map(str::trim_end).collect();
+        let now = stamps().unwrap();
+        let now: Vec<&str> = now.lines().collect();
         assert_eq!(
-            kept,
-            stamps().unwrap(),
+            kept, now,
             "an example script or the thumbnail settings changed: run `cargo xtask example-thumbs` and commit docs/examples/thumbs"
         );
         for id in EXAMPLES {
@@ -272,6 +331,12 @@ mod tests {
     #[test]
     fn a_stamp_follows_the_script() {
         assert_eq!(stamp(b"[]"), stamp(b"[]"));
+        assert_eq!(
+            stamp(b"[\n1\n]\n"),
+            stamp(b"[\r\n1\r\n]\r\n"),
+            "line ends do not count"
+        );
+        assert_ne!(stamp(b"[\n1]"), stamp(b"[\r1]"));
         assert_ne!(stamp(b"[]"), stamp(b"[ ]"));
         assert_eq!(stamp(b"[]").len(), 16);
     }

@@ -1,0 +1,6 @@
+# The example scripts and the stamps of their thumbnails are hashed
+# (`cargo xtask example-thumbs`, xtask/src/thumbs.rs): LF in every
+# checkout, also with core.autocrlf on Windows.
+docs/examples/*.json text eol=lf
+docs/examples/thumbs/STAMPS.txt text eol=lf
+*.png binary
