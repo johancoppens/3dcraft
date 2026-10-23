@@ -82,6 +82,9 @@ fn options(types: &[PickerType], suggested: Option<&str>) -> Result<Object, Stri
     set(&options, "types", &kinds)?;
     if let Some(name) = suggested {
         set(&options, "suggestedName", &JsValue::from_str(name))?;
+        // A save dialog offers only the file's own kind, no "All files":
+        // the bytes are of one format.
+        set(&options, "excludeAcceptAllOption", &JsValue::TRUE)?;
     }
     Ok(options)
 }
@@ -194,7 +197,10 @@ pub async fn write(handle: &FileSystemFileHandle, bytes: &[u8]) -> Result<(), St
         .map_err(cannot)?
         .dyn_into()
         .map_err(|_| "the browser gave no stream to write".to_string())?;
-    let written = match stream.write_with_u8_array(bytes) {
+    // A copy in JavaScript's memory, not a view into the module's: the
+    // write is asynchronous, and the module's memory may grow meanwhile.
+    let copy = js_sys::Uint8Array::from(bytes);
+    let written = match stream.write_with_buffer_source(&copy) {
         Ok(promise) => JsFuture::from(promise).await.map(|_| ()),
         Err(e) => Err(e),
     };

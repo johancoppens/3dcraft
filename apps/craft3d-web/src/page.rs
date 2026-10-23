@@ -12,15 +12,15 @@
 
 use crate::flags::{self, Flags};
 use crate::host::{
-    Ask, Download, NameDialog, Pick, PickerType, Purpose, WebHost, memory_name, open_types,
-    received_kind,
+    Ask, Download, Pick, PickerType, WebHost, open_types, received_kind,
+    refusal_is_about_activation,
 };
 use crate::pickers::{self, Picked};
 use crate::prefs::{self, Prefs};
 use craft3d_ui_egui::{RendererChoice, Shell, window_title};
 use egui_wgpu::wgpu;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use wasm_bindgen::JsCast;
@@ -53,25 +53,31 @@ type Inbox = Rc<RefCell<Vec<Arrived>>>;
 enum Mail {
     /// The save dialog chose a file for `pick`.
     Picked(Pick, FileSystemFileHandle),
-    /// The save dialog was not shown (why): the dialog over the page
-    /// names the file, which is then downloaded.
+    /// The save dialog was not shown (why): the file is downloaded, or
+    /// the dialog over the page names it first.
     NoSavePicker(Pick, String),
     /// The open dialog was not shown (why): the file input asks.
     NoOpenPicker(Ask, String),
-    /// A file was written through `handle`, or not: the saved file of
-    /// `document` (which is then saved there again), or an export.
-    Written {
-        document: Option<u64>,
-        handle: FileSystemFileHandle,
-        bytes: usize,
-        result: Result<(), String>,
-    },
+    /// A file was written through a handle, or not.
+    Written(Written),
     /// A line for the status bar.
     Note {
         label: &'static str,
         ok: bool,
         text: String,
     },
+}
+
+/// A write through a file dialog's handle, done.
+struct Written {
+    handle: FileSystemFileHandle,
+    /// The document it is the saved file of (saved there again from now
+    /// on), or `None` for an export.
+    document: Option<u64>,
+    /// The document is closed once this is written (and only then).
+    close: bool,
+    bytes: usize,
+    result: Result<(), String>,
 }
 
 type Mailbox = Rc<RefCell<Vec<Mail>>>;
@@ -202,7 +208,9 @@ fn keep_file_shortcuts() {
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
             let command = event.ctrl_key() || event.meta_key();
             let key = event.key().to_ascii_lowercase();
-            if command && !event.alt_key() && (key == "e" || key == "i") {
+            // Not with Shift: Ctrl+Shift+I and Ctrl+Shift+E stay the
+            // browser's (its developer tools).
+            if command && !event.alt_key() && !event.shift_key() && (key == "e" || key == "i") {
                 event.prevent_default();
             }
         });
@@ -410,6 +418,10 @@ struct Page {
     /// The file each document (by id) was opened from or saved to through
     /// a file dialog: Save writes there.
     handles: BTreeMap<u64, FileSystemFileHandle>,
+    /// The documents a write is running for.
+    busy: BTreeSet<u64>,
+    /// The next write of a busy document, waiting for the running one.
+    queued: BTreeMap<u64, (FileSystemFileHandle, Download)>,
     ctx: egui::Context,
     unsaved: Rc<Cell<bool>>,
     /// The first error the graphics device reported, for the next frame.
@@ -485,6 +497,8 @@ impl Page {
             inbox,
             mail: Rc::new(RefCell::new(Vec::new())),
             handles: BTreeMap::new(),
+            busy: BTreeSet::new(),
+            queued: BTreeMap::new(),
             ctx: creation.egui_ctx.clone(),
             unsaved,
             gpu_error,
@@ -538,8 +552,8 @@ impl Page {
         }
     }
 
-    /// Save As or Export: the save dialog. Called in the frame of the click
-    /// or key press that asked.
+    /// Save As, or an export already made: the save dialog. Called in the
+    /// frame of the click or key press that asked.
     fn pick(&mut self, pick: Pick) {
         let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
@@ -555,25 +569,34 @@ impl Page {
     }
 
     /// Writes `download` through `handle` in the background; the result
-    /// comes back as [`Mail::Written`].
-    fn write(&self, handle: FileSystemFileHandle, download: Download) {
+    /// comes back as [`Mail::Written`]. A document's writes go one at a
+    /// time, in order: while one runs, the newest next one waits (an
+    /// older waiting one is dropped, the newer holds all it held).
+    fn write(&mut self, handle: FileSystemFileHandle, download: Download) {
+        if let Some(id) = download.document {
+            if self.busy.contains(&id) {
+                self.queued.insert(id, (handle, download));
+                return;
+            }
+            self.busy.insert(id);
+        }
         let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let result = pickers::write(&handle, &download.bytes).await;
-            mail.borrow_mut().push(Mail::Written {
-                document: download.document,
+            mail.borrow_mut().push(Mail::Written(Written {
                 handle,
+                document: download.document,
+                close: download.close,
                 bytes: download.bytes.len(),
                 result,
-            });
+            }));
             ctx.request_repaint();
         });
     }
 
-    /// A file that goes with an export (an OBJ's material library): its
-    /// own save dialog, proposed next to the export under its name, else
-    /// a download (a browser shows one dialog per click).
-    fn companion(&self, download: Download) {
+    /// The file that goes with an export (an OBJ's material library), after
+    /// the person clicked to save it: its own save dialog, else a download.
+    fn save_companion(&mut self, file: Download) {
         let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let types = [PickerType {
@@ -581,38 +604,35 @@ impl Page {
                 mime: "model/mtl",
                 extensions: vec!["mtl"],
             }];
-            let note = match pickers::save(&types, &download.name).await {
+            let note = match pickers::save(&types, &file.name).await {
                 Picked::Chosen(handle) => {
-                    let result = pickers::write(&handle, &download.bytes).await;
-                    Mail::Written {
-                        document: None,
+                    let result = pickers::write(&handle, &file.bytes).await;
+                    Mail::Written(Written {
                         handle,
-                        bytes: download.bytes.len(),
+                        document: None,
+                        close: false,
+                        bytes: file.bytes.len(),
                         result,
-                    }
+                    })
                 }
                 Picked::Cancelled => Mail::Note {
                     label: "file.export",
-                    ok: false,
-                    text: format!(
-                        "`{}` (the OBJ's material library, its colours) was not saved",
-                        download.name
-                    ),
+                    ok: true,
+                    text: format!("`{}` (the OBJ's colours) was not saved", file.name),
                 },
-                Picked::Unavailable(_) => match offer(&download) {
+                Picked::Unavailable(_) => match offer(&file) {
                     Ok(()) => Mail::Note {
                         label: "file.export",
                         ok: true,
                         text: format!(
-                            "the OBJ's material library `{}` was downloaded: put it next to the OBJ \
-                             (see the browser's downloads)",
-                            download.name
+                            "downloaded `{}`: put it next to the OBJ (see the browser's downloads)",
+                            file.name
                         ),
                     },
                     Err(why) => Mail::Note {
                         label: "file.export",
                         ok: false,
-                        text: format!("`{}` could not be downloaded: {why}", download.name),
+                        text: format!("`{}` could not be downloaded: {why}", file.name),
                     },
                 },
             };
@@ -627,25 +647,45 @@ impl Page {
         let mut offered = Vec::new();
         let mut saved = false;
         for download in downloads {
-            let own = download
-                .document
-                .and_then(|id| self.handles.get(&id))
-                .filter(|handle| handle.name() == download.name)
-                .cloned();
-            if let Some(handle) = own {
-                self.write(handle, download);
-                continue;
+            if let Some(id) = download.document {
+                let own = self
+                    .handles
+                    .get(&id)
+                    .filter(|handle| handle.name() == download.name)
+                    .cloned();
+                if let Some(handle) = own {
+                    self.write(handle, download);
+                    continue;
+                }
+                if self.host.pickers && self.host.writable.contains(&id) {
+                    // Its file is under another name than the document
+                    // now: ask where, and until then it is not saved.
+                    self.host.write_failed(id);
+                    self.pick(Pick::Save {
+                        document: id,
+                        suggested: download.name,
+                        close: download.close,
+                    });
+                    continue;
+                }
             }
             saved |= download.document.is_some();
             match offer(&download) {
-                Ok(()) => offered.push(format!("`{}`", download.name)),
+                Ok(()) => {
+                    offered.push(format!("`{}`", download.name));
+                    if let (true, Some(id)) = (download.close, download.document) {
+                        self.host.close_document(id);
+                    }
+                }
                 Err(why) => {
+                    if let Some(id) = download.document {
+                        self.host.write_failed(id);
+                    }
                     self.host.note(
                         "download",
                         false,
                         format!("`{}` could not be downloaded: {why}", download.name),
                     );
-                    return;
                 }
             }
         }
@@ -672,24 +712,13 @@ impl Page {
                 Mail::Picked(pick, handle) => self.picked(pick, handle),
                 Mail::NoSavePicker(pick, why) => {
                     log::warn!("the save dialog was not shown: {why}");
-                    let (purpose, name) = match pick {
-                        Pick::Save {
-                            suggested, close, ..
-                        } => (Purpose::Save { close }, suggested),
-                        Pick::Export { suggested } => (Purpose::Export, suggested),
-                    };
-                    self.host.dialog = Some(NameDialog { purpose, name });
-                    self.host.note(
-                        "file",
-                        false,
-                        format!(
-                            "the browser did not show its file dialog ({why}): the file is \
-                             downloaded instead"
-                        ),
-                    );
+                    self.refused(&why);
+                    let outcome = self.host.without_picker(pick, &why);
+                    self.deliver(outcome.downloads);
                 }
                 Mail::NoOpenPicker(ask, why) => {
                     log::warn!("the open dialog was not shown: {why}");
+                    self.refused(&why);
                     self.host.note(
                         "file",
                         false,
@@ -700,23 +729,62 @@ impl Page {
                     );
                     self.choose(ask);
                 }
-                Mail::Written {
-                    document,
-                    handle,
-                    bytes,
-                    result,
-                } => self.written(document, handle, bytes, result),
+                Mail::Written(written) => self.written(written),
                 Mail::Note { label, ok, text } => self.host.note(label, ok, text),
             }
         }
     }
 
+    /// A file dialog was refused for a reason other than a click that came
+    /// too long ago (a cross-origin iframe, a browser that has the API but
+    /// not for this page): downloads and the file input from now on.
+    fn refused(&mut self, why: &str) {
+        if !refusal_is_about_activation(why) {
+            self.host.pickers = false;
+        }
+    }
+
     /// The save dialog chose `handle` for `pick`: the document is saved, or
-    /// the export made, under its name and written there. When nothing is
-    /// (the status bar says why), the empty file the dialog made goes
-    /// again.
+    /// the export written, there. When nothing is (the status bar says
+    /// why), the empty file the dialog made goes again; a file with
+    /// anything in it is kept.
     fn picked(&mut self, pick: Pick, handle: FileSystemFileHandle) {
-        let written = self.picked_inner(pick, &handle);
+        let name = handle.name();
+        let written = if pick.accepts(&name) {
+            match pick {
+                Pick::Save {
+                    document, close, ..
+                } => {
+                    let downloads = self.host.save_document(document, &name, close);
+                    let any = !downloads.is_empty();
+                    for download in downloads {
+                        self.write(handle.clone(), download);
+                    }
+                    any
+                }
+                Pick::Export { file } => {
+                    self.write(handle.clone(), Download { name, ..file });
+                    true
+                }
+            }
+        } else {
+            let wanted = pick
+                .types()
+                .iter()
+                .flat_map(|t| t.extensions.iter().map(|e| format!(".{e}")))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            let label = match pick {
+                Pick::Save { .. } => "file.save",
+                Pick::Export { .. } => "file.export",
+            };
+            self.host.note(
+                label,
+                false,
+                format!("`{name}` is not a {wanted} file: nothing was written; choose a name that ends in {wanted}"),
+            );
+            false
+        };
         if !written {
             wasm_bindgen_futures::spawn_local(async move {
                 pickers::remove_if_empty(&handle).await;
@@ -724,87 +792,53 @@ impl Page {
         }
     }
 
-    /// [`Page::picked`]; false when nothing is written.
-    fn picked_inner(&mut self, pick: Pick, handle: &FileSystemFileHandle) -> bool {
-        let name = handle.name();
-        match pick {
-            Pick::Save {
-                document, close, ..
-            } => {
-                let active = self.host.session.document_status().map(|s| s.id);
-                if active != Some(document) {
-                    self.host.note(
-                        "file.save",
-                        false,
-                        format!(
-                            "another document was shown while the file dialog was open: nothing \
-                             was written to `{name}`; save again"
-                        ),
-                    );
-                    return false;
-                }
-                let mut written = false;
-                for download in self.host.save_as(&name, close) {
-                    // A tab closed once it is saved is not saved again.
-                    let download = Download {
-                        document: download.document.filter(|_| close.is_none()),
-                        ..download
-                    };
-                    self.write(handle.clone(), download);
-                    written = true;
-                }
-                written
-            }
-            Pick::Export { .. } => {
-                let main = memory_name(&name);
-                let mut written = false;
-                for download in self.host.export_as(&name) {
-                    if main.as_deref() == Some(download.name.as_str()) {
-                        self.write(handle.clone(), download);
-                        written = true;
-                    } else {
-                        self.companion(download);
-                    }
-                }
-                written
-            }
-        }
-    }
-
     /// A write through a file dialog's handle is done.
-    fn written(
-        &mut self,
-        document: Option<u64>,
-        handle: FileSystemFileHandle,
-        bytes: usize,
-        result: Result<(), String>,
-    ) {
+    fn written(&mut self, done: Written) {
+        let Written {
+            handle,
+            document,
+            close,
+            bytes,
+            result,
+        } = done;
         let name = handle.name();
         let label = if document.is_some() {
             "file.save"
         } else {
             "file.export"
         };
+        if let Some(id) = document {
+            self.busy.remove(&id);
+        }
+        let later = document.and_then(|id| self.queued.remove(&id));
         match result {
             Ok(()) => {
-                if let Some(id) = document {
+                // A later write of the same document keeps its own file
+                // once it is done.
+                if let (Some(id), None) = (document, &later) {
                     self.handles.insert(id, handle);
                     self.host.writable.insert(id);
                 }
                 let verb = if document.is_some() { "saved" } else { "wrote" };
                 self.host
                     .note(label, true, format!("{verb} `{name}` ({bytes} bytes)"));
+                if let (Some(id), true, None) = (document, close, &later) {
+                    self.host.close_document(id);
+                }
             }
             Err(why) => {
                 let mut text = format!("`{name}` was not written: {why}");
                 if let Some(id) = document {
-                    // The next Save asks where.
+                    // Still open and unsaved; the next Save asks where.
                     self.handles.remove(&id);
-                    self.host.writable.remove(&id);
-                    text.push_str("; the changes are not in that file: save again");
+                    self.host.write_failed(id);
+                    text.push_str("; the document is not saved");
                 }
                 self.host.note(label, false, text);
             }
+        }
+        if let Some((handle, download)) = later {
+            self.write(handle, download);
         }
     }
 
@@ -930,7 +964,15 @@ impl eframe::App for Page {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let WebHost { session, shell, .. } = &mut self.host;
         shell.ui(ui, session);
-        let downloads = self.host.dialog_ui(ui.ctx());
-        self.deliver(downloads);
+        // The answers of the dialogs over the page, in the frame of their
+        // click: a system's save dialog is shown only so shortly after.
+        let outcome = self.host.dialog_ui(ui.ctx());
+        if let Some(pick) = outcome.pick {
+            self.pick(pick);
+        }
+        self.deliver(outcome.downloads);
+        if let Some(file) = self.host.companion_ui(ui.ctx()) {
+            self.save_companion(file);
+        }
     }
 }

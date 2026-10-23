@@ -88,11 +88,14 @@ craft3d-cli render bracket.3dcraft --out bracket.png --size 800x600 --view iso
 The web version reads and writes files on your computer; nothing is uploaded.
 
 - **Chrome, Edge and Chromebooks:** Open…, Import…, Save As… and Export… show your system's file
-  dialog. Export… lists every format; the extension of the name you choose picks the format (the last
-  one you used comes first). Save writes back to the file the document was opened from or last saved
-  to, without asking again; the first time, the browser asks whether the page may change that file.
-  An OBJ with colours asks a second time, for its material library (`.mtl`): save it next to the
-  `.obj` (when the browser does not show that second dialog, the `.mtl` is downloaded instead).
+  dialog. Export… first asks for the format in a small dialog of its own (the last one you used is
+  chosen); *Export…* there makes the file and then shows the system's dialog to say where it goes. An
+  export that cannot be made (DXF or SVG with nothing flat selected) says why before any file is
+  touched. Save writes back to the file the document was opened from or last saved to, without asking
+  again; the first time, the browser asks whether the page may change that file. A tab you close with
+  *Save* stays open until its file is written; if the file cannot be written, the document stays open
+  and unsaved. An OBJ with colours then offers its material library (`.mtl`) with a *Save…* button:
+  save it next to the `.obj`.
 - **Firefox and Safari** have no such dialogs for web pages: Save and Export ask for a name in a small
   dialog of their own and the file is a download (in the browser's downloads, often the *Downloads*
   folder); Open and Import use the browser's file chooser. Add `?download` to the address to work this

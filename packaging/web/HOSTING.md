@@ -68,13 +68,14 @@ http://localhost:8765/.
   Import…, Save As… and Export… (STEP, STL, 3MF, OBJ, DXF, SVG) show the operating system's
   file dialog, and Save writes back to the document's file. The API exists only in a **secure
   context** (`https://`, or `http://localhost` / `http://127.0.0.1` while testing) and only in the
-  top-level page or a **same-origin** iframe; a cross-origin iframe is refused the dialogs. An OBJ
-  with colours asks for its `.mtl` in a second dialog.
-- **Downloads** everywhere else (Firefox, Safari, plain HTTP, a cross-origin iframe, or `?download`
-  in the address): Save and Export name the file in a dialog of the page and the file is a browser
-  download; Open and Import use the browser's file chooser. When the browser refuses a file dialog,
-  the app falls back to this by itself and says so in the status bar. An OBJ with colours may then
-  be two downloads; the browser may ask once to allow that.
+  top-level page or a **same-origin** iframe. An OBJ with colours offers its `.mtl` with a button
+  of its own, since a browser shows one file dialog per click.
+- **Downloads** everywhere else (Firefox, Safari, plain HTTP, or `?download` in the address): Save
+  and Export name the file in a dialog of the page and the file is a browser download; Open and
+  Import use the browser's file chooser. In a **cross-origin iframe** the browser refuses the
+  dialogs: the first refusal switches the app to downloads for the rest of the session and says so
+  in the status bar. An OBJ with colours is then two downloads; the browser may ask once to allow
+  that.
 - There is no crash recovery in the browser: a document lives in the page until it is saved,
   and the browser asks before a page with unsaved changes is closed or reloaded.
 - Preferences (open panels, shown sketches and datums, the last export format) are kept in

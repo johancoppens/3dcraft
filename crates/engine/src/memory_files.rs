@@ -106,6 +106,21 @@ impl Session {
         self.memory.files.keys().cloned().collect()
     }
 
+    /// Marks the open document `id` ([`crate::DocumentStatus::id`]) as not
+    /// saved: what the host does when the file `file.save` wrote into
+    /// memory did not reach the person's file (a refused or failed write
+    /// in the browser), so the document keeps asking before it is closed.
+    /// False when no open document has that id.
+    pub fn mark_unsaved(&mut self, id: u64) -> bool {
+        match self.documents.iter_mut().find(|open| open.id == id) {
+            Some(open) => {
+                open.saved_revision = None;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// True when the session's files are in its memory.
     pub(crate) fn writes_to_memory(&self) -> bool {
         self.workspace.write == Access::Memory
@@ -213,6 +228,27 @@ mod tests {
         assert!(session.put_file("../x", vec![]).is_err());
         assert!(session.put_file("/x", vec![]).is_err());
         assert!(session.put_file("", vec![]).is_err());
+    }
+
+    #[test]
+    fn a_save_that_did_not_arrive_leaves_the_document_unsaved() {
+        let mut session = Session::new(crate::Workspace::memory());
+        session
+            .execute("file.new", &serde_json::json!({"units": "mm"}))
+            .unwrap();
+        session
+            .execute("feature.block", &serde_json::json!({"size": [1, 2, 3]}))
+            .unwrap();
+        session
+            .execute("file.save", &serde_json::json!({"path": "a.3dcraft"}))
+            .unwrap();
+        let status = session.document_status().unwrap();
+        assert!(!status.dirty && !status.close_asks);
+        assert!(session.mark_unsaved(status.id));
+        let after = session.document_status().unwrap();
+        assert!(after.dirty && after.close_asks);
+        assert_eq!(after.path.as_deref(), Some("a.3dcraft"));
+        assert!(!session.mark_unsaved(status.id + 1000));
     }
 
     #[test]
