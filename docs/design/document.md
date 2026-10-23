@@ -4,7 +4,7 @@ The document as data (`craft3d-doc`), expressions and variables (`craft3d-expr`)
 
 ## Method
 
-**The document is the recipe.** `Document` holds units, tolerance, variables (in the order they were defined), the features in order of application, a rollback marker, the next feature id (ids are never reused), and beside the history `bodies`: the appearance and material given to the body of a feature. It is pure data with serde; nothing in it is derived, and `validate()` checks it. Every numeric parameter is an expression kept as source text (`"height - 2 * wall"`), evaluated at regeneration in the document's units; a bare number is in the document's unit.
+**The document is the recipe.** `Document` holds units, tolerance, variables (in the order they were defined), the features in order of application, a rollback marker, the next feature id (ids are never reused), tables (below), and beside the history what regeneration does not read: `bodies` and `faces` (the appearance and material given to the body of a feature, and colours of single faces), `assertions`, named `sets`, `hidden` features and `info` (title, author, licence, description of a Jig). Public parameters are a property of a variable (below). It is pure data with serde; nothing in it is derived, and `validate()` checks it. Every numeric parameter is an expression kept as source text (`"height - 2 * wall"`), evaluated at regeneration in the document's units; a bare number is in the document's unit.
 
 **Expressions** (`expr`): dimensions (length and angle exponents) and units, a parser and evaluator with functions and `pi` (`sin cos tan asin acos atan atan2 sqrt abs min max`, the whole-number functions `floor ceil round trunc mod`, `exp ln log10 pow sinh cosh tanh`, and conditions: comparisons, `&& || !`, `if clamp choose`: below), and a `VariableTable` that evaluates in a deterministic order from the dependencies, detects cycles, fails only what depends on a bad variable, and rewrites references on rename. Sizes are capped against hostile input.
 
@@ -77,7 +77,7 @@ The document as data (`craft3d-doc`), expressions and variables (`craft3d-expr`)
 
 A document is the recipe. Sketch of the types (final names are settled in M1/M2):
 
-*The plan's sketch of the types. As built, `Document` has no `id` or `metadata` but `next_feature_id` and `bodies` (appearance and material); variables are kept in the order they were defined and evaluated in dependency order; `FeatureKind` has the variants in `crates/doc/src/lib.rs` (`Block`, `Cylinder`, … , `Extrude`, `Revolve`, `Loft`, `Sweep`, `Boolean`, datums, `Chamfer`, `Fillet`, the face operations, `Thread`); `Import` and `Draft` as planned here, a pattern and a mirror are built, `Primitive` is one variant per kind.*
+*The plan's sketch of the types. As built, `Document` has no `id` but `next_feature_id`, and beside the history `bodies` and `faces` (appearance and material), `assertions`, `sets`, `hidden`, `info` (the document info a Jig shows, in place of the planned `metadata`) and, part of the design like the variables, `tables`; variables are kept in the order they were defined and evaluated in dependency order; `FeatureKind` has the variants in `crates/doc/src/lib.rs` (`Block`, `Cylinder`, … , `Extrude`, `Revolve`, `Loft`, `Sweep`, `Boolean`, datums, `Chamfer`, `Fillet`, the face operations, `Thread`); `Import` and `Draft` as planned here, a pattern and a mirror are built, `Primitive` is one variant per kind.*
 
 ```rust
 pub struct Document {

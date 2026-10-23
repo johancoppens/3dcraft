@@ -1,6 +1,6 @@
 # 3DCraft architecture
 
-> **The map.** What the parts are, how they fit, and the rules that always hold. It changes only when the structure changes; a finding, a fix or a number goes into the detail document of its part under [`design/`](design/README.md) (§10). **Last updated:** 2026-10-15 (this map replaces the single file that mixed the plan with the history of every finding; the original plan of 2026-10-12 is kept as written in [`design/plan.md`](design/plan.md)).
+> **The map.** What the parts are, how they fit, and the rules that always hold. It changes only when the structure changes; a finding, a fix or a number goes into the detail document of its part under [`design/`](design/README.md) (§10). **Last updated:** 2026-10-23 (0.1.0: the web app, `buildinfo`, the document's tables, parameters and sets, the command families; the map itself dates from 2026-10-15: it replaces the single file that mixed the plan with the history of every finding; the original plan of 2026-10-12 is kept as written in [`design/plan.md`](design/plan.md)).
 
 ## 0. In one paragraph
 
@@ -32,7 +32,7 @@ These are the invariants. Every part is built so that they hold by construction,
 ## 2. The parts and their layers
 
 ```text
- L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz
+ L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz, craft3d-web (the page)
  L7  clients       ui-egui (the shell), automation (control server, MCP)
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
@@ -74,14 +74,14 @@ These are the invariants. Every part is built so that they hold by construction,
 | `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `score`, `check-range`, `commands`, `serve`, `mcp` | holds modelling logic |
 | `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
 | `apps/craft3d-web` | L8 | the page: eframe's web runner, the session's files in memory, the file chooser and downloads, preferences in `localStorage` | holds modelling logic; starts a thread |
-| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz` | is shipped |
+| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz`, `actions`, `package` (installers and the web zip), `web-size`, `example-thumbs` | is shipped |
 
 ## 3. The data
 
-- **Document** (`doc`): units, tolerance, variables, the ordered features (sketches, datums, primitives, extrusions, revolutions, lofts, sweeps, booleans, transforms, mirrors, patterns, blends, face operations, threads), a rollback marker, and beside the history the bodies' appearance and material (`Document::bodies`). Every numeric parameter is an expression kept as source text. Pure data; no geometry code. Details: [`design/document.md`](design/document.md).
+- **Document** (`doc`): units, tolerance, variables (some published as a Jig's public parameters), tables, the ordered features (sketches, datums, primitives, extrusions, revolutions, lofts, sweeps, sheets, booleans, transforms, mirrors, patterns, blends, face operations, threads, imports; each may carry a condition, `when`), a rollback marker, and beside the history what regeneration does not read: the appearance and material of bodies and faces, assertions, named sets, hidden features and the document's info. Every numeric parameter is an expression kept as source text. Pure data; no geometry code. Details: [`design/document.md`](design/document.md).
 - **Body** (`topo`): vertices, edges, loops of coedges, faces, shells; each face on a surface, each edge on a curve. Parameter-space curves are not stored (they are recovered by projection); a vertex or an edge may carry a tolerance of its own in a sparse table on the body (empty for every body 3DCraft builds). `topo::check` decides validity; `topo` also measures (area, volume, centroid, inertia) by integrating over the exact geometry. Details: [`design/topology.md`](design/topology.md).
 - **Origins and names**: every kernel operation reports, for every entity of its result, where it came from. `regen` turns that into persistent names: by role and source for what a feature makes (`F2:side(e7)`), as a copy for what it keeps (`F9:copy(0)/F1:face(1)`), by the faces around them for edges and vertices after a boolean (`F7:between[…]`). Details: [`design/names.md`](design/names.md).
-- **Regeneration result**: per feature a status (`Ok`, `Suppressed`, `RolledBack`, `Failed(reason)`), its body, datum or solved sketch, its names, and which later feature took its body.
+- **Regeneration result**: per feature a status (`Ok`, `Suppressed`, `Inactive` (its condition is zero), `RolledBack`, `Failed(reason)`), its body, datum or solved sketch, its names, and which later feature took its body.
 - **Mesh and scene**: triangles per face and polylines per edge, with the face's and the edge's name, at a quality the caller chooses.
 
 ## 4. The pipelines
@@ -117,14 +117,14 @@ Edges first: each edge becomes points once, and both faces that share it use the
 
 ## 7. The engine and its clients
 
-- **Session** (`engine`): open documents, the command registry (72 commands in eleven families: `file`, `recovery`, `edit`, `variable`, `sketch`, `datum`, `feature`, `body`, `history`, `document`, `view`), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
+- **Session** (`engine`): open documents, the command registry (111 commands at 0.1.0 in twenty families: `file`, `recovery`, `edit`, `variable`, `table`, `sketch`, `datum`, `feature`, `body`, `face`, `history`, `document`, `measure`, `assert`, `select`, `set`, `param`, `jig`, `view`, `session`), undo, autosave and crash recovery, scenes per document revision (kept within a memory budget), read and write roots for files.
 - **Commands**: an id, a parameter string, a summary and a `run` function, in the `SPECS` of `commands.rs` or of an `<area>_cmds.rs` module; the UI, CLI, control channel and MCP all dispatch the same ones. A failed command changes nothing; a panic inside one is caught and reported. `panic_hunt` runs every command with hostile parameters.
 - **The window** (`apps/craft3d`, `ui-egui`): a thin shell. Commands, regeneration and meshing run on the engine thread; the viewport draws on the GPU (`gpu::Onscreen`), with the CPU renderer as the fallback and as the oracle for screenshots. The control channel (loopback TCP, a token) lets an agent drive the window the developer watches, also over MCP (`craft3d-cli mcp --bridge`). Details: [`design/engine.md`](design/engine.md), [`design/rendering.md`](design/rendering.md), [`control-protocol.md`](control-protocol.md).
 - **The page** (`apps/craft3d-web`, `ui-egui`): the same shell in the browser, on one thread: commands run between frames, the viewport draws on the page's own device (WebGPU, else WebGL2) with the CPU renderer standing by, and the session keeps its files in memory (`Access::Memory`), so open, save, import and export are the same commands; no control channel. Details: [`development.md`](development.md) › Web build.
 
 ## 8. Files
 
-`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 17, never silently dropping a field); STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ meshes; DXF and SVG of flat outlines. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
+`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 35 at 0.1.0, never silently dropping a field; beside it the imported files' bytes and a thumbnail), and the same format as a published Jig, `.3dcraftjig`; STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ (with a `.mtl`) meshes; DXF and SVG of flat outlines and of projected views. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
 
 ## 9. Known structural debt
 
@@ -156,6 +156,9 @@ Kept here on purpose, short, so the developer sees where the structure is weakes
 | [`design/tessellator.md`](design/tessellator.md) | edges first, faces, seams, poles, angle, budgets, display and picture quality |
 | [`design/rendering.md`](design/rendering.md) | the CPU oracle, the GPU renderer and their tolerances, section, see-through, pointing, the viewport |
 | [`design/engine.md`](design/engine.md) | Session, commands, threads, scenes, recovery, automation |
+| [`design/selection.md`](design/selection.md) | the selection shared by the window and agents, selecting by description, named sets |
+| [`design/verification.md`](design/verification.md) | checking a design by questions (`measure.*`), assertions kept in the document, the proof of a Jig over its parameter range |
+| [`design/step-import.md`](design/step-import.md) | STEP files read into bodies: typed reading, sewing, the import feature |
 | [`design/files.md`](design/files.md) | the formats as built (their specification: [`file-formats.md`](file-formats.md)) |
 | [`design/plan.md`](design/plan.md) | the design plan of 2026-10-12 as written, and the revision history of the old single file |
 | [`file-formats.md`](file-formats.md), [`control-protocol.md`](control-protocol.md), [`testing.md`](testing.md) | as before |
