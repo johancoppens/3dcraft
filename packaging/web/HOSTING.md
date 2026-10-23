@@ -64,8 +64,18 @@ http://localhost:8765/.
 
 - **Open** (File, Open…, or drop a `.3dcraft` file on the page) and **Import** (a STEP file)
   read the file in the browser; nothing is uploaded anywhere.
-- **Save** and **Export** (STEP, STL, 3MF, OBJ with its `.mtl`, DXF, SVG) are browser
-  downloads. An OBJ with colours is two downloads; the browser may ask once to allow that.
+- **The system's file dialogs** (the File System Access API: Chrome, Edge, ChromeOS): Open…,
+  Import…, Save As… and Export… (STEP, STL, 3MF, OBJ, DXF, SVG) show the operating system's
+  file dialog, and Save writes back to the document's file. The API exists only in a **secure
+  context** (`https://`, or `http://localhost` / `http://127.0.0.1` while testing) and only in the
+  top-level page or a **same-origin** iframe. An OBJ with colours offers its `.mtl` with a button
+  of its own, since a browser shows one file dialog per click.
+- **Downloads** everywhere else (Firefox, Safari, plain HTTP, or `?download` in the address): Save
+  and Export name the file in a dialog of the page and the file is a browser download; Open and
+  Import use the browser's file chooser. In a **cross-origin iframe** the browser refuses the
+  dialogs: the first refusal switches the app to downloads for the rest of the session and says so
+  in the status bar. An OBJ with colours is then two downloads; the browser may ask once to allow
+  that.
 - There is no crash recovery in the browser: a document lives in the page until it is saved,
   and the browser asks before a page with unsaved changes is closed or reloaded.
 - Preferences (open panels, shown sketches and datums, the last export format) are kept in
@@ -93,7 +103,9 @@ http://localhost:8765/.
 - **Sandboxed iframes** need at least
   `sandbox="allow-scripts allow-same-origin allow-downloads allow-popups"`. Without
   `allow-same-origin` there's no storage. Without `allow-downloads`, Save and Export (browser
-  downloads) are blocked.
+  downloads) are blocked: the status bar still says *downloaded*, but no file arrives.
+- **File dialogs in an iframe:** only a same-origin iframe gets the system's file dialogs; a
+  cross-origin one falls back to downloads, which need `allow-downloads` when it is sandboxed.
 - Don't send `X-Frame-Options: DENY` or a `frame-ancestors` CSP that excludes the embedding page.
 
 ## Renderer selection and fallback flags
@@ -107,6 +119,7 @@ work on the iframe `src` too:
 | *(none)* | WebGPU if available, otherwise WebGL2 |
 | `?webgl` | Force the WebGL2 backend (useful when a WebGPU driver misbehaves) |
 | `?cpu` | Render the viewport with the CPU reference renderer (slowest, most compatible) |
+| `?download` | Save and export as browser downloads and open with the file chooser, also where the system's file dialogs exist |
 
 For example: `<iframe src="https://example.com/3dcraft/?webgl" ...>`. Flags combine:
 `?webgl&open=part.3dcraft`.
