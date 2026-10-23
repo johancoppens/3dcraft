@@ -69,6 +69,14 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 /// a whole surface may have.
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
+/// A surface whose spans quartered to the depth would make more leaves
+/// than this halves a piece that is short one way only across the other
+/// ([`long_ways`]); smaller trees are quartered throughout, as they were
+/// before 2026-10-23, so that what they answer stays the same to the bit.
+/// The strips of fitted formula curves (30 spans and more, quartered
+/// four or five times) are halved; a single span (a fillet's surface, a
+/// patch) is quartered.
+const HALVED_FROM: usize = 1 << 12;
 /// How far apart the weights of one Bézier span of a rational surface may
 /// be. Every bound on its derivatives carries a power of the ratio within
 /// a piece, so the bounds are taken from pieces small enough for their
@@ -119,7 +127,7 @@ struct Node {
     bbox: Bbox3,
     u: (f64, f64),
     v: (f64, f64),
-    children: Option<[usize; 4]>,
+    children: Option<Kids>,
     /// A leaf keeps its piece, to split further when a query needs a
     /// bound finer than its box, and the box of the piece in its own
     /// frame, thinner than `bbox`, by which the nearest-point search
@@ -135,6 +143,69 @@ struct Node {
     /// search for the least bound that has found one as low passes it by
     /// ([`PatchTree::sigma_search`]).
     floor: f64,
+}
+
+/// The children of a node of a [`PatchTree`]: its four quarters, or its
+/// two halves across the one direction in which it is long
+/// ([`long_ways`]).
+#[derive(Clone, Copy, Debug)]
+struct Kids {
+    ids: [usize; 4],
+    len: usize,
+}
+
+impl Kids {
+    fn four(ids: [usize; 4]) -> Kids {
+        Kids { ids, len: 4 }
+    }
+
+    fn two(a: usize, b: usize) -> Kids {
+        Kids {
+            ids: [a, b, a, b],
+            len: 2,
+        }
+    }
+
+    fn ids(&self) -> &[usize] {
+        self.ids.get(..self.len).unwrap_or(&self.ids)
+    }
+}
+
+/// Whether `patch` is longer than half of `small` along u and along v: the
+/// longest of the rows of its control net that run that way, measured
+/// along the net. A box holds the net, whose points are joined by a row
+/// one way and a row the other, so a patch whose box's diagonal is more
+/// than `small` is long at least one way. Not a number counts as long.
+fn long_ways(patch: &RationalBezierPatch, small: f64) -> (bool, bool) {
+    let (du, dv) = patch.degrees();
+    let points = patch.control_points();
+    let width = dv + 1;
+    let at = |i: usize, j: usize| points.get(i.saturating_mul(width).saturating_add(j));
+    let mut unknown = false;
+    let mut along_u = 0.0_f64;
+    for j in 0..=dv {
+        let mut length = 0.0;
+        for i in 0..du {
+            if let (Some(a), Some(b)) = (at(i, j), at(i + 1, j)) {
+                length += a.distance(*b);
+            }
+        }
+        unknown |= length.is_nan();
+        along_u = along_u.max(length);
+    }
+    let mut along_v = 0.0_f64;
+    for i in 0..=du {
+        let mut length = 0.0;
+        for j in 0..dv {
+            if let (Some(a), Some(b)) = (at(i, j), at(i, j + 1)) {
+                length += a.distance(*b);
+            }
+        }
+        unknown |= length.is_nan();
+        along_v = along_v.max(length);
+    }
+    let half = 0.5 * small;
+    (unknown || !(along_u <= half), unknown || !(along_v <= half))
 }
 
 /// The leaves of a [`PatchTree`] split further where its bound on the
@@ -247,6 +318,9 @@ pub(super) struct PatchTree {
     /// How many fine pieces the tree keeps at most ([`FINE_PIECES`]; less
     /// in the tests of letting them go).
     fine_cap: usize,
+    /// Whether a piece short one way is halved only across the other
+    /// ([`HALVED_FROM`]).
+    halves: bool,
     /// The leaves split further for [`Self::sigma_near`], as far as its
     /// queries called for ([`Fine`]).
     fine: Mutex<Fine>,
@@ -1779,6 +1853,123 @@ fn keep_within_budget(shelf: &mut Shelf) {
     }
 }
 
+/// How much memory the trees one operation holds may take at most
+/// ([`holding`]): their nodes and the pieces their leaves keep
+/// ([`PatchTree::base_bytes`]), each tree counted once. A boolean holds the
+/// tree of every freeform face of both operands it looks at while it
+/// works, and each tree is capped ([`MAX_LEAVES`], about 22 MB), but their
+/// number is not: a spur gear of twenty teeth drawn from formulas, its hub
+/// covering the face the teeth end in, held 160 trees and 2.2 GB, and one
+/// of a hundred teeth took a laptop's memory (2026-10-23). The impeller of
+/// the showcase holds about 450 MB. A browser has less memory.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const HELD_BYTES: usize = 2 << 30;
+#[cfg(target_arch = "wasm32")]
+pub(super) const HELD_BYTES: usize = 384 << 20;
+/// [`HELD_BYTES`].
+pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more memory for their indexes than one operation may take (too many freeform faces, or faces of too many pieces)";
+
+thread_local! {
+    /// The trees the operation running on this thread asked for
+    /// ([`holding`]), by their numbers, and the bytes they take; `None`
+    /// outside one.
+    static HELD: std::cell::RefCell<Option<Held>> = const { std::cell::RefCell::new(None) };
+    /// How deep in [`holding`] this thread is.
+    static HOLDING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `work` as one operation whose trees are held to [`HELD_BYTES`]
+/// together: inside it, [`PatchTree::shared`] refuses ([`TOO_MUCH_HELD`])
+/// once the distinct trees asked for take more, and builds no more. Each
+/// tree counts by what it is made of, which depends on its surface alone,
+/// whether it was built then or found on the shelf, so the refusal is the
+/// same on every run and whatever ran before. Nested, the outermost counts.
+pub(super) fn holding<R>(work: impl FnOnce() -> R) -> R {
+    holding_within(HELD_BYTES, work)
+}
+
+/// The trees an operation asked for ([`holding`]).
+struct Held {
+    ids: std::collections::BTreeSet<u64>,
+    bytes: usize,
+    limit: usize,
+}
+
+/// [`holding`] with a budget of `limit` bytes.
+fn holding_within<R>(limit: usize, work: impl FnOnce() -> R) -> R {
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            let depth = HOLDING.with(|d| {
+                let left = d.get().saturating_sub(1);
+                d.set(left);
+                left
+            });
+            if depth == 0 {
+                HELD.with(|held| {
+                    if let Ok(mut held) = held.try_borrow_mut() {
+                        *held = None;
+                    }
+                });
+            }
+        }
+    }
+    let depth = HOLDING.with(|d| {
+        let was = d.get();
+        d.set(was.saturating_add(1));
+        was
+    });
+    let _leave = Leave;
+    if depth == 0 {
+        HELD.with(|held| {
+            if let Ok(mut held) = held.try_borrow_mut() {
+                *held = Some(Held {
+                    ids: std::collections::BTreeSet::new(),
+                    bytes: 0,
+                    limit,
+                });
+            }
+        });
+    }
+    work()
+}
+
+/// Inside [`holding`]: counts the tree `tree` (its number and bytes) when
+/// given and not counted yet, and refuses when the trees counted take more
+/// than [`HELD_BYTES`]. Outside, nothing.
+fn held_within_budget(tree: Option<(u64, usize)>) -> Result<(), Reason> {
+    HELD.with(|held| {
+        let Ok(mut held) = held.try_borrow_mut() else {
+            return Ok(());
+        };
+        let Some(held) = held.as_mut() else {
+            return Ok(());
+        };
+        if let Some((id, size)) = tree
+            && held.ids.insert(id)
+        {
+            held.bytes = held.bytes.saturating_add(size);
+        }
+        if held.bytes > held.limit {
+            Err(TOO_MUCH_HELD)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+/// How many bytes of trees the operation running on this thread has asked
+/// for so far ([`holding`]); zero outside one.
+#[cfg(test)]
+pub(super) fn held_bytes() -> usize {
+    HELD.with(|held| {
+        held.try_borrow()
+            .ok()
+            .and_then(|h| h.as_ref().map(|held| held.bytes))
+            .unwrap_or(0)
+    })
+}
+
 thread_local! {
     /// Trees this thread built ([`trees_built`]).
     static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -1799,9 +1990,13 @@ impl PatchTree {
     /// booleans on one body (each operand of the next the result of the
     /// last, its faces on the same surfaces) indexes each surface once.
     pub fn shared(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
+        // Within an operation already over its budget of trees, none is
+        // built or handed out ([`holding`]).
+        held_within_budget(None)?;
         // Built uncounted, found or not; asking for a tree charges by its
         // nodes, the same either way (`craft3d_geom::allowance::uncounted`).
         let tree = craft3d_geom::allowance::uncounted(|| PatchTree::shelved(surface))?;
+        held_within_budget(Some((tree.id, tree.base_bytes)))?;
         craft3d_geom::allowance::once(tree.id, tree.units);
         Ok(tree)
     }
@@ -1948,6 +2143,7 @@ impl PatchTree {
             base_bytes: 0,
             fine_piece_bytes: 0,
             fine_cap: FINE_PIECES,
+            halves: spans.len().saturating_mul(1 << (2 * depth)) > HALVED_FROM,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
             id: craft3d_geom::allowance::number_of(&format!("{surface:?}")),
@@ -1986,16 +2182,40 @@ impl PatchTree {
         let children = if depth > 0 && bbox.diagonal() > small {
             let um = 0.5 * (u.0 + u.1);
             let vm = 0.5 * (v.0 + v.1);
-            let (left, right) = patch.split_u(0.5);
-            let (ll, lh) = left.split_v(0.5);
-            let (rl, rh) = right.split_v(0.5);
             let next = depth - 1;
-            Some([
-                self.subdivide(&ll, (u.0, um), (v.0, vm), next, small),
-                self.subdivide(&lh, (u.0, um), (vm, v.1), next, small),
-                self.subdivide(&rl, (um, u.1), (v.0, vm), next, small),
-                self.subdivide(&rh, (um, u.1), (vm, v.1), next, small),
-            ])
+            // Halved only across the direction it is long in when it is
+            // short the other way ([`Kids`]): a strip along a fitted curve
+            // (a flank of a gear tooth, 32 or more spans each a hundredth
+            // of a millimetre wide and the face's width long) was quartered
+            // into 1024 leaves a span, 22 MB a face.
+            let (long_u, long_v) = if self.halves {
+                long_ways(patch, small)
+            } else {
+                (true, true)
+            };
+            if long_u && !long_v {
+                let (left, right) = patch.split_u(0.5);
+                Some(Kids::two(
+                    self.subdivide(&left, (u.0, um), v, next, small),
+                    self.subdivide(&right, (um, u.1), v, next, small),
+                ))
+            } else if long_v && !long_u {
+                let (low, high) = patch.split_v(0.5);
+                Some(Kids::two(
+                    self.subdivide(&low, u, (v.0, vm), next, small),
+                    self.subdivide(&high, u, (vm, v.1), next, small),
+                ))
+            } else {
+                let (left, right) = patch.split_u(0.5);
+                let (ll, lh) = left.split_v(0.5);
+                let (rl, rh) = right.split_v(0.5);
+                Some(Kids::four([
+                    self.subdivide(&ll, (u.0, um), (v.0, vm), next, small),
+                    self.subdivide(&lh, (u.0, um), (vm, v.1), next, small),
+                    self.subdivide(&rl, (um, u.1), (v.0, vm), next, small),
+                    self.subdivide(&rh, (um, u.1), (vm, v.1), next, small),
+                ]))
+            }
         } else {
             None
         };
@@ -2003,6 +2223,7 @@ impl PatchTree {
         // parent takes the least of its children's, which is tighter.
         let sigma = match children {
             Some(kids) => kids
+                .ids()
                 .iter()
                 .filter_map(|&k| self.nodes.get(k).map(|n| n.sigma))
                 .fold(f64::INFINITY, f64::min)
@@ -2019,6 +2240,7 @@ impl PatchTree {
         // a leaf's pieces keep at least its own: the floor is below all.)
         let floor = match children {
             Some(kids) => kids
+                .ids()
                 .iter()
                 .filter_map(|&k| self.nodes.get(k).map(|n| n.floor))
                 .fold(f64::INFINITY, |a, b| {
@@ -2175,7 +2397,7 @@ impl PatchTree {
                 far.length() <= reach
             });
             match node.children {
-                Some(kids) if !inside => stack.extend(kids),
+                Some(kids) if !inside => stack.extend(kids.ids()),
                 Some(_) => least = least.min(node.sigma),
                 // A leaf's bound may be far below the least singular value
                 // over it: its pieces, split where that is so, are looked
@@ -2834,7 +3056,7 @@ impl PatchTree {
             };
             match node.children {
                 Some(kids) => {
-                    for k in kids {
+                    for &k in kids.ids() {
                         if let Some(child) = self.nodes.get(k) {
                             heap.push(Pending(distance(&Slab::axis_aligned(child.bbox)), k));
                         }
@@ -3046,7 +3268,7 @@ impl PatchTree {
             };
             match node.children {
                 Some(kids) => {
-                    for k in kids {
+                    for &k in kids.ids() {
                         if let Some(child) = self.nodes.get(k) {
                             heap.push(Pending(key(child), k));
                         }
@@ -4519,5 +4741,108 @@ mod tests {
         let c = PatchTree::shared(&moved).unwrap();
         assert!(!Arc::ptr_eq(&a, &c));
         assert_eq!(c.surface, moved);
+    }
+
+    /// A strip along a cubic B-spline of `spans` spans winding in the xy
+    /// plane (an involute-like spiral `radius` across), extruded `width`
+    /// along z: the face a fitted formula curve is extruded into, as the
+    /// flank of a gear tooth. `turn` turns it about z, so that strips of
+    /// different turns are different surfaces.
+    fn strip(spans: usize, radius: f64, width: f64, turn: f64) -> Surface {
+        let count_u = spans + 3;
+        let mut knots_u = vec![0.0; 4];
+        for k in 1..spans {
+            knots_u.push(k as f64 / spans as f64);
+        }
+        knots_u.extend([1.0; 4]);
+        let mut ctrl = Vec::new();
+        for i in 0..count_u {
+            let t = 0.4 * i as f64 / (count_u - 1) as f64;
+            let r = radius * (1.0 + t * t);
+            let a = turn + t;
+            let p = Vec3::new(r * a.cos(), r * a.sin(), 0.0);
+            ctrl.push(p);
+            ctrl.push(p + Vec3::new(0.0, 0.0, width));
+        }
+        let weights = vec![1.0; ctrl.len()];
+        Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                1,
+                knots_u,
+                vec![0.0, 0.0, 1.0, 1.0],
+                count_u,
+                2,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The flank of a tooth of the spur gear drawn from formulas: 30 cubic
+    /// spans along a 3 mm involute, 10 mm wide. Quartered evenly, its tree
+    /// had 1024 leaves a span, 40,950 nodes and 21.6 MB, and a boolean
+    /// meeting the 80 faces of a gear's teeth held 2.2 GB of them
+    /// (2026-10-23). Halved only across the way a piece is long (the
+    /// strip's width), each span takes 32 to 64 leaves.
+    #[test]
+    fn a_thin_strip_along_a_fitted_curve_is_indexed_by_few_leaves() {
+        let surface = strip(30, 10.0, 10.0, 0.0);
+        let tree = PatchTree::new(&surface).unwrap();
+        let leaves = tree.nodes.iter().filter(|n| n.patch.is_some()).count();
+        // (Quartered: 30,720; the spans here a sixth of a millimetre
+        // along, some halved along too.)
+        assert!(leaves <= 2 * 30 * 32, "{leaves} leaves");
+        assert!(tree.base_bytes <= 2 << 20, "{} bytes", tree.base_bytes);
+        // Every leaf is still small in space, as small as quartering made
+        // it the way the strip is long.
+        let small = tree
+            .roots
+            .iter()
+            .filter_map(|&r| tree.nodes.get(r))
+            .map(|n| n.bbox.diagonal())
+            .fold(0.0, f64::max)
+            / 32.0;
+        for node in tree.nodes.iter().filter(|n| n.patch.is_some()) {
+            assert!(node.bbox.diagonal() <= 2.0 * small, "{:?}", node.bbox);
+        }
+        // And the nearest point is found as before.
+        let p = surface.eval(0.37, 0.61);
+        let found = tree.nearest(p).unwrap();
+        assert!(found.distance <= 1e-9, "{found:?}");
+    }
+
+    /// One operation's trees are held to a budget together: past it,
+    /// [`PatchTree::shared`] refuses and builds no more, and the trees
+    /// asked for again count once. Outside an operation nothing is held.
+    #[test]
+    fn the_trees_of_one_operation_are_held_to_a_budget() {
+        let first = PatchTree::new(&strip(30, 10.0, 10.0, 0.5)).unwrap();
+        let each = first.base_bytes;
+        assert!(each > 0);
+        let limit = 5 * each + each / 2;
+        let built_before = trees_built();
+        let outcome = holding_within(limit, || {
+            let mut kept = Vec::new();
+            for k in 0..20 {
+                match PatchTree::shared(&strip(30, 10.0, 10.0, 0.5 + 0.01 * k as f64)) {
+                    Ok(tree) => {
+                        // Asked for again: counted once.
+                        PatchTree::shared(&tree.surface).unwrap();
+                        kept.push(tree);
+                    }
+                    Err(reason) => return (kept.len(), Some(reason), held_bytes()),
+                }
+            }
+            (kept.len(), None, held_bytes())
+        });
+        assert_eq!(outcome.0, 5, "{outcome:?}");
+        assert_eq!(outcome.1, Some(TOO_MUCH_HELD));
+        assert!(outcome.2 <= limit + each, "{outcome:?}");
+        // The refusal came before a seventh tree was built.
+        assert!(trees_built() - built_before <= 6);
+        assert_eq!(held_bytes(), 0);
+        assert!(PatchTree::shared(&strip(30, 10.0, 10.0, 0.9)).is_ok());
     }
 }

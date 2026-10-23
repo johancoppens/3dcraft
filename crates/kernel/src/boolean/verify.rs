@@ -286,6 +286,18 @@ pub fn verify(
     tolerance: &Tolerance,
     options: &VerifyOptions,
 ) -> Result<Verification, KernelError> {
+    super::freeform::holding(|| verify_held(a, b, op, result, tolerance, options))
+}
+
+/// [`verify`], its trees held to a budget ([`super::freeform::holding`]).
+fn verify_held(
+    a: &Body,
+    b: &Body,
+    op: BooleanOp,
+    result: &Body,
+    tolerance: &Tolerance,
+    options: &VerifyOptions,
+) -> Result<Verification, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
