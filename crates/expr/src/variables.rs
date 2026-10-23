@@ -378,36 +378,17 @@ impl VariableTable {
                 .unwrap_or_else(|| Arc::from(Vec::new()));
             return Err(ExprError::new(pos, ErrorKind::Cycle { names }));
         }
-        let value = expr.eval(|name| {
-            let j = *plan.index.get(name)?;
-            match results.get(j) {
-                Some(Some(Ok(value))) => Some(*value),
-                _ => None,
-            }
-        });
-        if value.is_ok() {
-            // A dependency without a value that only a branch not taken
-            // refers to (`if`, `choose`, `&&`, `||`) does not count.
-            return value;
-        }
-        // A dependency without a value: either it failed, or (for the
-        // variables behind a cycle) it never got a turn. That is the error,
-        // rather than what evaluating without it gave.
-        for (name, pos) in expr.variable_refs() {
-            let failed = plan
-                .index
-                .get(name)
-                .is_some_and(|&j| !matches!(results.get(j), Some(Some(Ok(_)))));
-            if failed {
-                return Err(ExprError::new(
-                    pos,
-                    ErrorKind::DependencyFailed {
-                        name: name.to_string(),
-                    },
-                ));
-            }
-        }
-        value
+        evaluate_known(
+            expr,
+            |name| plan.index.contains_key(name),
+            |name| {
+                let j = *plan.index.get(name)?;
+                match results.get(j) {
+                    Some(Some(Ok(value))) => Some(*value),
+                    _ => None,
+                }
+            },
+        )
     }
 
     /// Dependency graph, evaluation order and cycles. Everything here is
@@ -601,7 +582,51 @@ pub struct Evaluation {
     index: BTreeMap<String, usize>,
 }
 
+/// Evaluates `expr` against a set of variables: `known` says whether a
+/// name is one of them, `value` gives its value when it has one.
+///
+/// A name that is not a variable at all is an error even where it would
+/// not be used (in the branch of `if` that is not taken), so a typo does
+/// not wait for the condition to flip. A variable without a value (it
+/// failed) only counts where it is used, and is then reported as
+/// [`ErrorKind::DependencyFailed`]; every other error is the expression's
+/// own.
+fn evaluate_known(
+    expr: &Expr,
+    known: impl Fn(&str) -> bool,
+    value: impl FnMut(&str) -> Option<Quantity>,
+) -> Result<Quantity, ExprError> {
+    if let Some((name, pos)) = expr.variable_refs().find(|(name, _)| !known(name)) {
+        return Err(ExprError::new(
+            pos,
+            ErrorKind::UnknownVariable {
+                name: name.to_string(),
+            },
+        ));
+    }
+    expr.eval(value).map_err(|error| match error.kind {
+        ErrorKind::UnknownVariable { name } if known(&name) => {
+            ExprError::new(error.pos, ErrorKind::DependencyFailed { name })
+        }
+        kind => ExprError::new(error.pos, kind),
+    })
+}
+
 impl Evaluation {
+    /// Parses and evaluates `source` with these variables, as a variable
+    /// of the table is: a name that is no variable is an error wherever it
+    /// stands (also in a branch of `if` that is not taken), a variable that
+    /// failed is [`ErrorKind::DependencyFailed`] where it is used. Use this,
+    /// not `evaluate(source, |n| evaluation.value(n))`, for parameters.
+    pub fn evaluate(&self, source: &str) -> Result<Quantity, ExprError> {
+        let expr = Expr::parse(source)?;
+        evaluate_known(
+            &expr,
+            |name| self.index.contains_key(name),
+            |name| self.value(name),
+        )
+    }
+
     /// Every variable of the table, in evaluation order
     /// ([`VariableTable::evaluation_order`]).
     pub fn entries(&self) -> &[EvaluatedVariable] {
@@ -1284,5 +1309,48 @@ mod tests {
             e.get("other"),
             Some(&Err(ExprError::new(15, dependency_failed("share"))))
         );
+    }
+
+    #[test]
+    fn an_unknown_name_is_refused_also_in_a_branch_not_taken() {
+        let t = table(&[
+            ("on", "0"),
+            ("a", "if(on > 0, widht, 2 mm)"),
+            ("b", "choose(1, 1, typo)"),
+            ("c", "0 && nope"),
+        ]);
+        let e = t.evaluate();
+        let unknown = |name: &str| ErrorKind::UnknownVariable {
+            name: name.to_string(),
+        };
+        assert_eq!(e.get("a"), Some(&Err(ExprError::new(11, unknown("widht")))));
+        assert_eq!(kind(&e, "b"), unknown("typo"));
+        assert_eq!(kind(&e, "c"), unknown("nope"));
+        // The same for a parameter evaluated against the table.
+        assert_eq!(
+            e.evaluate("if(on > 0, widht, 1)").unwrap_err().kind,
+            unknown("widht")
+        );
+        // `b` failed: it counts only where it is used.
+        assert_eq!(
+            e.evaluate("if(on == 0, b, 1)").unwrap_err().kind,
+            dependency_failed("b")
+        );
+        assert_eq!(e.evaluate("if(on == 0, 1, b)").unwrap().value, 1.0);
+        assert_eq!(e.evaluate("on + 2").unwrap().value, 2.0);
+    }
+
+    /// An error of the expression itself is not blamed on a dependency
+    /// that failed but was not reached.
+    #[test]
+    fn an_own_error_is_reported_as_itself() {
+        let t = table(&[
+            ("bad", "1 / 0"),
+            ("x", "1 mm + 1 deg + if(0, bad, 1 mm)"),
+            ("y", "bad + 1"),
+        ]);
+        let e = t.evaluate();
+        assert!(matches!(kind(&e, "x"), ErrorKind::DimensionMismatch { .. }));
+        assert_eq!(kind(&e, "y"), dependency_failed("bad"));
     }
 }

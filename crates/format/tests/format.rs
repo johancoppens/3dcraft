@@ -3727,6 +3727,9 @@ fn a_version_29_file_with_a_variable_named_like_a_condition_function_opens_renam
         "features": [
           {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
             "position": ["0", "0", "-ln"], "size": ["width", "if + 1 mm", "ln"]}}],
+        "assertions": [
+          {"name": "volume", "measure": {"measure": "volume", "of": "F1"},
+           "expect": {"eq": "width * (if + 1 mm) * ln", "tol": "ln / 1 mm * 1e-6"}}],
         "rollback": null, "next_feature_id": 2}}"#;
     let (doc, warnings) = match craft3d_format::from_manifest_json_noted(v29.as_bytes()) {
         Ok(read) => read,
@@ -3747,6 +3750,16 @@ fn a_version_29_file_with_a_variable_named_like_a_condition_function_opens_renam
     assert_eq!(block.position[2].source(), "-ln_1");
     assert_eq!(block.size[1].source(), "if_1 + 1 mm");
     assert_eq!(block.size[2].source(), "ln_1");
+    let sources: Vec<&str> = doc.assertions[0]
+        .expect
+        .exprs()
+        .iter()
+        .map(|e| e.source())
+        .collect();
+    assert_eq!(
+        sources,
+        ["width * (if_1 + 1 mm) * ln_1", "ln_1 / 1 mm * 1e-6"]
+    );
     assert_eq!(
         warnings,
         [

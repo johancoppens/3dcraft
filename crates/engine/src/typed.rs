@@ -81,9 +81,10 @@ impl Typed<'_> {
         } else {
             source.to_string()
         };
-        let quantity = craft3d_expr::evaluate(source, |name| {
-            self.evaluation.as_ref().and_then(|e| e.value(name))
-        })
+        let quantity = match &self.evaluation {
+            Some(evaluation) => evaluation.evaluate(source),
+            None => craft3d_expr::evaluate(source, |_| None),
+        }
         .map_err(|e| failed(format!("`{shown}`: {e}")))?;
         let value = match kind {
             TypedKind::Length if quantity.dimension == Dimension::LENGTH => {
