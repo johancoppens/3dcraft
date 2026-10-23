@@ -432,6 +432,57 @@ fn a_held_arc_end_off_its_circle_is_warned_about_not_snapped() {
     assert_eq!(numbers["snapped"].as_array().unwrap().len(), 1, "{numbers}");
 }
 
+/// Rule 5 across files: an arc with held ends and a free centre (its
+/// radius a dimension: two centres) edited in a session solves to what the
+/// file saved before the edit gives when it is opened and edited the same
+/// way, and to what the file saved after the edit gives when reopened.
+#[test]
+fn an_edited_sketch_solves_as_the_file_reopened_and_edited() {
+    let dir = workdir("reopened");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    set(&mut s, "r", "10 mm");
+    set(&mut s, "a", "5");
+    run(&mut s, "sketch.create", json!({ "name": "S" }));
+    let arc = run(
+        &mut s,
+        "sketch.arc",
+        json!({ "sketch": "S", "center": [0, 0],
+                "start": ["r * cos(a * 1 deg)", "r * sin(a * 1 deg)"],
+                "end": ["r * cos(3 * a * 1 deg)", "r * sin(3 * a * 1 deg)"] }),
+    );
+    let id = arc["entity"].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({ "sketch": "S", "type": "radius", "entities": [id], "value": "r" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "before.3dcraft" }));
+    let entities = |s: &mut Session| {
+        let inspected = run(s, "sketch.inspect", json!({ "sketch": "S" }));
+        assert_eq!(inspected["status"], "ok", "{inspected}");
+        inspected["entities"].clone()
+    };
+    for a in ["80", "20", "3"] {
+        set(&mut s, "a", a);
+        let edited = entities(&mut s);
+        let mut other = session_in(&dir);
+        run(&mut other, "file.open", json!({ "path": "before.3dcraft" }));
+        set(&mut other, "a", a);
+        assert_eq!(entities(&mut other), edited, "a = {a}, opened and edited");
+        run(&mut s, "file.save", json!({ "path": "after.3dcraft" }));
+        let mut reopened = session_in(&dir);
+        run(
+            &mut reopened,
+            "file.open",
+            json!({ "path": "after.3dcraft" }),
+        );
+        assert_eq!(entities(&mut reopened), edited, "a = {a}, reopened");
+        run(&mut s, "file.save", json!({ "path": "before.3dcraft" }));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// An arc between two held points follows a large change of the angle
 /// that holds them (a Jig, 2026-10-23): from 5 to 90 degrees the end used
 /// to stay on the old side of the circle and its `y` was blamed

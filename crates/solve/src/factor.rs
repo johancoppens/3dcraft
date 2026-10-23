@@ -30,6 +30,15 @@ impl Work {
         Work { used: 0, limit }
     }
 
+    pub(crate) fn used(&self) -> u64 {
+        self.used
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limit(&self) -> u64 {
+        self.limit
+    }
+
     fn spend(&mut self, operations: usize) -> Result<(), SolveError> {
         self.used = self
             .used

@@ -670,11 +670,21 @@ pub fn score_task(task: &Value, script: &Value) -> Result<Value, CommandError> {
 
     let mut failed = Vec::new();
     for (index, step) in steps.iter().enumerate() {
-        if let Err(error) = session.execute(&step.command, &step.params) {
+        // A variable.set whose expression is kept but cannot be worked out
+        // fails the step too, as `craft3d-cli run` counts it.
+        let error = match session.execute(&step.command, &step.params) {
+            Err(error) => Some(error.message().to_string()),
+            Ok(result) if step.command == "variable.set" => result
+                .get("error")
+                .and_then(Value::as_str)
+                .map(|e| format!("variable.set: the expression cannot be worked out: {e}")),
+            Ok(_) => None,
+        };
+        if let Some(error) = error {
             failed.push(json!({
                 "step": index,
                 "command": step.command,
-                "error": error.message(),
+                "error": error,
             }));
         }
     }
