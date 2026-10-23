@@ -1,4 +1,7 @@
-# 7. Measuring and assertions
+# 10. Measuring and checking
+
+*Ask the design questions (how heavy, how thick, does it fit) and keep the answers that matter as
+checks that run at every change.*
 
 An agent should check a design by asking it questions, not by looking at a picture. 3DCraft answers on
 the exact geometry, and can keep the questions in the document as **assertions** that are checked again
@@ -18,11 +21,11 @@ after every change.
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
-`select.query` takes it (chapter 8): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
+`select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
 `{"kind": "face", "where": {"normal": {"along": "z"}}}` for the faces facing up.
 
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
-is below, beside the value found at a real place. On the flange of chapter 2: `"thickness": 6.0,
+is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
 
 ## Assertions
@@ -69,3 +72,5 @@ the proof only reaches 1.9575 mm near the rounded corners; a bound of `wall - 0.
 One trap: in an expression a power binds to the number with its unit, so `50 cm^3` would mean
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the
 document's unit (mm³ in a mm document).
+
+**Next:** [Selection and named sets](11-selection.md).

@@ -1,29 +1,80 @@
-# The 3DCraft user guide
+# Start here: the 3DCraft user guide
 
-> **Last updated:** 2026-10-23, for the first release (R1). Every command named here exists, and every
-> example model is rebuilt and checked by a test (`crates/engine/tests/guide_examples.rs`).
+> **For version 0.1.0** (the first release, October 2026). Every command named in this guide exists, and
+> every example model is rebuilt and checked by a test at every change, so what you read here is what
+> 3DCraft does.
 
-3DCraft is a parametric 3D CAD modeller in which **every action is a command** with an id and JSON
-parameters. The same commands are run by an AI agent over MCP, by a script on the command line, or by a
-program over a JSON channel; the window shows the model as it is built. This guide is written for the way
-3DCraft is meant to be used first: **you describe a part, an AI agent builds it with 3DCraft's commands,
-and you watch, point and check**. Building by hand (writing the commands yourself) is covered too, briefly.
+![3DCraft's start screen: the logo, New document and Open, the example models as cards, and how to connect an AI agent](images/start-screen.png)
 
-You need no knowledge of Rust or of 3DCraft's source to read this guide.
+**3DCraft is a 3D design program for real parts**: brackets, boxes, gears, holders, spare parts. You
+describe a part with its sizes, 3DCraft builds an exact solid model of it, and you save it, 3D-print it,
+laser-cut it or send it to a workshop.
 
-| Chapter | What it covers |
+What makes it different: **every action in 3DCraft is a command** with a name and a few values, such as
+`feature.block` with a size. That makes it easy for an **AI agent** (Claude, or another assistant that
+speaks MCP) to model for you while you watch, and it means a model is a recipe that can be changed:
+make the box 10 mm wider and everything that depends on the width follows.
+
+You do not need to know anything about programming or CAD to start.
+
+## Three ways to use 3DCraft
+
+| | How | Best for |
+|---|---|---|
+| **With an AI agent** | You describe the part in your own words; the agent builds it in the 3DCraft window while you watch, point at faces and check the result. | Designing something new. This is what 3DCraft is made for. |
+| **With a Jig** | You open a ready-made design (a box, a pulley, a welding table), set its sizes in a form, and export the result. No AI needed. | Getting a useful part in minutes, also in the browser. |
+| **By hand** | You write the commands yourself, one by one or as a script, on the command line. | Repeating a design, automating, learning how it works. |
+
+You can mix them: an agent can make a Jig for you, and you can open what an agent built and change its
+numbers yourself.
+
+## Where to go next
+
+**New to 3DCraft?** Follow these three, in order:
+
+1. [Install 3DCraft and connect an AI agent](01-install.md): the installers for Windows, macOS and Linux,
+   the web version that needs no installing, and how to give your AI agent access.
+2. [Your first five minutes](02-first-steps.md): open an example, look around, play its history, change a
+   size and export it for a 3D printer.
+3. [Working with an AI agent](03-agent.md): what to ask, what a session looks like, and how to check the
+   agent's work.
+
+**Using 3DCraft**
+
+| Chapter | What you learn |
 |---|---|
-| [1. Install and connect an agent](01-install.md) | Build the programs, connect an MCP client (headless, or bridged to the window) |
-| [2. Working with an agent](02-agent.md) | What to ask, a full sample session, reading the agent's results, checking its work |
-| [3. Watching and pointing](03-window.md) | The window: viewport, view cube, feature tree, clicking faces the agent can read |
-| [4. Concepts](04-concepts.md) | History, variables and units, sketches and constraints, features, persistent names, failed features |
-| [5. A first part, step by step](05-first-part.md) | An L-bracket with a rounded corner and two holes, command by command |
-| [6. Modelling features](06-features.md) | Booleans, fillets and chamfers, shell, patterns, revolve, sweep and loft, threads, sheets, datums, Jigs and their parameters |
-| [7. Measuring and assertions](07-measure.md) | `measure.*` queries and `assert.*` design rules checked at every regeneration |
-| [8. Selection and named sets](08-selection.md) | `select.query` filters, the shared selection, sets kept in the document |
-| [9. Files](09-files.md) | `.3dcraft` and its promise, STEP import and export, STL/3MF/OBJ, DXF/SVG for laser cutting |
-| [10. Without an agent](10-by-hand.md) | `craft3d-cli run` and scripts, the JSON channel |
-| [11. Troubleshooting](11-troubleshooting.md) | What refusals mean, failed features, undo, crash recovery |
+| [4. The window](04-window.md) | The start screen, tabs, the feature list, flying to a feature, the history player, pointing at faces, menus and keys |
+| [5. Jigs](05-jigs.md) | Using a ready-made Jig (the Parameters tab), the Jigs collection, and making a Jig of your own |
+| [6. How 3DCraft thinks](06-concepts.md) | The history, variables and units, sketches and constraints, features, names that stay put, failed features |
+| [7. A first part, command by command](07-first-part.md) | An L-bracket with a rounded corner and two holes, built step by step |
+| [8. Formulas, tables and conditions](08-formulas.md) | Choices made by formulas, tables of sizes, parts switched on and off, curves drawn from formulas (an involute gear) |
+| [9. Modelling features](09-features.md) | Extrude, revolve, sweep and loft; booleans; fillets and chamfers; shell; patterns; threads; datums; sheets |
+| [10. Measuring and checking](10-measure.md) | Volume, distances and wall thickness, and design rules (assertions) checked at every change |
+| [11. Selection and named sets](11-selection.md) | Finding faces by what they are, the selection you share with the agent, sets kept in the document |
+| [12. Files, export and drawings](12-files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
+| [13. The command line and scripts](13-command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
+| [14. Troubleshooting](14-troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
 
-The [example models](../examples/README.md) are small command scripts, each with a picture; every one of
-them asserts its own volume, so you can see what a checked model looks like.
+**Reference**
+
+- [15. Reference](15-reference.md): every command by family, the MCP tools, keys and mouse, units and
+  functions, the command-line programs.
+- [Example models](../examples/README.md): ten small parts (a bracket, a flange, a gear, …), each a script
+  with a picture that checks its own volume. The window's start screen builds most of them with one click.
+- [The Jigs collection](https://github.com/johancoppens/3dcraft-jigs): Jigs to download and use.
+
+## Words used in this guide
+
+| Word | Meaning |
+|---|---|
+| **Document** | One design, saved as a `.3dcraft` file. It holds the recipe, not just the shape. |
+| **Feature** | One step of the recipe: a block, a hole, a rounded edge. The **feature list** shows them in order. |
+| **Body** | A solid shape the features make. A document can hold several. |
+| **Variable** | A named number with a unit (`width = 60 mm`) that features use, so the model follows when it changes. |
+| **Parameter** | A variable a Jig shows in its form, with a label and a range. |
+| **Jig** | A design made to be set by others through its parameters, shared as a `.3dcraftjig` file. |
+| **Agent** | An AI assistant connected to 3DCraft through **MCP** (the Model Context Protocol), which lets it run 3DCraft's commands. |
+| **Command** | One action, such as `feature.fillet` or `file.export`, with its values written as JSON (`{"radius": "3 mm"}`). |
+
+In this guide, **File › Export…** means the *Export…* item of the *File* menu, and text in
+`this font` is something you type or a name 3DCraft shows.

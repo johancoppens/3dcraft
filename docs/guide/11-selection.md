@@ -1,4 +1,7 @@
-# 8. Selection and named sets
+# 11. Selection and named sets
+
+*Find faces, edges and bodies by what they are, share a selection with the agent, and keep groups of
+them under a name.*
 
 ## Finding things by what they are
 
@@ -53,3 +56,5 @@ A named set is a query kept in the document, computed again whenever it is used:
 Add two holes and the set holds two more. `set.list` says how many items each set holds now; `set.edit`
 and `set.remove` change and remove them. Sets are saved with the document and renamed features keep
 them working.
+
+**Next:** [Files, export and drawings](12-files.md).

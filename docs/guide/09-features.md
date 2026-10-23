@@ -1,4 +1,6 @@
-# 6. Modelling features
+# 9. Modelling features
+
+*What each kind of feature does, with the parameters that matter: a reference to come back to.*
 
 What each kind of feature does, with the parameters that matter. The full list of parameters of any
 command is in `command_list` (or `craft3d-cli commands --filter <id>`), with a summary that also says
@@ -109,91 +111,8 @@ does the same. To build on from that step, move the real marker there with `hist
 ## Switching a feature on or off
 
 `feature.suppress {"feature": "Round"}` switches a feature off by hand; `"suppressed": false` switches it
-on again. `feature.when` switches it by a **condition**, an expression kept with the feature and
-evaluated at every regeneration: the feature is built when it is a number other than zero, and is
-**inactive** when it is zero.
+on again. `feature.when` switches it by a condition, such as a yes-or-no parameter of a Jig. Off, a feature
+behaves as if it were not in the history: one that changes a body passes it on unchanged, one that makes a
+body makes none. [Chapter 8](08-formulas.md#switching-parts-on-and-off) explains both in full.
 
-```json
-[
-  ["feature.when", {"feature": "Lid", "expr": "lid"}],
-  ["feature.when", {"feature": "LidFillet", "expr": "lid"}],
-  ["feature.when", {"feature": "GT2 tooth", "expr": "profile == 1"}],
-  ["feature.when", {"feature": "Flange", "expr": "flanges && teeth < 40"}]
-]
-```
-
-A boolean public parameter (`lid`) or a choice (`profile == 2`) then switches parts of the model from a
-form, with `param.set`. `"expr": null` takes the condition away. Comparisons, `&&`, `||`, `!` and `if`
-work as in any expression; a condition with a unit (`3 mm`), or one that does not evaluate, fails the
-feature with the reason. A suppressed feature stays off whatever its condition. `variable.rename` and
-`table.rename` rewrite conditions too, and `variable.delete` names a feature whose condition uses it.
-
-Off, by hand or by its condition, a feature behaves as if it were not in the history:
-
-- one that **changes** a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a
-  transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from
-  the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
-- one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
-  A boolean that used it as its tool passes its target on; one that used it as its target makes no body
-  and leaves its tool alone; a pattern, transform, mirror or shell of it makes none either
-  (`passesNothing` says why);
-- what only the switched-off feature makes is gone: a chamfer of an edge of a fillet's face, a sketch on
-  that face or a face of a pattern's second instance fails, naming the feature that is off. Give it the
-  same condition (`"expr": "lid"` on the lid and on its fillet), so they come and go together.
-
-A sketch or a datum that is off is not there for what refers to it: an extrusion of a sketch that is off
-fails, so give the extrusion the same condition. In `document.inspect`, `ui.get` and the feature list an
-inactive feature has the status `inactive`, distinct from `suppressed`; the list shows it greyed with a
-*when* mark, and its condition on hover. Switched on again, the feature gives exactly the bodies it gave
-before.
-
-## Jigs: parameters
-
-A **Jig** is a document that others set without knowing how it is modelled: a box sized by its width,
-depth and height, a pulley by its tooth count. You make one by **publishing** the variables that drive it.
-A published variable is a public parameter, with a label, a group, a range and a step:
-
-```json
-[
-  ["variable.publish", {"name": "width", "label": "Width", "description": "Outside width", "group": "Size",
-                        "min": "40 mm", "max": "120 mm", "step": "1 mm"}],
-  ["variable.publish", {"name": "lid", "label": "Thick lid", "group": "Finish", "kind": "boolean"}],
-  ["variable.publish", {"name": "corners", "label": "Corners", "group": "Finish", "kind": "choice",
-                        "choices": ["sharp", "round"]}],
-  ["document.info", {"title": "Storage box", "author": "You", "licence": "CC-BY-4.0"}]
-]
-```
-
-`kind` is `number` (a value of its unit), `integer`, `boolean` (0 or 1) or `choice` (1 for the first
-label). Its value must be a value (`40 mm`), not a formula; other variables may be formulas of it
-(`radius = 0.5 mm + (corners - 1) * 4.5 mm`). `param.list` lists the parameters as a form shows them;
-`param.set {"values": {"width": 90}}` sets several at once and **refuses** a value outside its range, with
-the range, so an agent can correct it; `variable.unpublish` makes one an ordinary variable again.
-
-**In the window** a Jig opens on its **Parameters** tab, beside **Features**: the title and description
-from `document.info`, the groups (click a group to fold it), and a field per parameter. Drag a number
-across its field (the bar is where it lies in its range; Shift is finer, Ctrl goes in steps), click the
-‹ › at its ends, or press Enter over it and type a value with or without its unit. A boolean is a
-checkbox, a choice a list. The model follows as you drag; the whole drag is **one undo step**. In the
-browser the model follows when you let go, because there a regeneration holds up the page.
-
-The form keeps a value in its range: typing 150 into a width that goes up to 120 sets 120 and says
-*clamped to 120 mm* under the field for a few seconds (and *rounded to …* for a value between two steps).
-A parameter that is not at its default has a ↺ to put it back; **Reset all** puts them all back
-(`param.set {"reset": true}`).
-
-**Publishing and using a Jig.** A Jig is designed in an ordinary `.3dcraft` document. When it is ready,
-**File › Export as Jig…** (`jig.export {"path": "box.3dcraftjig"}`) writes it as a `.3dcraftjig` file, with its
-info and a picture; this is the file you hand out. Opening a `.3dcraftjig` opens the Jig **to use**: the
-Parameters tab shows, and only the parameters change. The feature list is there to look at (and the
-timeline to play), not to edit; an agent that tries gets *this is a Jig: … save it as a model to edit it*.
-**Save** saves it as a `.3dcraft` model under a name you choose, never over the `.3dcraftjig`; **Open for
-editing** (on the Parameters tab or in the File menu, `jig.edit`) makes a new untitled model of it, set as
-it is, to change as you like. Closing a Jig whose parameters you changed asks whether to **save the result as a
-model**; the Jig's file stays as it is.
-
-When a value breaks the model (a fillet that no longer fits, a shell thicker than the box, an assertion
-that fails) the field turns red with the reason, and a banner over the model says *This value breaks the
-model* with a **Back to last good** button that sets the values that built. The viewport shows the model
-as it is, broken or not. A parameter whose range no longer works (a variable it
-used was deleted) shows the problem under its field in the attention colour.
+**Next:** [Measuring and checking](10-measure.md).
