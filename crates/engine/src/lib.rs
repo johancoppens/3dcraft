@@ -45,6 +45,7 @@ mod replay_cmds;
 mod report;
 mod scene;
 mod scene_box;
+mod scene_view;
 mod scrub;
 mod section;
 mod select_cmds;

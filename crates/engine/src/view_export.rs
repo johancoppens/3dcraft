@@ -1133,9 +1133,16 @@ pub(crate) fn export(
     if !(size.is_finite() && size > 0.0) {
         return fail(format!("{ID}: the bodies have no size to draw"));
     }
-    let mut tess = crate::commands::tolerance_param(p, ID, &regen)?;
-    tess.chordal_tolerance = tess.chordal_tolerance.max(size * TOLERANCE_FLOOR);
-    let tolerance = tess.chordal_tolerance;
+    let asked = match p.number("tolerance")? {
+        Some(t) if t > 0.0 && t.is_finite() => t,
+        Some(_) => return fail(format!("{ID}: `tolerance` must be positive")),
+        None => crate::commands::automatic_tolerance(&regen),
+    };
+    let tolerance: f64 = asked.max(size * TOLERANCE_FLOOR);
+    let tess = craft3d_tess::TessParams {
+        chordal_tolerance: tolerance,
+        ..craft3d_tess::TessParams::default()
+    };
     let mut meshes = Vec::new();
     let mut lines: Vec<Vec<Vec3>> = Vec::new();
     let mut triangles = 0_usize;

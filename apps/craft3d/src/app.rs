@@ -666,16 +666,16 @@ impl Desk {
                 ),
                 Ok(Choice::Export(path)) => {
                     self.host.note_export(&path);
-                    self.start(
-                        Waiting::File("file.export"),
-                        "file.export".to_string(),
-                        Box::new(move |session| {
-                            Outcome::Ran(files::export_as_user(session, &path))
-                        }),
-                    );
+                    if self.host.export_chosen(&path) {
+                        self.start_export(path, files::ExportPlan::default());
+                    }
                 }
                 other => self.host.file_choice(other),
             }
+            return true;
+        }
+        if let Some((path, plan)) = self.host.shell.take_export_answer() {
+            self.start_export(std::path::PathBuf::from(path), plan);
             return true;
         }
         if let Some(action) = self.host.shell.take_file_action() {
@@ -708,6 +708,16 @@ impl Desk {
             return true;
         }
         self.host.pump_places()
+    }
+
+    /// Exports to the file the person chose, as the export dialog was
+    /// answered, on the engine thread.
+    fn start_export(&mut self, path: std::path::PathBuf, plan: files::ExportPlan) {
+        self.start(
+            Waiting::File("file.export"),
+            "file.export".to_string(),
+            Box::new(move |session| Outcome::Ran(files::export_planned(session, &path, plan))),
+        );
     }
 
     /// What a tab asked for, on the engine thread like every command, so
