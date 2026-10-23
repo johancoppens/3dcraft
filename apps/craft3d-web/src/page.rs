@@ -1,23 +1,32 @@
 //! The page: eframe's web runner around the [`WebHost`], and what only
-//! the browser can do: choose a file, read a dropped one, offer a
-//! download, keep preferences, warn before unsaved work is closed.
+//! the browser can do: choose a file (with the system's file dialogs
+//! where the browser has them, [`crate::pickers`], else with the file
+//! input), read a dropped one, write a file or offer a download, keep
+//! preferences, warn before unsaved work is closed.
 //!
 //! Every call into the browser is a `Result` or an `Option` that is
-//! handled: a page without storage, a blocked download or a failed fetch
-//! is reported in the status bar or ignored, never a panic (a panic in
-//! WebAssembly ends the page).
+//! handled: a page without storage, a refused dialog, a failed write or
+//! fetch is reported in the status bar or ignored, never a panic (a panic
+//! in WebAssembly ends the page). A file dialog the person closes is not
+//! reported: nothing was asked of the page.
 
 use crate::flags::{self, Flags};
-use crate::host::{Ask, Download, WebHost, received_kind};
+use crate::host::{
+    Ask, Download, NameDialog, Pick, PickerType, Purpose, WebHost, memory_name, open_types,
+    received_kind,
+};
+use crate::pickers::{self, Picked};
 use crate::prefs::{self, Prefs};
 use craft3d_ui_egui::{RendererChoice, Shell, window_title};
 use egui_wgpu::wgpu;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use web_sys::FileSystemFileHandle;
 
 /// The canvas and the message element of `index.html`.
 const CANVAS_ID: &str = "craft3d_canvas";
@@ -32,9 +41,40 @@ struct Arrived {
     name: String,
     bytes: Result<Vec<u8>, String>,
     wanted: Option<Ask>,
+    /// The file it was read from, when the open dialog chose it: a
+    /// document is saved back there.
+    handle: Option<FileSystemFileHandle>,
 }
 
 type Inbox = Rc<RefCell<Vec<Arrived>>>;
+
+/// What a file dialog or a write in the background left for the next
+/// frame.
+enum Mail {
+    /// The save dialog chose a file for `pick`.
+    Picked(Pick, FileSystemFileHandle),
+    /// The save dialog was not shown (why): the dialog over the page
+    /// names the file, which is then downloaded.
+    NoSavePicker(Pick, String),
+    /// The open dialog was not shown (why): the file input asks.
+    NoOpenPicker(Ask, String),
+    /// A file was written through `handle`, or not: the saved file of
+    /// `document` (which is then saved there again), or an export.
+    Written {
+        document: Option<u64>,
+        handle: FileSystemFileHandle,
+        bytes: usize,
+        result: Result<(), String>,
+    },
+    /// A line for the status bar.
+    Note {
+        label: &'static str,
+        ok: bool,
+        text: String,
+    },
+}
+
+type Mailbox = Rc<RefCell<Vec<Mail>>>;
 
 /// Starts the page once the module is loaded.
 #[wasm_bindgen(start)]
@@ -98,6 +138,7 @@ async fn run() {
     let inbox: Inbox = Rc::new(RefCell::new(Vec::new()));
     let unsaved = Rc::new(Cell::new(false));
     warn_before_leaving(Rc::clone(&unsaved));
+    keep_file_shortcuts();
     let runner = eframe::WebRunner::new();
     let (for_app, for_unsaved) = (Rc::clone(&inbox), Rc::clone(&unsaved));
     let open = flags.open.clone();
@@ -148,6 +189,27 @@ fn warn_before_leaving(unsaved: Rc<Cell<bool>>) {
     handler.forget();
 }
 
+/// Keeps the File shortcuts eframe leaves to the browser for the page:
+/// Ctrl+E (Export; Chrome and Firefox move the focus to the address bar's
+/// search) and Ctrl+I (Import; Firefox's page information). eframe itself
+/// keeps Ctrl+O and Ctrl+S; Ctrl+N and Ctrl+W the browser never gives up.
+/// Kept for the page's lifetime.
+fn keep_file_shortcuts() {
+    let Some(window) = window() else {
+        return;
+    };
+    let handler =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
+            let command = event.ctrl_key() || event.meta_key();
+            let key = event.key().to_ascii_lowercase();
+            if command && !event.alt_key() && (key == "e" || key == "i") {
+                event.prevent_default();
+            }
+        });
+    let _ = window.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+    handler.forget();
+}
+
 /// Reads a file of the same site (`?open=`) into the inbox.
 fn fetch_into(url: String, inbox: Inbox) {
     wasm_bindgen_futures::spawn_local(async move {
@@ -157,6 +219,7 @@ fn fetch_into(url: String, inbox: Inbox) {
             name,
             bytes,
             wanted: None,
+            handle: None,
         });
     });
 }
@@ -279,6 +342,7 @@ fn choose(ask: Ask, inbox: &Inbox, ctx: &egui::Context) -> Result<(), String> {
                 name,
                 bytes,
                 wanted: Some(ask),
+                handle: None,
             });
             ctx.request_repaint();
         });
@@ -288,7 +352,9 @@ fn choose(ask: Ask, inbox: &Inbox, ctx: &egui::Context) -> Result<(), String> {
     Ok(())
 }
 
-/// Offers `download` to the person as a file to save.
+/// Offers `download` to the person as a file to save: a link to it,
+/// clicked. The link is in the page while it is clicked (Firefox only
+/// follows a link of the page).
 fn offer(download: &Download) -> Result<(), String> {
     let document = document().ok_or("no document")?;
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(download.bytes.as_slice()));
@@ -304,7 +370,10 @@ fn offer(download: &Download) -> Result<(), String> {
         .map_err(|_| "no link".to_string())?;
     anchor.set_href(&url);
     anchor.set_download(&download.name);
+    let body = document.body().ok_or("the page has no body")?;
+    body.append_child(&anchor).map_err(|e| text_of(&e))?;
     anchor.click();
+    anchor.remove();
     // The address is let go of once the browser has taken the file.
     let revoke = Closure::once_into_js(move || {
         let _ = web_sys::Url::revoke_object_url(&url);
@@ -337,6 +406,11 @@ fn store_prefs(text: &str) {
 struct Page {
     host: WebHost,
     inbox: Inbox,
+    mail: Mailbox,
+    /// The file each document (by id) was opened from or saved to through
+    /// a file dialog: Save writes there.
+    handles: BTreeMap<u64, FileSystemFileHandle>,
+    ctx: egui::Context,
     unsaved: Rc<Cell<bool>>,
     /// The first error the graphics device reported, for the next frame.
     gpu_error: Arc<Mutex<Option<String>>>,
@@ -395,9 +469,23 @@ impl Page {
         prefs.apply(&mut host.shell.state);
         host.export_extension.clone_from(&prefs.export_extension);
         let stored = prefs.to_json();
+        // The system's file dialogs where the browser has them, unless the
+        // address asks for downloads (`?download`).
+        host.pickers = !flags.download && pickers::available();
+        log::info!(
+            "files: {}",
+            if host.pickers {
+                "the system's file dialogs"
+            } else {
+                "downloads and the file input"
+            }
+        );
         Self {
             host,
             inbox,
+            mail: Rc::new(RefCell::new(Vec::new())),
+            handles: BTreeMap::new(),
+            ctx: creation.egui_ctx.clone(),
             unsaved,
             gpu_error,
             title: String::new(),
@@ -405,16 +493,335 @@ impl Page {
         }
     }
 
-    fn offer_all(&mut self, downloads: &[Download]) {
-        for download in downloads {
-            if let Err(why) = offer(download) {
-                self.host.shell.last_command = Some(craft3d_ui_egui::CommandReport {
-                    label: "download".to_string(),
+    /// Open or Import: the open dialog where there is one, else the file
+    /// input. Called in the frame of the click or key press that asked
+    /// (the browser shows a dialog only then).
+    fn ask(&mut self, ask: Ask) {
+        if !self.host.pickers {
+            self.choose(ask);
+            return;
+        }
+        let (inbox, mail, ctx) = (
+            Rc::clone(&self.inbox),
+            Rc::clone(&self.mail),
+            self.ctx.clone(),
+        );
+        wasm_bindgen_futures::spawn_local(async move {
+            match pickers::open(&open_types(ask)).await {
+                Picked::Chosen(handle) => {
+                    let (name, bytes) = match pickers::file(&handle).await {
+                        Ok(file) => (file.name(), read_file(file).await),
+                        Err(why) => (handle.name(), Err(why)),
+                    };
+                    inbox.borrow_mut().push(Arrived {
+                        name,
+                        bytes,
+                        wanted: Some(ask),
+                        handle: (ask == Ask::Open).then_some(handle),
+                    });
+                }
+                Picked::Cancelled => {}
+                Picked::Unavailable(why) => mail.borrow_mut().push(Mail::NoOpenPicker(ask, why)),
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// The file input for `ask`.
+    fn choose(&mut self, ask: Ask) {
+        if let Err(why) = choose(ask, &self.inbox, &self.ctx) {
+            self.host.note(
+                "file",
+                false,
+                format!("the file chooser could not be shown: {why}"),
+            );
+        }
+    }
+
+    /// Save As or Export: the save dialog. Called in the frame of the click
+    /// or key press that asked.
+    fn pick(&mut self, pick: Pick) {
+        let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let types = pick.types();
+            let suggested = pick.suggested().to_string();
+            match pickers::save(&types, &suggested).await {
+                Picked::Chosen(handle) => mail.borrow_mut().push(Mail::Picked(pick, handle)),
+                Picked::Cancelled => {}
+                Picked::Unavailable(why) => mail.borrow_mut().push(Mail::NoSavePicker(pick, why)),
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Writes `download` through `handle` in the background; the result
+    /// comes back as [`Mail::Written`].
+    fn write(&self, handle: FileSystemFileHandle, download: Download) {
+        let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = pickers::write(&handle, &download.bytes).await;
+            mail.borrow_mut().push(Mail::Written {
+                document: download.document,
+                handle,
+                bytes: download.bytes.len(),
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// A file that goes with an export (an OBJ's material library): its
+    /// own save dialog, proposed next to the export under its name, else
+    /// a download (a browser shows one dialog per click).
+    fn companion(&self, download: Download) {
+        let (mail, ctx) = (Rc::clone(&self.mail), self.ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let types = [PickerType {
+                description: "OBJ material library",
+                mime: "model/mtl",
+                extensions: vec!["mtl"],
+            }];
+            let note = match pickers::save(&types, &download.name).await {
+                Picked::Chosen(handle) => {
+                    let result = pickers::write(&handle, &download.bytes).await;
+                    Mail::Written {
+                        document: None,
+                        handle,
+                        bytes: download.bytes.len(),
+                        result,
+                    }
+                }
+                Picked::Cancelled => Mail::Note {
+                    label: "file.export",
                     ok: false,
-                    text: format!("`{}` could not be offered: {why}", download.name),
-                });
+                    text: format!(
+                        "`{}` (the OBJ's material library, its colours) was not saved",
+                        download.name
+                    ),
+                },
+                Picked::Unavailable(_) => match offer(&download) {
+                    Ok(()) => Mail::Note {
+                        label: "file.export",
+                        ok: true,
+                        text: format!(
+                            "the OBJ's material library `{}` was downloaded: put it next to the OBJ \
+                             (see the browser's downloads)",
+                            download.name
+                        ),
+                    },
+                    Err(why) => Mail::Note {
+                        label: "file.export",
+                        ok: false,
+                        text: format!("`{}` could not be downloaded: {why}", download.name),
+                    },
+                },
+            };
+            mail.borrow_mut().push(note);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Where saved and exported files go: back to the file a document was
+    /// opened from or saved to (with the file dialogs), else a download.
+    fn deliver(&mut self, downloads: Vec<Download>) {
+        let mut offered = Vec::new();
+        let mut saved = false;
+        for download in downloads {
+            let own = download
+                .document
+                .and_then(|id| self.handles.get(&id))
+                .filter(|handle| handle.name() == download.name)
+                .cloned();
+            if let Some(handle) = own {
+                self.write(handle, download);
+                continue;
+            }
+            saved |= download.document.is_some();
+            match offer(&download) {
+                Ok(()) => offered.push(format!("`{}`", download.name)),
+                Err(why) => {
+                    self.host.note(
+                        "download",
+                        false,
+                        format!("`{}` could not be downloaded: {why}", download.name),
+                    );
+                    return;
+                }
             }
         }
+        // Said in the status bar, so the file is looked for where it went.
+        let succeeded = self.host.shell.last_command.as_ref().is_none_or(|r| r.ok);
+        if !offered.is_empty() && succeeded {
+            let label = if saved { "file.save" } else { "file.export" };
+            self.host.note(
+                label,
+                true,
+                format!(
+                    "downloaded {}: see the browser's downloads",
+                    offered.join(", ")
+                ),
+            );
+        }
+    }
+
+    /// What the dialogs and writes in the background left.
+    fn read_mail(&mut self) {
+        let mail: Vec<Mail> = self.mail.borrow_mut().drain(..).collect();
+        for item in mail {
+            match item {
+                Mail::Picked(pick, handle) => self.picked(pick, handle),
+                Mail::NoSavePicker(pick, why) => {
+                    log::warn!("the save dialog was not shown: {why}");
+                    let (purpose, name) = match pick {
+                        Pick::Save {
+                            suggested, close, ..
+                        } => (Purpose::Save { close }, suggested),
+                        Pick::Export { suggested } => (Purpose::Export, suggested),
+                    };
+                    self.host.dialog = Some(NameDialog { purpose, name });
+                    self.host.note(
+                        "file",
+                        false,
+                        format!(
+                            "the browser did not show its file dialog ({why}): the file is \
+                             downloaded instead"
+                        ),
+                    );
+                }
+                Mail::NoOpenPicker(ask, why) => {
+                    log::warn!("the open dialog was not shown: {why}");
+                    self.host.note(
+                        "file",
+                        false,
+                        format!(
+                            "the browser did not show its file dialog ({why}): its file chooser \
+                             is asked instead; when none appears, try again from the File menu"
+                        ),
+                    );
+                    self.choose(ask);
+                }
+                Mail::Written {
+                    document,
+                    handle,
+                    bytes,
+                    result,
+                } => self.written(document, handle, bytes, result),
+                Mail::Note { label, ok, text } => self.host.note(label, ok, text),
+            }
+        }
+    }
+
+    /// The save dialog chose `handle` for `pick`: the document is saved, or
+    /// the export made, under its name and written there. When nothing is
+    /// (the status bar says why), the empty file the dialog made goes
+    /// again.
+    fn picked(&mut self, pick: Pick, handle: FileSystemFileHandle) {
+        let written = self.picked_inner(pick, &handle);
+        if !written {
+            wasm_bindgen_futures::spawn_local(async move {
+                pickers::remove_if_empty(&handle).await;
+            });
+        }
+    }
+
+    /// [`Page::picked`]; false when nothing is written.
+    fn picked_inner(&mut self, pick: Pick, handle: &FileSystemFileHandle) -> bool {
+        let name = handle.name();
+        match pick {
+            Pick::Save {
+                document, close, ..
+            } => {
+                let active = self.host.session.document_status().map(|s| s.id);
+                if active != Some(document) {
+                    self.host.note(
+                        "file.save",
+                        false,
+                        format!(
+                            "another document was shown while the file dialog was open: nothing \
+                             was written to `{name}`; save again"
+                        ),
+                    );
+                    return false;
+                }
+                let mut written = false;
+                for download in self.host.save_as(&name, close) {
+                    // A tab closed once it is saved is not saved again.
+                    let download = Download {
+                        document: download.document.filter(|_| close.is_none()),
+                        ..download
+                    };
+                    self.write(handle.clone(), download);
+                    written = true;
+                }
+                written
+            }
+            Pick::Export { .. } => {
+                let main = memory_name(&name);
+                let mut written = false;
+                for download in self.host.export_as(&name) {
+                    if main.as_deref() == Some(download.name.as_str()) {
+                        self.write(handle.clone(), download);
+                        written = true;
+                    } else {
+                        self.companion(download);
+                    }
+                }
+                written
+            }
+        }
+    }
+
+    /// A write through a file dialog's handle is done.
+    fn written(
+        &mut self,
+        document: Option<u64>,
+        handle: FileSystemFileHandle,
+        bytes: usize,
+        result: Result<(), String>,
+    ) {
+        let name = handle.name();
+        let label = if document.is_some() {
+            "file.save"
+        } else {
+            "file.export"
+        };
+        match result {
+            Ok(()) => {
+                if let Some(id) = document {
+                    self.handles.insert(id, handle);
+                    self.host.writable.insert(id);
+                }
+                let verb = if document.is_some() { "saved" } else { "wrote" };
+                self.host
+                    .note(label, true, format!("{verb} `{name}` ({bytes} bytes)"));
+            }
+            Err(why) => {
+                let mut text = format!("`{name}` was not written: {why}");
+                if let Some(id) = document {
+                    // The next Save asks where.
+                    self.handles.remove(&id);
+                    self.host.writable.remove(&id);
+                    text.push_str("; the changes are not in that file: save again");
+                }
+                self.host.note(label, false, text);
+            }
+        }
+    }
+
+    /// Forgets the files of documents that are closed.
+    fn forget_closed(&mut self) {
+        if self.handles.is_empty() && self.host.writable.is_empty() {
+            return;
+        }
+        let open: Vec<u64> = self
+            .host
+            .session
+            .document_statuses()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        self.handles.retain(|id, _| open.contains(id));
+        self.host.writable.retain(|id| open.contains(id));
     }
 }
 
@@ -445,6 +852,7 @@ impl eframe::App for Page {
                     name,
                     bytes: Err(why),
                     wanted: None,
+                    handle: None,
                 });
                 continue;
             }
@@ -454,6 +862,7 @@ impl eframe::App for Page {
                     name,
                     bytes,
                     wanted: None,
+                    handle: None,
                 });
                 ctx.request_repaint();
             });
@@ -462,17 +871,21 @@ impl eframe::App for Page {
         for file in arrived {
             match file.bytes {
                 Ok(bytes) => {
-                    let _ = self.host.receive(&file.name, bytes, file.wanted);
+                    let opened = self.host.receive(&file.name, bytes, file.wanted);
+                    // A document chosen in the open dialog is saved back to
+                    // its file.
+                    if let (Ok(_), Some(handle)) = (opened, file.handle)
+                        && received_kind(&file.name) == Some(crate::host::Received::Document)
+                        && let Some(status) = self.host.session.document_status()
+                    {
+                        self.handles.insert(status.id, handle);
+                        self.host.writable.insert(status.id);
+                    }
                 }
-                Err(why) => {
-                    self.host.shell.last_command = Some(craft3d_ui_egui::CommandReport {
-                        label: "file.open".to_string(),
-                        ok: false,
-                        text: why,
-                    });
-                }
+                Err(why) => self.host.note("file.open", false, why),
             }
         }
+        self.read_mail();
         let failed = self
             .gpu_error
             .lock()
@@ -483,17 +896,18 @@ impl eframe::App for Page {
                 .shell
                 .leave_gpu(format!("the graphics device reported an error: {why}"));
         }
+        // What the File menu, its shortcuts and the tabs asked for, in the
+        // frame of the click or key press: a browser shows a file dialog
+        // (or lets a download through) only so shortly after one.
         let outcome = self.host.pump();
-        if let Some(ask) = outcome.ask
-            && let Err(why) = choose(ask, &self.inbox, ctx)
-        {
-            self.host.shell.last_command = Some(craft3d_ui_egui::CommandReport {
-                label: "file".to_string(),
-                ok: false,
-                text: format!("the file chooser could not be shown: {why}"),
-            });
+        if let Some(ask) = outcome.ask {
+            self.ask(ask);
         }
-        self.offer_all(&outcome.downloads);
+        if let Some(pick) = outcome.pick {
+            self.pick(pick);
+        }
+        self.deliver(outcome.downloads);
+        self.forget_closed();
         let title = window_title(self.host.session.document_status().as_ref());
         if title != self.title {
             if let Some(document) = document() {
@@ -517,6 +931,6 @@ impl eframe::App for Page {
         let WebHost { session, shell, .. } = &mut self.host;
         shell.ui(ui, session);
         let downloads = self.host.dialog_ui(ui.ctx());
-        self.offer_all(&downloads);
+        self.deliver(downloads);
     }
 }

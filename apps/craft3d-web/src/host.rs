@@ -5,6 +5,14 @@
 //! [`WebHost::receive`], and offers each [`Download`] to the person. So
 //! the whole flow runs in native tests.
 //!
+//! Where the browser has the File System Access API (Chrome, Edge,
+//! Chromebooks) the page asks with the system's file dialogs
+//! ([`WebHost::pickers`]): Save, Save As and Export name the file in a
+//! save dialog ([`Outcome::pick`]), and a document opened or saved through
+//! one is saved back to that file without asking again
+//! ([`WebHost::writable`]). Elsewhere a saved or exported file is a
+//! download and the dialog over the page ([`NameDialog`]) names it.
+//!
 //! The session keeps its files in memory (`craft3d_engine::Access::Memory`):
 //! a file the person chose is put there under its name, the same command
 //! as on the desktop reads it (`file.open`, `file.import`), and what
@@ -18,12 +26,112 @@ use craft3d_ui_egui::files::{
 };
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// A file for the person to save: its name and its bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Download {
     pub name: String,
     pub bytes: Vec<u8>,
+    /// The document this is the saved file of (its id in the session),
+    /// for the page to write it back to the file it came from; `None`
+    /// for an export.
+    pub document: Option<u64>,
+}
+
+/// What the page names a file for with the system's save dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// The active document (`document`, its id), saved as a `.3dcraft`
+    /// file; with the tab to close once it is saved.
+    Save {
+        document: u64,
+        suggested: String,
+        close: Option<usize>,
+    },
+    /// An export: the format follows the extension of the name chosen.
+    Export { suggested: String },
+}
+
+impl Pick {
+    /// The kinds of file the dialog offers, the one proposed first.
+    pub fn types(&self) -> Vec<PickerType> {
+        match self {
+            Pick::Save { .. } => vec![PickerType {
+                description: "3DCraft document",
+                mime: "application/x-3dcraft",
+                extensions: vec![EXTENSION],
+            }],
+            Pick::Export { suggested } => export_types(extension_of(suggested).as_deref()),
+        }
+    }
+
+    /// The name the dialog proposes.
+    pub fn suggested(&self) -> &str {
+        match self {
+            Pick::Save { suggested, .. } | Pick::Export { suggested } => suggested,
+        }
+    }
+}
+
+/// A kind of file in the system's file dialog: a description, a media
+/// type and its extensions (without the dot).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerType {
+    pub description: &'static str,
+    pub mime: &'static str,
+    pub extensions: Vec<&'static str>,
+}
+
+/// The kinds of file Open and Import choose from.
+pub fn open_types(ask: Ask) -> Vec<PickerType> {
+    match ask {
+        Ask::Open => vec![PickerType {
+            description: "3DCraft document",
+            mime: "application/x-3dcraft",
+            extensions: vec![EXTENSION],
+        }],
+        Ask::Import => vec![PickerType {
+            description: "STEP",
+            mime: "model/step",
+            extensions: vec!["step", "stp"],
+        }],
+    }
+}
+
+/// The media type the file dialog files a format under (the dialog
+/// filters by the extensions; the type only has to be well formed).
+fn export_mime(extension: &str) -> &'static str {
+    match extension {
+        "step" | "stp" => "model/step",
+        "stl" => "model/stl",
+        "3mf" => "model/3mf",
+        "obj" => "model/obj",
+        "dxf" => "image/vnd.dxf",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Every export format as a kind of file for the save dialog, the one
+/// with extension `first` (the last format exported) first.
+pub fn export_types(first: Option<&str>) -> Vec<PickerType> {
+    let mut types: Vec<PickerType> = EXPORT_FORMATS
+        .iter()
+        .map(|(format, extensions)| PickerType {
+            description: format,
+            mime: export_mime(extensions.first().copied().unwrap_or_default()),
+            extensions: extensions.to_vec(),
+        })
+        .collect();
+    if let Some(at) = types
+        .iter()
+        .position(|t| first.is_some_and(|f| t.extensions.contains(&f)))
+    {
+        let chosen = types.remove(at);
+        types.insert(0, chosen);
+    }
+    types
 }
 
 /// What the page asks the person for.
@@ -39,6 +147,9 @@ pub enum Ask {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub ask: Option<Ask>,
+    /// A file to name with the system's save dialog (with
+    /// [`WebHost::pickers`] only).
+    pub pick: Option<Pick>,
     pub downloads: Vec<Download>,
 }
 
@@ -112,6 +223,13 @@ pub struct WebHost {
     /// The extension of the last export, for the next one's name.
     pub export_extension: Option<String>,
     pub dialog: Option<NameDialog>,
+    /// True when the page names files with the system's file dialogs
+    /// (the File System Access API): Save, Save As and Export then ask
+    /// through [`Outcome::pick`], not [`NameDialog`].
+    pub pickers: bool,
+    /// The documents (by id) whose file the page can write to again: Save
+    /// goes there without asking. Only with [`WebHost::pickers`].
+    pub writable: BTreeSet<u64>,
 }
 
 impl WebHost {
@@ -122,7 +240,19 @@ impl WebHost {
             shell,
             export_extension: None,
             dialog: None,
+            pickers: false,
+            writable: BTreeSet::new(),
         }
+    }
+
+    /// Shows `text` in the status bar under `label`, as a command's
+    /// report.
+    pub fn note(&mut self, label: &str, ok: bool, text: String) {
+        self.shell.last_command = Some(CommandReport {
+            label: label.to_string(),
+            ok,
+            text,
+        });
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
@@ -157,7 +287,11 @@ impl WebHost {
             .into_iter()
             .filter_map(|name| {
                 let bytes = self.session.take_file(&name)?;
-                Some(Download { name, bytes })
+                Some(Download {
+                    name,
+                    bytes,
+                    document: None,
+                })
             })
             .collect()
     }
@@ -249,6 +383,7 @@ impl WebHost {
             let more = self.doc_action(action);
             outcome.downloads.extend(more.downloads);
             outcome.ask = outcome.ask.or(more.ask);
+            outcome.pick = outcome.pick.or(more.pick);
         }
         outcome
     }
@@ -273,8 +408,23 @@ impl WebHost {
                     );
                     return outcome;
                 };
-                match status.path.clone().filter(|_| action == FileAction::Save) {
+                // Save goes to the file the document has without asking:
+                // a download of it again, or (with the file dialogs) the
+                // file it was opened from or saved to, when the page can
+                // write there.
+                let own = status.path.clone().filter(|_| {
+                    action == FileAction::Save
+                        && (!self.pickers || self.writable.contains(&status.id))
+                });
+                match own {
                     Some(own) => outcome.downloads = self.save_as(&own, None),
+                    None if self.pickers => {
+                        outcome.pick = Some(Pick::Save {
+                            document: status.id,
+                            suggested: suggested_name(status.path.as_deref()),
+                            close: None,
+                        });
+                    }
                     None => {
                         self.dialog = Some(NameDialog {
                             purpose: Purpose::Save { close: None },
@@ -291,13 +441,16 @@ impl WebHost {
                     );
                     return outcome;
                 };
-                self.dialog = Some(NameDialog {
-                    purpose: Purpose::Export,
-                    name: suggested_export_name(
-                        status.path.as_deref(),
-                        self.export_extension.as_deref(),
-                    ),
-                });
+                let name =
+                    suggested_export_name(status.path.as_deref(), self.export_extension.as_deref());
+                if self.pickers {
+                    outcome.pick = Some(Pick::Export { suggested: name });
+                } else {
+                    self.dialog = Some(NameDialog {
+                        purpose: Purpose::Export,
+                        name,
+                    });
+                }
             }
         }
         outcome
@@ -325,9 +478,23 @@ impl WebHost {
                     self.finish("file.activate", &Err(e));
                     return outcome;
                 }
-                let own = self.session.document_status().and_then(|s| s.path);
+                let Some(status) = self.session.document_status() else {
+                    return outcome;
+                };
+                let own = status
+                    .path
+                    .clone()
+                    .filter(|_| !self.pickers || self.writable.contains(&status.id));
                 match own {
                     Some(own) => outcome.downloads = self.save_as(&own, Some(document)),
+                    None if self.pickers => {
+                        self.shell.sync(&mut self.session);
+                        outcome.pick = Some(Pick::Save {
+                            document: status.id,
+                            suggested: suggested_name(status.path.as_deref()),
+                            close: Some(document),
+                        });
+                    }
                     None => {
                         self.shell.sync(&mut self.session);
                         self.dialog = Some(NameDialog {
@@ -351,6 +518,7 @@ impl WebHost {
             self.finish("file.save", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
         };
+        let id = self.session.document_status().map(|s| s.id);
         let saved = self.run("file.save", &json!({ "path": name, "overwrite": true }));
         let file = self.session.take_file(&name);
         let mut downloads = Vec::new();
@@ -359,6 +527,7 @@ impl WebHost {
                 downloads.push(Download {
                     name: name.clone(),
                     bytes,
+                    document: id,
                 });
                 match close {
                     Some(_) => {
@@ -401,6 +570,7 @@ impl WebHost {
                 downloads.push(Download {
                     name: name.clone(),
                     bytes,
+                    document: None,
                 });
             }
             if let Some(library) = result.get("mtl").and_then(Value::as_str)
@@ -409,6 +579,7 @@ impl WebHost {
                 downloads.push(Download {
                     name: library.to_string(),
                     bytes,
+                    document: None,
                 });
             }
         }
@@ -676,5 +847,69 @@ mod tests {
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
         assert_eq!(host.file_action(FileAction::Open).ask, Some(Ask::Open));
         assert_eq!(host.file_action(FileAction::Import).ask, Some(Ask::Import));
+    }
+
+    #[test]
+    fn with_file_dialogs_save_asks_once_and_then_writes_back() {
+        let mut host = modelled();
+        host.pickers = true;
+        let id = host.session.document_status().unwrap().id;
+        // The first Save names the file in the system's dialog, not ours.
+        let outcome = host.file_action(FileAction::Save);
+        assert!(host.dialog.is_none() && outcome.downloads.is_empty());
+        let pick = outcome.pick.unwrap();
+        assert_eq!(
+            pick,
+            Pick::Save {
+                document: id,
+                suggested: "untitled.3dcraft".to_string(),
+                close: None
+            }
+        );
+        assert_eq!(pick.types()[0].extensions, [EXTENSION]);
+        // The page saves under the name chosen and can write there again.
+        let saved = host.save_as("plate.3dcraft", None);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].document, Some(id));
+        host.writable.insert(id);
+        // Save now writes back without asking; Save As still asks.
+        let again = host.file_action(FileAction::Save);
+        assert!(again.pick.is_none());
+        assert_eq!(again.downloads[0].name, "plate.3dcraft");
+        assert_eq!(again.downloads[0].document, Some(id));
+        assert!(host.file_action(FileAction::SaveAs).pick.is_some());
+        // A document with a name the page cannot write to (dropped, or
+        // opened from the address) asks where to save.
+        host.writable.clear();
+        let asked = host.file_action(FileAction::Save).pick.unwrap();
+        assert_eq!(asked.suggested(), "plate.3dcraft");
+        // Closing a tab with Save asks too, with the tab to close.
+        let closing = host.doc_action(DocAction::SaveAndClose(0)).pick.unwrap();
+        assert!(matches!(closing, Pick::Save { close: Some(0), .. }));
+        assert!(host.dialog.is_none());
+    }
+
+    #[test]
+    fn with_file_dialogs_export_offers_every_format_last_one_first() {
+        let mut host = modelled();
+        host.pickers = true;
+        host.export_extension = Some("stl".to_string());
+        let pick = host.file_action(FileAction::Export).pick.unwrap();
+        assert_eq!(pick.suggested(), "untitled.stl");
+        let types = pick.types();
+        assert_eq!(types.len(), EXPORT_FORMATS.len());
+        assert_eq!(types[0].extensions, ["stl"]);
+        assert_eq!(types[1].extensions, ["step", "stp"]);
+        for kind in &types {
+            assert!(kind.mime.contains('/'), "{kind:?}");
+        }
+        // The name chosen decides the format; exports are not saves.
+        let downloads = host.export_as("plate.obj");
+        assert!(downloads.iter().all(|d| d.document.is_none()));
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
+        assert_eq!(export_types(Some("svg"))[0].description, "SVG");
+        assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);
+        assert_eq!(open_types(Ask::Open)[0].extensions, [EXTENSION]);
     }
 }

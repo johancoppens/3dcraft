@@ -83,6 +83,25 @@ craft3d-cli info bracket.3dcraft          # the whole state as JSON
 craft3d-cli render bracket.3dcraft --out bracket.png --size 800x600 --view iso
 ```
 
+## Files in the web version
+
+The web version reads and writes files on your computer; nothing is uploaded.
+
+- **Chrome, Edge and Chromebooks:** Open…, Import…, Save As… and Export… show your system's file
+  dialog. Export… lists every format; the extension of the name you choose picks the format (the last
+  one you used comes first). Save writes back to the file the document was opened from or last saved
+  to, without asking again; the first time, the browser asks whether the page may change that file.
+  An OBJ with colours asks a second time, for its material library (`.mtl`): save it next to the
+  `.obj` (when the browser does not show that second dialog, the `.mtl` is downloaded instead).
+- **Firefox and Safari** have no such dialogs for web pages: Save and Export ask for a name in a small
+  dialog of their own and the file is a download (in the browser's downloads, often the *Downloads*
+  folder); Open and Import use the browser's file chooser. Add `?download` to the address to work this
+  way in Chrome too.
+- The status bar says where each file went (*saved `part.3dcraft`*, *downloaded `part.step`: see the
+  browser's downloads*) or why it was not written. Closing a file dialog does nothing and says nothing.
+- There is no autosave in the browser: a document lives in the page until you save it, and the browser
+  asks before a page with unsaved changes is closed or reloaded.
+
 ## Autosave and recovery
 
 The window autosaves documents with unsaved changes 30 s after a change, into a recovery directory in

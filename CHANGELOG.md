@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- **Files in the browser.** In Chrome, Edge and on Chromebooks, Open, Save As, Import and Export show your system's file dialog, and Save writes back to the file the document came from. Elsewhere files are downloads, and the status bar says where each file went.
+
 ## [0.1.0] - 2026-10-23
 
 The first release for people outside the project. 3DCraft is a parametric 3D CAD modeller built for AI: you describe a part, an AI agent builds it through 3DCraft's commands, and you watch it appear in the window, point at faces and check the result. Everything can also be done from the command line or a script.
