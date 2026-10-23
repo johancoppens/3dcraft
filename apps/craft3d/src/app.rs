@@ -807,6 +807,23 @@ impl Desk {
             self.doc_action(action);
             return true;
         }
+        // Undo and Redo of the Edit menu and Ctrl+Z, on the engine thread
+        // like every command that rebuilds the scene.
+        if let Some(action) = self.host.shell.take_edit_action() {
+            let command = action.command();
+            self.start(
+                Waiting::Command(command),
+                command.to_string(),
+                Box::new(move |session| {
+                    Outcome::Ran(
+                        session
+                            .execute(command, &json!({}))
+                            .map_err(|e| e.message().to_string()),
+                    )
+                }),
+            );
+            return true;
+        }
         if let Some(path) = self.host.shell.take_open_recent() {
             let path = std::path::PathBuf::from(path);
             self.start(

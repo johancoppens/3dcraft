@@ -201,6 +201,23 @@ pub fn export_types(first: Option<&str>) -> Vec<PickerType> {
     types
 }
 
+/// The keys the page keeps from the browser (`keydown`'s default is
+/// prevented; egui still gets them), `key` in lower case: Ctrl (⌘) with
+/// E (Export; Chrome and Firefox would focus the address bar's search) or
+/// I (Import; Firefox's page information), not with Shift, which stay
+/// the browser's developer tools; and Undo and Redo, Ctrl with Z,
+/// Shift+Z or Y. Never with Alt.
+pub fn page_keeps_key(command: bool, alt: bool, shift: bool, key: &str) -> bool {
+    if !command || alt {
+        return false;
+    }
+    match key {
+        "e" | "i" | "y" => !shift,
+        "z" => true,
+        _ => false,
+    }
+}
+
 /// True when a browser refused a file dialog (`why`, the error's name and
 /// message) because the click or key press that asked for it came too
 /// long ago, or none did: the next click may well show it. Any other
@@ -606,6 +623,12 @@ impl WebHost {
             outcome.downloads.extend(more.downloads);
             outcome.ask = outcome.ask.or(more.ask);
             outcome.pick = outcome.pick.or(more.pick);
+        }
+        // Undo and Redo of the Edit menu and Ctrl+Z.
+        if let Some(action) = self.shell.take_edit_action() {
+            let command = action.command();
+            let done = self.run(command, &json!({}));
+            self.finish(command, &done);
         }
         // An example from the start screen, built in a new document.
         if let Some(example) = self.shell.take_example() {
@@ -1093,6 +1116,47 @@ fn renamed(name: &str, extension: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_edit_menu_undoes_and_redoes_in_the_page() {
+        let mut host = modelled();
+        let before = host.session.document_status().unwrap();
+        assert!(before.undo.is_some());
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo);
+        host.pump();
+        let after = host.session.document_status().unwrap();
+        assert!(after.redo.is_some(), "{after:?}");
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+        host.pump();
+        assert_eq!(host.session.document_status().unwrap().undo, before.undo);
+    }
+
+    #[test]
+    fn the_page_keeps_undo_redo_and_the_file_keys_from_the_browser() {
+        for (shift, key) in [
+            (false, "z"),
+            (true, "z"),
+            (false, "y"),
+            (false, "e"),
+            (false, "i"),
+        ] {
+            assert!(page_keeps_key(true, false, shift, key), "{shift} {key}");
+            assert!(!page_keeps_key(false, false, shift, key), "no Ctrl: {key}");
+            assert!(!page_keeps_key(true, true, shift, key), "Alt: {key}");
+        }
+        // The developer tools and the rest stay the browser's.
+        for (shift, key) in [
+            (true, "i"),
+            (true, "e"),
+            (true, "y"),
+            (false, "r"),
+            (false, "w"),
+        ] {
+            assert!(!page_keeps_key(true, false, shift, key), "{shift} {key}");
+        }
+    }
 
     fn host() -> WebHost {
         WebHost::new(Shell::new())

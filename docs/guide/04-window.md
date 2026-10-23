@@ -12,7 +12,7 @@ open, save, import and export files, and let you look, play, click and select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File** and **Help** menus | Files, recent files, Jigs; the guide, the keys, About |
+| 1 | **File**, **Edit** and **Help** menus | Files, recent files, Jigs; Undo and Redo; the guide, the keys, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -67,6 +67,17 @@ Under them, the open documents: click one to switch to it.
 A recent file that is not there any more is greyed out. The list is kept in `3dcraft/recent-files.json`
 in your state folder (next to the autosaves), and two windows open at once each keep what the other
 added. The browser keeps no recent files.
+
+The **Edit** menu:
+
+| Item | Keys | Does |
+|---|---|---|
+| **Undo** | Ctrl+Z | Undoes the last change to the active document; the item names it (**Undo Set teeth**) |
+| **Redo** | Ctrl+Shift+Z or Ctrl+Y | Redoes the change last undone |
+
+An item is greyed out when there is nothing to undo or redo. Every change counts, whoever made it: you,
+or an agent over MCP. While you type into a field, Ctrl+Z undoes your typing instead. In a Jig in use
+the only changes are those of its parameters, so Undo takes back the last parameter you set.
 
 The **Help** menu:
 

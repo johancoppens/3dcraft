@@ -199,6 +199,9 @@ fn warn_before_leaving(unsaved: Rc<Cell<bool>>) {
 /// Ctrl+E (Export; Chrome and Firefox move the focus to the address bar's
 /// search) and Ctrl+I (Import; Firefox's page information). eframe itself
 /// keeps Ctrl+O and Ctrl+S; Ctrl+N and Ctrl+W the browser never gives up.
+/// Undo and Redo too: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, so the browser
+/// does not act on them as well (egui still gets them, and a text field
+/// in the page keeps its own undo). Which keys: [`crate::host::page_keeps_key`].
 /// Kept for the page's lifetime.
 fn keep_file_shortcuts() {
     let Some(window) = window() else {
@@ -208,9 +211,7 @@ fn keep_file_shortcuts() {
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
             let command = event.ctrl_key() || event.meta_key();
             let key = event.key().to_ascii_lowercase();
-            // Not with Shift: Ctrl+Shift+I and Ctrl+Shift+E stay the
-            // browser's (its developer tools).
-            if command && !event.alt_key() && !event.shift_key() && (key == "e" || key == "i") {
+            if crate::host::page_keeps_key(command, event.alt_key(), event.shift_key(), &key) {
                 event.prevent_default();
             }
         });

@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 mod controls;
 mod dialogs;
+mod edit;
 pub mod help;
 mod icons;
 mod layout;
@@ -41,6 +42,7 @@ mod views;
 
 pub use controls::ControlsLayout;
 pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
+pub use edit::EditAction;
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use params::{
@@ -632,6 +634,9 @@ pub struct Shell {
     /// What a tab, the File menu or a shortcut asked for, until the host
     /// takes it.
     doc_action: Option<DocAction>,
+    /// Undo or Redo asked by the Edit menu or a shortcut, until the host
+    /// takes it.
+    edit_action: Option<EditAction>,
     /// Where the last frame drew the tabs and their close buttons.
     tab_hits: Vec<(TabPart, egui::Rect)>,
     /// Where the last frame drew the question's buttons.
@@ -900,6 +905,7 @@ impl Shell {
             tabs: Vec::new(),
             closing: None,
             doc_action: None,
+            edit_action: None,
             tab_hits: Vec::new(),
             closing_hits: Vec::new(),
             tab_scrolled: None,
@@ -1737,6 +1743,7 @@ impl Shell {
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
         self.file_shortcuts(ui, status.is_some());
+        self.edit_shortcuts(ui, status.as_ref());
         self.tab_shortcuts(ui);
         self.help_keys(ui);
         // The next step of the history player, when it is time.
@@ -1748,9 +1755,9 @@ impl Shell {
             .frame(chrome_frame(tokens.menu_fill))
             .show(ui, |ui| {
                 ui.style_mut().visuals = tokens.chrome_visuals();
-                self.menu_bar(ui, status.is_some());
+                self.menu_bar(ui, status.as_ref());
             });
-        if self.file_action.is_some() || self.doc_action.is_some() {
+        if self.file_action.is_some() || self.doc_action.is_some() || self.edit_action.is_some() {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
@@ -1873,7 +1880,8 @@ impl Shell {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui, has_document: bool) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
+        let has_document = status.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 for action in FileAction::ALL {
@@ -1896,6 +1904,7 @@ impl Shell {
                 ui.separator();
                 self.menu_documents(ui);
             });
+            self.edit_menu(ui, status);
             self.help_menu(ui);
         });
     }

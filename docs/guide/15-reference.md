@@ -101,6 +101,8 @@ The window lists these under **Help › Keyboard shortcuts** (F1). On a Mac, ⌘
 | Ctrl+E | Export the bodies or the selection |
 | Ctrl+W | Close the document |
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous document |
+| Ctrl+Z | Undo the last change to the document (not while typing in a field) |
+| Ctrl+Shift+Z, Ctrl+Y | Redo the change last undone |
 | F | Fly to the selection, or frame everything |
 | Escape | Clear the selection |
 | F1 | Show the shortcuts |

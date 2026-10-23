@@ -736,6 +736,16 @@ impl Host {
             self.doc_action(action, picker);
             did = true;
         }
+        if let Some(action) = self.shell.take_edit_action() {
+            let command = action.command();
+            let outcome = self
+                .session
+                .execute(command, &json!({}))
+                .map_err(|e| e.message().to_string());
+            self.report(command, &outcome);
+            self.shell.sync(&mut self.session);
+            did = true;
+        }
         if let Some(path) = self.shell.take_open_recent() {
             let outcome = self.run_as_user("file.open", Path::new(&path), false, None);
             self.report("file.open", &outcome);
@@ -913,6 +923,35 @@ mod tests {
         if let Some(choice) = picker.wait() {
             host.file_choice(choice);
         }
+    }
+
+    #[test]
+    fn the_edit_menu_and_its_keys_undo_and_redo_through_the_host() {
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let person = Person::who_answers(&[]);
+        let mut dialogs = picker(&person);
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.session
+            .execute("feature.block", &json!({"size": [10, 10, 5]}))
+            .unwrap();
+        assert_eq!(volume(&mut host), 500.0);
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo);
+        assert!(host.pump_files(&mut dialogs));
+        assert_eq!(last(&host).0, "edit.undo");
+        assert!(last(&host).1, "{:?}", last(&host));
+        assert_eq!(volume(&mut host), 0.0);
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+        assert!(host.pump_files(&mut dialogs));
+        assert_eq!(volume(&mut host), 500.0);
+        // Nothing to redo: reported, not a crash.
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+        assert!(host.pump_files(&mut dialogs));
+        assert_eq!(last(&host).0, "edit.redo");
+        assert!(!last(&host).1);
+        assert!(person.asked().is_empty());
     }
 
     fn last(host: &Host) -> (String, bool, String) {
