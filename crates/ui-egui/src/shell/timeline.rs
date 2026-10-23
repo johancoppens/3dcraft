@@ -59,13 +59,29 @@ impl Timeline {
     }
 
     fn queue(&mut self, id: &'static str, params: Value) {
-        // Only the last scrub counts.
+        // Only the last scrub counts: an earlier one gives its place.
         if id == "view.scrub" {
             self.pending.retain(|(queued, _)| *queued != "view.scrub");
         }
         if self.pending.len() < MAX_PENDING {
             self.pending.push((id, params));
+        } else {
+            self.problem = Some(format!(
+                "{id} not run: {MAX_PENDING} requests are waiting for the document"
+            ));
         }
+    }
+
+    /// Whether `feature` is hidden once what is queued has run: the last
+    /// `feature.visible` queued for it, else `shown` (the row as drawn).
+    fn hidden_after_queue(&self, feature: &str, shown: bool) -> bool {
+        self.pending
+            .iter()
+            .rev()
+            .filter(|(id, _)| *id == "feature.visible")
+            .find(|(_, params)| params["feature"].as_str() == Some(feature))
+            .and_then(|(_, params)| params["visible"].as_bool())
+            .map_or(shown, |visible| !visible)
     }
 }
 
@@ -196,12 +212,19 @@ impl Shell {
         })
     }
 
-    /// Asks to show the feature `id` again, or to hide it.
-    pub(crate) fn queue_visible(&mut self, id: String, visible: bool) {
-        self.timeline.queue(
-            "feature.visible",
-            json!({"feature": id, "visible": visible}),
-        );
+    /// The eye of the row of feature `id` was clicked; `hidden` is the
+    /// row as drawn. Switches from what the clicks queued before it, so
+    /// two clicks before the document answers (a double click) come back
+    /// to where they started.
+    pub(crate) fn toggle_visible(&mut self, id: String, hidden: bool) {
+        let visible = self.timeline.hidden_after_queue(&id, hidden);
+        self.timeline
+            .queue("feature.visible", json!({"feature": id, "visible": visible}));
+    }
+
+    /// The step the view is scrubbed to, if it is.
+    pub(crate) fn scrubbed_step(&self) -> Option<usize> {
+        self.timeline.position.as_ref().map(|p| p.step)
     }
 
     /// Runs what the timeline and the eyes asked for. True when there was
@@ -404,8 +427,13 @@ mod tests {
         assert_eq!(shell.timeline_json()["steps"], 3);
         assert_eq!(shell.timeline_json()["shown"], 3);
 
-        // The eye of the second row.
-        shell.queue_visible("F2".to_string(), false);
+        // The eye of the second row, clicked twice before the document
+        // answered, then once more.
+        shell.toggle_visible("F2".to_string(), false);
+        shell.toggle_visible("F2".to_string(), false);
+        frame(&ctx, &mut shell, &mut session);
+        assert!(!shell.tree_rows()[1].hidden);
+        shell.toggle_visible("F2".to_string(), false);
         frame(&ctx, &mut shell, &mut session);
         frame(&ctx, &mut shell, &mut session);
         assert!(shell.tree_rows()[1].hidden && !shell.tree_rows()[0].hidden);
@@ -453,5 +481,25 @@ mod tests {
         shell.timeline.queue("view.scrub", json!({"step": 99}));
         frame(&ctx, &mut shell, &mut session);
         assert!(shell.timeline_json()["problem"].is_string());
+        // While scrubbed, a click in the viewport selects nothing.
+        shell.timeline.queue("view.scrub", json!({"step": 1}));
+        frame(&ctx, &mut shell, &mut session);
+        frame(&ctx, &mut shell, &mut session);
+        let serial = session.selection_serial();
+        let scene = shell.shown_scene_arc();
+        shell.click_select(
+            scene.as_deref(),
+            1.0,
+            1.0,
+            &craft3d_engine::ScenePointed::default(),
+            (false, false, false),
+        );
+        frame(&ctx, &mut shell, &mut session);
+        assert_eq!(session.selection_serial(), serial);
+        assert!(
+            shell
+                .selection_status()
+                .is_some_and(|(text, _)| text.contains("To end"))
+        );
     }
 }

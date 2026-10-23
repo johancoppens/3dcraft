@@ -482,6 +482,13 @@ mod native {
         let Some(final_regen) = final_regen else {
             return fail("view.replay: nothing to replay");
         };
+        if steps.iter().all(|s| s.bodies.is_empty()) && !doc.hidden.is_empty() {
+            let hidden: Vec<String> = doc.hidden.iter().map(ToString::to_string).collect();
+            return fail(format!(
+                "view.replay: every body of the range is hidden in the view ({}); show them with feature.visible",
+                hidden.join(", ")
+            ));
+        }
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
         let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);
         if frames > MAX_REPLAY_FRAMES {

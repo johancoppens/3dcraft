@@ -16,9 +16,18 @@
 //! so going back to a step seen before costs nothing.
 //!
 //! The scrub is view state of an open document, like its selection: not
-//! saved, not undone. It is let go of when the document gains or loses a
-//! feature (the history it was a position in is another one); an edit
-//! that keeps the features (a parameter, a colour, hiding) keeps it.
+//! saved, not undone. It is let go of when the features of the history
+//! are no longer the same ones in the same order (a feature added,
+//! deleted or moved, a delete and an add in one batch, another document
+//! read into it): the history it was a position in is another one. An
+//! edit that keeps the features (a parameter, a colour, hiding) keeps it.
+//!
+//! What a scrubbed view does not follow: a viewport click selects nothing
+//! (the window says to go to the end first), because selecting resolves
+//! names against the document as it is and the face clicked may be
+//! another one there; `view.pick` says `"scrubbed": true`. A section on a
+//! datum plane is placed where the document has the plane, and
+//! `view.replay` replays the document's own history, not the scrub.
 
 use crate::commands::{Run, fail, feature_ref, spec};
 use crate::params::Params;
@@ -32,7 +41,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.scrub",
     "Scrub History",
     r#"{"feature": id or name or null, "step": integer}"#,
-    "Shows the model in the view as it was after one feature of the history, as if the rollback marker stood there, without changing the document: not its rollback marker, not its undo history, not its dirty state. feature names the feature (null shows the document as it is again); step is its place instead (1 is the first feature). The viewport, view.render, view.pick and the window's screenshots show that state; document.inspect, measures and exports still see the document itself. New features still go where the real marker says: history.rollback moves it (\"roll back here\"), and history.rollback with null takes it away. The scrub is let go of when a feature is added or deleted. Without parameters it changes nothing. Returns where the view is: the feature (null when it shows the document as it is), its step, the number of steps, and the real rollback marker.",
+    "Shows the model in the view as it was after one feature of the history, as if the rollback marker stood there, without changing the document: not its rollback marker, not its undo history, not its dirty state. feature names the feature (null shows the document as it is again); step is its place instead (1 is the first feature). The viewport, view.render, view.pick and the window's screenshots show that state; document.inspect, measures and exports still see the document itself. New features still go where the real marker says: history.rollback moves it (\"roll back here\"), and history.rollback with null takes it away. The scrub is let go of when the features of the history change (one added, deleted or moved). While scrubbed, a click in the window's viewport does not select (go to the end first: selections name the document as it is), and view.pick says \"scrubbed\": true; a section on a datum plane uses the plane of the document as it is, and view.replay replays the document's own history. Without parameters it changes nothing. Returns where the view is: the feature (null when it shows the document as it is), its step, the number of steps, and the real rollback marker.",
     doc: true,
     view_scrub
 )];
@@ -63,9 +72,9 @@ struct State {
 /// Where an open document's view is in its history.
 #[derive(Clone, Default)]
 pub(crate) struct Scrub {
-    /// The feature the view shows the model after, and how many features
-    /// the document had when it was set.
-    at: Option<(FeatureId, usize)>,
+    /// The feature the view shows the model after, and the
+    /// [`features_key`] of the history when it was set.
+    at: Option<(FeatureId, u64)>,
     /// The states shown so far, the most recently shown last.
     states: Vec<State>,
 }
@@ -82,24 +91,48 @@ pub struct ScrubPosition {
     pub steps: usize,
 }
 
+/// The features of a history, by id and in order, as one number (FNV-1a
+/// over the count and the ids): a scrub holds while it stays the same.
+pub(crate) fn features_key(doc: &Document) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let count = u64::try_from(doc.features.len()).unwrap_or(u64::MAX);
+    for word in std::iter::once(count).chain(doc.features.iter().map(|f| f.id.0)) {
+        for byte in word.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
+}
+
 impl OpenDocument {
     /// The feature the view is scrubbed to, if the scrub still holds: the
-    /// feature is there and the history has as many features as when the
-    /// scrub was set. Lets go of one that does not.
+    /// feature is there and the history has the same features in the same
+    /// order as when the scrub was set. Lets go of one that does not.
     pub(crate) fn scrubbed_to(&mut self) -> Option<FeatureId> {
-        let (at, count) = self.scrub.at?;
+        let (at, key) = self.scrub.at?;
         let doc = self.history.current();
-        if doc.features.len() != count || doc.feature(at).is_none() {
+        if features_key(doc) != key || doc.feature(at).is_none() {
             self.scrub = Scrub::default();
             return None;
         }
         Some(at)
     }
 
+    /// Scrubs the view to `at` (`None`: the document as it is).
+    pub(crate) fn scrub_to(&mut self, at: Option<FeatureId>) {
+        let key = features_key(self.history.current());
+        self.scrub.at = at.map(|id| (id, key));
+    }
+
     /// The state of the document the view shows: the document itself, or
     /// the copy of it with the marker where the view is scrubbed to.
     pub(crate) fn shown(&mut self) -> Arc<Document> {
         let current = Arc::clone(self.history.current());
+        // States of another document state can no longer be shown: let go
+        // of them (and of the old document each holds) at once.
+        self.scrub
+            .states
+            .retain(|state| Arc::ptr_eq(&state.base, &current));
         let Some(at) = self.scrubbed_to() else {
             return current;
         };
@@ -107,10 +140,6 @@ impl OpenDocument {
         if current.rollback == Some(at) || (current.rollback.is_none() && last == Some(at)) {
             return current;
         }
-        // States of another document state can no longer be shown.
-        self.scrub
-            .states
-            .retain(|state| Arc::ptr_eq(&state.base, &current));
         if let Some(found) = self.scrub.states.iter().position(|s| s.at == at) {
             let state = self.scrub.states.remove(found);
             let doc = Arc::clone(&state.doc);
@@ -153,6 +182,12 @@ impl OpenDocument {
         self.regen();
         let mut cache = self.cache.clone();
         let regen = Arc::new(craft3d_regen::regenerate_cached(&doc, &mut cache));
+        // Bodies the cache had let go of to stay within its budget, and
+        // derived again here, are not kept with the state: they would live
+        // outside any budget (its scenes are kept by the scene cache).
+        if cache.last_run_rederived() > 0 {
+            return regen;
+        }
         if let Some(state) = self
             .scrub
             .states
@@ -227,7 +262,7 @@ fn view_scrub(session: &mut Session, params: &Value) -> Run {
         }
     };
     if let Some(target) = target {
-        open.scrub.at = target.map(|id| (id, count));
+        open.scrub_to(target);
     }
     let rollback = open.history.current().rollback.map(|id| id.to_string());
     let position = session.scrub_position();
@@ -338,6 +373,36 @@ mod tests {
         .unwrap();
         assert!(s.scrub_position().is_none());
         assert_eq!(s.scene(None).unwrap().unwrap().bodies.len(), 2);
+    }
+
+    #[test]
+    fn a_delete_and_an_add_in_one_go_let_go_of_the_scrub() {
+        let mut s = session();
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        // Nothing looks at the scrub between the two (as in a batch): the
+        // count is the same afterwards, the features are not.
+        s.execute("feature.delete", &json!({"feature": "Join"}))
+            .unwrap();
+        s.execute("feature.sphere", &json!({"radius": "1 mm"}))
+            .unwrap();
+        assert!(s.scrub_position().is_none());
+        // A move keeps the count and is let go of too.
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        s.execute("feature.move", &json!({"feature": "Pin", "position": 0}))
+            .unwrap();
+        assert!(s.scrub_position().is_none());
+    }
+
+    #[test]
+    fn the_states_of_an_old_document_go_when_the_view_is_back_at_the_end() {
+        let mut s = session();
+        s.execute("view.scrub", &json!({"step": 1})).unwrap();
+        s.scene(None).unwrap();
+        s.execute("view.scrub", &json!({"feature": null})).unwrap();
+        s.execute("feature.visible", &json!({"feature": "Box", "visible": false}))
+            .unwrap();
+        s.scene(None).unwrap();
+        assert!(s.documents[s.active].scrub.states.is_empty());
     }
 
     #[test]

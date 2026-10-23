@@ -2337,7 +2337,7 @@ impl Shell {
             });
         self.cause_hits = hits;
         if let Some((id, hidden)) = eye_clicked {
-            self.queue_visible(id, hidden);
+            self.toggle_visible(id, hidden);
             ui.ctx().request_repaint();
         }
         self.tree_row_hits = rows_drawn;
