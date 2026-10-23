@@ -6,7 +6,8 @@
 //! as they are. "Roll back here" moves the real marker there
 //! (`history.rollback`), so new features go in after it; "To end" takes
 //! the marker away and shows the document as it is. The rows after the
-//! step shown are greyed in the list.
+//! step shown are greyed in the list. Under the slider sits the player
+//! (`shell/player.rs`), which plays the steps one after the other.
 //!
 //! The eye of a row hides the feature's body, sketch or datum in the view
 //! (`feature.visible`), and shows it again.
@@ -35,11 +36,11 @@ pub(crate) struct Timeline {
     /// Commands to run when the session is here, in order.
     pending: Vec<(&'static str, Value)>,
     /// Where the view is scrubbed to, as the session said last.
-    position: Option<ScrubPosition>,
+    pub(super) position: Option<ScrubPosition>,
     /// How many features the history has.
-    steps: usize,
+    pub(super) steps: usize,
     /// The place of the real rollback marker (1 for the first feature).
-    rollback: Option<usize>,
+    pub(super) rollback: Option<usize>,
     /// Why the last command of the timeline failed.
     problem: Option<String>,
     /// A flight waits for what was asked to show its target: the scene's
@@ -58,7 +59,12 @@ impl Timeline {
             .unwrap_or(self.steps)
     }
 
-    fn queue(&mut self, id: &'static str, params: Value) {
+    /// Whether a scrub waits to be run.
+    pub(super) fn scrub_waiting(&self) -> bool {
+        self.pending.iter().any(|(id, _)| *id == "view.scrub")
+    }
+
+    pub(super) fn queue(&mut self, id: &'static str, params: Value) {
         // Only the last scrub counts: an earlier one gives its place.
         if id == "view.scrub" {
             self.pending.retain(|(queued, _)| *queued != "view.scrub");
@@ -93,6 +99,7 @@ impl Shell {
         self.timeline.pending.clear();
         self.timeline.revealing = None;
         self.timeline.problem = None;
+        self.player_switched();
     }
 
     /// Takes in where the active document's view is in its history.
@@ -201,8 +208,10 @@ impl Shell {
     }
 
     /// The timeline as `ui.get` reports it: the steps, where the view is
-    /// scrubbed to (`scrub`, null when it shows the document as it is) and
-    /// the real rollback marker's step.
+    /// scrubbed to (`scrub`, null when it shows the document as it is),
+    /// the real rollback marker's step, the player (`playing`, `speed`,
+    /// `loop`, `orbit`, as `state.timeline` has them) and the caption over
+    /// the viewport (null when there is none).
     pub fn timeline_json(&self) -> Value {
         json!({
             "steps": self.timeline.steps,
@@ -212,6 +221,11 @@ impl Shell {
             })),
             "rollback": self.timeline.rollback,
             "problem": self.timeline.problem,
+            "playing": self.state.timeline.playing,
+            "speed": self.state.timeline.speed,
+            "loop": self.state.timeline.looping,
+            "orbit": self.state.timeline.orbit,
+            "caption": self.player_caption(),
         })
     }
 
@@ -240,7 +254,13 @@ impl Shell {
         for (id, params) in &pending {
             match session.execute(id, params) {
                 Ok(_) => self.timeline.problem = None,
-                Err(e) => self.timeline.problem = Some(e.message().to_string()),
+                Err(e) => {
+                    self.timeline.problem = Some(e.message().to_string());
+                    // A step that cannot be shown is never waited for.
+                    if *id == "view.scrub" {
+                        self.stop_playing();
+                    }
+                }
             }
         }
         if !pending.is_empty() {
@@ -249,9 +269,9 @@ impl Shell {
         !pending.is_empty()
     }
 
-    /// The timeline under the heading of the feature panel: a slider over
-    /// the steps, the step shown, and the buttons to roll back there and
-    /// to go back to the end.
+    /// The timeline at the foot of the feature panel: a slider over the
+    /// steps, the player's buttons, the step shown, and the button to roll
+    /// back there.
     pub(crate) fn timeline_ui(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
@@ -276,19 +296,14 @@ impl Shell {
             );
         });
         if step != shown {
-            let end = self.timeline.rollback.unwrap_or(steps);
-            let params = if step == end {
-                json!({"feature": null})
-            } else {
-                json!({"step": step})
-            };
-            self.timeline.queue("view.scrub", params);
+            self.go_to_step(step);
             ui.ctx().request_repaint();
         }
         let scrubbed = self.timeline.position.clone();
+        self.player_controls(ui);
         ui.horizontal(|ui| {
             let text = format!("Step {shown}/{steps}  {name}");
-            let label = if scrubbed.is_some() {
+            let label = if scrubbed.is_some() || self.state.timeline.playing {
                 egui::RichText::new(text).color(color(tokens.attention))
             } else {
                 egui::RichText::new(text).color(color(tokens.text_dim))
@@ -305,21 +320,11 @@ impl Shell {
             if here.clicked()
                 && let Some(position) = &scrubbed
             {
+                self.stop_playing();
                 self.timeline.queue(
                     "history.rollback",
                     json!({"feature": position.feature.clone()}),
                 );
-                self.timeline.queue("view.scrub", json!({"feature": null}));
-            }
-            let at_end = scrubbed.is_none() && self.timeline.rollback.is_none();
-            let end = ui
-                .add_enabled(!at_end, egui::Button::new("To end"))
-                .on_hover_text("Show the whole history again and take the rollback marker away.");
-            if end.clicked() {
-                if self.timeline.rollback.is_some() {
-                    self.timeline
-                        .queue("history.rollback", json!({"feature": null}));
-                }
                 self.timeline.queue("view.scrub", json!({"feature": null}));
             }
         });

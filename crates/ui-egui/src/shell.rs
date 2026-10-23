@@ -28,6 +28,7 @@ pub mod help;
 mod icons;
 mod layout;
 pub mod number_field;
+mod player;
 pub mod recent;
 mod report;
 mod selection;
@@ -549,6 +550,12 @@ pub struct Shell {
     select: selection::Selecting,
     /// The history timeline and the rows' eyes (`shell/timeline.rs`).
     timeline: timeline::Timeline,
+    /// The history player under the timeline (`shell/player.rs`).
+    player: player::Player,
+    /// The player's orbit turned the camera this frame.
+    orbiting: bool,
+    /// Where the feature panel was drawn: the player's keys work over it.
+    tree_panel: Option<egui::Rect>,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -828,6 +835,9 @@ impl Shell {
             zoom_anchor: None,
             select: selection::Selecting::default(),
             timeline: timeline::Timeline::default(),
+            player: player::Player::default(),
+            orbiting: false,
+            tree_panel: None,
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -1494,6 +1504,7 @@ impl Shell {
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.follow_active_tab(session);
         self.sync_timeline(session);
+        self.sync_player(session);
         let scene = self.sync_scene(session);
         self.mark_scrubbed_rows();
         self.assertion_rows = session.assertion_states();
@@ -1671,6 +1682,8 @@ impl Shell {
         self.file_shortcuts(ui, status.is_some());
         self.tab_shortcuts(ui);
         self.help_keys(ui);
+        // The next step of the history player, when it is time.
+        self.advance_player(ui.ctx());
         let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1735,13 +1748,18 @@ impl Shell {
                 top: 2,
                 bottom: 2,
             });
-            egui::Panel::left("craft3d-tree")
+            let panel = egui::Panel::left("craft3d-tree")
                 .resizable(true)
                 .default_size(260.0)
                 .frame(frame)
                 .show(ui, |ui| self.tree(ui, status.is_some()));
+            self.tree_panel = Some(panel.response.rect);
+        } else {
+            self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // Space, the arrows, Home and End over the viewport or the list.
+        self.player_keys(ui.ctx());
         // A number typed into a field of the viewport, once Enter was
         // pressed: evaluated with the document's variables, shown next
         // frame (or its error is).
@@ -2181,6 +2199,9 @@ impl Shell {
                 "No document."
             };
             ui.colored_label(dim, hint);
+            if has_document {
+                assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
+            }
             return;
         }
         let mut clicked = None;
@@ -2302,11 +2323,7 @@ impl Shell {
                                 });
                             }
                         }
-                        if !self.assertion_rows.is_empty() {
-                            ui.add_space(tokens.inset * 0.5);
-                            ui.label(egui::RichText::new("Assertions").strong());
-                            ui.separator();
-                        }
+                        assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
                         let mut pending = false;
                         for row in &self.assertion_rows {
                             use craft3d_engine::AssertionStatus as A;
@@ -2497,7 +2514,8 @@ impl Shell {
 
         self.start_requested_fly(scene, ui.input(|i| i.time));
         let turning = self.advance_turn(ui, scene);
-        let moving = self.pointer(ui, &response, rect, scene) || resized || turning;
+        let moving =
+            self.pointer(ui, &response, rect, scene) || resized || turning || self.orbiting;
         let [width, height] = self.size;
         let pixel = |at: egui::Pos2| {
             let across = |from: f32, to: f32, at: f32, pixels: u32| {
@@ -2643,14 +2661,21 @@ impl Shell {
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
-        if !self.state.notice.is_empty() {
+        // The caption of a narrated demo, then the history player's step
+        // under it: plates at the top, in the middle.
+        let mut top = inner.top();
+        let captions = [
+            (!self.state.notice.is_empty()).then(|| (self.state.notice.clone(), 17.0)),
+            self.player_caption().map(|text| (text, 15.0)),
+        ];
+        for (text, size) in captions.into_iter().flatten() {
             let galley = painter.layout_no_wrap(
-                self.state.notice.clone(),
-                egui::FontId::proportional(17.0),
+                text,
+                egui::FontId::proportional(size),
                 color(tokens.notice_text),
             );
             let text_size = galley.size();
-            let center = egui::pos2(rect.center().x, inner.top() + text_size.y);
+            let center = egui::pos2(rect.center().x, top + text_size.y);
             let plate = egui::Rect::from_center_size(center, text_size).expand(inset * 0.8);
             painter.rect_filled(
                 plate,
@@ -2662,6 +2687,7 @@ impl Shell {
                 galley,
                 color(tokens.notice_text),
             );
+            top = plate.bottom() + inset * 0.5;
         }
 
         if let Some(work) = &self.work {
@@ -3256,6 +3282,28 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
 
 /// The frame of a chrome bar (the menu bar, the status bar): `fill`, with
 /// the margins of egui's own side panels.
+/// What the feature panel says under "Assertions" while the document has
+/// none: what they are for, and how to get one.
+pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
+
+/// The "Assertions" heading of the feature panel, always there; with the
+/// hint while there are none.
+fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
+    ui.add_space(tokens.inset * 0.5);
+    ui.label(egui::RichText::new("Assertions").strong());
+    ui.separator();
+    if empty {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(NO_ASSERTIONS_HINT)
+                    .color(color(tokens.text_dim))
+                    .small(),
+            )
+            .wrap(),
+        );
+    }
+}
+
 fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
     egui::Frame::new()
         .fill(color(fill))

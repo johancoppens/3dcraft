@@ -13,7 +13,7 @@
 //! browser the page opens a link itself (egui's `open_url`, which the web
 //! runner turns into `window.open`).
 
-use super::{FileAction, Shell, close_shortcut, next_shortcut, previous_shortcut};
+use super::{FileAction, Shell, close_shortcut, next_shortcut, player, previous_shortcut};
 use crate::theme::color;
 use std::path::PathBuf;
 
@@ -52,13 +52,15 @@ pub enum External {
 pub enum ShortcutGroup {
     Files,
     View,
+    History,
     Mouse,
 }
 
 impl ShortcutGroup {
-    pub const ALL: [ShortcutGroup; 3] = [
+    pub const ALL: [ShortcutGroup; 4] = [
         ShortcutGroup::Files,
         ShortcutGroup::View,
+        ShortcutGroup::History,
         ShortcutGroup::Mouse,
     ];
 
@@ -66,6 +68,7 @@ impl ShortcutGroup {
         match self {
             ShortcutGroup::Files => "Files and documents",
             ShortcutGroup::View => "View and selection",
+            ShortcutGroup::History => "History player (over the viewport or the feature list)",
             ShortcutGroup::Mouse => "Mouse",
         }
     }
@@ -100,7 +103,7 @@ impl Shortcut {
 
 /// Every shortcut of the window, in the order the window lists them.
 pub fn shortcuts() -> Vec<Shortcut> {
-    use ShortcutGroup::{Files, Mouse, View};
+    use ShortcutGroup::{Files, History, Mouse, View};
     let keys = |group, shortcut, action| Shortcut {
         group,
         input: ShortcutInput::Keys(shortcut),
@@ -137,6 +140,15 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         keys(View, bare(CLEAR_KEY), "Clear the selection"),
         keys(View, help_shortcut(), "Show these shortcuts"),
+        keys(History, bare(player::PLAY_KEY), "Play or pause the history"),
+        keys(History, bare(player::BACK_KEY), "A step back"),
+        keys(History, bare(player::FORWARD_KEY), "A step forward"),
+        keys(History, bare(player::START_KEY), "The first step"),
+        keys(
+            History,
+            bare(player::END_KEY),
+            "To end: the whole history, without the rollback marker",
+        ),
         mouse("Drag", "Orbit"),
         mouse("Right or middle drag, Shift+drag", "Pan"),
         mouse("Wheel, pinch", "Zoom about the point under the pointer"),
@@ -424,6 +436,11 @@ mod tests {
             help_shortcut(),
             bare(egui::Key::F),
             bare(egui::Key::Escape),
+            bare(egui::Key::Space),
+            bare(egui::Key::ArrowLeft),
+            bare(egui::Key::ArrowRight),
+            bare(egui::Key::Home),
+            bare(egui::Key::End),
         ] {
             assert!(has(shortcut), "{shortcut:?}");
         }

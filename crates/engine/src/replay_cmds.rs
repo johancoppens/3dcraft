@@ -45,10 +45,10 @@ fn view_replay(session: &mut Session, params: &Value) -> Run {
     native::view_replay(session, params)
 }
 
-/// The caption of a step: its place in the history, name and type.
+/// The caption of a step: the one the window's history player shows.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn caption(place: usize, count: usize, name: &str, kind: &str) -> String {
-    format!("{place}/{count}  {name} ({kind})")
+    crate::step_caption(place, count, name, kind)
 }
 
 /// The time of frame `frame` at `fps` as an SRT time stamp, `00:01:02,500`.
@@ -700,6 +700,9 @@ mod tests {
         assert_eq!(frame_index("frame-7.png"), None);
         assert_eq!(frame_index("frame-0000x.png"), None);
         assert_eq!(frame_index("captions.srt"), None);
-        assert_eq!(caption(3, 10, "Plate", "block"), "3/10  Plate (block)");
+        assert_eq!(
+            caption(3, 10, "Plate", "block"),
+            "Step 3/10 · Plate · block"
+        );
     }
 }
