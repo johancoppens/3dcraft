@@ -6,7 +6,7 @@
 //! This is the body of the methods; the transport (JSON lines over TCP, the
 //! token) belongs to the application.
 
-use crate::shell::Shell;
+use crate::shell::{FlyTo, Shell};
 use crate::viewport::{self, MAX_SIDE, MIN_SIDE, Quality};
 use craft3d_engine::Session;
 use serde_json::{Map, Value, json};
@@ -47,8 +47,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.fit",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom"}"#,
-        summary: "Frames everything (bodies and sketches), from the named view when one is given, and keeps following the model as it grows.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "feature": id or name, "selection": boolean = false}"#,
+        summary: "Frames everything (bodies and sketches), from the named view when one is given, and keeps following the model as it grows. With feature it frames instead what that feature made: the faces whose persistent names say it made them, wherever they are now (a hole's wall in the plate it was cut into), else its body, its sketch or its datum; with selection: true, what is selected (ui.select, select.get). Then the camera stays where it is put as the model grows (autoFit false), a hidden sketch or datum framed is shown again, and a section that cuts away all of it is switched off. This is what a double click on a row of the feature list does in the window, and F with something selected, there as a flight of 0.3 s. An error (nothing of the feature is shown, nothing is selected) changes nothing.",
     },
     UiMethod {
         name: "ui.screenshot",
@@ -255,6 +255,7 @@ impl Shell {
                     "error": row.error,
                     "causedBy": row.caused_by.as_ref().map(|(id, name)| json!({"id": id, "name": name})),
                     "selected": row.selected,
+                    "madeSelection": row.made_selection,
                 })
             })
             .collect();
@@ -383,18 +384,50 @@ impl Shell {
     }
 
     fn ui_fit(&mut self, session: &mut Session, params: Option<&Value>) -> Result<Value, String> {
-        let map = fields("ui.fit", params, &["view"])?;
+        let map = fields("ui.fit", params, &["view", "feature", "selection"])?;
         let view = match map.get("view") {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) => Some(name.as_str()),
             Some(_) => return Err("ui.fit: `view` must be a string".to_string()),
         };
+        let feature = match map.get("feature") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(feature)) => Some(feature.clone()),
+            Some(_) => return Err("ui.fit: `feature` must be a feature's id or name".to_string()),
+        };
+        let selection = match map.get("selection") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(selection)) => *selection,
+            Some(_) => return Err("ui.fit: `selection` must be true or false".to_string()),
+        };
+        let to = match (feature, selection) {
+            (Some(_), true) => {
+                return Err("ui.fit: give `feature` or `selection`, not both".to_string());
+            }
+            (Some(feature), false) => Some(FlyTo::Feature(feature)),
+            (None, true) => Some(FlyTo::Selection),
+            (None, false) => None,
+        };
         let mut camera = self.state.camera;
         if let Some(name) = view {
             camera.set_view(name).map_err(|e| format!("ui.fit: {e}"))?;
         }
-        let before = self.state.camera;
+        let before = (self.state.camera, self.state.show, self.state.section.on);
         self.state.camera = camera;
+        if let Some(to) = to {
+            let Some(scene) = self.sync(session) else {
+                self.state.camera = before.0;
+                return Err("ui.fit: there is no document; open one first".to_string());
+            };
+            if let Err(why) = self.fly_to(&scene, &to, None) {
+                (self.state.camera, self.state.show, self.state.section.on) = before;
+                return Err(format!("ui.fit: {why}"));
+            }
+            // A section switched off to show it is resolved again.
+            self.sync(session);
+            return Ok(json!({ "camera": self.state_json()?.get("camera") }));
+        }
+        let before = before.0;
         if !self.fit(session) {
             self.state.camera = before;
             return Err(

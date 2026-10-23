@@ -520,6 +520,69 @@ pub struct UiState {
     pub show: Show,
 }
 
+/// What each document tab keeps of the view: the fields of [`UiState`]
+/// that are about the document shown, so that orbiting or cutting one
+/// document leaves the others as they were. The window holds the active
+/// tab's in [`UiState`] (what `ui.get` and `ui.set` read and change) and
+/// the others aside, by document; switching tabs swaps them. A document
+/// opened or created starts with the default: framed whole (`autoFit`),
+/// the iso view, perspective, no section, opaque, nothing highlighted.
+///
+/// Not kept per tab, because they are about the window or the person's
+/// taste rather than a document: the panels, the caption, the display
+/// quality and what is shown besides the bodies (`show`, which the web
+/// build keeps as a preference).
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct TabView {
+    pub camera: CameraState,
+    pub section: SectionState,
+    pub transparency: f64,
+    pub selected_feature: Option<String>,
+    pub highlight: Option<FaceRef>,
+    pub highlight_edge: Option<EdgeRef>,
+    pub highlight_vertex: Option<VertexRef>,
+    pub picked: Option<Picked>,
+}
+
+impl TabView {
+    /// The tab's part of `state`.
+    pub fn of(state: &UiState) -> Self {
+        Self {
+            camera: state.camera,
+            section: state.section.clone(),
+            transparency: state.transparency,
+            selected_feature: state.selected_feature.clone(),
+            highlight: state.highlight.clone(),
+            highlight_edge: state.highlight_edge.clone(),
+            highlight_vertex: state.highlight_vertex.clone(),
+            picked: state.picked.clone(),
+        }
+    }
+
+    /// Puts the tab's view into `state`; the rest of it stays.
+    pub fn put(self, state: &mut UiState) {
+        let Self {
+            camera,
+            section,
+            transparency,
+            selected_feature,
+            highlight,
+            highlight_edge,
+            highlight_vertex,
+            picked,
+        } = self;
+        state.camera = camera;
+        state.section = section;
+        state.transparency = transparency;
+        state.selected_feature = selected_feature;
+        state.highlight = highlight;
+        state.highlight_edge = highlight_edge;
+        state.highlight_vertex = highlight_vertex;
+        state.picked = picked;
+    }
+}
+
 fn finite(name: &str, value: f64) -> Result<f64, String> {
     if value.is_finite() {
         Ok(value)
@@ -860,6 +923,53 @@ mod tests {
         let text = serde_json::to_string(&default).unwrap();
         assert_eq!(serde_json::from_str::<UiState>(&text).unwrap(), default);
         assert_eq!(serde_json::from_str::<UiState>("{}").unwrap(), default);
+    }
+
+    /// A tab's view is the document's part of the state, and putting it
+    /// back leaves the window's part alone.
+    #[test]
+    fn a_tab_view_swaps_the_documents_part_of_the_state_only() {
+        let mut state = UiState::default();
+        state
+            .apply_patch(
+                &json!({"camera": {"yaw": 10, "distance": 5, "projection": "orthographic"},
+                                 "section": {"on": true}, "transparency": 0.4,
+                                 "selectedFeature": "F2", "notice": "keep",
+                                 "panels": {"tree": false}, "show": {"datums": false},
+                                 "quality": {"chordal": 1e-4},
+                                 "highlight": {"face": "F1:face(0)"}}),
+            )
+            .unwrap();
+        let first = TabView::of(&state);
+        let window = (
+            state.panels,
+            state.notice.clone(),
+            state.quality,
+            state.show,
+        );
+        // Another document starts as a fresh one.
+        TabView::default().put(&mut state);
+        assert_eq!(state.camera, CameraState::default());
+        assert_eq!(state.camera.projection, ProjectionKind::Perspective);
+        assert!(state.camera.auto_fit);
+        assert_eq!(state.section, SectionState::default());
+        assert_eq!(state.transparency, 0.0);
+        assert_eq!(state.selected_feature, None);
+        assert_eq!(state.highlight, None);
+        assert_eq!(
+            (
+                state.panels,
+                state.notice.clone(),
+                state.quality,
+                state.show
+            ),
+            window
+        );
+        // And the first comes back as it was.
+        first.clone().put(&mut state);
+        assert_eq!(TabView::of(&state), first);
+        assert_eq!(state.camera.yaw, 10.0);
+        assert!(state.section.on);
     }
 
     #[test]

@@ -236,7 +236,9 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
     assert_eq!(
         features[0],
         json!({"id": "F1", "name": "Plate", "kind": "block", "state": "ok",
-               "status": "ok", "error": null, "causedBy": null, "selected": false})
+               "status": "ok", "error": null, "causedBy": null, "selected": false,
+               // Added with the list following the selection (2026-10-23).
+               "madeSelection": false})
     );
     assert_eq!(features[2]["state"], "failed");
     assert!(features[2]["error"].as_str().unwrap().contains("nope"));

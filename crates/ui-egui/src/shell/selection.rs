@@ -287,6 +287,7 @@ impl Shell {
                 .find(|item| !item.kind.is_entity())
                 .map(|item| item.feature.clone());
             self.select.view = view;
+            self.follow_selection_in_tree(scene);
         }
         let key = (self.select.view.serial, scene.revision, scene.sampling());
         if self.select.drawn_for != Some(key) {

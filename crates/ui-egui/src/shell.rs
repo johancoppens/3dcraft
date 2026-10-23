@@ -8,7 +8,8 @@ use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
-    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, SectionState, UiState, Work,
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, SectionState, TabView,
+    UiState, Work,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -19,6 +20,7 @@ use craft3d_engine::{
 };
 use craft3d_math::Bbox3;
 use craft3d_render::{Highlight, Section};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
@@ -27,12 +29,16 @@ mod layout;
 pub mod number_field;
 mod selection;
 mod tabs;
+mod views;
+
 pub use controls::ControlsLayout;
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
 };
+pub use views::FLY_SECONDS;
+pub(crate) use views::FlyTo;
 
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
@@ -180,6 +186,9 @@ pub struct TreeRow {
     /// (`F3`) and its name.
     pub caused_by: Option<(String, String)>,
     pub selected: bool,
+    /// The first face, edge or vertex selected was made by this feature
+    /// (by its persistent name): the row is marked as selected too.
+    pub made_selection: bool,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -229,6 +238,10 @@ pub struct RenderStats {
     pub msaa: u32,
 }
 
+/// Room the rows of the feature list keep on their right, in points,
+/// for the scroll bar that lies over them against the panel's edge.
+const TREE_BAR_ROOM: i8 = 12;
+
 /// How long the camera takes to turn to the view a click on the view
 /// cube asked for.
 const TURN_SECONDS: f64 = 0.25;
@@ -242,6 +255,9 @@ struct Turn {
     started: f64,
     /// The camera it set last: another one means something else moved it.
     last: CameraState,
+    /// How long it takes: [`TURN_SECONDS`] for the view cube,
+    /// [`FLY_SECONDS`] for a flight to a feature or the selection.
+    seconds: f64,
 }
 
 /// Where a zoom at the pointer was made: the pointer (in points), the
@@ -550,6 +566,22 @@ pub struct Shell {
     closing_hits: Vec<(CloseAnswer, egui::Rect)>,
     /// The tab that was last brought into view, by its place in the row.
     tab_scrolled: Option<usize>,
+    /// The view of every open document but the one shown, by the
+    /// document's id, with the box its camera was last fitted to
+    /// (`views.rs`).
+    views: BTreeMap<u64, (TabView, Bbox3)>,
+    /// The document whose view `state` holds.
+    viewing: Option<u64>,
+    /// A flight asked for, made in the viewport's next frame.
+    fly: Option<views::FlyTo>,
+    /// The feature that made the first face, edge or vertex selected.
+    made_selection: Option<String>,
+    /// The row of the feature list to bring into view in the next frame.
+    tree_scroll: Option<String>,
+    /// Where the last frame drew the name of each row of the feature
+    /// list, and the part of the window the list shows its rows in.
+    tree_row_hits: Vec<(String, egui::Rect)>,
+    tree_view: Option<egui::Rect>,
 }
 
 impl Default for Shell {
@@ -776,6 +808,13 @@ impl Shell {
             tab_hits: Vec::new(),
             closing_hits: Vec::new(),
             tab_scrolled: None,
+            views: BTreeMap::new(),
+            viewing: None,
+            fly: None,
+            made_selection: None,
+            tree_scroll: None,
+            tree_row_hits: Vec::new(),
+            tree_view: None,
         }
     }
 
@@ -1202,6 +1241,19 @@ impl Shell {
         &self.show_hits
     }
 
+    /// Where the last frame drew the name of each row of the feature list
+    /// (the feature's id and the rectangle, in points); rows scrolled out
+    /// of view are listed too, outside [`Self::tree_view`].
+    pub fn tree_row_hits(&self) -> &[(String, egui::Rect)] {
+        &self.tree_row_hits
+    }
+
+    /// The part of the window the feature list shows its rows in, once it
+    /// was drawn with rows: its right edge is where the scroll bar lies.
+    pub fn tree_view(&self) -> Option<egui::Rect> {
+        self.tree_view
+    }
+
     /// Where the last frame drew the "caused by" links of the feature tree:
     /// (the failed feature's id, the id of the feature that caused it, the
     /// link's rectangle). A click on a link selects that feature.
@@ -1394,6 +1446,7 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
+        self.follow_active_tab(session);
         let scene = self.sync_scene(session);
         self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
@@ -1422,6 +1475,7 @@ impl Shell {
             self.state.highlight_vertex = None;
             self.state.picked = None;
             self.forget_selection();
+            self.made_selection = None;
             self.framed = Bbox3::EMPTY;
             // The section stays as it is set: it is resolved again when
             // there is a document to cut.
@@ -1510,6 +1564,7 @@ impl Shell {
                 error: f.error.clone(),
                 caused_by: f.caused_by.as_ref().map(|id| (id.clone(), name_of(id))),
                 selected: selected == Some(f.id.as_str()),
+                made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -1620,9 +1675,18 @@ impl Shell {
         }
         self.cause_hits.clear();
         if self.state.panels.tree {
+            // No margin on the right: the list's scroll bar lies against
+            // the panel's edge, the split it is resized by.
+            let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
+                left: 8,
+                right: 0,
+                top: 2,
+                bottom: 2,
+            });
             egui::Panel::left("craft3d-tree")
                 .resizable(true)
                 .default_size(260.0)
+                .frame(frame)
                 .show(ui, |ui| self.tree(ui, status.is_some()));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
@@ -2008,122 +2072,175 @@ impl Shell {
             return;
         }
         let mut clicked = None;
+        let mut double = None;
         let mut followed = None;
         let mut hits = Vec::new();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for row in &self.rows {
-                let tint = match row.state {
-                    FeatureState::Ok => tokens.ok,
-                    FeatureState::Failed => tokens.failed,
-                    FeatureState::Suppressed | FeatureState::RolledBack => tokens.inactive,
-                };
-                let mark = tree_mark(row.state);
-                let mut name = egui::RichText::new(&row.name);
-                match row.state {
-                    FeatureState::Ok => {}
-                    FeatureState::Failed => name = name.color(color(tokens.failed)),
-                    FeatureState::Suppressed => {
-                        name = name.color(color(tokens.inactive)).strikethrough();
-                    }
-                    FeatureState::RolledBack => name = name.color(color(tokens.inactive)).italics(),
-                }
-                let hover = match (&row.error, row.state) {
-                    (Some(error), _) => error.clone(),
-                    (None, FeatureState::Suppressed) => {
-                        "Suppressed: not built, and what is made from it fails.".to_string()
-                    }
-                    (None, FeatureState::RolledBack) => {
-                        "Rolled back: after the rollback marker, not built.".to_string()
-                    }
-                    (None, _) => format!("{} · {}", row.kind, row.status),
-                };
-                ui.horizontal(|ui| {
-                    ui.colored_label(color(tint), mark).on_hover_text(&hover);
-                    if ui
-                        .selectable_label(row.selected, name)
-                        .on_hover_text(&hover)
-                        .clicked()
-                    {
-                        clicked = Some(row.id.clone());
-                    }
-                    ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
-                });
-                if let Some((cause, cause_name)) = &row.caused_by {
-                    ui.indent(("craft3d-cause", &row.id), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(dim, "caused by");
-                            let link = ui
-                                .link(egui::RichText::new(cause_name).color(color(tokens.failed)))
-                                .on_hover_text("Select the feature to fix first");
-                            hits.push((row.id.clone(), cause.clone(), link.rect));
-                            if link.clicked() {
-                                followed = Some(cause.clone());
+        let scroll_to = self.tree_scroll.take();
+        let mut rows_drawn = Vec::new();
+        // F over the list as over the viewport: to the selection.
+        let fit = ui.rect_contains_pointer(ui.max_rect())
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.is_none());
+        // Each document keeps where its list was scrolled to. The bar
+        // lies against the panel's edge: the area takes the whole width
+        // and the rows keep clear of the bar.
+        let list = egui::ScrollArea::vertical()
+            .id_salt(("craft3d-tree-rows", self.viewing))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: TREE_BAR_ROOM,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        for row in &self.rows {
+                            let tint = match row.state {
+                                FeatureState::Ok => tokens.ok,
+                                FeatureState::Failed => tokens.failed,
+                                FeatureState::Suppressed | FeatureState::RolledBack => {
+                                    tokens.inactive
+                                }
+                            };
+                            let mark = tree_mark(row.state);
+                            let mut name = egui::RichText::new(&row.name);
+                            match row.state {
+                                FeatureState::Ok => {}
+                                FeatureState::Failed => name = name.color(color(tokens.failed)),
+                                FeatureState::Suppressed => {
+                                    name = name.color(color(tokens.inactive)).strikethrough();
+                                }
+                                FeatureState::RolledBack => {
+                                    name = name.color(color(tokens.inactive)).italics()
+                                }
                             }
-                        });
+                            let hover = match (&row.error, row.state) {
+                                (Some(error), _) => error.clone(),
+                                (None, FeatureState::Suppressed) => {
+                                    "Suppressed: not built, and what is made from it fails."
+                                        .to_string()
+                                }
+                                (None, FeatureState::RolledBack) => {
+                                    "Rolled back: after the rollback marker, not built.".to_string()
+                                }
+                                (None, _) => format!("{} · {}", row.kind, row.status),
+                            };
+                            ui.horizontal(|ui| {
+                                ui.colored_label(color(tint), mark).on_hover_text(&hover);
+                                let label = ui
+                                    .selectable_label(row.selected || row.made_selection, name)
+                                    .on_hover_text(&hover);
+                                rows_drawn.push((row.id.clone(), label.rect));
+                                // The second click of a double click is a click
+                                // too: the double click wins.
+                                if label.double_clicked() {
+                                    double = Some(row.id.clone());
+                                } else if label.clicked() {
+                                    clicked = Some(row.id.clone());
+                                }
+                                if scroll_to.as_deref() == Some(row.id.as_str()) {
+                                    // Only as far as it takes: a row in view stays.
+                                    label.scroll_to_me(None);
+                                }
+                                ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                            });
+                            if let Some((cause, cause_name)) = &row.caused_by {
+                                ui.indent(("craft3d-cause", &row.id), |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(dim, "caused by");
+                                        let link = ui
+                                            .link(
+                                                egui::RichText::new(cause_name)
+                                                    .color(color(tokens.failed)),
+                                            )
+                                            .on_hover_text("Select the feature to fix first");
+                                        hits.push((row.id.clone(), cause.clone(), link.rect));
+                                        if link.clicked() {
+                                            followed = Some(cause.clone());
+                                        }
+                                    });
+                                });
+                            }
+                            if let Some(error) = &row.error {
+                                ui.indent(("craft3d-error", &row.id), |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(error)
+                                                .color(color(tokens.failed))
+                                                .small(),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            }
+                        }
+                        if !self.assertion_rows.is_empty() {
+                            ui.add_space(tokens.inset * 0.5);
+                            ui.label(egui::RichText::new("Assertions").strong());
+                            ui.separator();
+                        }
+                        let mut pending = false;
+                        for row in &self.assertion_rows {
+                            use craft3d_engine::AssertionStatus as A;
+                            // Passed: built; failed or in error: failed; not proven
+                            // either way: needs attention; being measured: inactive.
+                            let (state, tint) = match row.status {
+                                A::Passed => (FeatureState::Ok, tokens.ok),
+                                A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
+                                A::NotProven => (FeatureState::Failed, tokens.attention),
+                                A::Pending => (FeatureState::RolledBack, tokens.inactive),
+                            };
+                            pending |= row.status == A::Pending;
+                            let mut name = egui::RichText::new(&row.name);
+                            if row.status != A::Passed {
+                                name = name.color(color(tint));
+                            }
+                            let status = match &row.measured {
+                                Some(measured) => format!("{} · {}", row.measure, measured),
+                                None => format!("{} · {}", row.measure, row.status.name()),
+                            };
+                            ui.horizontal(|ui| {
+                                ui.colored_label(color(tint), tree_mark(state))
+                                    .on_hover_text(&row.message);
+                                ui.label(name).on_hover_text(&row.message);
+                                ui.colored_label(dim, status);
+                            });
+                            if matches!(row.status, A::Failed | A::Error | A::NotProven) {
+                                ui.indent(("craft3d-assertion", &row.name), |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&row.message)
+                                                .color(color(tint))
+                                                .small(),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            }
+                        }
+                        // Measured on another thread: look again soon.
+                        if pending {
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(250));
+                        }
                     });
-                }
-                if let Some(error) = &row.error {
-                    ui.indent(("craft3d-error", &row.id), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(error)
-                                    .color(color(tokens.failed))
-                                    .small(),
-                            )
-                            .wrap(),
-                        );
-                    });
-                }
-            }
-            if !self.assertion_rows.is_empty() {
-                ui.add_space(tokens.inset * 0.5);
-                ui.label(egui::RichText::new("Assertions").strong());
-                ui.separator();
-            }
-            let mut pending = false;
-            for row in &self.assertion_rows {
-                use craft3d_engine::AssertionStatus as A;
-                // Passed: built; failed or in error: failed; not proven
-                // either way: needs attention; being measured: inactive.
-                let (state, tint) = match row.status {
-                    A::Passed => (FeatureState::Ok, tokens.ok),
-                    A::Failed | A::Error => (FeatureState::Failed, tokens.failed),
-                    A::NotProven => (FeatureState::Failed, tokens.attention),
-                    A::Pending => (FeatureState::RolledBack, tokens.inactive),
-                };
-                pending |= row.status == A::Pending;
-                let mut name = egui::RichText::new(&row.name);
-                if row.status != A::Passed {
-                    name = name.color(color(tint));
-                }
-                let status = match &row.measured {
-                    Some(measured) => format!("{} · {}", row.measure, measured),
-                    None => format!("{} · {}", row.measure, row.status.name()),
-                };
-                ui.horizontal(|ui| {
-                    ui.colored_label(color(tint), tree_mark(state))
-                        .on_hover_text(&row.message);
-                    ui.label(name).on_hover_text(&row.message);
-                    ui.colored_label(dim, status);
-                });
-                if matches!(row.status, A::Failed | A::Error | A::NotProven) {
-                    ui.indent(("craft3d-assertion", &row.name), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&row.message).color(color(tint)).small(),
-                            )
-                            .wrap(),
-                        );
-                    });
-                }
-            }
-            // Measured on another thread: look again soon.
-            if pending {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(250));
-            }
-        });
+            });
         self.cause_hits = hits;
+        self.tree_row_hits = rows_drawn;
+        self.tree_view = Some(list.inner_rect);
+        // A double click on a row selects that feature (whatever its
+        // first click did) and flies to what it made.
+        if let Some(id) = double {
+            self.state.selected_feature = Some(id.clone());
+            self.queue_select(serde_json::json!({"items": [{"kind": "feature", "feature": id}]}));
+            self.request_fly(views::FlyTo::Feature(id));
+            return;
+        }
+        if fit {
+            self.fit_key(self.shown_scene.clone().as_deref());
+        }
         // A click on a cause selects that feature (it does not toggle: the
         // point is to get there).
         if let Some(id) = followed {
@@ -2247,6 +2364,7 @@ impl Shell {
             }
         }
 
+        self.start_requested_fly(scene, ui.input(|i| i.time));
         let turning = self.advance_turn(ui, scene);
         let moving = self.pointer(ui, &response, rect, scene) || resized || turning;
         let [width, height] = self.size;
@@ -2460,7 +2578,7 @@ impl Shell {
             return false;
         }
         let elapsed = ui.input(|i| i.time) - turn.started;
-        let camera = view_cube::between(&turn.from, &turn.to, elapsed / TURN_SECONDS);
+        let camera = view_cube::between(&turn.from, &turn.to, elapsed / turn.seconds);
         self.state.camera = camera;
         ui.ctx().request_repaint();
         if camera == turn.to {
@@ -2589,7 +2707,7 @@ impl Shell {
                 moving = true;
             }
             if fit {
-                self.fit_to(scene);
+                self.fit_key(scene);
             }
         }
         moving
