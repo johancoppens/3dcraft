@@ -736,12 +736,15 @@ impl Host {
             self.doc_action(action, picker);
             did = true;
         }
-        if let Some(action) = self.shell.take_edit_action() {
-            let command = action.command();
-            let outcome = self
-                .session
-                .execute(command, &json!({}))
-                .map_err(|e| e.message().to_string());
+        if let Some(request) = self.shell.take_edit_action() {
+            let command = request.action.command();
+            let session = &mut self.session;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft3d_ui_egui::run_edit(session, request)
+            }))
+            .unwrap_or_else(|_| {
+                Err("internal error (a bug in 3DCraft, please report it)".to_string())
+            });
             self.report(command, &outcome);
             self.shell.sync(&mut self.session);
             did = true;
@@ -935,22 +938,36 @@ mod tests {
             .execute("feature.block", &json!({"size": [10, 10, 5]}))
             .unwrap();
         assert_eq!(volume(&mut host), 500.0);
+        let id = host.session.document_status().unwrap().id;
         host.shell
-            .request_edit_action(craft3d_ui_egui::EditAction::Undo);
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo, id);
         assert!(host.pump_files(&mut dialogs));
         assert_eq!(last(&host).0, "edit.undo");
         assert!(last(&host).1, "{:?}", last(&host));
         assert_eq!(volume(&mut host), 0.0);
         host.shell
-            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo, id);
         assert!(host.pump_files(&mut dialogs));
         assert_eq!(volume(&mut host), 500.0);
         // Nothing to redo: reported, not a crash.
         host.shell
-            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo, id);
         assert!(host.pump_files(&mut dialogs));
         assert_eq!(last(&host).0, "edit.redo");
         assert!(!last(&host).1);
+        // For a document that is no longer the active one: refused, with
+        // a note, and the active one is untouched.
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.session
+            .execute("feature.block", &json!({"size": [1, 1, 1]}))
+            .unwrap();
+        host.shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo, id);
+        assert!(host.pump_files(&mut dialogs));
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("edit.undo", false));
+        assert!(said.contains("another document"), "{said}");
+        assert_eq!(volume(&mut host), 1.0);
         assert!(person.asked().is_empty());
     }
 

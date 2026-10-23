@@ -88,23 +88,71 @@ impl EditAction {
     }
 }
 
+/// Undo or Redo for one document: what the Edit menu or a key asked
+/// for, with the document that was active then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditRequest {
+    pub action: EditAction,
+    /// The document's id (`DocumentStatus::id`).
+    pub document: u64,
+}
+
+/// The most edit requests that wait for the host; more are dropped (a key
+/// held down while a heavy undo runs).
+pub const MAX_EDIT_QUEUE: usize = 16;
+
+/// Runs `request` in `session`, as a host does with what
+/// [`Shell::take_edit_action`] gives: `edit.undo` or `edit.redo` of the
+/// active document, refused when another document is active now than when
+/// it was asked for (a tab switched meanwhile). Whether there is a step to
+/// undo or redo is the engine's to say, now, not the window's of when the
+/// key was pressed.
+pub fn run_edit(
+    session: &mut craft3d_engine::Session,
+    request: EditRequest,
+) -> Result<serde_json::Value, String> {
+    let command = request.action.command();
+    match session.document_status() {
+        Some(status) if status.id == request.document => session
+            .execute(command, &serde_json::json!({}))
+            .map_err(|e| e.message().to_string()),
+        Some(_) => Err(format!(
+            "{command}: not done: another document is active now than when it was asked for"
+        )),
+        None => Err(format!("{command}: not done: the document was closed")),
+    }
+}
+
 impl Shell {
-    /// What the Edit menu or a shortcut asked for since the last call.
-    /// The host takes it and runs [`EditAction::command`].
-    pub fn take_edit_action(&mut self) -> Option<EditAction> {
-        self.edit_action.take()
+    /// The next Undo or Redo the Edit menu or a key asked for, oldest
+    /// first. The host runs it with [`run_edit`], without the Parameters
+    /// form's verdict (that is for the form's own commits).
+    pub fn take_edit_action(&mut self) -> Option<EditRequest> {
+        self.edit_actions.pop_front()
     }
 
-    /// Asks for Undo or Redo, as the menu does.
-    pub fn request_edit_action(&mut self, action: EditAction) {
-        self.edit_action = Some(action);
+    /// Asks for Undo or Redo of `document`, as the menu does.
+    pub fn request_edit_action(&mut self, action: EditAction, document: u64) {
+        if self.edit_actions.len() < MAX_EDIT_QUEUE {
+            self.edit_actions
+                .push_back(EditRequest { action, document });
+        }
+    }
+
+    /// Undo and Redo wait: not under a modal dialog or the question
+    /// before closing, and not while the Parameters form drags a value or
+    /// waits for its commit (that commit is a step of its own).
+    fn edit_blocked(&self) -> bool {
+        self.dialog_open() || self.closing.is_some() || self.params_editing()
     }
 
     /// Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, wherever the pointer is; not while
-    /// a text field has the keyboard (it has its own undo), and only when
-    /// the active document has a step to undo or redo.
+    /// a text field has the keyboard (it has its own undo) or while
+    /// [`Self::edit_blocked`]. Asked for whenever there is a document:
+    /// whether there is a step left is judged when it runs, so presses
+    /// made while an earlier one runs are not lost to a stale status.
     pub(super) fn edit_shortcuts(&mut self, ui: &egui::Ui, status: Option<&DocumentStatus>) {
-        if ui.ctx().egui_wants_keyboard_input() {
+        if ui.ctx().egui_wants_keyboard_input() || self.edit_blocked() {
             return;
         }
         // Redo first: Ctrl+Shift+Z would also match Ctrl+Z.
@@ -113,15 +161,17 @@ impl Shell {
                 .shortcuts()
                 .iter()
                 .any(|shortcut| ui.input_mut(|i| i.consume_shortcut(shortcut)));
-            if pressed && action.step(status).is_some() {
-                self.edit_action = Some(action);
+            if let (true, Some(status)) = (pressed, status) {
+                self.request_edit_action(action, status.id);
             }
         }
     }
 
     /// The Edit menu, after File: Undo and Redo with the step's name,
-    /// greyed when there is nothing to undo or redo.
+    /// greyed when there is nothing to undo or redo, and while
+    /// [`Self::edit_blocked`].
     pub(super) fn edit_menu(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
+        let blocked = self.edit_blocked();
         ui.menu_button("Edit", |ui| {
             for action in EditAction::ALL {
                 let shortcut = action
@@ -130,11 +180,11 @@ impl Shell {
                     .map(|shortcut| ui.ctx().format_shortcut(shortcut))
                     .unwrap_or_default();
                 let button = egui::Button::new(action.menu_text(status)).shortcut_text(shortcut);
-                if ui
-                    .add_enabled(action.step(status).is_some(), button)
-                    .clicked()
-                {
-                    self.edit_action = Some(action);
+                let enabled = !blocked && action.step(status).is_some();
+                if ui.add_enabled(enabled, button).clicked() {
+                    if let Some(status) = status {
+                        self.request_edit_action(action, status.id);
+                    }
                     ui.close();
                 }
             }

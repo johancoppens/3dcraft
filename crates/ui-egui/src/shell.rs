@@ -42,7 +42,7 @@ mod views;
 
 pub use controls::ControlsLayout;
 pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
-pub use edit::EditAction;
+pub use edit::{EditAction, EditRequest, MAX_EDIT_QUEUE, run_edit};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use params::{
@@ -640,7 +640,7 @@ pub struct Shell {
     doc_action: Option<DocAction>,
     /// Undo or Redo asked by the Edit menu or a shortcut, until the host
     /// takes it.
-    edit_action: Option<EditAction>,
+    edit_actions: std::collections::VecDeque<EditRequest>,
     /// Where the last frame drew the tabs and their close buttons.
     tab_hits: Vec<(TabPart, egui::Rect)>,
     /// Where the last frame drew the question's buttons.
@@ -909,7 +909,7 @@ impl Shell {
             tabs: Vec::new(),
             closing: None,
             doc_action: None,
-            edit_action: None,
+            edit_actions: std::collections::VecDeque::new(),
             tab_hits: Vec::new(),
             closing_hits: Vec::new(),
             tab_scrolled: None,
@@ -1761,7 +1761,8 @@ impl Shell {
                 ui.style_mut().visuals = tokens.chrome_visuals();
                 self.menu_bar(ui, status.as_ref());
             });
-        if self.file_action.is_some() || self.doc_action.is_some() || self.edit_action.is_some() {
+        if self.file_action.is_some() || self.doc_action.is_some() || !self.edit_actions.is_empty()
+        {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
@@ -1864,8 +1865,12 @@ impl Shell {
         self.help_windows(ui);
     }
 
-    /// The File shortcuts, wherever the pointer is.
+    /// The File shortcuts, wherever the pointer is; not under a modal
+    /// dialog or the question before closing.
     fn file_shortcuts(&mut self, ui: &egui::Ui, has_document: bool) {
+        if self.dialog_open() || self.closing.is_some() {
+            return;
+        }
         // Shift+S before S: the longer shortcut would also match the
         // shorter one.
         for action in [

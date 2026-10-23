@@ -918,6 +918,12 @@ impl Shell {
         }
     }
 
+    /// The form drags or steps a value not committed yet, or a commit of
+    /// it waits or runs: Undo and Redo wait meanwhile.
+    pub(super) fn params_editing(&self) -> bool {
+        self.params.busy() || self.params.live.is_some()
+    }
+
     /// A commit waits for the host.
     pub(super) fn command_waiting(&self) -> bool {
         self.params.pending.is_some()

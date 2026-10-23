@@ -624,10 +624,18 @@ impl WebHost {
             outcome.ask = outcome.ask.or(more.ask);
             outcome.pick = outcome.pick.or(more.pick);
         }
-        // Undo and Redo of the Edit menu and Ctrl+Z.
-        if let Some(action) = self.shell.take_edit_action() {
-            let command = action.command();
-            let done = self.run(command, &json!({}));
+        // Undo and Redo of the Edit menu and Ctrl+Z, in the order asked,
+        // each for the document active when it was asked; not a commit of
+        // the Parameters form (no command_done), as on the desktop.
+        while let Some(request) = self.shell.take_edit_action() {
+            let command = request.action.command();
+            let session = &mut self.session;
+            let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft3d_ui_egui::run_edit(session, request)
+            }))
+            .unwrap_or_else(|_| {
+                Err("internal error (a bug in 3DCraft, please report it)".to_string())
+            });
             self.finish(command, &done);
         }
         // An example from the start screen, built in a new document.
@@ -1122,13 +1130,14 @@ mod tests {
         let mut host = modelled();
         let before = host.session.document_status().unwrap();
         assert!(before.undo.is_some());
+        let id = before.id;
         host.shell
-            .request_edit_action(craft3d_ui_egui::EditAction::Undo);
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo, id);
         host.pump();
         let after = host.session.document_status().unwrap();
         assert!(after.redo.is_some(), "{after:?}");
         host.shell
-            .request_edit_action(craft3d_ui_egui::EditAction::Redo);
+            .request_edit_action(craft3d_ui_egui::EditAction::Redo, id);
         host.pump();
         assert_eq!(host.session.document_status().unwrap().undo, before.undo);
     }
