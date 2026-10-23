@@ -521,8 +521,9 @@ fn conflicts(solution: &Solution) -> usize {
 
 /// The sketch with every coordinate that a constraint holds at a value
 /// (`x`, `y`, `Fixed` at a place: the first such constraint of each
-/// coordinate) already at that value in the starting guess, or none when
-/// that moves nothing.
+/// coordinate; not on a point that a `Fixed` without a place holds where
+/// it is) already at that value in the starting guess, or none when that
+/// moves nothing.
 ///
 /// A held point starts where it was solved before its values changed, and
 /// Newton's method linearises there. An equation that is not linear in it
@@ -536,6 +537,15 @@ fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
     use crate::model::Constraint as C;
     let mut entities = sketch.entities.clone();
     let mut set = vec![[false; 2]; entities.len()];
+    // A point fixed where it is (`Fixed` without a place) is held by its
+    // starting guess: moving it would change what it is held at.
+    for constraint in &sketch.constraints {
+        if let C::Fixed { point, at: None } = *constraint
+            && let Some(done) = set.get_mut(point.index())
+        {
+            *done = [true; 2];
+        }
+    }
     let mut moved = false;
     for constraint in &sketch.constraints {
         let (point, values) = match *constraint {
