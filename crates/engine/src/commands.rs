@@ -2395,6 +2395,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
+        // Hidden in the view (`feature.visible`): said only when it is.
+        if let Some(map) = entry.as_object_mut()
+            && doc.is_hidden(feature.id)
+        {
+            map.insert("hidden".into(), true.into());
+        }
         // Failed because something it is made from failed: the feature at
         // the start of that chain, the one to fix.
         if let (Some(map), Some(root)) = (

@@ -65,6 +65,11 @@ pub struct Document {
     /// version 28).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assertions: Vec<Assertion>,
+    /// The ids of the features hidden in the view, in ascending order:
+    /// view data, which regeneration does not read. Absent when none is
+    /// hidden (and in files before version 30).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<u64>,
 }
 
 /// One assertion: what is measured (the JSON object `assert.add` was

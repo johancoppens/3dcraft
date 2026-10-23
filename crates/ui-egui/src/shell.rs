@@ -27,6 +27,7 @@ mod layout;
 pub mod number_field;
 mod selection;
 mod tabs;
+mod timeline;
 pub use controls::ControlsLayout;
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use tabs::{
@@ -180,6 +181,8 @@ pub struct TreeRow {
     /// (`F3`) and its name.
     pub caused_by: Option<(String, String)>,
     pub selected: bool,
+    /// Hidden in the view (`feature.visible`).
+    pub hidden: bool,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -500,6 +503,8 @@ pub struct Shell {
     status_hits: Vec<(StatusSlot, egui::Rect)>,
     /// The selection as the window draws and changes it.
     select: selection::Selecting,
+    /// The history timeline and the rows' eyes (`shell/timeline.rs`).
+    timeline: timeline::Timeline,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -754,6 +759,7 @@ impl Shell {
             status_hits: Vec::new(),
             zoom_anchor: None,
             select: selection::Selecting::default(),
+            timeline: timeline::Timeline::default(),
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -1394,7 +1400,9 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
+        self.sync_timeline(session);
         let scene = self.sync_scene(session);
+        self.mark_scrubbed_rows();
         self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
         self.shown_status = session.document_status();
@@ -1510,6 +1518,7 @@ impl Shell {
                 error: f.error.clone(),
                 caused_by: f.caused_by.as_ref().map(|id| (id.clone(), name_of(id))),
                 selected: selected == Some(f.id.as_str()),
+                hidden: f.hidden,
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -1635,6 +1644,13 @@ impl Shell {
             if self.typing != before {
                 ui.ctx().request_repaint();
             }
+        }
+        // What the timeline and the eyes asked for: the scene of a new
+        // step is built where the window's scenes are, not here.
+        if let Some(session) = session.as_deref_mut()
+            && self.apply_timeline_requests(session)
+        {
+            ui.ctx().request_repaint();
         }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session
@@ -1997,6 +2013,7 @@ impl Shell {
         let dim = color(tokens.text_dim);
         ui.add_space(tokens.inset * 0.5);
         ui.label(egui::RichText::new("Features").strong());
+        self.timeline_ui(ui);
         ui.separator();
         if self.rows.is_empty() {
             let hint = if has_document {
@@ -2009,6 +2026,7 @@ impl Shell {
         }
         let mut clicked = None;
         let mut followed = None;
+        let mut eye_clicked = None;
         let mut hits = Vec::new();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for row in &self.rows {
@@ -2032,12 +2050,18 @@ impl Shell {
                     (None, FeatureState::Suppressed) => {
                         "Suppressed: not built, and what is made from it fails.".to_string()
                     }
+                    (None, FeatureState::RolledBack) if row.status == timeline::AFTER_SCRUB => {
+                        "After the step the timeline shows: not shown now.".to_string()
+                    }
                     (None, FeatureState::RolledBack) => {
                         "Rolled back: after the rollback marker, not built.".to_string()
                     }
                     (None, _) => format!("{} · {}", row.kind, row.status),
                 };
                 ui.horizontal(|ui| {
+                    if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                        eye_clicked = Some((row.id.clone(), row.hidden));
+                    }
                     ui.colored_label(color(tint), mark).on_hover_text(&hover);
                     if ui
                         .selectable_label(row.selected, name)
@@ -2124,6 +2148,10 @@ impl Shell {
             }
         });
         self.cause_hits = hits;
+        if let Some((id, hidden)) = eye_clicked {
+            self.queue_visible(id, hidden);
+            ui.ctx().request_repaint();
+        }
         // A click on a cause selects that feature (it does not toggle: the
         // point is to get there).
         if let Some(id) = followed {

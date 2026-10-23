@@ -255,6 +255,7 @@ impl Shell {
                     "error": row.error,
                     "causedBy": row.caused_by.as_ref().map(|(id, name)| json!({"id": id, "name": name})),
                     "selected": row.selected,
+                    "hidden": row.hidden,
                 })
             })
             .collect();
@@ -326,6 +327,7 @@ impl Shell {
             "closing": self.closing(),
             "quitting": self.quitting(),
             "selection": self.selection().json(),
+            "timeline": self.timeline_json(),
         }))
     }
 

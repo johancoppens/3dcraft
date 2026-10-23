@@ -42,6 +42,7 @@ mod recovery_cmds;
 mod recovery_store;
 mod replay_cmds;
 mod scene;
+mod scrub;
 mod section;
 mod select_cmds;
 mod selection;
@@ -59,6 +60,7 @@ pub mod task_score;
 mod typed;
 mod verify;
 mod verify_cmds;
+mod visibility_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
@@ -83,6 +85,7 @@ pub use scene::{
     SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
     SketchCurve, arc_segments, base64 as encode_base64,
 };
+pub use scrub::ScrubPosition;
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
@@ -166,6 +169,9 @@ pub(crate) struct OpenDocument {
     /// The assertions checked against `history.revision()`
     /// (`assert_cmds.rs`).
     pub(crate) assertions: assert_check::Checks,
+    /// Where the view is in the history (`view.scrub`): view state, not
+    /// saved and not undone (`scrub.rs`).
+    pub(crate) scrub: scrub::Scrub,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -207,6 +213,7 @@ impl OpenDocument {
             cache: new_cache(),
             selection: selection::Selection::default(),
             assertions: assert_check::Checks::default(),
+            scrub: scrub::Scrub::default(),
         }
     }
 
@@ -369,6 +376,8 @@ impl Session {
                 set_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
+                visibility_cmds::SPECS,
+                scrub::SPECS,
             ]
             .concat()
         })

@@ -428,8 +428,10 @@ mod native {
             Ok(craft3d_regen::regenerate_cached(doc, &mut cache))
         };
         let bodies_of = |doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen| -> Bodies {
+            // What the view hides is not drawn (`feature.visible`).
             regen
                 .bodies()
+                .filter(|(id, _)| !doc.is_hidden(*id))
                 .map(|(id, b)| {
                     let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
                         .into_iter()
@@ -501,7 +503,7 @@ mod native {
         };
         // Framed, as view.render frames, on the box around the bodies at
         // `to` from their B-rep.
-        let model = crate::scene::bodies_box(&final_regen);
+        let model = crate::scene::bodies_box(&doc, &final_regen);
         let aspect = width as f64 / height as f64;
         // Every step is sampled as view.render samples the state at `to`
         // (the document's own when the replay ends where it does, so that
