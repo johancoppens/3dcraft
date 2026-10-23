@@ -74,10 +74,10 @@ did not reach the bound ([chapter 10](10-measure.md)).
 
 ## Undo
 
-`edit.undo` undoes one change (a batch of ten steps is ten changes); `edit.redo` redoes it. Undo also
-brings back a deleted feature or variable. The selection is not part of the history and is not undone. The window
-has no Undo key or menu yet: ask the agent to undo, or, in a Jig, use ↺, **Reset all** or **Back to last
-good**.
+**Edit › Undo** (Ctrl+Z) undoes one change, yours or the agent's, and **Edit › Redo** (Ctrl+Shift+Z or
+Ctrl+Y) redoes it; an agent does the same with `edit.undo` and `edit.redo` (a batch of ten steps is ten
+changes). Undo also brings back a deleted feature or variable. The selection is not part of the history
+and is not undone. In a Jig, **↺**, **Reset all** and **Back to last good** are there as well.
 
 ## A sketch does not do what you meant
 

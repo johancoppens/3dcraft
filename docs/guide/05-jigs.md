@@ -56,8 +56,8 @@ clamp the second, and the form says that too.
 **Back to the defaults.** A parameter that is not at its default has a **↺** next to it to put it back;
 **Reset all** puts every parameter back.
 
-There is no Undo key in the window yet: use **↺**, **Reset all** or **Back to last good** (below). For an
-agent, a whole drag is one undo step (`edit.undo`).
+**Edit › Undo** (Ctrl+Z) takes back the last value you set; a whole drag is one undo step, for you and
+for an agent (`edit.undo`). **↺**, **Reset all** and **Back to last good** (below) are there as well.
 
 **When a value breaks the model** (a fillet that no longer fits, a wall thicker than the box, a check that
 fails), the field turns red with the reason, and a banner over the model says *This value breaks the
