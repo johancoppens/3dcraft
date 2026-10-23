@@ -22,6 +22,21 @@ use std::sync::Mutex;
 /// [`watch_memory`] when the process reaches a new peak.
 static IN_FLIGHT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
+/// Commands whose valid cases draw pictures or rebuild the document many
+/// times (a replay renders a frame per step: about 160 MB each). They run
+/// one at a time, whatever the number of cores: on 32 threads the replays
+/// running together made the hunt's peak 5.2 GB (2026-10-23); the other
+/// cases still run on every core, and every case still runs.
+const HEAVY: &[&str] = &[
+    "view.replay",
+    "view.render",
+    "file.export",
+    "document.sample",
+];
+
+/// Held while a [`HEAVY`] command runs.
+static HEAVY_LOCK: Mutex<()> = Mutex::new(());
+
 /// The process's resident memory in kB (Linux; `None` elsewhere).
 fn resident_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -532,6 +547,13 @@ fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(me.clone(), format!("{id} in state {state} on {}", shown()));
+    // A heavy command waits for the one before it (a panic in one is
+    // caught by `Session::execute`; a poisoned lock is still a lock).
+    let _heavy = HEAVY.contains(&id).then(|| {
+        HEAVY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
     let outcome = s.execute(id, params);
     match &outcome {
         Err(e) => {
