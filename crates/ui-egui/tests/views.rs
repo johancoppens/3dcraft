@@ -183,10 +183,25 @@ fn row(shell: &Shell, id: &str) -> egui::Rect {
 
 /// The camera `camera` becomes when it frames `bbox` in the shell's
 /// viewport.
+/// Since 2026-10-23 (the developer: a flight to a small fillet came far
+/// too close) a flight frames at least a fifth of the diagonal of the
+/// body its target lies in: here always the cut plate, 100 × 60 × 10.
 fn framed(shell: &Shell, camera: CameraState, bbox: &Bbox3) -> CameraState {
     let [w, h] = shell.viewport_size();
     let mut camera = camera;
-    camera.fit(bbox, f64::from(w) / f64::from(h));
+    let plate = (100.0_f64 * 100.0 + 60.0 * 60.0 + 10.0 * 10.0).sqrt();
+    let side = 0.2 * plate / 3.0_f64.sqrt();
+    let (lo, hi) = bbox.corners().unwrap();
+    let c = bbox.center().unwrap();
+    let grow = |lo: f64, hi: f64, c: f64| (lo.min(c - side / 2.0), hi.max(c + side / 2.0));
+    let (x0, x1) = grow(lo.x, hi.x, c.x);
+    let (y0, y1) = grow(lo.y, hi.y, c.y);
+    let (z0, z1) = grow(lo.z, hi.z, c.z);
+    let bbox = Bbox3::from_points([
+        craft3d_math::Vec3::new(x0, y0, z0),
+        craft3d_math::Vec3::new(x1, y1, z1),
+    ]);
+    camera.fit(&bbox, f64::from(w) / f64::from(h));
     camera.auto_fit = false;
     camera
 }

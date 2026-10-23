@@ -10,8 +10,12 @@
 //!   perspective.
 //! - A double click on a row of the feature list, or F with something
 //!   selected, flies the camera in [`FLY_SECONDS`] (eased) to frame what
-//!   the feature made or what is selected, from the direction it looks
-//!   from now. What the flight is aimed at is made visible: a hidden
+//!   the feature made or what is selected (2026-10-23, the developer's
+//!   test on a large model): from the iso direction (of eight, from above
+//!   and below) that sees most of its faces' area not hidden by the rest
+//!   of the model (`Scene::best_view`; the current direction is kept when
+//!   it sees them as well), and with at least [`MIN_FLY_CONTEXT`] of the
+//!   body it lies in around it. What the flight is aimed at is made visible: a hidden
 //!   sketch or datum is shown again, a feature hidden with its eye
 //!   (`feature.visible`) is shown, a timeline scrubbed to a step before it
 //!   goes back to the end (`shell/timeline.rs`), and a section that cuts away all of
@@ -21,8 +25,8 @@
 //!   the same at once, for an agent.
 
 use super::{Shell, Turn};
-use crate::state::TabView;
-use craft3d_engine::{Scene, SelectionKind, Session};
+use crate::state::{CameraState, TabView};
+use craft3d_engine::{Scene, SelectionItem, SelectionKind, Session};
 use craft3d_math::{Bbox3, Vec3};
 use std::collections::BTreeSet;
 
@@ -202,7 +206,37 @@ impl Shell {
         self.reveal(scene, to, target.cut_away);
         let from = self.state.camera;
         let mut camera = from;
-        camera.fit(&at_least(&target.bbox, scene), self.aspect());
+        // The faces it stands for: which way to look at them, and the
+        // body around them.
+        let feature;
+        let items: &[SelectionItem] = match to {
+            FlyTo::Feature(id) => {
+                feature = [SelectionItem {
+                    kind: SelectionKind::Feature,
+                    name: String::new(),
+                    feature: id.clone(),
+                }];
+                &feature
+            }
+            FlyTo::Selection => &self.select.view.items,
+        };
+        let faces = scene.items_face_ids(items);
+        let candidates = view_candidates(&from);
+        let toward: Vec<Vec3> = candidates.iter().map(CameraState::toward_eye).collect();
+        let weights: Vec<f64> = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, camera)| view_weight(index, camera))
+            .collect();
+        if let Some(best) = scene
+            .best_view(&faces, &toward, &weights)
+            .and_then(|best| candidates.get(best))
+        {
+            camera.yaw = best.yaw;
+            camera.pitch = best.pitch;
+        }
+        let context = with_context(&target.bbox, &scene.bodies_box_of(&faces));
+        camera.fit(&at_least(&context, scene), self.aspect());
         camera.auto_fit = false;
         match started {
             Some(started) => {
@@ -300,11 +334,174 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Where the last frame drew a row's zoom icon (the feature's id and
+    /// the rectangle, in points): only on the row under the pointer, and
+    /// only where it can be flown to ([`zoomable`]).
+    pub fn tree_zoom_hits(&self) -> &[(String, egui::Rect)] {
+        &self.tree_zoom_hits
+    }
+
+    /// The ids in the scene's mesh of the faces lit as selected.
+    pub fn selected_face_ids(&self) -> Vec<u32> {
+        self.selection_faces().collect()
+    }
+
+    /// Marks the rows that can be flown to ([`zoomable`]), after the rows
+    /// were made and marked for the timeline. What the scene shows is
+    /// worked out once per scene.
+    pub(crate) fn mark_zoomable(&mut self, scene: Option<&Scene>) {
+        let Some(scene) = scene else {
+            self.shown_features = None;
+            return;
+        };
+        let key = (scene.revision, scene.sampling());
+        if self.shown_features.as_ref().map(|(k, _)| *k) != Some(key) {
+            // What the scene shows, and what showing a hidden feature
+            // would bring into view (`SceneFeature::draws`).
+            let mut shown = scene.shown_features();
+            shown.extend(
+                scene
+                    .features
+                    .iter()
+                    .filter(|f| f.hidden && f.draws)
+                    .map(|f| f.id.clone()),
+            );
+            self.shown_features = Some((key, shown));
+        }
+        if let Some((_, shown)) = &self.shown_features {
+            for row in &mut self.rows {
+                row.zoomable = zoomable(row, shown);
+            }
+        }
+    }
+}
+
+/// The features a scene shows something of
+/// ([`Scene::shown_features`]), with the scene's revision and sampling.
+pub(crate) type ShownFeatures = ((u64, (f64, Option<f64>)), BTreeSet<String>);
+
+/// What a row's zoom icon says under the pointer, and how to fly there.
+pub const ZOOM_TOOLTIP: &str = "Double-click or ⌖: zoom to this feature";
+
+/// Whether the feature of `row` can be flown to: one place decides both
+/// the row's zoom icon and what a double click on it does. A feature that
+/// failed or is suppressed cannot, nor one with nothing to frame (`shown`:
+/// the features the scene shows something of, and the hidden ones that
+/// would show something once shown); one hidden with its eye that has a
+/// body, sketch or datum of its own, or one after the step the timeline
+/// shows, can (the flight shows it first, `shell/timeline.rs`).
+pub fn zoomable(row: &super::TreeRow, shown: &BTreeSet<String>) -> bool {
+    use craft3d_engine::FeatureState as S;
+    match row.state {
+        S::Failed | S::Suppressed => false,
+        S::RolledBack => row.error.is_none() && row.status == super::timeline::AFTER_SCRUB,
+        S::Ok => shown.contains(&row.id),
+    }
+}
+
+/// The zoom icon of a row: a target (⌖) where it can be flown to and the
+/// row is under the pointer, else room kept empty so the eyes line up.
+/// The response when it is drawn.
+pub(crate) fn zoom_icon(
+    ui: &mut egui::Ui,
+    zoomable: bool,
+    row_hovered: bool,
+    tokens: &crate::theme::Tokens,
+) -> Option<egui::Response> {
+    let side = ui.spacing().interact_size.y.max(12.0);
+    let size = egui::vec2(side, side);
+    if !(zoomable && row_hovered) {
+        ui.allocate_exact_size(size, egui::Sense::hover());
+        return None;
+    }
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let ink = if response.hovered() {
+        crate::theme::color(tokens.text)
+    } else {
+        crate::theme::color(tokens.text_dim)
+    };
+    super::icons::paint(
+        ui.painter(),
+        super::icons::Icon::ZoomTo,
+        rect.shrink(rect.width() * 0.08),
+        ink,
+        tokens,
+    );
+    Some(response.on_hover_text(ZOOM_TOOLTIP))
+}
+
 /// What a flight frames.
 struct Target {
     bbox: Bbox3,
     /// The section cuts all of it away.
     cut_away: bool,
+}
+
+/// The directions a flight may look from: the one the camera looks from
+/// now (kept when it sees the target as well as any), then the eight iso
+/// directions, from above and from below.
+fn view_candidates(now: &CameraState) -> Vec<CameraState> {
+    let (_, _, pitch) = crate::state::VIEWS[0];
+    let mut out = vec![*now];
+    for up in [pitch, -pitch] {
+        for yaw in [-45.0, 45.0, 135.0, -135.0] {
+            out.push(CameraState {
+                yaw,
+                pitch: up,
+                ..*now
+            });
+        }
+    }
+    out
+}
+
+/// How much a flight prefers direction `index` of [`view_candidates`]: the one
+/// the camera has now a little (no turn for nothing: [`STAY_WEIGHT`]),
+/// a view from below a little less ([`BELOW_WEIGHT`]: parts are mostly
+/// looked at from above), the iso views from above as they score.
+fn view_weight(index: usize, camera: &CameraState) -> f64 {
+    if index == 0 {
+        STAY_WEIGHT
+    } else if camera.pitch < 0.0 {
+        BELOW_WEIGHT
+    } else {
+        1.0
+    }
+}
+
+/// The weight of the direction the camera has now ([`view_weight`]).
+pub const STAY_WEIGHT: f64 = 1.1;
+/// The weight of an iso view from below ([`view_weight`]).
+pub const BELOW_WEIGHT: f64 = 0.8;
+
+/// The share of the diagonal of the body it lies in that a flight frames
+/// at least: a small feature is shown with some of its body around it.
+pub const MIN_FLY_CONTEXT: f64 = 0.2;
+
+/// The most a flight's context grows the target: its diagonal times this
+/// at most, so a small hole on a big part is still seen as a hole.
+pub const MAX_FLY_CONTEXT_TIMES: f64 = 8.0;
+
+/// `bbox` grown about its centre until its diagonal is at least
+/// [`MIN_FLY_CONTEXT`] of `body`'s, but no more than
+/// [`MAX_FLY_CONTEXT_TIMES`] its own (the sides it lacks, alike).
+fn with_context(bbox: &Bbox3, body: &Bbox3) -> Bbox3 {
+    let (Some(center), Some((lo, hi))) = (bbox.center(), bbox.corners()) else {
+        return *bbox;
+    };
+    let have = bbox.diagonal();
+    let wanted = (MIN_FLY_CONTEXT * body.diagonal()).min(MAX_FLY_CONTEXT_TIMES * have);
+    if !(wanted.is_finite() && wanted > have) {
+        return *bbox;
+    }
+    // A cube of that diagonal, the box's longer sides kept.
+    let half = wanted / 3.0_f64.sqrt() * 0.5;
+    let grow = |lo: f64, hi: f64, c: f64| (lo.min(c - half), hi.max(c + half));
+    let (x0, x1) = grow(lo.x, hi.x, center.x);
+    let (y0, y1) = grow(lo.y, hi.y, center.y);
+    let (z0, z1) = grow(lo.z, hi.z, center.z);
+    Bbox3::from_points([Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1)])
 }
 
 /// Smallest side of the box a flight frames, as a fraction of the
@@ -313,12 +510,19 @@ struct Target {
 pub const MIN_FLY_EXTENT: f64 = 0.02;
 
 /// `bbox` grown about its centre to at least [`MIN_FLY_EXTENT`] of the
-/// model's diagonal along every axis.
+/// model's diagonal along every axis, and no more than
+/// [`MAX_FLY_CONTEXT_TIMES`] its own diagonal when it has one (a point, a
+/// vertex, gets the extent).
 fn at_least(bbox: &Bbox3, scene: &Scene) -> Bbox3 {
     let (Some(center), Some((lo, hi))) = (bbox.center(), bbox.corners()) else {
         return *bbox;
     };
-    let side = MIN_FLY_EXTENT * scene.bbox.diagonal();
+    let model = scene.bbox.diagonal();
+    let own = bbox.diagonal();
+    let mut side = MIN_FLY_EXTENT * model;
+    if own > model * 1e-9 {
+        side = side.min(MAX_FLY_CONTEXT_TIMES * own);
+    }
     if !(side.is_finite() && side > 0.0) {
         return *bbox;
     }

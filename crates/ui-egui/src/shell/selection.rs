@@ -147,6 +147,29 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
         }
     };
     for item in items {
+        // A feature that made faces of its own lights those, wherever
+        // they are now (a fillet's round, not the whole part); one that
+        // made none (a boolean) lights its body, below.
+        if item.kind == SelectionKind::Feature {
+            let made = scene.feature_face_ids(&item.feature);
+            if !made.is_empty() {
+                faces.extend(made.iter().copied());
+                // One outline per body, of the faces made in it: each
+                // edge once, however many of its faces were made.
+                for (index, body) in scene.bodies.iter().enumerate() {
+                    let ids = range(index);
+                    let mine: BTreeSet<usize> = made
+                        .iter()
+                        .filter(|id| ids.contains(id))
+                        .filter_map(|id| usize::try_from(id - ids.start).ok())
+                        .collect();
+                    if !mine.is_empty() {
+                        outline(body, &|face| mine.contains(&face), &mut marks);
+                    }
+                }
+                continue;
+            }
+        }
         match item.kind {
             SelectionKind::Body | SelectionKind::Feature => {
                 let Some(index) = scene.bodies.iter().position(|b| b.feature == item.feature)
