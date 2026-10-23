@@ -67,6 +67,8 @@ A Jig (a document with public parameters, [`document.md`](document.md) › *Publ
 
 - **2026-10-23, proof over the range** (Jigs phase 4). The laser box (`plan/laserbox.md`) with nine public parameters (width 100–300 mm on 1 mm steps, depth, height, thickness 2–6 mm, finger width 8–20 mm, kerf, clearance, thumb and lid-hole radii): 73 points (64 of 512 corners, 8 random) all pass, regeneration median 180 ms, max 418 ms (optimised debug build); deep on 13 points passes. The welding table (`plan/weldtable.md`, without welds) with width 24–48 in, depth 24–36 in, kerf, clearance and tabs per cell 1–3: 37 points (all 32 corners) pass, median 75 ms, max 198 ms. Corners repeat where one range ends at another's value (`w` from 10 mm to `2 * d` with `d` at 5 mm): they are checked twice rather than told apart.
 
+- **2026-10-23, a choice from a table was not varied.** A choice parameter whose labels come from a table (`choicesFrom`) counted as having no choices in the ranges the run reads (`param_cmds::ranges` took the length of the parameter's own `choices`, empty for it): it did not move, so `craft3d-cli check-range` on the pot knob reported 0 choice points and kept the shaft at its default in every corner and random point. The count is now `Document::choices_of` (the table's rows), like the form's. Test: `jig_sample.rs` (`a_choice_from_a_table_is_varied_like_a_list_of_choices`: corners at the first and last row, every other row a choice point, every row among the random points).
+
 ## Open
 
 - A section as geometry with its measures (area, outline, the widths across it), the least inside radius.

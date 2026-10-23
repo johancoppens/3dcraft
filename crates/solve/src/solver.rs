@@ -490,6 +490,91 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 /// stores the result and solves again later, gets the same answer.
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
+    let first = settle(sketch, options);
+    let worth_another = match &first {
+        Ok(solution) => conflicts(solution) > 0,
+        Err(SolveError::DidNotConverge { .. }) => true,
+        Err(_) => false,
+    };
+    if !worth_another {
+        return first;
+    }
+    let Some(placed) = held_in_place(sketch) else {
+        return first;
+    };
+    // Only a solution without conflicts replaces the first: solving it
+    // again finds nothing to retry, so it stays what it is.
+    match settle(&placed, options) {
+        Ok(second) if conflicts(&second) == 0 => Ok(second),
+        _ => first,
+    }
+}
+
+/// How many constraints a solution leaves conflicting.
+fn conflicts(solution: &Solution) -> usize {
+    solution
+        .constraints
+        .iter()
+        .filter(|c| c.status == ConstraintStatus::Conflicting)
+        .count()
+}
+
+/// The sketch with every coordinate that a constraint holds at a value
+/// (`x`, `y`, `Fixed` at a place: the first such constraint of each
+/// coordinate) already at that value in the starting guess, or none when
+/// that moves nothing.
+///
+/// A held point starts where it was solved before its values changed, and
+/// Newton's method linearises there. An equation that is not linear in it
+/// (an arc's ends equally far from its centre, a distance) then has the
+/// root nearest that old place, not the one the held values pick: the
+/// arc's equation, which comes first, settles the second coordinate of
+/// a held end on the old side of the circle and the coordinate's own
+/// constraint is blamed. A fresh build draws the point at its values and
+/// does not meet this; this start is that of a fresh build.
+fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
+    use crate::model::Constraint as C;
+    let mut entities = sketch.entities.clone();
+    let mut set = vec![[false; 2]; entities.len()];
+    let mut moved = false;
+    for constraint in &sketch.constraints {
+        let (point, values) = match *constraint {
+            C::CoordinateX { point, value } => (point, [Some(value), None]),
+            C::CoordinateY { point, value } => (point, [None, Some(value)]),
+            C::Fixed {
+                point,
+                at: Some([x, y]),
+            } => (point, [Some(x), Some(y)]),
+            _ => continue,
+        };
+        let index = point.index();
+        let (Some(Entity::Point { x, y }), Some(done)) =
+            (entities.get_mut(index), set.get_mut(index))
+        else {
+            continue;
+        };
+        for ((slot, value), done) in [x, y].into_iter().zip(values).zip(done.iter_mut()) {
+            let Some(value) = value else { continue };
+            if *done || !value.is_finite() {
+                continue;
+            }
+            *done = true;
+            if *slot != value {
+                *slot = value;
+                moved = true;
+            }
+        }
+    }
+    moved.then(|| Sketch {
+        entities,
+        constraints: sketch.constraints.clone(),
+        splines: sketch.splines.clone(),
+        image_starts: sketch.image_starts.clone(),
+    })
+}
+
+/// [`solve`] from the sketch's own starting guess.
+fn settle(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     // Image points that jumped since the starting guess was solved carry
     // the sketch along first, with half the work budget of its own; the
     // solve then starts from where the path ended, with the whole budget,

@@ -1232,7 +1232,7 @@ pub(crate) fn ranges(doc: &Document) -> Vec<Range> {
             Range {
                 name: e.name.to_string(),
                 kind: e.public.kind,
-                choices: e.public.choices.len(),
+                choices: doc.choices_of(e.public).len(),
                 default_source: e.public.default.source().to_string(),
                 default: e
                     .default

@@ -431,3 +431,45 @@ fn a_held_arc_end_off_its_circle_is_warned_about_not_snapped() {
     );
     assert_eq!(numbers["snapped"].as_array().unwrap().len(), 1, "{numbers}");
 }
+
+/// An arc between two held points follows a large change of the angle
+/// that holds them (a Jig, 2026-10-23): from 5 to 90 degrees the end used
+/// to stay on the old side of the circle and its `y` was blamed
+/// ("constraint c6 conflicts"), while a fresh build at 90 was fine.
+#[test]
+fn an_arc_between_held_points_follows_a_large_change_of_angle() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({ "units": "mm" }));
+    set(&mut s, "r", "10 mm");
+    set(&mut s, "a", "5");
+    run(&mut s, "sketch.create", json!({ "name": "S" }));
+    run(
+        &mut s,
+        "sketch.point",
+        json!({ "sketch": "S", "at": ["0 mm", "0 mm"] }),
+    );
+    run(
+        &mut s,
+        "sketch.arc",
+        json!({ "sketch": "S", "center": "e1",
+                "start": ["r * cos(a * 1 deg)", "r * sin(a * 1 deg)"],
+                "end": ["r * cos(3 * a * 1 deg)", "r * sin(3 * a * 1 deg)"] }),
+    );
+    for a in [90.0_f64, 12.0, 170.0, 20.0, 5.0] {
+        set(&mut s, "a", &a.to_string());
+        let inspected = run(&mut s, "sketch.inspect", json!({ "sketch": "S" }));
+        assert_eq!(inspected["status"], "ok", "a = {a}: {inspected}");
+        let (t, u) = (a.to_radians(), (3.0 * a).to_radians());
+        let what = format!("a = {a}");
+        assert_xy(
+            xy(&mut s, "S", "e2"),
+            (10.0 * t.cos(), 10.0 * t.sin()),
+            &what,
+        );
+        assert_xy(
+            xy(&mut s, "S", "e3"),
+            (10.0 * u.cos(), 10.0 * u.sin()),
+            &what,
+        );
+    }
+}
