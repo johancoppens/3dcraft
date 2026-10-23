@@ -24,7 +24,7 @@ A `.3dcraft` file is a ZIP of STORE (uncompressed) entries, or a directory with 
 manifest.json            the document, versioned
 blobs/<sha256>.step      the bytes of each imported STEP file, once per content (format 25)
 blobs/<blake3>.zst       (planned) content-addressed, compressed caches of regeneration results
-thumb.png                preview of a Jig, 400 x 300 (CPU renderer; format 32)
+thumb.png                preview of a Jig, 400 x 300 (CPU renderer, on the viewport's light background; format 32)
 ```
 
 **`manifest.json`** holds `format_version` and the whole `craft3d-doc` document as JSON: readable, diffable and writable by an agent in an emergency.

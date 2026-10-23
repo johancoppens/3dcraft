@@ -321,7 +321,7 @@ impl Tokens {
     /// for the selection, a light warm-grey viewport.
     pub fn mission() -> Self {
         Self {
-            viewport_background: [235, 233, 229],
+            viewport_background: craft3d_engine::VIEWPORT_BACKGROUND,
             body: [221, 217, 210],
             face_highlight: [217, 134, 44],
             section_cap: craft3d_engine::SECTION_CAP_COLOR,

@@ -12,12 +12,12 @@
 mod common;
 
 use common::plain::run;
-use craft3d_engine::{Access, Session, Workspace};
+use craft3d_engine::{Access, Session, VIEWPORT_BACKGROUND, Workspace};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// The renderer's default background.
-const BACKGROUND: [u8; 3] = [30, 33, 40];
+/// The background of a picture: the window's viewport.
+const BACKGROUND: [u8; 3] = VIEWPORT_BACKGROUND;
 
 fn workdir(name: &str) -> PathBuf {
     common::workdir("replay", name)

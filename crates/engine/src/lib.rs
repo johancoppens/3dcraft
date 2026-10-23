@@ -74,6 +74,7 @@ mod when_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
+pub use commands::{DARK_BACKGROUND, VIEWPORT_BACKGROUND};
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{

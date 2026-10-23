@@ -94,8 +94,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
-        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light"}"#,
+        "Renders the bodies with the CPU renderer, on the window's light viewport background (235, 233, 229; background: dark for the renderer's dark grey). Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
 ];
 
 /// The command id most like `id`, for "did you mean".
@@ -3542,7 +3542,16 @@ const VIEW_RENDER_PARAMS: &[&str] = &[
     "mode",
     "section",
     "tolerance",
+    "background",
 ];
+
+/// The background of `view.render` and of thumbnails by default: the
+/// window's viewport in its theme, Mission (a light warm grey), so a
+/// picture looks like what the window shows.
+pub const VIEWPORT_BACKGROUND: [u8; 3] = [235, 233, 229];
+/// The background of `view.render` with `background: "dark"`: the CPU
+/// renderer's own (`RenderParams::default`).
+pub const DARK_BACKGROUND: [u8; 3] = [30, 33, 40];
 
 fn view_render(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("view.render", params, VIEW_RENDER_PARAMS)?;
@@ -3629,6 +3638,16 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
         Some(_) => return fail("view.render: `tolerance` must be positive"),
         None => None,
     };
+    let background = match p.str("background")?.unwrap_or("light") {
+        "light" => VIEWPORT_BACKGROUND,
+        "dark" => DARK_BACKGROUND,
+        other => {
+            let other: String = other.chars().take(40).collect();
+            return fail(format!(
+                "view.render: unknown background `{other}`; use light or dark"
+            ));
+        }
+    };
     let aspect = width as f64 / height as f64;
     let pixel = |model: &craft3d_math::Bbox3| {
         let camera = framing.camera(model, aspect).ok()?;
@@ -3666,6 +3685,7 @@ fn render_picture(session: &mut Session, p: &Params) -> Result<(Value, Vec<u8>),
     let render_params = RenderParams {
         width: width as u32,
         height: height as u32,
+        background,
         section: section.map(|(plane, cap)| craft3d_render::Section {
             cap,
             ..plane.section(crate::section::SECTION_CAP_COLOR)

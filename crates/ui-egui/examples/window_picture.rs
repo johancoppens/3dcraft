@@ -313,13 +313,15 @@ fn main() -> Result<(), String> {
             && frame >= 1
         {
             events.push(egui::Event::PointerMoved(at));
-            if frame == 2 {
-                events.extend([true, false].map(|pressed| egui::Event::PointerButton {
+            // Pressed in one frame and released in the next, as a hand
+            // clicks.
+            if frame == 3 || frame == 4 {
+                events.push(egui::Event::PointerButton {
                     pos: at,
                     button: egui::PointerButton::Primary,
-                    pressed,
+                    pressed: frame == 3,
                     modifiers: egui::Modifiers::NONE,
-                }));
+                });
             }
         }
         let output = ctx.run_ui(input(time, events), |ui| {

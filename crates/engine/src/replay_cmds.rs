@@ -564,6 +564,7 @@ mod native {
         let render_params = RenderParams {
             width: width as u32,
             height: height as u32,
+            background: crate::commands::VIEWPORT_BACKGROUND,
             ..RenderParams::default()
         };
 

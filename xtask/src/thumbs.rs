@@ -30,7 +30,7 @@ pub const RENDER: &str =
 pub const PALETTE: usize = 128;
 /// What else the stamp covers: bump it when the way the pictures are
 /// made changes in a way the settings above do not show.
-const METHOD: &str = "thumbs v1: units mm, popularity palette on 5-bit buckets, nearest colour";
+const METHOD: &str = "thumbs v2: units mm, light viewport background, popularity palette on 5-bit buckets, nearest colour";
 /// Largest thumbnail file accepted, in bytes.
 pub const MAX_BYTES: u64 = 12 * 1024;
 

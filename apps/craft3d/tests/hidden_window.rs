@@ -143,6 +143,24 @@ fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
         let reply = call(&mut stream, &mut reader, request);
         assert!(reply.contains(r#""ok":true"#), "{request}: {reply}");
     }
+    // A picture of the window itself needs a frame, which never comes: it
+    // is answered with its error at its deadline (8 s), not left waiting
+    // for the control channel's 120 s (R1 B8).
+    let asked = Instant::now();
+    let reply = call(
+        &mut stream,
+        &mut reader,
+        r#"{"id":6,"method":"ui.screenshot","params":{"window":true}}"#,
+    );
+    assert!(
+        reply.contains(r#""ok":false"#) && reply.contains("drew no frame"),
+        "{reply}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(12),
+        "answered after {:?}",
+        asked.elapsed()
+    );
     let reply = call(&mut stream, &mut reader, r#"{"id":5,"method":"ui.quit"}"#);
     assert!(reply.contains(r#""quitting":true"#), "{reply}");
     let asked = Instant::now();
