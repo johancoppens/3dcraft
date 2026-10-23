@@ -200,7 +200,12 @@ fn perspective_is_not_to_scale_and_says_so() {
         "pf.dxf",
         json!({"view": "front", "projection": "perspective", "hidden": "dashed"}),
     );
-    assert_eq!(lines(&dxf, "visible").len(), 4, "{front}");
+    assert_eq!(
+        lines(&dxf, "visible").len(),
+        4,
+        "{front} {:?}",
+        lines(&dxf, "visible")
+    );
     assert_eq!(lines(&dxf, "hidden").len(), 8, "{front}");
 }
 
@@ -245,13 +250,125 @@ fn the_window_camera_is_the_current_view() {
         up: craft3d_math::Vec3::Z,
         projection: craft3d_render::Projection::Perspective { fov_y_deg: 30.0 },
     }));
-    let (current, dxf) = export(&mut s, &dir, "c.dxf", json!({}));
+    let (current, dxf) = export(&mut s, &dir, "c.dxf", json!({"view": "current"}));
     assert_eq!(current["view"], "current");
     assert_eq!(current["projection"], "orthographic");
+    assert_eq!(current["camera"]["towardEye"], json!([0.0, -1.0, 0.0]));
     assert_eq!(lines(&dxf, "visible").len(), 4);
+    // Without `view` (an agent, the command line): iso, whatever the
+    // window shows.
+    let (plain, _) = export(&mut s, &dir, "p.dxf", json!({}));
+    assert_eq!(plain["view"], "iso");
+    assert_eq!(plain["visible"], 9);
+    // In perspective from the window's eye.
+    let (seen, _) = export(
+        &mut s,
+        &dir,
+        "ps.dxf",
+        json!({"view": "current", "projection": "perspective"}),
+    );
+    assert_eq!(seen["camera"]["eye"], json!([5.0, -100.0, 5.0]));
+    // An eye inside the model is refused.
+    s.set_window_camera(Some(craft3d_render::Camera {
+        eye: craft3d_math::Vec3::new(5.0, 5.0, 5.0),
+        target: craft3d_math::Vec3::new(5.0, 20.0, 5.0),
+        up: craft3d_math::Vec3::Z,
+        projection: craft3d_render::Projection::Perspective { fov_y_deg: 30.0 },
+    }));
+    let error = s
+        .execute(
+            "file.export",
+            &json!({"path": "in.svg", "view": "current", "projection": "perspective"}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("inside the model or too near"), "{error}");
+    // Another document made active since (in a batch): not its camera.
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [1, 1, 1]}));
+    let (other, _) = export(&mut s, &dir, "o.dxf", json!({"view": "current"}));
+    assert_eq!(other["view"], "iso");
+    assert!(other["note"].is_string());
     s.set_window_camera(None);
     let (fallback, _) = export(&mut s, &dir, "d.dxf", json!({"view": "current"}));
     assert_eq!(fallback["view"], "iso");
+}
+
+/// The length of the pieces on `layer` of a DXF file.
+fn layer_length(dxf: &str, layer: &str) -> f64 {
+    lines(dxf, layer).iter().map(length).sum()
+}
+
+#[test]
+fn a_pin_in_its_hole_is_hidden_inside_and_seen_outside() {
+    // A plate with a hole and a pin of the hole's size through it: two
+    // bodies whose surfaces touch all round.
+    let dir = workdir("view-export", "pin");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, 10], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 20, "position": [20, 15, -5], "name": "Drill"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Hole"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 30, "position": [20, 15, -10], "name": "Pin"}),
+    );
+    let (result, dxf) = export(
+        &mut s,
+        &dir,
+        "pin.dxf",
+        json!({"view": "front", "hidden": "dashed"}),
+    );
+    let tolerance = result["tolerance"].as_f64().unwrap();
+    // The pin's two silhouettes: seen for 10 mm above and 10 mm below the
+    // plate, hidden for the 10 mm inside it.
+    let seen = layer_length(&dxf, "silhouette");
+    assert!((seen - 40.0).abs() < 4.0 * tolerance, "{seen} {result}");
+    let hidden = lines(&dxf, "hidden");
+    let vertical: f64 = hidden
+        .iter()
+        .filter(|l| (l[0] - l[2]).abs() < 1e-6)
+        .map(length)
+        .sum();
+    assert!(
+        (vertical - 20.0).abs() < 4.0 * tolerance,
+        "{vertical} {result}"
+    );
+    // No flicker: every hidden piece is longer than the tolerance.
+    for l in &hidden {
+        assert!(length(l) > tolerance, "{l:?}");
+    }
+}
+
+#[test]
+fn a_tolerance_finer_than_the_floor_is_the_floor() {
+    let (mut s, dir) = cylinder("floor");
+    for tolerance in [5e-324, 1e-12] {
+        let (result, _) = export(
+            &mut s,
+            &dir,
+            "fine.svg",
+            json!({"view": "iso", "tolerance": tolerance, "hidden": "dashed"}),
+        );
+        // The rod's box is 10 × 10 × 20: a diagonal of √600.
+        let floor = 600f64.sqrt() * 1e-5;
+        let got = result["tolerance"].as_f64().unwrap();
+        assert!((got - floor).abs() < 1e-12, "{result}");
+        assert_eq!(result["silhouette"], 2, "{result}");
+    }
 }
 
 #[test]

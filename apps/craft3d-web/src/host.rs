@@ -1025,7 +1025,7 @@ mod tests {
                     assert_eq!(downloads.len(), 1, "{format}");
                     let report = host.shell.last_command.as_ref().unwrap();
                     assert!(
-                        report.ok && report.text.contains("visible"),
+                        report.ok && report.text.contains("\"bodies\":1"),
                         "{}",
                         report.text
                     );

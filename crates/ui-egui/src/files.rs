@@ -165,8 +165,9 @@ pub fn export_selection(
         }
         ExportKind::Outline => {
             if items.is_empty() {
-                // The model as seen (`view_export.rs` in the engine).
-                return Ok(None);
+                // The model as seen from the viewport (`view_export.rs` in
+                // the engine; without `view` it would be the iso view).
+                return Ok(Some(("view", Value::String("current".to_string()))));
             }
             if faces == items.len() {
                 let list: Vec<Value> = items

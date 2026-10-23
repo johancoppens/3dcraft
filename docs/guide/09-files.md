@@ -85,8 +85,8 @@ left out or drawn dashed.
 ]
 ```
 
-- `view`: `current` (what the window shows; `iso` without a window), `iso`, `front`, `back`, `left`,
-  `right`, `top` or `bottom`.
+- `view`: `iso` (the default), `front`, `back`, `left`, `right`, `top`, `bottom`, or `current`: what
+  the window shows (the iso view when no window shows the document).
 - `projection`: `orthographic` (the default) is **to scale**, 1:1 in the document's unit, so you can
   measure it; `perspective` is for an illustration and is true size only at the depth the camera looks
   at.
