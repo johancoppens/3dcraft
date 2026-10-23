@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--recent FILE] model.3dcraft [more.3dcraft | untitled | none ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] model.3dcraft [more.3dcraft | untitled | none ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -30,7 +30,10 @@
 //! that number field and types TEXT into it, without Enter; `--click X,Y`
 //! clicks the window at that point (in points), and leaves the pointer
 //! there: `--click 20,10` opens the File menu. `--recent FILE` starts
-//! with the recent files kept in FILE (`{"recent": [path, ...]}`). Then,
+//! with the recent files kept in FILE (`{"recent": [path, ...]}`).
+//! `--dialog export:NAME` opens the export dialog for a file of that name
+//! (with what is selected, after `--set {"selectedFeature": …}`), `--dialog
+//! error:TEXT` the error dialog. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -43,7 +46,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--recent FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -58,6 +61,7 @@ fn main() -> Result<(), String> {
     let mut point: Option<String> = None;
     let mut typed: Option<(String, String)> = None;
     let mut click: Option<Pos2> = None;
+    let mut dialog: Option<String> = None;
     let mut recent = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -73,6 +77,12 @@ fn main() -> Result<(), String> {
             "--active" => active = Some(number("--active")?),
             "--edit" => edit = Some(number("--edit")?),
             "--ask" => ask = Some(number("--ask")?),
+            "--dialog" => {
+                dialog = Some(
+                    args.next()
+                        .ok_or(format!("--dialog takes export:NAME or error:TEXT; {USAGE}"))?,
+                );
+            }
             "--set" => {
                 let text = args.next().ok_or(format!("--set takes JSON; {USAGE}"))?;
                 set = Some(serde_json::from_str(&text).map_err(|e| format!("--set: {e}"))?);
@@ -240,6 +250,20 @@ fn main() -> Result<(), String> {
             && let Some(document) = ask
         {
             shell.request_close(document);
+        }
+        // The export dialog for a file of that name, as the selection
+        // makes it, or the error dialog with that text (`shell/dialogs.rs`).
+        if frame == 1
+            && let Some(what) = &dialog
+        {
+            match what.split_once(':') {
+                Some(("export", name)) => {
+                    let check = craft3d_ui_egui::files::export_check(&mut session, name);
+                    shell.ask_export(name.to_string(), check);
+                }
+                Some(("error", text)) => shell.show_error("file.save", text),
+                _ => return Err(format!("--dialog takes export:NAME or error:TEXT; {USAGE}")),
+            }
         }
         if frame == frames - 2 && !idle {
             shell.set_work(Some(Work {
