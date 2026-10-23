@@ -41,8 +41,10 @@ mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
 mod replay_cmds;
+mod report;
 mod scene;
 mod scrub;
+mod scene_box;
 mod section;
 mod select_cmds;
 mod selection;
@@ -76,6 +78,10 @@ pub use recovery::{
     Clock, DEFAULT_AUTOSAVE_INTERVAL, MAX_AUTOSAVE_INTERVAL, MIN_AUTOSAVE_INTERVAL, ManualClock,
     Recoverable, RecoveryNotify, RecoveryOptions, RecoveryOverview, default_recovery_directory,
     parse_autosave_interval,
+};
+pub use report::{
+    FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
+    set_build_commit,
 };
 pub use scene::{
     AUTOMATIC_RELATIVE_TOLERANCE, DATUM_AXIS_EXTENT, DATUM_PLANE_EXTENT, DEFAULT_SCENE_BUDGET,
@@ -143,8 +149,8 @@ pub struct CommandSpec {
 #[derive(Clone)]
 pub(crate) struct OpenDocument {
     /// Which open document this is, within the process: never reused, so
-    /// a recovery file is never taken for another document's.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// a recovery file is never taken for another document's, and a
+    /// window's view of a tab stays with its document.
     pub id: u64,
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.
@@ -288,6 +294,10 @@ pub struct Session {
     body_budget: Option<usize>,
     /// The files of a session without a file system (`memory_files.rs`).
     pub(crate) memory: memory_files::MemoryFiles,
+    /// The last command that failed, for the bug report (`report.rs`).
+    last_failure: Option<report::FailedCommand>,
+    /// What the frontend says about itself in the bug report.
+    host_details: Vec<(String, String)>,
 }
 
 /// Most documents open at once.
@@ -304,6 +314,8 @@ impl Session {
             trees_held_for: Vec::new(),
             body_budget: None,
             memory: memory_files::MemoryFiles::default(),
+            last_failure: None,
+            host_details: Vec::new(),
         }
     }
 
@@ -378,6 +390,7 @@ impl Session {
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,
                 scrub::SPECS,
+                report::SPECS,
             ]
             .concat()
         })
@@ -471,6 +484,17 @@ impl Session {
     /// document that was just saved or closed. After a caught panic the
     /// last good state of every document is autosaved at once.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
+        let outcome = self.execute_unrecorded(id, params);
+        // The report itself is not what a report is about.
+        if let Err(error) = &outcome
+            && id != "session.report"
+        {
+            self.record_failure(id, params, error.message());
+        }
+        outcome
+    }
+
+    fn execute_unrecorded(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
         let Some(spec) = Self::command(id) else {
             let hint = commands::closest(id)
                 .map(|c| format!("; did you mean `{c}`?"))

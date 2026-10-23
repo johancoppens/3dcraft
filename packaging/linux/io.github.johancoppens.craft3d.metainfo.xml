@@ -20,5 +20,13 @@
     <binary>craft3d-cli</binary>
     <mediatype>application/x-craft3d</mediatype>
   </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-23">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0</url>
+      <description>
+        <p>The first release for people outside the project: parametric modelling driven by an AI agent over MCP, booleans, fillets and chamfers, sketches with a constraint solver, STEP import and export, STL, 3MF, OBJ, DXF and SVG export, and a user guide.</p>
+      </description>
+    </release>
+  </releases>
   <content_rating type="oars-1.1"/>
 </component>

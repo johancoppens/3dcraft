@@ -539,6 +539,11 @@ impl Scene {
 pub struct DocumentStatus {
     /// Its index among the open documents.
     pub index: usize,
+    /// Which open document it is, within the process: never reused, and
+    /// kept while documents before it close and its index moves. A
+    /// window keys what it remembers per document (the view of a tab) by
+    /// it.
+    pub id: u64,
     /// How many documents are open.
     pub open: usize,
     /// The path it was opened from or last saved to.
@@ -2231,6 +2236,7 @@ impl Session {
         let doc = open.history.current();
         Some(DocumentStatus {
             index,
+            id: open.id,
             open: self.documents.len(),
             path: open.path.clone(),
             dirty: open.dirty(),

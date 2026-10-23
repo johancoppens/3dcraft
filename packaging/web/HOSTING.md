@@ -53,6 +53,10 @@ location /3dcraft/ {
 }
 ```
 
+Serve it over https (or from localhost while testing): browsers let a page use the clipboard only in a
+secure context, so elsewhere the status bar's *Copy details* cannot copy and the person copies the
+report from its window by hand. WebGPU needs a secure context too.
+
 Local test: `python3 -m http.server 8765 --bind 127.0.0.1` inside the folder, then open
 http://localhost:8765/.
 

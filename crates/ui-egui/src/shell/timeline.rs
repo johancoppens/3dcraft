@@ -17,8 +17,9 @@
 //! builds a step shows the latest step once that is done.
 
 use super::Shell;
+use super::views::FlyTo;
 use crate::theme::{Tokens, color};
-use craft3d_engine::{ScrubPosition, Session};
+use craft3d_engine::{Scene, ScrubPosition, Session};
 use egui::{Color32, Pos2, Sense, Shape, Stroke, vec2};
 use serde_json::{Value, json};
 
@@ -41,6 +42,9 @@ pub(crate) struct Timeline {
     rollback: Option<usize>,
     /// Why the last command of the timeline failed.
     problem: Option<String>,
+    /// A flight waits for what was asked to show its target: the scene's
+    /// revision when it was asked ([`Shell::prepare_fly`]).
+    revealing: Option<u64>,
 }
 
 impl Timeline {
@@ -66,6 +70,15 @@ impl Timeline {
 }
 
 impl Shell {
+    /// Another tab is shown: what was asked for the other document is
+    /// not run on this one. Where this one's view is in its history is the
+    /// session's (the scrub is per document), read by the next sync.
+    pub(crate) fn timeline_switched(&mut self) {
+        self.timeline.pending.clear();
+        self.timeline.revealing = None;
+        self.timeline.problem = None;
+    }
+
     /// Takes in where the active document's view is in its history.
     pub(crate) fn sync_timeline(&mut self, session: &mut Session) {
         self.timeline.position = session.scrub_position();
@@ -86,6 +99,86 @@ impl Shell {
                 row.status = AFTER_SCRUB.to_string();
             }
         }
+    }
+
+    /// What a flight to `to` needs before it can frame its target in
+    /// `scene` (decided 2026-10-23): a feature it aims at that is hidden is
+    /// shown again (`feature.visible`), and when the view is scrubbed to a
+    /// step before one of them, the scrub is let go of (`view.scrub` with
+    /// null): the view shows the document as it is, where the feature is
+    /// built. A flight to the selection looks at the features of every
+    /// item (a face of a hidden body shows the body).
+    fn reveal_requests(&self, scene: &Scene, to: &FlyTo) -> Vec<(&'static str, Value)> {
+        let wanted: Vec<&str> = match to {
+            FlyTo::Feature(feature) => vec![feature.as_str()],
+            FlyTo::Selection => self
+                .selection()
+                .items
+                .iter()
+                .map(|item| item.feature.as_str())
+                .collect(),
+        };
+        let step = self.timeline.position.as_ref().map(|p| p.step);
+        let mut hidden = Vec::new();
+        let mut after_scrub = false;
+        for (index, row) in scene.features.iter().enumerate() {
+            if !wanted.iter().any(|w| *w == row.id || *w == row.name) {
+                continue;
+            }
+            if row.hidden && !hidden.contains(&row.id) {
+                hidden.push(row.id.clone());
+            }
+            after_scrub |= step.is_some_and(|step| index >= step);
+        }
+        let mut requests = Vec::new();
+        if !hidden.is_empty() {
+            requests.push(("feature.visible", json!({"feature": hidden, "visible": true})));
+        }
+        if after_scrub {
+            requests.push(("view.scrub", json!({"feature": null})));
+        }
+        requests
+    }
+
+    /// Before a flight in the window: asks for what [`Self::reveal_requests`]
+    /// says, and true while the flight must wait for the scene that shows
+    /// it. Asked once: when the next scene still does not show it (the
+    /// command failed), the flight goes ahead and says what it cannot
+    /// frame.
+    pub(crate) fn prepare_fly(&mut self, scene: &Scene, to: &FlyTo) -> bool {
+        if self.timeline.revealing == Some(scene.revision) {
+            return true;
+        }
+        if self.timeline.revealing.take().is_some() {
+            return false;
+        }
+        let requests = self.reveal_requests(scene, to);
+        if requests.is_empty() {
+            return false;
+        }
+        for (id, params) in requests {
+            self.timeline.queue(id, params);
+        }
+        self.timeline.revealing = Some(scene.revision);
+        true
+    }
+
+    /// [`Self::prepare_fly`] with the session at hand (`ui.fit`): runs the
+    /// requests at once. True when it ran any, so the scene is to be
+    /// taken again.
+    pub(crate) fn reveal_now(
+        &mut self,
+        session: &mut Session,
+        scene: &Scene,
+        to: &FlyTo,
+    ) -> Result<bool, String> {
+        let requests = self.reveal_requests(scene, to);
+        for (id, params) in &requests {
+            session
+                .execute(id, params)
+                .map_err(|e| e.message().to_string())?;
+        }
+        Ok(!requests.is_empty())
     }
 
     /// The timeline as `ui.get` reports it: the steps, where the view is
@@ -342,6 +435,20 @@ mod tests {
         assert_eq!(shell.timeline_json()["rollback"], 1);
         assert_eq!(shell.timeline_json()["scrub"], json!(null));
         assert_eq!(shell.timeline_json()["shown"], 1);
+        // A double click on a hidden row after the scrub: the feature is
+        // shown and the timeline goes back to the end, then the flight.
+        shell.timeline.queue("history.rollback", json!({"feature": null}));
+        shell.timeline.queue("view.scrub", json!({"step": 1}));
+        frame(&ctx, &mut shell, &mut session);
+        frame(&ctx, &mut shell, &mut session);
+        assert_eq!(shell.timeline_json()["scrub"]["step"], 1);
+        shell.request_fly(super::FlyTo::Feature("Ball".to_string()));
+        for _ in 0..4 {
+            frame(&ctx, &mut shell, &mut session);
+        }
+        assert_eq!(shell.timeline_json()["scrub"], json!(null));
+        assert!(!shell.tree_rows()[1].hidden);
+        assert!(!shell.state.camera.auto_fit, "the flight was made");
         // A command that fails is said, not a crash.
         shell.timeline.queue("view.scrub", json!({"step": 99}));
         frame(&ctx, &mut shell, &mut session);

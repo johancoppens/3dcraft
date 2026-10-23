@@ -53,3 +53,7 @@ web-sys = { workspace = true, features = [
     "Url",
     "Window",
 ] }
+
+# The commit the program is built from, for the bug report (build.rs).
+[build-dependencies]
+craft3d-buildinfo.workspace = true

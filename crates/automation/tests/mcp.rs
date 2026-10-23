@@ -377,7 +377,8 @@ fn command_list_returns_the_registry_and_filters() {
             "file.list",
             "recovery.list",
             "recovery.open",
-            "recovery.discard"
+            "recovery.discard",
+            "session.report"
         ],
         "the fixture of this test"
     );

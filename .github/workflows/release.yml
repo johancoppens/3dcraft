@@ -12,7 +12,7 @@ name: Release
 #   gh workflow run Release && gh run watch
 # or by pushing a tag `v<version>` matching the workspace version, which
 # also makes a draft GitHub release with the packages for the developer to
-# publish. macOS minutes count tenfold in a private repository.
+# publish, its notes taken from CHANGELOG.md's section for that version. macOS minutes count tenfold in a private repository.
 on:
   workflow_dispatch:
   push:
@@ -53,6 +53,10 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+          if ! awk -v head="## [$version]" 'index($0, head) == 1 { found = 1 } END { exit !found }' CHANGELOG.md; then
+            echo "CHANGELOG.md has no section ## [$version] for the release notes" >&2
             exit 1
           fi
 
@@ -199,10 +203,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # The release notes are CHANGELOG.md's section for the tag: from its
+      # `## [<version>]` heading to the next heading of that level or the
+      # link definitions at the end (checked to exist before the build).
+      - name: release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v head="## [$version]" '
+            index($0, "## [") == 1 { if (found) exit; found = (index($0, head) == 1); next }
+            /^\[[^]]+\]: / { if (found) exit }
+            found { print }
+          ' src/CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no notes under ## [$version]" >&2
+            exit 1
+          fi
+          printf '\nThe installers are not signed yet; [the install guide](https://github.com/%s/blob/%s/docs/guide/01-install.md) says what your system shows and how to open them anyway.\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
+          cat notes.md
       - name: checksums
         run: |
           cd dist
@@ -218,4 +243,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "3DCraft ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+            --notes-file notes.md
