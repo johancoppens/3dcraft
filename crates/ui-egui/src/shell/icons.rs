@@ -36,6 +36,8 @@ pub enum Icon {
     Loop,
     /// Orbit: an ellipse about a vertical axis, with an arrow.
     Orbit,
+    /// Zoom to a feature (a row of the feature list): a target, ⌖.
+    ZoomTo,
 }
 
 /// Paints `icon` centred in `place` (its shorter side is the icon's).
@@ -198,6 +200,20 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                 line(points),
                 head(tip, -0.85 * end.sin(), 0.35 * end.cos()),
             ]
+        }
+        Icon::ZoomTo => {
+            // A target: a ring, a dot in it and four ticks through it.
+            let mut shapes = vec![
+                Shape::circle_stroke(c, half * 0.55, stroke),
+                Shape::circle_filled(c, stroke.width * 0.9, ink),
+            ];
+            for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                shapes.push(Shape::line_segment(
+                    [p(dx * 0.3, dy * 0.3), p(dx * 0.9, dy * 0.9)],
+                    stroke,
+                ));
+            }
+            shapes
         }
     };
     for shape in shapes {

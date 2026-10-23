@@ -322,3 +322,73 @@ fn the_zoom_tooltip_is_in_the_fonts() {
         assert_ne!(glyph(c), missing, "{c}");
     }
 }
+
+/// A hidden feature is offered only when showing it brings something to
+/// frame (2026-10-23 review): the union, whose body the fillet took, has
+/// none, hidden or not; the fillet, hidden, has its body.
+#[test]
+fn a_hidden_feature_is_zoomable_only_with_something_to_show() {
+    let mut session = part();
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    for id in ["F3", "F4"] {
+        run(
+            &mut session,
+            "feature.visible",
+            json!({"feature": id, "visible": false}),
+        );
+    }
+    window.idle(&mut shell, &mut session, 3);
+    let row = |shell: &Shell, id: &str| {
+        shell
+            .tree_rows()
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.hidden, r.zoomable))
+            .unwrap()
+    };
+    assert_eq!(row(&shell, "F3"), (true, false));
+    assert_eq!(row(&shell, "F4"), (true, true));
+}
+
+/// A small hole on a big part is framed as a hole: the context of a
+/// fifth of the part is capped at eight times the hole's own size.
+#[test]
+fn a_small_hole_on_a_big_part_is_framed_as_a_hole() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Deck", "size": [2000, 1500, 20]}),
+    );
+    run(
+        &mut session,
+        "feature.cylinder",
+        json!({"name": "Drill", "position": [1000, 750, -5], "radius": 1, "height": 30}),
+    );
+    run(
+        &mut session,
+        "feature.boolean",
+        json!({"name": "Hole", "op": "subtract", "target": "Deck", "tool": "Drill"}),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    window.idle(&mut shell, &mut session, 2);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.fit",
+        json!({"feature": "Drill"}),
+    );
+    let camera = shell.state.camera;
+    // The hole's wall: radius 1, 20 high, a diagonal of about 20.2.
+    let wall = (2.0_f64 * 2.0 + 2.0 * 2.0 + 20.0 * 20.0).sqrt();
+    let seen = 2.0 * camera.distance * (camera.fov_y.to_radians() / 2.0).tan();
+    assert!(seen > wall * 0.5, "{seen}");
+    assert!(
+        seen < 8.0 * wall * 1.5,
+        "{seen}: not a fifth of the deck ({})",
+        0.2 * 2500.0
+    );
+}

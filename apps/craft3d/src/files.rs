@@ -382,6 +382,16 @@ pub fn export_planned(
 pub const CONFIRMED: (&str, bool) = ("overwrite", true);
 
 impl Host {
+    /// A failure the person did not cause (the list of recent files could
+    /// not be written): in the status bar only, no dialog.
+    pub(crate) fn report_notice(&mut self, label: &str, error: &str) {
+        self.shell.last_command = Some(CommandReport {
+            label: label.to_string(),
+            ok: false,
+            text: error.chars().take(160).collect(),
+        });
+    }
+
     /// Shows what an action the person started did in the status bar, and
     /// a failure in the error dialog as well (every caller is the person's:
     /// an agent's requests are reported by the control channel).
@@ -494,7 +504,12 @@ impl Host {
         let name = path.to_string_lossy().to_string();
         let check = craft3d_ui_egui::files::export_check(&mut self.session, &name);
         if check.asks() {
-            self.shell.ask_export(name, check);
+            if !self.shell.ask_export(name, check) {
+                self.report_notice(
+                    "file.export",
+                    "an export is being asked already: answer that one first",
+                );
+            }
             return false;
         }
         if let Some(problem) = check.problem {

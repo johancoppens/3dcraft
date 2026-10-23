@@ -400,9 +400,8 @@ impl WebHost {
                         });
                         self.note("file.save", false, text);
                     }
-                    None => self.note(
+                    None => self.note_error(
                         "file.save",
-                        false,
                         format!(
                             "the browser did not show its file dialog ({why}), and another \
                              document is shown now: nothing was saved; save again"
@@ -416,17 +415,22 @@ impl WebHost {
 
     /// Shows `text` in the status bar under `label`, as a command's
     /// report.
+    /// A notice (a fallback that still works, such as a download in place
+    /// of the system's dialog) stays there; a failure of what the person
+    /// asked for is [`Self::note_error`].
     pub fn note(&mut self, label: &str, ok: bool, text: String) {
-        // Everything the page does is the person's: a failure is shown in
-        // the error dialog too.
-        if !ok {
-            self.shell.show_error(label, &text);
-        }
         self.shell.last_command = Some(CommandReport {
             label: label.to_string(),
             ok,
             text,
         });
+    }
+
+    /// A failure of what the person asked for: in the status bar and in
+    /// the error dialog.
+    pub fn note_error(&mut self, label: &str, text: String) {
+        self.shell.show_error(label, &text);
+        self.note(label, false, text);
     }
 
     fn report(&mut self, label: &str, outcome: &Result<Value, String>) {

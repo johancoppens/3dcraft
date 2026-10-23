@@ -55,7 +55,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = by quality, "quality": "coarse|normal|fine" = "normal", "angle": degrees = by quality, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
-        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: quality coarse, normal (the default) or fine sets how closely they follow the model, a chordal tolerance of 2, 1 or 0.25 thousandths of the side of a square with the bodies' area and an angle criterion of 20, 10 or 5 degrees (no chord turns an edge, no triangle side a surface's normal, by more, so small holes and thin bent tubes stay round); tolerance (in document units) and angle (degrees, 0 for none, up to 90) set either one instead, and a tolerance given without quality or angle has no angle criterion, as before 2026-10-23. The result says tolerance, angle and quality, and closed counts the meshes that are watertight. 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; a name that is not a body now (unknown, failed, suppressed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: quality coarse, normal (the default) or fine sets how closely they follow the model, a chordal tolerance of 2, 1 or 0.25 thousandths of the side of a square with the bodies' area and an angle criterion of 20, 10 or 5 degrees (no chord turns an edge, no triangle side a surface's normal, by more, so small holes and thin bent tubes stay round); tolerance (in document units) and angle (degrees, 0 for none, else 1 to 90) set either one instead, and a tolerance given without quality or angle has no angle criterion, as before 2026-10-23. The result says tolerance, angle and quality, and closed counts the meshes that are watertight. A mesh of more than 20000000 triangles, all bodies together, is refused (choose a coarser quality). 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; a name that is not a body now (unknown, failed, suppressed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -735,6 +735,15 @@ pub const EXPORT_QUALITIES: [(&str, f64, f64); 3] = [
 /// The largest angle criterion `file.export {angle}` takes, in degrees.
 pub const MAX_EXPORT_ANGLE: f64 = 90.0;
 
+/// The smallest angle criterion `file.export {angle}` takes (besides 0,
+/// none), in degrees.
+pub const MIN_EXPORT_ANGLE: f64 = 1.0;
+
+/// The most triangles a mesh export holds, all bodies together: past it
+/// `file.export` refuses, asking for a coarser mesh, rather than write a
+/// file no program can open.
+pub const EXPORT_MAX_TRIANGLES: usize = 20_000_000;
+
 /// The tessellation of a mesh export, from `quality`, `tolerance` and
 /// `angle` (see [`EXPORT_QUALITIES`]). Without `tolerance` the quality
 /// sets both (normal by default); with it, the chordal tolerance is that
@@ -766,9 +775,9 @@ fn export_tess(
         .or_else(|| EXPORT_QUALITIES.get(1).copied())
         .unwrap_or(("normal", 1.0, 10.0));
     let angle = match p.number("angle")? {
-        Some(a) if !(0.0..=MAX_EXPORT_ANGLE).contains(&a) => {
+        Some(a) if a != 0.0 && !(MIN_EXPORT_ANGLE..=MAX_EXPORT_ANGLE).contains(&a) => {
             return fail(format!(
-                "file.export: `angle` is in degrees, from 0 (none) to {MAX_EXPORT_ANGLE}"
+                "file.export: `angle` is in degrees: 0 for none, or from {MIN_EXPORT_ANGLE} to {MAX_EXPORT_ANGLE} (a finer angle makes meshes too large to use)"
             ));
         }
         Some(a) => Some(a),
@@ -790,6 +799,7 @@ fn export_tess(
         TessParams {
             chordal_tolerance,
             max_angle,
+            max_triangles: Some(EXPORT_MAX_TRIANGLES),
             ..TessParams::default()
         },
         name,
@@ -826,8 +836,17 @@ fn meshes(
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
-        let mesh = tessellate_body(body, tess)
-            .map_err(|e| CommandError::new(format!("{command}: {name}: {e}")))?;
+        // What is left of the export's triangle budget, for this body.
+        let used: usize = out.iter().map(|m: &BodyMesh| m.mesh.triangles.len()).sum();
+        let mut params = *tess;
+        params.max_triangles = tess.max_triangles.map(|cap| cap.saturating_sub(used));
+        let mesh = tessellate_body(body, &params).map_err(|e| match e {
+            craft3d_tess::TessError::OverBudget { .. } => CommandError::new(format!(
+                "{command}: the mesh would have more than {} triangles; choose a coarser quality, a larger tolerance or a larger angle",
+                tess.max_triangles.unwrap_or(0)
+            )),
+            e => CommandError::new(format!("{command}: {name}: {e}")),
+        })?;
         out.push(BodyMesh {
             name,
             mesh,
@@ -3623,5 +3642,49 @@ mod loose_mesh_tests {
             let problem = loose_mesh_problem(&bare, tol.linear).unwrap().unwrap();
             assert!(problem.contains("points off their faces"), "{problem}");
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod export_budget_tests {
+    use super::{TessParams, meshes};
+    use crate::{Session, Workspace};
+    use serde_json::json;
+
+    /// The export's triangle budget holds for all bodies together, and a
+    /// mesh over it is refused saying what to do.
+    #[test]
+    fn a_mesh_export_over_its_triangle_budget_is_refused() {
+        let mut session = Session::new(Workspace::none());
+        session.execute("file.new", &json!({})).unwrap();
+        for k in 0..3 {
+            session
+                .execute(
+                    "feature.block",
+                    &json!({"size": [1, 1, 1], "position": [k * 3, 0, 0]}),
+                )
+                .unwrap();
+        }
+        let open = session.document_mut().unwrap();
+        let tess = |cap| TessParams {
+            chordal_tolerance: 0.01,
+            max_triangles: Some(cap),
+            ..TessParams::default()
+        };
+        // Three cubes of 12 triangles: 36 fit, 35 do not.
+        let made = meshes(open, "file.export", &tess(36), None).unwrap();
+        assert_eq!(
+            made.iter().map(|m| m.mesh.triangles.len()).sum::<usize>(),
+            36
+        );
+        let Err(error) = meshes(open, "file.export", &tess(35), None) else {
+            panic!("over the budget");
+        };
+        assert!(
+            error.message().contains("more than 35 triangles")
+                && error.message().contains("coarser quality"),
+            "{error}"
+        );
     }
 }

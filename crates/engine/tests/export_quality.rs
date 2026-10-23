@@ -123,6 +123,7 @@ fn bad_qualities_and_angles_are_refused() {
         (json!({"path": "a.stl", "quality": "ultra"}), "ultra"),
         (json!({"path": "a.stl", "quality": 3}), "quality"),
         (json!({"path": "a.stl", "angle": -1}), "angle"),
+        (json!({"path": "a.stl", "angle": 0.5}), "0 for none"),
         (json!({"path": "a.stl", "angle": 91}), "angle"),
         (json!({"path": "a.stl", "angle": "ten"}), "angle"),
         (json!({"path": "a.stl", "tolerance": 0}), "positive"),

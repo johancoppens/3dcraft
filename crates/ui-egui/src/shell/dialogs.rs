@@ -3,16 +3,24 @@
 //!
 //! - **An error dialog** when an action the person started from a menu, a
 //!   tab or a dialog fails (Open, Save, Save As, Import, Export, New, an
-//!   example): what went wrong in plain words, OK, and "Copy details",
-//!   the bug report the status bar offers too (`report.rs`). Failures of
+//!   example): what went wrong in plain words, OK, and "Copy details", the
+//!   bug report as it was when the error came (`report.rs`). Failures of
 //!   an agent's commands stay in the status bar: an agent reads them from
-//!   its reply, and a dialog would stop the person for nothing.
+//!   its reply, and a dialog would stop the person for nothing. Notices
+//!   that something still worked another way (a download in place of the
+//!   system's dialog) stay there too.
 //! - **The export dialog** after the file was chosen, when there is
 //!   something to choose: the quality of a mesh (STL, 3MF, OBJ), and for
 //!   a selection the format cannot hold (faces selected, a STEP file
 //!   chosen) the warning and the way out (every body instead), before
 //!   anything is written. The host asks it ([`Shell::ask_export`]) and
-//!   takes the answer ([`Shell::take_export_answer`]).
+//!   takes the answer ([`Shell::take_export_answer`]); it belongs to the
+//!   document shown when it was asked, and is refused when another one is
+//!   shown by the time it is answered.
+//!
+//! Both are modal: nothing under them takes a click, and they are drawn
+//! first in a frame, so that Enter and Escape answer them and nothing else
+//! (they take those keys out of the frame's input).
 
 use super::Shell;
 use crate::files::{ExportCheck, ExportPlan, ExportQuality, export_options_ui, plain_message};
@@ -24,6 +32,11 @@ pub struct ErrorDialog {
     pub title: String,
     /// Why, for a person.
     pub message: String,
+    /// The bug report as it was when the error came: what "Copy details"
+    /// copies, whatever happens in the window meanwhile.
+    pub report: String,
+    /// "Copy details" was clicked.
+    pub copied: bool,
 }
 
 /// The export dialog while it is open.
@@ -33,6 +46,8 @@ pub struct ExportAsk {
     pub path: String,
     pub check: ExportCheck,
     pub plan: ExportPlan,
+    /// The document shown when it was asked (`DocumentStatus::id`).
+    pub document: Option<u64>,
 }
 
 /// What the dialogs keep.
@@ -67,22 +82,36 @@ pub fn error_title(label: &str) -> String {
         "file.close" => "Could not close the document",
         "file.activate" => "Could not show the document",
         "example" => "Could not build the example",
+        "download" => "Could not download",
         _ => "Something went wrong",
     }
     .to_string()
 }
 
+/// The longest line the status bar keeps of a failure, in characters (as
+/// the hosts cut it).
+const STATUS_CHARS: usize = 160;
+
 impl Shell {
     /// Shows the error dialog for an action the person started that
-    /// failed, labelled as the status bar labels it (`file.save`). A
-    /// cancelled dialog is no error and shows nothing.
+    /// failed, labelled as the status bar labels it (`file.save`), and
+    /// puts the failure in the status bar. A cancelled dialog is no error
+    /// and shows nothing.
     pub fn show_error(&mut self, label: &str, error: &str) {
         if error == "cancelled" {
             return;
         }
+        self.last_command = Some(crate::CommandReport {
+            label: label.to_string(),
+            ok: false,
+            text: error.chars().take(STATUS_CHARS).collect(),
+        });
+        let report = self.error_report();
         self.dialogs.error = Some(ErrorDialog {
             title: error_title(label),
             message: plain_message(error),
+            report,
+            copied: false,
         });
     }
 
@@ -97,8 +126,13 @@ impl Shell {
     }
 
     /// Opens the export dialog for an export to `path` that `check`
-    /// describes, with the quality chosen last.
-    pub fn ask_export(&mut self, path: String, check: ExportCheck) {
+    /// describes, with the quality chosen last, for the document shown
+    /// now. False, and nothing changes, while an export dialog is open
+    /// already: a second Export… does not replace the first's question.
+    pub fn ask_export(&mut self, path: String, check: ExportCheck) -> bool {
+        if self.dialogs.export.is_some() {
+            return false;
+        }
         self.dialogs.export = Some(ExportAsk {
             path,
             check,
@@ -106,7 +140,9 @@ impl Shell {
                 quality: self.dialogs.quality,
                 all_bodies: false,
             },
+            document: self.viewing(),
         });
+        true
     }
 
     /// The export dialog, while it is open.
@@ -115,20 +151,29 @@ impl Shell {
     }
 
     /// Answers the export dialog as its buttons do: `Some(plan)` exports
-    /// (Export, or Export all bodies), `None` cancels.
+    /// (Export, or Export all bodies), `None` cancels. When another
+    /// document is shown than the one it was asked for, nothing is
+    /// exported and the error dialog says so.
     pub fn answer_export(&mut self, plan: Option<ExportPlan>) {
         let Some(ask) = self.dialogs.export.take() else {
             return;
         };
-        if let Some(plan) = plan {
-            self.dialogs.quality = plan.quality;
-            self.dialogs.answer = Some((ask.path, plan));
-        } else {
-            self.last_command = Some(crate::CommandReport {
-                label: "file.export".to_string(),
-                ok: false,
-                text: "cancelled".to_string(),
-            });
+        match plan {
+            Some(_) if ask.document != self.viewing() => self.show_error(
+                "file.export",
+                "another document is shown now than the one the export was asked for: nothing was exported; export again",
+            ),
+            Some(plan) => {
+                self.dialogs.quality = plan.quality;
+                self.dialogs.answer = Some((ask.path, plan));
+            }
+            None => {
+                self.last_command = Some(crate::CommandReport {
+                    label: "file.export".to_string(),
+                    ok: false,
+                    text: "cancelled".to_string(),
+                });
+            }
         }
     }
 
@@ -149,44 +194,48 @@ impl Shell {
         self.dialogs.quality = quality;
     }
 
-    /// Draws the open dialogs.
+    /// Draws the open dialog, the error first (one at a time): call it
+    /// before anything else in the frame reads Enter or Escape.
     pub(super) fn dialogs_ui(&mut self, ctx: &egui::Context) {
-        self.export_dialog_ui(ctx);
-        self.error_dialog_ui(ctx);
+        if self.dialogs.error.is_some() {
+            self.error_dialog_ui(ctx);
+        } else {
+            self.export_dialog_ui(ctx);
+        }
     }
 
     fn error_dialog_ui(&mut self, ctx: &egui::Context) {
-        let Some(error) = self.dialogs.error.clone() else {
+        let Some(mut error) = self.dialogs.error.take() else {
             return;
         };
+        let tokens = self.tokens;
         let mut ok = false;
-        let mut copy = false;
-        egui::Window::new(error.title.as_str())
-            .id(egui::Id::new("craft3d-error-dialog"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(420.0);
-                ui.add(egui::Label::new(error.message.as_str()).wrap());
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ok = ui.button("OK").clicked();
-                    copy = ui
-                        .small_button(super::report::COPY_DETAILS)
-                        .on_hover_text(super::report::COPY_TOOLTIP)
-                        .clicked();
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape))
+        let modal = egui::Modal::new(egui::Id::new("craft3d-error-dialog")).show(ctx, |ui| {
+            ui.set_max_width(tokens.dialog_width);
+            ui.heading(error.title.as_str());
+            ui.add_space(tokens.inset * 0.4);
+            ui.add(egui::Label::new(error.message.as_str()).wrap());
+            ui.add_space(tokens.inset * 0.8);
+            ui.horizontal(|ui| {
+                ok = ui.button("OK").clicked();
+                let label = if error.copied {
+                    super::report::COPIED
+                } else {
+                    super::report::COPY_DETAILS
+                };
+                if ui
+                    .small_button(label)
+                    .on_hover_text(super::report::COPY_TOOLTIP)
+                    .clicked()
                 {
-                    ok = true;
+                    ctx.copy_text(error.report.clone());
+                    error.copied = true;
                 }
             });
-        if copy {
-            self.copy_error_report(ctx);
-        }
-        if ok {
-            self.dialogs.error = None;
+            ok |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        });
+        if !(ok || modal.should_close()) {
+            self.dialogs.error = Some(error);
         }
     }
 
@@ -194,35 +243,37 @@ impl Shell {
         let Some(mut ask) = self.dialogs.export.take() else {
             return;
         };
+        let tokens = self.tokens;
         let mut answer: Option<Option<ExportPlan>> = None;
         let name = std::path::Path::new(&ask.path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(ask.path.as_str())
             .to_string();
-        egui::Window::new("Export")
-            .id(egui::Id::new("craft3d-export-dialog"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(440.0);
-                ui.label(format!("Export to {name}"));
-                export_options_ui(ui, &ask.check, &mut ask.plan);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button(export_verb(&ask.check)).clicked() {
-                        ask.plan.all_bodies = ask.check.offers_all_bodies();
-                        answer = Some(Some(ask.plan));
-                    }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(None);
-                    }
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let modal = egui::Modal::new(egui::Id::new("craft3d-export-dialog")).show(ctx, |ui| {
+            ui.set_max_width(tokens.dialog_width);
+            ui.heading("Export");
+            ui.add_space(tokens.inset * 0.4);
+            ui.label(format!("Export to {name}"));
+            export_options_ui(ui, &ask.check, &mut ask.plan);
+            ui.add_space(tokens.inset * 0.6);
+            ui.horizontal(|ui| {
+                if ui.button(export_verb(&ask.check)).clicked() {
+                    ask.plan.all_bodies = ask.check.offers_all_bodies();
+                    answer = Some(Some(ask.plan));
+                }
+                if ui.button("Cancel").clicked() {
                     answer = Some(None);
                 }
             });
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+                ask.plan.all_bodies = ask.check.offers_all_bodies();
+                answer = Some(Some(ask.plan));
+            }
+        });
+        if answer.is_none() && modal.should_close() {
+            answer = Some(None);
+        }
         self.dialogs.export = Some(ask);
         if let Some(answer) = answer {
             self.answer_export(answer);

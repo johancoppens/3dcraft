@@ -68,6 +68,7 @@ fn the_export_dialog_remembers_the_quality_and_escape_cancels() {
         problem: None,
     };
     assert_eq!(shell.export_quality(), ExportQuality::Normal);
+    frame(&ctx, &mut shell, &mut session, Vec::new());
     shell.ask_export("part.stl".to_string(), check.clone());
     frame(&ctx, &mut shell, &mut session, Vec::new());
     let mut plan = shell.export_dialog().unwrap().plan;
@@ -93,4 +94,48 @@ fn the_export_dialog_remembers_the_quality_and_escape_cancels() {
         (report.label.as_str(), report.ok, report.text.as_str()),
         ("file.export", false, "cancelled")
     );
+}
+
+#[test]
+fn one_export_question_at_a_time_and_only_for_the_document_it_was_asked_for() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    session.execute("file.new", &json!({})).unwrap();
+    let mut shell = Shell::new();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    let check = ExportCheck {
+        kind: Some(ExportKind::Bodies),
+        mesh: true,
+        problem: None,
+    };
+    assert!(shell.ask_export("one.stl".to_string(), check.clone()));
+    // A second Export… while it is open does not replace it.
+    assert!(!shell.ask_export("two.stl".to_string(), check.clone()));
+    assert_eq!(shell.export_dialog().unwrap().path, "one.stl");
+    // Another document shown meanwhile: refused, said in the error
+    // dialog, nothing to export.
+    session.execute("file.new", &json!({})).unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    let plan = shell.export_dialog().unwrap().plan;
+    shell.answer_export(Some(plan));
+    assert_eq!(shell.take_export_answer(), None);
+    let error = shell.error_dialog().unwrap().clone();
+    assert_eq!(error.title, "Could not export");
+    assert!(error.message.starts_with("Another document"), "{error:?}");
+    // The report is the one of that moment: a later line in the status
+    // bar does not change what Copy details copies.
+    assert!(
+        error.report.contains("another document"),
+        "{}",
+        error.report
+    );
+    shell.last_command = Some(craft3d_ui_egui::CommandReport {
+        label: "feature.block".to_string(),
+        ok: false,
+        text: "something else".to_string(),
+    });
+    assert_eq!(shell.error_dialog().unwrap().report, error.report);
+    // Enter answers the dialog, and only the dialog.
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
+    assert!(shell.error_dialog().is_none());
 }

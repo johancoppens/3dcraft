@@ -54,12 +54,14 @@ is refused with the list of bodies there are. In the window, Export… with bodi
 `quality` is `coarse`, `normal` (the default) or `fine`: how closely the triangles follow the model.
 Each sets a distance chosen from the model's size (2, 1 or ¼ thousandth of it) and an angle (20°, 10°
 or 5°): no triangle's side turns the surface by more, so small holes and thin bent tubes stay round on a
-big part. `tolerance` (in the document's unit) and `angle` (degrees; 0 for none) set either one
+big part. `tolerance` (in the document's unit) and `angle` (degrees; 0 for none, else 1 to 90) set either one
 yourself; a `tolerance` alone, with no `quality` or `angle`, makes the mesh it always made (no angle).
 The result says `tolerance`, `angle`, `quality` and how many meshes are `closed` (watertight). 3MF
 carries the unit, the bodies' names and colours; STL carries triangles only (`"format": "stl-ascii"` for
-text). In the window, Export… to a mesh asks for the quality (Coarse, Normal, Fine; the last one you
-chose is offered) before it writes.
+text). A mesh of more than 20 million triangles, all bodies together, is refused: choose a coarser
+quality. In the window, Export… to a mesh asks for the quality (Coarse, Normal, Fine; the last one you
+chose is offered) before it writes; `craft3d-cli convert part.3dcraft part.stl --quality fine` (or
+`--angle`, `--tolerance`) does the same from a shell.
 
 When the selection does not fit the format you chose (a face selected and a STEP or STL file chosen),
 the window says so before anything is written and offers **Export all bodies**; for DXF or SVG with no

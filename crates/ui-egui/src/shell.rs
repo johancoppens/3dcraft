@@ -1689,6 +1689,9 @@ impl Shell {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
+        // The dialogs first: they take Enter and Escape before anything
+        // else in the frame reads them (`dialogs.rs`).
+        self.dialogs_ui(ui.ctx());
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
@@ -1803,7 +1806,6 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.closing_dialog(ui);
-        self.dialogs_ui(ui.ctx());
         self.help_windows(ui);
     }
 

@@ -357,7 +357,17 @@ impl Shell {
         };
         let key = (scene.revision, scene.sampling());
         if self.shown_features.as_ref().map(|(k, _)| *k) != Some(key) {
-            self.shown_features = Some((key, scene.shown_features()));
+            // What the scene shows, and what showing a hidden feature
+            // would bring into view (`SceneFeature::draws`).
+            let mut shown = scene.shown_features();
+            shown.extend(
+                scene
+                    .features
+                    .iter()
+                    .filter(|f| f.hidden && f.draws)
+                    .map(|f| f.id.clone()),
+            );
+            self.shown_features = Some((key, shown));
         }
         if let Some((_, shown)) = &self.shown_features {
             for row in &mut self.rows {
@@ -376,16 +386,17 @@ pub const ZOOM_TOOLTIP: &str = "Double-click or ⌖: zoom to this feature";
 
 /// Whether the feature of `row` can be flown to: one place decides both
 /// the row's zoom icon and what a double click on it does. A feature that
-/// failed or is suppressed cannot, nor one the scene (`shown`: the
-/// features it shows something of) shows nothing of; one hidden with its
-/// eye, or after the step the timeline shows, can (the flight shows it
-/// first, `shell/timeline.rs`).
+/// failed or is suppressed cannot, nor one with nothing to frame (`shown`:
+/// the features the scene shows something of, and the hidden ones that
+/// would show something once shown); one hidden with its eye that has a
+/// body, sketch or datum of its own, or one after the step the timeline
+/// shows, can (the flight shows it first, `shell/timeline.rs`).
 pub fn zoomable(row: &super::TreeRow, shown: &BTreeSet<String>) -> bool {
     use craft3d_engine::FeatureState as S;
     match row.state {
         S::Failed | S::Suppressed => false,
         S::RolledBack => row.error.is_none() && row.status == super::timeline::AFTER_SCRUB,
-        S::Ok => row.hidden || shown.contains(&row.id),
+        S::Ok => shown.contains(&row.id),
     }
 }
 
@@ -410,29 +421,14 @@ pub(crate) fn zoom_icon(
     } else {
         crate::theme::color(tokens.text_dim)
     };
-    paint_target(ui.painter(), rect, ink, tokens);
+    super::icons::paint(
+        ui.painter(),
+        super::icons::Icon::ZoomTo,
+        rect.shrink(rect.width() * 0.08),
+        ink,
+        tokens,
+    );
     Some(response.on_hover_text(ZOOM_TOOLTIP))
-}
-
-/// A target in `rect`: a ring, a dot in it and four ticks through it.
-fn paint_target(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    ink: egui::Color32,
-    tokens: &crate::theme::Tokens,
-) {
-    let half = rect.width().min(rect.height()) * 0.42;
-    if !(half.is_finite() && half > 0.0) {
-        return;
-    }
-    let c = rect.center();
-    let stroke = egui::Stroke::new(tokens.nav_icon_width.max(1.0), ink);
-    painter.circle_stroke(c, half * 0.62, stroke);
-    painter.circle_filled(c, stroke.width * 0.9, ink);
-    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-        let d = egui::vec2(dx, dy);
-        painter.line_segment([c + d * half * 0.35, c + d * half], stroke);
-    }
 }
 
 /// What a flight frames.
@@ -483,14 +479,19 @@ pub const BELOW_WEIGHT: f64 = 0.8;
 /// at least: a small feature is shown with some of its body around it.
 pub const MIN_FLY_CONTEXT: f64 = 0.2;
 
+/// The most a flight's context grows the target: its diagonal times this
+/// at most, so a small hole on a big part is still seen as a hole.
+pub const MAX_FLY_CONTEXT_TIMES: f64 = 8.0;
+
 /// `bbox` grown about its centre until its diagonal is at least
-/// [`MIN_FLY_CONTEXT`] of `body`'s (the sides it lacks, alike).
+/// [`MIN_FLY_CONTEXT`] of `body`'s, but no more than
+/// [`MAX_FLY_CONTEXT_TIMES`] its own (the sides it lacks, alike).
 fn with_context(bbox: &Bbox3, body: &Bbox3) -> Bbox3 {
     let (Some(center), Some((lo, hi))) = (bbox.center(), bbox.corners()) else {
         return *bbox;
     };
-    let wanted = MIN_FLY_CONTEXT * body.diagonal();
     let have = bbox.diagonal();
+    let wanted = (MIN_FLY_CONTEXT * body.diagonal()).min(MAX_FLY_CONTEXT_TIMES * have);
     if !(wanted.is_finite() && wanted > have) {
         return *bbox;
     }
@@ -509,12 +510,19 @@ fn with_context(bbox: &Bbox3, body: &Bbox3) -> Bbox3 {
 pub const MIN_FLY_EXTENT: f64 = 0.02;
 
 /// `bbox` grown about its centre to at least [`MIN_FLY_EXTENT`] of the
-/// model's diagonal along every axis.
+/// model's diagonal along every axis, and no more than
+/// [`MAX_FLY_CONTEXT_TIMES`] its own diagonal when it has one (a point, a
+/// vertex, gets the extent).
 fn at_least(bbox: &Bbox3, scene: &Scene) -> Bbox3 {
     let (Some(center), Some((lo, hi))) = (bbox.center(), bbox.corners()) else {
         return *bbox;
     };
-    let side = MIN_FLY_EXTENT * scene.bbox.diagonal();
+    let model = scene.bbox.diagonal();
+    let own = bbox.diagonal();
+    let mut side = MIN_FLY_EXTENT * model;
+    if own > model * 1e-9 {
+        side = side.min(MAX_FLY_CONTEXT_TIMES * own);
+    }
     if !(side.is_finite() && side > 0.0) {
         return *bbox;
     }

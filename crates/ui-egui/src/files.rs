@@ -276,16 +276,11 @@ impl ExportCheck {
 /// (`file.export: a .step file …` → `A .step file …`), for a person.
 pub fn plain_message(text: &str) -> String {
     let mut rest = text.trim();
-    // `file.export: file.export: …` and the like, a few deep.
+    // `file.export: file.export: …`: a command's id from the registry,
+    // a few deep; any other text before a colon is the message's own.
     for _ in 0..4 {
         match rest.split_once(": ") {
-            Some((head, tail))
-                if !head.is_empty()
-                    && head.len() <= 24
-                    && head
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_') =>
-            {
+            Some((head, tail)) if head.contains('.') && Session::command(head).is_some() => {
                 rest = tail.trim_start();
             }
             _ => break,
@@ -364,6 +359,12 @@ mod tests {
             "No such file: x"
         );
         assert_eq!(plain_message("Disk full"), "Disk full");
+        // Only a command's id is taken off, not any word before a colon.
+        assert_eq!(plain_message("download: blocked"), "Download: blocked");
+        assert_eq!(
+            plain_message("part.step: not found"),
+            "Part.step: not found"
+        );
         assert_eq!(plain_message(""), "");
         assert_eq!(
             plain_message("the path C:\\a: is odd"),

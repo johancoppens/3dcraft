@@ -42,7 +42,8 @@ give your client (chapter 1), with this window's own port and token file when it
   hidden feature's row shows it again and flies to it. Under the pointer a row shows a **⌖** beside the
   eye: a click flies to the feature, as a double click does. A feature that failed, is suppressed or
   shows nothing has no ⌖, and a double click on it does nothing. A selected feature lights the faces it
-  made (a fillet's round), not its whole part.
+  made (a fillet's round), not its whole part; a pattern or a mirror lights the instances it made, and
+  its seed only its own faces.
 - **The timeline** at the foot of the feature tree: drag it to see the model as it was after any step of
   the history; the features after that step are greyed. Looking back changes nothing in the document.
   Under it is a **player**, like a video player's: first step, a step back, play or pause, a step

@@ -506,6 +506,27 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
         exported["triangles"].as_u64().unwrap() > triangles,
         "{exported}"
     );
+    // The quality and the angle (2026-10-23): fine has more triangles
+    // than coarse; the angle is what was given.
+    let count = |quality: &str| {
+        let out = path(&dir, &format!("{quality}.stl"));
+        let exported = cli(&["convert", &part, &out, "--quality", quality])
+            .ok()
+            .json_lines()
+            .remove(0);
+        assert_eq!(exported["quality"], quality, "{exported}");
+        exported["triangles"].as_u64().unwrap()
+    };
+    assert!(count("coarse") < count("fine"));
+    let angled = path(&dir, "angled.stl");
+    let exported = cli(&["convert", &part, &angled, "--angle", "30"])
+        .ok()
+        .json_lines()
+        .remove(0);
+    assert_eq!(exported["angle"], 30.0);
+    cli(&["convert", &part, &angled, "--angle", "0.5"]).failed(1);
+    cli(&["convert", &part, &angled, "--angle", "steep"]).failed(2);
+    cli(&["convert", &part, &path(&dir, "q.step"), "--quality", "fine"]).failed(2);
 
     // convert to STEP: the exact geometry, as text.
     let step = path(&dir, "part.step");

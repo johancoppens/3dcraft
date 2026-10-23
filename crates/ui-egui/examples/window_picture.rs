@@ -259,7 +259,7 @@ fn main() -> Result<(), String> {
             match what.split_once(':') {
                 Some(("export", name)) => {
                     let check = craft3d_ui_egui::files::export_check(&mut session, name);
-                    shell.ask_export(name.to_string(), check);
+                    let _ = shell.ask_export(name.to_string(), check);
                 }
                 Some(("error", text)) => shell.show_error("file.save", text),
                 _ => return Err(format!("--dialog takes export:NAME or error:TEXT; {USAGE}")),

@@ -153,10 +153,18 @@ fn drawn(scene: &Scene, items: &[SelectionItem]) -> (Vec<u32>, Marks) {
         if item.kind == SelectionKind::Feature {
             let made = scene.feature_face_ids(&item.feature);
             if !made.is_empty() {
-                for &id in &made {
-                    faces.insert(id);
-                    if let Some((body, index)) = scene.face_of(id) {
-                        outline(body, &|face| face == index, &mut marks);
+                faces.extend(made.iter().copied());
+                // One outline per body, of the faces made in it: each
+                // edge once, however many of its faces were made.
+                for (index, body) in scene.bodies.iter().enumerate() {
+                    let ids = range(index);
+                    let mine: BTreeSet<usize> = made
+                        .iter()
+                        .filter(|id| ids.contains(id))
+                        .filter_map(|id| usize::try_from(id - ids.start).ok())
+                        .collect();
+                    if !mine.is_empty() {
+                        outline(body, &|face| mine.contains(&face), &mut marks);
                     }
                 }
                 continue;
