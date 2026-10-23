@@ -3692,6 +3692,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "craft3d-doc",
+ "flate2",
  "serde_json",
 ]
 

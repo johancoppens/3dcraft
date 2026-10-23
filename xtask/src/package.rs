@@ -108,13 +108,13 @@ fn known_formats() -> &'static [&'static str] {
     }
 }
 
-fn repo_root() -> PathBuf {
+pub(crate) fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-fn target_dir(repo: &Path) -> PathBuf {
+pub(crate) fn target_dir(repo: &Path) -> PathBuf {
     match std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
         Some(dir) if dir.is_absolute() => dir,
         Some(dir) => std::env::current_dir().unwrap_or_default().join(dir),

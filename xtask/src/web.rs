@@ -106,18 +106,21 @@ pub fn fill(template: &str, js: &str, wasm: &str, version: &str) -> String {
         .replace("@BACKGROUND@", BACKGROUND)
 }
 
-/// Makes `out/3dcraft-web-<version>.zip` and puts its line into
-/// `out/SHA256SUMS.txt`. `target` is cargo's target directory, `stage` a
-/// directory of its own to work in.
-pub fn package(
+/// Builds the module the site carries: `cargo build` (when `build` is
+/// given, with those extra arguments), `wasm-bindgen`, then `wasm-opt`.
+/// Returns the module and its glue. `target` is cargo's target directory,
+/// `stage` a directory of its own to work in. Without `require_opt` a
+/// `wasm-opt` the caller did not name may be missing (the module is then
+/// left as wasm-bindgen made it); with it, that is an error, since
+/// `cargo xtask web-size` measures the module that is shipped.
+pub fn module(
     repo: &Path,
     target: &Path,
     stage: &Path,
-    out: &Path,
-    version: &str,
     tools: &Tools,
     build: Option<&[&str]>,
-) -> Result<PathBuf, String> {
+    require_opt: bool,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     if let Some(extra) = build {
         let mut cargo = vec![
             "build",
@@ -213,7 +216,7 @@ pub fn package(
                 &String::from_utf8_lossy(&output.stderr),
             ));
         }
-        Err(e) if given.is_none() && e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e) if !require_opt && given.is_none() && e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
                 "package: no wasm-opt on PATH; the module is left as wasm-bindgen made it \
                  (binaryen's wasm-opt makes it smaller: --wasm-opt PATH or WASM_OPT)"
@@ -223,6 +226,22 @@ pub fn package(
     }
     let wasm = crate::package::read(&wasm_file)?;
     let js = crate::package::read(&js_file)?;
+    Ok((wasm, js))
+}
+
+/// Makes `out/3dcraft-web-<version>.zip` and puts its line into
+/// `out/SHA256SUMS.txt`. `target` is cargo's target directory, `stage` a
+/// directory of its own to work in.
+pub fn package(
+    repo: &Path,
+    target: &Path,
+    stage: &Path,
+    out: &Path,
+    version: &str,
+    tools: &Tools,
+    build: Option<&[&str]>,
+) -> Result<PathBuf, String> {
+    let (wasm, js) = module(repo, target, stage, tools, build, false)?;
     let hash = content_hash(&wasm, &js);
     let (js_name, wasm_name) = (
         format!("{NAME}-{hash}.js"),
