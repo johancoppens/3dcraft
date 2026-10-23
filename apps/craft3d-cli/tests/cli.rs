@@ -13,8 +13,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const SUBCOMMANDS: [&str; 9] = [
-    "commands", "run", "info", "render", "convert", "replay", "score", "serve", "mcp",
+const SUBCOMMANDS: [&str; 10] = [
+    "commands",
+    "run",
+    "info",
+    "render",
+    "convert",
+    "replay",
+    "score",
+    "check-range",
+    "serve",
+    "mcp",
 ];
 
 /// What one run of the binary produced.
@@ -286,7 +295,10 @@ fn other_usage_errors_exit_with_2() {
         (vec!["convert", &part], "IN OUT"),
         // A drawing says which flags name what it is the outline of.
         (vec!["convert", &part, "a.dxf"], "give `--sketch S`"),
-        (vec!["convert", &part, "a.svg"], "or `--face F`"),
+        (
+            vec!["convert", &part, "a.svg"],
+            "`--face F` (a face name; with `--feature B` when several bodies have it) or `--set S`",
+        ),
         (
             vec!["convert", &part, "a.stl", "b.stl"],
             "unexpected argument `b.stl`",
@@ -1440,4 +1452,126 @@ fn score_prints_a_scorecard_for_a_task_and_a_candidate() {
     cli(&["score", &task, "--script", &candidate]).failed(1);
     cli(&["score"]).failed(2);
     cli(&["score", "a", "b"]).failed(2);
+}
+
+/// A Jig: a plate `w` x 20 x `h` and a pin of height `8 mm - t`, with
+/// `t` published up to `t_max` (the pin fails from 8 mm on).
+fn build_jig(dir: &Path, name: &str, t_max: &str) -> String {
+    let file = path(dir, name);
+    let script = path(dir, &format!("{name}.json"));
+    let steps = json!([
+        ["variable.set", {"name": "w", "expr": "40 mm"}],
+        ["variable.set", {"name": "h", "expr": "5 mm"}],
+        ["variable.set", {"name": "t", "expr": "2 mm"}],
+        ["feature.block", {"name": "Plate", "size": ["w", "20 mm", "h"]}],
+        ["feature.block", {"name": "Pin", "size": ["4 mm", "4 mm", "8 mm - t"], "position": [100, 0, 0]}],
+        ["variable.publish", {"name": "w", "min": "10 mm", "max": "80 mm"}],
+        ["variable.publish", {"name": "h", "min": "1 mm", "max": "10 mm"}],
+        ["variable.publish", {"name": "t", "min": "1 mm", "max": t_max}],
+    ]);
+    std::fs::write(&script, steps.to_string()).unwrap();
+    cli(&["run", "--script", &script, "--out", &file]).ok();
+    file
+}
+
+#[test]
+fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
+    let dir = workdir("check-range");
+    let good = build_jig(&dir, "good.3dcraft", "6 mm");
+    let ran = cli(&["check-range", &good, "--samples", "5", "--seed", "3"]).ok();
+    println!("{}", ran.stdout);
+    assert!(
+        ran.stdout.contains(
+            "3 parameters, 14 points (1 default, 8 corners, all, 0 choices, 5 random): 14 passed, 0 failed"
+        ),
+        "{}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("regeneration: median"),
+        "{}",
+        ran.stdout
+    );
+    // --json is document.sample's result, the same for the same seed.
+    let json = |file: &str| -> Value {
+        let ran = cli(&[
+            "check-range",
+            file,
+            "--samples",
+            "5",
+            "--seed",
+            "3",
+            "--json",
+        ]);
+        serde_json::from_str(ran.stdout.trim()).unwrap()
+    };
+    let result = json(&good);
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["counts"]["points"], 14);
+
+    let bad = build_jig(&dir, "bad.3dcraft", "10 mm");
+    let ran = cli(&[
+        "check-range",
+        &bad,
+        "--samples",
+        "5",
+        "--seed",
+        "3",
+        "--deep",
+    ])
+    .failed(1);
+    println!("{}", ran.stdout);
+    assert!(ran.stderr.contains("points fail"), "{}", ran.stderr);
+    assert!(ran.stdout.contains("FAIL point"), "{}", ran.stdout);
+    assert!(ran.stdout.contains("t=10 mm"), "{}", ran.stdout);
+    assert!(ran.stdout.contains("Pin: "), "{}", ran.stdout);
+    let a = json(&bad);
+    let b = json(&bad);
+    assert_eq!(a["ok"], false);
+    assert_eq!(a["failed"], b["failed"]);
+    let values = |r: &Value| -> Vec<Value> {
+        r["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["values"].clone())
+            .collect()
+    };
+    assert_eq!(values(&a), values(&b));
+    // A budget no regeneration meets fails every point.
+    cli(&[
+        "check-range",
+        &good,
+        "--samples",
+        "1",
+        "--budget-ms",
+        "0.000001",
+    ])
+    .failed(1);
+
+    // A time limit that stops the run: 4 when nothing failed so far, 1
+    // when a point did.
+    let ran = cli(&["check-range", &good, "--time-limit-ms", "0.000001"]).failed(4);
+    assert!(ran.stdout.contains("INCOMPLETE"), "{}", ran.stdout);
+    cli(&["check-range", &bad, "--time-limit-ms", "100000"]).failed(1);
+
+    // Usage errors (2, the caps included), and files that cannot be
+    // checked (3).
+    cli(&["check-range"]).failed(2);
+    cli(&["check-range", &good, "--samples", "many"]).failed(2);
+    cli(&["check-range", &good, "--budget-ms", "-3"]).failed(2);
+    cli(&["check-range", &good, "--time-limit-ms", "0"]).failed(2);
+    cli(&["check-range", &good, "--deep=yes"]).failed(2);
+    cli(&["check-range", &good, &good]).failed(2);
+    cli(&["check-range", &good, "--samples", "20000"]).failed(2);
+    cli(&["check-range", &good, "--max-corners", "5000"]).failed(2);
+    cli(&["check-range", &path(&dir, "missing.3dcraft")]).failed(3);
+    let part = build_part(&dir);
+    let ran = cli(&["check-range", &part]).failed(3);
+    assert!(
+        ran.stderr.contains("no public parameters"),
+        "{}",
+        ran.stderr
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

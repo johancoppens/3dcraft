@@ -455,6 +455,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
             "--feature",
             "--quality",
             "--angle",
+            "--set",
         ],
         |name, value| {
             if name == "--quality" {
@@ -513,7 +514,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     }
     if native && !outline.is_empty() {
         return Err(CliError::Usage(
-            "`--sketch`, `--face` and `--feature` say what a .dxf or .svg file is the outline of"
+            "`--sketch`, `--face`, `--feature` and `--set` say what a .dxf or .svg file is the outline of"
                 .to_string(),
         ));
     }
@@ -521,9 +522,13 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("dxf") || e.eq_ignore_ascii_case("svg"));
-    if drawing && !outline.contains_key("sketch") && !outline.contains_key("face") {
+    if drawing
+        && !["sketch", "face", "set"]
+            .iter()
+            .any(|k| outline.contains_key(*k))
+    {
         return Err(CliError::Usage(
-            "a .dxf or .svg file is the flat outline of a sketch or of a flat face: give `--sketch S` (a sketch's id or name) or `--face F` (a face name; with `--feature B` when several bodies have it); `craft3d-cli info IN` lists the features"
+            "a .dxf or .svg file is the flat outline of a sketch, of a flat face or of a sheet of flat faces: give `--sketch S` (a sketch's id or name), `--face F` (a face name; with `--feature B` when several bodies have it) or `--set S` (a named set of faces: all its flat faces on one sheet); `craft3d-cli info IN` lists the features"
                 .to_string(),
         ));
     }

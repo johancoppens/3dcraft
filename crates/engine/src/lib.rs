@@ -44,6 +44,7 @@ mod recovery_cmds;
 mod recovery_store;
 mod replay_cmds;
 mod report;
+mod sample_cmds;
 mod scene;
 mod scene_box;
 mod scene_view;
@@ -376,6 +377,14 @@ impl Session {
     /// held, also those that went into later features, so that an edit
     /// further down finds the trees of what it starts from. Results do not
     /// change: a tree is a function of its surface.
+    /// [`Session::release_unused_trees`] even when no open document
+    /// changed: after work in a session of its own (`document.sample`'s
+    /// points), whose bodies are gone.
+    pub(crate) fn release_trees_now(&mut self) {
+        self.trees_held_for.clear();
+        self.release_unused_trees();
+    }
+
     fn release_unused_trees(&mut self) {
         let now: Vec<(u64, Option<u64>)> = self
             .documents
@@ -438,6 +447,7 @@ impl Session {
                 set_cmds::SPECS,
                 param_cmds::SPECS,
                 jig_cmds::SPECS,
+                sample_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,

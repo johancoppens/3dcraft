@@ -910,21 +910,21 @@ fn value_source(
     }
 }
 
-fn param_set(session: &mut Session, params: &Value) -> Run {
-    let command = "param.set";
-    let p = Params::new(command, params, &["values", "reset", "merge"])?;
-    let reset = p.bool("reset")?.unwrap_or(false);
-    let merge = p.bool("merge")?.unwrap_or(false);
-    let given: Map<String, Value> = match p.get("values") {
-        None => Map::new(),
-        Some(Value::Object(map)) => map.clone(),
-        Some(_) => {
-            return fail(format!(
-                "{command}: `values` must be an object of parameter names and values, such as {{\"teeth\": 20, \"bore\": \"5 mm\"}}"
-            ));
-        }
-    };
-    let doc = session.document()?.history.current();
+/// The parameters a `param.set` sets, each with its new expression, and
+/// its warnings.
+pub(crate) type Prepared = (Vec<(String, String)>, Vec<String>);
+
+/// What `param.set` with `given` (after a `reset` to the defaults) would
+/// set on `doc`, checked as `param.set` checks it: each parameter with
+/// the expression it would get, in the order of `given` (after the
+/// defaults on a reset), and the warnings; or why it is refused (nothing
+/// is changed then). `document.sample` checks its points with it.
+pub(crate) fn prepare_set(
+    command: &str,
+    doc: &Document,
+    given: &Map<String, Value>,
+    reset: bool,
+) -> Result<Prepared, CommandError> {
     let values_before = evaluation(doc);
     let before = evaluate_all(doc, values_before.as_ref());
     if before.is_empty() {
@@ -944,7 +944,7 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
             put(e.name, e.public.default.source().to_string());
         }
     }
-    for (name, value) in &given {
+    for (name, value) in given.iter() {
         let Some(e) = before.iter().find(|e| e.name == name) else {
             let public: Vec<&str> = before.iter().map(|e| e.name).collect();
             return fail(format!(
@@ -956,7 +956,7 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
     }
     // Checked on the document as it would be: each value set, and every
     // other parameter whose range moved with them.
-    let mut next = (**doc).clone();
+    let mut next = doc.clone();
     for (name, source) in &sources {
         next.set_variable(name, source)
             .map_err(doc_error(command))?;
@@ -1017,6 +1017,114 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
             refusals.join("; ")
         ));
     }
+    Ok((sources, warnings))
+}
+
+/// A public parameter's range as `document.sample` samples it: each
+/// number in the parameter's unit (as `param.list` shows it), against the
+/// variables of the document it was taken from, so a range that uses
+/// other parameters is the one at that point.
+pub(crate) struct Range {
+    pub(crate) name: String,
+    pub(crate) kind: ParamKind,
+    /// How many choices a choice has.
+    pub(crate) choices: usize,
+    /// The default as written (what a reset sets).
+    pub(crate) default_source: String,
+    pub(crate) default: Option<f64>,
+    /// None when not given or when it does not evaluate to a number of
+    /// the parameter's dimension.
+    pub(crate) min: Option<f64>,
+    pub(crate) max: Option<f64>,
+    /// Only a positive one.
+    pub(crate) step: Option<f64>,
+    /// The parameter's unit and dimension, for [`value_text`].
+    unit: Option<Unit>,
+    dimension: Dimension,
+    length_symbol: &'static str,
+}
+
+/// Every public parameter of `doc` with its range evaluated against
+/// `doc`'s variables, in the variables' order.
+pub(crate) fn ranges(doc: &Document) -> Vec<Range> {
+    let values = evaluation(doc);
+    evaluate_all(doc, values.as_ref())
+        .iter()
+        .map(|e| {
+            let dimension = e
+                .default
+                .as_ref()
+                .or(e.value.as_ref())
+                .map_or(Dimension::NONE, |q| q.dimension);
+            let number = |what: &str| {
+                bound(&e.bounds, what)
+                    .filter(|q| q.dimension == dimension)
+                    .map(|q| shown(doc, q, e.unit))
+                    .filter(|x| x.is_finite())
+            };
+            Range {
+                name: e.name.to_string(),
+                kind: e.public.kind,
+                choices: e.public.choices.len(),
+                default_source: e.public.default.source().to_string(),
+                default: e
+                    .default
+                    .as_ref()
+                    .ok()
+                    .map(|q| shown(doc, *q, e.unit))
+                    .filter(|x| x.is_finite()),
+                min: number("min"),
+                max: number("max"),
+                step: number("step").filter(|s| *s > 0.0),
+                unit: e.unit,
+                dimension,
+                length_symbol: doc.units.length.symbol(),
+            }
+        })
+        .collect()
+}
+
+/// `number` (in the parameter's unit) written as `param.set` takes it:
+/// `12.5 mm`, `20`, `400 * (1 mm)^2`; a whole-number kind as the exact
+/// whole number.
+pub(crate) fn value_text(range: &Range, number: f64) -> String {
+    if range.kind != ParamKind::Number {
+        return whole_source(range.kind, number.to_string());
+    }
+    match range.unit {
+        Some(unit) => format!("{number} {unit}"),
+        None if range.dimension.is_dimensionless() => number.to_string(),
+        None => {
+            let mut text = number.to_string();
+            for (symbol, exponent) in [
+                (range.length_symbol, range.dimension.length),
+                ("rad", range.dimension.angle),
+            ] {
+                if exponent != 0 {
+                    text.push_str(&format!(" * (1 {symbol})^{exponent}"));
+                }
+            }
+            text
+        }
+    }
+}
+
+fn param_set(session: &mut Session, params: &Value) -> Run {
+    let command = "param.set";
+    let p = Params::new(command, params, &["values", "reset", "merge"])?;
+    let reset = p.bool("reset")?.unwrap_or(false);
+    let merge = p.bool("merge")?.unwrap_or(false);
+    let given: Map<String, Value> = match p.get("values") {
+        None => Map::new(),
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => {
+            return fail(format!(
+                "{command}: `values` must be an object of parameter names and values, such as {{\"teeth\": 20, \"bore\": \"5 mm\"}}"
+            ));
+        }
+    };
+    let doc = session.document()?.history.current();
+    let (sources, warnings) = prepare_set(command, doc, &given, reset)?;
     let mut names: Vec<&str> = sources.iter().map(|(n, _)| n.as_str()).collect();
     let mut label = names
         .iter()
