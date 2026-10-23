@@ -10,6 +10,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 Generators (a gear, a toothed-belt pulley, a laser-cut box, a welding table) are called **Jigs**. A Jig is made once, by an AI or by hand, and then runs without AI: the user sets its public parameters in a form inside 3DCraft and the model regenerates deterministically. Jigs are never part of 3DCraft: 3DCraft gets the general mechanism (public parameters, the form, a Jig package to export and open, a check over the parameter range), the Jigs themselves live with their makers or in a community collection. Jigs run in the web build too. Level 1 comes first: a Jig is a `.3dcraft` document whose public variables drive it, with no code of its own; scripted Jigs (logic in a sandbox) come later, only if level 1 cannot carry the pilots (the pulley, the laser box).
 
+Tables follow the same line: 3DCraft gets tables as a general part of a document (rows and columns, a parameter chosen from a table, formulas that look a value up), because any design can use them; the contents of tables for one kind of product (GT2 and HTD belt profiles, ISO gear modules, bolt sizes) live in the Jigs, or in a Jig that holds only tables and that other Jigs use. Data a modelling operation needs to be correct on any shape (the ISO metric thread sizes of the thread feature) is the exception, not the habit.
+
+**3DCraft stays light** (the developer, 2026-10-23): no catalogues of parts, standards or materials, no bundled content beyond the guide's examples, no dependency for one product's sake; the download and the web module stay small and the start fast. Light is not incomplete: the kernel and the general modelling operations must still become complete (2026-10-14). When a request would add weight, ask whether it works on any shape for anyone; if not, it belongs in a Jig or a separate project.
+
 ### 2026-10-22: Identifiers and installers (decided by an agent; the developer may overturn)
 
 Following the 2026-10-22 decision that 3DCraft is independent of the `*Craft` family, it has identifiers of its own, derived from where it lives (`github.com/johancoppens/3dcraft`):
