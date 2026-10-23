@@ -21,12 +21,62 @@ use serde::{Deserialize, Serialize};
 /// Most tables a document holds.
 pub const MAX_TABLES: usize = 256;
 
-/// One cell: a number in its column's unit, or a short text.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum TableCell {
-    Number(f64),
-    Text(String),
+/// Most cells all the tables of a document hold together.
+pub const MAX_CELLS: usize = 1_000_000;
+
+/// One cell: a number in its column's unit, or a short text. The
+/// expression language's own type, so the document and an evaluation
+/// share the cells ([`Table::rows`]).
+pub use craft3d_expr::Cell as TableCell;
+
+/// Serde for the shared cells: a number, or a string.
+mod cells {
+    use super::TableCell;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Number(f64),
+        Text(String),
+    }
+
+    pub fn serialize<S: Serializer>(
+        rows: &Arc<Vec<Vec<TableCell>>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let repr: Vec<Vec<Repr>> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match cell {
+                        TableCell::Number(v) => Repr::Number(*v),
+                        TableCell::Text(t) => Repr::Text(t.clone()),
+                    })
+                    .collect()
+            })
+            .collect();
+        repr.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<Vec<Vec<TableCell>>>, D::Error> {
+        let repr = Vec::<Vec<Repr>>::deserialize(deserializer)?;
+        Ok(Arc::new(
+            repr.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| match cell {
+                            Repr::Number(v) => TableCell::Number(v),
+                            Repr::Text(t) => TableCell::Text(t),
+                        })
+                        .collect()
+                })
+                .collect(),
+        ))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,8 +93,11 @@ pub struct Table {
     /// The name of the key column.
     pub key: String,
     pub columns: Vec<TableColumn>,
-    /// One cell per column in each row.
-    pub rows: Vec<Vec<TableCell>>,
+    /// One cell per column in each row. Shared with the evaluations made
+    /// from the document ([`Table::to_expr`] copies no cell); change it
+    /// with `Arc::make_mut`.
+    #[serde(with = "cells")]
+    pub rows: std::sync::Arc<Vec<Vec<TableCell>>>,
 }
 
 /// Whether `text` is a text a cell may hold: printable ASCII without `"`
@@ -152,6 +205,11 @@ impl Table {
         Ok(())
     }
 
+    /// How many cells it holds.
+    pub fn cells(&self) -> usize {
+        self.rows.len().saturating_mul(self.columns.len())
+    }
+
     /// The labels of the rows: the key column's cells, in order.
     pub fn keys(&self) -> Vec<String> {
         let key = self.columns.iter().position(|c| c.name == self.key);
@@ -179,28 +237,15 @@ impl Table {
                 .iter()
                 .position(|c| c.name == self.key)
                 .unwrap_or(0),
-            rows: self
-                .rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|cell| match cell {
-                            TableCell::Number(v) => craft3d_expr::Cell::Number(*v),
-                            TableCell::Text(t) => craft3d_expr::Cell::Text(t.clone()),
-                        })
-                        .collect()
-                })
-                .collect(),
+            rows: std::sync::Arc::clone(&self.rows),
         }
     }
 }
 
-/// A cell as a row's label.
+/// A cell as a row's label: a text as it is, a number as `t["2.5"]`
+/// finds it.
 fn label(cell: &TableCell) -> String {
-    match cell {
-        TableCell::Number(value) => format!("{value}"),
-        TableCell::Text(text) => text.clone(),
-    }
+    craft3d_expr::cell_label(cell)
 }
 
 impl Document {
@@ -209,7 +254,14 @@ impl Document {
     }
 
     /// Defines a table or replaces it whole (it keeps its place).
-    pub fn set_table(&mut self, table: Table) -> Result<(), DocError> {
+    ///
+    /// A choice parameter that takes its labels from the table keeps
+    /// pointing at the same key: its value and its default are moved to
+    /// the row that has that key now. When the key is gone the value (or
+    /// the default) becomes 0, which is no choice, so the parameter is
+    /// invalid and what looks the row up fails, instead of silently taking
+    /// another row; one warning per such parameter is returned.
+    pub fn set_table(&mut self, table: Table) -> Result<Vec<String>, DocError> {
         table
             .check()
             .map_err(|reason| DocError::Invalid(format!("table `{}`: {reason}", table.name)))?;
@@ -218,6 +270,80 @@ impl Document {
                 "`{}` is a variable; a table needs a name of its own",
                 table.name
             )));
+        }
+        let others: usize = self
+            .tables
+            .iter()
+            .filter(|t| t.name != table.name)
+            .map(Table::cells)
+            .sum();
+        if others.saturating_add(table.cells()) > MAX_CELLS {
+            return Err(DocError::Invalid(format!(
+                "the tables of a document hold at most {MAX_CELLS} cells together; table `{}` would make {}",
+                table.name,
+                others.saturating_add(table.cells())
+            )));
+        }
+        let choosers: Vec<String> = self
+            .variables
+            .iter()
+            .filter(|v| {
+                v.public
+                    .as_ref()
+                    .is_some_and(|p| p.choices_from.as_deref() == Some(table.name.as_str()))
+            })
+            .map(|v| v.name.clone())
+            .collect();
+        if !choosers.is_empty() && table.rows.len() > crate::public::MAX_CHOICES {
+            return Err(DocError::Invalid(format!(
+                "table `{}` gives the choices of {}, and a choice offers at most {} labels; the table has {} rows",
+                table.name,
+                choosers.join(", "),
+                crate::public::MAX_CHOICES,
+                table.rows.len()
+            )));
+        }
+        let old_keys = self.table(&table.name).map(Table::keys);
+        let new_keys = table.keys();
+        let mut warnings = Vec::new();
+        if let Some(old_keys) = old_keys {
+            for name in &choosers {
+                let Some(variable) = self.variables.iter_mut().find(|v| v.name == *name) else {
+                    continue;
+                };
+                let mut lost = Vec::new();
+                let remap = |expr: &mut Expr, lost: &mut Vec<String>| {
+                    let Ok(q) = craft3d_expr::evaluate(expr.source(), |_| None) else {
+                        return;
+                    };
+                    let k = q.value;
+                    if !(q.dimension.is_dimensionless() && k.fract() == 0.0 && k >= 1.0) {
+                        return;
+                    }
+                    let Some(key) = old_keys.get((k as usize).saturating_sub(1)) else {
+                        return;
+                    };
+                    match new_keys.iter().position(|n| n == key) {
+                        Some(at) if at + 1 != k as usize => *expr = Expr::new((at + 1).to_string()),
+                        Some(_) => {}
+                        None => {
+                            *expr = Expr::new("0");
+                            lost.push(key.clone());
+                        }
+                    }
+                };
+                remap(&mut variable.expr, &mut lost);
+                if let Some(public) = &mut variable.public {
+                    remap(&mut public.default, &mut lost);
+                }
+                if !lost.is_empty() {
+                    warnings.push(format!(
+                        "the parameter `{name}` was the row \"{}\" of table `{}`, which it no longer has; it is 0 (no choice) until it is set again",
+                        lost.first().map(String::as_str).unwrap_or_default(),
+                        table.name
+                    ));
+                }
+            }
         }
         match self.tables.iter_mut().find(|t| t.name == table.name) {
             Some(slot) => *slot = table,
@@ -230,7 +356,7 @@ impl Document {
                 self.tables.push(table);
             }
         }
-        Ok(())
+        Ok(warnings)
     }
 
     /// Removes a table. Expressions that still look values up in it fail
@@ -352,6 +478,12 @@ impl Document {
                 "a document holds at most {MAX_TABLES} tables"
             )));
         }
+        let cells: usize = self.tables.iter().map(Table::cells).sum();
+        if cells > MAX_CELLS {
+            return Err(DocError::Invalid(format!(
+                "the tables of a document hold at most {MAX_CELLS} cells together, these {cells}"
+            )));
+        }
         for (i, table) in self.tables.iter().enumerate() {
             table
                 .check()
@@ -381,6 +513,20 @@ impl Document {
                     variable.name
                 )));
             }
+            if let Some(from) = variable
+                .public
+                .as_ref()
+                .and_then(|p| p.choices_from.as_ref())
+                && self
+                    .table(from)
+                    .is_some_and(|t| t.rows.len() > crate::public::MAX_CHOICES)
+            {
+                return Err(DocError::Invalid(format!(
+                    "the parameter `{}` takes its choices from the table `{from}`, which has more than {} rows",
+                    variable.name,
+                    crate::public::MAX_CHOICES
+                )));
+            }
         }
         Ok(())
     }
@@ -405,7 +551,7 @@ mod tests {
                 column("pitch", Some("mm")),
                 column("width", Some("mm")),
             ],
-            rows: vec![
+            rows: std::sync::Arc::new(vec![
                 vec![
                     TableCell::Text("GT2".into()),
                     TableCell::Number(2.0),
@@ -416,7 +562,7 @@ mod tests {
                     TableCell::Number(3.0),
                     TableCell::Number(9.0),
                 ],
-            ],
+            ]),
         }
     }
 
@@ -434,17 +580,41 @@ mod tests {
                 .to_string()
         };
         assert!(bad(&|t| t.key = "nope".into()).contains("key"));
-        assert!(bad(&|t| t.rows[1][0] = TableCell::Text("GT2".into())).contains("two rows"));
-        assert!(bad(&|t| t.rows[0].pop().map(|_| ()).unwrap_or(())).contains("cells"));
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[1][0] = TableCell::Text("GT2".into()))
+                .contains("two rows")
+        );
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[0]
+                .pop()
+                .map(|_| ())
+                .unwrap_or(()))
+            .contains("cells")
+        );
         assert!(bad(&|t| t.columns[1].unit = Some("inch".into())).contains("not a unit"));
         assert!(bad(&|t| t.columns[2].name = "pitch".into()).contains("two columns"));
         assert!(bad(&|t| t.columns[2].name = "2x".into()).contains("column"));
         assert!(bad(&|t| t.name = "mm".into()).contains("cannot name a table"));
-        assert!(bad(&|t| t.rows[0][1] = TableCell::Number(f64::NAN)).contains("finite"));
-        assert!(bad(&|t| t.rows[0][0] = TableCell::Text("a\"b".into())).contains("printable"));
-        assert!(bad(&|t| t.rows[0][0] = TableCell::Text("x".repeat(65))).contains("longer"));
-        assert!(bad(&|t| t.rows[0][0] = TableCell::Text(" ".into())).contains("empty"));
-        assert!(bad(&|t| t.rows = vec![t.rows[0].clone(); MAX_ROWS + 1]).contains("rows"));
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[0][1] = TableCell::Number(f64::NAN))
+                .contains("finite")
+        );
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[0][0] = TableCell::Text("a\"b".into()))
+                .contains("printable")
+        );
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[0][0] = TableCell::Text("x".repeat(65)))
+                .contains("longer")
+        );
+        assert!(
+            bad(&|t| std::sync::Arc::make_mut(&mut t.rows)[0][0] = TableCell::Text(" ".into()))
+                .contains("empty")
+        );
+        assert!(
+            bad(&|t| t.rows = std::sync::Arc::new(vec![t.rows[0].clone(); MAX_ROWS + 1]))
+                .contains("rows")
+        );
         // A table and a variable do not share a name.
         doc.set_variable("width", "1 mm").unwrap();
         let mut t = belt();
@@ -494,5 +664,100 @@ mod tests {
         );
         assert!(doc.rename_table("strap", "pitch").is_err());
         assert!(doc.rename_table("nope", "x").is_err());
+        // Nor may a variable take a table's name by a rename.
+        let e = doc
+            .rename_variable("pitch", "strap")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("is a table"), "{e}");
+        assert_eq!(
+            doc.variable("pitch").unwrap().expr.source(),
+            "strap[pitch_row].pitch"
+        );
+    }
+
+    /// A choice parameter follows its key when the table changes, and
+    /// becomes no choice (0) when its key is gone, with a warning.
+    #[test]
+    fn a_choice_keeps_its_key_when_the_table_changes() {
+        let mut doc = Document::new(Units::default());
+        doc.set_table(belt()).unwrap();
+        doc.set_variable("profile", "2").unwrap();
+        doc.publish_variable(
+            "profile",
+            PublicParam {
+                kind: ParamKind::Choice,
+                choices_from: Some("belt".into()),
+                default: Expr::new("2"),
+                ..PublicParam::default()
+            },
+        )
+        .unwrap();
+        // A row put in front: HTD3 is row 3 now.
+        let mut t = belt();
+        let rows = std::sync::Arc::make_mut(&mut t.rows);
+        rows.insert(
+            0,
+            vec![
+                TableCell::Text("T5".into()),
+                TableCell::Number(5.0),
+                TableCell::Number(10.0),
+            ],
+        );
+        assert!(doc.set_table(t.clone()).unwrap().is_empty());
+        let profile = doc.variable("profile").unwrap();
+        assert_eq!(profile.expr.source(), "3");
+        assert_eq!(profile.public.as_ref().unwrap().default.source(), "3");
+        // HTD3 gone: 0, never another row.
+        std::sync::Arc::make_mut(&mut t.rows).remove(2);
+        let warnings = doc.set_table(t).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("\"HTD3\""), "{warnings:?}");
+        assert_eq!(doc.variable("profile").unwrap().expr.source(), "0");
+        // Too many rows for a choice.
+        let mut big = belt();
+        big.rows = std::sync::Arc::new(
+            (0..300)
+                .map(|i| {
+                    vec![
+                        TableCell::Text(format!("r{i}")),
+                        TableCell::Number(1.0),
+                        TableCell::Number(1.0),
+                    ]
+                })
+                .collect(),
+        );
+        let e = doc.set_table(big).unwrap_err().to_string();
+        assert!(e.contains("at most 256 labels"), "{e}");
+    }
+
+    #[test]
+    fn the_cells_of_all_tables_are_capped() {
+        let mut doc = Document::new(Units::default());
+        let wide = |name: &str, rows: usize| Table {
+            name: name.into(),
+            key: "c0".into(),
+            columns: (0..50)
+                .map(|i| TableColumn {
+                    name: format!("c{i}"),
+                    unit: None,
+                })
+                .collect(),
+            rows: std::sync::Arc::new(
+                (0..rows)
+                    .map(|r| {
+                        (0..50)
+                            .map(|c| TableCell::Number((r * 50 + c) as f64))
+                            .collect()
+                    })
+                    .collect(),
+            ),
+        };
+        for i in 0..2 {
+            doc.set_table(wide(&format!("t{i}"), 10_000)).unwrap();
+        }
+        let e = doc.set_table(wide("t2", 1)).unwrap_err().to_string();
+        assert!(e.contains("1000000 cells"), "{e}");
+        doc.validate().unwrap();
     }
 }

@@ -325,12 +325,18 @@ impl Document {
         public
             .check()
             .map_err(|reason| DocError::Invalid(format!("`{name}`: {reason}")))?;
-        if let Some(table) = &public.choices_from
-            && self.table(table).is_none()
-        {
-            return Err(DocError::Invalid(format!(
-                "`{name}`: there is no table `{table}` to take the choices from"
-            )));
+        if let Some(table) = &public.choices_from {
+            let Some(found) = self.table(table) else {
+                return Err(DocError::Invalid(format!(
+                    "`{name}`: there is no table `{table}` to take the choices from"
+                )));
+            };
+            if found.rows.len() > MAX_CHOICES {
+                return Err(DocError::Invalid(format!(
+                    "`{name}`: a choice offers at most {MAX_CHOICES} labels, and table `{table}` has {} rows",
+                    found.rows.len()
+                )));
+            }
         }
         let variable = self
             .variables

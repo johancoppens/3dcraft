@@ -1727,7 +1727,7 @@ mod tests {
                 column("teeth", None),
             ],
             key: 0,
-            rows: vec![
+            rows: std::sync::Arc::new(vec![
                 vec![
                     Cell::Text("GT2".into()),
                     Cell::Number(2.0),
@@ -1740,7 +1740,7 @@ mod tests {
                     Cell::Number(0.0),
                     Cell::Text("none".into()),
                 ],
-            ],
+            ]),
         }]
     }
 

@@ -132,7 +132,7 @@ fn table_set(session: &mut Session, params: &Value) -> Run {
         name: name.to_string(),
         key,
         columns,
-        rows,
+        rows: std::sync::Arc::new(rows),
     };
     // Checked before the edit, so the message names the command.
     if let Err(reason) = table.check() {
@@ -140,13 +140,25 @@ fn table_set(session: &mut Session, params: &Value) -> Run {
     }
     let existed = session.document()?.history.current().table(name).is_some();
     let before = failing(session)?;
-    edit(session, SET, &format!("Set table {name}"), |doc| {
+    let doc_before = std::sync::Arc::clone(session.document()?.history.current());
+    let mut warnings = edit(session, SET, &format!("Set table {name}"), |doc| {
         doc.set_table(table)
     })?;
     let doc = session.document()?.history.current();
     let mut result = describe(doc, name, false);
+    // The choices that lost their key, then every other parameter the
+    // change made invalid (a range that looks the table up), as
+    // variable.set reports them.
+    for warning in crate::param_cmds::invalidated(&doc_before, doc) {
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
     if let Some(map) = result.as_object_mut() {
         map.insert("created".into(), (!existed).into());
+        if !warnings.is_empty() {
+            map.insert("parameterWarnings".into(), warnings.into());
+        }
     }
     add_failed(session, &before, None, &mut result)?;
     crate::assert_cmds::add_summary(session, &mut result);

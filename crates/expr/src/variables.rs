@@ -1458,10 +1458,10 @@ mod tests {
                 },
             ],
             key: 0,
-            rows: vec![
+            rows: Arc::new(vec![
                 vec![Cell::Text("a".into()), Cell::Number(2.0)],
                 vec![Cell::Text("b".into()), Cell::Number(3.0)],
-            ],
+            ]),
         }]);
         let e = t.evaluate();
         assert_eq!(e.get("pitch"), Some(&length(3.0)));

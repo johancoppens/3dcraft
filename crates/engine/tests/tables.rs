@@ -106,19 +106,71 @@ fn a_lookup_sizes_the_model_and_follows_the_row_and_the_table() {
         json!({"name": "w", "expr": "belt[\"T5\"].width"}),
     );
     assert!(close(volume(&mut s), 10.0 * 40.0 * 5.08));
-    // A table shrunk below the choice: the parameter is invalid, not a
-    // crash.
     run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "belt[profile].width"}),
+    );
+    // A row put in front: the choice keeps its key (HTD3), now row 3.
+    let set = run(
+        &mut s,
+        "table.set",
+        json!({"name": "belt", "columns": ["profile", {"name": "width", "unit": "mm"}, {"name": "thick", "unit": "in"}],
+               "rows": [["S2", 4, 0.1], ["GT2", 6, 0.1], ["HTD3", 12, 0.2], ["T5", 10, 0.25]]}),
+    );
+    assert!(set.get("parameterWarnings").is_none(), "{set}");
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(list["parameters"][0]["choice"], "HTD3");
+    assert_eq!(list["parameters"][0]["expr"], "3");
+    assert!(close(volume(&mut s), 12.0 * 40.0 * 5.08));
+    // Its key gone: never another row; the parameter is no choice and
+    // says so, and what looks the row up fails.
+    let set = run(
         &mut s,
         "table.set",
         json!({"name": "belt", "columns": ["profile", {"name": "width", "unit": "mm"}, {"name": "thick", "unit": "in"}],
                "rows": [["GT2", 6, 0.1], ["T5", 10, 0.25]]}),
     );
+    let warnings = set["parameterWarnings"].to_string();
+    assert!(warnings.contains("\\\"HTD3\\\""), "{set}");
+    assert_eq!(set["failed"][0]["id"], "F1", "{set}");
     let list = run(&mut s, "param.list", json!({}));
     assert_eq!(list["parameters"][0]["choices"], json!(["GT2", "T5"]));
-    assert_eq!(list["parameters"][0]["valid"], true);
-    let check = run(&mut s, "document.check", json!({}));
-    assert!(check.is_object());
+    assert_eq!(list["parameters"][0]["expr"], "0");
+    assert_eq!(list["parameters"][0]["valid"], false);
+    run(&mut s, "param.set", json!({"values": {"profile": "T5"}}));
+    assert!(close(volume(&mut s), 10.0 * 40.0 * 6.35));
+}
+
+/// A cell that only a feature reads, directly: editing it rebuilds that
+/// feature (the regeneration cache compares the looked-up values), and
+/// one that nothing reads rebuilds nothing.
+#[test]
+fn editing_a_cell_rebuilds_what_reads_it() {
+    let mut s = session();
+    common::plain::run(&mut s, "file.new", json!({"units": "mm"}));
+    let table = |h: f64, unused: f64| {
+        json!({"name": "dims", "columns": ["k", {"name": "h", "unit": "mm"}, {"name": "u", "unit": "mm"}],
+               "rows": [["a", h, unused]]})
+    };
+    common::plain::run(&mut s, "table.set", table(5.0, 1.0));
+    common::plain::run(
+        &mut s,
+        "feature.block",
+        json!({"name": "A", "size": ["10 mm", "10 mm", "dims[1].h"]}),
+    );
+    common::plain::run(
+        &mut s,
+        "feature.block",
+        json!({"name": "B", "size": ["2 mm", "2 mm", "2 mm"], "position": ["20 mm", 0, 0]}),
+    );
+    assert!(close(volume(&mut s), 500.0 + 8.0));
+    common::plain::run(&mut s, "table.set", table(7.0, 1.0));
+    assert!(close(volume(&mut s), 700.0 + 8.0));
+    assert_eq!(s.last_regeneration(), Some((1, 1)), "A rebuilt, B reused");
+    common::plain::run(&mut s, "table.set", table(7.0, 3.0));
+    let _ = volume(&mut s);
+    assert_eq!(s.last_regeneration(), Some((0, 2)), "nothing reads u");
 }
 
 #[test]
@@ -180,6 +232,12 @@ fn renames_and_deletes_keep_the_lookups_whole() {
         json!({"name": "strap", "to": "width"}),
     );
     assert!(e.contains("taken"), "{e}");
+    let e = refused(
+        &mut s,
+        "variable.rename",
+        json!({"name": "width", "to": "strap"}),
+    );
+    assert!(e.contains("is a table"), "{e}");
     let e = refused(
         &mut s,
         "variable.set",
@@ -276,5 +334,46 @@ fn bad_tables_are_refused_with_a_reason() {
         "variable.publish",
         json!({"name": "w", "kind": "choice", "choicesFrom": "nope"}),
     );
-    assert!(e.contains("no table"), "{e}");
+    assert!(e.contains("no table"), "{e}"); // A lookup is not a value: a public variable cannot be one, and
+    // param.set does not take one.
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "n", "columns": ["k", "v"], "rows": [[3, 10], [1, 20], [2, 30], [4, 40]]}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pick", "expr": "n[1].v"}),
+    );
+    let e = refused(&mut s, "variable.publish", json!({"name": "pick"}));
+    assert!(e.contains("formula"), "{e}");
+    run(&mut s, "variable.set", json!({"name": "pick", "expr": "1"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "pick", "kind": "choice", "choicesFrom": "n"}),
+    );
+    let e = refused(&mut s, "param.set", json!({"values": {"pick": "n[1].v"}}));
+    assert!(e.contains("not a lookup"), "{e}");
+    // Number keys: a label that is also another row's number is refused,
+    // a JSON number is always the row's number, a label that is its own
+    // row's number is fine.
+    let e = refused(&mut s, "param.set", json!({"values": {"pick": "3"}}));
+    assert!(e.contains("both the label of choice 1"), "{e}");
+    run(&mut s, "param.set", json!({"values": {"pick": 3}}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "got", "expr": "n[pick].v + n[\"3\"].v"}),
+    );
+    let got = run(&mut s, "document.inspect", json!({}))["variables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == "got")
+        .unwrap()["value"]
+        .clone();
+    assert_eq!(got, json!(40.0));
+    run(&mut s, "param.set", json!({"values": {"pick": "4"}}));
 }

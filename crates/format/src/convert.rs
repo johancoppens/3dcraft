@@ -148,17 +148,18 @@ fn table_to_doc(table: manifest::Table) -> doc::Table {
             .into_iter()
             .map(|manifest::TableColumn { name, unit }| doc::TableColumn { name, unit })
             .collect(),
-        rows: rows
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|cell| match cell {
-                        manifest::TableCell::Number(v) => doc::TableCell::Number(v),
-                        manifest::TableCell::Text(t) => doc::TableCell::Text(t),
-                    })
-                    .collect()
-            })
-            .collect(),
+        rows: std::sync::Arc::new(
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| match cell {
+                            manifest::TableCell::Number(v) => doc::TableCell::Number(v),
+                            manifest::TableCell::Text(t) => doc::TableCell::Text(t),
+                        })
+                        .collect()
+                })
+                .collect(),
+        ),
     }
 }
 

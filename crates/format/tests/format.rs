@@ -4393,7 +4393,8 @@ fn tables_are_written_like_this_and_round_trip() {
         rows: vec![
             vec![TableCell::Text("GT2".into()), TableCell::Number(2.0)],
             vec![TableCell::Text("HTD3".into()), TableCell::Number(3.5)],
-        ],
+        ]
+        .into(),
     })
     .unwrap();
     doc.set_variable("profile", "2").unwrap();

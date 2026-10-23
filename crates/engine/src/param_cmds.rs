@@ -24,7 +24,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label. A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
         "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
@@ -54,7 +54,8 @@ fn eval(source: &str, values: Option<&Evaluation>) -> Result<Quantity, String> {
 /// One that does not parse is not called a formula: evaluating it says
 /// what is wrong.
 pub(crate) fn is_value(source: &str) -> bool {
-    craft3d_expr::Expr::parse(source).map_or(true, |e| e.variables().is_empty())
+    craft3d_expr::Expr::parse(source)
+        .map_or(true, |e| e.variables().is_empty() && e.tables().is_empty())
 }
 
 /// The unit a parameter of `dimension` is shown in: its own when it has
@@ -854,8 +855,19 @@ fn value_source(
                 .choices_of(e.public)
                 .iter()
                 .position(|c| c == label)
-                .unwrap_or_default();
-            Ok(at.saturating_add(1).to_string())
+                .unwrap_or_default()
+                .saturating_add(1);
+            // A label that is also a number (a table keyed by numbers)
+            // could mean the row of that number as well: refused unless
+            // both are the same row.
+            if let Ok(number) = label.trim().parse::<f64>()
+                && number != at as f64
+            {
+                return fail(format!(
+                    "{command}: `{name}`: \"{label}\" is both the label of choice {at} and the number {label}; give the label's row number as a JSON number ({at}) or the row {label} as a JSON number"
+                ));
+            }
+            Ok(at.to_string())
         }
         Value::Bool(_) => fail(format!(
             "{command}: `{name}` is a {} parameter, not a boolean; give a number or a string",
@@ -886,6 +898,11 @@ fn value_source(
                     "{command}: `{name}`: `{source}` does not read: {error}"
                 ))
             })?;
+            if let Some(table) = parsed.tables().first() {
+                return fail(format!(
+                    "{command}: `{name}` takes a value, not a lookup: `{source}` looks a value up in table `{table}`"
+                ));
+            }
             let uses = parsed.variables();
             if !uses.is_empty() && kind == ParamKind::Choice {
                 return fail(format!(

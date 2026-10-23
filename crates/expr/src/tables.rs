@@ -4,7 +4,9 @@
 //! cells; one column is the key, whose cells name the rows. A row is found
 //! by its number, counted from 1 (`belt[2]`, `belt[profile]` with a
 //! variable that holds the number, as a choice parameter does), or by its
-//! key written as a text (`belt["GT2"]`). A number cell is taken in its
+//! key written as a text (`belt["GT2"]`). A number in the key column is
+//! matched by its label, as [`cell_label`] writes it: the row keyed 2.5 is
+//! `t["2.5"]`, while `t[2]` is always the second row. A number cell is taken in its
 //! column's unit, so the lookup has that column's dimension; a text cell
 //! can name a row but is not a value.
 //!
@@ -13,6 +15,7 @@
 
 use crate::error::ErrorKind;
 use crate::units::{Quantity, Unit};
+use std::sync::Arc;
 
 /// Most rows a table holds.
 pub const MAX_ROWS: usize = 10_000;
@@ -40,8 +43,9 @@ pub struct Table {
     pub columns: Vec<Column>,
     /// The index in `columns` of the key column.
     pub key: usize,
-    /// Each row has one cell per column.
-    pub rows: Vec<Vec<Cell>>,
+    /// Each row has one cell per column. Shared: the document keeps the
+    /// same cells, so handing a table to an evaluation copies no cell.
+    pub rows: Arc<Vec<Vec<Cell>>>,
 }
 
 /// How a lookup names its row.
@@ -82,6 +86,13 @@ impl Table {
                         found: q.dimension,
                     });
                 }
+                if !q.value.is_finite() {
+                    return Err(ErrorKind::RowOutOfRange {
+                        table: self.name.clone(),
+                        index: q.value,
+                        rows: self.rows.len(),
+                    });
+                }
                 let whole = q.value.round();
                 if (q.value - whole).abs() > 4.0 * f64::EPSILON * whole.abs().max(1.0) {
                     return Err(ErrorKind::NotWholeNumber {
@@ -101,7 +112,7 @@ impl Table {
             RowRef::Key(key) => self
                 .rows
                 .iter()
-                .position(|r| matches!(r.get(self.key), Some(Cell::Text(t)) if t == key))
+                .position(|r| r.get(self.key).is_some_and(|cell| cell_label(cell) == *key))
                 .ok_or_else(|| ErrorKind::UnknownKey {
                     table: self.name.clone(),
                     key: (*key).to_string(),
@@ -159,7 +170,7 @@ mod tests {
                 },
             ],
             key: 0,
-            rows: vec![
+            rows: Arc::new(vec![
                 vec![
                     Cell::Text("GT2".into()),
                     Cell::Number(2.0),
@@ -170,7 +181,8 @@ mod tests {
                     Cell::Number(0.2),
                     Cell::Text("n/a".into()),
                 ],
-            ],
+                vec![Cell::Number(2.5), Cell::Number(1.0), Cell::Number(0.0)],
+            ]),
         }
     }
 
@@ -190,6 +202,18 @@ mod tests {
             t.lookup(&one, "teeth").unwrap(),
             Quantity::dimensionless(20.0)
         );
-        assert_eq!(t.keys(), ["GT2", "T5"]);
+        assert_eq!(t.keys(), ["GT2", "T5", "2.5"]);
+        // A number key by its label; a row number is always a position.
+        assert_eq!(t.lookup(&RowRef::Key("2.5"), "pitch").unwrap().value, 1.0);
+        let two = RowRef::Number(Quantity::dimensionless(2.0));
+        assert_eq!(t.lookup(&two, "pitch").unwrap().value, 0.2);
+        // A row that is not a number is no row, never the first.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let row = RowRef::Number(Quantity::dimensionless(bad));
+            assert!(matches!(
+                t.lookup(&row, "pitch"),
+                Err(ErrorKind::RowOutOfRange { .. })
+            ));
+        }
     }
 }

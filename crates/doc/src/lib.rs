@@ -1768,6 +1768,11 @@ impl Document {
     /// Renames a variable everywhere: in the table, in other variables'
     /// expressions and in feature parameters. All or nothing.
     pub fn rename_variable(&mut self, old: &str, new: &str) -> Result<(), DocError> {
+        if self.table(new).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{new}` is a table; a variable needs a name of its own"
+            )));
+        }
         let mut table = self.variable_table()?;
         table.rename(old, new)?;
         let mut renamed_features = Vec::with_capacity(self.features.len());

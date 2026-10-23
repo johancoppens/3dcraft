@@ -91,10 +91,10 @@ fn exercise(source: &str) -> bool {
             },
         ],
         key: 0,
-        rows: vec![
+        rows: std::sync::Arc::new(vec![
             vec![crate::Cell::Text("GT2".into()), crate::Cell::Number(2.5)],
             vec![crate::Cell::Number(7.0), crate::Cell::Number(-1.0)],
-        ],
+        ]),
     };
     match expr.eval_with(lookup, std::slice::from_ref(&table)) {
         Ok(q) => assert!(q.value.is_finite(), "{source:?} gave {q:?}"),
