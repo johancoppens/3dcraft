@@ -589,7 +589,25 @@ impl Host {
             self.doc_action(action, picker);
             did = true;
         }
-        did
+        if let Some(path) = self.shell.take_open_recent() {
+            let outcome = self.run_as_user("file.open", Path::new(&path), false, None);
+            self.report("file.open", &outcome);
+            self.shell.sync(&mut self.session);
+            did = true;
+        }
+        if let Some(example) = self.shell.take_example() {
+            let session = &mut self.session;
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft3d_ui_egui::shell::run_example(session, example)
+            }))
+            .unwrap_or_else(|_| {
+                Err("internal error (a bug in 3DCraft, please report it)".to_string())
+            });
+            self.report("example", &built);
+            self.shell.sync(&mut self.session);
+            did = true;
+        }
+        self.pump_places() || did
     }
 }
 

@@ -1,5 +1,6 @@
 //! The flags of the page's address (`?webgl&open=part.3dcraft`): which
-//! renderer, and a document to open at the start. They work on an
+//! renderer, how files are saved, and a document to open at the start.
+//! They work on an
 //! iframe's `src` too (packaging/web/HOSTING.md).
 
 /// What the address asks for.
@@ -11,6 +12,10 @@ pub struct Flags {
     /// `?cpu`: the viewport rendered by the CPU reference renderer, on
     /// the page's own thread.
     pub cpu: bool,
+    /// `?download`: saved and exported files are downloads and files are
+    /// chosen with the page's file input, also where the browser has the
+    /// system's file dialogs (the File System Access API).
+    pub download: bool,
     /// `?open=<url>`: a `.3dcraft` or STEP file of the same site, opened
     /// at the start.
     pub open: Option<String>,
@@ -30,6 +35,7 @@ pub fn parse(search: &str) -> Flags {
         match key {
             "webgl" => flags.webgl = true,
             "cpu" => flags.cpu = true,
+            "download" => flags.download = true,
             "open" => flags.open = decode(value).filter(|url| same_site(url)),
             _ => {}
         }
@@ -106,6 +112,8 @@ mod tests {
         assert!(flags.cpu && !flags.webgl);
         assert_eq!(flags.open.as_deref(), Some("models/a b.3dcraft"));
         assert!(parse("webgl=1").webgl);
+        assert!(parse("?webgl&download").download);
+        assert!(!parse("?webgl").download);
     }
 
     #[test]

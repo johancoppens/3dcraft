@@ -686,7 +686,28 @@ impl Desk {
             self.doc_action(action);
             return true;
         }
-        false
+        if let Some(path) = self.host.shell.take_open_recent() {
+            let path = std::path::PathBuf::from(path);
+            self.start(
+                Waiting::File("file.open"),
+                "file.open".to_string(),
+                Box::new(move |session| {
+                    Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
+                }),
+            );
+            return true;
+        }
+        if let Some(example) = self.host.shell.take_example() {
+            self.start(
+                Waiting::File("example"),
+                format!("example {}", example.title),
+                Box::new(move |session| {
+                    Outcome::Ran(craft3d_ui_egui::shell::run_example(session, example))
+                }),
+            );
+            return true;
+        }
+        self.host.pump_places()
     }
 
     /// What a tab asked for, on the engine thread like every command, so
@@ -1139,7 +1160,22 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             ));
         }
     }
-    let host = Host::new(session);
+    let mut host = Host::new(session);
+    host.recent_file.clone_from(&options.recent_file);
+    // What the start screen and the Help menu show of this window.
+    let recent = options
+        .recent_file
+        .as_deref()
+        .map(crate::places::read_recent)
+        .unwrap_or_default();
+    host.recent_baseline = recent.clone();
+    let env = |name: &str| std::env::var(name).ok();
+    let data_folder = crate::places::data_folder(options, &env);
+    let agent = crate::places::agent_setup(
+        server.as_ref().map(|server| server.address().port()),
+        options.token_file.as_deref(),
+        &env,
+    );
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
     let desk = Rc::new(RefCell::new(
@@ -1162,7 +1198,10 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             // `--renderer cpu` asks for outright. The window never waits
             // for the CPU renderer: its sharp images are made on the
             // shell's own thread.
-            let shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
+            let mut shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
+            shell.set_recent_files(recent);
+            shell.set_data_folder(data_folder);
+            shell.set_agent_setup(agent);
             announce(&format!(
                 "viewport renderer: {}",
                 shell.renderer_report().describe()

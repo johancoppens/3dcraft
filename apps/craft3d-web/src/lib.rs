@@ -7,16 +7,23 @@
 //! (File, Open…, or drop it on the page), look at it with the viewport,
 //! the view cube, the feature tree and the selection; save it, export it
 //! (STEP, STL, 3MF, OBJ with its material library, DXF, SVG) and import
-//! STEP. Files the person saves or exports are browser downloads. There
-//! is no control channel and no MCP in the browser.
+//! STEP. Where the browser has the File System Access API (Chrome, Edge,
+//! Chromebooks) Open, Save As, Import and Export show the system's file
+//! dialogs and Save writes back to the document's file; elsewhere (or
+//! with `?download`) saved and exported files are browser downloads and
+//! files are chosen with the page's file input. There is no control
+//! channel and no MCP in the browser.
 //!
-//! - [`flags`]: `?webgl`, `?cpu`, `?open=` in the page's address.
+//! - [`flags`]: `?webgl`, `?cpu`, `?download`, `?open=` in the page's
+//!   address.
 //! - [`prefs`]: preferences in `localStorage`, which may be missing.
 //! - [`host`]: the session (files in memory) and the shell, and the File
 //!   menu's actions: everything but the browser, tested natively.
 //! - `page` (wasm32 only): eframe's web runner, the file chooser,
 //!   downloads, storage, the browser's warning before unsaved work is
 //!   closed, and the graphics device's errors.
+//! - `pickers` (wasm32 only): the system's file dialogs and writing to
+//!   the file one chose.
 //!
 //! The page runs on one thread: no `SharedArrayBuffer`, so no
 //! cross-origin isolation headers. The viewport is drawn by the GPU
@@ -31,4 +38,6 @@ pub mod flags;
 pub mod host;
 #[cfg(target_arch = "wasm32")]
 mod page;
+#[cfg(target_arch = "wasm32")]
+mod pickers;
 pub mod prefs;

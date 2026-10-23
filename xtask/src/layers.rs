@@ -123,6 +123,25 @@ fn inherits_workspace_lints(manifest: &str) -> bool {
     false
 }
 
+/// A format migration step marked as a stand-in for another branch's
+/// step (`PLACEHOLDER` in `crates/format/src/migrate.rs`) must be replaced
+/// before the branches meet on `main`: a released build with a stand-in
+/// would read that version's files wrongly. One error per line marked.
+fn placeholder_steps(migrate: &str) -> Vec<String> {
+    migrate
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("PLACEHOLDER"))
+        .map(|(i, _)| {
+            format!(
+                "crates/format/src/migrate.rs:{}: a PLACEHOLDER migration step; replace it by the \
+                 real step of that format version",
+                i + 1
+            )
+        })
+        .collect()
+}
+
 pub fn check() -> Result<(), String> {
     let mut errors = Vec::new();
     let mut checked = 0;
@@ -141,6 +160,15 @@ pub fn check() -> Result<(), String> {
                 "{name} does not opt in to the workspace lints (`[lints] workspace = true`)"
             )),
             Err(e) => errors.push(format!("cannot read {manifest_path}: {e}")),
+        }
+        if name == "craft3d-format" {
+            let migrate = std::path::Path::new(manifest_path)
+                .with_file_name("src")
+                .join("migrate.rs");
+            match std::fs::read_to_string(&migrate) {
+                Ok(text) => errors.extend(placeholder_steps(&text)),
+                Err(e) => errors.push(format!("cannot read {}: {e}", migrate.display())),
+            }
         }
         let Some(short) = short_name(name) else {
             continue; // xtask
@@ -204,6 +232,15 @@ pub fn check() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_placeholder_migration_step_is_refused() {
+        let text = "fn v1_to_v2() {}\n/// PLACEHOLDER for another branch\nfn v2_to_v3() {}\n";
+        let errors = placeholder_steps(text);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("migrate.rs:2:"), "{errors:?}");
+        assert!(placeholder_steps("fn v1_to_v2() {}\n").is_empty());
+    }
 
     #[test]
     fn lint_opt_in_is_detected() {

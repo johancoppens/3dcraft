@@ -66,7 +66,37 @@ Every length, angle and count may be an **expression** in the document's variabl
 - The variables and their values are listed by `document.inspect` (`variables`); there is no separate
   list command.
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
-  `ceil`, `round`, `trunc`, `mod`, the constant `pi`, and `^` for powers.
+  `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, the conditions
+  below, the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
+  a plain number).
+
+### Conditions
+
+A comparison (`<`, `<=`, `>`, `>=`, `==`, `!=`) is 1 when it holds and 0 when it does not; both sides
+have the same dimension. `&&` (and), `||` (or) and `!` (not) combine them. Three functions choose:
+
+```json
+[
+ ["variable.set", {"name": "length", "expr": "240 mm"}],
+ ["variable.set", {"name": "size", "expr": "2"}],
+ ["variable.set", {"name": "ribs", "expr": "if(length > 200 mm, 4, 2)"}],
+ ["variable.set", {"name": "wall", "expr": "clamp(length / 50, 1.2 mm, 5 mm)"}],
+ ["variable.set", {"name": "bore", "expr": "choose(size, 3 mm, 4 mm, 5 mm)"}]
+]
+```
+
+- `if(condition, a, b)` is `a` when the condition holds, else `b`. Only the chosen one is worked out, so
+  the other may fail: `if(n > 0, total / n, 0 mm)` does not divide by zero. `a` and `b` have the same
+  dimension; the branch not taken is only checked for that when it can be worked out. A name that is
+  no variable at all (a typo) is refused in either branch, so it shows before the condition flips.
+- `clamp(x, low, high)` keeps `x` between the bounds; `low` may not be above `high`.
+- `choose(i, a, b, ...)` is the `i`-th value, counted from 1 (`i` a whole number).
+- `==` treats two values as equal when they differ by less than a part in 10^12, so `0.1 + 0.2 == 0.3`
+  holds. Compare values with each other, not their difference with zero: `sin(pi) == 0` is false.
+- Order, loosest first: `||`, then `&&`, then `!`, then the comparisons, then `+ -`, `* /` and `^`:
+  `a > 1 && b > 1 || c` is `((a > 1) && (b > 1)) || c`, `!a > b` is `!(a > b)` and `!a + b` is
+  `!(a + b)`: put the operand of `!` in parentheses when you mean less (`(!a) + b`). `a < b < c` is
+  refused: write `a < b && b < c`.
 - `variable.set` on an existing name changes it, and every feature that uses it is rebuilt.
   `variable.rename` renames it everywhere it is used. `variable.delete` refuses a variable that is still
   used and names what uses it; with `"force": true` it deletes it anyway, and what used it then fails
