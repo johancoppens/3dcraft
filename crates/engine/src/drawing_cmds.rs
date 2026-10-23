@@ -234,7 +234,7 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
     };
     // The instances of the sketch's patterns are curves of the outline
     // too: drawn as entities of a copy, at the places regeneration made.
-    let (drawn, placed) = with_instances(sketch, solved)
+    let (drawn, placed, splines) = with_instances(sketch, solved)
         .map_err(|e| CommandError::new(format!("{ID}: the sketch `{name}`: {e}")))?;
     let outline = craft3d_io::sketch_outline(
         &drawn,
@@ -244,6 +244,17 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
                 .or_else(|| placed.get(&entity).copied())
         },
         &|entity| solved.radius(entity),
+        &|entity| {
+            splines.get(&entity).cloned().or_else(|| {
+                solved.curve(entity).map(|c| {
+                    (
+                        c.spline.degree,
+                        c.spline.knots.clone(),
+                        c.spline.control.clone(),
+                    )
+                })
+            })
+        },
         construction,
         doc.tolerance.linear,
     )
@@ -274,6 +285,9 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
 
 /// Where the points [`with_instances`] adds lie.
 type Placed = std::collections::BTreeMap<craft3d_doc::EntityId, (f64, f64)>;
+/// The splines [`with_instances`] adds as they are: on their own knots,
+/// which a sketch spline (on uniform knots) cannot hold.
+type Splines = std::collections::BTreeMap<craft3d_doc::EntityId, craft3d_io::FittedSpline>;
 
 /// `sketch` with the curves its patterns make added as entities of their
 /// own (on points of their own, at the places the instances have), and
@@ -281,21 +295,23 @@ type Placed = std::collections::BTreeMap<craft3d_doc::EntityId, (f64, f64)>;
 fn with_instances(
     sketch: &craft3d_doc::Sketch,
     solved: &craft3d_regen::SketchResult,
-) -> Result<(craft3d_doc::Sketch, Placed), String> {
+) -> Result<(craft3d_doc::Sketch, Placed, Splines), String> {
     let mut drawn = sketch.clone();
     let mut placed = Placed::new();
+    let mut splines = Splines::new();
     if sketch.patterns.is_empty() {
-        return Ok((drawn, placed));
+        return Ok((drawn, placed, splines));
     }
     let instances = craft3d_regen::pattern_instances(sketch, solved)?;
     add_curves(
         &mut drawn,
         &mut placed,
+        &mut splines,
         instances
             .into_iter()
             .map(|(made, construction)| (made.curve, construction)),
     )?;
-    Ok((drawn, placed))
+    Ok((drawn, placed, splines))
 }
 
 /// Adds `curves` to `drawn` as entities on points of their own, and
@@ -303,6 +319,7 @@ fn with_instances(
 fn add_curves(
     drawn: &mut craft3d_doc::Sketch,
     placed: &mut Placed,
+    splines: &mut Splines,
     curves: impl Iterator<Item = (craft3d_regen::Curve2, bool)>,
 ) -> Result<(), String> {
     use craft3d_regen::Curve2;
@@ -328,13 +345,14 @@ fn add_curves(
             }
             Curve2::Spline(spline) => {
                 let mut control = Vec::with_capacity(spline.control.len());
-                for point in spline.control {
-                    control.push(at(point)?);
+                for point in &spline.control {
+                    control.push(at(*point)?);
                 }
                 let degree = u32::try_from(spline.degree).map_err(|e| e.to_string())?;
-                drawn
+                let id = drawn
                     .add_spline(degree, control, construction)
                     .map_err(text)?;
+                splines.insert(id, (spline.degree, spline.knots, spline.control));
             }
         }
     }
@@ -369,9 +387,11 @@ fn offset(session: &mut Session, id: craft3d_doc::FeatureId) -> Result<Source, C
         .clone();
     let mut drawn = craft3d_doc::Sketch::new(plane);
     let mut placed = Placed::new();
+    let mut splines = Splines::new();
     add_curves(
         &mut drawn,
         &mut placed,
+        &mut splines,
         made.outline.curves.iter().map(|c| (c.curve.clone(), false)),
     )
     .map_err(|e| CommandError::new(format!("{ID}: the offset `{name}`: {e}")))?;
@@ -380,6 +400,7 @@ fn offset(session: &mut Session, id: craft3d_doc::FeatureId) -> Result<Source, C
         &|entity| placed.get(&entity).copied(),
         // A circle has its radius in the sketch.
         &|_| None,
+        &|entity| splines.get(&entity).cloned(),
         false,
         doc.tolerance.linear,
     )

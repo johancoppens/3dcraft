@@ -12,7 +12,7 @@
 //! [`crate::regenerate_cached`] returns exactly what [`crate::regenerate`]
 //! does.
 
-use crate::sketch::{Placement, SketchResult, solve_sketch};
+use crate::sketch::{FormulaFits, Placement, SketchResult, formula_fits, solve_sketch};
 use crate::{FeatureResult, Status};
 use craft3d_doc::{Document, Feature, FeatureId, FeatureKind, Sketch, Tolerance, Units};
 use craft3d_expr::{Dimension, Evaluation};
@@ -105,6 +105,53 @@ struct Solve {
     outcome: (Status, Option<SketchResult>),
 }
 
+/// The formula curves of a sketch as they were fitted, and what they were
+/// fitted with: their definitions, every variable (the formulas may use
+/// any of them, and whatever else the evaluation holds), the units and the
+/// tolerance.
+#[derive(Clone)]
+struct Fitted {
+    formulas: Vec<craft3d_doc::Entity>,
+    variables: Evaluation,
+    units: Units,
+    tolerance: (u64, u64),
+    fits: Arc<FormulaFits>,
+}
+
+/// The formula curves of a sketch, as compared for a fit.
+fn formulas(sketch: &Sketch) -> Vec<craft3d_doc::Entity> {
+    sketch
+        .entities
+        .iter()
+        .filter(|e| matches!(e.geometry, craft3d_doc::Geometry::Formula { .. }))
+        .cloned()
+        .collect()
+}
+
+/// The fits as values a cache entry is keyed on: every bit of every
+/// control point and knot, or the reason a curve has no fit. A formula
+/// curve's expressions cannot be evaluated without its parameter, so its
+/// fit stands for them.
+fn fit_values(fits: &FormulaFits) -> Vec<Evaluated> {
+    let mut out = Vec::new();
+    for (_, fit) in fits {
+        match fit {
+            Ok(fit) => {
+                let spline = &fit.spline;
+                out.extend(
+                    spline
+                        .knots
+                        .iter()
+                        .chain(spline.control.iter().flatten())
+                        .map(|v| Ok((v.to_bits(), Dimension::LENGTH))),
+                );
+            }
+            Err(reason) => out.push(Err(reason.clone())),
+        }
+    }
+    out
+}
+
 /// What one document's last regeneration found, per feature. Keep one per
 /// open document and pass it to every regeneration of that document; using
 /// it for another document is safe (everything is compared), only useless.
@@ -112,6 +159,7 @@ struct Solve {
 pub struct RegenCache {
     entries: BTreeMap<FeatureId, Entry>,
     solves: BTreeMap<FeatureId, Solve>,
+    fits: BTreeMap<FeatureId, Fitted>,
     next_stamp: u64,
     /// What the last regeneration found of each feature, in the order of
     /// its history: what the next one compares with to know, without
@@ -241,6 +289,43 @@ impl RegenCache {
             })
     }
 
+    /// The fits of the formula curves of sketch `id`, or the last ones when
+    /// nothing they are fitted with has changed.
+    pub(crate) fn formula_fits(
+        &mut self,
+        id: FeatureId,
+        doc: &Document,
+        variables: &Evaluation,
+        sketch: &Sketch,
+    ) -> Arc<FormulaFits> {
+        let now = formulas(sketch);
+        if now.is_empty() {
+            self.fits.remove(&id);
+            return Arc::new(Vec::new());
+        }
+        let tolerance = bits(doc.tolerance);
+        if let Some(fitted) = self.fits.get(&id)
+            && fitted.units == doc.units
+            && fitted.tolerance == tolerance
+            && fitted.formulas == now
+            && fitted.variables == *variables
+        {
+            return Arc::clone(&fitted.fits);
+        }
+        let fits = Arc::new(formula_fits(doc, variables, sketch));
+        self.fits.insert(
+            id,
+            Fitted {
+                formulas: now,
+                variables: variables.clone(),
+                units: doc.units,
+                tolerance,
+                fits: Arc::clone(&fits),
+            },
+        );
+        fits
+    }
+
     /// Solves `sketch` on the flat plane, or returns how it solved the
     /// last time when nothing it depends on has changed.
     pub(crate) fn solve(
@@ -250,7 +335,9 @@ impl RegenCache {
         variables: &Evaluation,
         sketch: &Sketch,
     ) -> (Status, Option<SketchResult>) {
-        let values = evaluated(variables, &sketch.exprs());
+        let fits = self.formula_fits(id, doc, variables, sketch);
+        let mut values = evaluated(variables, &sketch.exprs());
+        values.extend(fit_values(&fits));
         let tolerance = bits(doc.tolerance);
         if let Some(solve) = self.solves.get(&id)
             && solve.units == doc.units
@@ -260,7 +347,7 @@ impl RegenCache {
         {
             return solve.outcome.clone();
         }
-        let outcome = solve_sketch(doc, variables, sketch, Ok(Placement::FLAT));
+        let outcome = solve_sketch(doc, variables, sketch, Ok(Placement::FLAT), &fits);
         self.solves.insert(
             id,
             Solve {
@@ -279,6 +366,7 @@ impl RegenCache {
         let present: BTreeSet<FeatureId> = doc.features.iter().map(|f| f.id).collect();
         self.entries.retain(|id, _| present.contains(id));
         self.solves.retain(|id, _| present.contains(id));
+        self.fits.retain(|id, _| present.contains(id));
     }
 }
 
@@ -589,7 +677,12 @@ pub(crate) fn features(
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
-        let values = evaluated(variables, &feature.kind.exprs());
+        let mut values = evaluated(variables, &feature.kind.exprs());
+        if let FeatureKind::Sketch(sketch) = &feature.kind {
+            values.extend(fit_values(
+                &cache.formula_fits(feature.id, doc, variables, sketch),
+            ));
+        }
         let group = crate::split::group_state(doc, stated);
         let unchanged = !changed.is_marked(stated.id)
             && feature

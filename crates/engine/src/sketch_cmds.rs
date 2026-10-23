@@ -1121,6 +1121,19 @@ fn removal_json(removal: &Removal, mut own: Value) -> Value {
     own
 }
 
+/// How regeneration fitted a formula curve or a live spline: the size of
+/// the spline and, for a formula, how far it was found from it.
+fn fit_json(fitted: &craft3d_regen::FittedCurve) -> Value {
+    let mut fit = json!({
+        "degree": fitted.spline.degree,
+        "controlPoints": fitted.spline.control.len(),
+    });
+    if let (Some(map), Some(deviation)) = (fit.as_object_mut(), fitted.deviation) {
+        map.insert("deviation".into(), deviation.into());
+    }
+    fit
+}
+
 fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.inspect";
     let p = Params::new(COMMAND, params, &["sketch"])?;
@@ -1153,6 +1166,39 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                             "closed".into(),
                             (control.len() > 1 && control.first() == control.last()).into(),
                         );
+                    }
+                    Geometry::Formula {
+                        ref x,
+                        ref y,
+                        ref from,
+                        ref to,
+                        start,
+                        end,
+                    } => {
+                        map.insert("x".into(), x.source().into());
+                        map.insert("y".into(), y.source().into());
+                        map.insert("from".into(), from.source().into());
+                        map.insert("to".into(), to.source().into());
+                        map.insert("start".into(), start.to_string().into());
+                        map.insert("end".into(), end.to_string().into());
+                        map.insert("closed".into(), (start == end).into());
+                        if let Some(fitted) = solved.and_then(|s| s.curve(entity.id)) {
+                            map.insert("fit".into(), fit_json(fitted));
+                        }
+                    }
+                    Geometry::Interpolated {
+                        degree,
+                        ref through,
+                    } => {
+                        map.insert("degree".into(), degree.into());
+                        map.insert("through".into(), ids(through).into());
+                        map.insert(
+                            "closed".into(),
+                            (through.len() > 1 && through.first() == through.last()).into(),
+                        );
+                        if let Some(fitted) = solved.and_then(|s| s.curve(entity.id)) {
+                            map.insert("fit".into(), fit_json(fitted));
+                        }
                     }
                     Geometry::Image { of, pattern, index } => {
                         map.insert("of".into(), of.to_string().into());

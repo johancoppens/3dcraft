@@ -233,6 +233,13 @@ pub(crate) fn drawn<'a>(
                     format!("sketch `{name}`: {} has no solved radius", entity.id)
                 })?,
             },
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => Curve2::Spline(
+                solved
+                    .curve(entity.id)
+                    .ok_or_else(|| format!("sketch `{name}`: {} has no fitted curve", entity.id))?
+                    .spline
+                    .clone(),
+            ),
         };
         curves.push(SketchCurve {
             id: entity.id.0,

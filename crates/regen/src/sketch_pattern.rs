@@ -1014,6 +1014,56 @@ pub(crate) fn instance_curves(
                     control,
                 })
             }
+            Geometry::Formula { start, end, .. } => {
+                // The seed's fit, moved as the instance moves its ends:
+                // the maps of patterns are rigid.
+                let seed = &solved
+                    .curve(entity.id)
+                    .ok_or_else(|| format!("{} has no fitted curve", entity.id))?
+                    .spline;
+                if start == end {
+                    return Err(format!(
+                        "{}: a closed formula curve in a pattern is not supported yet; end it on two points",
+                        entity.id
+                    ));
+                }
+                let (Some(&s0), Some(&e0)) = (seed.control.first(), seed.control.last()) else {
+                    return Err(format!("{} has no fitted points", entity.id));
+                };
+                let (s1, e1) = (at(*start)?, at(*end)?);
+                let turn =
+                    (e1[1] - s1[1]).atan2(e1[0] - s1[0]) - (e0[1] - s0[1]).atan2(e0[0] - s0[0]);
+                let (sin, cos) = turn.sin_cos();
+                let mut control: Vec<[f64; 2]> = seed
+                    .control
+                    .iter()
+                    .map(|p| {
+                        let (ux, uy) = (p[0] - s0[0], p[1] - s0[1]);
+                        [s1[0] + ux * cos - uy * sin, s1[1] + ux * sin + uy * cos]
+                    })
+                    .collect();
+                if let Some(first) = control.first_mut() {
+                    *first = s1;
+                }
+                if let Some(last) = control.last_mut() {
+                    *last = e1;
+                }
+                Curve2::Spline(Spline2 {
+                    degree: seed.degree,
+                    knots: seed.knots.clone(),
+                    control,
+                })
+            }
+            Geometry::Interpolated { degree, through } => {
+                let through = through
+                    .iter()
+                    .map(|id| at(*id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Curve2::Spline(
+                    crate::curve_fit::interpolated(*degree, &through)
+                        .map_err(|why| format!("{}: {why}", name()))?,
+                )
+            }
             Geometry::Point { .. } | Geometry::Image { .. } => return Ok(()),
         };
         let words = words_of(patterns, entity.id, levels)?;

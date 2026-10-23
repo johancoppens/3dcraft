@@ -7,7 +7,9 @@
 //! so the solver shapes it by its points. `through` is not a second kind
 //! of spline: the control points of the spline that passes through the
 //! given points are worked out here, once, and from then on it is a spline
-//! like any other.
+//! like any other. With `live`, it is: a spline through points that is
+//! fitted again at every regeneration (`craft3d_doc::Geometry::Interpolated`),
+//! so points held by formulas move it.
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
@@ -17,62 +19,16 @@ use crate::{CommandSpec, Session};
 use craft3d_doc::{
     EntityId, MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, clamped_uniform_knots,
 };
+use craft3d_regen::curve_fit::{basis, interpolate};
 use serde_json::{Value, json};
-
-/// Most points `through` takes: the system that gives the control points
-/// is solved densely, which costs the cube of this.
-const MAX_THROUGH_POINTS: usize = 400;
 
 /// Most points a spline is drawn with.
 const MAX_DRAWN_POINTS: usize = 4096;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "construction": boolean = false}"#,
-        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(e7)), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at).", doc: true, sketch_spline),
+    spec!("sketch.spline", "Sketch Spline", r#"{"sketch": id or name, "control": [point id or [x, y], ...], "through": [point id or [x, y], ...], "degree": integer = 3, "closed": boolean = false, "live": boolean = false, "construction": boolean = false}"#,
+        "Adds a B-spline. Give either control: its control points in order (it starts at the first, ends at the last and leaves each along the leg to the next; the points in between pull it without lying on it), or through: points it passes through, from which the control points are worked out once (the first and last are shared as given, the ones in between become new control points). An existing point (\"e1\") shares an end with a line, an arc or another spline, which is how a spline closes a profile; a tangent constraint between the two then makes the corner smooth. degree is from 1 to 7 and needs degree + 1 points; closed brings the spline back to its first point. A profile takes splines that do not cross or touch themselves or other curves, extruded or revolved: a closed spline is a profile on its own (its wall is made in two faces, the second called F2:piece(1)/F2:side(e7)), and a spline of degree 1 is a polyline whose every leg sweeps a flat face (numbered the same way). Revolved, a spline has to stay clear of the axis (a line may lie on it). Returns the spline and its control points; move one with sketch.edit (entity and at). With live (only with through) the points given are the spline's own points, kept as they are, and the spline is fitted through them again at every regeneration: points held by formulas ([\"r * cos(30 deg)\", \"r * sin(30 deg)\"]) or by constraints move it, and the fit is the same as through gives once. A live spline takes no tangent or pointOn constraint yet; returns the spline and its through points.", doc: true, sketch_spline),
 ];
-
-/// The span of `knots` that holds `u` (the index `k` with
-/// `knots[k] <= u < knots[k + 1]`, the last span for the end of the range)
-/// and the `degree + 1` basis functions that are not zero there: those of
-/// the control points `k − degree ..= k`. (*The NURBS Book*, algorithms
-/// A2.1 and A2.2.) `None` when the knots do not fit `count` control
-/// points of this degree.
-fn basis(degree: usize, knots: &[f64], count: usize, u: f64) -> Option<(usize, Vec<f64>)> {
-    if degree == 0 || count <= degree || knots.len() != count.checked_add(degree)?.checked_add(1)? {
-        return None;
-    }
-    let (start, end) = (*knots.get(degree)?, *knots.get(count)?);
-    if !(u.is_finite() && start < end) {
-        return None;
-    }
-    let u = u.clamp(start, end);
-    let mut span = degree;
-    for k in degree..count {
-        if *knots.get(k)? <= u {
-            span = k;
-        }
-    }
-    let mut values = vec![0.0; degree + 1];
-    let (mut left, mut right) = (vec![0.0; degree + 1], vec![0.0; degree + 1]);
-    *values.first_mut()? = 1.0;
-    for j in 1..=degree {
-        *left.get_mut(j)? = u - knots.get(span + 1 - j)?;
-        *right.get_mut(j)? = knots.get(span + j)? - u;
-        let mut saved = 0.0;
-        for r in 0..j {
-            let width = right.get(r + 1)? + left.get(j - r)?;
-            let share = if width > 0.0 {
-                values.get(r)? / width
-            } else {
-                0.0
-            };
-            *values.get_mut(r)? = saved + right.get(r + 1)? * share;
-            saved = left.get(j - r)? * share;
-        }
-        *values.get_mut(j)? = saved;
-    }
-    Some((span, values))
-}
 
 /// A sketch spline of `degree` on these control points, for evaluating.
 pub(crate) struct SplineCurve<'a> {
@@ -153,105 +109,6 @@ impl<'a> SplineCurve<'a> {
     }
 }
 
-/// The control points of the spline of `degree` on clamped uniform knots
-/// that passes through `through`, in order: as many as there are points.
-///
-/// The spline takes point `i` at the Greville abscissa of control point
-/// `i` (the mean of its `degree` inner knots), which makes the system
-/// that gives the control points well conditioned whatever the points are
-/// (Schoenberg and Whitney's condition holds by construction). The first
-/// and last control points are the first and last points themselves.
-pub(crate) fn interpolate(degree: u32, through: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
-    let count = through.len();
-    let knots = clamped_uniform_knots(degree, count);
-    let p = usize::try_from(degree).unwrap_or(usize::MAX);
-    if knots.is_empty() {
-        return Err(format!(
-            "a spline of degree {degree} through points needs from {} to {MAX_SPLINE_POINTS} of them, got {count}",
-            p.saturating_add(1)
-        ));
-    }
-    if count > MAX_THROUGH_POINTS {
-        return Err(format!(
-            "a spline is fitted through at most {MAX_THROUGH_POINTS} points, got {count}; give control points instead"
-        ));
-    }
-    // One row per point: the basis functions at its parameter, and the
-    // point as the right-hand side.
-    let mut rows: Vec<(Vec<f64>, f64, f64)> = Vec::with_capacity(count);
-    for (i, point) in through.iter().enumerate() {
-        let inner = knots.get(i + 1..=i + p).ok_or("the knots are too short")?;
-        let u = if i == 0 {
-            0.0
-        } else if i + 1 == count {
-            1.0
-        } else {
-            inner.iter().sum::<f64>() / p as f64
-        };
-        let (span, values) = basis(p, &knots, count, u).ok_or("the knots do not fit")?;
-        let mut row = vec![0.0; count];
-        let first = span.checked_sub(p).ok_or("the knots do not fit")?;
-        for (slot, value) in row.iter_mut().skip(first).zip(&values) {
-            *slot = *value;
-        }
-        rows.push((row, point.0, point.1));
-    }
-    // Gaussian elimination with partial pivoting.
-    for column in 0..count {
-        let pivot = (column..count)
-            .max_by(|&a, &b| {
-                let size = |r: usize| {
-                    rows.get(r)
-                        .and_then(|row| row.0.get(column))
-                        .map_or(0.0, |v| v.abs())
-                };
-                size(a).total_cmp(&size(b))
-            })
-            .ok_or("there are no points")?;
-        rows.swap(column, pivot);
-        let (top, rest) = rows.split_at_mut(column + 1);
-        let lead = top.last().ok_or("a row is missing")?;
-        let diagonal = *lead.0.get(column).ok_or("a column is missing")?;
-        if diagonal.is_nan() || diagonal.abs() <= 1e-12 {
-            return Err("the points do not determine a spline of this degree".into());
-        }
-        for row in rest {
-            let factor = row.0.get(column).copied().unwrap_or(0.0) / diagonal;
-            if factor == 0.0 {
-                continue;
-            }
-            for (slot, value) in row.0.iter_mut().zip(&lead.0).skip(column) {
-                *slot -= factor * value;
-            }
-            row.1 -= factor * lead.1;
-            row.2 -= factor * lead.2;
-        }
-    }
-    let mut control = vec![(0.0, 0.0); count];
-    for i in (0..count).rev() {
-        let (row, x, y) = rows.get(i).ok_or("a row is missing")?;
-        let (mut x, mut y) = (*x, *y);
-        for (value, solved) in row.iter().zip(&control).skip(i + 1) {
-            x -= value * solved.0;
-            y -= value * solved.1;
-        }
-        let diagonal = *row.get(i).ok_or("a column is missing")?;
-        let solved = (x / diagonal, y / diagonal);
-        if !(solved.0.is_finite() && solved.1.is_finite()) {
-            return Err("the points do not determine a spline of this degree".into());
-        }
-        *control.get_mut(i).ok_or("a point is missing")? = solved;
-    }
-    // The ends are the end points exactly, not within rounding.
-    if let (Some(first), Some(point)) = (control.first_mut(), through.first()) {
-        *first = *point;
-    }
-    if let (Some(last), Some(point)) = (control.last_mut(), through.last()) {
-        *last = *point;
-    }
-    Ok(control)
-}
-
 fn points_param(
     typed: &Typed<'_>,
     p: &Params,
@@ -306,6 +163,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             "through",
             "degree",
             "closed",
+            "live",
             "construction",
         ],
     )?;
@@ -332,7 +190,13 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
         .map_or(Ok(3), u32::try_from)
         .map_err(|_| p.missing("degree"))?;
     let closed = p.bool("closed")?.unwrap_or(false);
+    let live = p.bool("live")?.unwrap_or(false);
     let construction = p.bool("construction")?.unwrap_or(false);
+    if live && !fitted {
+        return fail(format!(
+            "{COMMAND}: `live` fits a spline through points at every regeneration: give `through`, not `control`"
+        ));
+    }
     if closed {
         let Some(first) = given.first().cloned() else {
             return fail(format!("{COMMAND}: a closed spline needs points"));
@@ -354,6 +218,53 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
     let tolerance = session.document()?.history.current().tolerance.linear;
 
     let before = crate::commands::failing(session)?;
+    if live {
+        let (spline, points) = change(session, COMMAND, "Add live spline", id, |s| {
+            let last = given.len().saturating_sub(1);
+            // Two points in a row at one place, where both are known now.
+            let places: Vec<Option<(f64, f64)>> = given.iter().map(|g| g.drawn(s)).collect();
+            for (i, pair) in places.windows(2).enumerate() {
+                if let [Some(a), Some(b)] = pair
+                    && (a.0 - b.0).hypot(a.1 - b.1) <= tolerance
+                    && !(closed && i + 1 == last)
+                {
+                    return invalid(format!(
+                        "points {} and {} of the spline are at the same place ({}, {}); a spline takes each place once",
+                        i + 1,
+                        i + 2,
+                        a.0,
+                        a.1
+                    ));
+                }
+            }
+            let mut points: Vec<EntityId> = Vec::with_capacity(given.len());
+            for (i, point) in given.iter().enumerate() {
+                points.push(if closed && i == last {
+                    *points
+                        .first()
+                        .ok_or(SketchError::Invalid("a closed spline needs points".into()))?
+                } else {
+                    point.place(s)?
+                });
+            }
+            let spline = s.add_interpolated(degree, points.clone(), construction)?;
+            Ok((spline, points))
+        })?;
+        let (start, end) = (points.first().copied(), points.last().copied());
+        return sketch_result(
+            session,
+            id,
+            Some(&before),
+            json!({
+                "entity": spline.to_string(),
+                "degree": degree,
+                "live": true,
+                "through": ids(&points),
+                "start": start.map(|id| id.to_string()),
+                "end": end.map(|id| id.to_string()),
+            }),
+        );
+    }
     let (spline, points) = change(session, COMMAND, "Add spline", id, |s| {
         // Two points in a row at one place make a corner (or, for a point
         // to pass through, ask the impossible).
@@ -429,6 +340,7 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_regen::curve_fit::MAX_THROUGH_POINTS;
 
     #[test]
     fn the_basis_functions_are_a_partition_of_unity() {
