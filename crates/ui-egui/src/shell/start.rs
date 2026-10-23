@@ -243,8 +243,14 @@ impl AgentSetup {
     /// The same as a command line for a client that adds servers that
     /// way (Claude Code), quoted for the platform.
     pub fn claude_command(&self) -> String {
+        format!("claude mcp add craft3d -- {}", self.server_command())
+    }
+
+    /// The MCP server's command line, quoted for the platform: what the
+    /// configuration starts.
+    pub fn server_command(&self) -> String {
         format!(
-            "claude mcp add craft3d -- {} mcp --bridge {} --control-token-file {}",
+            "{} mcp --bridge {} --control-token-file {}",
             shell_word(&self.cli, self.windows),
             self.port.unwrap_or(GUIDE_PORT),
             shell_word(self.token(), self.windows)
@@ -275,15 +281,48 @@ pub(crate) struct StartMemory {
     hits: Vec<(String, egui::Rect)>,
     /// The logo and the thumbnails, once loaded.
     pictures: Option<Pictures>,
+    /// The layout of the last frame.
+    layout: Option<StartLayout>,
 }
 
-/// Widest the card is, in points.
-const CARD_WIDTH: f32 = 760.0;
-/// A thumbnail as the card shows it, in points, and the examples per row.
-const THUMB: egui::Vec2 = egui::vec2(128.0, 96.0);
-const PER_ROW: usize = 5;
-/// The logo's side, in points.
-const LOGO_SIDE: f32 = 64.0;
+/// How the card is laid out for the room the window gives it: roomy
+/// (a large logo, large thumbnails five to a row) or, below
+/// [`ROOMY_HEIGHT`], compact (a smaller logo, small thumbnails all in one
+/// row where the width allows), so it fits without scrolling down to
+/// 1024 × 700 and 1366 × 768.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StartLayout {
+    /// The card's width, in points.
+    pub width: f32,
+    pub logo: f32,
+    pub thumb: egui::Vec2,
+    pub per_row: usize,
+}
+
+/// The least height (of the room for the card, in points) for the roomy
+/// layout.
+pub const ROOMY_HEIGHT: f32 = 760.0;
+
+impl StartLayout {
+    /// The layout for room of `size` points.
+    pub fn for_room(size: egui::Vec2) -> Self {
+        if size.y >= ROOMY_HEIGHT {
+            Self {
+                width: size.x.min(880.0),
+                logo: 64.0,
+                thumb: egui::vec2(128.0, 96.0),
+                per_row: 5,
+            }
+        } else {
+            Self {
+                width: size.x.min(980.0),
+                logo: 40.0,
+                thumb: egui::vec2(96.0, 72.0),
+                per_row: EXAMPLES.len(),
+            }
+        }
+    }
+}
 
 impl Shell {
     /// The example chosen on the start screen, for the host to build
@@ -343,7 +382,9 @@ impl Shell {
         if inner.width() < 120.0 || inner.height() < 80.0 {
             return;
         }
-        let width = CARD_WIDTH.min(inner.width());
+        let layout = StartLayout::for_room(inner.size());
+        self.start.layout = Some(layout);
+        let width = layout.width;
         let top = (inner.center().y - self.start.height * 0.5).max(inner.top());
         let area = egui::Rect::from_min_max(
             egui::pos2(inner.center().x - width * 0.5, top),
@@ -385,9 +426,10 @@ impl Shell {
         card.show(ui, |ui| {
             ui.set_width(width - 48.0);
             ui.vertical_centered(|ui| {
+                let side = self.start.layout.map_or(64.0, |l| l.logo);
                 let logo = self.start.pictures.as_ref().and_then(|p| p.logo.as_ref());
                 if let Some(logo) = logo {
-                    ui.add(egui::Image::new((logo.id(), egui::vec2(LOGO_SIDE, LOGO_SIDE))));
+                    ui.add(egui::Image::new((logo.id(), egui::vec2(side, side))));
                 }
                 ui.label(egui::RichText::new(super::PRODUCT).size(26.0).strong());
                 ui.colored_label(dim, format!("Version {}", super::help::VERSION));
@@ -457,12 +499,18 @@ impl Shell {
     fn example_grid(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let gap = tokens.inset;
-        let label_height = 22.0;
-        let card = egui::vec2(THUMB.x, THUMB.y + label_height);
+        let layout = self
+            .start
+            .layout
+            .unwrap_or_else(|| StartLayout::for_room(egui::vec2(760.0, ROOMY_HEIGHT)));
+        let thumb = layout.thumb;
+        let gap = if layout.per_row > 5 { gap * 0.8 } else { gap };
+        let label_height = 20.0;
+        let card = egui::vec2(thumb.x, thumb.y + label_height);
         let per_row = {
             let fit = ((ui.available_width() + gap) / (card.x + gap)).floor();
             if fit.is_finite() && fit >= 1.0 {
-                (fit as usize).min(PER_ROW)
+                (fit as usize).min(layout.per_row)
             } else {
                 1
             }
@@ -496,7 +544,7 @@ impl Shell {
                         .on_hover_text(format!("{}: {}", example.title, example.summary))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let painter = ui.painter_at(rect.expand(2.0));
-                    let image = egui::Rect::from_min_size(rect.min, THUMB);
+                    let image = egui::Rect::from_min_size(rect.min, thumb);
                     let radius = egui::CornerRadius::same(tokens.radius);
                     painter.rect_filled(image, radius, color(tokens.plate_fill));
                     if let Some(Some(id)) = index.and_then(|i| thumbs.get(i)) {
@@ -516,10 +564,10 @@ impl Shell {
                         );
                     }
                     painter.text(
-                        egui::pos2(rect.min.x + 2.0, image.max.y + 4.0),
+                        egui::pos2(rect.min.x + 2.0, image.max.y + 3.0),
                         egui::Align2::LEFT_TOP,
                         example.title,
-                        egui::FontId::proportional(13.0),
+                        egui::FontId::proportional(if thumb.x < 110.0 { 12.0 } else { 13.0 }),
                         color(if response.hovered() {
                             tokens.text
                         } else {
@@ -549,34 +597,52 @@ impl Shell {
             return;
         }
         let setup = self.start.agent.clone();
-        if setup.listening() {
-            ui.colored_label(
-                dim,
-                "This window listens for an agent. Give your MCP client this server, and the agent models here while you watch:",
-            );
-        } else {
-            ui.colored_label(
-                dim,
-                format!(
-                    "Start the window so that it listens ({}), then give your MCP client this server:",
-                    setup.window_command()
-                ),
-            );
+        let mono = |text: &str| {
+            egui::RichText::new(text)
+                .font(egui::FontId::monospace(11.5))
+                .color(color(tokens.plate_text))
+        };
+        // A line of code on a dark plate, cut at the plate's edge (the
+        // whole line on hover).
+        let plate = |ui: &mut egui::Ui, text: &str| {
+            egui::Frame::new()
+                .fill(color(tokens.plate_fill))
+                .corner_radius(egui::CornerRadius::same(tokens.radius))
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(mono(text)).truncate())
+                        .on_hover_text(text);
+                });
+        };
+        if !setup.listening() {
+            ui.colored_label(dim, "Start the window so that it listens:");
+            plate(ui, &setup.window_command());
+            ui.add_space(tokens.inset * 0.3);
         }
-        ui.add_space(tokens.inset * 0.4);
+        ui.colored_label(
+            dim,
+            if setup.listening() {
+                "This window listens. Give your MCP client this server, and the agent models here while you watch:"
+            } else {
+                "Then give your MCP client this server:"
+            },
+        );
+        plate(ui, &setup.server_command());
         let config = setup.mcp_config();
-        let code = egui::Frame::new()
-            .fill(color(tokens.plate_fill))
-            .corner_radius(egui::CornerRadius::same(tokens.radius))
-            .inner_margin(egui::Margin::same(10));
-        code.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(&config)
-                    .font(egui::FontId::monospace(11.5))
-                    .color(color(tokens.plate_text)),
-            );
-        });
+        egui::CollapsingHeader::new("The configuration as JSON")
+            .id_salt("craft3d-start-config")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .fill(color(tokens.plate_fill))
+                    .corner_radius(egui::CornerRadius::same(tokens.radius))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(mono(&config));
+                    });
+            });
         ui.add_space(tokens.inset * 0.4);
         ui.horizontal(|ui| {
             if ui.button("Copy configuration").clicked() {
@@ -630,6 +696,23 @@ mod tests {
         };
         assert!(run_example(&mut session, &not_steps).is_err());
         assert_eq!(session.document_statuses().len(), 1);
+    }
+
+    #[test]
+    fn a_short_window_gets_the_compact_layout() {
+        let roomy = StartLayout::for_room(egui::vec2(1500.0, 900.0));
+        assert_eq!((roomy.per_row, roomy.logo), (5, 64.0));
+        assert_eq!(roomy.width, 880.0);
+        for room in [
+            egui::vec2(1240.0, 716.0),
+            egui::vec2(1326.0, 684.0),
+            egui::vec2(984.0, 616.0),
+        ] {
+            let compact = StartLayout::for_room(room);
+            assert_eq!(compact.per_row, EXAMPLES.len());
+            assert!(compact.width <= room.x);
+            assert!(compact.thumb.y < roomy.thumb.y && compact.logo < roomy.logo);
+        }
     }
 
     #[test]
