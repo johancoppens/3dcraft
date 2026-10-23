@@ -493,6 +493,8 @@ The first version for people outside the project; it follows M9 and does not wai
 - Finishing round, the window: the parameter form clamps a parameter whose range a change narrows in the same `param.set` (`clamp`, "bore clamped to 3.1 mm"); pictures, thumbnails and `craft3d-cli render` on the light viewport background (`background: dark` keeps the old); the export dialog offers a sheet of a named set for DXF and SVG; `ui.screenshot {window: true}` keeps its 8 s deadline without frames; the web lets the scenes of other documents and undo states go beyond 256 MiB ([`control-protocol.md`](control-protocol.md), [`development.md`](development.md)) (2026-10-23)
 - Features switched on or off by a condition (gap G4): `feature.when {feature, expr}`, status `inactive`, driven by a boolean or choice parameter; a suppressed or inactive feature passes the body it changes on unchanged (a boolean whose tool is off passes its target on), and a reference to what only it makes fails naming it ([`design/regeneration.md`](design/regeneration.md) › *Switched off*, [guide](guide/06-features.md#switching-a-feature-on-or-off)) (2026-10-23)
 - Curves from formulas in a sketch: `sketch.curve` (`x(t)`, `y(t)` over a range of `t` in the variables, fitted as a cubic B-spline within half the tolerance at every regeneration, its ends holding profiles closed) and live splines (`sketch.spline {live: true}`, fitted again through points held by formulas); an involute gear example ([`design/document.md`](design/document.md) › *Curves from formulas*; format 35) (2026-10-23)
+- Sketch diagnostics from the second field test: a conflicting constraint's result names the constraints it contradicts (`conflicts`), a line shrunk to a point under two directions is listed (`collapsed`) and is a problem of `document.check`, a sketch with freedom left is a warning there, and a literal value a constraint can never take is refused at the command; an arc end held at x and y is no longer called redundant ([guide chapter 4](guide/04-concepts.md)) (2026-10-23)
+- `document.inspect {named: true}` adds `named`, the parameters in the commands' words (`keepTool`, features by name) where they differ from `params`; `variable.set` warns about `sin(30)`-like plain numbers; `craft3d-cli convert --set` takes `--width` and `--gap`; `check-range` measures bodies at the defaults and the corners, at every point only with `--deep` (welding table 9.3 s → 2.4 s measuring the defaults alone) ([`control-protocol.md`](control-protocol.md), [`design/verification.md`](design/verification.md)) (2026-10-23)
 
 #### Open
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
@@ -501,15 +503,11 @@ The first version for people outside the project; it follows M9 and does not wai
 - [ ] A feature inserted at the rollback marker that takes a body leaves the features after it that used that body failing (*already went into*); re-point them, or offer to
 - [ ] An assertion on a feature's body errors as soon as a feature is added on top; a subject that follows the chain to its newest body
 - [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet
-- [ ] A conflicting constraint is named, the constraints it contradicts are not
-- [ ] A contradiction the solver meets by shrinking a line to a point (`horizontal` and `vertical` on one line) is reported as solved
-- [ ] An under-constrained sketch is built without a word: a warning in `document.check` (or a deliberate decision not to)
-- [ ] A constraint with a literal value it can never take (a negative length, an angle for a length) is added and fails the sketch instead of being refused
 - [ ] A sketch on a face takes the face's axes (the bottom of a block has x along world Y); a way to choose them (`xAxis`, or world-aligned where it can be)
-- [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees; a unit after a parenthesis is refused
+- [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused
 - [ ] No command changes a document's length unit after `file.new`
 - [ ] A feature's name is not accepted in a face name (`Cube:face(2)`), and ids shift when features are inserted
-- [ ] `document.inspect` shows parameters in the document's words (`keep_tool`, `"target": 1`), not the commands' (`keepTool`, a name), and assertions' `measured` as text where `assert.list` gives numbers
+- [ ] `document.inspect` shows assertions' `measured` as text where `assert.list` gives numbers
 
 #### Acceptance
 Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.

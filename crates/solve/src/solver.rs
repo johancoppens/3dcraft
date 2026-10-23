@@ -724,6 +724,21 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
         }
     }
 
+    let mut solve_arcs_last = active(count, &blamed);
+    for (on, site) in solve_arcs_last.iter_mut().zip(&prep.source) {
+        if matches!(site, Site::Entity(_)) {
+            *on = false;
+        }
+    }
+    pinned_arc_ends(
+        sketch,
+        &system,
+        &run.x,
+        &solve_arcs_last,
+        &mut budget.work,
+        &mut reports,
+    );
+
     let unknowns = run.x.len();
     Ok(Solution {
         entities,
@@ -734,6 +749,91 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
         iterations: budget.steps_taken,
         carry: None,
     })
+}
+
+/// A point held by an `x` and a `y` coordinate is pinned, as `Fixed` pins
+/// it, also when it is the end of an arc: the arc's own equation (its ends
+/// equally far from its centre) then makes the second coordinate dependent
+/// to first order, though it is what picks the end among the two on the
+/// circle. Such a coordinate is reported satisfied, not redundant, when
+/// (a) its partner on the same point is independent, and (b) without the
+/// arcs' equations it is independent too: its dependence comes only from
+/// an arc, which the person did not write and cannot remove. A coordinate
+/// that the person's own constraints already imply stays redundant.
+///
+/// Diagnosis only: the solution, the rank and the degrees of freedom are
+/// those of the solve; a factorisation that runs out of work leaves the
+/// reports as they are.
+fn pinned_arc_ends(
+    sketch: &Sketch,
+    system: &System<'_>,
+    x: &[f64],
+    without_arcs: &[bool],
+    work: &mut Work,
+    reports: &mut [ConstraintReport],
+) {
+    use crate::model::Constraint as C;
+    let axis_of = |c: &C| match *c {
+        C::CoordinateX { point, .. } => Some((point, 0)),
+        C::CoordinateY { point, .. } => Some((point, 1)),
+        _ => None,
+    };
+    let status = |reports: &[ConstraintReport], i: usize| reports.get(i).map(|r| r.status);
+    // Redundant coordinates whose partner on the same point is satisfied.
+    let candidates: Vec<usize> = sketch
+        .constraints
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| {
+            let Some((point, axis)) = axis_of(c) else {
+                return false;
+            };
+            status(reports, *i) == Some(ConstraintStatus::Redundant)
+                && sketch.constraints.iter().enumerate().any(|(j, other)| {
+                    axis_of(other) == Some((point, 1 - axis))
+                        && status(reports, j) == Some(ConstraintStatus::Satisfied)
+                })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let has_arcs = system
+        .prep
+        .source
+        .iter()
+        .any(|site| matches!(site, Site::Entity(_)));
+    if candidates.is_empty() || !has_arcs {
+        return;
+    }
+    let mut jac = Jacobian::new(x.len());
+    if system.evaluate(x, without_arcs, Some(&mut jac)).is_err() {
+        return;
+    }
+    let skip = system.skip_rows(without_arcs);
+    let Ok(factor) = Factor::new(
+        &jac,
+        &skip,
+        &system.negligible,
+        system.options.rank_threshold,
+        work,
+    ) else {
+        return;
+    };
+    for i in candidates {
+        let Some(equation) = system
+            .prep
+            .source
+            .iter()
+            .position(|site| *site == Site::Constraint(i))
+        else {
+            continue;
+        };
+        let independent = system
+            .rows_of(equation)
+            .any(|row| !factor.dependent.get(row).copied().unwrap_or(true));
+        if independent && let Some(report) = reports.get_mut(i) {
+            report.status = ConstraintStatus::Satisfied;
+        }
+    }
 }
 
 /// How far an equation is from holding at `x`: the norm of its rows, or

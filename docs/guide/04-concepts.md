@@ -64,7 +64,9 @@ Every length, angle and count may be an **expression** in the document's variabl
   `warning`; an inverse written as meant (`1 / (2 mm)`, `10 mm / (360 deg)`) has none.
 - **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's) is
   in degrees. `pi` is a plain number, so `2 * pi / n` there is a few degrees, not a turn: write
-  `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`. An angle
+  `360 deg / n`. Inside `sin`, `cos` and `tan` a plain number is in radians: write `sin(30 deg)`; a
+plain number there larger than a full turn in radians (`sin(30)`) gives the variable's result a `warning`
+that says so. An angle
   variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
 - The variables and their values are listed by `document.inspect` (`variables`); there is no separate
   list command.
@@ -201,14 +203,19 @@ point that has an expression among its coordinates is held where the expressions
 constraints, which follow the variables); a point given only as plain numbers, `[0, 0]`, is a starting
 place the solver may move. `sketch.inspect` reports `dof`, the degrees of freedom left: 0 means fully
 constrained, which is what you want for a part that must follow its variables. A sketch with freedom
-left builds without a warning, so check `dof` yourself.
+left builds; `document.check` has one warning (`kind: "underConstrained"`) that lists every such sketch
+with its `dof`.
 
 A constraint that repeats what others already say is `redundant` (listed, harmless while they agree); one
 that contradicts them is `conflicting`: the sketch fails, and so does what is made from it. Its result
-names it (`"conflicting": ["c10"]`); change its value with `sketch.edit {"sketch": "R", "constraint":
+names it (`"conflicting": ["c10"]`) and the ones it contradicts (`"conflicts": [{"constraint": "c10",
+"contradicts": ["c3", "c7"]}]`: taking out any one of those would let it hold; an empty list comes with a
+`reason`, and `truncated: true` says not every constraint was tried); change its value with `sketch.edit {"sketch": "R", "constraint":
 "c10", "value": "40 mm"}` or remove it with `sketch.delete {"sketch": "R", "constraint": "c10"}`. A
 redundant constraint becomes a conflicting one when a variable changes (a length written as `40 mm` next
-to a rectangle drawn to `w`), so prefer one constraint per measure.
+to a rectangle drawn to `w`), so prefer one constraint per measure. A value written without variables that
+a constraint can never take (a negative distance, radius or diameter; an angle for a length or a length
+for an angle) is refused by `sketch.constrain` and `sketch.edit`, and the sketch is left as it was.
 
 ## Features
 

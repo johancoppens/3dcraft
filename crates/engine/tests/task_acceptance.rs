@@ -124,9 +124,11 @@ fn the_documented_face_numbers_of_primitives_are_the_faces() {
 }
 
 /// A negative horizontal distance (a point to the left of the origin)
-/// fails the sketch with a reason that says what to give instead: the
-/// size, the side being the one the sketch is drawn on. That is how the
-/// agent pinned the corners of a hexagon.
+/// is refused with a reason that says what to give instead: the size, the
+/// side being the one the sketch is drawn on. That is how the agent
+/// pinned the corners of a hexagon. (Until 2026-10-23 the constraint was
+/// added and failed the sketch, with the same reason; refused at the
+/// command since, roadmap R1, the sketch is never touched.)
 #[test]
 fn a_negative_distance_says_to_give_its_size_and_draw_the_side() {
     let mut s = common::session();
@@ -143,19 +145,24 @@ fn a_negative_distance_says_to_give_its_size_and_draw_the_side() {
         "sketch.constrain",
         json!({"sketch": "S", "type": "fixed", "entities": ["e1"]}),
     );
-    let bad = run(
-        &mut s,
-        "sketch.constrain",
-        json!({"sketch": "S", "type": "distance", "entities": ["e1", "e2"],
-               "value": "-4 mm", "direction": "horizontal"}),
-    );
-    assert_eq!(bad["status"], "failed", "{bad}");
-    let why = bad["error"].as_str().unwrap();
+    let revision = run(&mut s, "sketch.inspect", json!({"sketch": "S"}));
+    let why = s
+        .execute(
+            "sketch.constrain",
+            &json!({"sketch": "S", "type": "distance", "entities": ["e1", "e2"],
+                    "value": "-4 mm", "direction": "horizontal"}),
+        )
+        .unwrap_err()
+        .message()
+        .to_string();
     assert!(
         why.contains("a distance cannot be negative") && why.contains("give its size"),
         "{why}"
     );
-    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(
+        run(&mut s, "sketch.inspect", json!({"sketch": "S"})),
+        revision
+    );
     // The size alone, with the point drawn on the left, puts it on the left.
     let good = run(
         &mut s,

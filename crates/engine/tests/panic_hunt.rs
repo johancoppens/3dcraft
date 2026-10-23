@@ -16,6 +16,160 @@ use craft3d_testkit::parallel::map_parallel;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// What each thread of the hunt is running now, by thread: read by
+/// [`watch_memory`] when the process reaches a new peak.
+static IN_FLIGHT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Commands whose valid cases draw pictures or rebuild the document many
+/// times (a replay renders a frame per step: about 160 MB each). At most
+/// [`HEAVY_AT_ONCE`] of them run at a time, whatever the number of cores:
+/// on 32 threads the replays running together made the hunt's peak
+/// 5.2 GB (2026-10-23); the other cases still run on every core, and
+/// every case still runs.
+const HEAVY: &[&str] = &[
+    "view.replay",
+    "view.render",
+    "file.export",
+    "document.sample",
+];
+
+/// How many [`HEAVY`] commands run at once.
+const HEAVY_AT_ONCE: usize = 2;
+
+/// How many [`HEAVY`] commands are running, and the wait for a turn.
+static HEAVY_RUNNING: Mutex<usize> = Mutex::new(0);
+static HEAVY_TURN: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A turn to run a [`HEAVY`] command, given back when dropped (also when
+/// the case panics).
+struct HeavyTurn;
+
+impl HeavyTurn {
+    fn take() -> Self {
+        let mut running = HEAVY_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *running >= HEAVY_AT_ONCE {
+            running = HEAVY_TURN
+                .wait(running)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *running += 1;
+        HeavyTurn
+    }
+}
+
+impl Drop for HeavyTurn {
+    fn drop(&mut self) {
+        let mut running = HEAVY_RUNNING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *running = running.saturating_sub(1);
+        HEAVY_TURN.notify_one();
+    }
+}
+
+/// `light` with `heavy` spread evenly among them, so that the threads
+/// taking cases in order do not all wait for the [`HEAVY_AT_ONCE`] slots
+/// at the same time.
+fn interleave<T>(light: Vec<T>, heavy: Vec<T>) -> Vec<T> {
+    let total = light.len() + heavy.len();
+    let mut out = Vec::with_capacity(total);
+    let mut light = light.into_iter();
+    let mut heavy = heavy.into_iter().peekable();
+    let every = total.checked_div(heavy.len().max(1)).unwrap_or(1).max(1);
+    for i in 0..total {
+        let next = if i % every == every - 1 && heavy.peek().is_some() {
+            heavy.next()
+        } else {
+            light.next().or_else(|| heavy.next())
+        };
+        out.extend(next);
+    }
+    out
+}
+
+/// Sets its flag when dropped, also when the work it guards panics: the
+/// memory watcher stops, and the scope that waits for it ends.
+struct SetOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// [`map_parallel`] with [`watch_memory`] beside it: the results, and the
+/// peak resident memory with what ran then. A panic in the work stops the
+/// watcher and is raised again here, never a hang.
+fn watched<T: Send, R: Send>(
+    items: Vec<T>,
+    work: impl Fn(T) -> R + Sync,
+) -> (Vec<R>, (u64, Vec<String>)) {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| watch_memory(&done));
+        let stop = SetOnDrop(&done);
+        let results = map_parallel(items, work);
+        drop(stop);
+        (results, watcher.join().unwrap())
+    })
+}
+
+/// What one thread runs, taken off [`IN_FLIGHT`] when the case ends.
+struct InFlight(String);
+
+impl InFlight {
+    fn start(what: String) -> Self {
+        let me = format!("{:?}", std::thread::current().id());
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(me.clone(), what);
+        InFlight(me)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// The process's resident memory in kB (Linux; `None` elsewhere).
+fn resident_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Samples the resident memory every 10 ms until `done`, and returns the
+/// peak with what the threads were running then: where the hunt's memory
+/// goes, printed with `--nocapture`.
+fn watch_memory(done: &std::sync::atomic::AtomicBool) -> (u64, Vec<String>) {
+    let mut peak = 0;
+    let mut running = Vec::new();
+    while !done.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(kb) = resident_kb()
+            && kb > peak
+        {
+            peak = kb;
+            running = IN_FLIGHT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    (peak, running)
+}
 
 fn adversarial() -> Vec<Value> {
     let mut deep = json!(1);
@@ -379,15 +533,21 @@ fn no_command_panics_on_adversarial_parameters() {
     // with one parameter left valid in turn. The cases are independent of
     // each other, so they run on every core, each in its own directory for
     // the files the commands write.
-    let mut cases = Vec::new();
-    for c in 0..commands.len() {
+    let mut light = Vec::new();
+    let mut heavy = Vec::new();
+    for (c, spec) in commands.iter().enumerate() {
         for state in 0..4 {
             for v in 0..values.len() {
-                cases.push((c, state, v));
+                if HEAVY.contains(&spec.id) {
+                    heavy.push((c, state, v));
+                } else {
+                    light.push((c, state, v));
+                }
             }
         }
     }
-    let timed = map_parallel(cases, |(c, state, v)| {
+    let cases = interleave(light, heavy);
+    let (timed, (peak, at_peak)) = watched(cases, |(c, state, v)| {
         let clock = std::time::Instant::now();
         let spec = &commands[c];
         let value = &values[v];
@@ -470,6 +630,13 @@ fn no_command_panics_on_adversarial_parameters() {
     for ((id, state), secs) in slowest.iter().take(12) {
         println!("    {secs:7.1} s  {id} in state {state}");
     }
+    println!(
+        "panic_hunt: peak resident memory {} MB; running then:",
+        peak / 1024
+    );
+    for case in &at_peak {
+        println!("    {case}");
+    }
     assert!(runs > 20_000);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -478,8 +645,11 @@ fn no_command_panics_on_adversarial_parameters() {
 /// have panicked, and the session must still answer afterwards.
 fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
     let before = (s.document_revision(), s.document_status());
-    let outcome = s.execute(id, params);
     let shown = || params.to_string().chars().take(200).collect::<String>();
+    let _in_flight = InFlight::start(format!("{id} in state {state} on {}", shown()));
+    // A heavy command waits for its turn.
+    let _heavy = HEAVY.contains(&id).then(HeavyTurn::take);
+    let outcome = s.execute(id, params);
     match &outcome {
         Err(e) => {
             assert!(
@@ -512,6 +682,35 @@ fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
             }
         }
     }
+}
+
+/// A case that panics fails the hunt with its message instead of
+/// hanging it: the memory watcher stops when the work unwinds.
+#[test]
+fn a_panicking_case_stops_the_watcher() {
+    let outcome = std::panic::catch_unwind(|| {
+        watched((0..64).collect(), |i: i32| {
+            assert!(i != 40, "case {i} panicked");
+            i
+        })
+    });
+    let payload = outcome.unwrap_err();
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("case 40 panicked"), "{message}");
+    // And without a panic the results come back in order.
+    let (results, _) = watched((0..64).collect(), |i: i32| i * 2);
+    assert_eq!(results, (0..64).map(|i| i * 2).collect::<Vec<_>>());
+}
+
+#[test]
+fn heavy_cases_are_spread_among_the_light_ones() {
+    let spread = interleave(vec!['l'; 9], vec!['h'; 3]);
+    assert_eq!(spread.iter().collect::<String>(), "lllhlllhlllh");
+    assert_eq!(interleave(vec!['l'; 2], vec!['h'; 4]).len(), 6);
+    assert_eq!(interleave(Vec::<char>::new(), vec!['h'; 2]), vec!['h', 'h']);
 }
 
 #[test]

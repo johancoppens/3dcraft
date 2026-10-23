@@ -65,11 +65,13 @@ brings back a deleted feature or variable. The selection is not part of the hist
 `sketch.inspect` shows every entity with its solved coordinates, every constraint with its residual and
 state, and `dof`, the freedom left. A point drawn with plain numbers may be moved by the solver; write its
 coordinates as expressions (`"0 mm"`) to hold it there. A constraint that contradicts the ones before it
-fails the sketch and is named (`"conflicting": ["c10"]`, state `conflicting`); the ones it contradicts are
-not, so look at the constraints on the same entities. Change it (`sketch.edit` with `constraint` and
-`value`) or delete it (`sketch.delete` with `constraint`). A contradiction the solver can meet by
-shrinking a line to nothing (a line both `horizontal` and `vertical`) is not reported until something is
-made from the sketch (*e5: the line has no length*).
+fails the sketch and is named (`"conflicting": ["c10"]`, state `conflicting`), and so are the ones it
+contradicts (`"conflicts": [{"constraint": "c10", "contradicts": ["c3"]}]`). Change one of them
+(`sketch.edit` with `constraint` and `value`) or delete it (`sketch.delete` with `constraint`). A
+contradiction the solver can meet by shrinking a line to nothing (a line both `horizontal` and
+`vertical`) solves, but the sketch command's result lists the line under `collapsed` with the constraints
+that did it (`contradiction: true`), and `document.check` reports it as a problem. A line with no length
+under one direction only is a warning there (`kind: "collapsedLine"`).
 
 ## Pictures
 

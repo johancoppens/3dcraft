@@ -525,6 +525,33 @@ pub(crate) fn sketch_result(
     if let Some(map) = result.as_object_mut() {
         if let Some(solved) = regen.feature(id).and_then(|f| f.sketch.as_ref()) {
             solve_summary(map, solved);
+            // Which constraints each conflicting one contradicts.
+            let conflicting: Vec<_> = solved
+                .constraints
+                .iter()
+                .filter(|c| c.state == ConstraintState::Conflicting)
+                .map(|c| c.id)
+                .collect();
+            if !conflicting.is_empty() {
+                let found =
+                    crate::sketch_conflicts::contradictions(session.document()?, id, &conflicting);
+                if !found.entries.is_empty() {
+                    map.insert("conflicts".into(), found.entries.into());
+                }
+                if found.truncated {
+                    map.insert("conflictsTruncated".into(), true.into());
+                }
+            }
+            // A line shrunk to a point under directions: a contradiction
+            // the solver reports as holding.
+            let doc = session.document()?.history.current();
+            if let Ok(sketch) = doc.sketch(id) {
+                let collapsed =
+                    crate::sketch_warnings::collapsed_lines(sketch, solved, doc.tolerance.linear);
+                if !collapsed.is_empty() {
+                    map.insert("collapsed".into(), collapsed.into());
+                }
+            }
         }
         if let Value::Object(own) = own {
             map.extend(own);
@@ -842,6 +869,53 @@ fn sketch_arc(session: &mut Session, params: &Value) -> Run {
     )
 }
 
+/// A constraint's value written as a literal (no variable in it) that it
+/// can never take: a length that is an angle or another quantity, a
+/// negative distance, radius or diameter, an angle that is a length. Such
+/// a constraint would be added and fail the sketch; it is refused at the
+/// command instead. A value that uses variables is left to the
+/// regeneration, as the variables may still change.
+pub(crate) fn literal_problem(kind: &ConstraintKind) -> Option<String> {
+    use craft3d_expr::Dimension;
+    let value = kind.value()?;
+    let source = value.source();
+    let quantity = craft3d_expr::evaluate(source, |_| None).ok()?;
+    let shown: String = source.chars().take(40).collect();
+    let dimension = quantity.dimension;
+    let name = kind.type_name();
+    let article = if matches!(name, "angle" | "x") {
+        "an"
+    } else {
+        "a"
+    };
+    let (wanted, unsigned) = match kind {
+        ConstraintKind::Distance { .. }
+        | ConstraintKind::Radius { .. }
+        | ConstraintKind::Diameter { .. } => (Dimension::LENGTH, true),
+        ConstraintKind::X { .. } | ConstraintKind::Y { .. } => (Dimension::LENGTH, false),
+        ConstraintKind::Angle { .. } => (Dimension::ANGLE, false),
+        _ => return None,
+    };
+    if dimension != wanted && !dimension.is_dimensionless() {
+        return Some(format!(
+            "the value `{shown}` of {article} {name} constraint is {}, but {} is needed{}",
+            dimension.described(),
+            if wanted == Dimension::ANGLE {
+                "an angle"
+            } else {
+                "a length"
+            },
+            dimension.unit_hint(source)
+        ));
+    }
+    if unsigned && quantity.value < 0.0 {
+        return Some(format!(
+            "the value `{shown}` of {article} {name} constraint is negative: a {name} cannot be negative; give its size, and draw the geometry on the side it is to lie on"
+        ));
+    }
+    None
+}
+
 fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.constrain";
     let p = Params::new(
@@ -898,6 +972,9 @@ fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
             let shown: String = reason.chars().take(400).collect();
             CommandError::new(format!("{COMMAND}: {shown}"))
         })?;
+    if let Some(problem) = literal_problem(&kind) {
+        return fail(format!("{COMMAND}: {problem}"));
+    }
     let label = format!("Constrain {}", kind.type_name());
     let before = failing(session)?;
     let constraint = change(session, COMMAND, &label, id, |s| {
@@ -998,6 +1075,9 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
                         "{constraint} is a {type_name} constraint: it has no value"
                     )));
                 }
+            }
+            if let Some(problem) = literal_problem(kind) {
+                return Err(SketchError::Invalid(format!("{constraint}: {problem}")));
             }
         }
         if let Some(entity) = entity {

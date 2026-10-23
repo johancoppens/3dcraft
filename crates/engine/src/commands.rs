@@ -88,10 +88,10 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a boolean) takes it from the features after the marker that were made from that body by naming it (a boolean's target or tool, the source of a transform, mirror, pattern or shell): those fail with \"already went into\" until they are pointed at the new feature (feature.edit with that target, tool or source). A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself.", doc: true, history_rollback),
-    spec!("document.inspect", "Inspect", r#"{"measures": boolean = true}"#,
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
+    spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
+        "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance. ok is true when there is none. loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light"}"#,
@@ -1329,6 +1329,8 @@ fn variable_json(regen: &Regen, name: &str, unit: &str) -> Value {
                             "warning".into(),
                             format!("`{}` is {}{hint}", v.expr, value.dimension.described()).into(),
                         );
+                    } else if let Some(degrees) = degrees_in_radians(&v.expr) {
+                        map.insert("warning".into(), degrees.into());
                     }
                 }
                 out
@@ -1336,6 +1338,45 @@ fn variable_json(regen: &Regen, name: &str, unit: &str) -> Value {
             Err(error) => json!({ "name": v.name, "expr": v.expr, "error": error }),
         },
     }
+}
+
+/// A plain number inside `sin`, `cos` or `tan` that looks like degrees
+/// (more than a full turn in radians: `sin(30)`), which those functions
+/// take as radians: the warning to give, naming the unit to write. Only a
+/// literal argument is looked at; the meaning does not change (a plain
+/// number in them stays radians, as files rely on).
+pub(crate) fn degrees_in_radians(source: &str) -> Option<String> {
+    let bytes = source.as_bytes();
+    for function in ["sin", "cos", "tan"] {
+        let pattern = format!("{function}(");
+        let mut from = 0;
+        while let Some(found) = source.get(from..).and_then(|rest| rest.find(&pattern)) {
+            let at = from + found;
+            from = at + pattern.len();
+            // `asin(`, `my_sin(`: another name.
+            let before = at.checked_sub(1).and_then(|i| bytes.get(i)).copied();
+            if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                continue;
+            }
+            let Some(inner) = source.get(from..) else {
+                continue;
+            };
+            let Some(close) = inner.find(')') else {
+                continue;
+            };
+            let argument = inner.get(..close).unwrap_or("").trim();
+            if let Ok(number) = argument.parse::<f64>()
+                && number.is_finite()
+                && number.abs() > std::f64::consts::TAU
+            {
+                return Some(format!(
+                    "`{function}({argument})` takes {argument} as radians ({:.0} degrees); for degrees write `{function}({argument} deg)`",
+                    number.to_degrees()
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn variable_set(session: &mut Session, params: &Value) -> Run {
@@ -2621,8 +2662,9 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
 // --------------------------------------------------------------- document
 
 fn document_inspect(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("document.inspect", params, &["measures"])?;
+    let p = Params::new("document.inspect", params, &["measures", "named"])?;
     let measures = p.bool("measures")?.unwrap_or(true);
+    let words = p.bool("named")?.unwrap_or(false);
     let index = session.active;
     let open = session.document_mut()?;
     let regen = open.regen();
@@ -2677,6 +2719,17 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             "status": status,
             "params": serde_json::to_value(&feature.kind).unwrap_or(Value::Null),
         });
+        // The parameters in the commands' words beside the document's own.
+        if words
+            && let Some(map) = entry.as_object_mut()
+            && let Some(params) = map.get("params")
+        {
+            // Only where they differ: most features say the same in both.
+            let named = in_command_words(params, doc, 0);
+            if named != *params {
+                map.insert("named".into(), named);
+            }
+        }
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
@@ -3031,6 +3084,22 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             "feature",
         )?),
     };
+    check_document(session, deep, only, true)
+}
+
+/// `document.check` of the active document: of every feature, or of
+/// `only`. Without `measure` the bodies are not measured (their mass
+/// properties integrated from the exact faces, which shows an unbounded
+/// or otherwise unmeasurable face): `document.sample` measures at the
+/// defaults and, with `deep`, at every point, as measuring costs several
+/// times a regeneration.
+pub(crate) fn check_document(
+    session: &mut Session,
+    deep: bool,
+    only: Option<craft3d_doc::FeatureId>,
+    measure: bool,
+) -> Run {
+    let measure = measure || deep;
     let open = session.document_mut()?;
     // A deep check holds every boolean to its operands, also those the
     // cache let go of.
@@ -3154,8 +3223,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 }));
             }
             // An unbounded or otherwise unmeasurable face shows up here.
-            crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
-            if let Err(error) = mass_of(body) {
+            if measure {
+                crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
+            }
+            if measure && let Err(error) = mass_of(body) {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
                 }));
@@ -3239,6 +3310,10 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             }
         }
     }
+    // Lines shrunk to a point under directions (a contradiction the
+    // solver reports as holding) and sketches with freedom left.
+    let mut sketch_warnings = Vec::new();
+    crate::sketch_warnings::check_sketches(doc, &regen, only, &mut problems, &mut sketch_warnings);
     // Broken assertions are problems of the design, like failed
     // features (only when the whole document is checked); those that are
     // not proven either way are warnings.
@@ -3247,16 +3322,17 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     } else {
         None
     };
-    let warnings: Vec<Value> = assertions
+    let mut warnings: Vec<Value> = assertions
         .as_ref()
         .and_then(|s| s.get("unproven"))
         .and_then(Value::as_array)
         .map(|list| {
             list.iter()
-                .map(|b| json!({"assertion": b.get("name"), "warning": b.get("message")}))
+                .map(|b| json!({"kind": "assertion", "assertion": b.get("name"), "warning": b.get("message")}))
                 .collect()
         })
         .unwrap_or_default();
+    warnings.extend(sketch_warnings);
     if let Some(broken) = assertions
         .as_ref()
         .and_then(|s| s.get("broken"))
@@ -3292,6 +3368,76 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         map.insert("looseMeshesChecked".into(), loose_meshes.into());
     }
     Ok(result)
+}
+
+/// Keys whose integer values are features in a feature's parameters.
+const FEATURE_KEYS: &[&str] = &[
+    "target", "tool", "sketch", "source", "path", "plane", "feature",
+];
+
+/// A feature's parameters as `document.inspect` lists them (`params`,
+/// the document's own form) in the words of the commands (`named`): keys
+/// in camelCase as the commands spell them (`keepTool`, not `keep_tool`),
+/// and a feature referred to by its name instead of its number
+/// (`"target": "Plate"`, not `"target": 1`). The same structure
+/// otherwise; `params` stays as it was for the agents that read it.
+fn in_command_words(value: &Value, doc: &Document, depth: usize) -> Value {
+    // Our own structures nest a few levels; deeper is cut off, not
+    // followed.
+    if depth > 32 {
+        return Value::Null;
+    }
+    let camel = |key: &str| -> String {
+        let mut out = String::with_capacity(key.len());
+        let mut up = false;
+        for c in key.chars() {
+            if c == '_' {
+                up = true;
+            } else if up {
+                out.extend(c.to_uppercase());
+                up = false;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let name_of = |v: &Value| -> Option<Value> {
+        let id = v.as_u64()?;
+        doc.feature(FeatureId(id))
+            .map(|f| Value::from(f.name.clone()))
+    };
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, v)| {
+                    let key = camel(key);
+                    let v = if FEATURE_KEYS.contains(&key.as_str()) {
+                        match v {
+                            Value::Array(items) => Value::Array(
+                                items
+                                    .iter()
+                                    .map(|item| name_of(item).unwrap_or_else(|| item.clone()))
+                                    .collect(),
+                            ),
+                            other => name_of(other)
+                                .unwrap_or_else(|| in_command_words(other, doc, depth + 1)),
+                        }
+                    } else {
+                        in_command_words(v, doc, depth + 1)
+                    };
+                    (key, v)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| in_command_words(v, doc, depth + 1))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// The mesh check of a body with loose entities (`document.check` deep):
