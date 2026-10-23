@@ -399,8 +399,11 @@ mod tests {
         s.execute("view.scrub", &json!({"step": 1})).unwrap();
         s.scene(None).unwrap();
         s.execute("view.scrub", &json!({"feature": null})).unwrap();
-        s.execute("feature.visible", &json!({"feature": "Box", "visible": false}))
-            .unwrap();
+        s.execute(
+            "feature.visible",
+            &json!({"feature": "Box", "visible": false}),
+        )
+        .unwrap();
         s.scene(None).unwrap();
         assert!(s.documents[s.active].scrub.states.is_empty());
     }

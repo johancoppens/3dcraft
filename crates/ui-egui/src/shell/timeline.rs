@@ -148,7 +148,10 @@ impl Shell {
         }
         let mut requests = Vec::new();
         if !hidden.is_empty() {
-            requests.push(("feature.visible", json!({"feature": hidden, "visible": true})));
+            requests.push((
+                "feature.visible",
+                json!({"feature": hidden, "visible": true}),
+            ));
         }
         if after_scrub {
             requests.push(("view.scrub", json!({"feature": null})));
@@ -218,8 +221,10 @@ impl Shell {
     /// to where they started.
     pub(crate) fn toggle_visible(&mut self, id: String, hidden: bool) {
         let visible = self.timeline.hidden_after_queue(&id, hidden);
-        self.timeline
-            .queue("feature.visible", json!({"feature": id, "visible": visible}));
+        self.timeline.queue(
+            "feature.visible",
+            json!({"feature": id, "visible": visible}),
+        );
     }
 
     /// The step the view is scrubbed to, if it is.
@@ -412,7 +417,10 @@ mod tests {
         let mut session = Session::new(Workspace::none());
         for (id, params) in [
             ("file.new", json!({})),
-            ("feature.block", json!({"size": [10, 10, 10], "name": "Box"})),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "name": "Box"}),
+            ),
             ("feature.sphere", json!({"radius": 3, "name": "Ball"})),
             (
                 "feature.cylinder",
@@ -465,7 +473,9 @@ mod tests {
         assert_eq!(shell.timeline_json()["shown"], 1);
         // A double click on a hidden row after the scrub: the feature is
         // shown and the timeline goes back to the end, then the flight.
-        shell.timeline.queue("history.rollback", json!({"feature": null}));
+        shell
+            .timeline
+            .queue("history.rollback", json!({"feature": null}));
         shell.timeline.queue("view.scrub", json!({"step": 1}));
         frame(&ctx, &mut shell, &mut session);
         frame(&ctx, &mut shell, &mut session);
