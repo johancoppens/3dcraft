@@ -25,6 +25,7 @@ mod controls;
 mod icons;
 mod layout;
 pub mod number_field;
+mod report;
 mod selection;
 mod tabs;
 pub use controls::ControlsLayout;
@@ -427,6 +428,13 @@ pub struct Shell {
     pub state: UiState,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
+    /// The last command that failed in the session, as of the last
+    /// `sync`: what "Copy details" reports (`shell/report.rs`).
+    failure: Option<craft3d_engine::FailedCommand>,
+    /// The report "Copy details" last put on the clipboard.
+    copied: Option<String>,
+    /// Where "Copy details" was drawn in the last frame.
+    copy_hit: Option<egui::Rect>,
     /// Autosave and what can be recovered, as of the last `sync`.
     recovery: RecoveryOverview,
     /// Where the buttons of the recovery bar were drawn in the last frame.
@@ -717,6 +725,9 @@ impl Shell {
             state: UiState::default(),
             tokens: Tokens::default(),
             last_command: None,
+            failure: None,
+            copied: None,
+            copy_hit: None,
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
@@ -1399,6 +1410,7 @@ impl Shell {
         self.sync_tabs(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
+        self.sync_report(session);
         scene
     }
 
@@ -1927,15 +1939,43 @@ impl Shell {
             })
             .collect();
         let available = ui.available_width();
-        let widths = fit_status(available, tokens.status_gap, &fits);
+        // "Copy details" after the answer of a command that failed
+        // (`shell/report.rs`): its room is kept out of what the items get.
+        let copy = self
+            .last_command
+            .as_ref()
+            .is_some_and(|r| !r.ok)
+            .then(|| self.copy_label());
+        let copy_width = copy.map_or(0.0, |label| {
+            measure(label) + 2.0 * ui.spacing().button_padding.x + tokens.status_gap
+        });
+        let widths = fit_status((available - copy_width).max(0.0), tokens.status_gap, &fits);
         let height = ui.spacing().interact_size.y;
         let mut hits = Vec::new();
+        let mut copy_clicked = false;
+        let mut copy_rect = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let mut used = 0.0;
             let mut first = true;
+            let mut copy_button = |ui: &mut egui::Ui, used: &mut f32| {
+                if let Some(label) = copy {
+                    ui.add_space(tokens.status_gap);
+                    let response = ui
+                        .add(egui::Button::new(label))
+                        .on_hover_text(report::COPY_TOOLTIP);
+                    copy_clicked |= response.clicked();
+                    copy_rect = Some(response.rect);
+                    *used += copy_width;
+                }
+            };
+            let mut copy_shown = false;
             for (item, width) in items.iter().zip(&widths) {
                 let Some(width) = *width else { continue };
+                if item.slot == StatusSlot::Render && !copy_shown {
+                    copy_button(ui, &mut used);
+                    copy_shown = true;
+                }
                 if item.slot == StatusSlot::Render {
                     // Right-aligned: the room left goes before it.
                     let room = (available - used - width).max(0.0);
@@ -1982,9 +2022,26 @@ impl Shell {
                     response.on_hover_text(&item.text);
                 }
                 used += width;
+                if item.slot == StatusSlot::Answer && !copy_shown {
+                    copy_button(ui, &mut used);
+                    copy_shown = true;
+                }
+            }
+            if !copy_shown {
+                copy_button(ui, &mut used);
             }
         });
         self.status_hits = hits;
+        self.copy_hit = copy_rect;
+        if copy_clicked {
+            self.copy_error_report(ui.ctx());
+        }
+    }
+
+    /// Where the status bar's "Copy details" was drawn in the last frame:
+    /// `None` when the last command did not fail.
+    pub fn copy_details_rect(&self) -> Option<egui::Rect> {
+        self.copy_hit
     }
 
     /// Where the items of the status bar were drawn in the last frame.
