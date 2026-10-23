@@ -339,8 +339,17 @@ pub fn write_svg(
             })?;
         }
         report = out.report;
+        // A dashed layer: dashes of its length, gaps half as long.
+        let dashes = match layer.dash {
+            Some(dash) => format!(
+                " stroke-dasharray=\"{} {}\"",
+                text(dash)?,
+                text(dash * 0.5)?
+            ),
+            None => String::new(),
+        };
         svg.push_str(&format!(
-            "<path id=\"layer-{}\" d=\"{}\" fill=\"none\" fill-rule=\"evenodd\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+            "<path id=\"layer-{}\" d=\"{}\" fill=\"none\" fill-rule=\"evenodd\" stroke=\"{}\" stroke-width=\"{}\"{dashes}/>\n",
             layer.name,
             out.d,
             layer.color.svg(),

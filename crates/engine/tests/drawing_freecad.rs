@@ -248,3 +248,67 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
         }
     }
 }
+
+/// The model as seen (`view_export.rs`): FreeCAD reads the visible,
+/// silhouette and dashed hidden lines of a drilled block in iso and of a
+/// cylinder from the front, as long as ours and in the same box.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_projected_view() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-view");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, 10], "name": "Block"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 20, "position": [20, 15, -5], "name": "Drill"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Block", "tool": "Drill", "name": "Hole"}),
+    );
+    let mut cases = Vec::new();
+    for (view, hidden) in [("iso", "dashed"), ("front", "dashed"), ("top", "omit")] {
+        for format in ["dxf", "svg"] {
+            let file = format!("{view}.{format}");
+            let result = run(
+                &mut s,
+                "file.export",
+                json!({"path": file, "view": view, "hidden": hidden}),
+            );
+            cases.push((file, result));
+        }
+    }
+    let reports = freecad_reads(&dir);
+    assert_eq!(reports.len(), cases.len());
+    for (file, ours) in &cases {
+        let report = &reports[file];
+        let number = |key: &str| -> f64 { report[key].parse().unwrap() };
+        let length = ours["length"].as_f64().unwrap();
+        println!(
+            "{file}: length {} (ours {length}), bbox {}, {} edges ({})",
+            report["length"], report["bbox"], report["edges"], report["kinds"]
+        );
+        assert!(near(number("length"), length, 1e-9), "{file}");
+        let bbox: Vec<f64> = report["bbox"]
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let size = (bbox[2] - bbox[0]).max(bbox[3] - bbox[1]);
+        for (got, expected) in bbox.iter().zip(ours["bbox"].as_array().unwrap()) {
+            let expected = expected.as_f64().unwrap();
+            assert!((got - expected).abs() <= 1e-9 * size, "{file}: {bbox:?}");
+        }
+    }
+}

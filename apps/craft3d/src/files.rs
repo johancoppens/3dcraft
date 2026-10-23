@@ -1695,12 +1695,13 @@ mod tests {
             assert_eq!((label.as_str(), ok), ("file.export", true));
         }
 
-        // An outline needs flat faces or a sketch: nothing selected, so it
-        // is refused, and nothing is written.
-        for name in ["top.dxf", "top.svg"] {
-            let error = host.export_as_user(&mine.join(name)).unwrap_err();
-            assert!(error.contains("select the faces or the sketch"), "{error}");
-            assert!(!mine.join(name).exists());
+        // Nothing selected, to an outline format: the model as seen
+        // (the window's view, to scale; 2026-10-23, before that refused).
+        for name in ["seen.dxf", "seen.svg"] {
+            let result = host.export_as_user(&mine.join(name)).unwrap();
+            assert!(result["visible"].as_u64().unwrap_or(0) > 0, "{result}");
+            assert_eq!(result["projection"], "orthographic");
+            assert!(mine.join(name).exists());
         }
         // The block's top face selected: its outline, 10 × 10.
         select(&mut host, &["F1:face(1)"]);
@@ -1899,6 +1900,7 @@ mod tests {
         host.shell.answer_export(Some(ExportPlan {
             quality: craft3d_ui_egui::files::ExportQuality::Fine,
             all_bodies: false,
+            ..ExportPlan::default()
         }));
         assert!(host.pump_files(&mut dialogs));
         assert!(last(&host).1, "{:?}", last(&host));
@@ -1984,9 +1986,29 @@ mod tests {
         assert!(!host.pump_files(&mut dialogs) || listing(&mine) == ["part.step"]);
         assert_eq!(listing(&mine), ["part.step"]);
         assert!(host.shell.error_dialog().is_none());
-        // An outline with nothing it can hold: said at once, in the
-        // error dialog, and nothing written.
+        // Nothing selected, to DXF: a drawing of the model as seen; the
+        // dialog asks for its view first (2026-10-23).
         select(&mut host, &[]);
+        host.file_choice(Ok(Choice::Export(mine.join("seen.dxf"))));
+        let asked = host.shell.export_dialog().unwrap().clone();
+        assert!(asked.check.drawing && asked.check.problem.is_none());
+        let mut plan = asked.plan;
+        plan.drawing.view = craft3d_ui_egui::files::DrawingView::Front;
+        plan.drawing.dashed = true;
+        host.shell.answer_export(Some(plan));
+        assert!(host.pump_files(&mut dialogs));
+        let (label, ok, said) = last(&host);
+        assert!(ok && label == "file.export", "{said}");
+        assert!(listing(&mine).contains(&"seen.dxf".to_string()));
+        std::fs::remove_file(mine.join("seen.dxf")).unwrap();
+        // An outline with nothing it can hold (an edge): said at once, in
+        // the error dialog, and nothing written.
+        host.session
+            .execute(
+                "select.query",
+                &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+            )
+            .unwrap();
         host.file_choice(Ok(Choice::Export(mine.join("part.dxf"))));
         assert!(host.shell.export_dialog().is_none());
         let error = host.shell.error_dialog().unwrap().clone();

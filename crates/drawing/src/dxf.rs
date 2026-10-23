@@ -22,6 +22,9 @@ pub const DXF_VERSION: &str = "AC1015";
 
 /// The handle of the model space block record: the owner of every entity.
 const MODEL_SPACE: &str = "1F";
+/// The name and the handle of the line type of a dashed layer.
+const DASHED: &str = "DASHED";
+const DASHED_HANDLE: &str = "17";
 /// The first handle given to a layer or an entity.
 const FIRST_FREE_HANDLE: u64 = 0x100;
 
@@ -234,7 +237,11 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
     ]);
     out.groups(&[(0, "ENDTAB")]);
 
-    table(&mut out, "LTYPE", "5", 3);
+    // A dashed layer's line type, only when there is one (a drawing
+    // without one is written as before, byte for byte): the first dashed
+    // layer's dash, a gap half as long.
+    let dash = drawing.layers.iter().find_map(|layer| layer.dash);
+    table(&mut out, "LTYPE", "5", if dash.is_some() { 4 } else { 3 });
     for (handle, name, description) in [
         ("14", "ByBlock", ""),
         ("15", "ByLayer", ""),
@@ -250,6 +257,27 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
             (40, "0.0"),
         ]);
     }
+    if let Some(dash) = dash {
+        record(
+            &mut out,
+            "LTYPE",
+            DASHED_HANDLE,
+            "5",
+            "AcDbLinetypeTableRecord",
+        );
+        out.groups(&[
+            (2, DASHED),
+            (70, "0"),
+            (3, "Dashed __ __ __"),
+            (72, "65"),
+            (73, "2"),
+        ]);
+        out.real(40, dash * 1.5)?;
+        out.real(49, dash)?;
+        out.group(74, "0");
+        out.real(49, -dash * 0.5)?;
+        out.group(74, "0");
+    }
     out.groups(&[(0, "ENDTAB")]);
 
     table(&mut out, "LAYER", "2", layers.len().saturating_add(1));
@@ -263,7 +291,14 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
             (2, &layer.name),
             (70, "0"),
             (62, &layer.color.aci().to_string()),
-            (6, "Continuous"),
+            (
+                6,
+                if layer.dash.is_some() {
+                    DASHED
+                } else {
+                    "Continuous"
+                },
+            ),
         ]);
     }
     out.groups(&[(0, "ENDTAB")]);

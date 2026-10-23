@@ -10,7 +10,7 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::Shell;
-use craft3d_ui_egui::files::{ExportCheck, ExportKind, ExportQuality};
+use craft3d_ui_egui::files::{DrawingPlan, DrawingView, ExportCheck, ExportKind, ExportQuality};
 use egui::{Event, Pos2, vec2};
 use serde_json::json;
 
@@ -65,6 +65,7 @@ fn the_export_dialog_remembers_the_quality_and_escape_cancels() {
     let check = ExportCheck {
         kind: Some(ExportKind::Bodies),
         mesh: true,
+        drawing: false,
         problem: None,
     };
     assert_eq!(shell.export_quality(), ExportQuality::Normal);
@@ -106,6 +107,7 @@ fn one_export_question_at_a_time_and_only_for_the_document_it_was_asked_for() {
     let check = ExportCheck {
         kind: Some(ExportKind::Bodies),
         mesh: true,
+        drawing: false,
         problem: None,
     };
     assert!(shell.ask_export("one.stl".to_string(), check.clone()));
@@ -138,4 +140,52 @@ fn one_export_question_at_a_time_and_only_for_the_document_it_was_asked_for() {
     // Enter answers the dialog, and only the dialog.
     frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
     assert!(shell.error_dialog().is_none());
+}
+
+#[test]
+fn a_drawing_of_the_model_asks_its_view_and_remembers_it() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute("feature.block", &json!({"size": [10, 10, 10]}))
+        .unwrap();
+    let mut shell = Shell::new();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    // Nothing selected, to DXF: a drawing of the model as seen.
+    let check = craft3d_ui_egui::files::export_check(&mut session, "part.dxf");
+    assert!(check.drawing && check.asks() && !check.mesh);
+    assert!(shell.ask_export("part.dxf".to_string(), check.clone()));
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    let mut plan = shell.export_dialog().unwrap().plan;
+    assert_eq!(plan.drawing, DrawingPlan::default());
+    assert_eq!(plan.drawing.view, DrawingView::Current);
+    plan.drawing = DrawingPlan {
+        view: DrawingView::Top,
+        perspective: false,
+        dashed: true,
+    };
+    shell.answer_export(Some(plan));
+    assert_eq!(
+        shell.take_export_answer(),
+        Some(("part.dxf".to_string(), plan))
+    );
+    // What the file gets, and the same choice offered next time.
+    let params = craft3d_ui_egui::files::export_params(&mut session, "part.dxf", plan).unwrap();
+    assert_eq!(
+        params,
+        vec![
+            ("view", json!("top")),
+            ("projection", json!("orthographic")),
+            ("hidden", json!("dashed")),
+        ]
+    );
+    assert!(shell.ask_export("again.svg".to_string(), check));
+    assert_eq!(shell.export_dialog().unwrap().plan.drawing, plan.drawing);
+    // Enter exports with what is shown.
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
+    let (path, answered) = shell.take_export_answer().unwrap();
+    assert_eq!(path, "again.svg");
+    assert_eq!(answered.drawing, plan.drawing);
 }

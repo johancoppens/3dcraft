@@ -5,7 +5,7 @@
 | `.3dcraft` | `file.open` | `file.save` | The design history: units, tolerance, variables, sketches, features, assertions, sets, colours |
 | STEP (`.step`, `.stp`) | `file.import` | `file.export` | Exact solids (B-rep), units, names, colours; no history |
 | STL, 3MF, OBJ | no | `file.export` | Triangle meshes, for printing and rendering |
-| DXF, SVG | no | `file.export` | The flat outline of a sketch or a flat face, at true size, for laser cutting and drawings |
+| DXF, SVG | no | `file.export` | The flat outline of a sketch or a flat face, at true size, for laser cutting and drawings; or the model as seen (a projected view with hidden lines) |
 
 Paths are relative to the read and write roots the server or window was started with (chapter 1);
 `craft3d-cli` on its own reads and writes anywhere you can.
@@ -86,6 +86,34 @@ A face is drawn as seen from outside the body, never mirrored. `faces` lays seve
 sheet, each on its own layer, `gap` apart (a length like any other: `5`, `"5 mm"` or `"kerf * 4"`).
 `feature.offsetProfile` grows a sketch by half the kerf before exporting it.
 
+## Drawings of the model as seen: DXF and SVG
+
+With no sketch or face named, a DXF or SVG file is a drawing of the whole model as seen from a view:
+the edges of the bodies and the outlines (silhouettes) of curved faces, with the lines behind a face
+left out or drawn dashed.
+
+```json
+[
+ ["file.export", {"path": "bracket-front.dxf", "view": "front"}],
+ ["file.export", {"path": "bracket-iso.svg", "view": "iso", "hidden": "dashed"}],
+ ["file.export", {"path": "bracket-look.svg", "projection": "perspective"}]
+]
+```
+
+- `view`: `iso` (the default), `front`, `back`, `left`, `right`, `top`, `bottom`, or `current`: what
+  the window shows (the iso view when no window shows the document).
+- `projection`: `orthographic` (the default) is **to scale**, 1:1 in the document's unit, so you can
+  measure it; `perspective` is for an illustration and is true size only at the depth the camera looks
+  at.
+- `hidden`: `omit` (the default) or `dashed`, on a layer of its own called `hidden`.
+
+Layers: `visible`, `silhouette` and `hidden`. Curves are written as fine straight pieces in this
+version. Bodies you hid with the eye are left out; the section and a rewound timeline are not
+applied: the drawing shows the whole model as it is. In the window, **Export…** to a `.dxf` or `.svg`
+file with nothing selected makes this drawing: the export dialog asks from which view (*As in the
+viewport* or a named one), orthographic or perspective, and whether hidden lines are left out or
+dashed, and offers your last choice next time.
+
 ## From the command line
 
 `craft3d-cli convert IN OUT` does the same for a saved file; the extension of `OUT` picks the format:
@@ -105,7 +133,8 @@ The web version reads and writes files on your computer; nothing is uploaded.
 - **Chrome, Edge and Chromebooks:** Open…, Import…, Save As… and Export… show your system's file
   dialog. Export… first asks for the format in a small dialog of its own (the last one you used is
   chosen); *Export…* there makes the file and then shows the system's dialog to say where it goes. An
-  export that cannot be made (DXF or SVG with nothing flat selected) says why before any file is
+  export that cannot be made (DXF or SVG with something selected that is not flat faces or one
+  sketch) says why before any file is
   touched. Save writes back to the file the document was opened from or last saved to, without asking
   again; the first time, the browser asks whether the page may change that file. A tab you close with
   *Save* stays open until its file is written; if the file cannot be written, the document stays open

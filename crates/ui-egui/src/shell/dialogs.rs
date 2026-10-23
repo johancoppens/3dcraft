@@ -12,7 +12,9 @@
 //! - **The export dialog** after the file was chosen, when there is
 //!   something to choose: the quality of a mesh (STL, 3MF, OBJ), and for
 //!   a selection the format cannot hold (faces selected, a STEP file
-//!   chosen) the warning and the way out (every body instead), before
+//!   chosen) the warning and the way out (every body instead), and for a
+//!   DXF or SVG file with nothing selected (a drawing of the model as
+//!   seen) the view, the projection and the hidden lines, before
 //!   anything is written. The host asks it ([`Shell::ask_export`]) and
 //!   takes the answer ([`Shell::take_export_answer`]); it belongs to the
 //!   document shown when it was asked, and is refused when another one is
@@ -23,7 +25,9 @@
 //! (they take those keys out of the frame's input).
 
 use super::Shell;
-use crate::files::{ExportCheck, ExportPlan, ExportQuality, export_options_ui, plain_message};
+use crate::files::{
+    DrawingPlan, ExportCheck, ExportPlan, ExportQuality, export_options_ui, plain_message,
+};
 
 /// An error shown in a dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +62,8 @@ pub(super) struct Dialogs {
     answer: Option<(String, ExportPlan)>,
     /// The quality chosen last, offered next time.
     quality: ExportQuality,
+    /// How the last drawing of the model as seen was made, likewise.
+    drawing: DrawingPlan,
 }
 
 /// The export button of the dialog: "Export all bodies" when the
@@ -139,6 +145,7 @@ impl Shell {
             plan: ExportPlan {
                 quality: self.dialogs.quality,
                 all_bodies: false,
+                drawing: self.dialogs.drawing,
             },
             document: self.viewing(),
         });
@@ -165,6 +172,7 @@ impl Shell {
             ),
             Some(plan) => {
                 self.dialogs.quality = plan.quality;
+                self.dialogs.drawing = plan.drawing;
                 self.dialogs.answer = Some((ask.path, plan));
             }
             None => {
@@ -192,6 +200,17 @@ impl Shell {
     /// browser's), to offer it next time.
     pub fn set_export_quality(&mut self, quality: ExportQuality) {
         self.dialogs.quality = quality;
+    }
+
+    /// How the export dialog offers to make a drawing of the model as
+    /// seen next: as the last one.
+    pub fn export_drawing(&self) -> DrawingPlan {
+        self.dialogs.drawing
+    }
+
+    /// Remembers the drawing chosen in a host's own export dialog.
+    pub fn set_export_drawing(&mut self, drawing: DrawingPlan) {
+        self.dialogs.drawing = drawing;
     }
 
     /// An error or export dialog is open: the question before closing a
