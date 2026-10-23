@@ -20,6 +20,13 @@ pub(crate) enum TokenKind {
     LParen,
     RParen,
     Comma,
+    /// `[`, `]` and `.` of a table lookup: `belt[2].pitch`.
+    LBracket,
+    RBracket,
+    Dot,
+    /// A text in double quotes, a table row's key: `belt["GT2"].pitch`.
+    /// Its text is `source[pos + 1..end - 1]`.
+    Text,
     /// `<`, `<=`, `>`, `>=`, `==`, `!=`.
     Less,
     LessEq,
@@ -96,6 +103,9 @@ pub(crate) fn scan(source: &str, from: usize) -> Result<Token, ScanError> {
         b'(' => simple(TokenKind::LParen),
         b')' => simple(TokenKind::RParen),
         b',' => simple(TokenKind::Comma),
+        b'[' => simple(TokenKind::LBracket),
+        b']' => simple(TokenKind::RBracket),
+        b'"' => text(bytes, pos),
         b'<' | b'>' | b'=' | b'!' | b'&' | b'|' => operator(bytes, pos, first),
         b if is_ident_start(b) => Ok(Token {
             kind: TokenKind::Ident,
@@ -105,6 +115,7 @@ pub(crate) fn scan(source: &str, from: usize) -> Result<Token, ScanError> {
         b if b.is_ascii_digit() => number(source, pos),
         // `.5`, but a lone `.` is not a number.
         b'.' if bytes.get(pos + 1).is_some_and(u8::is_ascii_digit) => number(source, pos),
+        b'.' => simple(TokenKind::Dot),
         _ => {
             // `pos` is a char boundary (see the module comment), so this
             // decodes the whole offending character.
@@ -150,6 +161,40 @@ fn operator(bytes: &[u8], pos: usize, first: u8) -> Result<Token, ScanError> {
         kind,
         pos,
         end: pos + len,
+    })
+}
+
+/// A text in double quotes starting at `pos`: printable ASCII other than
+/// `"` and `\\`, at most [`crate::MAX_TEXT_LEN`] bytes.
+fn text(bytes: &[u8], pos: usize) -> Result<Token, ScanError> {
+    let start = pos + 1;
+    let end = skip_while(bytes, start, |b| {
+        (b' '..=b'~').contains(&b) && b != b'"' && b != b'\\'
+    });
+    let error = |at: usize, kind: ErrorKind| ScanError {
+        error: ExprError::new(at, kind),
+        resume: end.max(start),
+    };
+    if bytes.get(end) != Some(&b'"') {
+        return Err(error(
+            pos,
+            ErrorKind::BadText {
+                reason: "it has no closing `\"` (a text is printable ASCII without `\"` or `\\`)",
+            },
+        ));
+    }
+    if end - start > crate::MAX_TEXT_LEN {
+        return Err(error(
+            pos,
+            ErrorKind::BadText {
+                reason: "it is longer than 64 characters",
+            },
+        ));
+    }
+    Ok(Token {
+        kind: TokenKind::Text,
+        pos,
+        end: end + 1,
     })
 }
 
@@ -247,6 +292,37 @@ mod tests {
     }
 
     #[test]
+    fn table_lookups() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("belt[2].pitch"),
+            [Ident, LBracket, Number(2.0), RBracket, Dot, Ident, End]
+        );
+        assert_eq!(
+            kinds("belt[\"GT2 2mm\"].pitch"),
+            [Ident, LBracket, Text, RBracket, Dot, Ident, End]
+        );
+        let tokens = tokenize("t[\"ab\"]").unwrap();
+        assert_eq!((tokens[2].pos, tokens[2].end), (2, 6));
+        // A dot before a digit is still a number.
+        assert_eq!(kinds(".5"), [Number(0.5), End]);
+        assert!(matches!(
+            tokenize("t[\"open").unwrap_err().kind,
+            ErrorKind::BadText { .. }
+        ));
+        assert!(matches!(
+            tokenize("t[\"tab\there\"]").unwrap_err().kind,
+            ErrorKind::BadText { .. }
+        ));
+        let long = format!("t[\"{}\"]", "x".repeat(65));
+        assert!(matches!(
+            tokenize(&long).unwrap_err().kind,
+            ErrorKind::BadText { .. }
+        ));
+        assert!(tokenize(&format!("t[\"{}\"]", "x".repeat(64))).is_ok());
+    }
+
+    #[test]
     fn comparison_and_logical_operators() {
         use TokenKind::*;
         assert_eq!(
@@ -295,11 +371,9 @@ mod tests {
             err,
             ExprError::new(2, ErrorKind::UnexpectedChar { ch: '$' })
         );
-        let err = tokenize("1 . 2").unwrap_err();
-        assert_eq!(
-            err,
-            ExprError::new(2, ErrorKind::UnexpectedChar { ch: '.' })
-        );
+        // A lone `.` is a token now (table lookups), so `1 . 2` lexes and
+        // is a parse error instead (`parser.rs` › `missing_operator`).
+        assert_eq!(tokenize("1 . 2").unwrap().len(), 4);
     }
 
     #[test]

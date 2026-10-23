@@ -87,8 +87,12 @@ pub struct PublicParam {
     pub order: i32,
     pub kind: ParamKind,
     /// The labels of a [`ParamKind::Choice`], in order: the value 1 is the
-    /// first. Empty for the other kinds.
+    /// first. Empty for the other kinds, and when `choices_from` gives them.
     pub choices: Vec<String>,
+    /// The table whose key column gives a choice's labels, row 1 for the
+    /// value 1 (`Document::choices_of`); the choice follows the table.
+    #[serde(default)]
+    pub choices_from: Option<String>,
     /// The least and the greatest value, and the step a form moves by:
     /// expressions, so a range may depend on other variables (a bore less
     /// than the root diameter).
@@ -112,6 +116,14 @@ impl PublicParam {
         check_text("group", &self.group, MAX_PARAM_TEXT)?;
         check_multiline("description", &self.description, MAX_DESCRIPTION)?;
         match self.kind {
+            ParamKind::Choice if self.choices_from.is_some() => {
+                if !self.choices.is_empty() {
+                    return Err(
+                        "a choice takes its labels from choices or from a table (choicesFrom), not both"
+                            .into(),
+                    );
+                }
+            }
             ParamKind::Choice => {
                 if self.choices.is_empty() {
                     return Err("a choice needs at least one label under choices".into());
@@ -127,7 +139,7 @@ impl PublicParam {
                 }
             }
             kind => {
-                if !self.choices.is_empty() {
+                if !self.choices.is_empty() || self.choices_from.is_some() {
                     return Err(format!(
                         "only a choice has choices, and this parameter is a {}",
                         kind.name()
@@ -313,6 +325,19 @@ impl Document {
         public
             .check()
             .map_err(|reason| DocError::Invalid(format!("`{name}`: {reason}")))?;
+        if let Some(table) = &public.choices_from {
+            let Some(found) = self.table(table) else {
+                return Err(DocError::Invalid(format!(
+                    "`{name}`: there is no table `{table}` to take the choices from"
+                )));
+            };
+            if found.rows.len() > MAX_CHOICES {
+                return Err(DocError::Invalid(format!(
+                    "`{name}`: a choice offers at most {MAX_CHOICES} labels, and table `{table}` has {} rows",
+                    found.rows.len()
+                )));
+            }
+        }
         let variable = self
             .variables
             .iter_mut()

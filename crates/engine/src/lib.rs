@@ -62,6 +62,7 @@ mod split_cmds;
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
+mod table_cmds;
 pub mod task_score;
 mod typed;
 mod verify;
@@ -447,6 +448,7 @@ impl Session {
                 select_cmds::SPECS,
                 set_cmds::SPECS,
                 param_cmds::SPECS,
+                table_cmds::SPECS,
                 jig_cmds::SPECS,
                 sample_cmds::SPECS,
                 recovery_cmds::SPECS,

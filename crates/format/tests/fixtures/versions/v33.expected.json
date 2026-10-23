@@ -1,0 +1,41 @@
+{
+  "format_version": 33,
+  "written_by": "e9ebb1778ddd09a48677631ba8e6ce0ec0f25c34",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v33.steps.json --out v33.3dcraft, then info v33.3dcraft, and param.list of it for parameters and info",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1828.8000000000002,
+      "area": 1217.8400000000004
+    }
+  ],
+  "parameters": [
+    {
+      "name": "profile",
+      "kind": "choice",
+      "expr": "2",
+      "unit": null,
+      "valid": true
+    }
+  ],
+  "info": {
+    "author": "",
+    "description": "",
+    "licence": "",
+    "tags": [],
+    "title": "",
+    "url": ""
+  }
+}
