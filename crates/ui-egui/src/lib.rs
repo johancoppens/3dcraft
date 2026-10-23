@@ -49,7 +49,7 @@ pub use shell::{
     autosave_text, doc_tabs, fit_status, window_title,
 };
 pub use state::{
-    CameraState, Closing, DocTab, Panels, ParametersView, ProjectionKind, Show, TabView, UiState,
-    Work,
+    CameraState, Closing, DocTab, Panels, ParametersView, Playback, ProjectionKind, Show, TabView,
+    UiState, Work,
 };
 pub use theme::Tokens;

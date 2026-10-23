@@ -181,7 +181,7 @@ fn engine_commands_filters_on_id_or_label_ignoring_case() {
         .filter(|c| c.id.contains("variable."))
         .map(|c| c.id.to_string())
         .collect();
-    assert_eq!(expected.len(), 3, "the fixture of this test");
+    assert_eq!(expected.len(), 5, "the fixture of this test");
     assert_eq!(ids(&mut s, "variable."), expected);
     assert_eq!(ids(&mut s, "VARIABLE."), expected);
     // By label only: "Roll Back" is the label of history.rollback, and the

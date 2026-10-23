@@ -1165,6 +1165,7 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
         file: None,
         dirty,
         close_asks: dirty,
+        jig_in_use: false,
         length_unit: "mm",
         angle_unit: "deg",
     };

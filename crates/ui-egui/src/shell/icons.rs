@@ -20,6 +20,22 @@ pub enum Icon {
     Section,
     /// Flip the kept side: an arrow up and one down.
     Flip,
+    /// The history player's first step: a bar and two triangles to it.
+    Start,
+    /// A step back: a bar and a triangle to it.
+    StepBack,
+    /// Play: a triangle to the right.
+    Play,
+    /// Pause: two bars.
+    Pause,
+    /// A step forward: a triangle and a bar.
+    StepForward,
+    /// The end: two triangles and a bar.
+    End,
+    /// Loop: a circle that runs into an arrow.
+    Loop,
+    /// Orbit: an ellipse about a vertical axis, with an arrow.
+    Orbit,
 }
 
 /// Paints `icon` centred in `place` (its shorter side is the icon's).
@@ -35,6 +51,35 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
     let line = |points: Vec<Pos2>| Shape::line(points, stroke);
     let closed = |points: Vec<Pos2>| Shape::closed_line(points, stroke);
     let faint = ink.gamma_multiply(tokens.disabled_opacity);
+    // A filled triangle pointing right (`dir` 1) or left (-1), its tip at
+    // `tip` and its back `width` behind it.
+    let triangle = |tip: f32, dir: f32, width: f32| {
+        Shape::convex_polygon(
+            vec![
+                p(tip - dir * width, -0.7),
+                p(tip, 0.0),
+                p(tip - dir * width, 0.7),
+            ],
+            ink,
+            Stroke::NONE,
+        )
+    };
+    let bar = |x: f32| {
+        Shape::line_segment(
+            [p(x, -0.7), p(x, 0.7)],
+            Stroke::new(stroke.width * 1.6, ink),
+        )
+    };
+    // An arrow head at `at`, pointing along `(dx, dy)`.
+    let head = |at: Pos2, dx: f32, dy: f32| {
+        let len = (dx * dx + dy * dy).sqrt().max(f32::MIN_POSITIVE);
+        let (ux, uy) = (dx / len * half * 0.4, dy / len * half * 0.4);
+        line(vec![
+            at + vec2(-ux - uy, -uy + ux),
+            at,
+            at + vec2(-ux + uy, -uy - ux),
+        ])
+    };
     let shapes: Vec<Shape> = match icon {
         Icon::Fit => {
             let (a, b) = (0.85, 0.4);
@@ -103,6 +148,55 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                     p(0.4, 0.85),
                     p(0.4 + head, 0.8 - head),
                 ]),
+            ]
+        }
+        Icon::Start => vec![
+            bar(-0.75),
+            triangle(-0.65, -1.0, 0.7),
+            triangle(0.05, -1.0, 0.7),
+        ],
+        Icon::StepBack => vec![bar(-0.55), triangle(-0.45, -1.0, 1.0)],
+        Icon::Play => vec![triangle(0.75, 1.0, 1.3)],
+        Icon::Pause => vec![
+            Shape::rect_filled(Rect::from_min_max(p(-0.55, -0.7), p(-0.15, 0.7)), 0.0, ink),
+            Shape::rect_filled(Rect::from_min_max(p(0.15, -0.7), p(0.55, 0.7)), 0.0, ink),
+        ],
+        Icon::StepForward => vec![triangle(0.45, 1.0, 1.0), bar(0.55)],
+        Icon::End => vec![
+            triangle(-0.05, 1.0, 0.7),
+            triangle(0.65, 1.0, 0.7),
+            bar(0.75),
+        ],
+        Icon::Loop => {
+            // Most of a circle, from the top round to the right.
+            let points: Vec<Pos2> = (0..=20)
+                .map(|k| {
+                    let a = -1.4 + (k as f32) / 20.0 * 5.0;
+                    p(0.7 * a.cos(), 0.7 * a.sin())
+                })
+                .collect();
+            let end = 3.6_f32;
+            let tip = p(0.7 * end.cos(), 0.7 * end.sin());
+            vec![line(points), head(tip, -end.sin(), end.cos())]
+        }
+        Icon::Orbit => {
+            // A flat ellipse about the vertical axis, an arrow on its
+            // near side going right.
+            let points: Vec<Pos2> = (0..=24)
+                .map(|k| {
+                    let a = 0.3 + (k as f32) / 24.0 * 5.4;
+                    p(0.85 * a.cos(), 0.35 * a.sin())
+                })
+                .collect();
+            let end = 5.7_f32;
+            let tip = p(0.85 * end.cos(), 0.35 * end.sin());
+            vec![
+                Shape::line_segment(
+                    [p(0.0, -0.9), p(0.0, 0.9)],
+                    Stroke::new(stroke.width, faint),
+                ),
+                line(points),
+                head(tip, -0.85 * end.sin(), 0.35 * end.cos()),
             ]
         }
     };

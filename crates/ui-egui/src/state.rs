@@ -288,6 +288,73 @@ pub struct Dialogs {
     pub shortcuts: bool,
 }
 
+/// The history player under the feature list: playing through the
+/// timeline step by step, how fast, whether it starts again at the end,
+/// and whether the camera turns slowly meanwhile. View state, like the
+/// timeline itself (`view.scrub`): `ui.set {"timeline": {"playing":
+/// true}}` starts a replay for the person watching. Not kept per tab:
+/// switching tabs stops it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Playback {
+    /// Playing: the next step follows once the step shown is built and
+    /// has been shown long enough ([`PLAYER_DWELL_SECONDS`] / `speed`).
+    pub playing: bool,
+    /// One of [`PLAYER_SPEEDS`].
+    pub speed: f64,
+    /// Starts again at the first step after the last.
+    #[serde(rename = "loop")]
+    pub looping: bool,
+    /// The camera turns slowly about the vertical while playing.
+    pub orbit: bool,
+}
+
+/// The speeds the player offers.
+pub const PLAYER_SPEEDS: [f64; 3] = [0.5, 1.0, 2.0];
+
+/// How long each step is shown at least, at speed 1, in seconds.
+pub const PLAYER_DWELL_SECONDS: f64 = 0.8;
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            playing: false,
+            speed: 1.0,
+            looping: false,
+            orbit: false,
+        }
+    }
+}
+
+impl Playback {
+    /// The same playback with a speed the player offers; any other speed
+    /// is an error.
+    pub fn validated(self) -> Result<Self, String> {
+        if PLAYER_SPEEDS.contains(&self.speed) {
+            Ok(self)
+        } else {
+            Err(format!(
+                "`timeline.speed` must be one of 0.5, 1 and 2, not {}",
+                self.speed
+            ))
+        }
+    }
+
+    /// The speed after `self.speed` in [`PLAYER_SPEEDS`], round.
+    pub fn next_speed(self) -> f64 {
+        let at = PLAYER_SPEEDS
+            .iter()
+            .position(|s| *s == self.speed)
+            .map_or(1, |i| i.saturating_add(1) % PLAYER_SPEEDS.len());
+        PLAYER_SPEEDS.get(at).copied().unwrap_or(1.0)
+    }
+
+    /// How long a step is shown at least, in seconds.
+    pub fn dwell(self) -> f64 {
+        PLAYER_DWELL_SECONDS / self.speed.max(0.25)
+    }
+}
+
 impl Default for Panels {
     fn default() -> Self {
         Self {
@@ -532,6 +599,8 @@ pub struct UiState {
     pub show: Show,
     /// The Help menu's windows that are open.
     pub dialogs: Dialogs,
+    /// The history player.
+    pub timeline: Playback,
     /// The Parameters tab of the side panel (`shell/params.rs`).
     pub parameters: ParametersView,
 }
@@ -680,6 +749,7 @@ impl UiState {
         self.quality = self.quality.validated()?;
         self.transparency = finite("transparency", self.transparency)?.clamp(0.0, MAX_TRANSPARENCY);
         self.section = self.section.validated()?;
+        self.timeline = self.timeline.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
         self.parameters.collapsed.truncate(MAX_COLLAPSED);
         for group in &mut self.parameters.collapsed {
@@ -921,6 +991,13 @@ mod tests {
                 about: true,
                 shortcuts: false,
             },
+            // Added with the history player (2026-10-23).
+            timeline: Playback {
+                playing: true,
+                speed: 2.0,
+                looping: true,
+                orbit: false,
+            },
             // Added with the Jigs' parameter form (2026-10-23).
             parameters: ParametersView {
                 open: true,
@@ -955,6 +1032,7 @@ mod tests {
                 "show": {"datums": false, "sketches": false},
                 "parameters": {"open": true, "collapsed": ["Finish"]},
                 "dialogs": {"about": true, "shortcuts": false},
+                "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();
