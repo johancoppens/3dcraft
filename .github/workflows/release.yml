@@ -55,7 +55,7 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
             exit 1
           fi
-          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+          if ! awk -v head="## [$version]" 'index($0, head) == 1 { found = 1 } END { exit !found }' CHANGELOG.md; then
             echo "CHANGELOG.md has no section ## [$version] for the release notes" >&2
             exit 1
           fi

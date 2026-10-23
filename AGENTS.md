@@ -36,6 +36,7 @@ crates/
   math geom                  L0 foundation (f64 vectors, transforms, tolerances; curves and surfaces incl. NURBS)
   step meshio zipstore       L0 standalone format crates (publishable): STEP Part 21, STL/3MF/OBJ, stored ZIP
   drawing                    L0 standalone format crate: DXF and SVG of flat outlines, with its own 2D model
+  buildinfo                  L0 for the programs' build scripts: the commit they are built from (bug report)
   topo expr                  L1 B-rep topology (pure data + validity checks); units, variables, formulas
   doc                        L2 document model (variables, sketches, constraints, feature history: pure data)
   ops solve kernel tess      L3 history/undo, sketch constraint solver, modelling operations, tessellator

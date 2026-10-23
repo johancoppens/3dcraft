@@ -12,3 +12,7 @@ workspace = true
 craft3d-engine.workspace = true
 craft3d-automation.workspace = true
 serde_json.workspace = true
+
+# The commit the program is built from, for the bug report (build.rs).
+[build-dependencies]
+craft3d-buildinfo.workspace = true

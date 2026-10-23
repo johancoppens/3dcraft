@@ -392,6 +392,8 @@ fn run(mut args: Args) -> Result<(), CliError> {
 }
 
 fn main() -> ExitCode {
+    // The commit the build script embedded, for the bug report.
+    craft3d_engine::set_build_commit(option_env!("CRAFT3D_GIT_COMMIT"));
     let outcome = Args::from_os(std::env::args_os().skip(1)).and_then(run);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,

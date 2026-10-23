@@ -16,9 +16,27 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!("session.report", "Report for 
 /// The version of 3DCraft this is.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The git commit this build was made from (12 hex digits), when the build
-/// knew it (`build.rs`).
-pub const COMMIT: Option<&str> = option_env!("CRAFT3D_GIT_COMMIT");
+/// The commit the running program was built from, as its `main` gave it
+/// ([`set_build_commit`]).
+static BUILD_COMMIT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Tells the engine which commit the program was built from, for every
+/// report: a program's `main` passes `option_env!("CRAFT3D_GIT_COMMIT")`,
+/// which its build script sets (`craft3d-buildinfo`). The value is embedded
+/// in the program, not in this library, so a new commit rebuilds only the
+/// program. The first call wins; `None` changes nothing.
+pub fn set_build_commit(commit: Option<&'static str>) {
+    if let Some(commit) = commit.filter(|c| !c.is_empty()) {
+        let _ = BUILD_COMMIT.set(commit);
+    }
+}
+
+/// The commit [`set_build_commit`] was given (letters and digits, up to 64:
+/// usually the first 12 hex digits of the object name), or `None` when the
+/// program did not know it.
+pub fn build_commit() -> Option<&'static str> {
+    BUILD_COMMIT.get().copied()
+}
 
 /// The most characters of params and of an error a report keeps.
 pub const MAX_REPORT_FIELD_CHARS: usize = 4000;
@@ -75,34 +93,46 @@ pub fn platform() -> String {
 }
 
 /// The plain-text report. `host` are the frontend's own lines (name,
-/// value); `status` is what the frontend showed for the last command when
-/// that was not `failure` (a failure outside the engine, such as a file
-/// chooser that could not be shown), as (label, text).
+/// value). `status` is the failure the frontend shows now, as (label,
+/// text), and `current` says whether `failure` is that failure (the engine
+/// command behind it, perhaps under another label such as a batch or an MCP
+/// tool). A status that is not `failure` (a failure outside the engine, such
+/// as a file chooser that could not be shown) gets lines of its own, and
+/// `failure` is then marked as an earlier one.
 pub fn bug_report(
     failure: Option<&FailedCommand>,
+    current: bool,
     host: &[(String, String)],
     status: Option<(&str, &str)>,
 ) -> String {
     let mut out = String::from("3DCraft bug report\n");
     out.push_str(&format!("version: {VERSION}\n"));
-    out.push_str(&format!("commit: {}\n", COMMIT.unwrap_or("unknown")));
+    out.push_str(&format!(
+        "commit: {}\n",
+        build_commit().unwrap_or("unknown")
+    ));
     out.push_str(&format!("platform: {}\n", platform()));
     for (name, value) in host {
         out.push_str(&format!("{name}: {value}\n"));
     }
+    let current = current && failure.is_some();
     if let Some((label, text)) = status
-        && failure.is_none_or(|f| f.command != label)
+        && !current
     {
         out.push_str(&format!("failed: {label}\n"));
         out.push_str(&format!("message: {text}\n"));
     }
     match failure {
         Some(failure) => {
+            if status.is_some() && !current {
+                out.push_str("earlier failed command (not the failure above):\n");
+            }
             out.push_str(&format!("command: {}\n", failure.command));
             out.push_str(&format!("params: {}\n", failure.params));
             out.push_str(&format!("error: {}\n", failure.error));
         }
-        None => out.push_str("command: (none failed)\n"),
+        None if status.is_none() => out.push_str("command: (none failed)\n"),
+        None => {}
     }
     out
 }
@@ -151,7 +181,7 @@ impl Session {
     /// The report of this session: the build, the platform, the host's
     /// details and the last command that failed.
     pub fn bug_report(&self) -> String {
-        bug_report(self.last_failure.as_ref(), &self.host_details, None)
+        bug_report(self.last_failure.as_ref(), true, &self.host_details, None)
     }
 }
 
@@ -172,7 +202,7 @@ fn session_report(session: &mut Session, params: &Value) -> Run {
     Ok(json!({
         "text": session.bug_report(),
         "version": VERSION,
-        "commit": COMMIT,
+        "commit": build_commit(),
         "platform": platform(),
         "host": host,
         "lastFailure": failure,
@@ -232,8 +262,8 @@ mod tests {
             text.contains(&format!("platform: {}\n", platform())),
             "{text}"
         );
-        let commit = COMMIT.unwrap_or("unknown");
-        assert!(text.contains(&format!("commit: {commit}\n")), "{text}");
+        // Which commit is the concern of `the_commit_is_what_the_program_gave`.
+        assert!(text.contains("\ncommit: "), "{text}");
     }
 
     #[test]
@@ -264,14 +294,52 @@ mod tests {
             error: "file.open: no such file".into(),
             serial: 1,
         };
-        let same = bug_report(Some(&failure), &[], Some(("file.open", "no such file")));
-        assert!(!same.contains("failed: "), "{same}");
-        let other = bug_report(Some(&failure), &[], Some(("download", "blocked")));
+        // The status bar shows this failure, under its own label or that
+        // of a batch: one block, no status lines.
+        for label in ["file.open", "batch of 3"] {
+            let same = bug_report(Some(&failure), true, &[], Some((label, "no such file")));
+            assert!(!same.contains("failed: "), "{same}");
+            assert!(!same.contains("earlier"), "{same}");
+            assert!(same.contains("command: file.open\n"), "{same}");
+        }
+        // Another failure: its lines, then the engine's as an earlier one.
+        let other = bug_report(Some(&failure), false, &[], Some(("download", "blocked")));
         assert!(
             other.contains("failed: download\nmessage: blocked\n"),
             "{other}"
         );
-        let only = bug_report(None, &[], Some(("file", "no chooser")));
-        assert!(only.contains("failed: file\n"), "{only}");
+        assert!(
+            other.contains("earlier failed command (not the failure above):\ncommand: file.open\n"),
+            "{other}"
+        );
+        let only = bug_report(None, false, &[], Some(("file", "no chooser")));
+        assert!(
+            only.contains("failed: file\nmessage: no chooser\n"),
+            "{only}"
+        );
+        assert!(!only.contains("command:"), "{only}");
+        // Without a status (session.report) the failure is simply named.
+        let plain = bug_report(Some(&failure), false, &[], None);
+        assert!(!plain.contains("earlier"), "{plain}");
+        assert!(plain.contains("command: file.open\n"), "{plain}");
+    }
+
+    #[test]
+    fn the_commit_is_what_the_program_gave() {
+        set_build_commit(None);
+        set_build_commit(Some(""));
+        // Other tests of this binary may have set it; it never changes.
+        let first = build_commit();
+        set_build_commit(Some("abc123def456"));
+        let now = build_commit();
+        assert!(now.is_some());
+        if let Some(first) = first {
+            assert_eq!(now, Some(first));
+        }
+        let text = Session::new(Workspace::memory()).bug_report();
+        assert!(
+            text.contains(&format!("commit: {}\n", now.unwrap())),
+            "{text}"
+        );
     }
 }

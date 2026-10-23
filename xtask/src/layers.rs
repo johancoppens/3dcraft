@@ -12,6 +12,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("meshio", 0),
     ("drawing", 0),
     ("zipstore", 0),
+    ("buildinfo", 0),
     ("topo", 1),
     ("expr", 1),
     ("doc", 2),
@@ -71,7 +72,7 @@ const SAME_LAYER: &[(&str, &str)] = &[
 const SAME_LAYER_DEV: &[(&str, &str)] = &[("kernel", "tess")];
 
 /// Format crates that must not depend on any workspace crate.
-const STANDALONE: &[&str] = &["step", "meshio", "zipstore", "drawing"];
+const STANDALONE: &[&str] = &["step", "meshio", "zipstore", "drawing", "buildinfo"];
 
 /// The documented exceptions to that: (crate, depends on), both standalone.
 const STANDALONE_EXCEPTIONS: &[(&str, &str)] = &[("meshio", "zipstore")];

@@ -428,11 +428,9 @@ pub struct Shell {
     pub state: UiState,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
-    /// The last command that failed in the session, as of the last
-    /// `sync`: what "Copy details" reports (`shell/report.rs`).
-    failure: Option<craft3d_engine::FailedCommand>,
-    /// The report "Copy details" last put on the clipboard.
-    copied: Option<String>,
+    /// What "Copy details" reports and whether its window is open
+    /// (`shell/report.rs`).
+    report: report::ReportState,
     /// Where "Copy details" was drawn in the last frame.
     copy_hit: Option<egui::Rect>,
     /// Autosave and what can be recovered, as of the last `sync`.
@@ -725,8 +723,7 @@ impl Shell {
             state: UiState::default(),
             tokens: Tokens::default(),
             last_command: None,
-            failure: None,
-            copied: None,
+            report: report::ReportState::default(),
             copy_hit: None,
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
@@ -2036,6 +2033,7 @@ impl Shell {
         if copy_clicked {
             self.copy_error_report(ui.ctx());
         }
+        self.error_details(ui.ctx());
     }
 
     /// Where the status bar's "Copy details" was drawn in the last frame:

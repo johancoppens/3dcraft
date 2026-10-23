@@ -39,6 +39,8 @@ type Inbox = Rc<RefCell<Vec<Arrived>>>;
 /// Starts the page once the module is loaded.
 #[wasm_bindgen(start)]
 pub fn start() {
+    // The commit the build script embedded, for the bug report.
+    craft3d_engine::set_build_commit(option_env!("CRAFT3D_GIT_COMMIT"));
     let _ = eframe::WebLogger::init(log::LevelFilter::Info);
     wasm_bindgen_futures::spawn_local(run());
 }

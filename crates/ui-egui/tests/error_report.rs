@@ -127,6 +127,12 @@ fn copy_details_appears_after_a_failure_and_copies_the_report() {
     );
     assert!(text.contains("renderer: "), "{text}");
 
+    // The window that shows it, for reading before posting and for copying
+    // by hand where a browser refuses the clipboard.
+    assert!(shell.error_details_open());
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.error_details_open());
+
     // The agent's way to the same text.
     let got = shell
         .handle_method(&mut session, "ui.get", None)

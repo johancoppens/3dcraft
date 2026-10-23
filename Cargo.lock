@@ -404,6 +404,7 @@ name = "craft3d"
 version = "0.1.0"
 dependencies = [
  "craft3d-automation",
+ "craft3d-buildinfo",
  "craft3d-engine",
  "craft3d-regen",
  "craft3d-ui-egui",
@@ -425,10 +426,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-buildinfo"
+version = "0.1.0"
+
+[[package]]
 name = "craft3d-cli"
 version = "0.1.0"
 dependencies = [
  "craft3d-automation",
+ "craft3d-buildinfo",
  "craft3d-engine",
  "serde_json",
 ]
@@ -666,6 +672,7 @@ dependencies = [
 name = "craft3d-web"
 version = "0.1.0"
 dependencies = [
+ "craft3d-buildinfo",
  "craft3d-engine",
  "craft3d-ui-egui",
  "eframe",

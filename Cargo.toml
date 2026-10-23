@@ -31,6 +31,7 @@ craft3d-drawing = { path = "crates/drawing" }
 craft3d-step = { path = "crates/step" }
 craft3d-stepread = { path = "crates/stepread" }
 craft3d-zipstore = { path = "crates/zipstore" }
+craft3d-buildinfo = { path = "crates/buildinfo" }
 craft3d-io = { path = "crates/io" }
 # Not modelling code: image encoding only (decisions.md, D10).
 png = "0.17"
