@@ -835,6 +835,10 @@ impl Page {
                     text.push_str("; the document is not saved");
                 }
                 self.host.note(label, false, text);
+                // A file the save dialog made and nothing reached goes again.
+                wasm_bindgen_futures::spawn_local(async move {
+                    pickers::remove_if_empty(&handle).await;
+                });
             }
         }
         if let Some((handle, download)) = later {
