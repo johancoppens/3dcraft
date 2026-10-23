@@ -8,7 +8,7 @@ use crate::commands::{Run, fail, spec};
 use crate::params::Params;
 use crate::sketch_cmds::{change, entity_id, sketch_ref, sketch_result};
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_doc::{EntityId, Expr, FORMULA_PARAMETER, SketchError};
+use craft3d_doc::{EntityId, Expr, FORMULA_PARAMETER, Geometry, SketchError};
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -96,6 +96,19 @@ fn sketch_curve(session: &mut Session, params: &Value) -> Run {
         let ensure = |s: &craft3d_doc::Sketch, id: EntityId, at: [f64; 2]| {
             let (px, py) = s.point(id)?;
             let off = (px - at[0]).hypot(py - at[1]);
+            // Another formula curve that ends there holds the point where
+            // its formulas put it: both have to meet.
+            let other = s.entities.iter().find(|e| {
+                matches!(e.geometry, Geometry::Formula { start, end, .. } if start == id || end == id)
+            });
+            if off > tolerance
+                && let Some(other) = other
+            {
+                return Err(SketchError::Invalid(format!(
+                    "the formula curve {} ends at {id}, at ({px}, {py}), but this curve starts or ends at ({}, {}): they do not meet; change the formulas, or give another point",
+                    other.id, at[0], at[1]
+                )));
+            }
             if off > tolerance
                 && s.constraints
                     .iter()

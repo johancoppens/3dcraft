@@ -5,32 +5,40 @@
 //! evaluating and drawing a spline on any clamped knots).
 //!
 //! **Fitting a formula** ([`fit_formula`]). The curve `(x(t), y(t))` for `t`
-//! from `from` to `to` is sampled at even steps of `t` and a cubic B-spline
-//! is interpolated through the samples, each at its chord-length parameter
-//! (the length of the polygon through the samples up to it, as a share of
-//! the whole), on knots averaged from the parameters (*The NURBS Book*,
-//! eqs. 9.5 and 9.8). That satisfies Schoenberg and Whitney's condition,
-//! so the banded system is solved without pivoting (the matrix is totally
-//! positive); and the spline runs at about even speed, also where the
-//! formula's parameter stands still (an involute leaves its base circle at
-//! speed zero, which a spline in `t` would turn into a cusp). The formula
-//! is then checked at three points inside every span between samples (a
-//! quarter, half and three quarters of the way in `t`): the distance from
-//! each to the spline (its nearest point, found by Newton steps from the
-//! point at the same share of the span). A span off by more than half the
-//! tolerance is halved (its middle check becomes a sample, its quarter
-//! checks the new spans' middles), and the spline is interpolated again,
-//! until every check holds. The ends are the formula's end points exactly.
+//! from `from` to `to` is sampled at 33 places: the ends, and 31 inner ones
+//! each moved off its even step by up to a quarter of a step (by the
+//! golden ratio, deterministically). A cubic B-spline is interpolated
+//! through the samples, each at its chord-length parameter (the length of
+//! the polygon through the samples up to it, as a share of the whole), on
+//! knots averaged from the parameters (*The NURBS Book*, eqs. 9.5 and
+//! 9.8). That satisfies Schoenberg and Whitney's condition, so the banded
+//! system is solved without pivoting (the matrix is totally positive); and
+//! the spline runs at about even speed, also where the formula's parameter
+//! stands still (an involute leaves its base circle at speed zero, which a
+//! spline in `t` would turn into a cusp). The formula is then checked at
+//! three points inside every span between samples (at 0.309, 0.5 and 0.691
+//! of the way in `t`): the distance from each to the spline (its nearest
+//! point, found by Newton steps from the point at the same share of the
+//! span). A span off by more than half the tolerance is halved (its middle
+//! check becomes a sample, each half is checked afresh at the same shares),
+//! and the spline is interpolated again, until every check holds. The ends
+//! are the formula's end points exactly.
 //!
 //! **What the fit guarantees.** Every sample lies on the spline (up to
-//! rounding), and every check within half the document's tolerance of it.
-//! Between checks nothing is proven: a formula that
-//! wiggles faster than the checks are spaced (32 spans of 3 checks to start
-//! with, so 128 points before any refinement) can pass unseen. It ends with
-//! an error, never a curve off by more: when the spline needs more than
-//! [`MAX_FIT_POINTS`] samples, more than [`MAX_FIT_ROUNDS`] rounds, or a
-//! span shorter than the rounding of its parameter (a kink or a jump in the
-//! formula), or when the formula fails or is not finite at a sample.
+//! rounding), and every check within half the document's tolerance of it,
+//! as far as the Newton steps find the spline's nearest point (where the
+//! spline comes back close to itself they may settle on a nearer stretch
+//! of it than the one that matches, and under-report). Between checks
+//! nothing is proven: a formula that wiggles faster than the checks are
+//! spaced (32 spans of 3 checks to start with, 129 points before any
+//! refinement) can pass unseen. The samples and checks are at shares that
+//! no even grid of the parameter holds, so a periodic formula in step with
+//! one (a ring of 64 waves) is seen; one in step with these shares by
+//! design is not. It ends with an error, never a curve off by more at a
+//! check: when the spline needs more than [`MAX_FIT_POINTS`] samples, more
+//! than [`MAX_FIT_ROUNDS`] rounds, or a span shorter than the rounding of
+//! its parameter (a kink or a jump in the formula), or when the formula
+//! fails or is not finite at a sample.
 
 pub use craft3d_kernel::profile::Spline2;
 
@@ -48,7 +56,29 @@ const FIRST_SPANS: usize = 32;
 /// to `1 − (3/4)^n` (0.94 for `n = 10`).
 const JUMP_SHARE: f64 = 0.95;
 /// Where in a span the fit is checked against the formula.
-const CHECKS: [f64; 3] = [0.25, 0.5, 0.75];
+///
+/// The outer two are at shares no halving reaches, (√5 − 1) / 4 and its
+/// mirror, and the first samples are moved off the even grid (below), so
+/// a periodic formula in step with an even grid of the parameter (a ring
+/// of 64 waves, sampled at multiples of 1/128 of its turn) is not taken
+/// for a smooth curve that passes through every sample and check.
+const CHECKS: [f64; 3] = [0.309_016_994_374_947_4, 0.5, 0.690_983_005_625_052_6];
+
+/// Where inner sample `i` of the first [`FIRST_SPANS`] spans is, as a share
+/// of the range: off its even place by up to a quarter of a span, by the
+/// fractional parts of multiples of the golden ratio (deterministic).
+fn first_sample(i: usize) -> f64 {
+    let n = FIRST_SPANS as f64;
+    if i == 0 {
+        return 0.0;
+    }
+    if i >= FIRST_SPANS {
+        return 1.0;
+    }
+    let golden = 0.618_033_988_749_894_9_f64;
+    let shift = ((i as f64 * golden).fract() - 0.5) * 0.5;
+    (i as f64 + shift) / n
+}
 /// Most points [`interpolate`] takes: the system that gives the control
 /// points is solved densely, which costs the cube of this.
 pub const MAX_THROUGH_POINTS: usize = 400;
@@ -562,7 +592,7 @@ pub fn fit_formula(
     };
     let mut samples: Vec<(f64, P2)> = Vec::with_capacity(FIRST_SPANS + 1);
     for i in 0..=FIRST_SPANS {
-        let u = i as f64 / FIRST_SPANS as f64;
+        let u = first_sample(i);
         samples.push((u, at(u)?));
     }
     let mut checks: Vec<[P2; 3]> = Vec::with_capacity(FIRST_SPANS);
@@ -646,7 +676,15 @@ pub fn fit_formula(
                 off = off.max(d);
             }
             if off > target || jumps {
-                bad.push(i);
+                // Into as many pieces as the error says (a cubic's falls
+                // with the fourth power of the span), two to eight.
+                let ratio = off / target;
+                let pieces = if ratio > 1.0 && ratio.is_finite() {
+                    (ratio.powf(0.25) * 1.2).ceil().clamp(2.0, 8.0) as usize
+                } else {
+                    2
+                };
+                bad.push((i, pieces));
             }
         }
         if bad.is_empty() {
@@ -665,40 +703,52 @@ pub fn fit_formula(
         if round == MAX_FIT_ROUNDS {
             return not_fitted(format!("{MAX_FIT_ROUNDS} rounds were not enough"));
         }
-        if samples.len().saturating_add(bad.len()) > MAX_FIT_POINTS {
+        let added: usize = bad.iter().map(|(_, k)| k.saturating_sub(1)).sum();
+        if samples.len().saturating_add(added) > MAX_FIT_POINTS {
             return not_fitted(format!("it would take more than {MAX_FIT_POINTS} points"));
         }
-        // Halve every span that is off.
-        let mut next_samples = Vec::with_capacity(samples.len() + bad.len());
-        let mut next_checks = Vec::with_capacity(checks.len() + bad.len());
+        // Cut every span that is off into its pieces, each checked afresh
+        // at the same shares of its own.
+        let mut next_samples = Vec::with_capacity(samples.len() + added);
+        let mut next_checks = Vec::with_capacity(checks.len() + added);
         let mut bad = bad.into_iter().peekable();
         for (i, (pair, three)) in samples.windows(2).zip(&checks).enumerate() {
             let [(a, pa), (b, _)] = *pair else { continue };
             next_samples.push((a, pa));
-            if bad.peek() != Some(&i) {
-                next_checks.push(*three);
-                continue;
-            }
+            let pieces = match bad.peek() {
+                Some(&(at_span, pieces)) if at_span == i => pieces,
+                _ => {
+                    next_checks.push(*three);
+                    continue;
+                }
+            };
             bad.next();
-            let middle = a + (b - a) / 2.0;
-            if !(middle > a && middle < b) {
+            let cuts: Vec<f64> = (0..=pieces)
+                .map(|j| {
+                    if j == pieces {
+                        b
+                    } else {
+                        a + (b - a) * j as f64 / pieces as f64
+                    }
+                })
+                .collect();
+            if cuts.windows(2).any(|w| matches!(*w, [p, q] if q <= p)) {
                 return not_fitted(format!(
                     "a span shrank to the rounding of its parameter at t = {}",
                     t_of(a)
                 ));
             }
-            let [q1, mid, q3] = *three;
-            next_samples.push((middle, mid));
-            next_checks.push([
-                at(a + (middle - a) * 0.25)?,
-                q1,
-                at(a + (middle - a) * 0.75)?,
-            ]);
-            next_checks.push([
-                at(middle + (b - middle) * 0.25)?,
-                q3,
-                at(middle + (b - middle) * 0.75)?,
-            ]);
+            for (j, piece) in cuts.windows(2).enumerate() {
+                let &[from, to] = piece else { continue };
+                if j > 0 {
+                    next_samples.push((from, at(from)?));
+                }
+                let mut fresh = [[0.0; 2]; 3];
+                for (slot, s) in fresh.iter_mut().zip(CHECKS) {
+                    *slot = at(from + (to - from) * s)?;
+                }
+                next_checks.push(fresh);
+            }
         }
         if let Some(end) = samples.last() {
             next_samples.push(*end);
@@ -852,6 +902,74 @@ mod tests {
             }
             Err(why) => assert!(why.contains("split"), "{why}"),
         }
+    }
+
+    /// The largest distance from `count` points of the formula, evenly in
+    /// `t` (a grid that is none of the fit's), to the fitted spline.
+    fn densely_off(fit: &Fit, f: impl Fn(f64) -> P2, from: f64, to: f64, count: u32) -> f64 {
+        let s = &fit.spline;
+        let (d1, d2) = (
+            derivative(s).unwrap(),
+            derivative(&derivative(s).unwrap()).unwrap(),
+        );
+        let along: Vec<(f64, P2)> = (0..=8 * count)
+            .map(|k| {
+                let u = f64::from(k) / f64::from(8 * count);
+                (u, point(s, u).unwrap())
+            })
+            .collect();
+        let mut worst = 0.0_f64;
+        // The curves run forwards together: the nearest point of the
+        // spline is searched near the last one.
+        let mut last: usize = 0;
+        for k in 0..=count {
+            let p = f(from + (to - from) * f64::from(k) / f64::from(count));
+            let window = last.saturating_sub(64)..(last + 256).min(along.len());
+            let (index, guess) = along[window.clone()]
+                .iter()
+                .enumerate()
+                .min_by(|a, b| distance(a.1.1, p).total_cmp(&distance(b.1.1, p)))
+                .map(|(i, a)| (window.start + i, a.0))
+                .unwrap();
+            last = index;
+            worst = worst.max(nearest(s, &d1, &d2, p, guess).unwrap());
+        }
+        worst
+    }
+
+    /// A ring of 64 waves is in step with every even grid of a 128th of
+    /// its turn: sampled there it is a plain circle. The fit sees the waves.
+    #[test]
+    fn a_periodic_formula_in_step_with_an_even_grid_is_seen() {
+        let ring = |t: f64| {
+            let r = 20.0 + (64.0 * t).sin();
+            [r * t.cos(), r * t.sin()]
+        };
+        let fit = fit_formula(|t| Ok(ring(t)), 0.0, std::f64::consts::TAU, 1e-4).unwrap();
+        let off = densely_off(&fit, ring, 0.0, std::f64::consts::TAU, 6007);
+        assert!(
+            off <= 1e-4,
+            "ring: {off:e}, {} points",
+            fit.spline.control.len()
+        );
+        assert!(fit.spline.control.len() > 64 * 4);
+        let wave = |t: f64| [t, t.sin()];
+        let end = 256.0 * std::f64::consts::PI;
+        // 128 periods of a sine: fitted within a coarse tolerance, and
+        // refused (never a flat line) where it would take too many points.
+        let refused = fit_formula(|t| Ok(wave(t)), 0.0, end, 1e-6).unwrap_err();
+        assert!(refused.contains("more than"), "{refused}");
+        let fit = fit_formula(|t| Ok(wave(t)), 0.0, end, 1e-3).unwrap();
+        let off = densely_off(&fit, wave, 0.0, end, 12007);
+        assert!(
+            off <= 1e-3,
+            "sine:{off:e}, {} points",
+            fit.spline.control.len()
+        );
+        println!(
+            "ring of 64 waves and 128 sine periods: {} control points",
+            fit.spline.control.len()
+        );
     }
 
     #[test]

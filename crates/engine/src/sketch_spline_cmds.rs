@@ -197,6 +197,13 @@ fn sketch_spline(session: &mut Session, params: &Value) -> Run {
             "{COMMAND}: `live` fits a spline through points at every regeneration: give `through`, not `control`"
         ));
     }
+    let most = craft3d_regen::curve_fit::MAX_THROUGH_POINTS;
+    if live && given.len().saturating_add(usize::from(closed)) > most {
+        return fail(format!(
+            "{COMMAND}: a live spline is fitted through at most {most} points, got {}",
+            given.len()
+        ));
+    }
     if closed {
         let Some(first) = given.first().cloned() else {
             return fail(format!("{COMMAND}: a closed spline needs points"));

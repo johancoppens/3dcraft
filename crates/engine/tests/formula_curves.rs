@@ -586,7 +586,7 @@ fn bad_formula_curves_are_refused_with_a_reason() {
             "empty",
         ),
         (
-            json!({"sketch": "C", "x": "t", "y": "t", "t": ["0 deg", "1 mm"]}),
+            json!({"sketch": "C", "x": "t", "y": "t", "t": ["1 deg", "1 mm"]}),
             "dimension",
         ),
         (
@@ -821,4 +821,109 @@ fn the_scene_draws_formula_curves_and_live_splines() {
         .unwrap_or_else(|| panic!("the live spline: {lines:?}"));
     assert_eq!(live.points[0].x, 20.0);
     assert_eq!(live.points[live.points.len() - 1].x, 30.0);
+}
+
+/// A formula curve that nearly closes, in a ring pattern: each instance is
+/// the seed's fit turned by the pattern's own map (not by its short
+/// chord), so the four regions have the seed's area exactly. The range
+/// `[0, 359 deg]` takes the angle's dimension for its zero.
+#[test]
+fn a_nearly_closed_formula_curve_turns_with_its_ring() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    run(&mut s, "sketch.create", json!({"name": "R"}));
+    let curve = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "R", "x": "20 mm + 3 mm * cos(t)", "y": "3 mm * sin(t)", "t": [0, "359 deg"]}),
+    );
+    assert_eq!(curve["closed"], false, "{curve}");
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "R", "from": curve["end"], "to": curve["start"]}),
+    );
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "R", "entities": [curve["entity"], line["entity"]], "count": 4, "angle": "90 deg", "center": ["0 mm", "0 mm"]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "R", "distance": 1, "name": "Rings"}),
+    );
+    let theta = 359f64.to_radians();
+    let area = 9.0 / 2.0 * (theta - theta.sin());
+    assert_volume(&mut s, "Rings", 4.0 * area, 4.0 * 20.0 * 1e-6);
+}
+
+/// Two formula curves may share an end point when their formulas meet
+/// there; when they do not (at creation, or after a variable changes) the
+/// sketch says which curves and which point.
+#[test]
+fn formula_curves_that_share_an_end_have_to_meet() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    set(&mut s, "L", "10 mm");
+    set(&mut s, "gap", "0 mm");
+    run(&mut s, "sketch.create", json!({"name": "S"}));
+    let a = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "S", "x": "t", "y": "0 mm", "t": ["0 mm", "L"]}),
+    );
+    let b = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "S", "x": "L + gap + t", "y": "t^2 / (10 mm)", "t": ["0 mm", "5 mm"], "start": a["end"]}),
+    );
+    assert_eq!(b["start"], a["end"], "{b}");
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "S", "from": b["end"], "to": a["start"]}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": 1, "name": "Shared"}),
+    );
+    // Under the chord from (0, 0) to (15, 2.5), less what lies under the
+    // line along x and the parabola: 18.75 - 125 / 30.
+    let area = 15.0 * 2.5 / 2.0 - 125.0 / 30.0;
+    assert_volume(&mut s, "Shared", area, 30.0 * 1e-6);
+    // A third curve from that point that does not start there: refused.
+    let refused = error(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "S", "x": "L + 1 mm + t", "y": "t", "t": ["0 mm", "1 mm"], "start": a["end"]}),
+    );
+    assert!(refused.contains("do not meet"), "{refused}");
+    // A variable that pulls them apart fails the sketch, naming them.
+    set(&mut s, "gap", "1 mm");
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "S"}));
+    assert_eq!(inspected["status"], "failed", "{inspected}");
+    let reason = inspected["error"].as_str().unwrap_or_default().to_string();
+    assert!(
+        reason.contains("do not meet") && reason.contains(a["end"].as_str().unwrap()),
+        "{inspected}"
+    );
+    set(&mut s, "gap", "0 mm");
+    assert_volume(&mut s, "Shared", area, 30.0 * 1e-6);
+}
+
+/// A live spline through more points than are fitted is refused when made.
+#[test]
+fn a_live_spline_through_too_many_points_is_refused() {
+    let mut s = session();
+    new_document(&mut s, 1e-6);
+    run(&mut s, "sketch.create", json!({"name": "L"}));
+    let points: Vec<Value> = (0..401).map(|i| json!([i, (i % 7)])).collect();
+    let refused = error(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "L", "through": points, "live": true}),
+    );
+    assert!(refused.contains("at most 400"), "{refused}");
 }

@@ -207,7 +207,16 @@ pub fn fit_formula_curve(
             .evaluate(expr.source())
             .map_err(|e| format!("{id}.{name}: `{}`: {e}", expr.source()))
     };
-    let (start, end) = (range("from", from)?, range("to", to)?);
+    let (mut start, mut end) = (range("from", from)?, range("to", to)?);
+    // An end that is exactly zero takes the other's dimension: `[0, 360
+    // deg]` is a range of angles.
+    if start.dimension != end.dimension {
+        if start.value == 0.0 {
+            start = Quantity::new(0.0, end.dimension);
+        } else if end.value == 0.0 {
+            end = Quantity::new(0.0, start.dimension);
+        }
+    }
     if start.dimension != end.dimension {
         return Err(format!(
             "{id}: the range of t runs from `{}`, which is {}, to `{}`, which is {}; both ends have one dimension",
@@ -679,6 +688,8 @@ fn problem(
     }
     // The ends of formula curves, where the formulas put them.
     let mut pins = Vec::new();
+    let mut held: BTreeMap<EntityId, (EntityId, [f64; 2])> = BTreeMap::new();
+    let distance2 = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
     for (curve, fit) in fits {
         let fit = fit.as_ref().map_err(Clone::clone)?;
         let Ok(Geometry::Formula { start, end, .. }) = sketch.entity(*curve).map(|e| &e.geometry)
@@ -703,11 +714,26 @@ fn problem(
             ends.push((*end, *last));
         }
         for (point, at) in ends {
-            input.constraints.push(solve::Constraint::Fixed {
-                point: find(point)?,
-                at: Some(at),
-            });
-            pins.push((*curve, point));
+            // A point two curves end on is held once, where both put it.
+            match held.get(&point) {
+                Some(&(other, there)) => {
+                    let gap: f64 = distance2(at, there);
+                    if gap > doc.tolerance.linear {
+                        return Err(format!(
+                            "the formula curves {other} and {curve} do not meet at {point}: one ends at ({}, {}), the other at ({}, {}), {gap:e} apart; change the formulas, or end them on two points",
+                            there[0], there[1], at[0], at[1]
+                        ));
+                    }
+                }
+                None => {
+                    held.insert(point, (*curve, at));
+                    input.constraints.push(solve::Constraint::Fixed {
+                        point: find(point)?,
+                        at: Some(at),
+                    });
+                    pins.push((*curve, point));
+                }
+            }
         }
     }
     Ok(Problem {

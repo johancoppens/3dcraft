@@ -677,6 +677,28 @@ impl<'a, F: Fn(EntityId) -> Option<[f64; 2]>> Placer<'a, F> {
         Ok(self.place(key))
     }
 
+    /// Where an instance puts any point `at` of its seed (a control point
+    /// of a fitted curve, which is no entity): the map of each level, the
+    /// innermost first, as [`Placer::at`] applies them to a point's place.
+    pub(crate) fn carry(
+        &mut self,
+        at: [f64; 2],
+        levels: &[(usize, (u32, u32))],
+    ) -> Result<Option<[f64; 2]>, String> {
+        let mut place = at;
+        for &(level, instance) in levels {
+            if instance == (0, 0) {
+                continue;
+            }
+            let ends = self.ends(level, 0)?;
+            match self.apply(level, place, instance, ends) {
+                Some(next) => place = next,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(place))
+    }
+
     /// For a ring of runs that makes a whole turn: whether its last joint,
     /// as the turns put it, lies within `linear` of its first.
     pub(crate) fn ring_closes(&mut self, level: usize, linear: f64) -> bool {
@@ -1014,34 +1036,27 @@ pub(crate) fn instance_curves(
                     control,
                 })
             }
-            Geometry::Formula { start, end, .. } => {
-                // The seed's fit, moved as the instance moves its ends:
-                // the maps of patterns are rigid.
+            Geometry::Formula { .. } | Geometry::Interpolated { .. } => {
+                // The seed's fit, moved by the instance's own map (rigid):
+                // its control points as the pattern places any point, its
+                // ends exactly where the instance's end points are.
                 let seed = &solved
                     .curve(entity.id)
                     .ok_or_else(|| format!("{} has no fitted curve", entity.id))?
                     .spline;
-                if start == end {
-                    return Err(format!(
-                        "{}: a closed formula curve in a pattern is not supported yet; end it on two points",
-                        entity.id
-                    ));
+                let (first, last) = entity
+                    .geometry
+                    .ends()
+                    .ok_or_else(|| format!("{} has no end points", entity.id))?;
+                let (s1, e1) = (at(first)?, at(last)?);
+                let mut control = Vec::with_capacity(seed.control.len());
+                for p in &seed.control {
+                    control.push(
+                        placer
+                            .carry(*p, levels)?
+                            .ok_or_else(|| format!("{} cannot be placed", name()))?,
+                    );
                 }
-                let (Some(&s0), Some(&e0)) = (seed.control.first(), seed.control.last()) else {
-                    return Err(format!("{} has no fitted points", entity.id));
-                };
-                let (s1, e1) = (at(*start)?, at(*end)?);
-                let turn =
-                    (e1[1] - s1[1]).atan2(e1[0] - s1[0]) - (e0[1] - s0[1]).atan2(e0[0] - s0[0]);
-                let (sin, cos) = turn.sin_cos();
-                let mut control: Vec<[f64; 2]> = seed
-                    .control
-                    .iter()
-                    .map(|p| {
-                        let (ux, uy) = (p[0] - s0[0], p[1] - s0[1]);
-                        [s1[0] + ux * cos - uy * sin, s1[1] + ux * sin + uy * cos]
-                    })
-                    .collect();
                 if let Some(first) = control.first_mut() {
                     *first = s1;
                 }
@@ -1053,16 +1068,6 @@ pub(crate) fn instance_curves(
                     knots: seed.knots.clone(),
                     control,
                 })
-            }
-            Geometry::Interpolated { degree, through } => {
-                let through = through
-                    .iter()
-                    .map(|id| at(*id))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Curve2::Spline(
-                    crate::curve_fit::interpolated(*degree, &through)
-                        .map_err(|why| format!("{}: {why}", name()))?,
-                )
             }
             Geometry::Point { .. } | Geometry::Image { .. } => return Ok(()),
         };

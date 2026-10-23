@@ -106,16 +106,48 @@ struct Solve {
 }
 
 /// The formula curves of a sketch as they were fitted, and what they were
-/// fitted with: their definitions, every variable (the formulas may use
-/// any of them, and whatever else the evaluation holds), the units and the
-/// tolerance.
+/// fitted with: their definitions, the value of every name their
+/// expressions mention (bit for bit), the units and the tolerance.
 #[derive(Clone)]
 struct Fitted {
     formulas: Vec<craft3d_doc::Entity>,
-    variables: Evaluation,
+    inputs: Vec<(String, Option<Evaluated>)>,
     units: Units,
     tolerance: (u64, u64),
     fits: Arc<FormulaFits>,
+}
+
+/// Every name the expressions of `formulas` mention, with its value as a
+/// variable (`None` for a name that is no variable: `t`, a function, a
+/// unit). Once tables are merged, the tables they look up belong here.
+fn fit_inputs(
+    variables: &Evaluation,
+    formulas: &[craft3d_doc::Entity],
+) -> Vec<(String, Option<Evaluated>)> {
+    let mut names = BTreeSet::new();
+    for entity in formulas {
+        if let craft3d_doc::Geometry::Formula { x, y, from, to, .. } = &entity.geometry {
+            for expr in [x, y, from, to] {
+                names.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let value = variables.get(&name).map(|result| {
+                result
+                    .as_ref()
+                    .map(|q| (q.value.to_bits(), q.dimension))
+                    .map_err(ToString::to_string)
+            });
+            (name, value)
+        })
+        .collect()
 }
 
 /// The formula curves of a sketch, as compared for a fit.
@@ -304,11 +336,12 @@ impl RegenCache {
             return Arc::new(Vec::new());
         }
         let tolerance = bits(doc.tolerance);
+        let inputs = fit_inputs(variables, &now);
         if let Some(fitted) = self.fits.get(&id)
             && fitted.units == doc.units
             && fitted.tolerance == tolerance
             && fitted.formulas == now
-            && fitted.variables == *variables
+            && fitted.inputs == inputs
         {
             return Arc::clone(&fitted.fits);
         }
@@ -317,7 +350,7 @@ impl RegenCache {
             id,
             Fitted {
                 formulas: now,
-                variables: variables.clone(),
+                inputs,
                 units: doc.units,
                 tolerance,
                 fits: Arc::clone(&fits),
