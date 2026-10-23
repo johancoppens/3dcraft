@@ -19,6 +19,7 @@ pub mod name;
 pub mod public;
 pub mod sets;
 pub mod sketch;
+pub mod table;
 pub mod visibility;
 
 pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
@@ -38,6 +39,7 @@ pub use public::{
     PublicParam,
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
+pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
@@ -1491,6 +1493,11 @@ pub struct Document {
     /// history either.
     #[serde(default)]
     pub info: DocInfo,
+    /// Tables of values that expressions look up (`belt[2].pitch`), in
+    /// the order they were defined ([`table`]). Part of the design like
+    /// the variables.
+    #[serde(default)]
+    pub tables: Vec<Table>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1698,6 +1705,7 @@ impl Document {
         self.validate_sets()?;
         self.validate_hidden()?;
         self.validate_public()?;
+        self.validate_tables()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1710,6 +1718,9 @@ impl Document {
         for v in &self.variables {
             table.set(&v.name, v.expr.source())?;
         }
+        if !self.tables.is_empty() {
+            table.set_tables(self.tables.iter().map(Table::to_expr).collect());
+        }
         Ok(table)
     }
 
@@ -1721,6 +1732,11 @@ impl Document {
     /// evaluated here: a formula that does not parse or refers to a missing
     /// variable is stored, and reported by regeneration.
     pub fn set_variable(&mut self, name: &str, expr: &str) -> Result<(), DocError> {
+        if self.table(name).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{name}` is a table; a variable needs a name of its own"
+            )));
+        }
         // The table validates the name and the caps.
         let mut table = self.variable_table()?;
         table.set(name, expr)?;
@@ -1752,6 +1768,11 @@ impl Document {
     /// Renames a variable everywhere: in the table, in other variables'
     /// expressions and in feature parameters. All or nothing.
     pub fn rename_variable(&mut self, old: &str, new: &str) -> Result<(), DocError> {
+        if self.table(new).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{new}` is a table; a variable needs a name of its own"
+            )));
+        }
         let mut table = self.variable_table()?;
         table.rename(old, new)?;
         let mut renamed_features = Vec::with_capacity(self.features.len());

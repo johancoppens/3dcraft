@@ -1402,7 +1402,7 @@ fn add_parameter_warnings(before: &Document, after: &Document, result: &mut Valu
 
 /// Whether the expression text `source` refers to the variable `name`.
 fn mentions(source: &str, name: &str) -> bool {
-    craft3d_expr::names_in(source).contains(&name)
+    craft3d_expr::refers_to_variable(source, name)
 }
 
 /// Whether a string inside the JSON `value` (a stored query or what an

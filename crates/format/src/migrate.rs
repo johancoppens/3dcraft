@@ -33,7 +33,7 @@ const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
-    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32,
+    v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -425,6 +425,18 @@ fn v30_to_v31(manifest: Value) -> Result<Value, String> {
 /// as, so nothing changes; the version was raised so that an older build
 /// says a newer 3DCraft is needed instead of refusing an unknown field.
 fn v31_to_v32(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 33 adds tables: `tables` on the document (named columns with
+/// units, rows of numbers and texts), looked up in expressions as
+/// `belt[2].pitch` or `belt["GT2"].pitch`, and `choices_from` on a choice
+/// parameter (the table whose key column gives its labels). Each is
+/// written only when set; a file of version 32 has none, which is what
+/// their absence reads as, so nothing changes. The version was raised so
+/// that an older build says a newer 3DCraft is needed instead of refusing
+/// an unknown field or failing a lookup.
+fn v32_to_v33(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

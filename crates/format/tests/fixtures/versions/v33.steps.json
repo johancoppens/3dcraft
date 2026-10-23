@@ -1,0 +1,8 @@
+[
+  ["table.set", {"name": "belt", "columns": ["profile", {"name": "width", "unit": "mm"}, {"name": "thick", "unit": "in"}, "teeth"], "rows": [["GT2", 6, 0.1, 20], ["HTD3", 9, 0.2, 30], ["T5", 10, 0.25, "n/a"]]}],
+  ["variable.set", {"name": "profile", "expr": "2"}],
+  ["variable.set", {"name": "w", "expr": "belt[profile].width"}],
+  ["variable.set", {"name": "teeth", "expr": "belt[\"GT2\"].teeth"}],
+  ["variable.publish", {"name": "profile", "kind": "choice", "choicesFrom": "belt", "label": "Belt profile"}],
+  ["feature.block", {"size": ["w", "teeth * 2 mm", "belt[profile].thick"], "name": "Plate"}]
+]

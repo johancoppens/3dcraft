@@ -45,6 +45,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         sets,
         hidden,
         info,
+        tables,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -98,6 +99,67 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         assertions: assertions.iter().map(assertion_to_manifest).collect(),
         hidden: hidden.iter().map(|doc::FeatureId(id)| *id).collect(),
         info: (!info.is_empty()).then(|| info_to_manifest(info)),
+        tables: tables.iter().map(table_to_manifest).collect(),
+    }
+}
+
+fn table_to_manifest(table: &doc::Table) -> manifest::Table {
+    let doc::Table {
+        name,
+        key,
+        columns,
+        rows,
+    } = table;
+    manifest::Table {
+        name: name.clone(),
+        key: key.clone(),
+        columns: columns
+            .iter()
+            .map(|doc::TableColumn { name, unit }| manifest::TableColumn {
+                name: name.clone(),
+                unit: unit.clone(),
+            })
+            .collect(),
+        rows: rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match cell {
+                        doc::TableCell::Number(v) => manifest::TableCell::Number(*v),
+                        doc::TableCell::Text(t) => manifest::TableCell::Text(t.clone()),
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
+fn table_to_doc(table: manifest::Table) -> doc::Table {
+    let manifest::Table {
+        name,
+        key,
+        columns,
+        rows,
+    } = table;
+    doc::Table {
+        name,
+        key,
+        columns: columns
+            .into_iter()
+            .map(|manifest::TableColumn { name, unit }| doc::TableColumn { name, unit })
+            .collect(),
+        rows: std::sync::Arc::new(
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| match cell {
+                            manifest::TableCell::Number(v) => doc::TableCell::Number(v),
+                            manifest::TableCell::Text(t) => doc::TableCell::Text(t),
+                        })
+                        .collect()
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -109,6 +171,7 @@ fn public_to_manifest(public: &doc::PublicParam) -> manifest::PublicParam {
         order,
         kind,
         choices,
+        choices_from,
         min,
         max,
         step,
@@ -127,6 +190,7 @@ fn public_to_manifest(public: &doc::PublicParam) -> manifest::PublicParam {
             doc::ParamKind::Choice => manifest::ParamKind::Choice,
         },
         choices: choices.clone(),
+        choices_from: choices_from.clone(),
         min: min.as_ref().map(expr_to_manifest),
         max: max.as_ref().map(expr_to_manifest),
         step: step.as_ref().map(expr_to_manifest),
@@ -143,6 +207,7 @@ fn public_to_doc(public: manifest::PublicParam) -> doc::PublicParam {
         order,
         kind,
         choices,
+        choices_from,
         min,
         max,
         step,
@@ -161,6 +226,7 @@ fn public_to_doc(public: manifest::PublicParam) -> doc::PublicParam {
             manifest::ParamKind::Choice => doc::ParamKind::Choice,
         },
         choices,
+        choices_from,
         min: min.map(doc::Expr),
         max: max.map(doc::Expr),
         step: step.map(doc::Expr),
@@ -1563,6 +1629,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         sets,
         hidden,
         info,
+        tables,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1612,6 +1679,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
             .collect(),
         hidden: hidden.into_iter().map(doc::FeatureId).collect(),
         info: info.map(info_to_doc).unwrap_or_default(),
+        tables: tables.into_iter().map(table_to_doc).collect(),
     }
 }
 
