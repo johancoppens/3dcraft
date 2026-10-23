@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::checked::{error, run, session, session_in};
+use common::checked::{error, refused, run, session, session_in};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -407,16 +407,30 @@ fn a_dimension_that_cannot_be_evaluated_fails_the_sketch_and_can_be_fixed() {
         reason.contains("c8.value") && reason.contains("nope"),
         "{reason}"
     );
-    // An angle where a length is needed, and a negative length.
+    // An angle where a length is needed, and a negative length: written
+    // as literals they are refused at the command since 2026-10-23
+    // (roadmap R1; until then the sketch failed with the same words).
+    // From a variable they still fail the sketch, which can be fixed.
     for (value, word) in [("30 deg", "length"), ("-5 mm", "c8")] {
-        let wrong = run(
+        let error = refused(
             &mut s,
             "sketch.edit",
             json!({"sketch": "Profile", "constraint": "c8", "value": value}),
         );
-        assert_eq!(wrong["status"], "failed", "{value}: {wrong}");
-        assert!(wrong["error"].as_str().unwrap().contains(word), "{wrong}");
+        assert!(error.contains(word), "{value}: {error}");
     }
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "below", "expr": "-5 mm"}),
+    );
+    let wrong = run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Profile", "constraint": "c8", "value": "below"}),
+    );
+    assert_eq!(wrong["status"], "failed", "{wrong}");
+    assert!(wrong["error"].as_str().unwrap().contains("c8"), "{wrong}");
     // The stored coordinates did not move meanwhile.
     assert_points(&mut s, "Profile", &L_40);
     let fixed = run(

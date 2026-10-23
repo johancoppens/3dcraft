@@ -1,8 +1,9 @@
 //! Words as a person or an agent writes them (R1, the second field
 //! test): `document.inspect` lists a feature's parameters in the
-//! document's own words (`params`: `keep_tool`, `"target": 1`) and, where
-//! those differ, in the commands' (`named`: `keepTool`, `"target":
-//! "Plate"`), finding 27, `params` staying as it was; and a plain number
+//! document's own words (`params`: `keep_tool`, `"target": 1`) and, asked
+//! with `named: true`, where those differ, in the commands' (`named`:
+//! `keepTool`, `"target": "Plate"`), finding 27, `params` staying as it
+//! was; and a plain number
 //! in `sin`, `cos` or `tan` that looks like degrees is warned about,
 //! its meaning (radians) unchanged.
 
@@ -48,7 +49,11 @@ fn inspect_names_parameters_as_the_commands_do() {
         "feature.boolean",
         json!({"op": "subtract", "target": "Plate", "tool": "Pin", "keepTool": true, "name": "Cut"}),
     );
-    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let inspect = run(
+        &mut s,
+        "document.inspect",
+        json!({"measures": false, "named": true}),
+    );
     let cut = feature(&inspect, "Cut");
     // The document's own form, unchanged.
     assert_eq!(cut["params"]["keep_tool"], true, "{cut}");
@@ -64,6 +69,9 @@ fn inspect_names_parameters_as_the_commands_do() {
     // A feature whose parameters say the same both ways has no `named`.
     let plate = feature(&inspect, "Plate");
     assert!(plate.get("named").is_none(), "{plate}");
+    // Asked for only: the output agents read by default is as it was.
+    let plain = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert!(feature(&plain, "Cut").get("named").is_none(), "{plain}");
 }
 
 #[test]

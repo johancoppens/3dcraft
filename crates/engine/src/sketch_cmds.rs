@@ -879,6 +879,12 @@ pub(crate) fn literal_problem(kind: &ConstraintKind) -> Option<String> {
     let quantity = craft3d_expr::evaluate(source, |_| None).ok()?;
     let shown: String = source.chars().take(40).collect();
     let dimension = quantity.dimension;
+    let name = kind.type_name();
+    let article = if matches!(name, "angle" | "x") {
+        "an"
+    } else {
+        "a"
+    };
     let (wanted, unsigned) = match kind {
         ConstraintKind::Distance { .. }
         | ConstraintKind::Radius { .. }
@@ -889,8 +895,7 @@ pub(crate) fn literal_problem(kind: &ConstraintKind) -> Option<String> {
     };
     if dimension != wanted && !dimension.is_dimensionless() {
         return Some(format!(
-            "the value `{shown}` of a {} is {}, but {} is needed{}",
-            kind.type_name(),
+            "the value `{shown}` of {article} {name} constraint is {}, but {} is needed{}",
             dimension.described(),
             if wanted == Dimension::ANGLE {
                 "an angle"
@@ -902,9 +907,7 @@ pub(crate) fn literal_problem(kind: &ConstraintKind) -> Option<String> {
     }
     if unsigned && quantity.value < 0.0 {
         return Some(format!(
-            "the value `{shown}` of a {} is negative: a {} cannot be negative; give its size, and draw the geometry on the side it is to lie on",
-            kind.type_name(),
-            kind.type_name()
+            "the value `{shown}` of {article} {name} constraint is negative: a {name} cannot be negative; give its size, and draw the geometry on the side it is to lie on"
         ));
     }
     None

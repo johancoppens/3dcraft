@@ -479,14 +479,16 @@ fn sketch_messages_use_the_right_article_and_name_the_commands_to_fix_a_conflict
         error.contains("change or delete it (sketch.edit with a new value, or sketch.delete)"),
         "{error}"
     );
-    let wrong = run(
+    // A literal angle for a length is refused at the command since
+    // 2026-10-23 (roadmap R1; it was added and failed the sketch, with the
+    // same words).
+    let error = refused(
         &mut s,
         "sketch.constrain",
         json!({"sketch": "S", "type": "x", "entities": ["e1"], "value": "10 deg"}),
     );
-    let error = wrong["error"].as_str().unwrap();
     assert!(
-        error.contains("is an angle, but a length is needed"),
+        error.contains("of an x constraint is an angle, but a length is needed"),
         "{error}"
     );
 }

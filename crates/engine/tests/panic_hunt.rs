@@ -16,6 +16,41 @@ use craft3d_testkit::parallel::map_parallel;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// What each thread of the hunt is running now, by thread: read by
+/// [`watch_memory`] when the process reaches a new peak.
+static IN_FLIGHT: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// The process's resident memory in kB (Linux; `None` elsewhere).
+fn resident_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Samples the resident memory every 10 ms until `done`, and returns the
+/// peak with what the threads were running then: where the hunt's memory
+/// goes, printed with `--nocapture`.
+fn watch_memory(done: &std::sync::atomic::AtomicBool) -> (u64, Vec<String>) {
+    let mut peak = 0;
+    let mut running = Vec::new();
+    while !done.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(kb) = resident_kb()
+            && kb > peak
+        {
+            peak = kb;
+            running = IN_FLIGHT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    (peak, running)
+}
 
 fn adversarial() -> Vec<Value> {
     let mut deep = json!(1);
@@ -387,72 +422,78 @@ fn no_command_panics_on_adversarial_parameters() {
             }
         }
     }
-    let timed = map_parallel(cases, |(c, state, v)| {
-        let clock = std::time::Instant::now();
-        let spec = &commands[c];
-        let value = &values[v];
-        let keys = keys(spec.params);
-        let dir = dir.join(format!("{c}-{state}-{v}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        // The first adversarial value runs in a session built from scratch
-        // (a cold regeneration cache, as after `file.open`); the others in
-        // a clone of a session built once per state, whose cache is warm,
-        // as in a session that has been working for a while. Both must
-        // hold, and the clone saves rebuilding the document a hundred
-        // thousand times.
-        // Every session autosaves into a recovery directory of its own.
-        let fresh = |dir: &std::path::Path| -> Session {
-            let s = if v == 0 {
-                session(dir, state)
-            } else {
-                let mut s = templates[state].clone();
-                s.set_workspace(workspace(dir));
-                s
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (timed, (peak, at_peak)) = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| watch_memory(&done));
+        let timed = map_parallel(cases, |(c, state, v)| {
+            let clock = std::time::Instant::now();
+            let spec = &commands[c];
+            let value = &values[v];
+            let keys = keys(spec.params);
+            let dir = dir.join(format!("{c}-{state}-{v}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            // The first adversarial value runs in a session built from scratch
+            // (a cold regeneration cache, as after `file.open`); the others in
+            // a clone of a session built once per state, whose cache is warm,
+            // as in a session that has been working for a while. Both must
+            // hold, and the clone saves rebuilding the document a hundred
+            // thousand times.
+            // Every session autosaves into a recovery directory of its own.
+            let fresh = |dir: &std::path::Path| -> Session {
+                let s = if v == 0 {
+                    session(dir, state)
+                } else {
+                    let mut s = templates[state].clone();
+                    s.set_workspace(workspace(dir));
+                    s
+                };
+                with_recovery(s, dir, &seed, spec.id)
             };
-            with_recovery(s, dir, &seed, spec.id)
-        };
-        let mut runs = 0_usize;
-        let mut check = |params: &Value| {
-            runs += 1;
-            run_case(fresh(&dir), state, spec.id, params);
-        };
-        // The params value itself, in every shape.
-        check(value);
-        // Each parameter in turn, the others absent.
-        for key in &keys {
-            check(&json!({ key.as_str(): value }));
-        }
-        // Every parameter at once with the same value, so the checks
-        // behind the first failing parameter are reached as well: also
-        // with one parameter left valid in turn.
-        let all: Map<String, Value> = keys.iter().map(|k| (k.clone(), value.clone())).collect();
-        check(&Value::Object(all.clone()));
-        for (key, valid) in [
-            ("feature", json!("Plate")),
-            ("sketch", json!("Profile")),
-            ("distance", json!(5)),
-            ("face", json!("F7:side(e5)")),
-            ("type", json!("distance")),
-            ("entities", json!(["e1", "e2"])),
-            ("entity", json!("e1")),
-            ("constraint", json!("c1")),
-            ("name", json!("width")),
-            ("path", json!("hunt.stl")),
-            ("size", json!([1, 2, 3])),
-            ("radius", json!(1)),
-            ("major", json!(5)),
-            ("axis", json!([0, 0, 1])),
-            ("id", json!(SEED_ID)),
-            ("all", json!(true)),
-        ] {
-            if all.contains_key(key) {
-                let mut mixed = all.clone();
-                mixed.insert(key.to_string(), valid);
-                check(&Value::Object(mixed));
+            let mut runs = 0_usize;
+            let mut check = |params: &Value| {
+                runs += 1;
+                run_case(fresh(&dir), state, spec.id, params);
+            };
+            // The params value itself, in every shape.
+            check(value);
+            // Each parameter in turn, the others absent.
+            for key in &keys {
+                check(&json!({ key.as_str(): value }));
             }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        (c, state, runs, clock.elapsed().as_secs_f64())
+            // Every parameter at once with the same value, so the checks
+            // behind the first failing parameter are reached as well: also
+            // with one parameter left valid in turn.
+            let all: Map<String, Value> = keys.iter().map(|k| (k.clone(), value.clone())).collect();
+            check(&Value::Object(all.clone()));
+            for (key, valid) in [
+                ("feature", json!("Plate")),
+                ("sketch", json!("Profile")),
+                ("distance", json!(5)),
+                ("face", json!("F7:side(e5)")),
+                ("type", json!("distance")),
+                ("entities", json!(["e1", "e2"])),
+                ("entity", json!("e1")),
+                ("constraint", json!("c1")),
+                ("name", json!("width")),
+                ("path", json!("hunt.stl")),
+                ("size", json!([1, 2, 3])),
+                ("radius", json!(1)),
+                ("major", json!(5)),
+                ("axis", json!([0, 0, 1])),
+                ("id", json!(SEED_ID)),
+                ("all", json!(true)),
+            ] {
+                if all.contains_key(key) {
+                    let mut mixed = all.clone();
+                    mixed.insert(key.to_string(), valid);
+                    check(&Value::Object(mixed));
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            (c, state, runs, clock.elapsed().as_secs_f64())
+        });
+        done.store(true, std::sync::atomic::Ordering::Release);
+        (timed, watcher.join().unwrap())
     });
     let runs: usize = timed.iter().map(|t| t.2).sum();
     // Where the time goes, per command and state: `--nocapture` shows it.
@@ -470,6 +511,13 @@ fn no_command_panics_on_adversarial_parameters() {
     for ((id, state), secs) in slowest.iter().take(12) {
         println!("    {secs:7.1} s  {id} in state {state}");
     }
+    println!(
+        "panic_hunt: peak resident memory {} MB; running then:",
+        peak / 1024
+    );
+    for case in &at_peak {
+        println!("    {case}");
+    }
     assert!(runs > 20_000);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -478,8 +526,13 @@ fn no_command_panics_on_adversarial_parameters() {
 /// have panicked, and the session must still answer afterwards.
 fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
     let before = (s.document_revision(), s.document_status());
-    let outcome = s.execute(id, params);
     let shown = || params.to_string().chars().take(200).collect::<String>();
+    let me = format!("{:?}", std::thread::current().id());
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(me.clone(), format!("{id} in state {state} on {}", shown()));
+    let outcome = s.execute(id, params);
     match &outcome {
         Err(e) => {
             assert!(
