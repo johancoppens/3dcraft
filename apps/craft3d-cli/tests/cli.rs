@@ -837,6 +837,65 @@ fn run_stops_at_the_first_failing_command_with_exit_code_1() {
     assert!(ran.stderr.contains("furlong"), "{}", ran.stderr);
 }
 
+/// A `variable.set` whose expression the engine keeps but cannot work out
+/// stops a run like a refused command (a Jig build, 2026-10-23: the steps
+/// after it failed one by one, each for the same reason); with
+/// `--keep-going` it is a failed line.
+#[test]
+fn run_stops_at_a_variable_that_cannot_be_worked_out() {
+    let dir = workdir("failing-variable");
+    let never = path(&dir, "never.3dcraft");
+    let ran = cli(&[
+        "run",
+        "--cmd",
+        "variable.set",
+        "--params",
+        r#"{"name": "w", "expr": "40 mm"}"#,
+        "--cmd",
+        "variable.set",
+        "--params",
+        r#"{"name": "d", "expr": "w + 1"}"#,
+        "--cmd",
+        "feature.block",
+        "--params",
+        r#"{"size": ["w", "d", "1 mm"]}"#,
+        "--out",
+        &never,
+    ])
+    .failed(1);
+    assert_eq!(ran.json_lines().len(), 1, "{}", ran.stdout);
+    assert!(
+        ran.stderr
+            .contains("variable.set: `d` cannot be worked out"),
+        "{}",
+        ran.stderr
+    );
+    assert!(!Path::new(&never).exists());
+
+    let ran = cli(&[
+        "run",
+        "--keep-going",
+        "--cmd",
+        "variable.set",
+        "--params",
+        r#"{"name": "d", "expr": "nowhere * 2"}"#,
+        "--cmd",
+        "variable.set",
+        "--params",
+        r#"{"name": "w", "expr": "40 mm"}"#,
+    ])
+    .failed(1);
+    let lines = ran.json_lines();
+    assert_eq!(lines.len(), 2, "{}", ran.stdout);
+    assert_eq!(lines[0]["failed"], "variable.set", "{}", ran.stdout);
+    assert_eq!(lines[1]["name"], "w", "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("1 of 2 commands failed"),
+        "{}",
+        ran.stderr
+    );
+}
+
 /// With `--keep-going` a failing command does not throw away what the
 /// others built (showcase U1, 2026-10-15: a failing last command lost a
 /// ten-minute build): it is reported on its line, the rest run, `--out`

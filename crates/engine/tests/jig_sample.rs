@@ -491,3 +491,56 @@ fn a_jig_in_use_is_checked_too_and_stays_as_it_was() {
     assert_eq!(s.document_revision(), revision);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_choice_from_a_table_is_varied_like_a_list_of_choices() {
+    // A choice whose labels come from a table (choicesFrom) moves over the
+    // table's rows in the corners, the choices and the random points; it
+    // used to count as having no choices and stay at its default.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "belt", "columns": ["profile", {"name": "width", "unit": "mm"}],
+               "rows": [["GT2", 6], ["HTD3", 9], ["T5", 10], ["T10", 12]]}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "profile", "expr": "2"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "h", "expr": "5 mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": ["belt[profile].width", "40 mm", "h"]}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "profile", "kind": "choice", "choicesFrom": "belt"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "h", "min": "2 mm", "max": "8 mm"}),
+    );
+    let result = sample(&mut s, json!({"samples": 24, "seed": 3, "values": true}));
+    assert_eq!(result["ok"], true, "{result}");
+    // Two parameters move: four corners; the three other rows.
+    assert_eq!(result["counts"]["corner"], 4, "{result}");
+    assert_eq!(result["counts"]["choice"], 3, "{result}");
+    let profile = |kind: &str| -> Vec<String> {
+        let mut v: Vec<String> = values_of(&result, kind)
+            .iter()
+            .map(|v| v["profile"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    assert_eq!(profile("corner"), ["1", "4"]);
+    assert_eq!(profile("choice"), ["1", "3", "4"]);
+    assert_eq!(profile("random"), ["1", "2", "3", "4"]);
+}

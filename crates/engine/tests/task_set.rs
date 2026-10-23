@@ -214,3 +214,25 @@ task_tests! {
     enclosure => "enclosure",
     hinge_leaf => "hinge-leaf",
 }
+
+/// A `variable.set` whose expression is kept but cannot be worked out is a
+/// failed step, as `craft3d-cli run` counts it.
+#[test]
+fn a_variable_that_cannot_be_worked_out_is_a_failed_step() {
+    let task = load("spacer");
+    let script = serde_json::json!([
+        ["variable.set", {"name": "w", "expr": "nowhere * 2"}],
+        ["variable.set", {"name": "d", "expr": "4 mm"}],
+    ]);
+    let card = score_task(&task, &script).unwrap();
+    let failed = card["failedSteps"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{card}");
+    assert_eq!(failed[0]["step"], 0);
+    assert!(
+        failed[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be worked out"),
+        "{card}"
+    );
+}

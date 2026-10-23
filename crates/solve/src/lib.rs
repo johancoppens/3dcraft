@@ -62,6 +62,13 @@
 //! its result is a better guess: a constraint blamed too early, or
 //! undefined where the sketch was drawn, gets its turn in the next pass.
 //!
+//! A solve that ends with a conflict, or does not converge, is tried once
+//! more from the starting guess with every coordinate that an `x`, `y` or
+//! `Fixed` constraint holds at a value already at that value (the start of
+//! a fresh build: a held end of an arc that jumped is then on the side of
+//! the circle its values pick, not the side it was on). That result is
+//! kept only when it has no conflict.
+//!
 //! Before the first pass, image points that have moved since the starting
 //! guess was a solution ([`Sketch::image_starts`]: a count, step or angle
 //! of their pattern changed) carry the sketch along by continuation from

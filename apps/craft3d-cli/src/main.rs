@@ -92,7 +92,9 @@ Usage: craft3d-cli run [FILE] [--new JSON] [--script FILE]
 Opens FILE (a .3dcraft file), or creates a document when no FILE is given,
 then runs commands in order and prints one line of JSON per result. Stops at
 the first command that fails, with exit code 1 and nothing saved, unless
---keep-going is given.
+--keep-going is given. A variable.set whose expression cannot be worked out
+(a name not defined, a length added to a plain number) counts as failing,
+although the engine keeps the variable as given.
 
 Options:
   --new JSON      Params of file.new for the new document, e.g.

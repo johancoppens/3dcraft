@@ -53,6 +53,22 @@ fn execute(session: &mut Session, command: &str, params: &Value) -> Result<Value
         .map_err(|e| CliError::Failed(e.message().to_string()))
 }
 
+/// Why a `variable.set` that the engine accepted still failed: its
+/// expression was stored but cannot be worked out (a name that is not
+/// defined, lengths added to plain numbers), so everything the variable
+/// drives would fail after it. A script stops there, as at a refused
+/// command, instead of cascading.
+fn set_but_failing(command: &str, result: &Value) -> Option<String> {
+    if command != "variable.set" {
+        return None;
+    }
+    let error = result.get("error")?.as_str()?;
+    let name = result.get("name").and_then(Value::as_str).unwrap_or("?");
+    Some(format!(
+        "variable.set: `{name}` cannot be worked out: {error} (the variable is set all the same)"
+    ))
+}
+
 fn open(session: &mut Session, file: &str) -> Result<(), CliError> {
     execute(session, "file.open", &json!({ "path": file })).map(|_| ())
 }
@@ -297,7 +313,12 @@ pub(crate) fn run(args: Args) -> Result<Parsed<()>, CliError> {
     // was, so what the others built is kept and saved.
     let mut failed: Vec<String> = Vec::new();
     for (index, step) in steps.iter().enumerate() {
-        match execute(&mut session, &step.command, &step.params) {
+        match execute(&mut session, &step.command, &step.params).and_then(|result| {
+            match set_but_failing(&step.command, &result) {
+                Some(error) => Err(CliError::Failed(error)),
+                None => Ok(result),
+            }
+        }) {
             Ok(result) => print_json(&result)?,
             Err(CliError::Failed(error)) if options.keep_going => {
                 print_json(&json!({

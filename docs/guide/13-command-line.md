@@ -21,7 +21,9 @@ craft3d-cli run part.3dcraft --cmd variable.set --params '{"name":"width","expr"
 
 `run` opens a file (or makes a new document with `--new`, the values of `file.new`), runs the commands in
 order, prints one line of JSON per result, and saves with `--out`. It stops at the first command that
-fails, saves nothing and exits with code 1. With `--keep-going` it carries on, prints
+fails, saves nothing and exits with code 1. A `variable.set` whose expression cannot be worked out (a
+name that is not defined, a length added to a plain number) counts as failing, although the variable is
+set: everything it drives would fail after it. With `--keep-going` it carries on, prints
 `{"failed": id, "step": n, "error": text}` for a failed command, and saves what was built.
 
 > **Quotes on Windows:** in PowerShell and Command Prompt, the JSON in `--params` needs other quoting.
@@ -39,6 +41,9 @@ craft3d-cli render flange.3dcraft --out flange.png
 
 Edit the numbers at the top of a script (the `variable.set` steps) to get another size. `craft3d-cli
 commands` lists every command with its values and a summary; `--filter fillet` narrows it.
+
+Define a variable before a step uses it: a `variable.set` that names a variable not yet defined
+cannot be worked out, and the script stops there.
 
 ## Pictures: `render`
 

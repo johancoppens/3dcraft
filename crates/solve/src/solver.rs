@@ -490,6 +490,210 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 /// stores the result and solves again later, gets the same answer.
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
+    let mut meter = Meter {
+        cap: None,
+        spent: 0,
+    };
+    let first = settle(sketch, options, &mut meter);
+    let first_iterations = match &first {
+        Ok(solution) => solution.iterations,
+        Err(SolveError::DidNotConverge { iterations }) => *iterations,
+        Err(_) => 0,
+    };
+    let worth_another = match &first {
+        Ok(solution) => conflicts(solution) > 0 && !only_unplaced_holders(sketch, solution),
+        Err(SolveError::DidNotConverge { .. }) => true,
+        Err(_) => false,
+    };
+    if !worth_another {
+        return first;
+    }
+    let Some(placed) = held_in_place(sketch) else {
+        return first;
+    };
+    // The retry spends what the first attempt left of the work limit.
+    let left = options.work_limit.saturating_sub(meter.spent);
+    if left == 0 {
+        return first;
+    }
+    let mut meter = Meter {
+        cap: Some(left),
+        spent: 0,
+    };
+    let second = settle(&placed, options, &mut meter).map(|mut second| {
+        second.iterations = second.iterations.saturating_add(first_iterations);
+        second
+    });
+    match (first, second) {
+        // Only a solution without conflicts replaces one with: solving it
+        // again finds nothing to retry, so it stays what it is.
+        (Ok(_), Ok(second)) if conflicts(&second) == 0 => Ok(second),
+        (Ok(first), _) => Ok(first),
+        // A verdict, conflicts and all, rather than none.
+        (Err(_), Ok(second)) => Ok(second),
+        (Err(first), Err(_)) => Err(match first {
+            SolveError::DidNotConverge { .. } => SolveError::DidNotConverge {
+                iterations: first_iterations,
+            },
+            other => other,
+        }),
+    }
+}
+
+/// Work spent by the passes of one [`settle`], and the most they may
+/// spend together (`None`: each pass has the whole work limit, as the
+/// first attempt always had).
+struct Meter {
+    cap: Option<u64>,
+    spent: u64,
+}
+
+impl Meter {
+    /// The budget of the next pass.
+    fn next(&self, options: &SolveOptions, share: u64) -> Work {
+        let whole = options.work_limit / share;
+        Work::new(match self.cap {
+            Some(cap) => whole.min(cap.saturating_sub(self.spent)),
+            None => whole,
+        })
+    }
+
+    fn add(&mut self, work: &Work) {
+        self.spent = self.spent.saturating_add(work.used());
+    }
+}
+
+/// Every conflict of `solution` is on a coordinate that [`held_in_place`]
+/// does not place (a second `x` of one point, or one on a point fixed
+/// where it is): it stays a conflict from any start, so a retry is waste.
+fn only_unplaced_holders(sketch: &Sketch, solution: &Solution) -> bool {
+    let placed = placed_holders(sketch);
+    solution
+        .constraints
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.status == ConstraintStatus::Conflicting)
+        .all(|(i, _)| {
+            use crate::model::Constraint as C;
+            matches!(
+                sketch.constraints.get(i),
+                Some(C::CoordinateX { .. } | C::CoordinateY { .. } | C::Fixed { at: Some(_), .. })
+            ) && !placed.get(i).copied().unwrap_or(false)
+        })
+}
+
+/// How many constraints a solution leaves conflicting.
+fn conflicts(solution: &Solution) -> usize {
+    solution
+        .constraints
+        .iter()
+        .filter(|c| c.status == ConstraintStatus::Conflicting)
+        .count()
+}
+
+/// The sketch with every coordinate that a constraint holds at a value
+/// (`x`, `y`, `Fixed` at a place: the first such constraint of each
+/// coordinate; not on a point that a `Fixed` without a place holds where
+/// it is) already at that value in the starting guess, or none when that
+/// moves nothing.
+///
+/// A held point starts where it was solved before its values changed, and
+/// Newton's method linearises there. An equation that is not linear in it
+/// (an arc's ends equally far from its centre, a distance) then has the
+/// root nearest that old place, not the one the held values pick: the
+/// arc's equation, which comes first, settles the second coordinate of
+/// a held end on the old side of the circle and the coordinate's own
+/// constraint is blamed. A fresh build draws the point at its values and
+/// does not meet this; this start is that of a fresh build.
+fn held_in_place(sketch: &Sketch) -> Option<Sketch> {
+    use crate::model::Constraint as C;
+    let mut entities = sketch.entities.clone();
+    let mut moved = false;
+    for (constraint, placed) in sketch.constraints.iter().zip(placed_holders(sketch)) {
+        if !placed {
+            continue;
+        }
+        let (point, values) = match *constraint {
+            C::CoordinateX { point, value } => (point, [Some(value), None]),
+            C::CoordinateY { point, value } => (point, [None, Some(value)]),
+            C::Fixed {
+                point,
+                at: Some([x, y]),
+            } => (point, [Some(x), Some(y)]),
+            _ => continue,
+        };
+        let Some(Entity::Point { x, y }) = entities.get_mut(point.index()) else {
+            continue;
+        };
+        for (slot, value) in [x, y].into_iter().zip(values) {
+            if let Some(value) = value
+                && *slot != value
+            {
+                *slot = value;
+                moved = true;
+            }
+        }
+    }
+    moved.then(|| Sketch {
+        entities,
+        constraints: sketch.constraints.clone(),
+        splines: sketch.splines.clone(),
+        image_starts: sketch.image_starts.clone(),
+    })
+}
+
+/// Per constraint: whether [`held_in_place`] places a coordinate at its
+/// value: the first `x`, `y` or `Fixed` at a place of each coordinate of a
+/// point, with a finite value, unless a `Fixed` without a place holds the
+/// point where it is (moving it would change what it is held at).
+fn placed_holders(sketch: &Sketch) -> Vec<bool> {
+    use crate::model::Constraint as C;
+    let mut taken = vec![[false; 2]; sketch.entities.len()];
+    for constraint in &sketch.constraints {
+        if let C::Fixed { point, at: None } = *constraint
+            && let Some(done) = taken.get_mut(point.index())
+        {
+            *done = [true; 2];
+        }
+    }
+    sketch
+        .constraints
+        .iter()
+        .map(|constraint| {
+            let (point, axes) = match *constraint {
+                C::CoordinateX { point, value } => (point, [value.is_finite(), false]),
+                C::CoordinateY { point, value } => (point, [false, value.is_finite()]),
+                C::Fixed {
+                    point,
+                    at: Some([x, y]),
+                } => (point, [x.is_finite(), y.is_finite()]),
+                _ => return false,
+            };
+            let is_point = matches!(
+                sketch.entities.get(point.index()),
+                Some(Entity::Point { .. })
+            );
+            let Some(done) = taken.get_mut(point.index()) else {
+                return false;
+            };
+            let mut places = false;
+            for (wanted, done) in axes.into_iter().zip(done.iter_mut()) {
+                if wanted && !*done && is_point {
+                    *done = true;
+                    places = true;
+                }
+            }
+            places
+        })
+        .collect()
+}
+
+/// [`solve`] from the sketch's own starting guess.
+fn settle(
+    sketch: &Sketch,
+    options: &SolveOptions,
+    meter: &mut Meter,
+) -> Result<Solution, SolveError> {
     // Image points that jumped since the starting guess was solved carry
     // the sketch along first, with half the work budget of its own; the
     // solve then starts from where the path ended, with the whole budget,
@@ -498,8 +702,9 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
     // (`Carried::Skipped`): carrying never makes the solve fail that
     // succeeded without it; whether a solution that was not carried may
     // be used is the caller's to decide.
-    let mut work = Work::new(options.work_limit / 2);
+    let mut work = meter.next(options, 2);
     let mut carrying = crate::carry::carry(sketch, options, &mut work);
+    meter.add(&work);
     let carried = carrying.entities.take().map(|entities| Sketch {
         entities,
         constraints: sketch.constraints.clone(),
@@ -507,14 +712,14 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         image_starts: Vec::new(),
     });
     let mut current = match carried {
-        Some(carried) => match solve_once(&carried, options, Work::new(options.work_limit)) {
+        Some(carried) => match solve_once(&carried, options, meter) {
             Ok(solved) => solved,
             Err(why) => {
                 carrying.outcome = unusable_end(carrying.outcome.take(), &carrying.moved, &why);
-                solve_once(sketch, options, Work::new(options.work_limit))?
+                solve_once(sketch, options, meter)?
             }
         },
-        None => solve_once(sketch, options, Work::new(options.work_limit))?,
+        None => solve_once(sketch, options, meter)?,
     };
     current.carry = carrying.outcome.clone();
     let mut iterations = current.iterations;
@@ -526,7 +731,7 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
             splines: sketch.splines.clone(),
             image_starts: Vec::new(),
         };
-        let mut next = solve_once(&guess, options, Work::new(options.work_limit))?;
+        let mut next = solve_once(&guess, options, meter)?;
         iterations = iterations.saturating_add(next.iterations);
         next.iterations = iterations;
         next.carry = carrying.outcome.clone();
@@ -549,14 +754,29 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
     }
 }
 
-fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Solution, SolveError> {
-    let prep = crate::equations::prepare(sketch, options.tolerance.linear)?;
-    let system = System::new(&prep, options);
+/// One pass, with the budget `meter` gives it, its work counted there.
+fn solve_once(
+    sketch: &Sketch,
+    options: &SolveOptions,
+    meter: &mut Meter,
+) -> Result<Solution, SolveError> {
     let mut budget = Budget {
         steps_left: options.max_iterations.saturating_mul(RUNS_PER_SOLVE),
         steps_taken: 0,
-        work,
+        work: meter.next(options, 1),
     };
+    let result = pass(sketch, options, &mut budget);
+    meter.add(&budget.work);
+    result
+}
+
+fn pass(
+    sketch: &Sketch,
+    options: &SolveOptions,
+    budget: &mut Budget,
+) -> Result<Solution, SolveError> {
+    let prep = crate::equations::prepare(sketch, options.tolerance.linear)?;
+    let system = System::new(&prep, options);
     let count = sketch.constraints.len();
     // A constraint that has no value at the starting guess (the direction
     // of a line without length) sits this pass out, like a blamed one. If
@@ -598,7 +818,7 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
 
     // First everything at once, from the starting guess. That is the whole
     // pass for a sketch that can be solved.
-    let mut run = system.attempt(&prep.x0, true, &active(count, &blamed), &mut budget)?;
+    let mut run = system.attempt(&prep.x0, true, &active(count, &blamed), budget)?;
 
     // Otherwise the constraints are taken in the order they were added,
     // which is how the sketch was built: `base` solves the first `good`
@@ -611,16 +831,16 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
     let mut blames = 0;
     while !run.converged {
         if blames == MAX_BLAMED || budget.steps_left == 0 {
-            return Err(gave_up(&budget));
+            return Err(gave_up(budget));
         }
         blames += 1;
         let mut lo = match good {
             Some(lo) => lo,
             None => {
                 // Without any constraint only the arcs remain.
-                let arcs = system.attempt(&base, true, &active(0, &blamed), &mut budget)?;
+                let arcs = system.attempt(&base, true, &active(0, &blamed), budget)?;
                 if !arcs.converged {
-                    return Err(gave_up(&budget));
+                    return Err(gave_up(budget));
                 }
                 base = arcs.x;
                 0
@@ -628,16 +848,16 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
         };
         let mut hi = count;
         if hi <= lo {
-            return Err(gave_up(&budget));
+            return Err(gave_up(budget));
         }
         while hi - lo > 1 {
             let mid = lo + (hi - lo) / 2;
-            let part = system.attempt(&base, false, &active(mid, &blamed), &mut budget)?;
+            let part = system.attempt(&base, false, &active(mid, &blamed), budget)?;
             if part.converged {
                 lo = mid;
                 base = part.x;
             } else if budget.steps_left == 0 {
-                return Err(gave_up(&budget));
+                return Err(gave_up(budget));
             } else {
                 hi = mid;
             }
@@ -646,10 +866,10 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
         // `lo` added there is no solution from where the search started.
         match blamed.get_mut(lo) {
             Some(b) => *b = true,
-            None => return Err(gave_up(&budget)),
+            None => return Err(gave_up(budget)),
         }
         good = Some(hi);
-        run = system.attempt(&base, false, &active(count, &blamed), &mut budget)?;
+        run = system.attempt(&base, false, &active(count, &blamed), budget)?;
     }
 
     let mut entities = sketch.entities.clone();
@@ -691,7 +911,7 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Sol
         let Site::Constraint(i) = site else {
             // An arc that is not an arc is not a solution.
             if violated {
-                return Err(gave_up(&budget));
+                return Err(gave_up(budget));
             }
             continue;
         };
@@ -879,5 +1099,96 @@ mod tests {
             Some(stopped)
         );
         assert_eq!(unusable_end(None, &moved, &why), None);
+    }
+
+    /// An arc from (r, 0) at 30 degrees to 90 degrees about a held centre,
+    /// its ends held at 90 and 270 degrees but drawn where they were.
+    fn jumped() -> Sketch {
+        use crate::model::Constraint as C;
+        let mut s = Sketch::new();
+        let c = s.add_point(0.0, 0.0);
+        let a = s.add_point(30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let b = s.add_point(0.0, 1.0);
+        for (point, [x, y]) in [(c, [0.0, 0.0]), (a, [0.0, 1.0]), (b, [0.0, -1.0])] {
+            s.add_constraint(C::CoordinateX { point, value: x });
+            s.add_constraint(C::CoordinateY { point, value: y });
+        }
+        s.add_arc(c, a, b);
+        s
+    }
+
+    /// The retry is taken, and the iterations of both attempts are counted.
+    #[test]
+    fn the_retry_counts_the_iterations_of_both_attempts() {
+        let options = SolveOptions::new(craft3d_math::Tolerance::default());
+        let sketch = jumped();
+        let unmetered = || Meter {
+            cap: None,
+            spent: 0,
+        };
+        let first = settle(&sketch, &options, &mut unmetered()).unwrap();
+        assert!(conflicts(&first) > 0, "{:?}", first.constraints);
+        let placed = held_in_place(&sketch).unwrap();
+        let second = settle(&placed, &options, &mut unmetered()).unwrap();
+        assert_eq!(conflicts(&second), 0);
+        let solution = solve(&sketch, &options).unwrap();
+        assert_eq!(conflicts(&solution), 0);
+        assert_eq!(
+            solution.iterations,
+            first.iterations + second.iterations,
+            "{first:?} {second:?}"
+        );
+    }
+
+    /// Both attempts together stay within the work limit: with too little
+    /// left after the first, there is no retry.
+    #[test]
+    fn the_retry_spends_what_the_first_attempt_left() {
+        let mut options = SolveOptions::new(craft3d_math::Tolerance::default());
+        let mut meter = Meter {
+            cap: None,
+            spent: 0,
+        };
+        settle(&jumped(), &options, &mut meter).unwrap();
+        options.work_limit = meter.spent;
+        let solution = solve(&jumped(), &options).unwrap();
+        assert!(conflicts(&solution) > 0, "no work was left for the retry");
+        let capped = Meter {
+            cap: Some(10),
+            spent: 4,
+        };
+        assert_eq!(capped.next(&options, 1).limit(), 6);
+    }
+
+    /// A conflict between two holders of one coordinate stays from any
+    /// start: no retry for it. One on a coordinate that is placed may be
+    /// the start's fault: a retry.
+    #[test]
+    fn a_conflict_only_on_holders_that_are_not_placed_is_not_retried() {
+        use crate::model::Constraint as C;
+        let options = SolveOptions::new(craft3d_math::Tolerance::default());
+        let mut s = Sketch::new();
+        let p = s.add_point(1.0, 1.0);
+        s.add_constraint(C::CoordinateX {
+            point: p,
+            value: 2.0,
+        });
+        s.add_constraint(C::CoordinateX {
+            point: p,
+            value: 3.0,
+        });
+        assert_eq!(placed_holders(&s), [true, false]);
+        let solution = solve(&s, &options).unwrap();
+        assert!(only_unplaced_holders(&s, &solution));
+        let first = settle(
+            &jumped(),
+            &options,
+            &mut Meter {
+                cap: None,
+                spent: 0,
+            },
+        )
+        .unwrap();
+        assert!(!only_unplaced_holders(&jumped(), &first));
     }
 }
