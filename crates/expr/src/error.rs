@@ -1,5 +1,6 @@
 //! Error types: every failure says where it is and what would fix it.
 
+use crate::parser::Function;
 use crate::units::{Dimension, Unit};
 use std::fmt;
 use std::sync::Arc;
@@ -37,6 +38,12 @@ pub enum ErrorKind {
     },
     /// A number literal too large for an `f64` (with its unit applied).
     NumberOutOfRange,
+    /// A lone `=`, `&` or `|`; `meant` is the operator that exists
+    /// (`==`, `&&`, `||`).
+    LoneOperator {
+        found: char,
+        meant: &'static str,
+    },
     /// The parser needed `expected` and met `found` (a token in backticks,
     /// or "the end of the expression").
     Expected {
@@ -78,6 +85,9 @@ pub enum ErrorKind {
     /// `a ^ 2 ^ 3`: mathematics reads this right to left, most calculators
     /// left to right, so it has to be spelled out with parentheses.
     ChainedPower,
+    /// `a < b < c`: a comparison gives 1 or 0, so comparing that again is
+    /// almost never what was meant; it has to be spelled out.
+    ChainedComparison,
 
     // --- evaluating ---
     /// A variable the lookup does not know.
@@ -115,6 +125,24 @@ pub enum ErrorKind {
     InvalidStep {
         function: &'static str,
         value: f64,
+    },
+    /// The bounds of `clamp(x, lo, hi)` are the wrong way round: `lo` is
+    /// larger than `hi` (both in base units).
+    InvalidBounds {
+        function: &'static str,
+        lo: f64,
+        hi: f64,
+    },
+    /// An argument that has to be a whole number is not one (the index of
+    /// `choose`), not even within rounding.
+    NotWholeNumber {
+        function: &'static str,
+        value: f64,
+    },
+    /// The index of `choose(i, a, b, …)` is not one of 1..=`count`.
+    ChoiceOutOfRange {
+        index: f64,
+        count: usize,
     },
     /// The result (or a variable's value) is NaN or infinite.
     /// `operation` is the operator, function or "variable".
@@ -155,9 +183,13 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnexpectedChar { ch } => write!(
                 f,
                 "unexpected character {ch:?}; an expression consists of numbers, units, \
-                 names (ASCII letters, digits, `_`), `+ - * / ^`, parentheses and commas"
+                 names (ASCII letters, digits, `_`), `+ - * / ^`, the comparisons \
+                 `< <= > >= == !=`, `&& || !`, parentheses and commas"
             ),
             ErrorKind::NumberOutOfRange => write!(f, "the number is too large"),
+            ErrorKind::LoneOperator { found, meant } => {
+                write!(f, "`{found}` alone is not an operator; write `{meant}`")
+            }
             ErrorKind::Expected { expected, found } => {
                 write!(f, "expected {expected}, found {found}")
             }
@@ -165,11 +197,19 @@ impl fmt::Display for ErrorKind {
                 f,
                 "parentheses and function calls are nested more than {max} levels deep"
             ),
-            ErrorKind::UnknownFunction { name } => write!(
-                f,
-                "unknown function `{name}`; the functions are sin, cos, tan, asin, acos, \
-                 atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc and mod"
-            ),
+            ErrorKind::UnknownFunction { name } => {
+                write!(f, "unknown function `{name}`; the functions are ")?;
+                let all = Function::ALL;
+                for (i, function) in all.iter().enumerate() {
+                    let separator = match all.len().saturating_sub(i) {
+                        _ if i == 0 => "",
+                        1 => " and ",
+                        _ => ", ",
+                    };
+                    write!(f, "{separator}{}", function.name())?;
+                }
+                Ok(())
+            }
             ErrorKind::UnitWithoutNumber { unit } => write!(
                 f,
                 "the unit `{unit}` must follow a number, as in `1 {unit}`; it cannot be \
@@ -201,6 +241,10 @@ impl fmt::Display for ErrorKind {
             ErrorKind::ChainedPower => write!(
                 f,
                 "`a ^ b ^ c` is ambiguous; write `(a ^ b) ^ c` or multiply the exponents"
+            ),
+            ErrorKind::ChainedComparison => write!(
+                f,
+                "comparisons cannot be chained: write `a < b && b < c` instead of `a < b < c`"
             ),
             ErrorKind::UnknownVariable { name } => write!(f, "unknown variable `{name}`"),
             ErrorKind::DimensionMismatch {
@@ -234,6 +278,19 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidStep { function, value } => write!(
                 f,
                 "the step of `{function}` (its second argument) has to be positive, got {value}"
+            ),
+            ErrorKind::InvalidBounds { function, .. } => write!(
+                f,
+                "the lower bound of `{function}` (its second argument) is larger than the \
+                 upper bound (its third)"
+            ),
+            ErrorKind::NotWholeNumber { function, value } => write!(
+                f,
+                "the first argument of `{function}` has to be a whole number, got {value}"
+            ),
+            ErrorKind::ChoiceOutOfRange { index, count } => write!(
+                f,
+                "`choose` has {count} choice(s), numbered from 1, so there is no choice {index}"
             ),
             ErrorKind::NonFinite { operation } => write!(
                 f,

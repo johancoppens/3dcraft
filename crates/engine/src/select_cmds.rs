@@ -603,9 +603,10 @@ impl<'a> Parser<'a> {
             Value::Number(n) => n.as_f64(),
             Value::String(source) => {
                 let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
-                let quantity = craft3d_expr::evaluate(source, |name| {
-                    evaluation.as_ref().and_then(|e| e.value(name))
-                })
+                let quantity = match &evaluation {
+                    Some(evaluation) => evaluation.evaluate(source),
+                    None => craft3d_expr::evaluate(source, |_| None),
+                }
                 .map_err(|e| format!("`{key}`: {e}"))?;
                 let wanted = craft3d_expr::Dimension::new(power, 0);
                 if quantity.dimension.is_dimensionless() {
@@ -2101,7 +2102,7 @@ impl Context<'_> {
         let mut map = Map::new();
         map.insert("expr".into(), expr.0.clone().into());
         let text = expr.0.trim();
-        let plain = craft3d_expr::evaluate(text, |_| None).is_ok();
+        let plain = craft3d_expr::Expr::parse(text).is_ok_and(|e| e.variables().is_empty());
         if let Some(variable) = self.doc.variables.iter().find(|v| v.name == text) {
             map.insert("formula".into(), true.into());
             map.insert("variable".into(), variable.name.clone().into());

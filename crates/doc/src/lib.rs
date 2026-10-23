@@ -1776,6 +1776,11 @@ impl Document {
     /// [`Document::rename_variable`] does. Returns the renames made, old
     /// name first, in the order of the variables. For reading old files
     /// only: in such a file every token with that name is the variable.
+    /// Variables, feature parameters and assertions are rewritten; the
+    /// queries of named sets are not (their expressions sit in free JSON
+    /// text, where a word may also be a key or a kind): a set whose query
+    /// names such a variable fails to resolve until it is set again, as
+    /// after [`Document::rename_variable`].
     pub fn rename_reserved_variables(&mut self) -> Result<Vec<(String, String)>, DocError> {
         let mut renames: Vec<(String, String)> = Vec::new();
         let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1789,6 +1794,15 @@ impl Document {
         }
         for feature in &mut self.features {
             for expr in feature.kind.exprs_mut() {
+                used.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+        }
+        for assertion in &mut self.assertions {
+            for expr in assertion.expect.exprs_mut() {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -1830,6 +1844,11 @@ impl Document {
             }
             for feature in &mut self.features {
                 for expr in feature.kind.exprs_mut() {
+                    rename(expr)?;
+                }
+            }
+            for assertion in &mut self.assertions {
+                for expr in assertion.expect.exprs_mut() {
                     rename(expr)?;
                 }
             }
