@@ -110,11 +110,7 @@ impl PublicParam {
     pub fn check(&self) -> Result<(), String> {
         check_text("label", &self.label, MAX_PARAM_TEXT)?;
         check_text("group", &self.group, MAX_PARAM_TEXT)?;
-        if self.description.len() > MAX_DESCRIPTION {
-            return Err(format!(
-                "a description is at most {MAX_DESCRIPTION} bytes long"
-            ));
-        }
+        check_multiline("description", &self.description, MAX_DESCRIPTION)?;
         match self.kind {
             ParamKind::Choice => {
                 if self.choices.is_empty() {
@@ -220,11 +216,8 @@ impl DocInfo {
         ] {
             check_text(what, text, MAX_INFO_TEXT)?;
         }
-        if self.description.len() > MAX_DESCRIPTION {
-            return Err(format!(
-                "the description is at most {MAX_DESCRIPTION} bytes long"
-            ));
-        }
+        check_url(&self.url)?;
+        check_multiline("description", &self.description, MAX_DESCRIPTION)?;
         if self.tags.len() > MAX_TAGS {
             return Err(format!("there are at most {MAX_TAGS} tags"));
         }
@@ -246,7 +239,66 @@ fn check_text(what: &str, text: &str, max: usize) -> Result<(), String> {
     if text.chars().any(char::is_control) {
         return Err(format!("the {what} must not contain control characters"));
     }
-    Ok(())
+    check_invisible(what, text)
+}
+
+/// Characters that change how text is shown without being seen: the
+/// bidirectional controls (which can make a gallery card or a form say
+/// something else than the file holds) and the zero-width ones.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
+/// A text that may span lines (a description): no invisible formatting
+/// characters, and no control characters other than line breaks and tabs.
+fn check_multiline(what: &str, text: &str, max: usize) -> Result<(), String> {
+    if text.len() > max {
+        return Err(format!("the {what} is at most {max} bytes long"));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(format!(
+            "the {what} must not contain control characters other than line breaks and tabs"
+        ));
+    }
+    check_invisible(what, text)
+}
+
+fn check_invisible(what: &str, text: &str) -> Result<(), String> {
+    match text.chars().find(|&c| is_invisible(c)) {
+        Some(c) => Err(format!(
+            "the {what} must not contain the invisible formatting character U+{:04X}",
+            u32::from(c)
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A url is empty or an http or https address without spaces.
+fn check_url(url: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    let lower = url.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"));
+    match rest {
+        Some(rest) if !rest.is_empty() && !url.chars().any(char::is_whitespace) => Ok(()),
+        _ => Err(format!(
+            "the url `{url}` is not an http:// or https:// address"
+        )),
+    }
 }
 
 impl Document {
@@ -420,7 +472,28 @@ mod tests {
         assert!(doc.set_info(info.clone()).is_err());
         info.tags.pop();
         info.title = "a\u{7}".into();
-        assert!(doc.set_info(info).is_err());
+        assert!(doc.set_info(info.clone()).is_err());
+        info.title = "Pul\u{202E}yell".into();
+        assert!(doc.set_info(info.clone()).is_err());
+        info.title = "Pulley".into();
+        info.description = "Two lines,\nwith a\u{200B}gap".into();
+        assert!(doc.set_info(info.clone()).is_err());
+        info.description = "Two lines,\nfine".into();
+        doc.set_info(info.clone()).unwrap();
+        for bad in [
+            "javascript:alert(1)",
+            "ftp://x",
+            "https://",
+            "https://a b",
+            "file:///etc",
+        ] {
+            info.url = bad.into();
+            assert!(doc.set_info(info.clone()).is_err(), "{bad}");
+        }
+        for good in ["https://example.org/jig", "HTTP://example.org"] {
+            info.url = good.into();
+            doc.set_info(info.clone()).unwrap();
+        }
         assert_eq!(doc.info.title, "Pulley");
     }
 }

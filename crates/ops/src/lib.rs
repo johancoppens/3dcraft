@@ -22,9 +22,15 @@ struct Step {
     label: String,
     before: Arc<Document>,
     after: Arc<Document>,
-    /// What a later step may be merged into this one by
-    /// ([`History::apply_merging`]); `None` takes no merge.
-    key: Option<String>,
+}
+
+/// A run of edits of the same thing ([`History::apply_merging`]): its key,
+/// and whether the last undo step is the run's (it is not once the run
+/// came back to where it started, which takes its step away).
+#[derive(Clone, Debug)]
+struct Run {
+    key: String,
+    has_step: bool,
 }
 
 /// A document with its undo and redo stacks.
@@ -37,6 +43,9 @@ pub struct History {
     /// Counts every change of `current`, including undo and redo: two equal
     /// revisions mean the same document.
     revision: u64,
+    /// The run the last edit belonged to; cleared by any other change,
+    /// undo or redo, so a run never folds into a step that is not its own.
+    run: Option<Run>,
 }
 
 impl History {
@@ -47,6 +56,7 @@ impl History {
             redo: Vec::new(),
             limit: DEFAULT_LIMIT,
             revision: 0,
+            run: None,
         }
     }
 
@@ -76,14 +86,17 @@ impl History {
         self.apply_merging(label, None, false, edit)
     }
 
-    /// [`History::apply`] for a step with a `key` (what it changed, such
-    /// as the parameters a form set). With `merge`, when the last step has
-    /// the same key and nothing was undone since, the change is folded
-    /// into that step instead of making a new one, so a run of edits of
-    /// the same thing (a slider dragged) is one undo step; the merged step
-    /// keeps the first one's label, and goes away when the run ends where
-    /// it started. No clock is involved: the caller says when a run goes
-    /// on, so the history stays deterministic.
+    /// [`History::apply`] as part of a run of edits with a `key` (what
+    /// they change, such as the parameters a form sets). Without `merge`
+    /// a new run starts; with `merge`, when the run of the last edit has
+    /// the same key and nothing else happened since (no other edit, undo
+    /// or redo), the change is folded into the run's step instead of
+    /// making a new one, so a run (a slider dragged) is one undo step. The
+    /// step keeps the first label, and goes away when the run comes back
+    /// to where it started; a later edit of the same run then makes a new
+    /// step from there, never folding into an earlier run's. No clock is
+    /// involved: the caller says when a run goes on, so the history stays
+    /// deterministic.
     pub fn apply_merging<T, E>(
         &mut self,
         label: &str,
@@ -93,21 +106,29 @@ impl History {
     ) -> Result<T, E> {
         let mut next = (*self.current).clone();
         let value = edit(&mut next)?;
+        let same_run =
+            merge && key.is_some() && self.run.as_ref().map(|run| run.key.as_str()) == key;
+        if !same_run {
+            self.run = key.map(|key| Run {
+                key: key.to_string(),
+                has_step: false,
+            });
+        }
         if next == *self.current {
             return Ok(value);
         }
-        let mergeable = merge
-            && key.is_some()
-            && self.redo.is_empty()
-            && self
-                .undo
-                .last()
-                .is_some_and(|last| last.key.as_deref() == key);
-        if mergeable && let Some(last) = self.undo.last_mut() {
+        let open = self.run.as_ref().is_some_and(|run| run.has_step);
+        if same_run
+            && open
+            && let Some(last) = self.undo.last_mut()
+        {
             let after = Arc::new(next);
             if *after == *last.before {
                 self.current = Arc::clone(&last.before);
                 self.undo.pop();
+                if let Some(run) = &mut self.run {
+                    run.has_step = false;
+                }
             } else {
                 last.after = Arc::clone(&after);
                 self.current = after;
@@ -121,8 +142,10 @@ impl History {
                 label: label.to_string(),
                 before: Arc::clone(&self.current),
                 after: Arc::clone(&after),
-                key: key.map(str::to_string),
             });
+            if let Some(run) = &mut self.run {
+                run.has_step = true;
+            }
             if self.undo.len() > self.limit {
                 self.undo.remove(0);
             }
@@ -139,6 +162,7 @@ impl History {
         let step = self.undo.pop()?;
         self.current = Arc::clone(&step.before);
         self.revision += 1;
+        self.run = None;
         let label = step.label.clone();
         self.redo.push(step);
         Some(label)
@@ -149,6 +173,7 @@ impl History {
         let step = self.redo.pop()?;
         self.current = Arc::clone(&step.after);
         self.revision += 1;
+        self.run = None;
         let label = step.label.clone();
         self.undo.push(step);
         Some(label)
@@ -295,6 +320,37 @@ mod tests {
         h.undo();
         merge(&mut h, Some("b"), "8 mm");
         assert_eq!(h.undo_labels().count(), 5);
+    }
+
+    /// A run that came back to its start and goes on makes a new step: it
+    /// never folds into the step of an earlier run of the same key.
+    #[test]
+    fn a_run_back_at_its_start_never_folds_into_an_earlier_run() {
+        let mut h = history();
+        set(&mut h, "a", "1 mm").unwrap();
+        let start = |h: &mut History, expr: &str| {
+            h.apply_merging::<(), DocError>("Set a", Some("a"), false, |doc| {
+                doc.set_variable("a", expr)
+            })
+            .unwrap();
+        };
+        // The first drag: 1 -> 2 -> 3, one step.
+        start(&mut h, "2 mm");
+        merge(&mut h, Some("a"), "3 mm");
+        let after_first = Arc::clone(h.current());
+        // The second drag: 3 -> 5 -> back to 3 (its step goes) -> 6.
+        start(&mut h, "5 mm");
+        merge(&mut h, Some("a"), "3 mm");
+        assert_eq!(h.undo_labels().count(), 2);
+        merge(&mut h, Some("a"), "6 mm");
+        assert_eq!(h.undo_labels().count(), 3);
+        h.undo();
+        assert!(Arc::ptr_eq(h.current(), &after_first));
+        // After an undo, a merge starts afresh too.
+        merge(&mut h, Some("a"), "7 mm");
+        assert_eq!(h.undo_labels().count(), 3);
+        h.undo();
+        assert!(Arc::ptr_eq(h.current(), &after_first));
     }
 
     #[test]

@@ -173,6 +173,9 @@ pub(crate) struct OpenDocument {
     /// The assertions checked against `history.revision()`
     /// (`assert_cmds.rs`).
     pub(crate) assertions: assert_check::Checks,
+    /// The thumbnail drawn for a save, with the revision it shows, so a
+    /// Jig saved again unchanged is not drawn again (`file.save`).
+    pub(crate) thumbnail: Option<(u64, Arc<Vec<u8>>)>,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -214,6 +217,7 @@ impl OpenDocument {
             cache: new_cache(),
             selection: selection::Selection::default(),
             assertions: assert_check::Checks::default(),
+            thumbnail: None,
         }
     }
 

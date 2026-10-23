@@ -20,11 +20,11 @@ use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
-        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate. One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
+        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\"; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit), or true or false for a boolean. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label. A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
         "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices, its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
@@ -96,13 +96,30 @@ fn shown(doc: &Document, quantity: Quantity, unit: Option<Unit>) -> f64 {
     }
 }
 
+/// The units a value of `dimension` is shown in when it has no unit of
+/// its own: `mm^2`, `mm^-1`, `mm*rad`.
+fn unit_text(doc: &Document, dimension: Dimension) -> String {
+    let mut parts = Vec::new();
+    for (symbol, exponent) in [
+        (doc.units.length.symbol(), dimension.length),
+        ("rad", dimension.angle),
+    ] {
+        match exponent {
+            0 => {}
+            1 => parts.push(symbol.to_string()),
+            n => parts.push(format!("{symbol}^{n}")),
+        }
+    }
+    parts.join("*")
+}
+
 /// A value written for messages: `6 mm`, `20`.
 fn written(doc: &Document, quantity: Quantity, unit: Option<Unit>) -> String {
     let number = shown(doc, quantity, unit);
     match unit {
         Some(unit) => format!("{number} {unit}"),
         None if quantity.dimension.is_dimensionless() => number.to_string(),
-        None => format!("{number} ({})", quantity.dimension),
+        None => format!("{number} {}", unit_text(doc, quantity.dimension)),
     }
 }
 
@@ -130,8 +147,23 @@ struct Evaluated<'a> {
     bounds: Bounds<'a>,
     unit: Option<Unit>,
     /// Why the parameter is not one a form can show as valid; empty when
-    /// it is.
+    /// it is. The problems of its value come first.
     problems: Vec<String>,
+    /// How many of `problems` are about its value (not of its kind, out of
+    /// its range, a formula, not evaluating), which `param.set` refuses;
+    /// the others are about its description (a range or a default that
+    /// does not work), which a value cannot mend.
+    value_problems: usize,
+}
+
+impl Evaluated<'_> {
+    fn value_problems(&self) -> &[String] {
+        self.problems.get(..self.value_problems).unwrap_or(&[])
+    }
+
+    fn description_problems(&self) -> &[String] {
+        self.problems.get(self.value_problems..).unwrap_or(&[])
+    }
 }
 
 fn bound(bounds: &Bounds, what: &str) -> Option<Quantity> {
@@ -268,12 +300,25 @@ fn evaluate_all<'a>(doc: &'a Document, values: Option<&Evaluation>) -> Vec<Evalu
             .or(default.as_ref())
             .map_or(Dimension::NONE, |q| q.dimension);
         let unit = shown_unit(doc, public, dimension);
-        let mut problems = Vec::new();
+        let mut about_value = Vec::new();
         if !is_value(expr) {
-            problems.push(format!(
+            about_value.push(format!(
                 "its expression `{expr}` is a formula, not a value a form can set"
             ));
         }
+        match &value {
+            Err(error) => about_value.push(format!("its value does not evaluate: {error}")),
+            Ok(q) => value_problems(
+                doc,
+                public,
+                unit,
+                &bounds,
+                "its value",
+                *q,
+                &mut about_value,
+            ),
+        }
+        let mut problems = Vec::new();
         if !is_value(public.default.source()) {
             problems.push(format!(
                 "its default `{}` is a formula, not a value",
@@ -327,10 +372,6 @@ fn evaluate_all<'a>(doc: &'a Document, values: Option<&Evaluation>) -> Vec<Evalu
                 range_text(doc, &bounds, unit)
             ));
         }
-        match &value {
-            Err(error) => problems.push(format!("its value does not evaluate: {error}")),
-            Ok(q) => value_problems(doc, public, unit, &bounds, "its value", *q, &mut problems),
-        }
         match &default {
             Err(error) => problems.push(format!("its default does not evaluate: {error}")),
             Ok(q) if value.as_ref().is_ok_and(|v| v.dimension != q.dimension) => {
@@ -351,6 +392,8 @@ fn evaluate_all<'a>(doc: &'a Document, values: Option<&Evaluation>) -> Vec<Evalu
                 &mut problems,
             ),
         }
+        let value_count = about_value.len();
+        about_value.extend(problems);
         out.push(Evaluated {
             name,
             expr,
@@ -359,7 +402,8 @@ fn evaluate_all<'a>(doc: &'a Document, values: Option<&Evaluation>) -> Vec<Evalu
             default,
             bounds,
             unit,
-            problems,
+            problems: about_value,
+            value_problems: value_count,
         });
     }
     out
@@ -432,6 +476,13 @@ fn param_json(doc: &Document, e: &Evaluated) -> Value {
         "unit".into(),
         e.unit.map_or(Value::Null, |u| u.symbol().into()),
     );
+    // Another dimension (an area) has no unit symbol: what its numbers
+    // are in, for reading (param.set takes it as a string with units).
+    if let (None, Ok(q)) = (e.unit, &e.value)
+        && !q.dimension.is_dimensionless()
+    {
+        out.insert("unitText".into(), unit_text(doc, q.dimension).into());
+    }
     out.insert(
         "default".into(),
         quantity_json(doc, public.default.source(), &e.default, e.unit),
@@ -634,21 +685,32 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
     if let Some(default) = p.expr("default")? {
         public.default = Expr::new(default);
     }
-    // Checked on the document as it would be.
+    // Checked on the document as it would be: this parameter, and every
+    // other one it would make invalid (its range may use this one, and a
+    // default is checked with every parameter at its default).
     let mut next = (**doc).clone();
     next.publish_variable(name, public.clone())
         .map_err(doc_error(command))?;
+    let mut refusals: Vec<String> = Vec::new();
     let values = evaluation(&next);
-    let problems: Vec<String> = evaluate_all(&next, values.as_ref())
-        .into_iter()
-        .find(|e| e.name == name)
-        .map(|e| e.problems)
-        .unwrap_or_default();
-    if !problems.is_empty() {
-        return fail(format!(
-            "{command}: `{name}` cannot be published so: {}",
-            problems.join("; ")
+    let after = evaluate_all(&next, values.as_ref());
+    if let Some(e) = after.iter().find(|e| e.name == name)
+        && !e.problems.is_empty()
+    {
+        refusals.push(format!(
+            "`{name}` cannot be published so: {}",
+            e.problems.join("; ")
         ));
+    }
+    let values_before = evaluation(doc);
+    let before = evaluate_all(doc, values_before.as_ref());
+    refusals.extend(
+        newly_invalid(&before, &after, &[name], |e| &e.problems)
+            .into_iter()
+            .map(|(other, problems)| format!("this would make `{other}` invalid ({problems})")),
+    );
+    if !refusals.is_empty() {
+        return fail(format!("{command}: {}", refusals.join("; ")));
     }
     edit(session, command, &format!("Publish {name}"), |doc| {
         doc.publish_variable(name, public)
@@ -677,6 +739,67 @@ fn variable_unpublish(session: &mut Session, params: &Value) -> Run {
 
 // ------------------------------------------------------------------- set
 
+/// For a parameter of a whole-number kind, a value that is a whole number
+/// (within 1e-9, as a count is) written as exactly that number, so the
+/// document holds what regeneration counts with; any other value as given
+/// (and refused by the check after, when it is not of its kind).
+fn whole_source(kind: ParamKind, source: String) -> String {
+    if kind == ParamKind::Number {
+        return source;
+    }
+    match eval(&source, None) {
+        Ok(q)
+            if q.dimension.is_dimensionless()
+                && q.value.is_finite()
+                && whole(q.value)
+                && q.value.abs() < 1e15 =>
+        {
+            format!("{}", q.value.round() as i64)
+        }
+        _ => source,
+    }
+}
+
+/// The parameters of `after` that are invalid by `problems` and were not
+/// in `before` (or are not there), other than those in `skip`: each name
+/// with its problems, joined.
+fn newly_invalid<'a>(
+    before: &[Evaluated],
+    after: &'a [Evaluated],
+    skip: &[&str],
+    problems: impl Fn(&'a Evaluated<'a>) -> &'a [String],
+) -> Vec<(&'a str, String)> {
+    after
+        .iter()
+        .filter(|e| !skip.contains(&e.name))
+        .filter_map(|e| {
+            let now = problems(e);
+            let was_valid = before
+                .iter()
+                .find(|b| b.name == e.name)
+                .is_none_or(|b| b.problems.is_empty());
+            (!now.is_empty() && was_valid).then(|| (e.name, now.join("; ")))
+        })
+        .collect()
+}
+
+/// What an edit from `before` to `after` made invalid among the public
+/// parameters that were valid, as warnings: for the designer's commands
+/// (`variable.set`, `variable.delete`), which do not refuse it.
+pub(crate) fn invalidated(before: &Document, after: &Document) -> Vec<String> {
+    if !after.is_jig() {
+        return Vec::new();
+    }
+    let values_before = evaluation(before);
+    let values_after = evaluation(after);
+    let was = evaluate_all(before, values_before.as_ref());
+    let now = evaluate_all(after, values_after.as_ref());
+    newly_invalid(&was, &now, &[], |e| &e.problems)
+        .into_iter()
+        .map(|(name, problems)| format!("the parameter `{name}` is now invalid: {problems}"))
+        .collect()
+}
+
 /// The expression a `param.set` value stands for, for the parameter `e`.
 fn value_source(
     command: &str,
@@ -685,9 +808,37 @@ fn value_source(
     value: &Value,
 ) -> Result<String, CommandError> {
     let name = e.name;
+    let kind = e.public.kind;
+    let dimension = e
+        .default
+        .as_ref()
+        .or(e.value.as_ref())
+        .map_or(Dimension::NONE, |q| q.dimension);
     match value {
-        Value::Bool(on) if e.public.kind == ParamKind::Boolean => {
+        Value::Bool(on) if kind == ParamKind::Boolean => {
             Ok(if *on { "1" } else { "0" }.to_string())
+        }
+        Value::String(text)
+            if kind == ParamKind::Boolean
+                && matches!(text.to_ascii_lowercase().as_str(), "true" | "false") =>
+        {
+            Ok(if text.eq_ignore_ascii_case("true") {
+                "1"
+            } else {
+                "0"
+            }
+            .to_string())
+        }
+        Value::String(label)
+            if kind == ParamKind::Choice && e.public.choices.iter().any(|c| c == label) =>
+        {
+            let at = e
+                .public
+                .choices
+                .iter()
+                .position(|c| c == label)
+                .unwrap_or_default();
+            Ok(at.saturating_add(1).to_string())
         }
         Value::Bool(_) => fail(format!(
             "{command}: `{name}` is a {} parameter, not a boolean; give a number or a string",
@@ -697,16 +848,20 @@ fn value_source(
             let Some(x) = n.as_f64().filter(|x| x.is_finite()) else {
                 return fail(format!("{command}: `{name}` must be a finite number"));
             };
-            let unit = e
-                .default
-                .as_ref()
-                .or(e.value.as_ref())
-                .ok()
-                .and_then(|q| shown_unit(doc, e.public, q.dimension));
-            Ok(match unit {
-                Some(unit) => format!("{x} {unit}"),
-                None => x.to_string(),
-            })
+            let unit = shown_unit(doc, e.public, dimension);
+            if unit.is_none() && !dimension.is_dimensionless() {
+                return fail(format!(
+                    "{command}: `{name}` is {}, which a plain number cannot give; write it with its units as a string, such as \"{x} * (1 mm)^2\" for an area",
+                    dimension.described()
+                ));
+            }
+            Ok(whole_source(
+                kind,
+                match unit {
+                    Some(unit) => format!("{x} {unit}"),
+                    None => x.to_string(),
+                },
+            ))
         }
         Value::String(source) => {
             let parsed = craft3d_expr::Expr::parse(source).map_err(|error| {
@@ -715,6 +870,18 @@ fn value_source(
                 ))
             })?;
             let uses = parsed.variables();
+            if !uses.is_empty() && kind == ParamKind::Choice {
+                return fail(format!(
+                    "{command}: `{name}` is a choice: give one of its choices ({}) or its number from 1 to {}; `{source}` is none of them",
+                    e.public.choices.join(", "),
+                    e.public.choices.len()
+                ));
+            }
+            if !uses.is_empty() && kind == ParamKind::Boolean {
+                return fail(format!(
+                    "{command}: `{name}` is on or off: give true or false (or 1 or 0), not `{source}`"
+                ));
+            }
             if !uses.is_empty() {
                 return fail(format!(
                     "{command}: `{name}` takes a value, not a formula: `{source}` uses {}",
@@ -724,10 +891,21 @@ fn value_source(
                         .join(", ")
                 ));
             }
-            Ok(source.clone())
+            Ok(whole_source(kind, source.clone()))
         }
         _ => fail(format!(
-            "{command}: the value of `{name}` must be a string such as \"6 mm\", a number in its unit, or true or false for a boolean"
+            "{command}: the value of `{name}` must be {}",
+            match kind {
+                ParamKind::Boolean => "true or false (or 1 or 0)".to_string(),
+                ParamKind::Choice => format!(
+                    "one of its choices ({}) or its number from 1 to {}",
+                    e.public.choices.join(", "),
+                    e.public.choices.len()
+                ),
+                ParamKind::Integer => "a whole number".to_string(),
+                ParamKind::Number =>
+                    "a string such as \"6 mm\" or a number in its unit".to_string(),
+            }
         )),
     }
 }
@@ -786,12 +964,22 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
     let values_after = evaluation(&next);
     let after = evaluate_all(&next, values_after.as_ref());
     let mut refusals = Vec::new();
+    let mut warnings = Vec::new();
     for e in &after {
         let set = sources.iter().any(|(n, _)| n == e.name);
+        // Only what is wrong with a value refuses it; a range or a default
+        // that does not work is the designer's to mend, and said.
         let was_valid = before
             .iter()
             .find(|b| b.name == e.name)
-            .is_some_and(|b| b.problems.is_empty());
+            .is_some_and(|b| b.value_problems().is_empty());
+        if set && !e.description_problems().is_empty() {
+            warnings.push(format!(
+                "`{}`: {}",
+                e.name,
+                e.description_problems().join("; ")
+            ));
+        }
         let old_dimension = before
             .iter()
             .find(|b| b.name == e.name)
@@ -810,10 +998,10 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
             ));
             continue;
         }
-        if e.problems.is_empty() || (!set && !was_valid) {
+        if e.value_problems().is_empty() || (!set && !was_valid) {
             continue;
         }
-        let problems = e.problems.join("; ");
+        let problems = e.value_problems().join("; ");
         if set {
             refusals.push(format!("`{}`: {problems}", e.name));
         } else {
@@ -873,6 +1061,9 @@ fn param_set(session: &mut Session, params: &Value) -> Run {
         })
         .collect();
     let mut result = json!({ "set": set, "changed": changed });
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), warnings.into());
+    }
     add_failed(session, &failed_before, None, &mut result)?;
     crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)

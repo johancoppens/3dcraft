@@ -51,7 +51,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false, "thumbnail": boolean = true for a Jig}"#,
-        "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true. With thumbnail (the default for a Jig, a document with public parameters) the file also holds thumb.png, a 400 x 300 picture of the bodies from the iso view drawn by the CPU renderer (the same document gives the same picture), for a gallery; the result says thumbnail: true when it was written, and thumbnailError why not (no bodies yet): the document is saved all the same.", doc: true, file_save),
+        "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true. With thumbnail (the default for a Jig, a document with public parameters) the file also holds thumb.png, a 400 x 300 picture of the bodies from the iso view drawn by the CPU renderer (the same document gives the same picture on one platform and build; drawn once per change), for a gallery; the result says thumbnail: true when it was written, and thumbnailError why not (no bodies yet): the document is saved all the same.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false}"#,
@@ -625,13 +625,14 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let document = std::sync::Arc::clone(open.history.current());
     let revision = open.history.revision();
     if in_memory {
-        let bytes = craft3d_format::to_bytes_with_thumbnail(&document, png.as_deref())
-            .map_err(|e| cannot(e.to_string()))?;
+        let bytes =
+            craft3d_format::to_bytes_with_thumbnail(&document, png.as_deref().map(Vec::as_slice))
+                .map_err(|e| cannot(e.to_string()))?;
         session
             .write_resolved(&resolved, bytes)
             .map_err(|e| cannot(e.message().to_string()))?;
     } else {
-        save_to_disk(&resolved, &document, png.as_deref()).map_err(cannot)?;
+        save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
     open.saved_revision = Some(revision);
@@ -1188,12 +1189,14 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
         ));
     }
     let before = failing(session)?;
+    let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)
     })?;
     let open = session.document_mut()?;
     let regen = open.regen();
     let mut result = variable_json(&regen, name, length_unit(open.history.current()));
+    add_parameter_warnings(&doc_before, open.history.current(), &mut result);
     add_failed(session, &before, None, &mut result)?;
     crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)
@@ -1215,6 +1218,7 @@ fn variable_delete(session: &mut Session, params: &Value) -> Run {
     } else {
         failing(session)?
     };
+    let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     edit(
         session,
         "variable.delete",
@@ -1222,6 +1226,11 @@ fn variable_delete(session: &mut Session, params: &Value) -> Run {
         |doc| doc.remove_variable(name),
     )?;
     let mut result = json!({ "deleted": name });
+    add_parameter_warnings(
+        &doc_before,
+        session.document()?.history.current(),
+        &mut result,
+    );
     if !users.is_empty() {
         if let Some(map) = result.as_object_mut() {
             map.insert("usedBy".into(), users.into());
@@ -1229,6 +1238,16 @@ fn variable_delete(session: &mut Session, params: &Value) -> Run {
         add_failed(session, &before, None, &mut result)?;
     }
     Ok(result)
+}
+
+/// Adds `parameterWarnings` to the result of a designer's edit: the public
+/// parameters it made invalid (`variable.set` and `variable.delete` do
+/// not refuse that; `param.set` and `variable.publish` do).
+fn add_parameter_warnings(before: &Document, after: &Document, result: &mut Value) {
+    let warnings = crate::param_cmds::invalidated(before, after);
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("parameterWarnings".into(), warnings.into());
+    }
 }
 
 /// Whether the expression text `source` refers to the variable `name`.
@@ -3333,12 +3352,24 @@ pub(crate) const THUMBNAIL_SIZE: (u32, u32) = (400, 300);
 /// The thumbnail of the active document: a PNG of the bodies from the
 /// default view (iso, perspective, the whole model) at
 /// [`THUMBNAIL_SIZE`], with the CPU renderer, so the same document gives
-/// the same bytes.
-pub(crate) fn thumbnail_png(session: &mut Session) -> Result<Vec<u8>, CommandError> {
+/// the same bytes on one platform and build (the renderer's maths is not
+/// promised bit for bit across platforms). Kept per revision: saving an
+/// unchanged document again does not draw it again.
+pub(crate) fn thumbnail_png(
+    session: &mut Session,
+) -> Result<std::sync::Arc<Vec<u8>>, CommandError> {
+    let revision = session.document()?.history.revision();
+    if let Some((drawn, png)) = &session.document()?.thumbnail
+        && *drawn == revision
+    {
+        return Ok(std::sync::Arc::clone(png));
+    }
     let (width, height) = THUMBNAIL_SIZE;
     let params = json!({ "width": width, "height": height });
     let p = Params::new("view.render", &params, VIEW_RENDER_PARAMS)?;
-    render_picture(session, &p).map(|(_, png)| png)
+    let png = std::sync::Arc::new(render_picture(session, &p)?.1);
+    session.document_mut()?.thumbnail = Some((revision, std::sync::Arc::clone(&png)));
+    Ok(png)
 }
 
 /// The picture of `view.render` with what it says about it; its `path`

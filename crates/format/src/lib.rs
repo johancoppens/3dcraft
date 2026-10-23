@@ -312,7 +312,9 @@ pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
 
 /// [`to_bytes`] with a thumbnail, the bytes of a PNG picture stored as
 /// the entry [`THUMBNAIL_NAME`] right after the manifest. Deterministic
-/// as `to_bytes` is, for the same thumbnail.
+/// as `to_bytes` is, for the same thumbnail bytes; whether the picture
+/// itself is the same on every platform is the renderer's matter (the
+/// engine promises it on one platform and build only).
 pub fn to_bytes_with_thumbnail(
     document: &Document,
     thumbnail: Option<&[u8]>,

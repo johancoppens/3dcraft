@@ -550,3 +550,187 @@ fn a_jig_saves_and_opens_with_its_parameters_info_and_a_thumbnail() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn publishing_never_makes_another_parameter_impossible_to_set() {
+    let mut s = session();
+    jig(&mut s);
+    // w's default 40 mm is checked with every parameter at its default:
+    // a default of 15 mm for d would put it above 2 * d.
+    let e = refused(
+        &mut s,
+        "variable.publish",
+        json!({"name": "d", "default": "15 mm"}),
+    );
+    assert!(e.contains("would make `w` invalid"), "{e}");
+    // A range that stops working is the designer's to mend: the commands
+    // that do it say so, and param.set still sets the value, with a
+    // warning.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "cap", "expr": "100 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "d", "max": "cap"}),
+    );
+    let r = run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "cap", "force": true}),
+    );
+    let warning = r["parameterWarnings"][0].as_str().unwrap();
+    assert!(
+        warning.contains("`d` is now invalid") && warning.contains("does not evaluate"),
+        "{r}"
+    );
+    let r = run(&mut s, "param.set", json!({"values": {"d": "30 mm"}}));
+    assert!(
+        r["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("does not evaluate"),
+        "{r}"
+    );
+    assert_close(&json!(volume(&mut s)), 40.0 * 30.0 * 5.0, "set anyway");
+    // variable.set says what it put out of range.
+    let r = run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "90 mm"}),
+    );
+    assert!(
+        r["parameterWarnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("`w` is now invalid"),
+        "{r}"
+    );
+}
+
+#[test]
+fn whole_kinds_take_labels_words_and_store_exact_whole_numbers() {
+    let mut s = session();
+    jig(&mut s);
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"n": "4.0000000001", "lid": "false", "style": "Round"}}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "n")["expr"], "4");
+    assert_eq!(param(&list, "lid")["expr"], "0");
+    assert_eq!(param(&list, "style")["expr"], "3");
+    assert_eq!(param(&list, "style")["choice"], "Round");
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"lid": "TRUE", "n": 5.0}}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "lid")["expr"], "1");
+    assert_eq!(param(&list, "n")["expr"], "5");
+    let e = refused(&mut s, "param.set", json!({"values": {"style": "Square"}}));
+    assert!(
+        e.contains("one of its choices (Plain, Slotted, Round)"),
+        "{e}"
+    );
+    let e = refused(&mut s, "param.set", json!({"values": {"lid": "yes"}}));
+    assert!(e.contains("give true or false"), "{e}");
+    let e = refused(&mut s, "param.set", json!({"values": {"style": [1]}}));
+    assert!(e.contains("one of its choices"), "{e}");
+}
+
+#[test]
+fn a_parameter_of_another_dimension_is_read_and_set_with_its_units() {
+    let mut s = session();
+    jig(&mut s);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "hole", "expr": "400 * (1 mm)^2"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "hole", "max": "1000 * (1 mm)^2"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    let hole = param(&list, "hole");
+    assert_eq!(hole["unit"], Value::Null);
+    assert_eq!(hole["unitText"], "mm^2");
+    assert_close(&hole["value"], 400.0, "area");
+    let e = refused(&mut s, "param.set", json!({"values": {"hole": 500}}));
+    assert!(e.contains("a plain number cannot give"), "{e}");
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"hole": "500 * (1 mm)^2"}}),
+    );
+    let e = refused(
+        &mut s,
+        "param.set",
+        json!({"values": {"hole": "5000 * (1 mm)^2"}}),
+    );
+    assert!(e.contains("outside its range, at most 1000 mm^2"), "{e}");
+}
+
+#[test]
+fn a_new_drag_never_folds_into_an_earlier_one() {
+    let mut s = session();
+    jig(&mut s);
+    let steps = |s: &mut Session| {
+        run(s, "document.inspect", json!({"measures": false}))["history"]["undo"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    // The first drag ends at 30 mm.
+    run(&mut s, "param.set", json!({"values": {"w": 35}}));
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"w": 30}, "merge": true}),
+    );
+    let after_first = steps(&mut s);
+    // The second goes to 25, back to 30 (its step goes), then on to 20.
+    run(&mut s, "param.set", json!({"values": {"w": 25}}));
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"w": 30}, "merge": true}),
+    );
+    assert_eq!(steps(&mut s), after_first);
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"w": 20}, "merge": true}),
+    );
+    assert_eq!(steps(&mut s), after_first + 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_close(
+        &json!(volume(&mut s)),
+        30.0 * 20.0 * 5.0,
+        "the first drag kept",
+    );
+}
+
+#[test]
+fn info_url_must_be_a_web_address() {
+    let mut s = session();
+    jig(&mut s);
+    let e = refused(
+        &mut s,
+        "document.info",
+        json!({"url": "javascript:alert(1)"}),
+    );
+    assert!(e.contains("http://"), "{e}");
+    refused(&mut s, "document.info", json!({"title": "a\u{202E}b"}));
+    run(
+        &mut s,
+        "document.info",
+        json!({"url": "https://example.org"}),
+    );
+}
