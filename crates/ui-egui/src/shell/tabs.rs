@@ -132,6 +132,7 @@ pub fn doc_tabs(statuses: &[DocumentStatus], active: Option<usize>) -> Vec<DocTa
                 dirty: status.dirty,
                 active: active == Some(status.index),
                 asks_to_close: status.close_asks,
+                jig_in_use: status.jig_in_use,
             }
         })
         .collect()
@@ -195,6 +196,7 @@ impl Shell {
                 name: tab.name.clone(),
                 path: tab.path.clone(),
                 quitting: self.quitting.is_some(),
+                jig: tab.jig_in_use,
             });
         } else {
             self.doc_action = Some(DocAction::Close {
@@ -582,6 +584,12 @@ impl Shell {
             self.closing_hits.clear();
             return;
         };
+        // One modal at a time: an error or export dialog first (a Save as
+        // model… that failed says why), the question after it.
+        if self.dialog_open() {
+            self.closing_hits.clear();
+            return;
+        }
         let tokens = self.tokens;
         let more = self
             .tabs
@@ -597,18 +605,35 @@ impl Shell {
             } else {
                 ("closing", "close")
             };
-            ui.label(
-                egui::RichText::new(format!(
-                    "Save the changes to \"{}\" before {doing}?",
-                    closing.name
-                ))
-                .strong(),
-            );
-            ui.add_space(tokens.inset * 0.4);
-            ui.colored_label(
-                color(tokens.text_dim),
-                format!("The changes are lost if you {done} without saving."),
-            );
+            if closing.jig {
+                // A Jig in use: its file stays as it is; the values set
+                // are kept only as a model.
+                ui.label(
+                    egui::RichText::new(format!(
+                        "You changed the parameters of \"{}\". Save the result as a model?",
+                        closing.name
+                    ))
+                    .strong(),
+                );
+                ui.add_space(tokens.inset * 0.4);
+                ui.colored_label(
+                    color(tokens.text_dim),
+                    format!("The Jig itself is not changed. The values you set are lost if you {done} without saving them."),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Save the changes to \"{}\" before {doing}?",
+                        closing.name
+                    ))
+                    .strong(),
+                );
+                ui.add_space(tokens.inset * 0.4);
+                ui.colored_label(
+                    color(tokens.text_dim),
+                    format!("The changes are lost if you {done} without saving."),
+                );
+            }
             if closing.quitting && more > 0 {
                 ui.colored_label(
                     color(tokens.text_dim),
@@ -623,7 +648,12 @@ impl Shell {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: Cancel at the right edge.
                 for choice in CloseAnswer::ALL.iter().rev() {
-                    let response = ui.button(choice.label());
+                    let label = match (closing.jig, choice) {
+                        (true, CloseAnswer::Save) => "Save as model…",
+                        (true, CloseAnswer::Discard) => "Close",
+                        _ => choice.label(),
+                    };
+                    let response = ui.button(label);
                     hits.push((*choice, response.rect));
                     if response.clicked() {
                         answer = Some(*choice);

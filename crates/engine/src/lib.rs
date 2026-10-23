@@ -28,6 +28,7 @@ mod file_cmds;
 mod helix_cmds;
 mod import_cmds;
 mod interference_cmds;
+mod jig_cmds;
 mod loft_cmds;
 mod mass;
 mod memory_files;
@@ -45,6 +46,7 @@ mod replay_cmds;
 mod report;
 mod scene;
 mod scene_box;
+mod scene_view;
 mod scrub;
 mod section;
 mod select_cmds;
@@ -64,6 +66,7 @@ pub mod task_score;
 mod typed;
 mod verify;
 mod verify_cmds;
+mod view_export;
 mod visibility_cmds;
 mod workspace;
 
@@ -187,6 +190,11 @@ pub(crate) struct OpenDocument {
     /// The thumbnail drawn for a save, with the revision it shows, so a
     /// Jig saved again unchanged is not drawn again (`file.save`).
     pub(crate) thumbnail: Option<(u64, Arc<Vec<u8>>)>,
+    /// A published Jig opened to be used (a `.3dcraftjig` file): only its
+    /// parameters change, it is never saved over its file, and its
+    /// parameter changes are not unsaved changes (`jig_cmds.rs`). Derived
+    /// from how it was opened, not stored in the file.
+    pub(crate) jig_in_use: bool,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -231,18 +239,34 @@ impl OpenDocument {
             assertions: assert_check::Checks::default(),
             scrub: scrub::Scrub::default(),
             thumbnail: None,
+            jig_in_use: false,
         }
     }
 
+    /// Changes not on disk. A Jig in use has none: its file is never
+    /// written, and setting its parameters is using it, as a form is.
     pub(crate) fn dirty(&self) -> bool {
-        self.saved_revision != Some(self.history.revision())
+        !self.jig_in_use && self.saved_revision != Some(self.history.revision())
     }
 
     /// True when `file.close` refuses it without `discard`: it has changes
     /// that are not on disk and are worth keeping (it has a file, or
     /// features). A new document nothing was added to closes freely.
+    ///
+    /// A Jig in use asks when its parameters changed since it was opened
+    /// (docs/decisions.md, 2026-10-23): its file is never written, so the
+    /// values set are kept only by saving them as a model.
     pub(crate) fn close_asks(&self) -> bool {
+        if self.jig_in_use {
+            return self.parameters_changed();
+        }
         self.dirty() && (self.path.is_some() || !self.history.current().features.is_empty())
+    }
+
+    /// A Jig in use whose parameters were changed since it was opened (or
+    /// last saved as a model).
+    pub(crate) fn parameters_changed(&self) -> bool {
+        self.jig_in_use && self.saved_revision != Some(self.history.revision())
     }
 
     /// The bodies and statuses of the current document. A body that went
@@ -309,6 +333,10 @@ pub struct Session {
     last_failure: Option<report::FailedCommand>,
     /// What the frontend says about itself in the bug report.
     host_details: Vec<(String, String)>,
+    /// The camera of the window's viewport, for `file.export` of the view
+    /// as seen (`view: "current"`), as the window last said, with the
+    /// document (its id) it was showing then.
+    pub(crate) window_camera: Option<(u64, craft3d_render::Camera)>,
 }
 
 /// Most documents open at once.
@@ -327,7 +355,19 @@ impl Session {
             memory: memory_files::MemoryFiles::default(),
             last_failure: None,
             host_details: Vec::new(),
+            window_camera: None,
         }
+    }
+
+    /// The camera the window's viewport shows the active document with:
+    /// what `file.export {view: "current"}` draws to DXF or SVG. A window
+    /// says it whenever it syncs; it holds for the document active now
+    /// only (another one made active in a batch since has none). Without
+    /// one (`None`) that view is the iso view. View state: nothing in a
+    /// document changes.
+    pub fn set_window_camera(&mut self, camera: Option<craft3d_render::Camera>) {
+        let active = self.document_status().map(|status| status.id);
+        self.window_camera = camera.zip(active).map(|(camera, id)| (id, camera));
     }
 
     /// Lets the kernel go of the trees it keeps for freeform surfaces that
@@ -399,6 +439,7 @@ impl Session {
                 set_cmds::SPECS,
                 param_cmds::SPECS,
                 table_cmds::SPECS,
+                jig_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
                 visibility_cmds::SPECS,

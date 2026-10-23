@@ -717,16 +717,19 @@ fn what_cannot_be_drawn_fails_with_the_reason() {
     plate(&mut s, 1.0);
     let top = face_named(&mut s, "endCap");
 
-    // What to draw.
+    // What to draw: neither a sketch nor a face is the model as seen
+    // (`view_export.rs`, 2026-10-23), the iso view without a window.
+    let seen = run(&mut s, "file.export", json!({"path": "a.dxf"}));
+    assert_eq!(seen["view"], "iso");
     refused(
         &mut s,
-        json!({"path": "a.dxf"}),
-        &["give `sketch`", "`face`"],
+        json!({"path": "a", "format": "svg", "view": "sideways"}),
+        &["unknown view `sideways`"],
     );
     refused(
         &mut s,
-        json!({"path": "a", "format": "svg"}),
-        &["give `sketch`"],
+        json!({"path": "a.svg", "sketch": "Plate", "view": "front"}),
+        &["`view`", "model as seen"],
     );
     refused(
         &mut s,
@@ -876,7 +879,8 @@ fn what_cannot_be_drawn_fails_with_the_reason() {
     let left: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name != "only.svg" && name != "side.dxf")
+        // a.dxf: the model as seen, written on purpose above.
+        .filter(|name| name != "only.svg" && name != "side.dxf" && name != "a.dxf")
         .collect();
     assert!(left.is_empty(), "nothing else was written: {left:?}");
     // Without a write root nothing is written at all.

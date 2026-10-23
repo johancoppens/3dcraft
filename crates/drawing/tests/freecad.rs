@@ -137,6 +137,7 @@ fn drawing(unit: Unit, paths: Vec<Path>) -> Drawing {
         layers: vec![Layer {
             name: "outline".into(),
             color: Color::Black,
+            dash: None,
             paths,
         }],
     }

@@ -39,7 +39,11 @@ give your client (chapter 1), with this window's own port and token file when it
   the failed colour with their message; while there are none, a short hint says how to get one (ask an AI
   agent, for example "check that the wall is at least 2 mm", or use `assert.add`). The **eye** at the end of a feature's row hides its body, sketch
   or datum in the view (click again to show it); the model itself does not change. A double click on a
-  hidden feature's row shows it again and flies to it.
+  hidden feature's row shows it again and flies to it. Under the pointer a row shows a **⌖** beside the
+  eye: a click flies to the feature, as a double click does. A feature that failed, is suppressed or
+  shows nothing has no ⌖, and a double click on it does nothing. A selected feature lights the faces it
+  made (a fillet's round), not its whole part; a pattern or a mirror lights the instances it made, and
+  its seed only its own faces.
 - **The timeline** at the foot of the feature tree: drag it to see the model as it was after any step of
   the history; the features after that step are greyed. Looking back changes nothing in the document.
   Under it is a **player**, like a video player's: first step, a step back, play or pause, a step
@@ -66,7 +70,7 @@ give your client (chapter 1), with this window's own port and token file when it
 | Wheel, or a pinch on a touchpad | Zoom about the point under the pointer |
 | F | Fly to the selection, or frame the whole model when nothing is selected |
 | **Fit** | Frame the whole model |
-| Double-click a feature in the tree | Select it and fly to what it made |
+| Double-click a feature in the tree, or its ⌖ | Select it and fly to what it made: from the iso view that sees it best, with some of its body around it |
 | **Iso**, or a click on a face, edge or corner of the view cube | A standard view |
 | **Persp** / **Ortho** | Perspective or orthographic (to scale) |
 

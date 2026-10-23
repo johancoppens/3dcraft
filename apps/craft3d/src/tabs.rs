@@ -33,7 +33,8 @@ pub fn needs_a_name(session: &Session, action: &DocAction) -> bool {
     session
         .document_statuses()
         .get(*document)
-        .is_some_and(|status| status.path.is_none())
+        // A Jig in use is saved as a model, under a name of its own.
+        .is_some_and(|status| status.path.is_none() || status.jig_in_use)
 }
 
 fn execute(session: &mut Session, command: &str, params: &Value) -> Result<Value, String> {
@@ -194,7 +195,7 @@ impl Host {
                 self.report(label, &outcome);
                 return;
             }
-            self.ask_name_then_close(picker);
+            self.ask_name_then_close(picker, document);
             return;
         }
         let outcome = self.guarded(|session| perform(session, &action));
@@ -202,10 +203,13 @@ impl Host {
         self.shell.sync(&mut self.session);
     }
 
-    /// Opens the save dialog for the active document, which is closed once
-    /// it is saved there.
-    pub(crate) fn ask_name_then_close(&mut self, picker: &mut Picker) {
-        match picker.ask_save(suggested_name(None)) {
+    /// Opens the save dialog for document `document` (made the active one
+    /// meanwhile), which is closed once it is saved there; a Jig in use is
+    /// proposed as a model of its name.
+    pub(crate) fn ask_name_then_close(&mut self, picker: &mut Picker, document: usize) {
+        let statuses = self.session.document_statuses();
+        let path = statuses.get(document).and_then(|s| s.path.as_deref());
+        match picker.ask_save(suggested_name(path)) {
             Ok(()) => self.close_after_save = true,
             Err(error) => self.report("file.save", &Err(error)),
         }
@@ -510,6 +514,70 @@ mod tests {
         assert_eq!(desk.host.session.document_statuses().len(), 2);
         assert_eq!(active(&desk), Some(0));
         assert!(!desk.host.close_after_save);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Closing a Jig in use whose parameters changed asks whether to save
+    /// the result as a model (decided 2026-10-23): Save as model… names a
+    /// `.3dcraft` (proposing the Jig's name), saves it, then closes; the
+    /// Jig's own file is never written. Unchanged, it closes at once.
+    #[test]
+    fn closing_a_changed_jig_offers_to_save_it_as_a_model() {
+        let dir = workdir("jig");
+        let jig = dir.join("plate.3dcraftjig");
+        let mut maker = Session::new(Workspace::unrestricted());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", 20, 5]})),
+            ("variable.publish", json!({"name": "w"})),
+            ("jig.export", json!({"path": jig.to_str().unwrap()})),
+        ] {
+            run(&mut maker, id, params);
+        }
+        let bytes = std::fs::read(&jig).unwrap();
+        let mut s = Session::new(Workspace::none());
+        files::run_as_user(&mut s, "file.open", &jig, false, None).unwrap();
+        run(&mut s, "param.set", json!({"values": {"w": 60}}));
+        let model = dir.join("plate-60.3dcraft");
+        let mut desk = desk(s, vec![Some(model.clone())]);
+        settle(&mut desk);
+        let tab = desk.host.shell.tabs()[0].clone();
+        assert!(tab.jig_in_use && tab.asks_to_close && !tab.dirty, "{tab:?}");
+        desk.host.shell.request_close(0);
+        let closing = desk.host.shell.closing().cloned().unwrap();
+        assert!(closing.jig, "{closing:?}");
+        desk.host.shell.answer_closing(CloseAnswer::Save);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !desk.host.session.document_statuses().is_empty() || desk.away() {
+            assert!(Instant::now() < deadline, "not closed");
+            let _ = desk.turn();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(model.exists());
+        assert_eq!(
+            std::fs::read(&jig).unwrap(),
+            bytes,
+            "the Jig is not written"
+        );
+        let mut check = Session::new(Workspace::unrestricted());
+        run(
+            &mut check,
+            "file.open",
+            json!({"path": model.to_str().unwrap()}),
+        );
+        let volume = run(&mut check, "document.measure", json!({}))["volume"]
+            .as_f64()
+            .unwrap();
+        assert!((volume - 6000.0).abs() < 1e-6, "{volume}");
+        // Opened again and not changed: closed without a question.
+        files::run_as_user(&mut desk.host.session, "file.open", &jig, false, None).unwrap();
+        settle(&mut desk);
+        desk.host.shell.sync(&mut desk.host.session);
+        desk.host.shell.request_close(0);
+        assert!(desk.host.shell.closing().is_none());
+        settle(&mut desk);
+        assert!(desk.host.session.document_statuses().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

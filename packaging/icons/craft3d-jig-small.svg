@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- The Jig icon drawn for 16 pixels: craft3d-small.svg with the slider
+       of craft3d-jig.svg on the pixel grid. Original work, MIT
+       (ATTRIBUTION.md). craft3d-jig-16.png is rendered from this file
+       (docs/development.md, Packaging). -->
+  <title>3DCraft Jig</title>
+  <rect x="0" y="0" width="16" height="16" rx="3.5" fill="#151413"/>
+  <path d="M3 3 L8 8 L3 13 L1.6 11.6 L5.2 8 L1.6 4.4 Z" fill="#9F6018" transform="translate(1 1)"/>
+  <path d="M3 3 L8 8 L3 13 L1.6 11.6 L5.2 8 L1.6 4.4 Z" fill="#E0A93E" transform="translate(0.5 0)"/>
+  <rect x="10" y="12" width="5" height="2" fill="#9F6018"/>
+  <rect x="9" y="11" width="5" height="2" fill="#E0A93E"/>
+  <rect x="9" y="11" width="5" height="1" fill="#F3CF7E"/>
+  <rect x="9" y="4" width="6" height="1" fill="#5A4A2E"/>
+  <rect x="9" y="4" width="3" height="1" fill="#E0A93E"/>
+  <rect x="11" y="3" width="2" height="3" fill="#F3CF7E"/>
+</svg>
