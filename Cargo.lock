@@ -3693,6 +3693,7 @@ version = "0.1.0"
 dependencies = [
  "craft3d-doc",
  "flate2",
+ "png 0.17.16",
  "serde_json",
 ]
 

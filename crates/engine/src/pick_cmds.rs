@@ -1380,6 +1380,11 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
     if pointed.kind().is_none() {
         map.insert("outside".into(), outside.into());
     }
+    // Picked in the scrubbed view (`view.scrub`): its names may not name
+    // the same thing in the document as it is.
+    if session.scrub_position().is_some() {
+        map.insert("scrubbed".into(), true.into());
+    }
     if all {
         let hits = scene
             .pick_all_cut(&camera, w, h, x, y, section.as_ref())

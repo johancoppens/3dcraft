@@ -1162,6 +1162,7 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
         id: 1,
         open: 1,
         path: path.map(str::to_string),
+        file: None,
         dirty,
         close_asks: dirty,
         length_unit: "mm",

@@ -45,10 +45,10 @@ fn view_replay(session: &mut Session, params: &Value) -> Run {
     native::view_replay(session, params)
 }
 
-/// The caption of a step: its place in the history, name and type.
+/// The caption of a step: the one the window's history player shows.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn caption(place: usize, count: usize, name: &str, kind: &str) -> String {
-    format!("{place}/{count}  {name} ({kind})")
+    crate::step_caption(place, count, name, kind)
 }
 
 /// The time of frame `frame` at `fps` as an SRT time stamp, `00:01:02,500`.
@@ -428,8 +428,10 @@ mod native {
             Ok(craft3d_regen::regenerate_cached(doc, &mut cache))
         };
         let bodies_of = |doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen| -> Bodies {
+            // What the view hides is not drawn (`feature.visible`).
             regen
                 .bodies()
+                .filter(|(id, _)| !doc.is_hidden(*id))
                 .map(|(id, b)| {
                     let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
                         .into_iter()
@@ -480,6 +482,13 @@ mod native {
         let Some(final_regen) = final_regen else {
             return fail("view.replay: nothing to replay");
         };
+        if steps.iter().all(|s| s.bodies.is_empty()) && !doc.hidden.is_empty() {
+            let hidden: Vec<String> = doc.hidden.iter().map(ToString::to_string).collect();
+            return fail(format!(
+                "view.replay: every body of the range is hidden in the view ({}); show them with feature.visible",
+                hidden.join(", ")
+            ));
+        }
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
         let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);
         if frames > MAX_REPLAY_FRAMES {
@@ -501,7 +510,7 @@ mod native {
         };
         // Framed, as view.render frames, on the box around the bodies at
         // `to` from their B-rep.
-        let model = crate::scene::bodies_box(&final_regen);
+        let model = crate::scene::bodies_box(&doc, &final_regen);
         let aspect = width as f64 / height as f64;
         // Every step is sampled as view.render samples the state at `to`
         // (the document's own when the replay ends where it does, so that
@@ -691,6 +700,9 @@ mod tests {
         assert_eq!(frame_index("frame-7.png"), None);
         assert_eq!(frame_index("frame-0000x.png"), None);
         assert_eq!(frame_index("captions.srt"), None);
-        assert_eq!(caption(3, 10, "Plate", "block"), "3/10  Plate (block)");
+        assert_eq!(
+            caption(3, 10, "Plate", "block"),
+            "Step 3/10 · Plate · block"
+        );
     }
 }

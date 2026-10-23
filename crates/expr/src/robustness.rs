@@ -96,7 +96,7 @@ fn random_bytes_never_panic() {
     // Mostly bytes that mean something to the lexer, so that the parser
     // gets past the first token; plus raw bytes, which become U+FFFD and
     // the occasional real multi-byte character.
-    let alphabet = b"0123456789.eE+-*/^(), \t\nabmnpitz_dgrsqxc";
+    let alphabet = b"0123456789.eE+-*/^(), \t\nabmnpitz_dgrsqxc<>=!&|f";
     for _ in 0..100_000 {
         let len = rng.below(40);
         let bytes: Vec<u8> = (0..len)
@@ -155,6 +155,24 @@ const TOKENS: &[&str] = &[
     "abs",
     "min",
     "max",
+    "if",
+    "clamp",
+    "choose",
+    "exp",
+    "ln",
+    "pow",
+    "cosh",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "!=",
+    "&&",
+    "||",
+    "!",
+    "&",
+    "|",
     "+",
     "-",
     "*",
@@ -215,7 +233,35 @@ fn random_expression(rng: &mut XorShift, depth: usize, out: &mut String) {
         }
         return;
     }
-    match rng.below(8) {
+    match rng.below(11) {
+        8 => {
+            out.push_str("if(");
+            random_expression(rng, depth - 1, out);
+            out.push_str(rng.pick(&[" > ", " <= ", " == ", " != ", " < ", ">="]));
+            random_expression(rng, depth - 1, out);
+            out.push_str(", ");
+            random_expression(rng, depth - 1, out);
+            out.push_str(", ");
+            random_expression(rng, depth - 1, out);
+            out.push(')');
+        }
+        9 => {
+            out.push_str(rng.pick(&["clamp(", "choose(n, ", "choose(1, "]));
+            random_expression(rng, depth - 1, out);
+            out.push_str(", ");
+            random_expression(rng, depth - 1, out);
+            out.push_str(", ");
+            random_expression(rng, depth - 1, out);
+            out.push(')');
+        }
+        10 => {
+            // Parenthesised whole: `!` cannot be the operand of `*`.
+            out.push_str(rng.pick(&["(!(", "(("]));
+            random_expression(rng, depth - 1, out);
+            out.push_str(rng.pick(&[" && ", " || ", " < ", " == "]));
+            random_expression(rng, depth - 1, out);
+            out.push_str("))");
+        }
         0 => {
             out.push('(');
             random_expression(rng, depth - 1, out);
@@ -231,14 +277,17 @@ fn random_expression(rng: &mut XorShift, depth: usize, out: &mut String) {
             out.push_str(rng.pick(&[") ^ 2", ")^-1", ") ^ 0", ")^3"]));
         }
         3 => {
-            let function = rng.pick(&["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs"]);
+            let function = rng.pick(&[
+                "sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "exp", "ln", "log10",
+                "sinh", "cosh", "tanh",
+            ]);
             out.push_str(function);
             out.push('(');
             random_expression(rng, depth - 1, out);
             out.push(')');
         }
         4 => {
-            out.push_str(rng.pick(&["atan2(", "min(", "max("]));
+            out.push_str(rng.pick(&["atan2(", "min(", "max(", "pow("]));
             random_expression(rng, depth - 1, out);
             out.push_str(", ");
             random_expression(rng, depth - 1, out);
@@ -275,7 +324,7 @@ fn random_variable_tables_never_panic() {
     let names = ["a", "b", "c", "d", "e", "f"];
     let pieces = [
         "a", "b", "c", "d", "e", "f", "1", "2 mm", "3 deg", "+", "-", "*", "/", "(", ")", "sin(",
-        "sqrt(", ",", "^ 2", "é", "nope",
+        "sqrt(", ",", "^ 2", "é", "nope", "if(", "choose(", ">", "==", "&&", "!",
     ];
     for _ in 0..20_000 {
         let mut table = VariableTable::new();
@@ -310,11 +359,12 @@ fn random_variable_tables_never_panic() {
             match &entry.result {
                 Ok(q) => {
                     assert!(q.value.is_finite());
-                    // A value means every dependency was evaluated earlier.
+                    // A value means every dependency came earlier; one
+                    // that only a branch not taken refers to may have
+                    // failed.
                     for dep in variable.parsed().unwrap().variables() {
                         let at = order.iter().position(|n| *n == dep).unwrap();
                         assert!(at < i, "{dep} must come before {}", entry.name);
-                        assert!(evaluation.value(dep).is_some());
                     }
                 }
                 Err(e) => {
@@ -419,5 +469,43 @@ fn long_flat_chains_do_not_recurse() {
     assert_eq!(
         Expr::parse(&longest).unwrap().eval(lookup).unwrap().value,
         (MAX_SOURCE_LEN / 2) as f64
+    );
+}
+
+#[test]
+fn deep_and_long_conditions() {
+    // `if` nested as deep as calls may be, in both branches.
+    let nested = |depth: usize| format!("{}1{}", "if(n > 1, ".repeat(depth), ", 2)".repeat(depth));
+    assert_eq!(
+        Expr::parse(&nested(MAX_DEPTH))
+            .unwrap()
+            .eval(lookup)
+            .unwrap()
+            .value,
+        1.0
+    );
+    assert!(matches!(
+        Expr::parse(&nested(MAX_DEPTH + 1)).unwrap_err().kind,
+        ErrorKind::TooDeep { .. }
+    ));
+    // Long runs of `!`, `&&` and `||` are loops, not recursion.
+    let terms = 200_000;
+    let bangs = "!".repeat(terms) + "1";
+    let expr = parse_with_limits(&bangs, usize::MAX, MAX_DEPTH).unwrap();
+    assert_eq!(expr.eval(lookup).unwrap().value, 1.0);
+    let ands = "1 && ".repeat(terms) + "z";
+    let expr = parse_with_limits(&ands, usize::MAX, MAX_DEPTH).unwrap();
+    assert_eq!(expr.eval(lookup).unwrap().value, 0.0);
+    let ors = "z || ".repeat(terms) + "1 / z";
+    let expr = parse_with_limits(&ors, usize::MAX, MAX_DEPTH).unwrap();
+    assert_eq!(
+        expr.eval(lookup).unwrap_err().kind,
+        ErrorKind::DivisionByZero
+    );
+    // An error deep in a branch not taken, under a long chain.
+    let chain = format!("if(1, 1, {}1 / z)", "1 + ".repeat(1000));
+    assert_eq!(
+        Expr::parse(&chain).unwrap().eval(lookup).unwrap().value,
+        1.0
     );
 }

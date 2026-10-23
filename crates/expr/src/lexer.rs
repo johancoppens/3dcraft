@@ -20,6 +20,17 @@ pub(crate) enum TokenKind {
     LParen,
     RParen,
     Comma,
+    /// `<`, `<=`, `>`, `>=`, `==`, `!=`.
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    EqEq,
+    NotEq,
+    /// `&&`, `||`, `!`.
+    AndAnd,
+    OrOr,
+    Bang,
     End,
 }
 
@@ -85,6 +96,7 @@ pub(crate) fn scan(source: &str, from: usize) -> Result<Token, ScanError> {
         b'(' => simple(TokenKind::LParen),
         b')' => simple(TokenKind::RParen),
         b',' => simple(TokenKind::Comma),
+        b'<' | b'>' | b'=' | b'!' | b'&' | b'|' => operator(bytes, pos, first),
         b if is_ident_start(b) => Ok(Token {
             kind: TokenKind::Ident,
             pos,
@@ -106,6 +118,39 @@ pub(crate) fn scan(source: &str, from: usize) -> Result<Token, ScanError> {
             })
         }
     }
+}
+
+/// A comparison or logical operator starting with `first` at `pos`. A
+/// lone `=`, `&` or `|` is an error that names the operator meant.
+fn operator(bytes: &[u8], pos: usize, first: u8) -> Result<Token, ScanError> {
+    let second = bytes.get(pos + 1).copied();
+    let (kind, len) = match (first, second) {
+        (b'<', Some(b'=')) => (TokenKind::LessEq, 2),
+        (b'<', _) => (TokenKind::Less, 1),
+        (b'>', Some(b'=')) => (TokenKind::GreaterEq, 2),
+        (b'>', _) => (TokenKind::Greater, 1),
+        (b'=', Some(b'=')) => (TokenKind::EqEq, 2),
+        (b'!', Some(b'=')) => (TokenKind::NotEq, 2),
+        (b'!', _) => (TokenKind::Bang, 1),
+        (b'&', Some(b'&')) => (TokenKind::AndAnd, 2),
+        (b'|', Some(b'|')) => (TokenKind::OrOr, 2),
+        _ => {
+            let (found, meant) = match first {
+                b'=' => ('=', "=="),
+                b'&' => ('&', "&&"),
+                _ => ('|', "||"),
+            };
+            return Err(ScanError {
+                error: ExprError::new(pos, ErrorKind::LoneOperator { found, meant }),
+                resume: pos + 1,
+            });
+        }
+    };
+    Ok(Token {
+        kind,
+        pos,
+        end: pos + len,
+    })
 }
 
 /// `digits [. digits] [e [+-] digits]` or `. digits [e …]`, starting at
@@ -199,6 +244,48 @@ mod tests {
             kinds("+-*/^(),"),
             [Plus, Minus, Star, Slash, Caret, LParen, RParen, Comma, End]
         );
+    }
+
+    #[test]
+    fn comparison_and_logical_operators() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("< <= > >= == != && || !"),
+            [
+                Less, LessEq, Greater, GreaterEq, EqEq, NotEq, AndAnd, OrOr, Bang, End
+            ]
+        );
+        // Longest match, without spaces.
+        assert_eq!(
+            kinds("a<=b!=!c"),
+            [Ident, LessEq, Ident, NotEq, Bang, Ident, End]
+        );
+        assert_eq!(kinds("!!a"), [Bang, Bang, Ident, End]);
+        assert_eq!(kinds("<<"), [Less, Less, End]);
+        let spans: Vec<(usize, usize)> = tokenize("a>=1")
+            .unwrap()
+            .iter()
+            .map(|t| (t.pos, t.end))
+            .collect();
+        assert_eq!(spans, [(0, 1), (1, 3), (3, 4), (4, 4)]);
+    }
+
+    #[test]
+    fn a_lone_equals_ampersand_or_bar_names_the_operator_meant() {
+        for (source, pos, found, meant) in [
+            ("a = 2", 2, '=', "=="),
+            ("a & b", 2, '&', "&&"),
+            ("a | b", 2, '|', "||"),
+            ("a =", 2, '=', "=="),
+            ("|", 0, '|', "||"),
+        ] {
+            assert_eq!(
+                tokenize(source).unwrap_err(),
+                ExprError::new(pos, ErrorKind::LoneOperator { found, meant }),
+                "{source}"
+            );
+        }
+        assert!(tokenize("a = 2").unwrap_err().to_string().contains("`==`"));
     }
 
     #[test]

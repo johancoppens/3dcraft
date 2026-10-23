@@ -15,7 +15,7 @@ Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
                [--automation-read-root DIR] [--automation-write-root DIR]
                [--renderer auto|cpu]
                [--recovery-dir DIR|none] [--autosave-interval SECONDS]
-               [--window-size WIDTHxHEIGHT]
+               [--recent-file FILE|none] [--window-size WIDTHxHEIGHT]
        craft3d --version | --help
 
 Opens FILE (a .3dcraft file) when one is given, and shows the active
@@ -47,18 +47,26 @@ Options:
                               %LOCALAPPDATA%). none turns autosave off.
   --autosave-interval SECONDS How long after a change a document is
                               autosaved. Default: 30
+  --recent-file FILE|none     Where the list of recent files is kept.
+                              Default: 3dcraft/recent-files.json in your
+                              state directory, beside the default recovery
+                              directory; with --recovery-dir given (or
+                              none), or none here, the list is kept for
+                              this run only.
   --window-size WIDTHxHEIGHT  The window's size when it opens, in points
                               (e.g. 1920x1080; at least 480x320).
                               Default: 1280x800
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
 CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
-CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR, CRAFT3D_AUTOSAVE_INTERVAL and
-CRAFT3D_WINDOW_SIZE stand in for the flags of the same name.
+CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR, CRAFT3D_AUTOSAVE_INTERVAL,
+CRAFT3D_RECENT_FILE and CRAFT3D_WINDOW_SIZE stand in for the flags of the
+same name.
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
-frame everything.
-Keys: Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as.";
+fly to the selection (or frame everything).
+Keys: Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as; F1
+lists every shortcut.";
 
 /// What to start with.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -79,6 +87,10 @@ pub struct Options {
     /// How long after a change a document is autosaved; `None` for the
     /// engine's default.
     pub autosave_interval: Option<Duration>,
+    /// Where the recent files are kept; `None` keeps them for the run
+    /// only. Parsing fills in the platform's default, as for
+    /// `recovery_dir`.
+    pub recent_file: Option<PathBuf>,
     /// The window's size when it opens, in points; `None` for the default.
     pub window_size: Option<[u32; 2]>,
 }
@@ -133,6 +145,7 @@ pub fn parse(
     let mut flags_ended = false;
     let mut seen: Vec<String> = Vec::new();
     let mut recovery_dir: Option<String> = None;
+    let mut recent_file: Option<String> = None;
     while let Some(arg) = args.next() {
         if flags_ended || !arg.starts_with('-') || arg == "-" {
             if options.file.is_some() {
@@ -169,6 +182,7 @@ pub fn parse(
             | "--renderer"
             | "--recovery-dir"
             | "--autosave-interval"
+            | "--recent-file"
             | "--window-size" => {
                 if seen.contains(&name) {
                     return Err(format!("`{name}` was given twice"));
@@ -181,6 +195,7 @@ pub fn parse(
                     "--control-token-file" => options.token_file = Some(PathBuf::from(value)),
                     "--automation-read-root" => options.read_root = Some(value),
                     "--recovery-dir" => recovery_dir = Some(value),
+                    "--recent-file" => recent_file = Some(value),
                     "--window-size" => {
                         options.window_size = Some(window_size(&value, "--window-size")?);
                     }
@@ -237,10 +252,25 @@ pub fn parse(
     }
     // The flag, else the variable, else the platform's place; `none`
     // turns autosave off, and so does a platform that names no place.
-    options.recovery_dir = match recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR")) {
+    let recovery_given = recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR"));
+    let own_recovery = recovery_given.is_none();
+    options.recovery_dir = match recovery_given {
         Some(none) if none == "none" => None,
         Some(dir) => Some(PathBuf::from(dir)),
         None => craft3d_engine::default_recovery_directory(env),
+    };
+    // Beside the default recovery directory only: a window given a
+    // recovery directory of its own (a test's, an agent's, or none) keeps
+    // the list for its run only, unless told where, so it neither litters
+    // the folder above that directory nor changes the person's list.
+    options.recent_file = match recent_file.or_else(|| from_env("CRAFT3D_RECENT_FILE")) {
+        Some(none) if none == "none" => None,
+        Some(file) => Some(PathBuf::from(file)),
+        None if own_recovery => options
+            .recovery_dir
+            .as_deref()
+            .and_then(crate::places::recent_file_beside),
+        None => None,
     };
     if options.control.is_some() && options.token_file.is_none() {
         return Err(
@@ -325,6 +355,7 @@ mod tests {
                 renderer: RendererChoice::Auto,
                 recovery_dir: None,
                 autosave_interval: None,
+                recent_file: None,
                 window_size: None,
             }
         );
@@ -445,6 +476,61 @@ mod tests {
         ] {
             assert!(HELP.contains(word), "{word}");
         }
+    }
+
+    #[test]
+    fn the_recent_files_are_kept_beside_the_recovery_directory_unless_told() {
+        let home = |name: &str| (name == "HOME").then(|| "/home/ann".to_string());
+        let with = |env: &dyn Fn(&str) -> Option<String>, list: &[&str]| match parse(
+            list.iter().map(|s| (*s).to_string()),
+            env,
+        ) {
+            Ok(Parsed::Run(options)) => options,
+            other => panic!("{other:?}"),
+        };
+        let default = with(&home, &[]);
+        let recovery = default.recovery_dir.unwrap();
+        assert_eq!(
+            default.recent_file,
+            Some(recovery.parent().unwrap().join("recent-files.json"))
+        );
+        // A recovery directory of its own: the list for the run only.
+        assert_eq!(
+            with(&home, &["--recovery-dir", "/t/w/recovery"]).recent_file,
+            None
+        );
+        assert_eq!(
+            with(&home, &["--recent-file", "/tmp/r.json"]).recent_file,
+            Some(PathBuf::from("/tmp/r.json"))
+        );
+        assert_eq!(with(&home, &["--recent-file=none"]).recent_file, None);
+        // A throwaway window keeps none, unless told where.
+        assert_eq!(with(&home, &["--recovery-dir", "none"]).recent_file, None);
+        assert_eq!(
+            with(
+                &home,
+                &["--recovery-dir", "none", "--recent-file", "r.json"]
+            )
+            .recent_file,
+            Some(PathBuf::from("r.json"))
+        );
+        let env = |name: &str| match name {
+            "HOME" => Some("/home/ann".to_string()),
+            "CRAFT3D_RECENT_FILE" => Some("/var/recent.json".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            with(&env, &[]).recent_file,
+            Some(PathBuf::from("/var/recent.json"))
+        );
+        assert!(
+            run(&["--recent-file"])
+                .unwrap_err()
+                .contains("needs a value")
+        );
+        assert!(HELP.contains("--recent-file") && HELP.contains("CRAFT3D_RECENT_FILE"));
+        // No environment: no place.
+        assert_eq!(options(&[]).recent_file, None);
     }
 
     #[test]

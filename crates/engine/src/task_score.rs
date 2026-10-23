@@ -368,7 +368,8 @@ fn expected_values(
     e.exprs
         .iter()
         .map(|source| {
-            let q: Quantity = craft3d_expr::evaluate(source, |name| evaluation.value(name))
+            let q: Quantity = evaluation
+                .evaluate(source)
                 .map_err(|err| task_error(format!("{} `{source}`: {err}", e.name)))?;
             if q.dimension.is_dimensionless() && want.angle == 0 && want.length > 0 {
                 return Ok(q.value * units.factor().powi(want.length));

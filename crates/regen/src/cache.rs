@@ -27,7 +27,8 @@ fn evaluated(variables: &Evaluation, exprs: &[(String, &craft3d_doc::Expr)]) -> 
     exprs
         .iter()
         .map(|(_, expr)| {
-            craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+            variables
+                .evaluate(expr.source())
                 .map(|q| (q.value.to_bits(), q.dimension))
                 .map_err(|e| e.to_string())
         })

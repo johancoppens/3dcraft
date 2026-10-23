@@ -346,6 +346,9 @@ impl Shell {
     ) {
         self.select.menu = None;
         self.select.hover = None;
+        if self.refused_while_scrubbed() {
+            return;
+        }
         // A click lights what it selects; a toggle lights nothing.
         self.select.lit = !shift;
         let mode = if shift { "toggle" } else { "replace" };
@@ -507,8 +510,25 @@ impl Shell {
         true
     }
 
+    /// While the timeline shows an earlier step, the viewport selects
+    /// nothing (decided 2026-10-23): a selection names the document as it
+    /// is, where what was clicked may be another face or not there at
+    /// all. Says so where a refused click does. True when refused.
+    fn refused_while_scrubbed(&mut self) -> bool {
+        let Some(step) = self.scrubbed_step() else {
+            return false;
+        };
+        self.select.problem = Some(format!(
+            "showing step {step} of the timeline: go To end to select in the view"
+        ));
+        true
+    }
+
     /// Selects what lies wholly inside the box that was dragged.
     fn finish_box(&mut self, boxing: Boxing) {
+        if self.refused_while_scrubbed() {
+            return;
+        }
         let (Some(rect), Some(scene)) = (self.rect, self.shown_scene.clone()) else {
             return;
         };

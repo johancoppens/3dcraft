@@ -20,6 +20,9 @@ serde_json.workspace = true
 # device (in the browser too: WebGPU or WebGL2, `crate::direct`).
 craft3d-gpu.workspace = true
 egui-wgpu.workspace = true
+# Reads the start screen's logo and example thumbnails, PNGs built into
+# the program (`shell/start.rs`).
+png.workspace = true
 
 # Blocks on wgpu's futures when a render state is made without a window
 # (`direct::headless_render_state`: tests and examples); the browser
@@ -34,6 +37,5 @@ egui-wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"]
 web-time.workspace = true
 
 [dev-dependencies]
-png.workspace = true
 # The GPU viewport's parity test includes the GPU crate's own comparison.
 craft3d-gpu.workspace = true

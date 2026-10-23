@@ -14,4 +14,7 @@ serde_json.workspace = true
 craft3d-doc.workspace = true
 # `cargo xtask web-size`: gzip -9 of the web module, with the pure-Rust
 # backend (miniz_oxide), so the measured size is the same on every machine.
+# `cargo xtask example-thumbs`: the start screen's thumbnails, read and
+# written as indexed PNGs (`thumbs.rs`).
+png.workspace = true
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }

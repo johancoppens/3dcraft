@@ -7,11 +7,12 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--recent FILE] model.3dcraft [more.3dcraft | untitled | none ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
-//! block in it, never saved) and the last one, or document `N` of
+//! block in it, never saved; `none` opens nothing, for the start screen)
+//! and the last one, or document `N` of
 //! `--active`, is shown as the window shows it; `--edit N` changes
 //! document `N` after it was opened, so its tab is marked unsaved, and
 //! `--ask N` closes document `N` from its tab, which shows the question
@@ -28,7 +29,8 @@
 //! of `ControlsLayout::controls`), and `--type NAME=TEXT` double-clicks
 //! that number field and types TEXT into it, without Enter; `--click X,Y`
 //! clicks the window at that point (in points), and leaves the pointer
-//! there: `--click 20,10` opens the File menu. Then,
+//! there: `--click 20,10` opens the File menu. `--recent FILE` starts
+//! with the recent files kept in FILE (`{"recent": [path, ...]}`). Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -41,7 +43,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--recent FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -56,6 +58,7 @@ fn main() -> Result<(), String> {
     let mut point: Option<String> = None;
     let mut typed: Option<(String, String)> = None;
     let mut click: Option<Pos2> = None;
+    let mut recent = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -120,6 +123,13 @@ fn main() -> Result<(), String> {
                 let y: f32 = y.trim().parse().map_err(|_| format!("--click: {y}"))?;
                 click = Some(Pos2::new(x, y));
             }
+            "--recent" => {
+                let file = args
+                    .next()
+                    .ok_or(format!("--recent takes a file; {USAGE}"))?;
+                let text = std::fs::read_to_string(&file).map_err(|e| format!("--recent: {e}"))?;
+                recent = Some(craft3d_ui_egui::shell::RecentFiles::from_json(&text));
+            }
             "--hover" => {
                 let text = args.next().ok_or(format!("--hover takes X,Y,Z; {USAGE}"))?;
                 let parts: Vec<i8> = text
@@ -147,6 +157,9 @@ fn main() -> Result<(), String> {
             .map_err(|e| e.to_string())
     };
     for (index, path) in paths.iter().enumerate() {
+        if path == "none" {
+            continue;
+        }
         if path == "untitled" {
             execute(&mut session, "file.new", json!({}))?;
             execute(&mut session, "feature.block", json!({"size": [40, 30, 20]}))?;
@@ -167,6 +180,9 @@ fn main() -> Result<(), String> {
     session.set_refine_elsewhere(first);
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
+    if let Some(recent) = recent {
+        shell.set_recent_files(recent);
+    }
     let ctx = egui::Context::default();
     ctx.set_pixels_per_point(scale);
     let pixels = size.map(|n| (n as f32 * scale).round() as u32);

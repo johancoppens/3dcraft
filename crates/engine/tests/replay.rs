@@ -140,7 +140,7 @@ fn a_frame_per_step_that_changes_a_body_from_empty_to_the_render() {
     // A caption per shown step, in a subtitle file.
     let srt = std::fs::read_to_string(out.join("captions.srt")).unwrap();
     assert_eq!(srt.matches(" --> ").count(), 4, "{srt}");
-    assert!(srt.contains("1/5  Plate (block)"), "{srt}");
+    assert!(srt.contains("Step 1/5 · Plate · block"), "{srt}");
     assert!(srt.contains("00:00:00,033 --> 00:00:00,066"), "{srt}");
     assert!(steps[1]["caption"].as_str().unwrap().contains("Hole"));
 }

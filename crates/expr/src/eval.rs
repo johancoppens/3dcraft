@@ -3,29 +3,74 @@
 //! Evaluation is one pass over the flat node list (operands always precede
 //! their node), so it needs no recursion. Every intermediate result is
 //! checked: a quantity that leaves this module is finite.
+//!
+//! **Conditions.** `if`, `choose`, `&&` and `||` take only the result of
+//! the operand they choose: an error in an operand they do not choose (a
+//! division by zero in the branch of `if` that is not taken) does not
+//! reach the result. The single pass still visits every node, so each
+//! node holds either a value or the error it would give, and an error
+//! travels upwards only through the operands that are used. An operand
+//! that is not chosen but has a value is still checked: the branches of
+//! `if` and the choices of `choose` must have the same dimension, the
+//! operands of `&&` and `||` must be dimensionless.
 
 use crate::error::{ErrorKind, ExprError};
 use crate::parser::{BinaryOp, Expr, Function, Node, NodeId, NodeKind};
 use crate::units::{Dimension, Quantity};
 
+/// What a node evaluated to: a value, or the index of its error in the
+/// list of errors met so far (an error is stored once and shared by every
+/// node it travels up through).
+#[derive(Clone, Copy)]
+enum Slot {
+    Value(Quantity),
+    Failed(usize),
+}
+
+/// Why a node has no value: an operand it needs has none (the index of
+/// that operand's error), or the node itself failed.
+enum Fail {
+    Operand(usize),
+    Here(ErrorKind),
+}
+
+impl From<ErrorKind> for Fail {
+    fn from(kind: ErrorKind) -> Fail {
+        Fail::Here(kind)
+    }
+}
+
 impl Expr {
     /// Evaluates the expression. `lookup` returns the value of a variable,
-    /// or `None` when there is no such variable.
+    /// or `None` when there is no such variable. `lookup` is asked about
+    /// every variable reference, also those in a branch of `if` that is not
+    /// taken.
     pub fn eval(
         &self,
         mut lookup: impl FnMut(&str) -> Option<Quantity>,
     ) -> Result<Quantity, ExprError> {
         let nodes = self.nodes();
-        let mut values: Vec<Quantity> = Vec::with_capacity(nodes.len());
+        let mut slots: Vec<Slot> = Vec::with_capacity(nodes.len());
+        let mut errors: Vec<ExprError> = Vec::new();
         for node in nodes {
-            let value = eval_node(node, &values, &mut lookup)
-                .map_err(|kind| ExprError::new(node.pos, kind))?;
-            values.push(value);
+            let slot = match eval_node(node, &slots, &mut lookup) {
+                Ok(value) => Slot::Value(value),
+                Err(Fail::Operand(error)) => Slot::Failed(error),
+                Err(Fail::Here(kind)) => {
+                    errors.push(ExprError::new(node.pos, kind));
+                    Slot::Failed(errors.len() - 1)
+                }
+            };
+            slots.push(slot);
         }
-        values
-            .last()
-            .copied()
-            .ok_or(ExprError::new(0, ErrorKind::Internal))
+        match slots.last() {
+            Some(Slot::Value(value)) => Ok(*value),
+            Some(Slot::Failed(error)) => Err(errors
+                .get(*error)
+                .cloned()
+                .unwrap_or(ExprError::new(0, ErrorKind::Internal))),
+            None => Err(ExprError::new(0, ErrorKind::Internal)),
+        }
     }
 }
 
@@ -44,20 +89,30 @@ fn operation_name(kind: &NodeKind) -> &'static str {
         NodeKind::Pi => "pi",
         NodeKind::Variable(_) => "variable",
         NodeKind::Neg(_) => "-",
+        NodeKind::Not(_) => "!",
         NodeKind::Binary { op, .. } => op.symbol(),
         NodeKind::Pow { .. } => "^",
         NodeKind::Call { function, .. } => function.name(),
     }
 }
 
+/// The value of node `id`, or why it has none. The parser only refers to
+/// earlier nodes; `Internal` is the answer to a tree that breaks that
+/// rule, instead of an out-of-bounds panic.
+fn operand(slots: &[Slot], id: NodeId) -> Result<Quantity, Fail> {
+    match slots.get(id) {
+        Some(Slot::Value(value)) => Ok(*value),
+        Some(Slot::Failed(error)) => Err(Fail::Operand(*error)),
+        None => Err(Fail::Here(ErrorKind::Internal)),
+    }
+}
+
 fn eval_node(
     node: &Node,
-    values: &[Quantity],
+    slots: &[Slot],
     lookup: &mut impl FnMut(&str) -> Option<Quantity>,
-) -> Result<Quantity, ErrorKind> {
-    // The parser only refers to earlier nodes; `Internal` is the answer to
-    // a tree that breaks that rule, instead of an out-of-bounds panic.
-    let operand = |id: NodeId| values.get(id).copied().ok_or(ErrorKind::Internal);
+) -> Result<Quantity, Fail> {
+    let operand = |id: NodeId| operand(slots, id);
     let result = match &node.kind {
         NodeKind::Number { value, unit: None } => Quantity::dimensionless(*value),
         NodeKind::Number {
@@ -72,22 +127,163 @@ fn eval_node(
             let inner = operand(*inner)?;
             Quantity::new(-inner.value, inner.dimension)
         }
+        NodeKind::Not(inner) => truth(!condition("!", operand(*inner)?)?),
+        NodeKind::Binary {
+            op: op @ (BinaryOp::And | BinaryOp::Or),
+            left,
+            right,
+        } => logic(*op, operand(*left)?, operand(*right))?,
         NodeKind::Binary { op, left, right } => binary(*op, operand(*left)?, operand(*right)?)?,
         NodeKind::Pow { base, exponent } => power(operand(*base)?, *exponent)?,
+        NodeKind::Call {
+            function: Function::If,
+            args,
+        } => if_then_else(slots, args)?,
+        NodeKind::Call {
+            function: Function::Choose,
+            args,
+        } => choose(slots, args)?,
         NodeKind::Call { function, args } => {
             let args = args
                 .iter()
                 .map(|&id| operand(id))
-                .collect::<Result<Vec<Quantity>, ErrorKind>>()?;
+                .collect::<Result<Vec<Quantity>, Fail>>()?;
             call(*function, &args)?
         }
     };
     if !result.value.is_finite() {
-        return Err(ErrorKind::NonFinite {
+        return Err(Fail::Here(ErrorKind::NonFinite {
             operation: operation_name(&node.kind),
-        });
+        }));
     }
     Ok(result)
+}
+
+/// How much two values may differ and still be equal for `==`, `!=`,
+/// `<=` and `>=`, relative to the larger magnitude: 1e-12, about 4500
+/// units in the last place. Lengths that are meant to be equal often come
+/// from different arithmetic (`3 * 0.1 in` and `0.3 in`, `r * cos(60 deg)`
+/// and `r / 2`) and differ by a few units in the last place; no design
+/// tells two sizes apart by a part in 10^12. The bound is relative, so it
+/// holds at every scale and in every unit, and a value is equal to zero
+/// only when it is exactly zero: compare `a == b`, not `a - b == 0 mm`.
+pub(crate) const COMPARE_RELATIVE: f64 = 1e-12;
+
+/// `a` and `b` (finite) equal within [`COMPARE_RELATIVE`].
+fn nearly_equal(a: f64, b: f64) -> bool {
+    a == b || (a - b).abs() <= COMPARE_RELATIVE * a.abs().max(b.abs())
+}
+
+/// 1 for true, 0 for false.
+fn truth(value: bool) -> Quantity {
+    Quantity::dimensionless(if value { 1.0 } else { 0.0 })
+}
+
+/// A condition's truth: dimensionless, and true unless exactly zero.
+fn condition(operation: &'static str, value: Quantity) -> Result<bool, ErrorKind> {
+    if !value.dimension.is_dimensionless() {
+        return Err(ErrorKind::ArgumentDimension {
+            function: operation,
+            expected: "a condition: a comparison such as `a > b`, or a dimensionless number \
+                       (0 is false, anything else true)",
+            found: value.dimension,
+        });
+    }
+    Ok(value.value != 0.0)
+}
+
+/// `&&` and `||`: the left operand decides when it can (false for `&&`,
+/// true for `||`), and then an error of the right one does not count.
+fn logic(op: BinaryOp, left: Quantity, right: Result<Quantity, Fail>) -> Result<Quantity, Fail> {
+    let name = op.symbol();
+    let left = condition(name, left)?;
+    let decided = match op {
+        BinaryOp::And => !left,
+        _ => left,
+    };
+    if decided {
+        // The right operand is not used, but one that has a value must
+        // still be a condition.
+        if let Ok(right) = right {
+            condition(name, right)?;
+        }
+        return Ok(truth(left));
+    }
+    Ok(truth(condition(name, right?)?))
+}
+
+/// `if(c, a, b)`: `a` when `c` is true, else `b`. Only the chosen branch
+/// has to have a value; the other one, when it has one, must have the
+/// same dimension.
+fn if_then_else(slots: &[Slot], args: &[NodeId]) -> Result<Quantity, Fail> {
+    let &[test, then, otherwise] = args else {
+        return Err(Fail::Here(ErrorKind::Internal));
+    };
+    let taken = condition("if", operand(slots, test)?)?;
+    let (chosen, other) = if taken {
+        (then, otherwise)
+    } else {
+        (otherwise, then)
+    };
+    let value = operand(slots, chosen)?;
+    if let Ok(other) = operand(slots, other) {
+        let (a, b) = if taken {
+            (value, other)
+        } else {
+            (other, value)
+        };
+        same_dimension("if", a, b)?;
+    }
+    Ok(value)
+}
+
+/// `choose(i, a, b, …)`: the `i`-th choice, counted from 1. `i` is a
+/// dimensionless whole number (within rounding, as for `floor`). Only the
+/// chosen one has to have a value; the others, when they have one, must
+/// have its dimension.
+fn choose(slots: &[Slot], args: &[NodeId]) -> Result<Quantity, Fail> {
+    let Some((&index, choices)) = args.split_first() else {
+        return Err(Fail::Here(ErrorKind::Internal));
+    };
+    let index = operand(slots, index)?;
+    if !index.dimension.is_dimensionless() {
+        return Err(Fail::Here(ErrorKind::ArgumentDimension {
+            function: "choose",
+            expected: "a dimensionless whole number as its first argument",
+            found: index.dimension,
+        }));
+    }
+    let whole = index.value.round();
+    if snapped(index.value, whole, 1.0) != whole {
+        return Err(Fail::Here(ErrorKind::NotWholeNumber {
+            function: "choose",
+            value: index.value,
+        }));
+    }
+    let count = choices.len();
+    // `whole` is finite; the range check comes before the cast.
+    if whole < 1.0 || whole > count as f64 {
+        return Err(Fail::Here(ErrorKind::ChoiceOutOfRange {
+            index: whole,
+            count,
+        }));
+    }
+    let chosen = (whole as usize).saturating_sub(1);
+    let value = operand(slots, *choices.get(chosen).ok_or(ErrorKind::Internal)?)?;
+    for (k, &other) in choices.iter().enumerate() {
+        if k == chosen {
+            continue;
+        }
+        if let Ok(other) = operand(slots, other) {
+            let (a, b) = if k < chosen {
+                (other, value)
+            } else {
+                (value, other)
+            };
+            same_dimension("choose", a, b)?;
+        }
+    }
+    Ok(value)
 }
 
 fn same_dimension(
@@ -133,6 +329,27 @@ fn binary(op: BinaryOp, left: Quantity, right: Quantity) -> Result<Quantity, Err
                     .ok_or(overflow)?,
             )
         }
+        BinaryOp::Less
+        | BinaryOp::LessEq
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEq
+        | BinaryOp::Equal
+        | BinaryOp::NotEqual => {
+            same_dimension(op.symbol(), left, right)?;
+            let (a, b) = (left.value, right.value);
+            let equal = nearly_equal(a, b);
+            truth(match op {
+                BinaryOp::Less => a < b && !equal,
+                BinaryOp::LessEq => a < b || equal,
+                BinaryOp::Greater => a > b && !equal,
+                BinaryOp::GreaterEq => a > b || equal,
+                BinaryOp::Equal => equal,
+                _ => !equal,
+            })
+        }
+        // `&&` and `||` are evaluated by `logic`, which may leave the
+        // right operand out.
+        BinaryOp::And | BinaryOp::Or => return Err(ErrorKind::Internal),
     })
 }
 
@@ -247,7 +464,84 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
             };
             modulo(*a, *b)
         }
+        Function::Exp
+        | Function::Ln
+        | Function::Log10
+        | Function::Sinh
+        | Function::Cosh
+        | Function::Tanh => {
+            let x = dimensionless(name, single(args)?)?;
+            let value = match function {
+                Function::Exp => x.exp(),
+                Function::Sinh => x.sinh(),
+                Function::Cosh => x.cosh(),
+                Function::Tanh => x.tanh(),
+                _ if x <= 0.0 => {
+                    return Err(ErrorKind::OutOfDomain {
+                        function: name,
+                        value: x,
+                    });
+                }
+                Function::Ln => x.ln(),
+                _ => x.log10(),
+            };
+            Ok(Quantity::dimensionless(value))
+        }
+        Function::Pow => {
+            let [base, exponent] = args else {
+                return Err(ErrorKind::Internal);
+            };
+            let (base, exponent) = (dimensionless(name, *base)?, dimensionless(name, *exponent)?);
+            if base == 0.0 && exponent < 0.0 {
+                return Err(ErrorKind::DivisionByZero);
+            }
+            // A negative base has a real power only for a whole exponent.
+            if base < 0.0 && exponent.fract() != 0.0 {
+                return Err(ErrorKind::OutOfDomain {
+                    function: name,
+                    value: base,
+                });
+            }
+            Ok(Quantity::dimensionless(base.powf(exponent)))
+        }
+        Function::Clamp => {
+            let [x, lo, hi] = args else {
+                return Err(ErrorKind::Internal);
+            };
+            same_dimension(name, *x, *lo)?;
+            let dimension = same_dimension(name, *lo, *hi)?;
+            if lo.value > hi.value {
+                return Err(ErrorKind::InvalidBounds {
+                    function: name,
+                    lo: lo.value,
+                    hi: hi.value,
+                });
+            }
+            Ok(Quantity::new(x.value.clamp(lo.value, hi.value), dimension))
+        }
+        // Evaluated by `if_then_else` and `choose`, which may leave
+        // arguments out.
+        Function::If | Function::Choose => Err(ErrorKind::Internal),
     }
+}
+
+/// The value of a dimensionless argument of `function`.
+fn dimensionless(function: &'static str, x: Quantity) -> Result<f64, ErrorKind> {
+    if !x.dimension.is_dimensionless() {
+        let expected = match function {
+            "pow" => {
+                "dimensionless arguments (for a power of a length, use `^` with a whole \
+                 exponent, as in `r ^ 2`)"
+            }
+            _ => "a dimensionless number (divide by a unit, as in `exp(x / 1 mm)`)",
+        };
+        return Err(ErrorKind::ArgumentDimension {
+            function,
+            expected,
+            found: x.dimension,
+        });
+    }
+    Ok(x.value)
 }
 
 /// How far an argument may lie from a point where a whole-number function
@@ -1057,5 +1351,336 @@ mod tests {
         });
         assert_eq!(result.unwrap().value, 3.0);
         assert_eq!(asked, ["x", "y", "x"]);
+    }
+
+    // --- conditions ---
+
+    #[test]
+    fn comparisons_give_one_or_zero() {
+        check("1 < 2", 1.0, NONE);
+        check("2 < 1", 0.0, NONE);
+        check("2 <= 2", 1.0, NONE);
+        check("3 > 2", 1.0, NONE);
+        check("2 >= 3", 0.0, NONE);
+        check("2 == 2", 1.0, NONE);
+        check("2 != 2", 0.0, NONE);
+        check("width > height", 1.0, NONE);
+        check("width == 40 mm", 1.0, NONE);
+        check("1 in == 25.4 mm", 1.0, NONE);
+        check("90 deg == pi / 2 * 1 rad", 1.0, NONE);
+        check("width * wall >= 80 mm * 1 mm", 1.0, NONE);
+        // A comparison is a number: it can be added and multiplied.
+        check("(width > 30 mm) + (height > 30 mm)", 1.0, NONE);
+        check("2 + (1 < 2) * 3", 5.0, NONE);
+        check("-1 < 0", 1.0, NONE);
+    }
+
+    #[test]
+    fn comparisons_need_the_same_dimension() {
+        assert_eq!(err("width > 3"), mismatch(6, ">", LENGTH, NONE));
+        assert_eq!(err("1 mm == 1 deg"), mismatch(5, "==", LENGTH, ANGLE));
+        assert_eq!(err("tilt <= width"), mismatch(5, "<=", ANGLE, LENGTH));
+        assert_eq!(
+            err("width != width * wall"),
+            mismatch(6, "!=", LENGTH, AREA)
+        );
+    }
+
+    /// Equality holds within a relative 1e-12: values that are meant to be
+    /// equal but come from different arithmetic compare equal, and the
+    /// comparisons stay consistent with it (exactly one of `<`, `==`, `>`).
+    #[test]
+    fn equality_within_rounding() {
+        assert!(eval("0.1 + 0.2").value != 0.3);
+        check("0.1 + 0.2 == 0.3", 1.0, NONE);
+        check("0.1 + 0.2 != 0.3", 0.0, NONE);
+        check("0.1 + 0.2 > 0.3", 0.0, NONE);
+        check("0.1 + 0.2 >= 0.3", 1.0, NONE);
+        check("0.3 < 0.1 + 0.2", 0.0, NONE);
+        check("0.3 <= 0.1 + 0.2", 1.0, NONE);
+        check("3 * 0.1 in == 0.3 in", 1.0, NONE);
+        check("r * cos(60 deg) == r / 2", 1.0, NONE);
+        check("sqrt(2) ^ 2 == 2", 1.0, NONE);
+        // At every scale: the bound is relative.
+        check("(0.1 + 0.2) * 1e-9 mm == 0.3e-9 mm", 1.0, NONE);
+        check("(0.1 + 0.2) * 1e9 mm == 0.3e9 mm", 1.0, NONE);
+        // A difference that is a part in 10^10 is a difference.
+        check("1 == 1 + 1e-10", 0.0, NONE);
+        check("1 < 1 + 1e-10", 1.0, NONE);
+        check("1e-6 mm == 1.0000000001e-6 mm", 0.0, NONE);
+        // Zero equals only zero: compare the values, not their difference.
+        check("sin(pi) == 0", 0.0, NONE);
+        check("0 == -0", 1.0, NONE);
+        for (a, b) in [(1.0, 1.0 + 1e-13), (1.0, 2.0), (-5.0, 5.0), (0.0, 1e-300)] {
+            let count = ["<", "==", ">"]
+                .iter()
+                .filter(|op| eval(&format!("{a:e} {op} {b:e}")).value == 1.0)
+                .count();
+            assert_eq!(count, 1, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn logic() {
+        check("1 && 1", 1.0, NONE);
+        check("1 && 0", 0.0, NONE);
+        check("0 || 1", 1.0, NONE);
+        check("0 || 0", 0.0, NONE);
+        check("!0", 1.0, NONE);
+        check("!5", 0.0, NONE);
+        check("!!5", 1.0, NONE);
+        check("-2 && 0.5", 1.0, NONE);
+        check("width > 30 mm && height < 40 mm", 1.0, NONE);
+        check("width > 50 mm || height > 50 mm", 0.0, NONE);
+        check("!width > 50 mm", 1.0, NONE);
+        check("0 && 1 || 1", 1.0, NONE);
+        check("1 || 1 && 0", 1.0, NONE);
+        check("(1 || 1) && 0", 0.0, NONE);
+        let wrong = |source: &str| match err(source) {
+            ExprError {
+                pos,
+                kind:
+                    ErrorKind::ArgumentDimension {
+                        function, found, ..
+                    },
+            } => (pos, function, found),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        assert_eq!(wrong("width && 1"), (6, "&&", LENGTH));
+        assert_eq!(wrong("1 || tilt"), (2, "||", ANGLE));
+        assert_eq!(wrong("!width"), (0, "!", LENGTH));
+        // Not used, but not a condition either.
+        assert_eq!(wrong("0 && width"), (2, "&&", LENGTH));
+        assert!(err("!width").to_string().contains("a comparison such as"));
+    }
+
+    #[test]
+    fn logic_decides_on_the_left_when_it_can() {
+        check("0 && 1 / zero > 0", 0.0, NONE);
+        check("1 || sqrt(-1) > 0", 1.0, NONE);
+        check("n != 0 && 12 / n > 1", 1.0, NONE);
+        check("zero != 0 && 12 / zero > 1", 0.0, NONE);
+        check("0 && depth", 0.0, NONE);
+        assert_eq!(
+            err("1 && 1 / zero > 0"),
+            ExprError::new(7, ErrorKind::DivisionByZero)
+        );
+        assert_eq!(
+            err("0 || depth"),
+            ExprError::new(
+                5,
+                ErrorKind::UnknownVariable {
+                    name: "depth".into()
+                }
+            )
+        );
+        // An error on the left is always an error.
+        assert_eq!(
+            err("1 / zero > 0 || 1"),
+            ExprError::new(2, ErrorKind::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn if_takes_one_branch() {
+        check("if(1, 2 mm, 3 mm)", 2.0, LENGTH);
+        check("if(0, 2 mm, 3 mm)", 3.0, LENGTH);
+        check("if(width > 200 mm, 4, 2)", 2.0, NONE);
+        check("if(width > 20 mm, 4, 2)", 4.0, NONE);
+        check("if(-0.5, 1, 2)", 1.0, NONE);
+        check("if(n > 3, if(n > 5, 3, 2), 1)", 3.0, NONE);
+        check("if(n > 3, width, height) / 2", 20.0, LENGTH);
+        check("max(if(n > 3, width, height), 45 mm)", 45.0, LENGTH);
+    }
+
+    /// Only the branch taken has to evaluate: the other may divide by
+    /// zero, leave a domain or name a variable that does not exist.
+    #[test]
+    fn the_branch_not_taken_may_fail() {
+        check("if(zero > 0, width / zero, width)", 40.0, LENGTH);
+        check("if(zero == 0, width, width / zero)", 40.0, LENGTH);
+        check("if(1, 1, sqrt(-1))", 1.0, NONE);
+        check("if(1, 1 mm, depth)", 1.0, LENGTH);
+        check("if(0, 1e308 * 10, 1)", 1.0, NONE);
+        check("if(0, nan, 1)", 1.0, NONE);
+        check("if(0, 1 mm + 1 deg, 2)", 2.0, NONE);
+        check("if(1, 2, if(1, 1 / zero, 3))", 2.0, NONE);
+        // The branch taken fails as it would on its own.
+        assert_eq!(
+            err("if(zero == 0, width / zero, width)"),
+            ExprError::new(20, ErrorKind::DivisionByZero)
+        );
+        assert_eq!(
+            err("if(0, 1, depth)"),
+            ExprError::new(
+                9,
+                ErrorKind::UnknownVariable {
+                    name: "depth".into()
+                }
+            )
+        );
+        // And so does the condition.
+        assert_eq!(
+            err("if(1 / zero, 1, 2)"),
+            ExprError::new(5, ErrorKind::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn if_needs_branches_of_one_dimension_and_a_condition() {
+        assert_eq!(err("if(1, 1 mm, 2)"), mismatch(0, "if", LENGTH, NONE));
+        assert_eq!(err("if(0, 1 mm, 2)"), mismatch(0, "if", LENGTH, NONE));
+        assert_eq!(
+            err("2 * if(n > 1, tilt, width)"),
+            mismatch(4, "if", ANGLE, LENGTH)
+        );
+        assert!(matches!(
+            err("if(width, 1, 2)").kind,
+            ErrorKind::ArgumentDimension { function: "if", .. }
+        ));
+    }
+
+    #[test]
+    fn clamp() {
+        check("clamp(5, 1, 10)", 5.0, NONE);
+        check("clamp(-5, 1, 10)", 1.0, NONE);
+        check("clamp(50, 1, 10)", 10.0, NONE);
+        check("clamp(wall, 1.2 mm, 5 mm)", 2.0, LENGTH);
+        check("clamp(width, 1.2 mm, 5 mm)", 5.0, LENGTH);
+        check("clamp(0.5 mm, 1.2 mm, 5 mm)", 1.2, LENGTH);
+        check("clamp(width, 1 in, 1 in)", 25.4, LENGTH);
+        check("clamp(tilt, 0 deg, 10 deg)", 10.0 * PI / 180.0, ANGLE);
+        assert_eq!(
+            err("clamp(width, 1, 5 mm)"),
+            mismatch(0, "clamp", LENGTH, NONE)
+        );
+        assert_eq!(err("clamp(1, 1, 5 mm)"), mismatch(0, "clamp", NONE, LENGTH));
+        assert_eq!(
+            err("clamp(wall, 5 mm, 1 mm)"),
+            ExprError::new(
+                0,
+                ErrorKind::InvalidBounds {
+                    function: "clamp",
+                    lo: 5.0,
+                    hi: 1.0
+                }
+            )
+        );
+        assert!(
+            err("clamp(1, 2, 1)")
+                .to_string()
+                .contains("is larger than the upper bound")
+        );
+    }
+
+    #[test]
+    fn choose_counts_from_one() {
+        check("choose(1, 2 mm, 4 mm, 8 mm)", 2.0, LENGTH);
+        check("choose(3, 2 mm, 4 mm, 8 mm)", 8.0, LENGTH);
+        check("choose(n / 3, width, height)", 30.0, LENGTH);
+        check("choose(1, 7)", 7.0, NONE);
+        // A whole number within rounding is that whole number.
+        check("choose(0.3 / 0.1, 1, 2, 3)", 3.0, NONE);
+        // Only the choice taken has to evaluate.
+        check("choose(1, 2, 1 / zero, depth)", 2.0, NONE);
+        let range = |source: &str| match err(source).kind {
+            ErrorKind::ChoiceOutOfRange { index, count } => (index, count),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        assert_eq!(range("choose(0, 1, 2)"), (0.0, 2));
+        assert_eq!(range("choose(3, 1, 2)"), (3.0, 2));
+        assert_eq!(range("choose(-1, 1, 2)"), (-1.0, 2));
+        assert_eq!(range("choose(1e300, 1, 2)"), (1e300, 2));
+        assert!(
+            err("choose(3, 1, 2)")
+                .to_string()
+                .contains("has 2 choice(s), numbered from 1")
+        );
+        assert_eq!(
+            err("choose(1.5, 1, 2)"),
+            ExprError::new(
+                0,
+                ErrorKind::NotWholeNumber {
+                    function: "choose",
+                    value: 1.5
+                }
+            )
+        );
+        assert!(matches!(
+            err("choose(1 mm, 1, 2)").kind,
+            ErrorKind::ArgumentDimension {
+                function: "choose",
+                ..
+            }
+        ));
+        assert_eq!(
+            err("choose(2, 1, 2 mm)"),
+            mismatch(0, "choose", NONE, LENGTH)
+        );
+        assert_eq!(
+            err("choose(1, 1, 2, 3 mm)"),
+            mismatch(0, "choose", NONE, LENGTH)
+        );
+        assert_eq!(
+            err("choose(2, 1, 2 mm / zero)"),
+            ExprError::new(18, ErrorKind::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn exponentials_and_logarithms() {
+        check("exp(0)", 1.0, NONE);
+        check("exp(1)", std::f64::consts::E, NONE);
+        check("ln(exp(2))", 2.0, NONE);
+        check("log10(1000)", 3.0, NONE);
+        check("log10(width / 4 mm)", 1.0, NONE);
+        check("pow(2, 0.5)", 2f64.sqrt(), NONE);
+        check("pow(-2, 3)", -8.0, NONE);
+        check("pow(0, 0)", 1.0, NONE);
+        check("pow(width / 1 mm, 1 / 3)", 40f64.powf(1.0 / 3.0), NONE);
+        check("sinh(1)", 1f64.sinh(), NONE);
+        check("cosh(0)", 1.0, NONE);
+        check("tanh(1)", 1f64.tanh(), NONE);
+        // A catenary: y = a * cosh(x / a), a curve from a formula.
+        check("r * cosh(width / r) - r", 5.0 * (8f64.cosh() - 1.0), LENGTH);
+        let domain = |source: &str| match err(source).kind {
+            ErrorKind::OutOfDomain { function, value } => (function, value),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        assert_eq!(domain("ln(0)"), ("ln", 0.0));
+        assert_eq!(domain("ln(-1)"), ("ln", -1.0));
+        assert_eq!(domain("log10(-2)"), ("log10", -2.0));
+        assert_eq!(domain("pow(-8, 1 / 3)"), ("pow", -8.0));
+        assert_eq!(
+            err("pow(0, -1)"),
+            ExprError::new(0, ErrorKind::DivisionByZero)
+        );
+        for source in ["exp(1000)", "sinh(1000)", "cosh(-1000)", "pow(10, 400)"] {
+            assert!(
+                matches!(err(source).kind, ErrorKind::NonFinite { .. }),
+                "`{source}`"
+            );
+        }
+        for source in [
+            "exp(1 mm)",
+            "ln(width)",
+            "sinh(tilt)",
+            "pow(width, 2)",
+            "pow(2, 1 mm)",
+        ] {
+            assert!(
+                matches!(err(source).kind, ErrorKind::ArgumentDimension { .. }),
+                "`{source}`"
+            );
+        }
+        assert!(err("pow(width, 2)").to_string().contains("`r ^ 2`"));
+    }
+
+    #[test]
+    fn a_pattern_count_from_a_condition() {
+        // The kind of expression a pattern's count gets.
+        check("if(width > 200 mm, 4, 2)", 2.0, NONE);
+        check("choose(if(width > 30 mm, 2, 1), 3, 6)", 6.0, NONE);
+        check("max(2, floor(width / 12 mm)) * (wall < 3 mm)", 3.0, NONE);
     }
 }

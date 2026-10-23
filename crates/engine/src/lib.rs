@@ -46,6 +46,7 @@ mod report;
 mod sample_cmds;
 mod scene;
 mod scene_box;
+mod scrub;
 mod section;
 mod select_cmds;
 mod selection;
@@ -63,6 +64,7 @@ pub mod task_score;
 mod typed;
 mod verify;
 mod verify_cmds;
+mod visibility_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
@@ -91,6 +93,7 @@ pub use scene::{
     SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
     SketchCurve, arc_segments, base64 as encode_base64,
 };
+pub use scrub::{ScrubPosition, step_caption};
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
@@ -154,6 +157,10 @@ pub(crate) struct OpenDocument {
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.
     pub path: Option<String>,
+    /// The file on disk it was opened from or last saved to, absolute,
+    /// whatever root `path` is relative to; `None` in memory, for a new
+    /// document and for a recovered one until it is saved.
+    pub file: Option<String>,
     /// The revision that is on disk.
     pub saved_revision: Option<u64>,
     /// What the file at `path` looked like when the document was opened
@@ -174,6 +181,9 @@ pub(crate) struct OpenDocument {
     /// The assertions checked against `history.revision()`
     /// (`assert_cmds.rs`).
     pub(crate) assertions: assert_check::Checks,
+    /// Where the view is in the history (`view.scrub`): view state, not
+    /// saved and not undone (`scrub.rs`).
+    pub(crate) scrub: scrub::Scrub,
     /// The thumbnail drawn for a save, with the revision it shows, so a
     /// Jig saved again unchanged is not drawn again (`file.save`).
     pub(crate) thumbnail: Option<(u64, Arc<Vec<u8>>)>,
@@ -211,6 +221,7 @@ impl OpenDocument {
             id: next_document_id(),
             history,
             path,
+            file: None,
             saved_revision,
             disk: None,
             recovered: None,
@@ -218,6 +229,7 @@ impl OpenDocument {
             cache: new_cache(),
             selection: selection::Selection::default(),
             assertions: assert_check::Checks::default(),
+            scrub: scrub::Scrub::default(),
             thumbnail: None,
         }
     }
@@ -397,6 +409,8 @@ impl Session {
                 sample_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
+                visibility_cmds::SPECS,
+                scrub::SPECS,
                 report::SPECS,
             ]
             .concat()

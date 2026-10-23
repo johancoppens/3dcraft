@@ -24,16 +24,24 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod controls;
+pub mod help;
 mod icons;
 mod layout;
 pub mod number_field;
+mod player;
+pub mod recent;
 mod report;
 mod selection;
+pub mod start;
 mod tabs;
+mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
+pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
+pub use recent::{MAX_RECENT, RecentEntry, RecentFiles};
+pub use start::{AgentSetup, EXAMPLES, Example, run_example};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -187,6 +195,8 @@ pub struct TreeRow {
     /// (`F3`) and its name.
     pub caused_by: Option<(String, String)>,
     pub selected: bool,
+    /// Hidden in the view (`feature.visible`).
+    pub hidden: bool,
     /// The first face, edge or vertex selected was made by this feature
     /// (by its persistent name): the row is marked as selected too.
     pub made_selection: bool,
@@ -246,7 +256,7 @@ fn plain_f(input: &egui::InputState) -> bool {
         matches!(
             event,
             egui::Event::Key {
-                key: egui::Key::F,
+                key: help::FIT_KEY,
                 pressed: true,
                 modifiers,
                 ..
@@ -538,6 +548,14 @@ pub struct Shell {
     status_hits: Vec<(StatusSlot, egui::Rect)>,
     /// The selection as the window draws and changes it.
     select: selection::Selecting,
+    /// The history timeline and the rows' eyes (`shell/timeline.rs`).
+    timeline: timeline::Timeline,
+    /// The history player under the timeline (`shell/player.rs`).
+    player: player::Player,
+    /// The player's orbit turned the camera this frame.
+    orbiting: bool,
+    /// Where the feature panel was drawn: the player's keys work over it.
+    tree_panel: Option<egui::Rect>,
     /// The point a zoom at the pointer keeps in place, while the pointer
     /// and the camera stay as that zoom left them: one look at the model
     /// per turn of the wheel, not one per frame of it.
@@ -606,6 +624,10 @@ pub struct Shell {
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
     tree_view: Option<egui::Rect>,
+    /// The Help menu, the recent files and the start screen.
+    help: help::HelpMemory,
+    recent: recent::RecentMemory,
+    start: start::StartMemory,
 }
 
 impl Default for Shell {
@@ -812,6 +834,10 @@ impl Shell {
             status_hits: Vec::new(),
             zoom_anchor: None,
             select: selection::Selecting::default(),
+            timeline: timeline::Timeline::default(),
+            player: player::Player::default(),
+            orbiting: false,
+            tree_panel: None,
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -842,6 +868,9 @@ impl Shell {
             tab_switched: false,
             tree_row_hits: Vec::new(),
             tree_view: None,
+            help: help::HelpMemory::default(),
+            recent: recent::RecentMemory::default(),
+            start: start::StartMemory::default(),
         }
     }
 
@@ -1474,9 +1503,13 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.follow_active_tab(session);
+        self.sync_timeline(session);
+        self.sync_player(session);
         let scene = self.sync_scene(session);
+        self.mark_scrubbed_rows();
         self.assertion_rows = session.assertion_states();
         self.sync_tabs(session);
+        self.note_recent(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
         self.sync_report(session);
@@ -1592,6 +1625,7 @@ impl Shell {
                 error: f.error.clone(),
                 caused_by: f.caused_by.as_ref().map(|id| (id.clone(), name_of(id))),
                 selected: selected == Some(f.id.as_str()),
+                hidden: f.hidden,
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
             })
             .collect();
@@ -1647,6 +1681,9 @@ impl Shell {
         };
         self.file_shortcuts(ui, status.is_some());
         self.tab_shortcuts(ui);
+        self.help_keys(ui);
+        // The next step of the history player, when it is time.
+        self.advance_player(ui.ctx());
         let tokens = self.tokens;
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1702,7 +1739,8 @@ impl Shell {
                 });
         }
         self.cause_hits.clear();
-        if self.state.panels.tree {
+        // Put away while the welcome shows (`start.rs`).
+        if self.state.panels.tree && !self.welcome() {
             // No margin on the right: the list's scroll bar lies against
             // the panel's edge, the split it is resized by.
             let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
@@ -1711,13 +1749,18 @@ impl Shell {
                 top: 2,
                 bottom: 2,
             });
-            egui::Panel::left("craft3d-tree")
+            let panel = egui::Panel::left("craft3d-tree")
                 .resizable(true)
                 .default_size(260.0)
                 .frame(frame)
                 .show(ui, |ui| self.tree(ui, status.is_some()));
+            self.tree_panel = Some(panel.response.rect);
+        } else {
+            self.tree_panel = None;
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // Space, the arrows, Home and End over the viewport or the list.
+        self.player_keys(ui.ctx());
         // A number typed into a field of the viewport, once Enter was
         // pressed: evaluated with the document's variables, shown next
         // frame (or its error is).
@@ -1728,6 +1771,13 @@ impl Shell {
                 ui.ctx().request_repaint();
             }
         }
+        // What the timeline and the eyes asked for: the scene of a new
+        // step is built where the window's scenes are, not here.
+        if let Some(session) = session.as_deref_mut()
+            && self.apply_timeline_requests(session)
+        {
+            ui.ctx().request_repaint();
+        }
         // What the mouse selected, now that the session is here.
         if let Some(session) = session
             && self.apply_selection_requests(session)
@@ -1736,6 +1786,7 @@ impl Shell {
             ui.ctx().request_repaint();
         }
         self.closing_dialog(ui);
+        self.help_windows(ui);
     }
 
     /// The File shortcuts, wherever the pointer is.
@@ -1772,9 +1823,11 @@ impl Shell {
                         ui.close();
                     }
                 }
+                self.recent_menu(ui);
                 ui.separator();
                 self.menu_documents(ui);
             });
+            self.help_menu(ui);
         });
     }
 
@@ -2136,6 +2189,10 @@ impl Shell {
         ui.add_space(tokens.inset * 0.5);
         ui.label(egui::RichText::new("Features").strong());
         ui.separator();
+        // The timeline at the foot of the panel, under the list.
+        egui::Panel::bottom("craft3d-timeline")
+            .resizable(false)
+            .show(ui, |ui| self.timeline_ui(ui));
         if self.rows.is_empty() {
             let hint = if has_document {
                 "No features yet."
@@ -2143,11 +2200,15 @@ impl Shell {
                 "No document."
             };
             ui.colored_label(dim, hint);
+            if has_document {
+                assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
+            }
             return;
         }
         let mut clicked = None;
         let mut double = None;
         let mut followed = None;
+        let mut eye_clicked = None;
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
@@ -2196,6 +2257,11 @@ impl Shell {
                                     "Suppressed: not built, and what is made from it fails."
                                         .to_string()
                                 }
+                                (None, FeatureState::RolledBack)
+                                    if row.status == timeline::AFTER_SCRUB =>
+                                {
+                                    "After the step the timeline shows: not shown now.".to_string()
+                                }
                                 (None, FeatureState::RolledBack) => {
                                     "Rolled back: after the rollback marker, not built.".to_string()
                                 }
@@ -2224,6 +2290,9 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
+                                if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                                    eye_clicked = Some((row.id.clone(), row.hidden));
+                                }
                             });
                             if let Some((cause, cause_name)) = &row.caused_by {
                                 ui.indent(("craft3d-cause", &row.id), |ui| {
@@ -2255,11 +2324,7 @@ impl Shell {
                                 });
                             }
                         }
-                        if !self.assertion_rows.is_empty() {
-                            ui.add_space(tokens.inset * 0.5);
-                            ui.label(egui::RichText::new("Assertions").strong());
-                            ui.separator();
-                        }
+                        assertions_heading(ui, &tokens, self.assertion_rows.is_empty());
                         let mut pending = false;
                         for row in &self.assertion_rows {
                             use craft3d_engine::AssertionStatus as A;
@@ -2307,6 +2372,10 @@ impl Shell {
                     });
             });
         self.cause_hits = hits;
+        if let Some((id, hidden)) = eye_clicked {
+            self.toggle_visible(id, hidden);
+            ui.ctx().request_repaint();
+        }
         self.tree_row_hits = rows_drawn;
         self.tree_view = Some(list.inner_rect);
         // A double click on a row selects that feature (whatever its
@@ -2446,7 +2515,8 @@ impl Shell {
 
         self.start_requested_fly(scene, ui.input(|i| i.time));
         let turning = self.advance_turn(ui, scene);
-        let moving = self.pointer(ui, &response, rect, scene) || resized || turning;
+        let moving =
+            self.pointer(ui, &response, rect, scene) || resized || turning || self.orbiting;
         let [width, height] = self.size;
         let pixel = |at: egui::Pos2| {
             let across = |from: f32, to: f32, at: f32, pixels: u32| {
@@ -2484,7 +2554,7 @@ impl Shell {
         }
         if response.contains_pointer()
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
         {
             self.escape_selection();
             ui.ctx().request_repaint();
@@ -2586,19 +2656,27 @@ impl Shell {
                 color(tokens.text_dim),
             );
         };
+        let start = self.welcome();
         match (scene, self.problem()) {
-            (None, None) => hint("No document. Run file.new or file.open."),
+            (None, None) if self.work.is_some() => hint("No document."),
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
-        if !self.state.notice.is_empty() {
+        // The caption of a narrated demo, then the history player's step
+        // under it: plates at the top, in the middle.
+        let mut top = inner.top();
+        let captions = [
+            (!self.state.notice.is_empty()).then(|| (self.state.notice.clone(), 17.0)),
+            self.player_caption().map(|text| (text, 15.0)),
+        ];
+        for (text, size) in captions.into_iter().flatten() {
             let galley = painter.layout_no_wrap(
-                self.state.notice.clone(),
-                egui::FontId::proportional(17.0),
+                text,
+                egui::FontId::proportional(size),
                 color(tokens.notice_text),
             );
             let text_size = galley.size();
-            let center = egui::pos2(rect.center().x, inner.top() + text_size.y);
+            let center = egui::pos2(rect.center().x, top + text_size.y);
             let plate = egui::Rect::from_center_size(center, text_size).expand(inset * 0.8);
             painter.rect_filled(
                 plate,
@@ -2610,6 +2688,7 @@ impl Shell {
                 galley,
                 color(tokens.notice_text),
             );
+            top = plate.bottom() + inset * 0.5;
         }
 
         if let Some(work) = &self.work {
@@ -2618,10 +2697,22 @@ impl Shell {
 
         // The box being dragged, and the "select other" list.
         self.paint_selecting(ui);
-        // The view cube, the triad and the controls over the viewport.
-        self.viewport_controls(ui, rect, scene);
+        // The view cube, the triad and the controls over the viewport;
+        // the start screen instead while there is no document.
+        if start {
+            self.controls_layout = None;
+        } else {
+            self.viewport_controls(ui, rect, scene);
+        }
         if let Some(problem) = self.problem().map(str::to_string) {
             self.problem_text(&painter, rect, &problem);
+        }
+        // No document: New, Open, the examples, the recent files and how
+        // to connect an agent (`start.rs`).
+        if start {
+            self.start_screen(ui, rect);
+        } else {
+            self.no_start_screen();
         }
     }
 
@@ -3188,6 +3279,28 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
         edge: name.map(str::to_string),
         between,
     })
+}
+
+/// What the feature panel says under "Assertions" while the document has
+/// none: what they are for, and how to get one.
+pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
+
+/// The "Assertions" heading of the feature panel, always there; with the
+/// hint while there are none.
+fn assertions_heading(ui: &mut egui::Ui, tokens: &Tokens, empty: bool) {
+    ui.add_space(tokens.inset * 0.5);
+    ui.label(egui::RichText::new("Assertions").strong());
+    ui.separator();
+    if empty {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(NO_ASSERTIONS_HINT)
+                    .color(color(tokens.text_dim))
+                    .small(),
+            )
+            .wrap(),
+        );
+    }
 }
 
 /// The frame of a chrome bar (the menu bar, the status bar): `fill`, with

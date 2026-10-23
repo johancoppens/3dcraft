@@ -59,7 +59,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
-        "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}. An expression has numbers with units (um mm cm m in ft, deg rad), variables, pi, + - * / ^ and the functions sin, cos, tan, asin, acos, atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc and mod. floor, ceil, round and trunc take a plain number (floor(span / fingerW)) or a value and a positive step of its dimension (round(width, 0.5 mm)); a length alone is refused, as its whole number would depend on the unit. round takes ties to the even whole number (2.5 to 2, 3.5 to 4); mod(a, b) is a - b * floor(a / b), with the sign of b, and b = 0 is an error.", doc: true, variable_set),
+        "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}. An expression has numbers with units (um mm cm m in ft, deg rad), variables, pi, + - * / ^, the comparisons < <= > >= == != (1 or 0; == within a relative 1e-12), && || ! (0 is false, anything else true) and the functions sin, cos, tan, asin, acos, atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc, mod, exp, ln, log10, pow, sinh, cosh, tanh, if, clamp and choose. Conditions: if(length > 200 mm, 4, 2) takes only the branch chosen, so the other may fail (if(n > 0, total / n, 0 mm)); both branches have one dimension. clamp(wall, 1.2 mm, 5 mm) keeps a value between two bounds; choose(i, a, b, ...) is the i-th value, counted from 1. floor, ceil, round and trunc take a plain number (floor(span / fingerW)) or a value and a positive step of its dimension (round(width, 0.5 mm)); a length alone is refused, as its whole number would depend on the unit. round takes ties to the even whole number (2.5 to 2, 3.5 to 4); mod(a, b) is a - b * floor(a / b), with the sign of b, and b = 0 is an error.", doc: true, variable_set),
     spec!("variable.delete", "Delete Variable", r#"{"name": string, "force": boolean = false}"#,
         "Deletes a variable. A variable still in use is refused, with every user named (variables, features and sketches with the parameter, assertions, named sets); with force it is deleted anyway, and what used it fails until the variable is defined again (edit.undo brings it back).", doc: true, variable_delete),
     spec!("variable.rename", "Rename Variable", r#"{"name": string, "to": string}"#,
@@ -572,6 +572,7 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
+    open.file = file_on_disk(in_memory, &resolved);
     let index = session.add_document(open)?;
     let mut result = json!({ "document": index, "path": kept, "features": features });
     // What reading the file changed (a tolerance outside the range a
@@ -580,6 +581,17 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
         map.insert("warnings".into(), read.into());
     }
     Ok(result)
+}
+
+/// The absolute path of the file at `resolved`, for
+/// [`crate::DocumentStatus::file`]; `None` for a file in memory.
+fn file_on_disk(in_memory: bool, resolved: &std::path::Path) -> Option<String> {
+    if in_memory {
+        return None;
+    }
+    std::path::absolute(resolved)
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
 }
 
 fn file_save(session: &mut Session, params: &Value) -> Run {
@@ -639,6 +651,7 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
+    open.file = file_on_disk(in_memory, &resolved);
     open.recovered = None;
     let mut result = json!({ "path": kept });
     if let Some(map) = result.as_object_mut()
@@ -2496,6 +2509,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
         }
+        // Hidden in the view (`feature.visible`): said only when it is.
+        if let Some(map) = entry.as_object_mut()
+            && doc.is_hidden(feature.id)
+        {
+            map.insert("hidden".into(), true.into());
+        }
         // Failed because something it is made from failed: the feature at
         // the start of that chain, the one to fix.
         if let (Some(map), Some(root)) = (
@@ -3369,7 +3388,12 @@ pub(crate) fn thumbnail_png(
     let (width, height) = THUMBNAIL_SIZE;
     let params = json!({ "width": width, "height": height });
     let p = Params::new("view.render", &params, VIEW_RENDER_PARAMS)?;
-    let png = std::sync::Arc::new(render_picture(session, &p)?.1);
+    // The document as it is, not where the view is in its history: a
+    // scrubbed view is set aside while the thumbnail is drawn.
+    let scrub = std::mem::take(&mut session.document_mut()?.scrub);
+    let drawn = render_picture(session, &p);
+    session.document_mut()?.scrub = scrub;
+    let png = std::sync::Arc::new(drawn?.1);
     session.document_mut()?.thumbnail = Some((revision, std::sync::Arc::clone(&png)));
     Ok(png)
 }
