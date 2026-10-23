@@ -1,0 +1,29 @@
+{
+  "format_version": 31,
+  "written_by": "e02b0fec8f25df927b37cf1befd5572b03a66803",
+  "how": "craft3d-cli built from that commit: run --new '{\"units\": \"mm\"}' --script v31.steps.json --out v31.3dcraft, then info v31.3dcraft",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Rib",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Ribs",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 24,
+      "edges": 48,
+      "vertices": 32,
+      "volume": 2051.3553564684034,
+      "area": 1630.8132138810424
+    }
+  ]
+}
