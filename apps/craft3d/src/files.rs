@@ -44,7 +44,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, IMPORT_EXTENSIONS, suggested_export_name, suggested_name,
+    EXPORT_FORMATS, EXTENSION, IMPORT_EXTENSIONS, JIG_EXTENSION, OPEN_EXTENSIONS,
+    suggested_export_name, suggested_jig_name, suggested_name,
 };
 
 /// The system's file dialogs. Each call blocks until the person chose or
@@ -59,6 +60,12 @@ pub trait Dialogs: Send + Sync {
     /// Asks where to export, proposing `suggested` as the file's name
     /// ([`EXPORT_FORMATS`]).
     fn export(&self, suggested: &str) -> Option<PathBuf>;
+    /// Asks where to publish the document as a Jig ([`JIG_EXTENSION`]);
+    /// none by default (a host without that dialog).
+    fn export_jig(&self, suggested: &str) -> Option<PathBuf> {
+        let _ = suggested;
+        None
+    }
 }
 
 /// The dialogs of the desktop (the portal's on Linux).
@@ -68,7 +75,8 @@ impl Dialogs for SystemDialogs {
     fn open(&self) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title("Open")
-            .add_filter("3DCraft document", &[EXTENSION])
+            .add_filter("3DCraft document or Jig", &OPEN_EXTENSIONS)
+            .add_filter("3DCraft Jig", &[JIG_EXTENSION])
             .add_filter("All files", &["*"])
             .pick_file()
     }
@@ -77,6 +85,14 @@ impl Dialogs for SystemDialogs {
         rfd::FileDialog::new()
             .set_title("Save As")
             .add_filter("3DCraft document", &[EXTENSION])
+            .set_file_name(suggested)
+            .save_file()
+    }
+
+    fn export_jig(&self, suggested: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Export as Jig")
+            .add_filter("3DCraft Jig", &[JIG_EXTENSION])
             .set_file_name(suggested)
             .save_file()
     }
@@ -113,6 +129,8 @@ pub enum Choice {
     Save(PathBuf),
     Import(PathBuf),
     Export(PathBuf),
+    /// Where to publish the document as a Jig (`jig.export`).
+    ExportJig(PathBuf),
     /// The dialog was closed without a choice.
     Cancelled(&'static str),
 }
@@ -205,6 +223,18 @@ impl Picker {
         })
     }
 
+    /// Opens the dialog for where to publish the document as a Jig; a
+    /// name without the extension gets it.
+    pub fn ask_export_jig(&mut self, suggested: String) -> Result<(), String> {
+        self.ask("export-jig", move |dialogs| {
+            dialogs
+                .export_jig(&suggested)
+                .map_or(Choice::Cancelled("jig.export"), |path| {
+                    Choice::ExportJig(with_jig_extension(path))
+                })
+        })
+    }
+
     fn settle(&mut self, received: Result<Choice, bool>) -> Option<Result<Choice, String>> {
         match received {
             Ok(choice) => {
@@ -245,6 +275,23 @@ pub fn with_extension(path: PathBuf) -> PathBuf {
         path
     } else {
         path.with_extension(EXTENSION)
+    }
+}
+
+/// `path` with the Jig's extension: as it is when it has it (in any case),
+/// else with it appended.
+fn with_jig_extension(path: PathBuf) -> PathBuf {
+    let has = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(JIG_EXTENSION));
+    if has {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".");
+        name.push(JIG_EXTENSION);
+        PathBuf::from(name)
     }
 }
 
@@ -457,6 +504,15 @@ impl Host {
         outcome
     }
 
+    /// Publishes the active document as a Jig to the file the person
+    /// chose (`jig.export`).
+    pub fn export_jig_as_user(&mut self, path: &Path) -> Result<Value, String> {
+        let outcome = self.run_as_user("jig.export", path, true, None);
+        self.report("jig.export", &outcome);
+        self.shell.sync(&mut self.session);
+        outcome
+    }
+
     /// Keeps the extension of a file chosen to export to, for the next
     /// export's proposed name.
     pub(crate) fn note_export(&mut self, path: &Path) {
@@ -492,6 +548,24 @@ impl Host {
                     suggested_export_name(status.path.as_deref(), self.export_extension.as_deref());
                 picker.ask_export(suggested).map_err(|e| ("file.export", e))
             }
+            FileAction::ExportJig => {
+                let Some(status) = self.session.document_status() else {
+                    self.report(
+                        "jig.export",
+                        &Err("there is no document to publish".to_string()),
+                    );
+                    return;
+                };
+                picker
+                    .ask_export_jig(suggested_jig_name(status.path.as_deref()))
+                    .map_err(|e| ("jig.export", e))
+            }
+            FileAction::OpenForEditing => {
+                let outcome = self.run("jig.edit", &json!({}));
+                self.report("jig.edit", &outcome);
+                self.shell.sync(&mut self.session);
+                return;
+            }
             FileAction::Save | FileAction::SaveAs => {
                 let Some(status) = self.session.document_status() else {
                     self.report(
@@ -500,10 +574,12 @@ impl Host {
                     );
                     return;
                 };
+                // A Jig in use is never saved over its file: Save saves
+                // it as a model, named in the dialog.
                 let own = status
                     .path
                     .as_deref()
-                    .filter(|_| action == FileAction::Save);
+                    .filter(|_| action == FileAction::Save && !status.jig_in_use);
                 match own {
                     // Its own file, chosen by the person before (in a
                     // dialog or on the command line): saved there again.
@@ -545,6 +621,9 @@ impl Host {
             }
             Ok(Choice::Export(path)) => {
                 let _ = self.export_as_user(&path);
+            }
+            Ok(Choice::ExportJig(path)) => {
+                let _ = self.export_jig_as_user(&path);
             }
             Ok(Choice::Save(path)) => {
                 let saved = self.save_chosen_as_user(&path);
@@ -749,6 +828,10 @@ mod tests {
         fn export(&self, suggested: &str) -> Option<PathBuf> {
             self.answer(format!("export {suggested}"))
         }
+
+        fn export_jig(&self, suggested: &str) -> Option<PathBuf> {
+            self.answer(format!("export-jig {suggested}"))
+        }
     }
 
     fn picker(person: &Arc<Person>) -> Picker {
@@ -919,6 +1002,71 @@ mod tests {
         assert!(status.dirty);
         assert_eq!(status.path.as_deref(), Some(text(&second)));
         assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two roles of a Jig at the window: Export as Jig publishes a
+    /// model as a `.3dcraftjig`; opening that file uses it (read-only but
+    /// for its parameters); Save then asks for a model's name and never
+    /// writes the Jig's file; Open for Editing makes a new model of it.
+    #[test]
+    fn a_jig_is_published_opened_for_use_and_saved_as_a_model() {
+        let dir = workdir("jig");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        let person = Person::who_answers(&[
+            Some(&mine.join("plate")),
+            Some(&mine.join("plate.3dcraftjig")),
+            Some(&mine.join("my-plate.3dcraft")),
+        ]);
+        let mut dialogs = picker(&person);
+        act(&mut host, &mut dialogs, FileAction::New);
+        for (command, params) in [
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", 10, 2]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+        ] {
+            host.session.execute(command, &params).unwrap();
+        }
+        host.shell.sync(&mut host.session);
+        // Export as Jig: the name gets the Jig's extension.
+        act(&mut host, &mut dialogs, FileAction::ExportJig);
+        assert_eq!(person.asked(), ["export-jig untitled.3dcraftjig"]);
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("jig.export", true), "{text}");
+        let jig = mine.join("plate.3dcraftjig");
+        let bytes = std::fs::read(&jig).unwrap();
+        // Open: the Jig in use.
+        act(&mut host, &mut dialogs, FileAction::Open);
+        let status = host.session.document_status().unwrap();
+        assert!(status.jig_in_use && !status.dirty);
+        assert!(host.shell.jig_in_use());
+        host.session
+            .execute("param.set", &json!({"values": {"w": 60}}))
+            .unwrap();
+        // Save asks for a model's name, proposing one.
+        act(&mut host, &mut dialogs, FileAction::Save);
+        assert_eq!(person.asked().last().unwrap(), "save plate.3dcraft");
+        assert_eq!(
+            std::fs::read(&jig).unwrap(),
+            bytes,
+            "the Jig is never saved over"
+        );
+        assert_eq!(volume_on_disk(&mine.join("my-plate.3dcraft")), 1200.0);
+        assert!(!host.session.document_status().unwrap().jig_in_use);
+        // Open for Editing: a new untitled model of a Jig in use.
+        let again = Person::who_answers(&[Some(&jig)]);
+        let mut dialogs = picker(&again);
+        act(&mut host, &mut dialogs, FileAction::Open);
+        assert!(host.session.document_status().unwrap().jig_in_use);
+        act(&mut host, &mut dialogs, FileAction::OpenForEditing);
+        let (label, ok, text) = last(&host);
+        assert_eq!((label.as_str(), ok), ("jig.edit", true), "{text}");
+        let status = host.session.document_status().unwrap();
+        assert!(!status.jig_in_use && status.path.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

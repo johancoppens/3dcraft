@@ -1,13 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The .3dcraft document type for shared-mime-info (freedesktop.org
-     Shared MIME-info Database specification). A .3dcraft file is a ZIP
-     of stored entries (docs/file-formats.md), so the type is a subclass of
-     application/zip and is recognised by its name, not its contents. -->
+<!-- The .3dcraft document type and the .3dcraftjig published Jig for
+     shared-mime-info (freedesktop.org Shared MIME-info Database
+     specification). Both are a ZIP of stored entries (docs/file-formats.md),
+     so the types are subclasses of application/zip and are recognised by
+     their names, not their contents. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-craft3d">
     <comment>3DCraft document</comment>
     <sub-class-of type="application/zip"/>
     <generic-icon name="io.github.johancoppens.craft3d"/>
     <glob pattern="*.3dcraft" weight="80"/>
+  </mime-type>
+  <mime-type type="application/x-craft3d-jig">
+    <comment>3DCraft Jig</comment>
+    <sub-class-of type="application/zip"/>
+    <icon name="io.github.johancoppens.craft3d-jig"/>
+    <glob pattern="*.3dcraftjig" weight="80"/>
   </mime-type>
 </mime-info>

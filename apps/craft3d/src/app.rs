@@ -739,6 +739,13 @@ impl Desk {
                     "file.import".to_string(),
                     Box::new(move |session| Outcome::Ran(files::import_as_user(session, &path))),
                 ),
+                Ok(Choice::ExportJig(path)) => self.start(
+                    Waiting::File("jig.export"),
+                    "jig.export".to_string(),
+                    Box::new(move |session| {
+                        Outcome::Ran(files::run_as_user(session, "jig.export", &path, true, None))
+                    }),
+                ),
                 Ok(Choice::Export(path)) => {
                     self.host.note_export(&path);
                     self.start(

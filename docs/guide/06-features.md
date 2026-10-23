@@ -141,6 +141,15 @@ The form keeps a value in its range: typing 150 into a width that goes up to 120
 A parameter that is not at its default has a ↺ to put it back; **Reset all** puts them all back
 (`param.set {"reset": true}`).
 
+**Publishing and using a Jig.** A Jig is designed in an ordinary `.3dcraft` document. When it is ready,
+**File › Export as Jig…** (`jig.export {"path": "box.3dcraftjig"}`) writes it as a `.3dcraftjig` file, with its
+info and a picture; this is the file you hand out. Opening a `.3dcraftjig` opens the Jig **to use**: the
+Parameters tab shows, and only the parameters change. The feature list is there to look at (and the
+timeline to play), not to edit; an agent that tries gets *this is a Jig: … save it as a model to edit it*.
+**Save** saves it as a `.3dcraft` model under a name you choose, never over the `.3dcraftjig`; **Open for
+editing** (on the Parameters tab or in the File menu, `jig.edit`) makes a new untitled model of it, set as
+it is, to change as you like.
+
 When a value breaks the model (a fillet that no longer fits, a shell thicker than the box, an assertion
 that fails) the field turns red with the reason, and a banner over the model says *This value breaks the
 model* with a **Back to last good** button that sets the values that built. The viewport shows the model

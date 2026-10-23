@@ -25,8 +25,8 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, export_kind, export_selection, extension_of, guarded,
-    suggested_export_name, suggested_name,
+    EXPORT_FORMATS, EXTENSION, JIG_EXTENSION, export_kind, export_selection, extension_of, guarded,
+    suggested_export_name, suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell};
 use serde_json::{Value, json};
@@ -81,6 +81,9 @@ impl Pick {
     pub fn types(&self) -> Vec<PickerType> {
         match self {
             Pick::Save { .. } => vec![document_type()],
+            Pick::Export { file } if extension_of(&file.name).as_deref() == Some(JIG_EXTENSION) => {
+                vec![jig_type()]
+            }
             Pick::Export { file } => {
                 let extension = extension_of(&file.name);
                 export_types(extension.as_deref())
@@ -119,8 +122,17 @@ impl Pick {
 fn document_type() -> PickerType {
     PickerType {
         description: "3DCraft document",
-        mime: "application/x-3dcraft",
+        mime: "application/x-craft3d",
         extensions: vec![EXTENSION],
+    }
+}
+
+/// A published Jig (`.3dcraftjig`): the same format, opened to be used.
+fn jig_type() -> PickerType {
+    PickerType {
+        description: "3DCraft Jig",
+        mime: "application/x-craft3d-jig",
+        extensions: vec![JIG_EXTENSION],
     }
 }
 
@@ -136,7 +148,14 @@ pub struct PickerType {
 /// The kinds of file Open and Import choose from.
 pub fn open_types(ask: Ask) -> Vec<PickerType> {
     match ask {
-        Ask::Open => vec![document_type()],
+        Ask::Open => vec![
+            PickerType {
+                description: "3DCraft document or Jig",
+                mime: "application/x-craft3d",
+                extensions: vec![EXTENSION, JIG_EXTENSION],
+            },
+            jig_type(),
+        ],
         Ask::Import => vec![PickerType {
             description: "STEP",
             mime: "model/step",
@@ -219,6 +238,8 @@ pub enum Purpose {
     Save { close: Option<usize> },
     /// Export: the format follows the extension.
     Export,
+    /// Export as Jig: a `.3dcraftjig` (`jig.export`).
+    ExportJig,
 }
 
 /// The dialog in which the person names the file, while it is open.
@@ -268,7 +289,7 @@ pub enum Received {
 
 pub fn received_kind(name: &str) -> Option<Received> {
     match extension_of(name)?.as_str() {
-        EXTENSION => Some(Received::Document),
+        EXTENSION | JIG_EXTENSION => Some(Received::Document),
         "step" | "stp" => Some(Received::Step),
         _ => None,
     }
@@ -499,7 +520,7 @@ impl WebHost {
             return Err(format!("`{name}` is not a file name"));
         };
         let kind = received_kind(&name).ok_or_else(|| {
-            format!("`{name}` is not a 3DCraft document (.3dcraft) or a STEP file (.step, .stp)")
+            format!("`{name}` is not a 3DCraft document (.3dcraft), a Jig (.3dcraftjig) or a STEP file (.step, .stp)")
         })?;
         match (wanted, kind) {
             (Some(Ask::Open), Received::Step) => {
@@ -595,8 +616,11 @@ impl WebHost {
                 // a download of it again, or (with the file dialogs) the
                 // file it was opened from or saved to, when the page can
                 // write there.
+                // A Jig in use is never saved over its file: Save saves it
+                // as a model, named first.
                 let own = status.path.clone().filter(|_| {
                     action == FileAction::Save
+                        && !status.jig_in_use
                         && (!self.pickers || self.writable.contains(&status.id))
                 });
                 match own {
@@ -635,8 +659,43 @@ impl WebHost {
                     ),
                 });
             }
+            FileAction::ExportJig => {
+                let Some(status) = self.session.document_status() else {
+                    self.report(
+                        "jig.export",
+                        &Err("there is no document to publish".to_string()),
+                    );
+                    return outcome;
+                };
+                self.dialog = Some(NameDialog {
+                    purpose: Purpose::ExportJig,
+                    name: suggested_jig_name(status.path.as_deref()),
+                });
+            }
+            FileAction::OpenForEditing => {
+                let made = self.run("jig.edit", &json!({}));
+                self.finish("jig.edit", &made);
+            }
         }
         outcome
+    }
+
+    /// Publishes the active document as a Jig named `name` (the extension
+    /// added when it lacks it): the file is the download.
+    pub fn export_jig_as(&mut self, name: &str) -> Vec<Download> {
+        let Some(name) = memory_name(name).map(|n| with_extension(&n, JIG_EXTENSION)) else {
+            self.finish("jig.export", &Err(format!("`{name}` is not a file name")));
+            return Vec::new();
+        };
+        let exported = self.run("jig.export", &json!({ "path": name }));
+        let mut downloads = Vec::new();
+        if exported.is_ok()
+            && let Some(bytes) = self.session.take_file(&name)
+        {
+            downloads.push(Download::export(name.clone(), bytes));
+        }
+        self.finish("jig.export", &exported);
+        downloads
     }
 
     /// What a tab asked for: show a document, close it, or save it (a
@@ -779,6 +838,7 @@ impl WebHost {
             let label = match dialog.purpose {
                 Purpose::Save { .. } => "file.save",
                 Purpose::Export => "file.export",
+                Purpose::ExportJig => "jig.export",
             };
             self.report(label, &Err("cancelled".to_string()));
             return outcome;
@@ -793,6 +853,14 @@ impl WebHost {
                 self.companion = files.next();
             }
             Purpose::Export => outcome.downloads = self.export_as(&dialog.name),
+            Purpose::ExportJig => {
+                let mut files = self.export_jig_as(&dialog.name).into_iter();
+                match files.next() {
+                    Some(file) if self.pickers => outcome.pick = Some(Pick::Export { file }),
+                    Some(file) => outcome.downloads.push(file),
+                    None => {}
+                }
+            }
         }
         outcome
     }
@@ -849,6 +917,7 @@ impl WebHost {
         let title = match dialog.purpose {
             Purpose::Save { .. } => "Save As",
             Purpose::Export => "Export",
+            Purpose::ExportJig => "Export as Jig",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -884,8 +953,8 @@ impl WebHost {
                     // system's save dialog.
                     let verb = match dialog.purpose {
                         Purpose::Save { .. } => "Save",
-                        Purpose::Export if self.pickers => "Export…",
-                        Purpose::Export => "Export",
+                        Purpose::Export | Purpose::ExportJig if self.pickers => "Export…",
+                        Purpose::Export | Purpose::ExportJig => "Export",
                     };
                     if ui.button(verb).clicked() {
                         answer = Some(true);
@@ -945,6 +1014,63 @@ mod tests {
             )
             .unwrap();
         host
+    }
+
+    /// Export as Jig downloads a `.3dcraftjig`; handed back to the page it
+    /// opens as a Jig in use, which Save saves as a model under a name of
+    /// its own (never the Jig's) and Open for Editing copies into a model.
+    #[test]
+    fn a_jig_is_exported_opened_for_use_and_saved_as_a_model() {
+        let mut host = modelled();
+        for (id, params) in [
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", 10, 2]})),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        assert!(host.file_action(FileAction::ExportJig).downloads.is_empty());
+        let dialog = host.dialog.take().unwrap();
+        assert_eq!(dialog.purpose, Purpose::ExportJig);
+        assert_eq!(dialog.name, "untitled.3dcraftjig");
+        let outcome = host.answer(
+            NameDialog {
+                purpose: Purpose::ExportJig,
+                name: "plate".to_string(),
+            },
+            true,
+        );
+        assert_eq!(outcome.downloads.len(), 1, "{outcome:?}");
+        let jig = outcome.downloads[0].clone();
+        assert_eq!(jig.name, "plate.3dcraftjig");
+        assert!(host.session.file_names().is_empty());
+        // Through the system's dialog, offered as a Jig only.
+        let pick = Pick::Export { file: jig.clone() };
+        assert_eq!(pick.types()[0].extensions, [JIG_EXTENSION]);
+        assert!(pick.accepts("a.3dcraftjig") && !pick.accepts("a.3dcraft"));
+        // Open accepts it; it opens as a Jig in use.
+        assert!(open_types(Ask::Open)[0].extensions.contains(&JIG_EXTENSION));
+        assert_eq!(received_kind("x.3DCraftJig"), Some(Received::Document));
+        host.receive(&jig.name, jig.bytes.clone(), Some(Ask::Open))
+            .unwrap();
+        let status = host.session.document_status().unwrap();
+        assert!(status.jig_in_use && !status.dirty && !status.close_asks);
+        // Save names a model, proposing one.
+        assert!(host.file_action(FileAction::Save).downloads.is_empty());
+        let dialog = host.dialog.take().unwrap();
+        assert_eq!(dialog.name, "plate.3dcraft");
+        let saved = host.answer(dialog, true).downloads;
+        assert_eq!(saved[0].name, "plate.3dcraft");
+        assert!(!host.session.document_status().unwrap().jig_in_use);
+        // Open for Editing: a new model of a Jig in use.
+        host.receive(&jig.name, jig.bytes.clone(), None).unwrap();
+        host.file_action(FileAction::OpenForEditing);
+        let status = host.session.document_status().unwrap();
+        assert!(!status.jig_in_use && status.path.is_none());
+        assert!(host.shell.last_command.as_ref().unwrap().ok);
     }
 
     #[test]
@@ -1307,7 +1433,11 @@ mod tests {
         assert_eq!(export_types(None)[0].extensions, ["step", "stp"]);
         assert_eq!(export_types(Some("svg"))[0].description, "SVG");
         assert_eq!(open_types(Ask::Import)[0].extensions, ["step", "stp"]);
-        assert_eq!(open_types(Ask::Open)[0].extensions, [EXTENSION]);
+        // Open takes a document or a published Jig (2026-10-23).
+        assert_eq!(
+            open_types(Ask::Open)[0].extensions,
+            [EXTENSION, JIG_EXTENSION]
+        );
     }
 
     #[test]

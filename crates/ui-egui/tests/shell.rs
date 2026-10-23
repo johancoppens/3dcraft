@@ -1056,7 +1056,7 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
         assert_eq!(shell.take_file_action(), Some(action), "{action:?}");
         // Taken once.
         assert_eq!(shell.take_file_action(), None);
-        assert_eq!(action.shortcut().logical_key, pressed);
+        assert_eq!(action.shortcut().map(|s| s.logical_key), Some(pressed));
     }
     // The keys alone, or with another modifier, are not shortcuts.
     for (pressed, modifiers) in [
@@ -1092,13 +1092,25 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
     let labels: Vec<&str> = FileAction::ALL.iter().map(|a| a.label()).collect();
     assert_eq!(
         labels,
-        ["New", "Open…", "Save", "Save As…", "Import…", "Export…"]
+        [
+            "New",
+            "Open…",
+            "Open for Editing",
+            "Save",
+            "Save As…",
+            "Import…",
+            "Export…",
+            "Export as Jig…"
+        ]
     );
-    // No two entries share a shortcut, and none is Close's (Ctrl+W).
+    // No two entries share a shortcut, and none is Close's (Ctrl+W); the
+    // Jig's two entries have none.
     let mut shortcuts: Vec<String> = FileAction::ALL
         .iter()
-        .map(|a| format!("{:?}", a.shortcut()))
+        .filter_map(|a| a.shortcut())
+        .map(|s| format!("{s:?}"))
         .collect();
+    assert_eq!(shortcuts.len(), 6);
     shortcuts.push(format!(
         "{:?}",
         egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W)
@@ -1151,7 +1163,14 @@ fn clicking_file_then_an_entry_asks_for_that_action() {
         escape(&mut window, &mut shell, &mut session);
     }
     found.dedup();
-    assert_eq!(found, FileAction::ALL, "the entries, from the top down");
+    // The Jig's entries are greyed out for a model without public
+    // parameters: Open for Editing is for a Jig in use, Export as Jig for
+    // a model with public parameters.
+    let offered: Vec<FileAction> = FileAction::ALL
+        .into_iter()
+        .filter(|a| !matches!(a, FileAction::OpenForEditing | FileAction::ExportJig))
+        .collect();
+    assert_eq!(found, offered, "the entries, from the top down");
 }
 
 #[test]

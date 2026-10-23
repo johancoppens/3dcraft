@@ -108,17 +108,24 @@ pub enum FileAction {
     /// The document's bodies, or what is selected, to a file of the
     /// format its extension names (`file.export`).
     Export,
+    /// The document published as a Jig, a `.3dcraftjig` file
+    /// (`jig.export`): for a document with public parameters.
+    ExportJig,
+    /// A new untitled model of a Jig in use, to edit (`jig.edit`).
+    OpenForEditing,
 }
 
 impl FileAction {
     /// In menu order.
-    pub const ALL: [FileAction; 6] = [
+    pub const ALL: [FileAction; 8] = [
         FileAction::New,
         FileAction::Open,
+        FileAction::OpenForEditing,
         FileAction::Save,
         FileAction::SaveAs,
         FileAction::Import,
         FileAction::Export,
+        FileAction::ExportJig,
     ];
 
     pub fn label(self) -> &'static str {
@@ -129,11 +136,14 @@ impl FileAction {
             FileAction::SaveAs => "Save As…",
             FileAction::Import => "Import…",
             FileAction::Export => "Export…",
+            FileAction::ExportJig => "Export as Jig…",
+            FileAction::OpenForEditing => "Open for Editing",
         }
     }
 
-    /// Ctrl (⌘ on a Mac) with N, O, S, Shift+S, I and E.
-    pub fn shortcut(self) -> egui::KeyboardShortcut {
+    /// Ctrl (⌘ on a Mac) with N, O, S, Shift+S, I and E; the Jig's
+    /// actions have none.
+    pub fn shortcut(self) -> Option<egui::KeyboardShortcut> {
         let command = egui::Modifiers::COMMAND;
         let (modifiers, key) = match self {
             FileAction::New => (command, egui::Key::N),
@@ -142,8 +152,9 @@ impl FileAction {
             FileAction::SaveAs => (command | egui::Modifiers::SHIFT, egui::Key::S),
             FileAction::Import => (command, egui::Key::I),
             FileAction::Export => (command, egui::Key::E),
+            FileAction::ExportJig | FileAction::OpenForEditing => return None,
         };
-        egui::KeyboardShortcut::new(modifiers, key)
+        Some(egui::KeyboardShortcut::new(modifiers, key))
     }
 
     /// Saving and exporting need a document. Importing does not: without
@@ -151,7 +162,11 @@ impl FileAction {
     pub fn needs_document(self) -> bool {
         matches!(
             self,
-            FileAction::Save | FileAction::SaveAs | FileAction::Export
+            FileAction::Save
+                | FileAction::SaveAs
+                | FileAction::Export
+                | FileAction::ExportJig
+                | FileAction::OpenForEditing
         )
     }
 
@@ -1818,7 +1833,9 @@ impl Shell {
             FileAction::Import,
             FileAction::Export,
         ] {
-            let pressed = ui.input_mut(|i| i.consume_shortcut(&action.shortcut()));
+            let pressed = action
+                .shortcut()
+                .is_some_and(|shortcut| ui.input_mut(|i| i.consume_shortcut(&shortcut)));
             if pressed && (has_document || !action.needs_document()) {
                 self.file_action = Some(action);
             }
@@ -1832,9 +1849,13 @@ impl Shell {
                     if action.starts_group() {
                         ui.separator();
                     }
-                    let shortcut = ui.ctx().format_shortcut(&action.shortcut());
+                    let shortcut = action
+                        .shortcut()
+                        .map(|shortcut| ui.ctx().format_shortcut(&shortcut))
+                        .unwrap_or_default();
                     let button = egui::Button::new(action.label()).shortcut_text(shortcut);
-                    let enabled = has_document || !action.needs_document();
+                    let enabled = (has_document || !action.needs_document())
+                        && self.file_action_available(action);
                     if ui.add_enabled(enabled, button).clicked() {
                         self.file_action = Some(action);
                         ui.close();
@@ -2223,6 +2244,7 @@ impl Shell {
         let mut double = None;
         let mut followed = None;
         let mut eye_clicked = None;
+        let in_use = self.jig_in_use();
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
@@ -2304,7 +2326,8 @@ impl Shell {
                                     );
                                 }
                                 ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
-                                if timeline::eye(ui, row.hidden, &tokens).clicked() {
+                                // A Jig in use is looked at, not changed.
+                                if !in_use && timeline::eye(ui, row.hidden, &tokens).clicked() {
                                     eye_clicked = Some((row.id.clone(), row.hidden));
                                 }
                             });

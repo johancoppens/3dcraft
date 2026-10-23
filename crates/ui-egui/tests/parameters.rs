@@ -502,3 +502,66 @@ fn a_result_for_another_document_is_dropped() {
     window.idle(&mut shell, &mut session, 2);
     assert_eq!(form(&mut shell, &mut session)["trouble"], Value::Null);
 }
+
+#[test]
+fn a_jig_in_use_offers_open_for_editing_and_only_its_parameters_change() {
+    let mut session = Session::new(Workspace::memory());
+    // The design, published in the session's memory and opened from there.
+    let bytes = {
+        let mut memory = Session::new(Workspace::memory());
+        run(&mut memory, "file.new", json!({"units": "mm"}));
+        run(
+            &mut memory,
+            "variable.set",
+            json!({"name": "w", "expr": "40 mm"}),
+        );
+        run(
+            &mut memory,
+            "feature.block",
+            json!({"size": ["w", "20 mm", "5 mm"]}),
+        );
+        run(
+            &mut memory,
+            "variable.publish",
+            json!({"name": "w", "min": "20 mm", "max": "100 mm"}),
+        );
+        run(
+            &mut memory,
+            "jig.export",
+            json!({"path": "plate.3dcraftjig"}),
+        );
+        memory.take_file("plate.3dcraftjig").unwrap()
+    };
+    session.put_file("plate.3dcraftjig", bytes).unwrap();
+    run(
+        &mut session,
+        "file.open",
+        json!({"path": "plate.3dcraftjig"}),
+    );
+    let (mut session, mut shell, mut window) = started(session);
+    let shown = form(&mut shell, &mut session);
+    assert_eq!(shown["inUse"], true, "{shown}");
+    assert_eq!(shown["tab"], "parameters");
+    // Its parameters change through the form.
+    let answer = shell
+        .handle_method(
+            &mut session,
+            "ui.param",
+            Some(&json!({"name": "w", "value": 60})),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["result"]["changed"], true, "{answer}");
+    // Open for editing asks the host for a model of it.
+    let edit = hit(&shell, "Open for editing");
+    window.click(&mut shell, &mut session, edit.center());
+    assert_eq!(
+        shell.take_file_action(),
+        Some(craft3d_ui_egui::FileAction::OpenForEditing)
+    );
+    // Anything but its parameters is refused, to agents too.
+    let refused = session
+        .execute("variable.set", &json!({"name": "w", "expr": "50 mm"}))
+        .unwrap_err();
+    assert!(refused.message().contains("this is a Jig"), "{refused}");
+}

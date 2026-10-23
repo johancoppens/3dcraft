@@ -861,6 +861,25 @@ impl Shell {
         }
     }
 
+    /// The document shown is a published Jig opened to be used
+    /// (`.3dcraftjig`): only its parameters change.
+    pub fn jig_in_use(&self) -> bool {
+        self.shown_status().is_some_and(|s| s.jig_in_use)
+    }
+
+    /// Whether the File menu offers `action` for the document shown:
+    /// Export as Jig for a document with public parameters that is not a
+    /// Jig in use, Open for Editing for a Jig in use; the rest always.
+    pub(super) fn file_action_available(&self, action: crate::shell::FileAction) -> bool {
+        use crate::shell::FileAction as A;
+        let jig = self.params.list.as_ref().is_some_and(|l| l.jig);
+        match action {
+            A::ExportJig => jig && !self.jig_in_use(),
+            A::OpenForEditing => self.jig_in_use(),
+            A::New | A::Open | A::Save | A::SaveAs | A::Import | A::Export => true,
+        }
+    }
+
     /// A commit waits for the host.
     pub(super) fn command_waiting(&self) -> bool {
         self.params.pending.is_some()
@@ -1061,6 +1080,7 @@ impl Shell {
                 "features"
             },
             "count": list.map_or(0, |l| l.params.len()),
+            "inUse": self.jig_in_use(),
             "busy": form.busy(),
             "live": form.live.as_ref().map(|l| json!({
                 "name": l.name, "value": l.value, "dragging": l.dragging,
@@ -1290,6 +1310,22 @@ impl Shell {
         if !list.info.description.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new(&list.info.description).color(dim)).wrap());
         }
+        // A Jig in use changes only through its parameters; editing it
+        // takes a model of its own.
+        if self.jig_in_use() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(dim, "A Jig: set its parameters.");
+                let edit = ui
+                    .small_button("Open for editing")
+                    .on_hover_text("A new untitled model of it, as it is set, to edit (jig.edit)");
+                self.params
+                    .hits
+                    .push(("Open for editing".to_string(), edit.rect));
+                if edit.clicked() {
+                    self.request_file_action(crate::shell::FileAction::OpenForEditing);
+                }
+            });
+        }
         let busy = self.params.busy();
         ui.horizontal(|ui| {
             let any_off = list.params.iter().any(|p| !p.at_default);
@@ -1410,6 +1446,9 @@ impl Shell {
         let mut back = None;
         egui::Area::new(egui::Id::new("craft3d-param-trouble"))
             .order(egui::Order::Foreground)
+            // Shown at once, in full: a fade would wait for frames an
+            // idle window does not draw.
+            .fade_in(false)
             .fixed_pos(at)
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
