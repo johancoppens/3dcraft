@@ -774,3 +774,51 @@ fn fits_of_the_examples() {
         started.elapsed().as_secs_f64() * 100.0
     );
 }
+
+/// The window draws a formula curve and a live spline like other sketch
+/// curves: polylines whose every point lies on the curve, ending on its
+/// end points, and within the scene's tolerance between them.
+#[test]
+fn the_scene_draws_formula_curves_and_live_splines() {
+    let mut s = craft3d_engine::Session::new(craft3d_engine::Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "C"}));
+    run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "C", "x": "10 mm * cos(t)", "y": "10 mm * sin(t)", "t": [0, "pi"]}),
+    );
+    run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "C", "through": [[20, 0], [25, 5], [30, 0]], "degree": 2, "live": true}),
+    );
+    let scene = s.scene(None).unwrap().expect("a document");
+    let lines = &scene.sketches[0].polylines;
+    let arc = lines.iter().find(|p| p.entity == "e3").expect("the curve");
+    assert_eq!(arc.curve, craft3d_engine::SketchCurve::Spline);
+    assert!(arc.points.len() > 8, "{}", arc.points.len());
+    for p in &arc.points {
+        assert!((p.length() - 10.0).abs() <= 1e-6, "{p:?}");
+    }
+    for pair in arc.points.windows(2) {
+        let sag = 10.0 - pair[0].lerp(pair[1], 0.5).length();
+        assert!(sag <= scene.tolerance * 1.01, "{sag} {}", scene.tolerance);
+    }
+    let first = arc.points[0];
+    let last = arc.points[arc.points.len() - 1];
+    assert!(
+        (first.x - 10.0).abs() < 1e-12 && first.y.abs() < 1e-12,
+        "{first:?}"
+    );
+    assert!(
+        (last.x + 10.0).abs() < 1e-9 && last.y.abs() < 1e-9,
+        "{last:?}"
+    );
+    let live = lines
+        .iter()
+        .find(|p| p.entity == "e7")
+        .unwrap_or_else(|| panic!("the live spline: {lines:?}"));
+    assert_eq!(live.points[0].x, 20.0);
+    assert_eq!(live.points[live.points.len() - 1].x, 30.0);
+}
