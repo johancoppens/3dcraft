@@ -53,6 +53,15 @@ impl Shell {
             .iter()
             .map(|status| status.id)
             .collect();
+        // A flight or a turn under way is put aside as where it was going.
+        if let Some(turn) = self.turn.take() {
+            self.state.camera = turn.to;
+            if turn.to.auto_fit
+                && let Some(scene) = &self.shown_scene
+            {
+                self.framed = scene.bbox;
+            }
+        }
         if let Some(before) = self.viewing.filter(|id| open.contains(id)) {
             self.views
                 .insert(before, (TabView::of(&self.state), self.framed));
@@ -83,6 +92,7 @@ impl Shell {
         self.fly = None;
         self.made_selection = None;
         self.tree_scroll = None;
+        self.tab_switched = true;
         // The session's selection is the document's: read it afresh.
         let drawn = self.select.drawn.wrapping_add(1);
         self.select = super::selection::Selecting::default();
@@ -94,39 +104,55 @@ impl Shell {
         self.viewing
     }
 
-    /// The box a flight to `to` frames in `scene`, or why there is none.
-    fn fly_box(&self, scene: &Scene, to: &FlyTo) -> Result<Bbox3, String> {
-        match to {
-            FlyTo::Feature(feature) => {
-                let bbox = scene.feature_box(feature);
-                if bbox.is_empty() {
-                    Err(format!(
-                        "nothing of `{}` is shown to frame (a feature that failed, or made no face of its own)",
-                        feature.chars().take(64).collect::<String>()
-                    ))
-                } else {
-                    Ok(bbox)
-                }
+    /// What a flight to `to` frames in `scene`, or why there is none: the
+    /// box around its points ([`Scene::feature_points`],
+    /// [`Scene::items_points`], read once), and whether the section cuts
+    /// every one of them away (farther than the cut's snap into the half
+    /// it takes away).
+    fn fly_target(&self, scene: &Scene, to: &FlyTo) -> Result<Target, String> {
+        let section = self.section().and_then(|section| {
+            let normal = section.normal.normalized()?;
+            Some((section.origin, normal))
+        });
+        let snap = craft3d_render::SECTION_SNAP * scene.bbox.diagonal();
+        let mut bbox = Bbox3::EMPTY;
+        let mut kept = false;
+        let mut visit = |point: Vec3| {
+            bbox.add(point);
+            if let Some((origin, normal)) = section
+                && (point - origin).dot(normal) <= snap
+            {
+                kept = true;
             }
+        };
+        match to {
+            FlyTo::Feature(feature) => scene.feature_points(feature, &mut visit),
             FlyTo::Selection => {
-                let items = &self.select.view.items;
-                if items.is_empty() {
+                if self.select.view.items.is_empty() {
                     return Err("nothing is selected".to_string());
                 }
-                let bbox = scene.items_box(items);
-                if bbox.is_empty() {
-                    Err("nothing of the selection is shown to frame".to_string())
-                } else {
-                    Ok(bbox)
-                }
+                scene.items_points(&self.select.view.items, &mut visit);
             }
         }
+        if bbox.is_empty() {
+            return Err(match to {
+                FlyTo::Feature(feature) => format!(
+                    "nothing of `{}` is shown to frame (a feature that failed, or made no face of its own)",
+                    feature.chars().take(64).collect::<String>()
+                ),
+                FlyTo::Selection => "nothing of the selection is shown to frame".to_string(),
+            });
+        }
+        Ok(Target {
+            bbox,
+            cut_away: section.is_some() && !kept,
+        })
     }
 
     /// Makes what a flight to `to` frames visible: a hidden sketch or
-    /// datum is shown, and a section that cuts away all of `bbox` is
-    /// switched off.
-    fn reveal(&mut self, scene: &Scene, to: &FlyTo, bbox: &Bbox3) {
+    /// datum is shown, and a section that cuts away all of it is switched
+    /// off.
+    fn reveal(&mut self, scene: &Scene, to: &FlyTo, cut_away: bool) {
         let features: Vec<&str> = match to {
             FlyTo::Feature(feature) => vec![feature.as_str()],
             FlyTo::Selection => self
@@ -147,20 +173,9 @@ impl Shell {
                 self.state.show.datums = true;
             }
         }
-        if let Some(section) = self.section()
-            && let Some((lo, hi)) = bbox.corners()
-        {
-            let cut_away = [lo.x, hi.x].iter().all(|&x| {
-                [lo.y, hi.y].iter().all(|&y| {
-                    [lo.z, hi.z]
-                        .iter()
-                        .all(|&z| (Vec3::new(x, y, z) - section.origin).dot(section.normal) > 0.0)
-                })
-            });
-            if cut_away {
-                self.state.section.on = false;
-                self.section_cache = None;
-            }
+        if cut_away {
+            self.state.section.on = false;
+            self.section_cache = None;
         }
     }
 
@@ -174,11 +189,17 @@ impl Shell {
         to: &FlyTo,
         started: Option<f64>,
     ) -> Result<(), String> {
-        let bbox = self.fly_box(scene, to)?;
-        self.reveal(scene, to, &bbox);
+        let target = self.fly_target(scene, to)?;
+        self.fly_with(scene, to, &target, started);
+        Ok(())
+    }
+
+    /// [`Self::fly_to`] with its target worked out.
+    fn fly_with(&mut self, scene: &Scene, to: &FlyTo, target: &Target, started: Option<f64>) {
+        self.reveal(scene, to, target.cut_away);
         let from = self.state.camera;
         let mut camera = from;
-        camera.fit(&bbox, self.aspect());
+        camera.fit(&at_least(&target.bbox, scene), self.aspect());
         camera.auto_fit = false;
         match started {
             Some(started) => {
@@ -195,7 +216,6 @@ impl Shell {
                 self.state.camera = camera;
             }
         }
-        Ok(())
     }
 
     /// Asks for a flight, made in the viewport's next frame, where the
@@ -219,17 +239,17 @@ impl Shell {
         }
     }
 
-    /// F: flies to the selection, or frames everything at once when
-    /// nothing is selected (or nothing of it is shown).
-    pub(crate) fn fit_key(&mut self, scene: Option<&Scene>) {
-        let shown = scene.is_some_and(|scene| {
-            !self.select.view.items.is_empty()
-                && !scene.items_box(&self.select.view.items).is_empty()
-        });
-        if shown {
-            self.request_fly(FlyTo::Selection);
-        } else {
-            self.fit_to(scene);
+    /// F at egui's time `now`: flies to the selection, or frames
+    /// everything at once when nothing is selected (or nothing of it is
+    /// shown). What is selected is looked at once.
+    pub(crate) fn fit_key(&mut self, scene: Option<&Scene>, now: f64) {
+        let to = FlyTo::Selection;
+        let target = scene
+            .filter(|_| !self.select.view.items.is_empty())
+            .and_then(|scene| Some((scene, self.fly_target(scene, &to).ok()?)));
+        match target {
+            Some((scene, target)) => self.fly_with(scene, &to, &target, Some(now)),
+            None => self.fit_to(scene),
         }
     }
 
@@ -239,11 +259,10 @@ impl Shell {
         self.made_selection.as_deref()
     }
 
-    /// After the selection changed: the row of the feature it is (a
-    /// feature or a body selected) or that made what it is (a face, an
-    /// edge or a vertex, by its persistent name) is marked and scrolled
-    /// into view in the list.
-    pub(crate) fn follow_selection_in_tree(&mut self, scene: &Scene) {
+    /// Which feature made the first face, edge or vertex selected (by
+    /// its persistent name), in `scene`: worked out again whenever the
+    /// selection or the model changes.
+    pub(crate) fn mark_made_selection(&mut self, scene: &Scene) {
         self.made_selection = self
             .select
             .view
@@ -251,10 +270,52 @@ impl Shell {
             .iter()
             .find(|item| item.kind.is_entity())
             .and_then(|item| scene.made_by(&item.name));
+    }
+
+    /// After the selection changed: the row of the feature it is (a
+    /// feature or a body selected) or that made what it is is scrolled
+    /// into view in the list.
+    pub(crate) fn scroll_tree_to_selection(&mut self) {
         self.tree_scroll = self
             .state
             .selected_feature
             .clone()
             .or_else(|| self.made_selection.clone());
     }
+}
+
+/// What a flight frames.
+struct Target {
+    bbox: Bbox3,
+    /// The section cuts all of it away.
+    cut_away: bool,
+}
+
+/// Smallest side of the box a flight frames, as a fraction of the
+/// diagonal of the model's box: a vertex, a short edge or a tiny face is
+/// framed with some of what is around it, not at the camera's nearest.
+pub const MIN_FLY_EXTENT: f64 = 0.02;
+
+/// `bbox` grown about its centre to at least [`MIN_FLY_EXTENT`] of the
+/// model's diagonal along every axis.
+fn at_least(bbox: &Bbox3, scene: &Scene) -> Bbox3 {
+    let (Some(center), Some((lo, hi))) = (bbox.center(), bbox.corners()) else {
+        return *bbox;
+    };
+    let side = MIN_FLY_EXTENT * scene.bbox.diagonal();
+    if !(side.is_finite() && side > 0.0) {
+        return *bbox;
+    }
+    let half = side * 0.5;
+    let grow = |lo: f64, hi: f64, c: f64| {
+        if hi - lo < side {
+            (c - half, c + half)
+        } else {
+            (lo, hi)
+        }
+    };
+    let (x0, x1) = grow(lo.x, hi.x, center.x);
+    let (y0, y1) = grow(lo.y, hi.y, center.y);
+    let (z0, z1) = grow(lo.z, hi.z, center.z);
+    Bbox3::from_points([Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1)])
 }

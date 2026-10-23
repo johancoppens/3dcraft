@@ -161,6 +161,9 @@ impl Shell {
         method: &str,
         params: Option<&Value>,
     ) -> Option<Result<Value, String>> {
+        // The active tab's view first: a method reads and changes that,
+        // and what it puts back when it refuses is that too.
+        self.follow_active_tab(session);
         let result = match method {
             "ui.get" => self.ui_get(session, params),
             "ui.set" => self.ui_set(session, params),

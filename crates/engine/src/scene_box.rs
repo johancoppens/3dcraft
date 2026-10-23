@@ -6,7 +6,7 @@
 use crate::scene::{Scene, SceneDatumShape};
 use crate::selection::{SelectionItem, SelectionKind};
 use craft3d_doc::PersistentName;
-use craft3d_math::Bbox3;
+use craft3d_math::{Bbox3, Vec3};
 
 impl Scene {
     /// The id (`F3`) of the feature `feature` names, by id or by name.
@@ -48,35 +48,25 @@ impl Scene {
         Some(root.feature.to_string())
     }
 
-    /// The box around the faces of [`Scene::mesh`] whose ids are in
-    /// `ids` (ascending).
-    fn faces_box(&self, ids: &[u32]) -> Bbox3 {
-        let mut bbox = Bbox3::EMPTY;
+    /// Every corner of the triangles of [`Scene::mesh`] whose face ids
+    /// are in `ids` (ascending): one pass over the mesh, however many
+    /// faces are asked for.
+    fn visit_faces(&self, ids: &[u32], visit: &mut dyn FnMut(Vec3)) {
         if ids.is_empty() {
-            return bbox;
+            return;
         }
         for (t, id) in self.mesh.face_ids.iter().enumerate() {
             if ids.binary_search(id).is_ok()
                 && let Some(corners) = self.mesh.corners(t)
             {
-                for corner in corners {
-                    bbox.add(corner);
-                }
+                corners.into_iter().for_each(&mut *visit);
             }
         }
-        bbox
     }
 
-    /// The box around what feature `feature` (by id or name) made, as
-    /// the scene shows it: the faces whose persistent names say it made
-    /// them, wherever they are now (a hole's wall in the plate it was cut
-    /// into); else its body; else its sketch or its datum. Empty when the
-    /// scene shows nothing of it (a feature that failed, one that made no
-    /// face of its own).
-    pub fn feature_box(&self, feature: &str) -> Bbox3 {
-        let Some(id) = self.feature_id(feature) else {
-            return Bbox3::EMPTY;
-        };
+    /// The ids in [`Scene::mesh`] of the faces whose persistent names say
+    /// feature `id` made them, wherever they are now.
+    fn made_face_ids(&self, id: &str) -> Vec<u32> {
         let mut ids = Vec::new();
         for body in self.bodies.iter() {
             for (k, name) in body.face_names.iter().enumerate() {
@@ -91,111 +81,158 @@ impl Scene {
                 }
             }
         }
-        ids.sort_unstable();
-        let faces = self.faces_box(&ids);
-        if !faces.is_empty() {
-            return faces;
-        }
-        self.body_box(id)
-            .or_else(|| self.sketch_box(id))
-            .or_else(|| self.datum_box(id))
-            .unwrap_or(Bbox3::EMPTY)
+        ids
     }
 
-    /// The box around the body of feature `id`.
-    fn body_box(&self, id: &str) -> Option<Bbox3> {
-        let body = self.bodies.iter().find(|b| b.feature == id)?;
-        Some(body.mesh.bbox()).filter(|b| !b.is_empty())
+    /// The points of the mesh of the body of feature `id`; false when
+    /// there is none.
+    fn visit_body(&self, id: &str, visit: &mut dyn FnMut(Vec3)) -> bool {
+        let Some(body) = self.bodies.iter().find(|b| b.feature == id) else {
+            return false;
+        };
+        body.mesh.positions.iter().copied().for_each(visit);
+        !body.mesh.positions.is_empty()
     }
 
-    /// The box around the sketch of feature `id`: its curves and points.
-    fn sketch_box(&self, id: &str) -> Option<Bbox3> {
-        let sketch = self.sketches.iter().find(|s| s.feature == id)?;
-        let mut bbox = Bbox3::from_points(sketch.points.iter().copied());
-        for polyline in &sketch.polylines {
-            for point in &polyline.points {
-                bbox.add(*point);
-            }
+    /// The points of the sketch of feature `id`: its curves and points,
+    /// or its origin when it has none; false when there is no sketch.
+    fn visit_sketch(&self, id: &str, visit: &mut dyn FnMut(Vec3)) -> bool {
+        let Some(sketch) = self.sketches.iter().find(|s| s.feature == id) else {
+            return false;
+        };
+        let mut any = false;
+        let points = sketch
+            .points
+            .iter()
+            .chain(sketch.polylines.iter().flat_map(|p| p.points.iter()));
+        for point in points {
+            visit(*point);
+            any = true;
         }
-        if bbox.is_empty() {
-            bbox.add(sketch.origin);
+        if !any {
+            visit(sketch.origin);
         }
-        Some(bbox)
+        true
     }
 
-    /// The box around the datum of feature `id`, as it is drawn.
-    fn datum_box(&self, id: &str) -> Option<Bbox3> {
-        let datum = self.datums.iter().find(|d| d.feature == id)?;
-        let points = match datum.shape {
+    /// The corners of the datum of feature `id`, as it is drawn; false
+    /// when there is no such datum.
+    fn visit_datum(&self, id: &str, visit: &mut dyn FnMut(Vec3)) -> bool {
+        let Some(datum) = self.datums.iter().find(|d| d.feature == id) else {
+            return false;
+        };
+        match datum.shape {
             SceneDatumShape::Plane { center, u, v } => {
-                vec![
+                for point in [
                     center + u + v,
                     center + u - v,
                     center - u + v,
                     center - u - v,
-                ]
+                ] {
+                    visit(point);
+                }
             }
-            SceneDatumShape::Axis { from, to } => vec![from, to],
-            SceneDatumShape::Point(point) => vec![point],
-        };
-        Some(Bbox3::from_points(points))
+            SceneDatumShape::Axis { from, to } => {
+                visit(from);
+                visit(to);
+            }
+            SceneDatumShape::Point(point) => visit(point),
+        }
+        true
     }
 
-    /// The box around what `items` (a selection, `select.get`) are in the
-    /// scene: a body's mesh, a feature's result ([`Self::feature_box`]),
-    /// a sketch, a datum, the triangles of a face, the polyline of an
-    /// edge, the point of a vertex. Items the scene does not show add
-    /// nothing; empty when none of them is shown.
-    pub fn items_box(&self, items: &[SelectionItem]) -> Bbox3 {
-        let mut bbox = Bbox3::EMPTY;
-        let mut add = |found: Bbox3| {
-            if let Some((lo, hi)) = found.corners() {
-                bbox.add(lo);
-                bbox.add(hi);
-            }
+    /// The points that show what feature `feature` (by id or name) made:
+    /// the corners of the triangles of the faces whose persistent names
+    /// say it made them, wherever they are now (a hole's wall in the
+    /// plate it was cut into); else its body's mesh; else its sketch or
+    /// its datum. None when the scene shows nothing of it (a feature that
+    /// failed, one that made no face of its own and has no body).
+    pub fn feature_points(&self, feature: &str, visit: &mut dyn FnMut(Vec3)) {
+        let item = SelectionItem {
+            kind: SelectionKind::Feature,
+            name: String::new(),
+            feature: feature.to_string(),
         };
+        self.items_points(std::slice::from_ref(&item), visit);
+    }
+
+    /// The box around [`Self::feature_points`].
+    pub fn feature_box(&self, feature: &str) -> Bbox3 {
+        let mut bbox = Bbox3::EMPTY;
+        self.feature_points(feature, &mut |p| bbox.add(p));
+        bbox
+    }
+
+    /// The points that show `items` (a selection, `select.get`) in the
+    /// scene: a body's mesh, a feature's result
+    /// ([`Self::feature_points`]), a sketch, a datum, the triangles of a
+    /// face, the polyline of an edge, the point of a vertex. The faces of
+    /// all items are gathered first and their triangles read in one pass
+    /// over the mesh. Items the scene does not show add nothing.
+    pub fn items_points(&self, items: &[SelectionItem], visit: &mut dyn FnMut(Vec3)) {
+        let mut faces = Vec::new();
         for item in items {
             let feature = item.feature.as_str();
+            let id = self.feature_id(feature).unwrap_or(feature);
             match item.kind {
                 SelectionKind::Body => {
-                    let id = self.feature_id(feature).unwrap_or(feature);
-                    add(self.body_box(id).unwrap_or(Bbox3::EMPTY));
+                    self.visit_body(id, visit);
                 }
                 SelectionKind::Feature | SelectionKind::Sketch | SelectionKind::Datum => {
-                    add(self.feature_box(feature));
+                    if self.feature_id(feature).is_none() {
+                        continue;
+                    }
+                    let made = self.made_face_ids(id);
+                    if made.is_empty() {
+                        let _ = self.visit_body(id, visit)
+                            || self.visit_sketch(id, visit)
+                            || self.visit_datum(id, visit);
+                    } else {
+                        faces.extend(made);
+                    }
                 }
                 SelectionKind::Face => {
                     if let Ok(found) = self.faces_named(Some(feature), &item.name) {
-                        add(self.faces_box(&found.ids));
+                        faces.extend(found.ids);
                     }
                 }
                 SelectionKind::Edge => {
                     if let Ok(found) = self.edges_named(Some(feature), Some(&item.name), &[])
                         && let Some(body) = self.bodies.get(found.body_index)
                     {
-                        let points = found
+                        found
                             .edges
                             .iter()
                             .filter_map(|&k| body.edges.get(k))
                             .flatten()
-                            .copied();
-                        add(Bbox3::from_points(points));
+                            .copied()
+                            .for_each(&mut *visit);
                     }
                 }
                 SelectionKind::Vertex => {
                     if let Ok(found) = self.vertices_named(Some(feature), Some(&item.name), &[])
                         && let Some(body) = self.bodies.get(found.body_index)
                     {
-                        let points = found
+                        found
                             .vertices
                             .iter()
                             .filter_map(|&k| body.vertices.get(k))
-                            .copied();
-                        add(Bbox3::from_points(points));
+                            .copied()
+                            .for_each(&mut *visit);
                     }
                 }
             }
         }
+        faces.sort_unstable();
+        faces.dedup();
+        self.visit_faces(&faces, visit);
+    }
+
+    /// The box around [`Self::items_points`]; empty when none of the
+    /// items is shown.
+    pub fn items_box(&self, items: &[SelectionItem]) -> Bbox3 {
+        let mut bbox = Bbox3::EMPTY;
+        self.items_points(items, &mut |p| bbox.add(p));
         bbox
     }
 }
@@ -352,5 +389,40 @@ mod tests {
             assert!(scene.items_box(&items).is_empty());
             assert!(scene.items_box(&[]).is_empty());
         }
+    }
+
+    /// Many faces at once are read in one pass and frame what each does
+    /// alone: every face of the cut plate, twice over, is the plate.
+    #[test]
+    fn all_faces_of_a_body_frame_the_body() {
+        let mut session = plate(1.0);
+        let scene = session.scene(None).unwrap().unwrap();
+        let body = scene.bodies.iter().find(|b| b.feature == "F3").unwrap();
+        let items: Vec<SelectionItem> = body
+            .face_names
+            .iter()
+            .chain(body.face_names.iter())
+            .map(|name| SelectionItem {
+                kind: SelectionKind::Face,
+                name: name.clone(),
+                feature: "F3".to_string(),
+            })
+            .collect();
+        assert_eq!(scene.items_box(&items), body.mesh.bbox());
+        let mut points = 0usize;
+        scene.items_points(&items, &mut |_| points += 1);
+        assert_eq!(points, 3 * body.mesh.triangles.len(), "each triangle once");
+        // A feature and the faces it made: the same box.
+        let made: Vec<SelectionItem> = body
+            .face_names
+            .iter()
+            .filter(|name| scene.made_by(name).as_deref() == Some("F2"))
+            .map(|name| SelectionItem {
+                kind: SelectionKind::Face,
+                name: name.clone(),
+                feature: "F3".to_string(),
+            })
+            .collect();
+        assert_eq!(scene.items_box(&made), scene.feature_box("Tool"));
     }
 }

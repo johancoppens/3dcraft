@@ -238,6 +238,22 @@ pub struct RenderStats {
     pub msaa: u32,
 }
 
+/// F pressed without Ctrl, Alt, Shift or Cmd, by the key's own event:
+/// Ctrl+F and the like are other shortcuts, not Fit.
+fn plain_f(input: &egui::InputState) -> bool {
+    input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key: egui::Key::F,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.is_none()
+        )
+    }) && input.modifiers.is_none()
+}
+
 /// Room the rows of the feature list keep on their right, in points,
 /// for the scroll bar that lies over them against the panel's edge.
 const TREE_BAR_ROOM: i8 = 12;
@@ -578,6 +594,8 @@ pub struct Shell {
     made_selection: Option<String>,
     /// The row of the feature list to bring into view in the next frame.
     tree_scroll: Option<String>,
+    /// The tab was switched and its selection not read yet.
+    tab_switched: bool,
     /// Where the last frame drew the name of each row of the feature
     /// list, and the part of the window the list shows its rows in.
     tree_row_hits: Vec<(String, egui::Rect)>,
@@ -813,6 +831,7 @@ impl Shell {
             fly: None,
             made_selection: None,
             tree_scroll: None,
+            tab_switched: false,
             tree_row_hits: Vec::new(),
             tree_view: None,
         }
@@ -2080,7 +2099,7 @@ impl Shell {
         // F over the list as over the viewport: to the selection.
         let fit = ui.rect_contains_pointer(ui.max_rect())
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.is_none());
+            && ui.input(plain_f);
         // Each document keeps where its list was scrolled to. The bar
         // lies against the panel's edge: the area takes the whole width
         // and the rows keep clear of the bar.
@@ -2244,7 +2263,8 @@ impl Shell {
             return;
         }
         if fit {
-            self.fit_key(self.shown_scene.clone().as_deref());
+            let now = ui.input(|i| i.time);
+            self.fit_key(self.shown_scene.clone().as_deref(), now);
         }
         // A click on a cause selects that feature (it does not toggle: the
         // point is to get there).
@@ -2685,7 +2705,7 @@ impl Shell {
                         f64::from(i.smooth_scroll_delta().y)
                     },
                     f64::from(i.zoom_delta()),
-                    i.key_pressed(egui::Key::F) && !typing,
+                    plain_f(i) && !typing,
                     pointer,
                 )
             });
@@ -2712,7 +2732,7 @@ impl Shell {
                 moving = true;
             }
             if fit {
-                self.fit_key(scene);
+                self.fit_key(scene, ui.input(|i| i.time));
             }
         }
         moving
