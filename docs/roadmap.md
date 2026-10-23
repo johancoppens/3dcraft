@@ -477,6 +477,7 @@ The first version for people outside the project; it follows M9 and does not wai
 - A view per document tab (camera, section, see-through, highlight), a double click on a feature or F flying the camera to what it made or to the selection (`ui.fit {feature | selection}` for agents), the feature list scrolled to the feature that made what is selected in the viewport, and its scroll bar against the panel's edge ([`control-protocol.md`](control-protocol.md) › *A view per tab*, *Flying to a feature*) (2026-10-23)
 - Version 0.1.0 with release notes in `CHANGELOG.md` that the Release workflow puts on a tag's draft release; *Copy details* in the status bar after a failed command and `session.report` for agents (version, commit, platform, renderer, the command with its params and error; [`control-protocol.md`](control-protocol.md) › *Bug reports*); the install guide per OS with the warnings of unsigned installers and the web version ([`guide/01-install.md`](guide/01-install.md)) (2026-10-23)
 - The web module's size held by the Strix gate (`cargo xtask web-size`): gzip -9 at most 8 MiB and at most 10 % over the committed baseline of 6,019,202 bytes (15,618,293 raw) ([`testing.md`](testing.md) › *Web module size*) (2026-10-23)
+- A Help menu (About 3DCraft, the user guide, keyboard shortcuts on F1 from one table the key handling uses, the data folder), recent files in the File menu kept per user, and a start screen without a document (New, Open, the guide's examples, recent files, the MCP configuration that connects an agent to this window) ([`control-protocol.md`](control-protocol.md) › *Help, recent files and the start screen*, [guide chapter 3](guide/03-window.md)) (2026-10-23)
 
 #### Open
 - [ ] The web build on more than one thread: the engine in a Web Worker (the page stays responsive during a long regeneration), or a threaded build (atomics, `SharedArrayBuffer`, which needs COOP/COEP headers on every host); a first run of the Release workflow's web job
@@ -591,6 +592,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-23 | minor | R1: Jigs at level 1 (public variables, a parameter form, a Jig package) and a few Jigs to try, moved from the ideas into R1 (the developer) |
+| 2026-10-23 | minor | R1: Help menu, recent files, keyboard shortcuts window and a start screen in the window |
 | 2026-10-23 | minor | Ideas: an AI in the browser driving the web build, researched and parked until a web AI calls WebMCP tools for every user |
 | 2026-10-22 | minor | `craft3d-web` moved from M10 to R1 (the developer's request): 3DCraft in the browser on one thread, packaged as `3dcraft-web-<version>.zip` like the other Craft apps |
 | 2026-10-22 | minor | R1: the second field test (history, conflicts, constraints, negative values, units, a change request, the guide); its open findings added under R1 › Open |

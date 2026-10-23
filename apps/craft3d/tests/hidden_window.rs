@@ -103,6 +103,8 @@ fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
         .arg(dir.join(format!("recovery-{renderer}")))
         .env("WAYLAND_DISPLAY", display)
         .env_remove("DISPLAY")
+        // Never the developer's list of recent files.
+        .env_remove("CRAFT3D_RECENT_FILE")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

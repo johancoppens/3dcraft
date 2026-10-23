@@ -276,6 +276,16 @@ impl Default for Show {
     }
 }
 
+/// The windows of the Help menu that are open: About 3DCraft and the
+/// keyboard shortcuts (F1). `ui.set {"dialogs": {"shortcuts": true}}`
+/// opens one, for an agent that shows the person around.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Dialogs {
+    pub about: bool,
+    pub shortcuts: bool,
+}
+
 impl Default for Panels {
     fn default() -> Self {
         Self {
@@ -518,6 +528,8 @@ pub struct UiState {
     /// `ui.set {"show": {"datums": false}}` hides the datums,
     /// `{"show": {"sketches": false}}` the sketches.
     pub show: Show,
+    /// The Help menu's windows that are open.
+    pub dialogs: Dialogs,
 }
 
 /// What each document tab keeps of the view: the fields of [`UiState`]
@@ -885,6 +897,11 @@ mod tests {
                 datums: false,
                 sketches: false,
             },
+            // Added with the Help menu (2026-10-23).
+            dialogs: Dialogs {
+                about: true,
+                shortcuts: false,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -912,6 +929,7 @@ mod tests {
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
                 "show": {"datums": false, "sketches": false},
+                "dialogs": {"about": true, "shortcuts": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

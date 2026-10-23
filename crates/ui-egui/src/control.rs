@@ -331,6 +331,8 @@ impl Shell {
             "closing": self.closing(),
             "quitting": self.quitting(),
             "selection": self.selection().json(),
+            "recent": self.recent_json(),
+            "startScreen": self.start_shown(),
         }))
     }
 
