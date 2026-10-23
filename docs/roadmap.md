@@ -594,6 +594,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | R1 scope closed after the projected-view export: finishing and cosmetic fixes only, then the field test (the developer) |
 | 2026-10-23 | minor | R1: formulas (conditions, tables, conditional features, curves from formulas) moved into R1 (the developer) |
 | 2026-10-23 | minor | R1: Jigs at level 1 (public variables, a parameter form, a Jig package) and a few Jigs to try, moved from the ideas into R1 (the developer) |
 | 2026-10-23 | minor | R1: Help menu, recent files, keyboard shortcuts window and a start screen in the window |
