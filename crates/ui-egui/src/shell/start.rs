@@ -46,7 +46,7 @@ macro_rules! example {
 }
 
 /// The guide's examples, in the order its README lists them.
-pub const EXAMPLES: [Example; 9] = [
+pub const EXAMPLES: [Example; 10] = [
     example!("bracket", "L-bracket", "extrude, fillet, holes"),
     example!("flange", "Bolt flange", "pattern, boolean, chamfer"),
     example!("case", "Shelled case", "fillet, shell"),
@@ -56,6 +56,7 @@ pub const EXAMPLES: [Example; 9] = [
     example!("hopper", "Hopper", "loft"),
     example!("panel", "Perforated panel", "sketch pattern"),
     example!("wedge", "Wedge", "datums, fill, intersect"),
+    example!("gear", "Involute gear", "curves from formulas, pattern"),
 ];
 
 /// The logo: the application's icon (`packaging/icons`).
@@ -287,9 +288,9 @@ pub(crate) struct StartMemory {
 
 /// How the card is laid out for the room the window gives it: roomy
 /// (a large logo, large thumbnails five to a row) or, below
-/// [`ROOMY_HEIGHT`], compact (a smaller logo, small thumbnails all in one
-/// row where the width allows), so it fits without scrolling down to
-/// 1024 × 700 and 1366 × 768.
+/// [`ROOMY_HEIGHT`], compact (a smaller logo, small thumbnails, also five
+/// to a row: two rows for the ten examples), so it fits without scrolling
+/// down to 1024 × 700 and 1366 × 768.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StartLayout {
     /// The card's width, in points.
@@ -297,6 +298,9 @@ pub struct StartLayout {
     pub logo: f32,
     pub thumb: egui::Vec2,
     pub per_row: usize,
+    /// The space between the card's parts, in units of `Tokens::inset`
+    /// (less in the compact layout).
+    pub spacing: f32,
 }
 
 /// The least height (of the room for the card, in points) for the roomy
@@ -312,13 +316,15 @@ impl StartLayout {
                 logo: 64.0,
                 thumb: egui::vec2(128.0, 96.0),
                 per_row: 5,
+                spacing: 1.0,
             }
         } else {
             Self {
                 width: size.x.min(980.0),
                 logo: 40.0,
                 thumb: egui::vec2(96.0, 72.0),
-                per_row: EXAMPLES.len(),
+                per_row: 5,
+                spacing: 0.6,
             }
         }
     }
@@ -424,6 +430,8 @@ impl Shell {
         if self.start.pictures.is_none() {
             self.start.pictures = Some(Pictures::load(ui.ctx()));
         }
+        // Less space between the parts in the compact layout.
+        let space = tokens.inset * self.start.layout.map_or(1.0, |l| l.spacing);
         card.show(ui, |ui| {
             ui.set_width(width - 48.0);
             ui.vertical_centered(|ui| {
@@ -434,12 +442,12 @@ impl Shell {
                 }
                 ui.label(egui::RichText::new(super::PRODUCT).size(26.0).strong());
                 ui.colored_label(dim, format!("Version {}", super::help::VERSION));
-                ui.add_space(tokens.inset * 0.4);
+                ui.add_space(space * 0.4);
                 ui.colored_label(
                     dim,
                     "Parametric CAD built for AI. Start a document, open one, or let an agent model while you watch.",
                 );
-                ui.add_space(tokens.inset);
+                ui.add_space(space);
                 // Centred: the two buttons laid out in a row of their own width.
                 let size = egui::vec2(0.0, 30.0);
                 let gold = egui::Button::new(
@@ -466,13 +474,13 @@ impl Shell {
                     },
                 );
             });
-            ui.add_space(tokens.inset * 1.4);
+            ui.add_space(space * 1.4);
             ui.label(egui::RichText::new("Examples").strong());
-            ui.add_space(tokens.inset * 0.4);
+            ui.add_space(space * 0.4);
             self.example_grid(ui);
-            ui.add_space(tokens.inset * 1.4);
+            ui.add_space(space * 1.4);
             ui.separator();
-            ui.add_space(tokens.inset * 0.6);
+            ui.add_space(space * 0.6);
             let left = 200.0_f32.min(ui.available_width() * 0.3);
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(
@@ -505,7 +513,11 @@ impl Shell {
             .layout
             .unwrap_or_else(|| StartLayout::for_room(egui::vec2(760.0, ROOMY_HEIGHT)));
         let thumb = layout.thumb;
-        let gap = if layout.per_row > 5 { gap * 0.8 } else { gap };
+        let gap = if layout.thumb.x < 110.0 {
+            gap * 0.8
+        } else {
+            gap
+        };
         let label_height = 20.0;
         let card = egui::vec2(thumb.x, thumb.y + label_height);
         let per_row = {
@@ -710,9 +722,12 @@ mod tests {
             egui::vec2(984.0, 616.0),
         ] {
             let compact = StartLayout::for_room(room);
-            assert_eq!(compact.per_row, EXAMPLES.len());
+            // Two rows of five for the ten examples.
+            assert_eq!(compact.per_row, 5);
+            assert_eq!(EXAMPLES.len().div_ceil(compact.per_row), 2);
             assert!(compact.width <= room.x);
             assert!(compact.thumb.y < roomy.thumb.y && compact.logo < roomy.logo);
+            assert!(compact.spacing < roomy.spacing);
         }
     }
 

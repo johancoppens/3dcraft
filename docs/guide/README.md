@@ -60,7 +60,7 @@ numbers yourself.
 - [15. Reference](15-reference.md): every command by family, the MCP tools, keys and mouse, units and
   functions, the command-line programs.
 - [Example models](../examples/README.md): ten small parts (a bracket, a flange, a gear, …), each a script
-  with a picture that checks its own volume. The window's start screen builds most of them with one click.
+  with a picture that checks its own volume. The window's start screen builds all ten with one click.
 - [The Jigs collection](https://github.com/johancoppens/3dcraft-jigs): Jigs to download and use.
 
 ## Words used in this guide

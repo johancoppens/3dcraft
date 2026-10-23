@@ -16,7 +16,7 @@ mod common;
 
 use common::checked::run;
 use common::{error, session_in, workdir};
-use craft3d_engine::Session;
+use craft3d_engine::{EXPORT_QUALITIES, Session};
 use serde_json::{Value, json};
 
 /// A big plate with a pin of radius 10 far from it: the automatic
@@ -113,6 +113,78 @@ fn qualities_keep_a_small_pin_round_on_a_big_part() {
         let other = export(&mut s, json!({"path": name}));
         assert_eq!(triangles(&other), triangles(&normal), "{name}");
     }
+}
+
+/// What file.export documents for a mesh: with nothing given it is
+/// quality normal of [`EXPORT_QUALITIES`] (its multiple of the automatic
+/// tolerance and its angle), the very file `quality: normal` writes; a
+/// tolerance given alone has no angle criterion and is the mesh the
+/// tessellator makes of each body at that tolerance, as every export was
+/// before 2026-10-23 (an oracle outside file.export: the saved document
+/// regenerated and meshed here).
+#[test]
+fn nothing_given_is_quality_normal_and_a_tolerance_alone_the_old_mesh() {
+    let dir = workdir("export-quality", "defaults");
+    let mut s = parts(&dir);
+    let quality = |name: &str| {
+        EXPORT_QUALITIES
+            .iter()
+            .find(|(n, ..)| *n == name)
+            .copied()
+            .unwrap()
+    };
+    let (_, normal_scale, normal_degrees) = quality("normal");
+    let (_, coarse_scale, _) = quality("coarse");
+    let default = export(&mut s, json!({"path": "default.stl"}));
+    let normal = export(&mut s, json!({"path": "normal.stl", "quality": "normal"}));
+    let coarse = export(&mut s, json!({"path": "coarse.stl", "quality": "coarse"}));
+    assert_eq!(default["quality"], "normal", "{default}");
+    assert_eq!(default["angle"], normal_degrees, "{default}");
+    assert_eq!(default["tolerance"], normal["tolerance"]);
+    let tolerance = |v: &Value| v["tolerance"].as_f64().unwrap();
+    // One automatic tolerance, times each quality's multiple.
+    let auto = tolerance(&default) / normal_scale;
+    assert!(
+        (tolerance(&coarse) / coarse_scale - auto).abs() <= 1e-12 * auto,
+        "{default} {coarse}"
+    );
+    let bytes = |name: &str| std::fs::read(dir.join(name)).unwrap();
+    assert_eq!(bytes("default.stl"), bytes("normal.stl"));
+
+    // A tolerance alone.
+    let alone = export(
+        &mut s,
+        json!({"path": "alone.stl", "tolerance": tolerance(&default)}),
+    );
+    assert_eq!(alone["angle"], Value::Null, "{alone}");
+    assert_eq!(alone["tolerance"], default["tolerance"]);
+    run(&mut s, "file.save", json!({"path": "parts.3dcraft"}));
+    let doc = craft3d_format::load(&dir.join("parts.3dcraft")).unwrap();
+    let regen = craft3d_regen::regenerate(&doc);
+    let params = craft3d_tess::TessParams {
+        chordal_tolerance: tolerance(&default),
+        ..craft3d_tess::TessParams::default()
+    };
+    assert_eq!(params.max_angle, None);
+    let triangles: usize = regen
+        .bodies()
+        .map(|(_, body)| {
+            craft3d_tess::tessellate_body(body, &params)
+                .unwrap()
+                .triangles
+                .len()
+        })
+        .sum();
+    assert_eq!(
+        alone["triangles"].as_u64(),
+        Some(triangles as u64),
+        "{alone}"
+    );
+    // Not the default's: the angle criterion rounds the pin.
+    assert!(
+        alone["triangles"].as_u64().unwrap() < default["triangles"].as_u64().unwrap(),
+        "{alone} {default}"
+    );
 }
 
 #[test]

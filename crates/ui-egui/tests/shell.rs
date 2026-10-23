@@ -1095,7 +1095,7 @@ fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
         [
             "New",
             "Open…",
-            "Open for Editing",
+            "Open for editing",
             "Save",
             "Save As…",
             "Import…",
@@ -1164,7 +1164,7 @@ fn clicking_file_then_an_entry_asks_for_that_action() {
     }
     found.dedup();
     // The Jig's entries are greyed out for a model without public
-    // parameters: Open for Editing is for a Jig in use, Export as Jig for
+    // parameters: Open for editing is for a Jig in use, Export as Jig for
     // a model with public parameters.
     let offered: Vec<FileAction> = FileAction::ALL
         .into_iter()
@@ -1185,6 +1185,8 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
         dirty,
         close_asks: dirty,
         jig_in_use: false,
+        undo: None,
+        redo: None,
         length_unit: "mm",
         angle_unit: "deg",
     };

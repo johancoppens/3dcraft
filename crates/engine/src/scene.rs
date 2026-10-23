@@ -572,6 +572,12 @@ pub struct DocumentStatus {
     /// A published Jig opened to be used (`.3dcraftjig`): only its
     /// parameters change, and Save saves it as a model.
     pub jig_in_use: bool,
+    /// The name of the step `edit.undo` would undo (`Set teeth`), `None`
+    /// when there is nothing to undo: what an Edit menu says.
+    pub undo: Option<String>,
+    /// The name of the step `edit.redo` would redo, `None` when there is
+    /// nothing to redo.
+    pub redo: Option<String>,
 }
 
 /// A scene, or why it could not be built.
@@ -2284,6 +2290,8 @@ impl Session {
             dirty: open.dirty(),
             close_asks: open.close_asks(),
             jig_in_use: open.jig_in_use,
+            undo: open.history.undo_labels().last().map(str::to_string),
+            redo: open.history.redo_labels().next().map(str::to_string),
             length_unit: doc.units.length.symbol(),
             angle_unit: match doc.units.angle {
                 AngleUnit::Degree => "deg",

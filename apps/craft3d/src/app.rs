@@ -807,6 +807,20 @@ impl Desk {
             self.doc_action(action);
             return true;
         }
+        // Undo and Redo of the Edit menu and Ctrl+Z, on the engine thread
+        // like every command that rebuilds the scene. Reported as a file
+        // action is: not a commit of the Parameters form, which judges
+        // only its own (an undo back to a failing state is no value of
+        // the form's that broke the model).
+        if let Some(request) = self.host.shell.take_edit_action() {
+            let command = request.action.command();
+            self.start(
+                Waiting::File(command),
+                command.to_string(),
+                Box::new(move |session| Outcome::Ran(craft3d_ui_egui::run_edit(session, request))),
+            );
+            return true;
+        }
         if let Some(path) = self.host.shell.take_open_recent() {
             let path = std::path::PathBuf::from(path);
             self.start(
@@ -1980,7 +1994,7 @@ mod tests {
         );
     }
 
-    /// Open for Editing makes the model of a Jig on the engine thread,
+    /// Open for editing makes the model of a Jig on the engine thread,
     /// as opening a file does.
     #[test]
     fn open_for_editing_runs_on_the_engine_thread() {
@@ -2014,6 +2028,70 @@ mod tests {
         let report = desk.host.shell.last_command.clone().unwrap();
         assert_eq!(report.label, "jig.edit");
         assert!(report.ok, "{}", report.text);
+    }
+
+    /// Undo and Redo of the Edit menu run on the engine thread and are not
+    /// a commit of the Parameters form: an undo back to a state in which a
+    /// feature fails is not judged as a value that broke the model (no
+    /// trouble, no Back to last good).
+    #[test]
+    fn undo_on_the_engine_thread_is_no_verdict_of_the_parameter_form() {
+        let (requests, incoming) = mpsc::channel::<Request>();
+        drop(requests);
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut session = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            ("variable.publish", json!({"name": "w"})),
+            // A width of nothing: the block fails.
+            ("variable.set", json!({"name": "w", "expr": "0 mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        let id = session.document_status().unwrap().id;
+        let mut desk =
+            Desk::new(Host::new(session), incoming, picker).with_engine_thread(Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        for _ in 0..6 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+        }
+        desk.host
+            .shell
+            .request_edit_action(craft3d_ui_egui::EditAction::Undo, id);
+        let mut ran = false;
+        for _ in 0..500 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+            ran |= desk.away();
+            if ran && !desk.away() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for _ in 0..4 {
+            draw(&mut desk, &ctx, &mut time, Vec::new());
+        }
+        let report = desk.host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "edit.undo");
+        assert!(report.ok, "{}", report.text);
+        assert!(
+            !desk.host.session.failed_features().is_empty(),
+            "back to the failing state"
+        );
+        let Host { session, shell, .. } = &mut desk.host;
+        let state = shell
+            .handle_method(session, "ui.get", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state["parameters"]["trouble"],
+            Value::Null,
+            "{}",
+            state["parameters"]
+        );
     }
 
     /// The Parameters tab's commit runs on the engine thread, as every

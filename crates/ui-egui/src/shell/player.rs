@@ -357,83 +357,163 @@ impl Shell {
         ))
     }
 
-    /// The player's row of buttons under the timeline's slider.
+    /// The player's buttons under the timeline's slider: the five that
+    /// move through the history, then speed, loop and orbit. One row
+    /// where the panel is wide enough, else two rows, each centred
+    /// ([`player_rows`]), so no button is left alone on a row of its own.
     pub(crate) fn player_controls(&mut self, ui: &mut egui::Ui) {
+        let rows = player_rows(ui.available_width(), button_side(ui));
+        let row = |ui: &mut egui::Ui, pad: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = PLAYER_GAP;
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+                add(ui);
+            });
+        };
+        match rows {
+            PlayerRows::One => row(ui, 0.0, &mut |ui| {
+                self.transport_buttons(ui);
+                ui.add_space(PLAYER_GROUP_GAP);
+                self.setting_buttons(ui);
+            }),
+            PlayerRows::Two {
+                transport,
+                settings,
+            } => {
+                row(ui, transport, &mut |ui| self.transport_buttons(ui));
+                row(ui, settings, &mut |ui| self.setting_buttons(ui));
+            }
+        }
+    }
+
+    /// First step, step back, play or pause, step forward, to end.
+    fn transport_buttons(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let steps = self.timeline.steps;
         let shown = self.timeline.shown_step().clamp(1, steps.max(1));
         let play = self.state.timeline;
         let at_end = self.at_end();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if icon_button(ui, Icon::Start, "First step", false, shown > 1, &tokens)
-                .on_hover_text("First step (Home)")
-                .clicked()
-            {
-                self.go_to_step(1);
-            }
-            if icon_button(ui, Icon::StepBack, "Step back", false, shown > 1, &tokens)
-                .on_hover_text("Step back (←)")
-                .clicked()
-            {
-                self.go_to_step(shown.saturating_sub(1));
-            }
-            let (icon, tip) = if play.playing {
-                (Icon::Pause, "Pause (Space)")
-            } else {
-                (
-                    Icon::Play,
-                    "Play the history step by step (Space). Each step waits until its model is built.",
-                )
-            };
-            let name = if play.playing { "Pause" } else { "Play" };
-            if icon_button(ui, icon, name, false, true, &tokens)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                self.toggle_playing();
-            }
-            if icon_button(ui, Icon::StepForward, "Step forward", false, shown < steps, &tokens)
-                .on_hover_text("Step forward (→)")
-                .clicked()
-            {
-                self.go_to_step(shown.saturating_add(1));
-            }
-            if icon_button(ui, Icon::End, "To end", false, !at_end, &tokens)
-                .on_hover_text(
-                    "To end: show the whole history again and remove the rollback marker \
-                     (an edit of the document, undone with Undo). The End key shows the end \
-                     in the view only and leaves the marker.",
-                )
-                .clicked()
-            {
-                self.go_to_end_and_unroll();
-            }
-            ui.add_space(4.0);
-            let speed = speed_text(play.speed);
-            if ui
-                .add(egui::Button::new(speed).min_size(vec2(
-                    0.0,
-                    button_side(ui),
-                )))
-                .on_hover_text("Playback speed: 0.5×, 1× or 2×")
-                .clicked()
-            {
-                self.state.timeline.speed = play.next_speed();
-            }
-            if icon_button(ui, Icon::Loop, "Loop", play.looping, true, &tokens)
-                .on_hover_text("Loop: start again at the first step after the last")
-                .clicked()
-            {
-                self.state.timeline.looping = !play.looping;
-            }
-            if icon_button(ui, Icon::Orbit, "Orbit", play.orbit, true, &tokens)
-                .on_hover_text("Orbit: turn the camera slowly while it plays")
-                .clicked()
-            {
-                self.state.timeline.orbit = !play.orbit;
-            }
-        });
+        if icon_button(ui, Icon::Start, "First step", false, shown > 1, &tokens)
+            .on_hover_text("First step (Home)")
+            .clicked()
+        {
+            self.go_to_step(1);
+        }
+        if icon_button(ui, Icon::StepBack, "Step back", false, shown > 1, &tokens)
+            .on_hover_text("Step back (←)")
+            .clicked()
+        {
+            self.go_to_step(shown.saturating_sub(1));
+        }
+        let (icon, tip) = if play.playing {
+            (Icon::Pause, "Pause (Space)")
+        } else {
+            (
+                Icon::Play,
+                "Play the history step by step (Space). Each step waits until its model is built.",
+            )
+        };
+        let name = if play.playing { "Pause" } else { "Play" };
+        if icon_button(ui, icon, name, false, true, &tokens)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            self.toggle_playing();
+        }
+        if icon_button(
+            ui,
+            Icon::StepForward,
+            "Step forward",
+            false,
+            shown < steps,
+            &tokens,
+        )
+        .on_hover_text("Step forward (→)")
+        .clicked()
+        {
+            self.go_to_step(shown.saturating_add(1));
+        }
+        if icon_button(ui, Icon::End, "To end", false, !at_end, &tokens)
+            .on_hover_text(
+                "To end: show the whole history again and remove the rollback marker \
+                 (an edit of the document, undone with Undo). The End key shows the end \
+                 in the view only and leaves the marker.",
+            )
+            .clicked()
+        {
+            self.go_to_end_and_unroll();
+        }
+    }
+
+    /// Speed, loop and orbit.
+    fn setting_buttons(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let play = self.state.timeline;
+        let speed = speed_text(play.speed);
+        if ui
+            .add(egui::Button::new(speed).min_size(vec2(SPEED_WIDTH, button_side(ui))))
+            .on_hover_text("Playback speed: 0.5×, 1× or 2×")
+            .clicked()
+        {
+            self.state.timeline.speed = play.next_speed();
+        }
+        if icon_button(ui, Icon::Loop, "Loop", play.looping, true, &tokens)
+            .on_hover_text("Loop: start again at the first step after the last")
+            .clicked()
+        {
+            self.state.timeline.looping = !play.looping;
+        }
+        if icon_button(ui, Icon::Orbit, "Orbit", play.orbit, true, &tokens)
+            .on_hover_text("Orbit: turn the camera slowly while it plays")
+            .clicked()
+        {
+            self.state.timeline.orbit = !play.orbit;
+        }
+    }
+}
+
+/// The space between two of the player's buttons, in points.
+const PLAYER_GAP: f32 = 2.0;
+/// The extra space between the five that move and the settings.
+const PLAYER_GROUP_GAP: f32 = 4.0;
+/// The speed button's width, the same for 0.5×, 1× and 2× (wide enough
+/// for each), so the rows are measured before they are drawn.
+const SPEED_WIDTH: f32 = 34.0;
+
+/// How the player's buttons are laid out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PlayerRows {
+    /// All eight in one row.
+    One,
+    /// The five that move on the first row, speed, loop and orbit on the
+    /// second, each row moved right by this much to be centred.
+    Two { transport: f32, settings: f32 },
+}
+
+/// The widths of the two groups of buttons for icon buttons of `side`
+/// points: the five that move, and speed, loop and orbit.
+pub(crate) fn player_group_widths(side: f32) -> (f32, f32) {
+    let icon = side + 4.0;
+    (
+        5.0 * icon + 4.0 * PLAYER_GAP,
+        SPEED_WIDTH + 2.0 * icon + 2.0 * PLAYER_GAP,
+    )
+}
+
+/// One row when `available` points hold all eight buttons, else two,
+/// centred.
+pub(crate) fn player_rows(available: f32, side: f32) -> PlayerRows {
+    let (transport, settings) = player_group_widths(side);
+    if available >= transport + PLAYER_GAP + PLAYER_GROUP_GAP + settings {
+        PlayerRows::One
+    } else {
+        let centred = |width: f32| ((available - width) * 0.5).max(0.0);
+        PlayerRows::Two {
+            transport: centred(transport),
+            settings: centred(settings),
+        }
     }
 }
 
@@ -494,7 +574,7 @@ fn icon_button(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
-    use super::{Player, Tick};
+    use super::{Player, PlayerRows, Tick, player_group_widths, player_rows};
     use crate::state::Playback;
     use serde_json::json;
 
@@ -531,6 +611,48 @@ mod tests {
         // Settling with nothing asked for changes nothing.
         p.settled();
         assert_eq!(p.tick(play, 104.0, 3, 3), Tick::Stop);
+    }
+
+    #[test]
+    fn the_buttons_take_one_row_or_two_centred_never_one_alone() {
+        let side = 24.0;
+        let (transport, settings) = player_group_widths(side);
+        assert!(settings < transport);
+        // Wide: one row.
+        assert_eq!(player_rows(400.0, side), PlayerRows::One);
+        assert_eq!(
+            player_rows(transport + settings + 6.0, side),
+            PlayerRows::One
+        );
+        // From just too narrow for one row down to the panel's least
+        // width: two rows, both inside the width and centred.
+        let least = super::super::TREE_PANEL_MIN - 2.0 * 10.0;
+        assert!(least >= transport, "{least} < {transport}");
+        let mut width = transport + settings + 5.9;
+        while width >= least {
+            match player_rows(width, side) {
+                PlayerRows::Two {
+                    transport: a,
+                    settings: b,
+                } => {
+                    assert!(a >= 0.0 && a + transport <= width + 1e-3, "{width}");
+                    assert!(b >= 0.0 && b + settings <= width + 1e-3, "{width}");
+                    assert!((a + transport * 0.5 - width * 0.5).abs() < 1e-3);
+                    assert!((b + settings * 0.5 - width * 0.5).abs() < 1e-3);
+                }
+                PlayerRows::One => panic!("one row at {width}"),
+            }
+            width -= 1.0;
+        }
+        // Narrower than a row (never, with the panel's least width): no
+        // negative padding.
+        assert_eq!(
+            player_rows(50.0, side),
+            PlayerRows::Two {
+                transport: 0.0,
+                settings: 0.0
+            }
+        );
     }
 
     #[test]

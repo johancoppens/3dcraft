@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 mod controls;
 mod dialogs;
+mod edit;
 pub mod help;
 mod icons;
 mod layout;
@@ -41,6 +42,7 @@ mod views;
 
 pub use controls::ControlsLayout;
 pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
+pub use edit::{EditAction, EditRequest, MAX_EDIT_QUEUE, run_edit};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};
 pub use params::{
@@ -139,7 +141,7 @@ impl FileAction {
             FileAction::Import => "Import…",
             FileAction::Export => "Export…",
             FileAction::ExportJig => "Export as Jig…",
-            FileAction::OpenForEditing => "Open for Editing",
+            FileAction::OpenForEditing => "Open for editing",
         }
     }
 
@@ -177,6 +179,10 @@ impl FileAction {
         self == FileAction::Import
     }
 }
+
+/// The least width of the feature panel, in points: the history player's
+/// five buttons that move through the history still fit on a row.
+pub(crate) const TREE_PANEL_MIN: f32 = 190.0;
 
 /// The window's title for a document: its file's name (`untitled` when it
 /// has none), a `*` when it has changes that are not on disk, and the
@@ -632,6 +638,9 @@ pub struct Shell {
     /// What a tab, the File menu or a shortcut asked for, until the host
     /// takes it.
     doc_action: Option<DocAction>,
+    /// Undo or Redo asked by the Edit menu or a shortcut, until the host
+    /// takes it.
+    edit_actions: std::collections::VecDeque<EditRequest>,
     /// Where the last frame drew the tabs and their close buttons.
     tab_hits: Vec<(TabPart, egui::Rect)>,
     /// Where the last frame drew the question's buttons.
@@ -900,6 +909,7 @@ impl Shell {
             tabs: Vec::new(),
             closing: None,
             doc_action: None,
+            edit_actions: std::collections::VecDeque::new(),
             tab_hits: Vec::new(),
             closing_hits: Vec::new(),
             tab_scrolled: None,
@@ -1737,6 +1747,7 @@ impl Shell {
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
         self.file_shortcuts(ui, status.is_some());
+        self.edit_shortcuts(ui, status.as_ref());
         self.tab_shortcuts(ui);
         self.help_keys(ui);
         // The next step of the history player, when it is time.
@@ -1748,9 +1759,10 @@ impl Shell {
             .frame(chrome_frame(tokens.menu_fill))
             .show(ui, |ui| {
                 ui.style_mut().visuals = tokens.chrome_visuals();
-                self.menu_bar(ui, status.is_some());
+                self.menu_bar(ui, status.as_ref());
             });
-        if self.file_action.is_some() || self.doc_action.is_some() {
+        if self.file_action.is_some() || self.doc_action.is_some() || !self.edit_actions.is_empty()
+        {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
@@ -1809,6 +1821,7 @@ impl Shell {
             let panel = egui::Panel::left("craft3d-tree")
                 .resizable(true)
                 .default_size(260.0)
+                .min_size(TREE_PANEL_MIN)
                 .frame(frame)
                 .show(ui, |ui| self.side_panel(ui, status.is_some()));
             self.tree_panel = Some(panel.response.rect);
@@ -1852,8 +1865,12 @@ impl Shell {
         self.help_windows(ui);
     }
 
-    /// The File shortcuts, wherever the pointer is.
+    /// The File shortcuts, wherever the pointer is; not under a modal
+    /// dialog or the question before closing.
     fn file_shortcuts(&mut self, ui: &egui::Ui, has_document: bool) {
+        if self.dialog_open() || self.closing.is_some() {
+            return;
+        }
         // Shift+S before S: the longer shortcut would also match the
         // shorter one.
         for action in [
@@ -1873,7 +1890,8 @@ impl Shell {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui, has_document: bool) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
+        let has_document = status.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 for action in FileAction::ALL {
@@ -1896,6 +1914,7 @@ impl Shell {
                 ui.separator();
                 self.menu_documents(ui);
             });
+            self.edit_menu(ui, status);
             self.help_menu(ui);
         });
     }

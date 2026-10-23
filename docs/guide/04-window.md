@@ -12,7 +12,7 @@ open, save, import and export files, and let you look, play, click and select.
 
 | | Part | What it is for |
 |---|---|---|
-| 1 | **File** and **Help** menus | Files, recent files, Jigs; the guide, the keys, About |
+| 1 | **File**, **Edit** and **Help** menus | Files, recent files, Jigs; Undo and Redo; the guide, the keys, About |
 | 2 | **Tabs** | One per open document |
 | 3 | **Feature list** | The history of the design, in order, with each step's status |
 | 4 | **Eye** | Hides a feature's body, sketch or datum in the view |
@@ -53,7 +53,7 @@ The **File** menu:
 |---|---|---|
 | **New** | Ctrl+N | A new, empty document in a new tab |
 | **Open…** | Ctrl+O | Opens a `.3dcraft` document or a `.3dcraftjig` Jig (a STEP file is imported with Import…) |
-| **Open for Editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
+| **Open for editing** | | For a Jig in use: a new untitled model of it, to change as you like ([chapter 5](05-jigs.md)) |
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
 | **Save As…** | Ctrl+Shift+S | Saves under a new name |
 | **Import…** | Ctrl+I | Reads a STEP file into the document |
@@ -67,6 +67,17 @@ Under them, the open documents: click one to switch to it.
 A recent file that is not there any more is greyed out. The list is kept in `3dcraft/recent-files.json`
 in your state folder (next to the autosaves), and two windows open at once each keep what the other
 added. The browser keeps no recent files.
+
+The **Edit** menu:
+
+| Item | Keys | Does |
+|---|---|---|
+| **Undo** | Ctrl+Z | Undoes the last change to the active document; the item names it (**Undo Set teeth**) |
+| **Redo** | Ctrl+Shift+Z or Ctrl+Y | Redoes the change last undone |
+
+An item is greyed out when there is nothing to undo or redo, and while a parameter is being dragged or set. Every change counts, whoever made it: you,
+or an agent over MCP. While you type into a field, Ctrl+Z undoes your typing instead. In a Jig in use
+the only changes are those of its parameters, so Undo takes back the last parameter you set.
 
 The **Help** menu:
 
@@ -128,6 +139,8 @@ Under the timeline is a **player**, like a video player's:
 | **1×** | | The speed: 0.5×, 1× or 2× (click to change) |
 | Loop | | Starts again at the first step after the last |
 | Orbit | | Turns the camera slowly while it plays |
+
+In a narrow feature panel the speed, Loop and Orbit move to a second row, under the other five.
 
 The keys work while the pointer is over the view or the feature list and you are not typing in a field.
 Each step is shown once its model is built, and for at least 0.8 s at 1×, so a heavy model never skips a

@@ -193,6 +193,53 @@ fn only_ui_methods_are_handled_and_each_listed_one_exists() {
     }
 }
 
+/// The methods' own documentation names everything: every key of the
+/// ui.get reply in its summary, every field ui.set takes in its params
+/// and its summary (picked, which it refuses, only in the summary).
+#[test]
+fn ui_get_and_ui_set_document_every_key() {
+    let mut session = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    plate_and_post(&mut session);
+    let reply = call(&mut shell, &mut session, "ui.get", json!({}));
+    let method = |name: &str| UI_METHODS.iter().find(|m| m.name == name).unwrap();
+    let get = method("ui.get");
+    for key in reply.as_object().unwrap().keys() {
+        assert!(
+            get.summary.contains(key.as_str()),
+            "ui.get's summary does not name `{key}`"
+        );
+    }
+    let set = method("ui.set");
+    let state = reply["state"].as_object().unwrap();
+    for key in state.keys() {
+        if key == "picked" {
+            assert!(!set.params.contains("\"picked\""));
+            assert!(set.summary.contains("picked"));
+            assert!(get.summary.contains("picked"));
+            continue;
+        }
+        assert!(
+            set.params.contains(&format!("\"{key}\"")),
+            "ui.set's params do not name `{key}`"
+        );
+        assert!(
+            get.summary.contains(key.as_str()),
+            "ui.get's summary does not name state.{key}"
+        );
+        // Each accepts its own value back.
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({ key: state[key] }),
+        );
+    }
+    assert!(set.params.contains("\"view\""));
+    // Said once.
+    assert_eq!(set.summary.matches("cannot be set").count(), 1);
+}
+
 #[test]
 fn ui_get_reports_the_state_the_scene_and_the_tree() {
     let mut session = Session::new(Workspace::none());

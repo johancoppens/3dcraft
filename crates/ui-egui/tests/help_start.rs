@@ -47,20 +47,26 @@ fn rooted(dir: &std::path::Path) -> Session {
 struct Window {
     ctx: egui::Context,
     time: f64,
+    size: egui::Vec2,
 }
 
 impl Window {
     fn new() -> Self {
+        Self::sized(1100.0, 760.0)
+    }
+
+    fn sized(width: f32, height: f32) -> Self {
         Self {
             ctx: egui::Context::default(),
             time: 0.0,
+            size: vec2(width, height),
         }
     }
 
     fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) {
         self.time += 1.0 / 60.0;
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 760.0))),
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
             events,
             ..Default::default()
@@ -180,6 +186,43 @@ fn the_start_screen_is_up_while_no_document_is_open() {
     run(&mut session, "file.close", json!({"discard": true}));
     window.frame(&mut shell, &mut session, Vec::new());
     assert!(shell.start_shown());
+}
+
+#[test]
+fn all_ten_examples_fit_on_the_start_screen_at_common_window_sizes() {
+    assert_eq!(EXAMPLES.len(), 10);
+    for (width, height) in [
+        (1024.0, 700.0),
+        (1280.0, 800.0),
+        (1366.0, 768.0),
+        (1600.0, 1000.0),
+    ] {
+        let mut session = Session::new(Workspace::none());
+        let mut shell = Shell::new();
+        let mut window = Window::sized(width, height);
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        let viewport = shell.viewport_rect().unwrap();
+        let cards: Vec<egui::Rect> = shell
+            .start_hits()
+            .iter()
+            .filter(|(name, _)| name.starts_with("example:"))
+            .map(|(_, rect)| *rect)
+            .collect();
+        assert_eq!(cards.len(), 10, "{width} x {height}");
+        // Two rows of five, every card inside the viewport: nothing to
+        // scroll to.
+        let mut rows: Vec<f32> = cards.iter().map(|r| r.top().round()).collect();
+        rows.dedup();
+        assert_eq!(rows.len(), 2, "{width} x {height}: rows at {rows:?}");
+        for card in &cards {
+            assert!(
+                viewport.contains_rect(*card),
+                "{width} x {height}: card {card:?} outside {viewport:?}"
+            );
+        }
+    }
 }
 
 #[test]

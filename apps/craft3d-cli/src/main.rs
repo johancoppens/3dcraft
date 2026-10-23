@@ -141,14 +141,16 @@ Options:
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
                            [--sketch S | --face F [--feature B]
-                            | --set S [--width W] [--gap G]]
+                            | --set S [--width W] [--gap G]
+                            | --view V [--projection P] [--hidden H]]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
 tolerance and names; .stl, .3mf or .obj tessellate the bodies and write a
 mesh; .dxf or .svg write the flat outline of a sketch or of a flat face,
-at true size, for laser cutting; .3dcraft writes the document again in the
-current format version.
+at true size, for laser cutting, or without --sketch, --face or --set a
+drawing of the model as seen (its edges and silhouettes, a projected
+view); .3dcraft writes the document again in the current format version.
 
 Options:
   --quality Q     For a mesh: coarse, normal (default) or fine, how
@@ -171,7 +173,15 @@ Options:
                   the document's units (e.g. '600 mm'); faces that do
                   not fit start a new row. Default: one row
   --gap G         With --set: the space between faces on the sheet, an
-                  expression. Default: 5 mm";
+                  expression. Default: 5 mm
+  --view V        For a drawing of the model as seen (.dxf or .svg
+                  without --sketch, --face or --set): iso, front, back,
+                  left, right, top or bottom. Default iso
+  --projection P  For that drawing: orthographic (to scale, the default)
+                  or perspective
+  --hidden H      For that drawing: omit (the default) leaves out what
+                  lies behind a face, dashed draws it dashed on the layer
+                  hidden";
 
 const HELP_REPLAY: &str = "\
 Usage: craft3d-cli replay FILE --out OUT [--size WxH] [--view V] [--orbit DEG]

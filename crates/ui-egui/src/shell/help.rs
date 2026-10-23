@@ -13,7 +13,9 @@
 //! browser the page opens a link itself (egui's `open_url`, which the web
 //! runner turns into `window.open`).
 
-use super::{FileAction, Shell, close_shortcut, next_shortcut, player, previous_shortcut};
+use super::{
+    EditAction, FileAction, Shell, close_shortcut, next_shortcut, player, previous_shortcut,
+};
 use crate::theme::color;
 use std::path::PathBuf;
 
@@ -51,14 +53,16 @@ pub enum External {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutGroup {
     Files,
+    Edit,
     View,
     History,
     Mouse,
 }
 
 impl ShortcutGroup {
-    pub const ALL: [ShortcutGroup; 4] = [
+    pub const ALL: [ShortcutGroup; 5] = [
         ShortcutGroup::Files,
+        ShortcutGroup::Edit,
         ShortcutGroup::View,
         ShortcutGroup::History,
         ShortcutGroup::Mouse,
@@ -67,6 +71,7 @@ impl ShortcutGroup {
     pub fn title(self) -> &'static str {
         match self {
             ShortcutGroup::Files => "Files and documents",
+            ShortcutGroup::Edit => "Undo and redo (not while typing in a field)",
             ShortcutGroup::View => "View and selection",
             ShortcutGroup::History => "History player (over the viewport or the feature list)",
             ShortcutGroup::Mouse => "Mouse",
@@ -103,7 +108,7 @@ impl Shortcut {
 
 /// Every shortcut of the window, in the order the window lists them.
 pub fn shortcuts() -> Vec<Shortcut> {
-    use ShortcutGroup::{Files, History, Mouse, View};
+    use ShortcutGroup::{Edit, Files, History, Mouse, View};
     let keys = |group, shortcut, action| Shortcut {
         group,
         input: ShortcutInput::Keys(shortcut),
@@ -136,6 +141,20 @@ pub fn shortcuts() -> Vec<Shortcut> {
         keys(Files, close_shortcut(), "Close the document"),
         keys(Files, next_shortcut(), "Next document"),
         keys(Files, previous_shortcut(), "Previous document"),
+    ]);
+    for action in EditAction::ALL {
+        let what = match action {
+            EditAction::Undo => "Undo the last change to the document",
+            EditAction::Redo => "Redo the change last undone",
+        };
+        rows.extend(
+            action
+                .shortcuts()
+                .iter()
+                .map(|shortcut| keys(Edit, *shortcut, what)),
+        );
+    }
+    rows.extend([
         keys(
             View,
             bare(FIT_KEY),
@@ -432,6 +451,11 @@ mod tests {
         for action in FileAction::ALL {
             if let Some(shortcut) = action.shortcut() {
                 assert!(has(shortcut), "{action:?}");
+            }
+        }
+        for action in EditAction::ALL {
+            for shortcut in action.shortcuts() {
+                assert!(has(*shortcut), "{action:?} {shortcut:?}");
             }
         }
         for shortcut in [

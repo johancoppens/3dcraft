@@ -34,7 +34,7 @@ fn jig_export(session: &mut Session, params: &Value) -> Run {
     let path = p.required_str("path")?.to_string();
     if session.document()?.jig_in_use {
         return fail(format!(
-            "{command}: this is a Jig in use, opened from its .3dcraftjig file; open it for editing first (jig.edit, File, Open for Editing) and export that model"
+            "{command}: this is a Jig in use, opened from its .3dcraftjig file; open it for editing first (jig.edit, File, Open for editing) and export that model"
         ));
     }
     if !session.document()?.history.current().is_jig() {
