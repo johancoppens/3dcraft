@@ -148,7 +148,8 @@ Parameters tab shows, and only the parameters change. The feature list is there 
 timeline to play), not to edit; an agent that tries gets *this is a Jig: … save it as a model to edit it*.
 **Save** saves it as a `.3dcraft` model under a name you choose, never over the `.3dcraftjig`; **Open for
 editing** (on the Parameters tab or in the File menu, `jig.edit`) makes a new untitled model of it, set as
-it is, to change as you like.
+it is, to change as you like. Closing a Jig whose parameters you changed asks whether to **save the result as a
+model**; the Jig's file stays as it is.
 
 When a value breaks the model (a fillet that no longer fits, a shell thicker than the box, an assertion
 that fails) the field turns red with the reason, and a banner over the model says *This value breaks the

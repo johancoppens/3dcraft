@@ -249,8 +249,21 @@ impl OpenDocument {
     /// True when `file.close` refuses it without `discard`: it has changes
     /// that are not on disk and are worth keeping (it has a file, or
     /// features). A new document nothing was added to closes freely.
+    ///
+    /// A Jig in use asks when its parameters changed since it was opened
+    /// (docs/decisions.md, 2026-10-23): its file is never written, so the
+    /// values set are kept only by saving them as a model.
     pub(crate) fn close_asks(&self) -> bool {
+        if self.jig_in_use {
+            return self.parameters_changed();
+        }
         self.dirty() && (self.path.is_some() || !self.history.current().features.is_empty())
+    }
+
+    /// A Jig in use whose parameters were changed since it was opened (or
+    /// last saved as a model).
+    pub(crate) fn parameters_changed(&self) -> bool {
+        self.jig_in_use && self.saved_revision != Some(self.history.revision())
     }
 
     /// The bodies and statuses of the current document. A body that went

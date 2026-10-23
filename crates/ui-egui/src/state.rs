@@ -238,6 +238,9 @@ pub struct DocTab {
     /// Closing it from its tab asks first (Save, Discard, Cancel): what
     /// `file.close` would refuse without `discard`.
     pub asks_to_close: bool,
+    /// A published Jig opened to be used (`.3dcraftjig`): closing it after
+    /// its parameters changed asks whether to save them as a model.
+    pub jig_in_use: bool,
 }
 
 /// The question the window asks before it closes a document with unsaved
@@ -257,6 +260,10 @@ pub struct Closing {
     /// unsaved changes is asked about after this one, and the
     /// application stops once none is left; Cancel keeps the window.
     pub quitting: bool,
+    /// It is a Jig in use whose parameters were changed: the question is
+    /// whether to save the result as a model (Save as model…, Close,
+    /// Cancel); the Jig's own file is never written.
+    pub jig: bool,
 }
 
 /// What the viewport draws besides the bodies and their edges.

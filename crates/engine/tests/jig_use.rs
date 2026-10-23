@@ -82,11 +82,13 @@ fn a_jig_is_published_from_a_model_and_used_read_only() {
     );
     assert!(u.document_status().unwrap().jig_in_use);
     assert!((volume(&mut u) - 40.0 * 20.0 * 5.0).abs() < 1e-6);
-    // Its parameters change, and that is no unsaved change.
+    // Its parameters change, and that is no unsaved change of its file;
+    // closing it asks (decided 2026-10-23: the values set are kept only
+    // by saving them as a model).
     run(&mut u, "param.set", json!({"values": {"w": 60}}));
     assert!((volume(&mut u) - 60.0 * 20.0 * 5.0).abs() < 1e-6);
     let status = u.document_status().unwrap();
-    assert!(!status.dirty && !status.close_asks);
+    assert!(!status.dirty && status.close_asks);
     // Undo and redo of its parameters are fine; nothing else changes it.
     run(&mut u, "edit.undo", json!({}));
     assert!((volume(&mut u) - 40.0 * 20.0 * 5.0).abs() < 1e-6);
@@ -209,4 +211,37 @@ fn a_jig_is_published_whole_whatever_the_rollback_marker() {
         1,
         "no document left behind by the thumbnail"
     );
+}
+
+/// Closing a Jig in use asks only when its parameters were changed
+/// (docs/decisions.md, 2026-10-23): file.close refuses then, as for a
+/// model with unsaved changes; the tab keeps no unsaved mark.
+#[test]
+fn closing_a_jig_with_changed_parameters_asks() {
+    let dir = workdir("jig-use", "close");
+    let mut s = session_in(&dir);
+    design(&mut s);
+    publish(&mut s);
+    run(&mut s, "jig.export", json!({"path": "plate.3dcraftjig"}));
+    run(&mut s, "file.close", json!({"discard": true}));
+    run(&mut s, "file.open", json!({"path": "plate.3dcraftjig"}));
+    let status = s.document_status().unwrap();
+    assert!(!status.close_asks && !status.dirty);
+    run(&mut s, "param.set", json!({"values": {"w": 60}}));
+    let status = s.document_status().unwrap();
+    assert!(status.close_asks, "changed parameters ask");
+    assert!(
+        !status.dirty,
+        "no unsaved mark: the Jig's file is unchanged"
+    );
+    let e = refused(&mut s, "file.close", json!({}));
+    assert!(e.contains("save the result as a model"), "{e}");
+    // Saved as a model, it closes freely.
+    run(&mut s, "file.save", json!({"path": "mine.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    // Or dropped.
+    run(&mut s, "file.open", json!({"path": "plate.3dcraftjig"}));
+    run(&mut s, "param.set", json!({"values": {"w": 30}}));
+    run(&mut s, "file.close", json!({"discard": true}));
+    assert!(s.document_status().is_none());
 }

@@ -713,6 +713,11 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
     let Some(open) = session.documents.get(index) else {
         return fail("file.close: there is no document to close");
     };
+    if open.close_asks() && !discard && open.jig_in_use {
+        return fail(
+            "file.close: this Jig's parameters were changed; save the result as a model (file.save with a path ending in .3dcraft), or pass {\"discard\": true}",
+        );
+    }
     if open.close_asks() && !discard {
         return fail(
             "file.close: the document has unsaved changes; save it, or pass {\"discard\": true}",

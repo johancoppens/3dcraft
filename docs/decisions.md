@@ -18,6 +18,8 @@ Formulas go into R1 too (the developer, 2026-10-23: "an enormous added value"), 
 
 Tables follow the same line: 3DCraft gets tables as a general part of a document (rows and columns, a parameter chosen from a table, formulas that look a value up), because any design can use them; the contents of tables for one kind of product (GT2 and HTD belt profiles, ISO gear modules, bolt sizes) live in the Jigs, or in a Jig that holds only tables and that other Jigs use. Data a modelling operation needs to be correct on any shape (the ISO metric thread sizes of the thread feature) is the exception, not the habit.
 
+Closing a Jig in use whose parameters changed since it was opened asks "You changed this Jig's parameters. Save the result as a model?" with Save as model…, Close and Cancel (the developer, 2026-10-23): the tab keeps no unsaved mark, since the Jig's file is unchanged, but the close asks, `file.close` refuses it without `discard`, as it does a model with unsaved changes, and the values set survive a crash: the recovery brings them back as a model with no file of its own (the simplest honest option: the `.3dcraftjig` is never written).
+
 **3DCraft stays light** (the developer, 2026-10-23): no catalogues of parts, standards or materials, no bundled content beyond the guide's examples, no dependency for one product's sake; the download and the web module stay small and the start fast. Light is not incomplete: the kernel and the general modelling operations must still become complete (2026-10-14). When a request would add weight, ask whether it works on any shape for anyone; if not, it belongs in a Jig or a separate project.
 
 ### 2026-10-22: Identifiers and installers (decided by an agent; the developer may overturn)

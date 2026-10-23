@@ -723,10 +723,10 @@ impl WebHost {
                 let Some(status) = self.session.document_status() else {
                     return outcome;
                 };
-                let own = status
-                    .path
-                    .clone()
-                    .filter(|_| !self.pickers || self.writable.contains(&status.id));
+                // A Jig in use is saved as a model, named first.
+                let own = status.path.clone().filter(|_| {
+                    !status.jig_in_use && (!self.pickers || self.writable.contains(&status.id))
+                });
                 match own {
                     // Written through a file dialog's handle: the page
                     // closes the tab once the write succeeded.
@@ -749,7 +749,7 @@ impl WebHost {
                             purpose: Purpose::Save {
                                 close: Some(document),
                             },
-                            name: suggested_name(None),
+                            name: suggested_name(status.path.as_deref()),
                         });
                     }
                 }
@@ -1067,6 +1067,15 @@ mod tests {
         assert!(!host.session.document_status().unwrap().jig_in_use);
         // Open for Editing: a new model of a Jig in use.
         host.receive(&jig.name, jig.bytes.clone(), None).unwrap();
+        // Changed and closed from its tab: Save names a model.
+        host.session
+            .execute("param.set", &json!({"values": {"w": 50}}))
+            .unwrap();
+        let status = host.session.document_status().unwrap();
+        assert!(status.close_asks && !status.dirty);
+        host.doc_action(DocAction::SaveAndClose(status.index));
+        assert_eq!(host.dialog.as_ref().unwrap().name, "plate.3dcraft");
+        host.dialog = None;
         host.file_action(FileAction::OpenForEditing);
         let status = host.session.document_status().unwrap();
         assert!(!status.jig_in_use && status.path.is_none());

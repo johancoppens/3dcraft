@@ -833,7 +833,7 @@ impl Desk {
             let DocAction::SaveAndClose(document) = action else {
                 return;
             };
-            self.host.ask_name_then_close(&mut self.picker);
+            self.host.ask_name_then_close(&mut self.picker, document);
             self.start(
                 Waiting::File("file.activate"),
                 "file.activate".to_string(),

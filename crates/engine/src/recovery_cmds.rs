@@ -11,7 +11,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("recovery.list", "List Recoverable Documents", "{}",
         "Looks in the recovery directory and lists the autosaved documents of launches that ended without a clean quit: id, name, original path, time of the autosave (seconds since the Unix epoch), size in bytes, revision, feature count, whether it can be opened and what is wrong with it. Also says whether autosave works: its directory, interval, last write and problem.", doc: false, recovery_list),
     spec!("recovery.open", "Recover Document", r#"{"id": string}"#,
-        "Opens a recoverable document (an id from recovery.list) as an unsaved document that remembers its original path, and makes it the active one. Its recovery file stays until the document is saved or closed.", doc: false, recovery_open),
+        "Opens a recoverable document (an id from recovery.list) as an unsaved document that remembers its original path, and makes it the active one. Its recovery file stays until the document is saved or closed. A Jig in use (a .3dcraftjig whose parameters were changed) comes back as a model with those values and no path (asModel: true): its Jig file is never written, so it is saved under a new .3dcraft name.", doc: false, recovery_open),
     spec!("recovery.discard", "Discard Recoverable Documents", r#"{"id": string, "all": boolean = false}"#,
         "Removes the recovery file of one recoverable document (an id from recovery.list), or of all of them with all: true. Give one of the two. Documents of a 3DCraft that is still running are never touched.", doc: false, recovery_discard),
 ];
@@ -87,7 +87,15 @@ mod native {
             .map_err(|e| CommandError::new(format!("recovery.open: {e}")))?;
         let features = adopted.document.features.len();
         let read = adopted.read.clone();
-        let mut open = OpenDocument::new(adopted.document, adopted.path.clone());
+        // A Jig in use comes back as a model with the values it was set
+        // to, without a file: its .3dcraftjig is never written, so saving
+        // asks for a model's name.
+        let from_jig = adopted
+            .path
+            .as_deref()
+            .is_some_and(craft3d_format::is_jig_path);
+        let path = adopted.path.clone().filter(|_| !from_jig);
+        let mut open = OpenDocument::new(adopted.document, path);
         open.id = number;
         // Nothing of it is on disk under its own name as it is now.
         open.saved_revision = None;
@@ -108,6 +116,9 @@ mod native {
             "recovered": true,
             "warning": adopted.warning,
         });
+        if let (true, Some(map)) = (from_jig, result.as_object_mut()) {
+            map.insert("asModel".into(), true.into());
+        }
         // What reading the file changed, as `file.open` says it.
         if let (false, Some(map)) = (read.is_empty(), result.as_object_mut()) {
             map.insert("warnings".into(), read.into());
