@@ -208,6 +208,22 @@ pub struct Tokens {
     /// on (a switch, a chosen segment, a number field's bar).
     pub glass: Rgb,
     pub accent: Rgb,
+    /// The second accent, cool against the warm one (the developer's
+    /// choice, 2026-10-24): `accent` is what acts (a button, the active
+    /// tab, a toggle that is on), `info_accent` is information and
+    /// connection (the hover ring of an example, the bar beside the agent
+    /// block and the start screen's headings). `info_ink` is the same hue
+    /// dark enough for text on the light panels (links, the recent files,
+    /// a text field's focus ring); `info_code` light enough for text on a
+    /// black plate (the program's name in a line of code).
+    pub info_accent: Rgb,
+    pub info_ink: Rgb,
+    pub info_code: Rgb,
+    /// Width of the info accent's bars (beside a heading, beside the
+    /// agent block) and the corner radius of an example's thumbnail, in
+    /// points.
+    pub info_bar_width: f32,
+    pub thumb_radius: u8,
     /// A control's fill (0 to 255, the colour is `glass`) and its text
     /// size in points; how opaque an inert control is drawn (0 to 1).
     pub control_opacity: u8,
@@ -418,6 +434,12 @@ impl Tokens {
             divider_inset: 0.2,
             glass: [43, 42, 40],
             accent: [224, 169, 62],
+            // Indigo #4C5AA6; its ink #3C4890 and its light tint #A9B3EC.
+            info_accent: [76, 90, 166],
+            info_ink: [60, 72, 144],
+            info_code: [169, 179, 236],
+            info_bar_width: 3.0,
+            thumb_radius: 6,
             control_opacity: 32,
             control_font: 13.0,
             disabled_opacity: 0.35,
@@ -499,6 +521,10 @@ impl Tokens {
         visuals.window_fill = color(self.panel_fill);
         visuals.override_text_color = Some(color(self.text));
         visuals.selection.bg_fill = color(self.selection_fill);
+        // egui's default blue clashes with the warm greys: links and a
+        // text field's focus ring take the info ink.
+        visuals.hyperlink_color = color(self.info_ink);
+        visuals.selection.stroke = egui::Stroke::new(1.0, color(self.info_ink));
         self.round(&mut visuals);
         visuals
     }
@@ -515,6 +541,7 @@ impl Tokens {
         visuals.panel_fill = color(self.menu_fill);
         visuals.window_fill = color(self.menu_fill);
         visuals.override_text_color = Some(color(self.chrome_text));
+        visuals.hyperlink_color = color(self.info_code);
         for (widget, fill) in [
             (&mut visuals.widgets.hovered, self.tab_hover_fill),
             (&mut visuals.widgets.active, self.tab_active_fill),
@@ -601,6 +628,14 @@ impl Tokens {
             ("text on panel_fill", self.text, self.panel_fill),
             ("text_dim on panel_fill", self.text_dim, self.panel_fill),
             ("text on selection_fill", self.text, self.selection_fill),
+            ("info_ink on panel_fill", self.info_ink, self.panel_fill),
+            (
+                "info_ink on selection_fill",
+                self.info_ink,
+                self.selection_fill,
+            ),
+            ("info_code on plate_fill", self.info_code, self.plate_fill),
+            ("info_code on menu_fill", self.info_code, self.menu_fill),
             ("ok on panel_fill", self.ok, self.panel_fill),
             ("failed on panel_fill", self.failed, self.panel_fill),
             ("chrome_text on menu_fill", self.chrome_text, self.menu_fill),
@@ -832,5 +867,23 @@ mod tests {
         assert!(chrome.dark_mode);
         assert_eq!(chrome.override_text_color, Some(color(tokens.chrome_text)));
         assert_eq!(chrome.panel_fill, color(tokens.menu_fill));
+        // Links in the info accent, not egui's default blue.
+        assert_eq!(panels.hyperlink_color, color(tokens.info_ink));
+        assert_eq!(chrome.hyperlink_color, color(tokens.info_code));
+    }
+
+    /// The info accent is a part of a control (a ring, a bar) on the
+    /// panels and the viewport: 3:1 or better, and cool, so it is told
+    /// apart from the warm action accent.
+    #[test]
+    fn the_info_accent_reads_as_a_part_and_is_cool() {
+        let tokens = Tokens::default();
+        for fill in [tokens.panel_fill, tokens.viewport_background] {
+            assert!(contrast(tokens.info_accent, fill) >= 3.0, "{fill:?}");
+        }
+        let [r, _, b] = tokens.info_accent;
+        assert!(b > r);
+        let [r, _, b] = tokens.accent;
+        assert!(r > b);
     }
 }

@@ -15,7 +15,7 @@
 //! thumbnails), which a test keeps in step with the scripts.
 
 use super::{FileAction, Shell};
-use crate::theme::{color, color_alpha};
+use crate::theme::{Tokens, color, color_alpha};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
@@ -475,7 +475,7 @@ impl Shell {
                 );
             });
             ui.add_space(space * 1.4);
-            ui.label(egui::RichText::new("Examples").strong());
+            heading(ui, &tokens, "Examples");
             ui.add_space(space * 0.4);
             self.example_grid(ui);
             ui.add_space(space * 1.4);
@@ -488,7 +488,7 @@ impl Shell {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(left);
-                        ui.label(egui::RichText::new("Recent").strong());
+                        heading(ui, &tokens, "Recent");
                         ui.add_space(tokens.inset * 0.3);
                         if cfg!(target_arch = "wasm32") {
                             ui.colored_label(dim, "The browser keeps no recent files.");
@@ -498,7 +498,25 @@ impl Shell {
                     },
                 );
                 ui.add_space(tokens.inset * 1.5);
-                ui.vertical(|ui| self.agent_block(ui));
+                // The agent block with the info accent's bar beside it.
+                let pad = (tokens.info_bar_width + tokens.inset * 0.9).round();
+                let block = egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: pad.clamp(0.0, 64.0) as i8,
+                        ..egui::Margin::ZERO
+                    })
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| self.agent_block(ui));
+                    });
+                let rect = block.response.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        rect.min,
+                        egui::vec2(tokens.info_bar_width, rect.height()),
+                    ),
+                    egui::CornerRadius::same(1),
+                    color(tokens.info_accent),
+                );
             });
         });
     }
@@ -558,22 +576,22 @@ impl Shell {
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let painter = ui.painter_at(rect.expand(2.0));
                     let image = egui::Rect::from_min_size(rect.min, thumb);
-                    let radius = egui::CornerRadius::same(tokens.radius);
-                    painter.rect_filled(image, radius, color(tokens.plate_fill));
+                    let radius = egui::CornerRadius::same(tokens.thumb_radius);
                     if let Some(Some(id)) = index.and_then(|i| thumbs.get(i)) {
-                        painter.image(
-                            *id,
-                            image,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+                        egui::Image::new((*id, thumb))
+                            .corner_radius(radius)
+                            .paint_at(ui, image);
+                    } else {
+                        painter.rect_filled(image, radius, color(tokens.viewport_background));
                     }
-                    if response.hovered() {
+                    // The ring of the info accent: a click here opens, it
+                    // does not act on the document.
+                    if response.hovered() || response.has_focus() {
                         painter.rect_stroke(
                             image,
                             radius,
-                            egui::Stroke::new(2.0, color(tokens.accent)),
-                            egui::StrokeKind::Inside,
+                            egui::Stroke::new(2.0, color(tokens.info_accent)),
+                            egui::StrokeKind::Outside,
                         );
                     }
                     painter.text(
@@ -601,7 +619,7 @@ impl Shell {
     fn agent_block(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let dim = color(tokens.text_dim);
-        ui.label(egui::RichText::new("Connect an AI agent").strong());
+        heading(ui, &tokens, "Connect an AI agent");
         if cfg!(target_arch = "wasm32") {
             ui.colored_label(
                 dim,
@@ -610,27 +628,40 @@ impl Shell {
             return;
         }
         let setup = self.start.agent.clone();
+        let font = egui::FontId::monospace(11.5);
         let mono = |text: &str| {
             egui::RichText::new(text)
-                .font(egui::FontId::monospace(11.5))
+                .font(font.clone())
                 .color(color(tokens.plate_text))
         };
         // A line of code on a dark plate, cut at the plate's edge (the
-        // whole line on hover).
-        let plate = |ui: &mut egui::Ui, text: &str| {
+        // whole line on hover); the program it starts in the info accent's
+        // light tint.
+        let plate = |ui: &mut egui::Ui, program: &str, text: &str| {
+            let (head, rest) = match text.strip_prefix(program) {
+                Some(rest) => (program, rest),
+                None => ("", text),
+            };
+            let mut job = egui::text::LayoutJob::default();
+            for (part, ink) in [(head, tokens.info_code), (rest, tokens.plate_text)] {
+                job.append(
+                    part,
+                    0.0,
+                    egui::TextFormat::simple(font.clone(), color(ink)),
+                );
+            }
             egui::Frame::new()
                 .fill(color(tokens.plate_fill))
                 .corner_radius(egui::CornerRadius::same(tokens.radius))
                 .inner_margin(egui::Margin::symmetric(8, 5))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(mono(text)).truncate())
-                        .on_hover_text(text);
+                    ui.add(egui::Label::new(job).truncate()).on_hover_text(text);
                 });
         };
         if !setup.listening() {
             ui.colored_label(dim, "Start the window so that it listens:");
-            plate(ui, &setup.window_command());
+            plate(ui, "craft3d", &setup.window_command());
             ui.add_space(tokens.inset * 0.3);
         }
         ui.colored_label(
@@ -641,7 +672,11 @@ impl Shell {
                 "Then give your MCP client this server:"
             },
         );
-        plate(ui, &setup.server_command());
+        plate(
+            ui,
+            &shell_word(&setup.cli, setup.windows),
+            &setup.server_command(),
+        );
         let config = setup.mcp_config();
         egui::CollapsingHeader::new("The configuration as JSON")
             .id_salt("craft3d-start-config")
@@ -676,6 +711,19 @@ impl Shell {
             }
         });
     }
+}
+
+/// A heading of the start screen, with the info accent's bar before it.
+fn heading(ui: &mut egui::Ui, tokens: &Tokens, text: &str) {
+    ui.horizontal(|ui| {
+        let (bar, _) = ui.allocate_exact_size(
+            egui::vec2(tokens.info_bar_width, 13.0),
+            egui::Sense::hover(),
+        );
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::same(1), color(tokens.info_accent));
+        ui.label(egui::RichText::new(text).strong());
+    });
 }
 
 #[cfg(test)]
