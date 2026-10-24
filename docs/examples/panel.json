@@ -13,5 +13,6 @@
  ["feature.extrude", {"sketch": "Outline", "distance": "thickness", "name": "Panel"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Panel", "eq": "(length * width - columns * rows * pi * hole_r^2) * thickness"}],
  ["assert.add", {"name": "holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": "columns * rows"}],
+ ["body.appearance", {"body": "Panel", "color": "#8fa98a", "metallic": 0, "roughness": 0.55}],
  ["document.check", {}]
 ]

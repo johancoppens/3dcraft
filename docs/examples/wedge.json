@@ -12,5 +12,6 @@
  ["feature.fill", {"sketch": "CutSketch", "name": "Sheet"}],
  ["feature.boolean", {"op": "intersect", "target": "Block", "tool": "Sheet", "name": "Wedge"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Wedge", "eq": "length * (width * cut_at + width^2 * tan(tilt) / 2)"}],
+ ["body.appearance", {"body": "Wedge", "color": "#8a5a7a", "metallic": 0, "roughness": 0.55}],
  ["document.check", {}]
 ]

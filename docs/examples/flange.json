@@ -17,5 +17,6 @@
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Flange", "eq": "pi * ((flange_d / 2)^2 - (bore_d / 2)^2 - n * (hole_d / 2)^2) * thickness - pi * (flange_d / 2 - chamfer / 3) * chamfer^2"}],
  ["assert.add", {"name": "one bolt hole each", "measure": "count", "of": {"set": "bolt holes"}, "eq": "n"}],
  ["assert.add", {"name": "holes go through", "measure": "through", "of": {"set": "bolt holes"}}],
+ ["body.appearance", {"body": "Flange", "color": "#5b7299", "metallic": 0.2, "roughness": 0.5}],
  ["document.check", {}]
 ]

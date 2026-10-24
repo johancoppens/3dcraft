@@ -16,5 +16,6 @@
  ["sketch.circle", {"sketch": "FlangeSketch", "center": ["0 mm", "0 mm"], "radius": "inner_r"}],
  ["feature.extrude", {"sketch": "FlangeSketch", "distance": "flange_t", "join": "Tube", "name": "Pipe"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Pipe", "eq": "pi * (outer_r^2 - inner_r^2) * (2 * run + pi / 2 * bend_r) + pi * (flange_r^2 - outer_r^2) * flange_t"}],
+ ["body.appearance", {"body": "Pipe", "color": "#2e7d7a", "metallic": 0.1, "roughness": 0.45}],
  ["document.check", {}]
 ]

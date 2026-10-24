@@ -26,5 +26,6 @@
  ["feature.boolean", {"op": "union", "target": "Root", "tool": "Teeth", "name": "Gear"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Gear", "eq": "(pi * rf^2 + z * (rb^2 * ta^3 / 3 - ra^2 * (g + ta - atan(ta) / 1 rad) + rf^2 * g)) * width"}],
  ["assert.add", {"name": "one body", "measure": "count", "of": {"kind": "body"}, "eq": "1"}],
+ ["body.appearance", {"body": "Gear", "color": "#7d858c", "metallic": 0.9, "roughness": 0.35}],
  ["document.check", {}]
 ]

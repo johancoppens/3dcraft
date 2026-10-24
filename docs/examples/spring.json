@@ -8,5 +8,6 @@
  ["sketch.circle", {"sketch": "Wire", "center": ["0 mm", "coil_r"], "radius": "wire_r"}],
  ["feature.sweep", {"sketch": "Wire", "path": "Coil", "name": "Spring"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Spring", "eq": "pi * wire_r^2 * 2 * pi * coil_r * turns"}],
+ ["body.appearance", {"body": "Spring", "color": "#b87350", "metallic": 0.9, "roughness": 0.3}],
  ["document.check", {}]
 ]

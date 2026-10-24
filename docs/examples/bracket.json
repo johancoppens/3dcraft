@@ -18,5 +18,6 @@
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Part", "eq": "(leg_x * thickness + (leg_z - thickness) * thickness) * width + (1 - pi / 4) * inner_r^2 * width - 2 * pi * (hole_d / 2)^2 * thickness"}],
  ["assert.add", {"name": "two holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": 2}],
  ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
+ ["body.appearance", {"body": "Part", "color": "#b9bec4", "metallic": 0.9, "roughness": 0.35}],
  ["document.check", {}]
 ]

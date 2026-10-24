@@ -9,5 +9,6 @@
  ["feature.shell", {"source": "Rounded", "thickness": "wall", "open": ["F1:face(1)"], "name": "Case"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Case", "eq": "(length * width - (4 - pi) * corner_r^2) * height - ((length - 2 * wall) * (width - 2 * wall) - (4 - pi) * (corner_r - wall)^2) * (height - wall)"}],
  ["assert.add", {"name": "walls", "measure": "thickness", "of": "Case", "min": "wall - 0.1 mm"}],
+ ["body.appearance", {"body": "Case", "color": "#c2694b", "metallic": 0, "roughness": 0.6}],
  ["document.check", {}]
 ]

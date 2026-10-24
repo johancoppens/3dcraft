@@ -11,5 +11,6 @@
  ["feature.thread", {"face": "F2:side(e9)", "start": "F2:side(e8)", "length": "thread_len", "name": "Thread"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Thread", "eq": "pi * (((flange_d / 2)^2 - (bore_d / 2)^2) * flange_len + ((shank_d / 2)^2 - (bore_d / 2)^2) * (length - flange_len))"}],
  ["assert.add", {"name": "bore goes through", "measure": "through", "of": {"hole": true}}],
+ ["body.appearance", {"body": "Bushing", "color": "#b8954a", "metallic": 0.9, "roughness": 0.3}],
  ["document.check", {}]
 ]

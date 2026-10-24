@@ -8,5 +8,6 @@
  ["sketch.rect", {"sketch": "Top", "from": ["-top / 2", "-top / 2"], "to": ["top / 2", "top / 2"]}],
  ["feature.loft", {"sections": ["Bottom", "Top"], "ruled": true, "name": "Hopper"}],
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Hopper", "eq": "height / 3 * (base^2 + top^2 + base * top)"}],
+ ["body.appearance", {"body": "Hopper", "color": "#d4a24c", "metallic": 0, "roughness": 0.55}],
  ["document.check", {}]
 ]
