@@ -299,17 +299,40 @@ impl Camera {
     }
 }
 
-/// Ambient term of the shading model: `intensity = AMBIENT + DIFFUSE * n·l`.
-pub const SHADE_AMBIENT: f64 = 0.2;
-/// Diffuse weight of the shading model.
-pub const SHADE_DIFFUSE: f64 = 0.8;
+/// The studio lighting both renderers shade with, in one place: an
+/// ambient term, a key light above and to the left of the viewer and a
+/// weaker fill light from the right, both fixed to the camera, so that a
+/// face turned from the key light still reads (2026-10-24, the developer's
+/// choice; it was one light, ambient 0.2 and diffuse 0.8, and a face turned
+/// from it was near black). The intensity of a face is
+/// `SHADE_AMBIENT + SHADE_DIFFUSE · n·key + SHADE_FILL · n·fill`, each dot
+/// product taken as 0 where it is negative; the white highlight comes from
+/// the key light alone. In the iso view a grey block's top is at 0.88, its
+/// front at 0.73 and its right side at 0.57.
+///
+/// The ambient term is a multiple of 1/25 on purpose: a face turned from
+/// both lights is shaded with it alone, and a colour byte times `k / 25` is
+/// never half-way between two levels, where the GPU rounds to even and the
+/// CPU away from zero (see [`SHADE_HIGHLIGHT_AMBIENT`]).
+pub const SHADE_AMBIENT: f64 = 0.36;
+/// Weight of the key light.
+pub const SHADE_DIFFUSE: f64 = 0.64;
+/// Weight of the fill light.
+pub const SHADE_FILL: f64 = 0.18;
+/// Where the key light comes from, in the camera's axes: right, up and
+/// towards the viewer (not normalised): above and to the left.
+pub const KEY_LIGHT: [f64; 3] = [-0.45, 0.6, 1.0];
+/// Where the fill light comes from, in the camera's axes as [`KEY_LIGHT`]:
+/// from the right, a little from below, towards the viewer.
+pub const FILL_LIGHT: [f64; 3] = [1.0, -0.2, 0.4];
 /// Weight of the white specular highlight, as a fraction of 255.
 pub const SHADE_SPECULAR: f64 = 0.35;
 /// Exponent of the specular highlight.
 pub const SHADE_SHININESS: i32 = 48;
 /// How much less diffuse light an all-metal face reflects ([`Finish`]):
 /// its diffuse weight is `1 − SHADE_METAL_DIFFUSE · metallic` times the
-/// plain one. `scene.wgsl` has the same number.
+/// plain one, for the key and the fill light alike. `scene.wgsl` has the
+/// same number.
 pub const SHADE_METAL_DIFFUSE: f64 = 0.3;
 /// Ambient term and diffuse weight of a highlighted face ([`Highlight`]):
 /// more ambient light than a plain face gets, so that a highlighted face
@@ -322,6 +345,9 @@ pub const SHADE_METAL_DIFFUSE: f64 = 0.3;
 /// differently (the GPU to even), a level apart over the whole shaded side.
 pub const SHADE_HIGHLIGHT_AMBIENT: f64 = 0.6;
 pub const SHADE_HIGHLIGHT_DIFFUSE: f64 = 0.4;
+/// The fill light's weight on a highlighted face: none, its ambient term
+/// already keeps it readable in the shade.
+pub const SHADE_HIGHLIGHT_FILL: f64 = 0.0;
 
 /// A camera resolved to an orthonormal basis and a projection scale. Both
 /// renderers take their projection from here, so there is one definition of
@@ -342,10 +368,22 @@ pub struct ViewAxes {
 }
 
 impl ViewAxes {
-    /// Unit vector towards the one light, which is fixed to the camera:
-    /// above and to the left of the viewer.
+    /// Unit vector towards the key light, which is fixed to the camera:
+    /// above and to the left of the viewer ([`KEY_LIGHT`]).
     pub fn light(&self) -> Option<Vec3> {
-        (self.up * 0.6 - self.right * 0.45 - self.forward).normalized()
+        self.toward(KEY_LIGHT)
+    }
+
+    /// Unit vector towards the fill light, fixed to the camera like the
+    /// key light: from the right ([`FILL_LIGHT`]).
+    pub fn fill_light(&self) -> Option<Vec3> {
+        self.toward(FILL_LIGHT)
+    }
+
+    /// A direction given in the camera's axes (right, up, towards the
+    /// viewer), in the model's, as a unit vector.
+    fn toward(&self, [right, up, back]: [f64; 3]) -> Option<Vec3> {
+        (self.right * right + self.up * up - self.forward * back).normalized()
     }
 }
 
@@ -774,8 +812,10 @@ struct View {
     /// Model units per half image height at distance 1 (perspective) or in
     /// total (orthographic).
     half: f64,
-    /// Unit vector towards the light ([`ViewAxes::light`]).
+    /// Unit vector towards the key light ([`ViewAxes::light`]).
     light: Option<Vec3>,
+    /// Unit vector towards the fill light ([`ViewAxes::fill_light`]).
+    fill: Option<Vec3>,
     aspect: f64,
     w: f64,
     h: f64,
@@ -792,6 +832,7 @@ impl View {
             projection: axes.projection,
             half: axes.half,
             light: axes.light(),
+            fill: axes.fill_light(),
             aspect: w as f64 / h as f64,
             w: w as f64,
             h: h as f64,
@@ -967,12 +1008,13 @@ fn sample_range(lo: f64, hi: f64, len: usize) -> Option<(usize, usize)> {
     (first <= end).then_some((first, end))
 }
 
-/// `weights` is the ambient term and the diffuse weight. With the plain
+/// `weights` is the ambient term, the key light's weight and the fill
+/// light's ([`SHADE_AMBIENT`], [`SHADE_DIFFUSE`], [`SHADE_FILL`]). With the plain
 /// [`Finish`] every factor it adds is exactly 1 (or 255 for the tint), so
 /// the plain picture is bit for bit what it was before finishes.
 fn shade(
     base: [u8; 3],
-    weights: (f64, f64),
+    weights: (f64, f64, f64),
     finish: Finish,
     normal: Vec3,
     to_viewer: Vec3,
@@ -984,9 +1026,11 @@ fn shade(
     } else {
         normal
     };
-    // One light fixed to the camera, above and to the left of the viewer.
+    // A key light fixed to the camera, above and to the left of the viewer,
+    // and a fill light from the right.
     let light = view.light.unwrap_or(to_viewer);
     let diffuse = n.dot(light).max(0.0);
+    let fill = view.fill.map_or(0.0, |f| n.dot(f).max(0.0));
     let metallic = f64::from(finish.metallic) / 255.0;
     // The exponent of the highlight and its strength, relative to the plain one.
     let (shininess, strength) = match finish.shininess().and_then(|e| i32::try_from(e).ok()) {
@@ -1000,7 +1044,8 @@ fn shade(
         .normalized()
         .map_or(0.0, |half| n.dot(half).max(0.0).powi(shininess));
     // A metal reflects less diffusely.
-    let intensity = weights.0 + weights.1 * diffuse * (1.0 - SHADE_METAL_DIFFUSE * metallic);
+    let intensity = weights.0
+        + (weights.1 * diffuse + weights.2 * fill) * (1.0 - SHADE_METAL_DIFFUSE * metallic);
     // Clamped to 0..=255 before the cast.
     base.map(|c| {
         // White on a dielectric, the base colour on a metal.
@@ -1036,15 +1081,16 @@ fn shade(
 ///
 /// **Metallic and roughness** ([`Finish`], per face in [`FaceColors`]). A
 /// Blinn-Phong approximation of a metallic-roughness material, with the
-/// one light fixed to the camera: with `m` the metallic factor, the
-/// intensity is `ambient + diffuse · n·l · (1 − 0.3 m)` (a metal reflects
-/// less diffusely), and the highlight `tint · SHADE_SPECULAR · k ·
+/// key and fill lights fixed to the camera ([`SHADE_AMBIENT`]): with `m`
+/// the metallic factor, the intensity is `ambient + (key · n·l + fill ·
+/// n·f) · (1 − 0.3 m)` (a metal reflects less diffusely), and the
+/// highlight, from the key light, `tint · SHADE_SPECULAR · k ·
 /// (n·h)^e`, where the tint is white on a dielectric and the base colour
 /// on a metal (`255 (1 − m) + base · m`), the exponent `e` comes from the
 /// roughness ([`Finish::shininess`]) and `k = √((e + 2) / 50)` makes a
 /// smooth face's narrow highlight brighter and a rough face's wide one
-/// dimmer (1 at the plain exponent, 48). A face without a finish is shaded
-/// as it always was, bit for bit.
+/// dimmer (1 at the plain exponent, 48). A face without a finish adds no
+/// factor to the plain shading, bit for bit.
 ///
 /// **Section** ([`RenderParams::section`]). A plane cuts the picture open:
 /// what lies in the half its normal points to is not drawn. Per sample:
@@ -1245,14 +1291,18 @@ pub fn render_colored(
                 let (base, light, finish) = if params.highlight.contains(face) {
                     (
                         params.highlight.color,
-                        (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
+                        (
+                            SHADE_HIGHLIGHT_AMBIENT,
+                            SHADE_HIGHLIGHT_DIFFUSE,
+                            SHADE_HIGHLIGHT_FILL,
+                        ),
                         Finish::default(),
                     )
                 } else {
                     let (color, finish) = colors
                         .look(face)
                         .unwrap_or((params.color, Finish::default()));
-                    (color, (SHADE_AMBIENT, SHADE_DIFFUSE), finish)
+                    (color, (SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL), finish)
                 };
                 let rgb = normal.map_or(base, |n| shade(base, light, finish, n, to_viewer, &view));
                 if !front {
@@ -3116,11 +3166,12 @@ mod tests {
         );
     }
 
-    /// The shading before finishes (2026-10-22), word for word: what the
-    /// plain finish must still give, bit for bit.
+    /// The plain shading without finishes (written 2026-10-22, the fill
+    /// light added 2026-10-24): what the plain finish must give, bit for
+    /// bit.
     fn shade_before_finishes(
         base: [u8; 3],
-        weights: (f64, f64),
+        weights: (f64, f64, f64),
         normal: Vec3,
         to_viewer: Vec3,
         view: &View,
@@ -3132,10 +3183,11 @@ mod tests {
         };
         let light = view.light.unwrap_or(to_viewer);
         let diffuse = n.dot(light).max(0.0);
+        let fill = view.fill.map_or(0.0, |f| n.dot(f).max(0.0));
         let specular = (light + to_viewer)
             .normalized()
             .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
-        let intensity = weights.0 + weights.1 * diffuse;
+        let intensity = weights.0 + (weights.1 * diffuse + weights.2 * fill);
         base.map(|c| {
             (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
                 .round()
@@ -3149,6 +3201,7 @@ mod tests {
         let view = View::new(&camera, 160, 120).unwrap();
         let to_viewer = Vec3::new(-0.35, 1.0, -0.45).normalized().unwrap();
         let half = (view.light.unwrap() + to_viewer).normalized().unwrap();
+        let plain = (SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL);
         let mut compared = 0;
         // Normals all round the sphere, and finely about the highlight.
         for i in 0..=200 {
@@ -3165,13 +3218,17 @@ mod tests {
                 let near = (half + n * 0.05).normalized().unwrap();
                 for normal in [n, near] {
                     for (base, weights) in [
-                        ([198, 204, 214], (SHADE_AMBIENT, SHADE_DIFFUSE)),
-                        ([200, 40, 30], (SHADE_AMBIENT, SHADE_DIFFUSE)),
+                        ([198, 204, 214], plain),
+                        ([200, 40, 30], plain),
                         (
                             [255, 140, 0],
-                            (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
+                            (
+                                SHADE_HIGHLIGHT_AMBIENT,
+                                SHADE_HIGHLIGHT_DIFFUSE,
+                                SHADE_HIGHLIGHT_FILL,
+                            ),
                         ),
-                        ([0, 1, 255], (SHADE_AMBIENT, SHADE_DIFFUSE)),
+                        ([0, 1, 255], plain),
                     ] {
                         assert_eq!(
                             shade(base, weights, Finish::default(), normal, to_viewer, &view),
@@ -3184,6 +3241,63 @@ mod tests {
             }
         }
         assert_eq!(compared, 201 * 201 * 2 * 4);
+    }
+
+    /// The studio lighting (2026-10-24): a grey block seen in the iso view
+    /// (from +x, −y, +z, as `view.render` shows it) has three faces of
+    /// three clearly different tones, and the darkest, turned from the
+    /// key light, is not near black: its relative luminance is 30 to 50 %
+    /// of the brightest's (with one light it was 8 %). A face turned from
+    /// both lights gets the ambient term alone, a byte times 9/25.
+    #[test]
+    fn a_grey_block_in_the_iso_view_reads_on_every_face() {
+        let camera = Camera {
+            eye: Vec3::new(10.0, -10.0, 8.0),
+            target: Vec3::new(0.0, 0.0, 0.0),
+            up: Vec3::Z,
+            projection: Projection::Orthographic { half_height: 5.0 },
+        };
+        let view = View::new(&camera, 160, 120).unwrap();
+        let to_viewer = view.toward_viewer(Vec3::new(0.0, 0.0, 0.0));
+        let grey = [221, 217, 210];
+        let plain = (SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL);
+        let tone = |normal: Vec3| {
+            let rgb = shade(grey, plain, Finish::default(), normal, to_viewer, &view);
+            relative_luminance(rgb)
+        };
+        let top = tone(Vec3::Z);
+        let front = tone(-Vec3::Y);
+        let right = tone(Vec3::X);
+        assert!(top > front && front > right, "{top} {front} {right}");
+        let share = right / top;
+        assert!((0.3..=0.5).contains(&share), "{share}");
+        assert!(
+            front / top < 0.85 && right / front < 0.85,
+            "{top} {front} {right}"
+        );
+        // Turned from both lights: the ambient term alone.
+        let away = (view.right * -0.4 - view.up - view.forward * 0.1)
+            .normalized()
+            .unwrap();
+        assert!(away.dot(view.light.unwrap()) < 0.0 && away.dot(view.fill.unwrap()) < 0.0);
+        let rgb = shade(grey, plain, Finish::default(), away, to_viewer, &view);
+        assert_eq!(
+            rgb,
+            grey.map(|c| (f64::from(c) * SHADE_AMBIENT).round() as u8)
+        );
+    }
+
+    /// The relative luminance of an sRGB colour (WCAG).
+    fn relative_luminance(rgb: [u8; 3]) -> f64 {
+        let [r, g, b] = rgb.map(|c| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
     #[test]

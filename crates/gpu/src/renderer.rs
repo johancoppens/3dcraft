@@ -9,8 +9,8 @@ use crate::readback;
 use craft3d_math::Bbox3;
 use craft3d_render::{
     Camera, Cut, FaceColors, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection,
-    RenderError, RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT,
-    SHADE_HIGHLIGHT_DIFFUSE, SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
+    RenderError, RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_FILL, SHADE_HIGHLIGHT_AMBIENT,
+    SHADE_HIGHLIGHT_DIFFUSE, SHADE_HIGHLIGHT_FILL, SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
 };
 use craft3d_tess::Mesh;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -31,7 +31,7 @@ pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
 /// four for its runs of faces and four for the section.
-pub(crate) const SCENE_FLOATS: usize = 72;
+pub(crate) const SCENE_FLOATS: usize = 76;
 
 /// Face ids are compared as `f32` in the shader: exact below this.
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
@@ -188,6 +188,8 @@ pub(crate) fn scene_uniforms(
     };
     let light = axes.light();
     let l = light.unwrap_or(craft3d_math::Vec3::ZERO);
+    let fill = axes.fill_light();
+    let f = fill.unwrap_or(craft3d_math::Vec3::ZERO);
     let [r, g, b] = params.color.map(f64::from);
     let [hr, hg, hb] = params.highlight.color.map(f64::from);
     // Two runs per vector; a run that is not there is first 1, last 0.
@@ -229,7 +231,12 @@ pub(crate) fn scene_uniforms(
             f64::from(SHADE_SHININESS.max(0)),
         ],
         [hr, hg, hb, 0.0],
-        [SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE, 0.0, 0.0],
+        [
+            SHADE_HIGHLIGHT_AMBIENT,
+            SHADE_HIGHLIGHT_DIFFUSE,
+            SHADE_HIGHLIGHT_FILL,
+            0.0,
+        ],
         run0,
         run1,
         run2,
@@ -238,6 +245,9 @@ pub(crate) fn scene_uniforms(
         section_cap,
         section_lo,
         section_hi,
+        // The fill light (scene.wgsl's `fill`): its direction and weight;
+        // the weight is 0 when there is none.
+        [f.x, f.y, f.z, if fill.is_some() { SHADE_FILL } else { 0.0 }],
     ];
     let mut out = [0.0_f32; SCENE_FLOATS];
     for (slot, value) in out.iter_mut().zip(wide.iter().flatten()) {

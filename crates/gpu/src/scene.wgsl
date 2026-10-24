@@ -21,19 +21,20 @@ struct Scene {
     forward: vec4<f32>,
     // xyz: the eye, relative to the mesh origin.
     eye: vec4<f32>,
-    // xyz: unit vector towards the light. w: 1 when there is one.
+    // xyz: unit vector towards the key light. w: 1 when there is one.
     light: vec4<f32>,
     // x: the near distance in perspective, the far one in orthographic.
     // y: the depth scale of an orthographic view (see vs_main).
     depth: vec4<f32>,
     // rgb: the base colour in 0..255.
     base: vec4<f32>,
-    // ambient, diffuse, specular * 255, shininess.
+    // ambient, key light's weight, specular * 255, shininess.
     shade: vec4<f32>,
     // rgb: the base colour of a highlighted face in 0..255
     // (`RenderParams::highlight`).
     highlight: vec4<f32>,
-    // x, y: the ambient term and the diffuse weight of a highlighted face.
+    // x, y, z: the ambient term, the key light's weight and the fill
+    // light's of a highlighted face.
     highlight_shade: vec4<f32>,
     // The highlighted faces: eight runs of face ids, two per vector, each
     // as first and last. A run whose first is above its last is empty.
@@ -50,6 +51,9 @@ struct Scene {
     // mesh origin.
     section_lo: vec4<f32>,
     section_hi: vec4<f32>,
+    // xyz: unit vector towards the fill light. w: its weight
+    // (`SHADE_FILL`), 0 when there is none.
+    fill: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -216,7 +220,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
             f32((in.color >> 16u) & 255u),
         );
     }
-    var weights = scene.shade.xy;
+    var weights = vec3<f32>(scene.shade.xy, scene.fill.w);
     // The finish (`Finish`): the metallic factor, the highlight's exponent
     // and its strength relative to the plain one.
     var metallic = f32(in.finish & 255u) / 255.0;
@@ -229,7 +233,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
     }
     if highlighted(in.face) {
         base = scene.highlight.rgb;
-        weights = scene.highlight_shade.xy;
+        weights = scene.highlight_shade.xyz;
         metallic = 0.0;
         shininess = u32(scene.shade.w);
         strength = 1.0;
@@ -261,7 +265,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
 
     var rgb = base;
     if has_normal {
-        // shade(): two-sided, one light fixed to the camera.
+        // shade(): two-sided, a key and a fill light fixed to the camera.
         if dot(n, to_viewer) < 0.0 {
             n = -n;
         }
@@ -270,6 +274,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
             light = scene.light.xyz;
         }
         let diffuse = max(dot(n, light), 0.0);
+        let fill = max(dot(n, scene.fill.xyz), 0.0);
         var specular = 0.0;
         let half_vector = light + to_viewer;
         let len_h = length(half_vector);
@@ -278,7 +283,8 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
         }
         // A metal reflects less diffusely (`SHADE_METAL_DIFFUSE`), and its highlight is in its own
         // colour: white times (1 - m) plus the base colour times m.
-        let intensity = weights.x + weights.y * diffuse * (1.0 - 0.3 * metallic);
+        let intensity = weights.x
+            + (weights.y * diffuse + weights.z * fill) * (1.0 - 0.3 * metallic);
         let tint = vec3<f32>(1.0 - metallic) + base / 255.0 * metallic;
         rgb = base * intensity + tint * (scene.shade.z * strength * specular);
     }
