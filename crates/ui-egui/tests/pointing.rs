@@ -269,7 +269,8 @@ fn pixel(rgb: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
 /// was cyan) has 1.6 times as much red as green and 3 times as much green
 /// as blue; the body, the edges and the background are grey, the X axis
 /// has far more red than green, and the indigo of a sketch has more blue
-/// than red.
+/// than red. The selected sketch is drawn in this very token (2026-10-24),
+/// so its pixels count as highlight; these tests select no sketch.
 fn is_highlight(p: [u8; 3], tokens: &Tokens) -> bool {
     let hue = |[r, g, b]: [i32; 3]| {
         b >= 8 && 4 * r >= 5 * g && 10 * r <= 21 * g && 5 * g >= 9 * b && g <= 5 * b

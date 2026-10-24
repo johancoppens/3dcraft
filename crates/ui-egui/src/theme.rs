@@ -910,9 +910,10 @@ mod tests {
     }
 
     /// Sketches and datums are lines and dots over the viewport and over a
-    /// lit body: a profile, the selected sketch and a datum read as parts
-    /// of a picture (3:1 on the viewport); construction geometry stands
-    /// back but is still seen (2:1). On the body's colour a profile and a
+    /// lit body: a profile and a datum read as parts of a picture (3:1 on
+    /// the viewport); the selected sketch, in the selection's copper, keeps
+    /// 2.3:1 there (it is 2.34:1; the developer's choice of colour, under
+    /// review); construction geometry stands back but is still seen (2:1). On the body's colour a profile and a
     /// datum keep 3:1. The four are told apart: a profile is cool (the
     /// info accent), the selected sketch warm (the selection), a datum
     /// green-blue, and construction lighter than a profile of its hue.

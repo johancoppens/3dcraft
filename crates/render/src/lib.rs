@@ -338,9 +338,10 @@ pub const SHADE_METAL_DIFFUSE: f64 = 0.3;
 /// more ambient light than a plain face gets, so that a highlighted face
 /// in the shade still shows its colour.
 ///
-/// Three fifths, like the plain face's one fifth, on purpose: everything
-/// turned away from the light is shaded with the ambient term alone, and a
-/// colour byte times a fifth is never half-way between two levels. With
+/// Three fifths on purpose, as the plain face's ambient term is 9/25:
+/// everything turned away from the lights is shaded with the ambient term
+/// alone, and a colour byte times a fifth (or `k / 25`) is never half-way
+/// between two levels. With
 /// 0.55 a byte of 150 is 82.5 there, which the two renderers round
 /// differently (the GPU to even), a level apart over the whole shaded side.
 pub const SHADE_HIGHLIGHT_AMBIENT: f64 = 0.6;
@@ -3166,9 +3167,11 @@ mod tests {
         );
     }
 
-    /// The plain shading without finishes (written 2026-10-22, the fill
-    /// light added 2026-10-24): what the plain finish must give, bit for
-    /// bit.
+    /// The plain shading, written out without the finish's factors
+    /// (2026-10-22, the fill light added 2026-10-24). It is the formula of
+    /// `shade` itself, so it pins only that a plain finish adds no factor;
+    /// the lighting's numbers are pinned by
+    /// `a_grey_block_in_the_iso_view_reads_on_every_face`.
     fn shade_before_finishes(
         base: [u8; 3],
         weights: (f64, f64, f64),
@@ -3196,7 +3199,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_finish_shades_bit_for_bit_as_before_finishes() {
+    fn the_plain_finish_adds_no_factor_to_the_shading() {
         let (_, camera) = teapot_mesh_and_camera(160, 120, true);
         let view = View::new(&camera, 160, 120).unwrap();
         let to_viewer = Vec3::new(-0.35, 1.0, -0.45).normalized().unwrap();
@@ -3249,6 +3252,12 @@ mod tests {
     /// key light, is not near black: its relative luminance is 30 to 50 %
     /// of the brightest's (with one light it was 8 %). A face turned from
     /// both lights gets the ambient term alone, a byte times 9/25.
+    ///
+    /// The pixels are pinned to closed forms worked out apart from the
+    /// code (a script with the camera's axes, the two directions and the
+    /// weights): intensities top 0.8832, front 0.7311 (no fill: the fill
+    /// light is behind it), right 0.5733 (key 0.0707, fill 0.9338), no
+    /// highlight on any of the three; times the grey, rounded.
     #[test]
     fn a_grey_block_in_the_iso_view_reads_on_every_face() {
         let camera = Camera {
@@ -3265,6 +3274,10 @@ mod tests {
             let rgb = shade(grey, plain, Finish::default(), normal, to_viewer, &view);
             relative_luminance(rgb)
         };
+        let pixel = |normal: Vec3| shade(grey, plain, Finish::default(), normal, to_viewer, &view);
+        assert_eq!(pixel(Vec3::Z), [195, 192, 185]);
+        assert_eq!(pixel(-Vec3::Y), [162, 159, 154]);
+        assert_eq!(pixel(Vec3::X), [127, 124, 120]);
         let top = tone(Vec3::Z);
         let front = tone(-Vec3::Y);
         let right = tone(Vec3::X);
@@ -3281,10 +3294,7 @@ mod tests {
             .unwrap();
         assert!(away.dot(view.light.unwrap()) < 0.0 && away.dot(view.fill.unwrap()) < 0.0);
         let rgb = shade(grey, plain, Finish::default(), away, to_viewer, &view);
-        assert_eq!(
-            rgb,
-            grey.map(|c| (f64::from(c) * SHADE_AMBIENT).round() as u8)
-        );
+        assert_eq!(rgb, [80, 78, 76]);
     }
 
     /// The relative luminance of an sRGB colour (WCAG).

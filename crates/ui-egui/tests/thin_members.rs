@@ -329,7 +329,7 @@ fn edges_behind_a_thin_plate_are_hidden_at_every_zoom_and_a_hollow_stays_in_sigh
     // not be told. What is measured is where an edge is hidden, not its
     // colour. Since 2026-10-21 an edge is a shade of its body's colour: the bodies
     // in a light red and their edges, inner and outline, black, which
-    // stands out by 51 levels or more from the red of a face in any
+    // stands out by 92 levels or more from the red of a face in any
     // light (the ambient share of 255); nothing faded.
     shell.tokens.body = [255, 60, 60];
     shell.tokens.edge_shade = 0.0;
