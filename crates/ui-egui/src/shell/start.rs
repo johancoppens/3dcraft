@@ -514,7 +514,7 @@ impl Shell {
                         rect.min,
                         egui::vec2(tokens.info_bar_width, rect.height()),
                     ),
-                    egui::CornerRadius::same(1),
+                    egui::CornerRadius::same(tokens.info_bar_radius),
                     color(tokens.info_accent),
                 );
             });
@@ -716,12 +716,16 @@ impl Shell {
 /// A heading of the start screen, with the info accent's bar before it.
 fn heading(ui: &mut egui::Ui, tokens: &Tokens, text: &str) {
     ui.horizontal(|ui| {
+        let height = egui::TextStyle::Body.resolve(ui.style()).size;
         let (bar, _) = ui.allocate_exact_size(
-            egui::vec2(tokens.info_bar_width, 13.0),
+            egui::vec2(tokens.info_bar_width, height),
             egui::Sense::hover(),
         );
-        ui.painter()
-            .rect_filled(bar, egui::CornerRadius::same(1), color(tokens.info_accent));
+        ui.painter().rect_filled(
+            bar,
+            egui::CornerRadius::same(tokens.info_bar_radius),
+            color(tokens.info_accent),
+        );
         ui.label(egui::RichText::new(text).strong());
     });
 }

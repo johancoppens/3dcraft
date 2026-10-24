@@ -213,16 +213,21 @@ pub struct Tokens {
     /// tab, a toggle that is on), `info_accent` is information and
     /// connection (the hover ring of an example, the bar beside the agent
     /// block and the start screen's headings). `info_ink` is the same hue
-    /// dark enough for text on the light panels (links, the recent files,
-    /// a text field's focus ring); `info_code` light enough for text on a
-    /// black plate (the program's name in a line of code).
+    /// dark enough for text on the light panels: egui's link colour (the
+    /// recent files, How it works, the About dialog's links) and its
+    /// `selection.stroke`, which is a text field's focus ring and also the
+    /// colour of selected text. `info_code` is light enough for text on a
+    /// black plate (the program's name in a line of code), and the chrome's
+    /// link colour, should a link appear there.
     pub info_accent: Rgb,
     pub info_ink: Rgb,
     pub info_code: Rgb,
     /// Width of the info accent's bars (beside a heading, beside the
-    /// agent block) and the corner radius of an example's thumbnail, in
-    /// points.
+    /// agent block) and their corner radius, and the corner radius of an
+    /// example's thumbnail, in points. A heading's bar is as high as the
+    /// body text's font size.
     pub info_bar_width: f32,
+    pub info_bar_radius: u8,
     pub thumb_radius: u8,
     /// A control's fill (0 to 255, the colour is `glass`) and its text
     /// size in points; how opaque an inert control is drawn (0 to 1).
@@ -439,6 +444,7 @@ impl Tokens {
             info_ink: [60, 72, 144],
             info_code: [169, 179, 236],
             info_bar_width: 3.0,
+            info_bar_radius: 1,
             thumb_radius: 6,
             control_opacity: 32,
             control_font: 13.0,

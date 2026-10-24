@@ -88,9 +88,13 @@ build on. A sketch can also be placed on a face of the body (`"face": "F2:endCap
  ["assert.add", {"name": "volume", "measure": "volume", "of": "Part", "eq": "(leg_x * thickness + (leg_z - thickness) * thickness) * width + (1 - pi / 4) * inner_r^2 * width - 2 * pi * (hole_d / 2)^2 * thickness"}],
  ["assert.add", {"name": "two holes", "measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": 2}],
  ["assert.add", {"name": "holes go through", "measure": "through", "of": {"hole": true}}],
+ ["body.appearance", {"body": "Part", "color": "#b9bec4", "metallic": 0.9, "roughness": 0.35}],
  ["document.check", {}]
 ]
 ```
+
+`body.appearance` gives the part a brushed-aluminium look: a colour, metallic and roughness, which the
+viewport, the pictures and a 3MF export show ([chapter 9](09-features.md#several-bodies)).
 
 The volume, worked out by hand: the L is a 40 × 4 bar and a 4 × 26 upright, times the width; the round
 adds the corner square less a quarter circle, (1 − π/4) r², along the width; each hole takes π (d/2)² t.
