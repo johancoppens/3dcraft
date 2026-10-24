@@ -29,11 +29,15 @@ pub struct Tokens {
     /// inside of a body. Drawn as it is, not shaded, so a cut reads as a
     /// cut whatever the light.
     pub section_cap: Rgb,
-    /// Sketch geometry that is part of a profile.
+    /// Sketch geometry that is part of a profile, and its points: the
+    /// info accent's indigo (2026-10-24, the developer's choice), cool
+    /// against the warm body.
     pub sketch: Rgb,
-    /// Construction geometry of a sketch.
+    /// Construction geometry of a sketch: a lighter tint of the same hue,
+    /// drawn thinner.
     pub sketch_construction: Rgb,
-    /// The sketch of the selected feature.
+    /// The sketch of the selected feature: the selection's copper
+    /// (`face_highlight`), so what is selected has one colour.
     pub sketch_selected: Rgb,
     /// The world axes at the origin: X, Y, Z.
     pub axes: [Rgb; 3],
@@ -64,9 +68,11 @@ pub struct Tokens {
     pub edge_dense_cap: f32,
     pub edge_fade_floor: f32,
     pub edge_tile: f32,
-    /// Datum planes, axes and points: their lines, their dots, the fill of
-    /// a plane and their names.
+    /// Datum planes, axes and points: their lines, their dots and the fill
+    /// of a plane (petrol, 2026-10-24). Their names are `datum_ink`, the
+    /// same hue dark enough for text on the viewport.
     pub datum: Rgb,
+    pub datum_ink: Rgb,
     /// Opacity of the fill of a datum plane, 0 to 255.
     pub datum_fill_opacity: u8,
     /// Width of a datum's lines, in points.
@@ -346,9 +352,11 @@ impl Tokens {
             body: [221, 217, 210],
             face_highlight: [217, 134, 44],
             section_cap: craft3d_engine::SECTION_CAP_COLOR,
-            sketch: [183, 112, 12],
-            sketch_construction: [63, 120, 181],
-            sketch_selected: [184, 50, 31],
+            // Indigo #4C5AA6 (the info accent), its light tint #8692D6 for
+            // construction, the selection's copper #D9862C.
+            sketch: [76, 90, 166],
+            sketch_construction: [134, 146, 214],
+            sketch_selected: [217, 134, 44],
             axes: [[210, 63, 54], [58, 154, 77], [52, 103, 209]],
             // A dark warm grey, not black: the shading carries the form.
             edge: [88, 84, 78],
@@ -364,7 +372,10 @@ impl Tokens {
             edge_dense_cap: 0.15,
             edge_fade_floor: 0.05,
             edge_tile: 16.0,
-            datum: [126, 87, 194],
+            // Petrol #2E7D7A; its names #266C69. A plane's fill at 48
+            // stands off the viewport as the old violet's did (1.25:1).
+            datum: [46, 125, 122],
+            datum_ink: [38, 108, 105],
             datum_fill_opacity: 48,
             datum_width: 1.25,
             datum_point_radius: 4.0,
@@ -731,6 +742,11 @@ impl Tokens {
                 self.text_dim,
                 self.viewport_background,
             ),
+            (
+                "datum_ink (a datum's name) on viewport_background",
+                self.datum_ink,
+                self.viewport_background,
+            ),
         ]
     }
 }
@@ -891,5 +907,41 @@ mod tests {
         assert!(b > r);
         let [r, _, b] = tokens.accent;
         assert!(r > b);
+    }
+
+    /// Sketches and datums are lines and dots over the viewport and over a
+    /// lit body: a profile, the selected sketch and a datum read as parts
+    /// of a picture (3:1 on the viewport); construction geometry stands
+    /// back but is still seen (2:1). On the body's colour a profile and a
+    /// datum keep 3:1. The four are told apart: a profile is cool (the
+    /// info accent), the selected sketch warm (the selection), a datum
+    /// green-blue, and construction lighter than a profile of its hue.
+    #[test]
+    fn sketches_and_datums_read_over_the_viewport_and_a_body() {
+        let tokens = Tokens::default();
+        let bg = tokens.viewport_background;
+        for (what, ink, least) in [
+            ("sketch", tokens.sketch, 3.0),
+            ("sketch_selected", tokens.sketch_selected, 2.3),
+            ("datum", tokens.datum, 3.0),
+            ("sketch_construction", tokens.sketch_construction, 2.0),
+        ] {
+            let ratio = contrast(ink, bg);
+            assert!(ratio >= least, "{what} on the viewport: {ratio:.2}");
+        }
+        for ink in [tokens.sketch, tokens.datum] {
+            assert!(contrast(ink, tokens.body) >= 3.0, "{ink:?}");
+        }
+        assert_eq!(tokens.sketch, tokens.info_accent);
+        assert_eq!(tokens.sketch_selected, tokens.face_highlight);
+        let [r, g, b] = tokens.sketch.map(i32::from);
+        assert!(b > r && b > g);
+        let [r, _, b] = tokens.sketch_selected.map(i32::from);
+        assert!(r > b);
+        let [r, g, b] = tokens.datum.map(i32::from);
+        assert!(g > r && b > r);
+        assert!(luminance(tokens.sketch_construction) > luminance(tokens.sketch));
+        // The datum's name is its line's hue, darker.
+        assert!(luminance(tokens.datum_ink) < luminance(tokens.datum));
     }
 }

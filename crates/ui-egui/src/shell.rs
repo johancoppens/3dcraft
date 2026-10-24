@@ -2759,7 +2759,7 @@ impl Shell {
                         egui::Align2::LEFT_BOTTOM,
                         name,
                         egui::FontId::proportional(12.0),
-                        color(tokens.datum),
+                        color(tokens.datum_ink),
                     );
                 }
             }
