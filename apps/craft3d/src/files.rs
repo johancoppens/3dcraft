@@ -444,7 +444,17 @@ impl Host {
     /// an agent's requests are reported by the control channel).
     pub(crate) fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
         let (ok, text) = match outcome {
-            Ok(result) => (true, result.to_string()),
+            // Saved, but the picture for a gallery could not be drawn (a
+            // body that cannot be meshed): said in words, first, rather
+            // than at the end of the answer, where the status line cuts
+            // it off.
+            Ok(result) => match result.get("thumbnailError").and_then(Value::as_str) {
+                Some(why) => {
+                    let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+                    (true, format!("no thumbnail ({why}); saved {path}"))
+                }
+                None => (true, result.to_string()),
+            },
             Err(error) => {
                 self.shell.show_error(label, error);
                 (false, error.clone())
@@ -1126,6 +1136,33 @@ mod tests {
         assert!(status.dirty);
         assert_eq!(status.path.as_deref(), Some(text(&second)));
         assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Jig saved at the window whose thumbnail cannot be drawn (here: no
+    /// bodies; in the field, a body that could not be meshed) is saved,
+    /// and the status line says first that it has no thumbnail and why.
+    #[test]
+    fn a_save_without_its_thumbnail_says_so_in_words() {
+        let dir = workdir("no-thumbnail");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        host.session.execute("file.new", &json!({})).unwrap();
+        host.session
+            .execute("variable.set", &json!({"name": "a", "expr": "1 mm"}))
+            .unwrap();
+        host.session
+            .execute("variable.publish", &json!({"name": "a"}))
+            .unwrap();
+        let chosen = dir.join("empty.3dcraft");
+        let result = host.save_as_user(&chosen).unwrap();
+        assert_eq!(result["thumbnail"], false, "{result}");
+        assert_eq!(listing(&dir), ["empty.3dcraft"]);
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.save", true));
+        assert!(
+            said.starts_with("no thumbnail (") && said.contains("no bodies"),
+            "{said}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

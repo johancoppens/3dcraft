@@ -554,6 +554,83 @@ impl CornerPole {
 ///
 /// `sense` is +1 when the loops of this face run counter-clockwise in
 /// `(a, b)` and −1 when clockwise.
+/// How far from a spline surface, as a part of the size of its loop, a
+/// point of the loop may be found by the search over the whole surface
+/// for the point found to be taken as its foot without a second look (see
+/// [`follow_along_the_loop`]).
+const FOUND_ON: f64 = 1e-9;
+
+/// The points of a loop on a spline surface that the search over the
+/// whole surface (`Surface::project`) did not find on the surface, found
+/// again by walking from the point before along the loop.
+///
+/// A point of a face's boundary lies on the face's surface, and the search
+/// finds its foot from the samples of a grid nearer to it than their
+/// neighbours. On a surface that folds more finely than that grid (a band
+/// between two spirals of many turns, extruded: its sides wind round five
+/// times and more within the sixteen samples across them) a point may lie
+/// between samples of the turns beside its own, and the search then ends
+/// on one of those, a turn away. Neighbours along the loop are near each
+/// other on the surface, so a walk downhill from where the point before
+/// landed (`Surface::project_from`) ends on the point's own turn. Its
+/// foot is taken when it is less than half as far as the search's: a
+/// point that lies off the surface by the tolerance of its edge is as far
+/// from it either way and keeps what the search found, so a loop the
+/// search placed (every face before this, 2026-10-25) is placed the same,
+/// bit for bit. The walk starts after the point found nearest, and each
+/// point walks from the one before it as found at last.
+fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]) {
+    let n = raw.len().min(points.len());
+    let mut size = 0.0_f64;
+    if let Some(&(first, _)) = points.first() {
+        for &(p, _) in points {
+            size = size.max(p.distance(first));
+        }
+    }
+    let off = |uv: Uv, point: Vec3| param.eval(uv).distance(point);
+    let mut away: Vec<f64> = raw
+        .iter()
+        .zip(points)
+        .map(|(&uv, &(point, _))| off(uv, point))
+        .collect();
+    let on = |d: f64| d <= FOUND_ON * size;
+    if away.iter().all(|&d| on(d)) || !(size > 0.0 && size.is_finite()) {
+        return;
+    }
+    let Some(nearest) = (0..n).min_by(|&i, &j| {
+        let (di, dj) = (away.get(i), away.get(j));
+        di.zip(dj)
+            .map_or(std::cmp::Ordering::Equal, |(x, y)| x.total_cmp(y))
+            .then(i.cmp(&j))
+    }) else {
+        return;
+    };
+    for step in 1..n {
+        let i = (nearest + step) % n;
+        let from = (i + n - 1) % n;
+        let (Some(&found), Some(&start), Some(&(point, _))) =
+            (away.get(i), raw.get(from), points.get(i))
+        else {
+            continue;
+        };
+        if on(found) {
+            continue;
+        }
+        let Ok((u, v)) = param.surface.project_from(point, param.raw(start)) else {
+            continue;
+        };
+        let uv = param.order(u, v);
+        let walked = off(uv, point);
+        if uv.iter().all(|x| x.is_finite())
+            && walked < 0.5 * found
+            && let (Some(slot), Some(d)) = (raw.get_mut(i), away.get_mut(i))
+        {
+            *slot = uv;
+            *d = walked;
+        }
+    }
+}
+
 fn build_ring(
     param: &Param,
     points: &[(Vec3, Chord)],
@@ -580,11 +657,16 @@ fn build_ring(
                 format!("a point of its loop {number} has no finite surface parameters"),
             );
         }
+        raw.push(uv);
+    }
+    if param.is_freeform() {
+        follow_along_the_loop(param, points, &mut raw);
+    }
+    for &uv in &raw {
         let (_, [da, db]) = param.derivatives(uv);
         let [la, lb] = &mut largest;
         *la = la.max(da.length());
         *lb = lb.max(db.length());
-        raw.push(uv);
         sizes.push([da.length(), db.length()]);
     }
     // On a spline surface with poles a parameter is free only at a pole:
@@ -1721,6 +1803,23 @@ fn band_region(
             .take(SEAM_TRIES)
             .find_map(|s| straight_from(anchor, s));
     }
+    // Nor that: a seam in pieces with the loops laid out further round.
+    // A hole that winds round the axis turns on its way up (the foot of a
+    // thread swept along a helix and joined to a turned neck: the neck's
+    // face has the circles at its ends and that foot as a hole) is in the
+    // way of every straight seam, and the seam in pieces goes up to it
+    // where it starts and on from where it ends, turns further round.
+    if cut.is_none() {
+        let search = Routes {
+            param,
+            lower,
+            upper,
+            holes: &holes,
+            upper_turns_b,
+            crosses_a_loop: &crosses_a_loop,
+        };
+        cut = search.cut_wide();
+    }
     let Some(cut) = cut else {
         // Chords too coarse may be what closes the way (two loops nearer
         // to each other than the tolerance): the face asks for finer ones
@@ -1812,6 +1911,15 @@ fn band_region(
 /// How many copies of the loops, side by side around the axis, the search
 /// for a seam in pieces lays out on either side of the one in the middle.
 const ROUTE_TURNS: i32 = 1;
+
+/// How many turns either way the search for a seam in pieces lays the
+/// loops out at most when they run round the axis further than
+/// [`ROUTE_TURNS`] reaches ([`Routes::cut_wide`]).
+const MOST_ROUTE_TURNS: i32 = 64;
+
+/// How many points (vertices of the loops times their copies) that wider
+/// layout may have at most.
+const MOST_ROUTE_POINTS: usize = 1 << 18;
 
 /// Whether `p` lies above (towards `+b` of) a loop that winds around `a`
 /// and is moved by `tb` periods of `b`.
@@ -1924,9 +2032,10 @@ impl Routes<'_> {
         stations: &[Station],
         low_end: usize,
         high_end: usize,
+        turns: i32,
     ) -> Result<Option<Vec<Bridge>>, &'static str> {
         let mut slow = false;
-        let bridges = self.laid_out_bridges(stations, low_end, high_end, &mut slow);
+        let bridges = self.laid_out_bridges(stations, low_end, high_end, turns, &mut slow);
         if slow {
             return Err(SLOW_TRIANGULATION);
         }
@@ -1940,6 +2049,7 @@ impl Routes<'_> {
         stations: &[Station],
         low_end: usize,
         high_end: usize,
+        turns: i32,
         slow: &mut bool,
     ) -> Option<Vec<Bridge>> {
         let periods = self.param.periods();
@@ -1969,7 +2079,7 @@ impl Routes<'_> {
         );
         for (station, s) in stations.iter().enumerate() {
             offsets.push(points.len());
-            for ta in -ROUTE_TURNS..=ROUTE_TURNS {
+            for ta in -turns..=turns {
                 for (vertex, v) in s.ring.verts.iter().enumerate() {
                     let plane = to_plane(shifted(v.uv, [ta, s.tb], periods), origin, scale);
                     if !(plane.0.is_finite() && plane.1.is_finite()) {
@@ -2037,7 +2147,7 @@ impl Routes<'_> {
         // The loops' segments. One that cannot be made an edge (it
         // crosses another: chords too coarse) is left out; the pieces are
         // tested against the loops themselves anyway.
-        let copies = usize::try_from(2 * ROUTE_TURNS + 1).ok()?;
+        let copies = usize::try_from(turns.checked_mul(2)?.checked_add(1)?).ok()?;
         for (station, s) in stations.iter().enumerate() {
             let n = s.ring.verts.len();
             let [wa, _] = s.ring.winding;
@@ -2155,6 +2265,62 @@ impl Routes<'_> {
     /// The seam in pieces, if there is a way for one; an error when the
     /// triangulation of the loops does not converge.
     fn cut(&self) -> Result<Option<Cut>, &'static str> {
+        self.cut_laid_out(ROUTE_TURNS)
+    }
+
+    /// The seam in pieces with the loops laid out as many turns either
+    /// way as the longest of them runs round the axis, and one more: for
+    /// a hole that winds round the axis several times on its way up (the
+    /// foot of a thread of four turns, swept along a helix and joined to a
+    /// turned neck), the seam goes up to the hole where it starts and on
+    /// from where it ends, turns further round than [`ROUTE_TURNS`]
+    /// reaches. Tried only when every other seam failed, so that a face
+    /// meshed before is meshed the same; `None` when the loops run round
+    /// no further than the first layout reached, or so far that laying
+    /// them out would be too much ([`MOST_ROUTE_TURNS`], or more points
+    /// than [`MOST_ROUTE_POINTS`]), or when the triangulation does not
+    /// converge.
+    fn cut_wide(&self) -> Option<Cut> {
+        let [Some(period), _] = self.param.periods() else {
+            return None;
+        };
+        let mut span = 0.0_f64;
+        let mut points = 0_usize;
+        let rings = self
+            .lower
+            .into_iter()
+            .chain(self.upper)
+            .chain(self.holes.iter().map(|&(_, ring)| ring));
+        for ring in rings {
+            let (low, high) =
+                ring.verts
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), v| {
+                        let a = get2(v.uv, 0);
+                        (low.min(a), high.max(a))
+                    });
+            span = span.max(high - low);
+            points = points.saturating_add(ring.verts.len());
+        }
+        let turns = (span / period).ceil() + 1.0;
+        if !(turns.is_finite() && turns > f64::from(ROUTE_TURNS)) {
+            return None;
+        }
+        if turns > f64::from(MOST_ROUTE_TURNS) {
+            return None;
+        }
+        // In range by the checks above.
+        let turns = turns as i32;
+        let copies = usize::try_from(2 * turns + 1).ok()?;
+        if points.saturating_mul(copies) > MOST_ROUTE_POINTS {
+            return None;
+        }
+        self.cut_laid_out(turns).ok().flatten()
+    }
+
+    /// The seam in pieces with the loops laid out `turns` periods either
+    /// way of the one in the middle.
+    fn cut_laid_out(&self, turns: i32) -> Result<Option<Cut>, &'static str> {
         let periods = self.param.periods();
         let mut stations: Vec<Station> = Vec::new();
         let (mut source, mut target) = (None, None);
@@ -2187,7 +2353,7 @@ impl Routes<'_> {
         let low_end = stations.len();
         let high_end = low_end + 1;
         let (source, target) = (source.unwrap_or(low_end), target.unwrap_or(high_end));
-        let Some(bridges) = self.bridges(&stations, low_end, high_end)? else {
+        let Some(bridges) = self.bridges(&stations, low_end, high_end, turns)? else {
             return Ok(None);
         };
         Ok(self.route(&stations, &bridges, source, target))
@@ -2203,6 +2369,7 @@ impl Routes<'_> {
         target: usize,
     ) -> Option<Cut> {
         let periods = self.param.periods();
+        let period_a = get2(periods, 0)?;
         let [_, (b_low, b_high)] = self.param.domain();
         let high_end = stations.len() + 1;
 
@@ -2252,7 +2419,20 @@ impl Routes<'_> {
                 let (Some([c, d]), Some(by)) = (step.piece, step.by) else {
                     return false;
                 };
-                for k in -1..=1 {
+                // The copies of the earlier piece a period either side of
+                // the new one; when the pieces lie turns apart (the loops
+                // laid out wider, `Routes::cut_wide`), of those around it.
+                let apart = ((get2(p, 0) - get2(c, 0)) / period_a).round();
+                let apart = if apart.is_finite()
+                    && apart.abs() > 1.0
+                    && apart.abs() <= f64::from(4 * MOST_ROUTE_TURNS)
+                {
+                    // In range by the check.
+                    apart as i32
+                } else {
+                    0
+                };
+                for k in (apart - 1).min(-1)..=(apart + 1).max(1) {
                     let (c, d) = (shifted(c, [k, 0], periods), shifted(d, [k, 0], periods));
                     if seam_blocked(p, q, c, d) {
                         return true;
