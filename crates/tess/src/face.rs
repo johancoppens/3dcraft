@@ -5835,7 +5835,7 @@ mod tests {
     }
 
     /// The side of a band between spirals, as an extrusion makes it: a
-    /// ruled spline surface along `r = 3 + 0.5 t / 2π` for `turns` turns
+    /// ruled spline surface along `r = 3 + 0.05 t / 2π` for `turns` turns
     /// (u, in 32 straight pieces a turn) and up by 3.3 (v).
     fn spiral_side(turns: f64) -> Surface {
         let pieces = (32.0 * turns) as usize;
@@ -5845,7 +5845,7 @@ mod tests {
         let mut ctrl = Vec::new();
         for i in 0..=pieces {
             let t = turns * std::f64::consts::TAU * i as f64 / pieces as f64;
-            let r = 3.0 + 0.5 * t / std::f64::consts::TAU;
+            let r = 3.0 + 0.05 * t / std::f64::consts::TAU;
             for z in [0.0, 3.3] {
                 ctrl.push(Vec3::new(r * t.cos(), r * t.sin(), z));
             }
@@ -5890,9 +5890,9 @@ mod tests {
 
     #[test]
     fn a_loop_on_a_side_that_winds_more_finely_than_the_search_is_followed_along_it() {
-        let surface = spiral_side(5.5);
+        let surface = spiral_side(40.0);
         let param = param_of(&surface);
-        let points = round_the_domain(&surface, 400);
+        let points = round_the_domain(&surface, 4000);
         let tolerance = 1e-3;
         let off = |ring: &Ring| {
             ring.verts
@@ -5903,7 +5903,7 @@ mod tests {
         // The search alone puts points of the rims a turn away: the loop
         // jumps across the surface (what refused the field test's band).
         let searched = build_ring(&param, &points, 1.0, 0, 0, None).unwrap();
-        assert!(off(&searched) > 0.1, "{}", off(&searched));
+        assert!(off(&searched) > 0.01, "{}", off(&searched));
         assert!(ring_jumps(&param, &searched, tolerance));
         // Followed along the loop, every point is on the surface.
         let followed = build_ring(&param, &points, 1.0, 0, 0, Some(tolerance)).unwrap();
@@ -5916,9 +5916,9 @@ mod tests {
         // The loop 0.01 below the surface's lower rim: the walk's feet are
         // that far off, beyond the tolerance, and the search's stay, so a
         // wrong dip never spreads along the loop (the face fails instead).
-        let surface = spiral_side(5.5);
+        let surface = spiral_side(40.0);
         let param = param_of(&surface);
-        let points: Vec<(Vec3, Chord)> = round_the_domain(&surface, 400)
+        let points: Vec<(Vec3, Chord)> = round_the_domain(&surface, 4000)
             .into_iter()
             .map(|(p, chord)| (p - Vec3::new(0.0, 0.0, 0.01), chord))
             .collect();
@@ -6010,13 +6010,13 @@ mod tests {
     }
 
     /// The foot of a thread of `turns` turns of pitch 1 on that cylinder:
-    /// a strip 0.5 wide winding up from `b` = 1, `per_turn` points a turn
+    /// a strip 0.5 wide winding up from `b` = 0.3, `per_turn` points a turn
     /// on each side.
     fn foot(surface: &Surface, turns: f64, per_turn: usize) -> Ring {
         let n = (turns * per_turn as f64) as usize;
         let tau = std::f64::consts::TAU;
         let point = |a: f64, up: f64| {
-            let b = 1.0 + up + a / tau;
+            let b = 0.3 + up + a / tau;
             Bv {
                 uv: [a, b],
                 pos: surface.eval(a, b),
@@ -6044,11 +6044,15 @@ mod tests {
             craft3d_geom::Cylinder::new(craft3d_math::Frame::WORLD, 1.0).unwrap(),
         );
         let param = param_of(&surface);
-        let (lower, upper) = (rim(&surface, 0.0, 1), rim(&surface, 80.0, -1));
+        let lower = rim(&surface, 0.0, 1);
         let periods = param.periods();
         let period = std::f64::consts::TAU;
         type Found = (Option<bool>, Result<Option<bool>, String>);
-        let search = |hole: &Ring| -> Found {
+        // The neck's wall: its lower rim, its upper one 0.6 above the end
+        // of the thread's foot (as a jar has it), and the foot as a hole.
+        let search = |turns: f64, per_turn: usize| -> Found {
+            let hole = &foot(&surface, turns, per_turn);
+            let upper = rim(&surface, 0.3 + turns + 0.5 + 0.6, -1);
             // As `band_region` tests a piece against the loops.
             let crosses = |from: Uv, to: Uv| -> bool {
                 [&lower, &upper, hole].iter().any(|ring| {
@@ -6083,18 +6087,18 @@ mod tests {
         };
         // Six turns: no seam one turn either way, one through the hole
         // laid out wide.
-        let (narrow, wide) = search(&foot(&surface, 6.0, 16));
+        let (narrow, wide) = search(6.0, 16);
         assert_eq!(narrow, None);
         assert_eq!(wide, Ok(Some(true)));
         // Seventy turns: refused with the reason, not searched.
-        let (_, wide) = search(&foot(&surface, 70.0, 4));
+        let (_, wide) = search(70.0, 4);
         let reason = wide.unwrap_err();
         assert!(
             reason.contains("70 times") && reason.contains("more than 64"),
             "{reason}"
         );
         // Too many points to lay out: refused with the reason.
-        let (_, wide) = search(&foot(&surface, 9.0, 2000));
+        let (_, wide) = search(9.0, 2000);
         let reason = wide.unwrap_err();
         assert!(reason.contains("more than 262144"), "{reason}");
     }
