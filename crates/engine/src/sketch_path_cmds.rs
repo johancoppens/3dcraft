@@ -15,10 +15,12 @@
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
-use crate::sketch_cmds::{Held, PointArg, change, coordinates, ids, sketch_ref, sketch_result};
+use crate::sketch_cmds::{
+    Held, MAX_COORDINATE_EXPR, PointArg, change, held_coordinates, ids, sketch_ref, sketch_result,
+};
 use crate::typed::Typed;
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_doc::{ConstraintId, ConstraintKind, EntityId, Sketch, SketchError};
+use craft3d_doc::{ConstraintId, ConstraintKind, EntityId, Expr, Sketch, SketchError};
 use serde_json::{Map, Value, json};
 
 const COMMAND: &str = "sketch.path";
@@ -43,7 +45,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     // params: `panic_hunt` reads every quoted word before a colon in the
     // params as a parameter of the command itself.
     spec!("sketch.path", "Sketch Path", r#"{"sketch": id or name, "start": point id or [x, y], "segments": [segment, ...], "closed": boolean = false, "construction": boolean = false}"#,
-        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. An end is a point id, coordinates [x, y], or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start (an end rounded to a few decimals): when the end is given as coordinates and is off by at most 1 % of the radius, it is put on that circle, in its direction from the centre, so the start and the segments before it stay where they are; the result then has snapped, one entry per such segment: {\"segment\": i, \"given\": [x, y], \"end\": [x, y], \"moved\": distance}. Otherwise (an end that is a point id or \"start\", or one farther off) it is drawn as given, and the result has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
+        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number or expr, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. Coordinates [x, y] (of an end, a center or a through point) are numbers or expressions in the document's variables (\"-width / 2\"), a point written with an expression held there by x and y constraints as sketch.polyline holds its corners. An end is a point id, coordinates, or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. A through point written with an expression becomes a point of its own, kept on the arc (pointOn) and held at its expressions; a radius written as an expression is held by a radius constraint. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added, and those that hold a radius or a through point written as expressions). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start (an end rounded to a few decimals): when the end is given as coordinates and is off by at most 1 % of the radius, it is put on that circle, in its direction from the centre, so the start and the segments before it stay where they are; the result then has snapped, one entry per such segment: {\"segment\": i, \"given\": [x, y], \"end\": [x, y], \"moved\": distance}. Otherwise (an end that is a point id or \"start\", or one farther off) it is drawn as given, and the result has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
 ];
 
 type Xy = (f64, f64);
@@ -64,9 +66,14 @@ enum Shape {
         center: PointArg,
         clockwise: bool,
     },
-    Through(Xy),
+    /// Through a point; written with expressions, the point is kept on
+    /// the arc and held at them.
+    Through(Xy, Held),
     Radius {
         radius: f64,
+        /// The radius written as an expression: held by a radius
+        /// constraint.
+        held: Option<Expr>,
         large: bool,
         clockwise: bool,
     },
@@ -194,22 +201,50 @@ fn parse_segment(typed: &Typed<'_>, index: usize, value: &Value) -> Result<Segme
             center: PointArg::parse(typed, COMMAND, &format!("segments[{index}].center"), center)?,
             clockwise: clockwise.unwrap_or(false),
         },
-        (None, Some(through), None) => match coordinates(through) {
-            Some(point) => Shape::Through(point),
+        (None, Some(through), None) => match held_coordinates(
+            typed,
+            COMMAND,
+            &format!("segments[{index}].through"),
+            through,
+        )? {
+            Some((x, y, held)) => Shape::Through((x, y), held),
             None => {
-                return fail(format!("{at}: `through` must be two finite numbers [x, y]"));
+                return fail(format!(
+                    "{at}: `through` must be coordinates [x, y]: two finite numbers, or expressions such as \"width / 2\""
+                ));
             }
         },
-        (None, None, Some(radius)) => match radius.as_f64().filter(|r| r.is_finite() && *r > 0.0) {
-            Some(radius) => Shape::Radius {
-                radius,
-                large: large.unwrap_or(false),
-                clockwise: clockwise.unwrap_or(false),
-            },
-            None => {
-                return fail(format!("{at}: `radius` must be a positive number"));
+        (None, None, Some(radius)) => {
+            let (value, held) = match radius {
+                Value::String(text) => {
+                    if text.chars().count() > MAX_COORDINATE_EXPR {
+                        return fail(format!(
+                            "{at}: `radius` is longer than {MAX_COORDINATE_EXPR} characters"
+                        ));
+                    }
+                    let value = typed
+                        .evaluate(text, crate::typed::TypedKind::Length)
+                        .map_err(|e| {
+                            CommandError::new(format!("{at}: `radius`: {}", e.message()))
+                        })?;
+                    (Some(value), Some(Expr::new(text.clone())))
+                }
+                other => (other.as_f64(), None),
+            };
+            match value.filter(|r| r.is_finite() && *r > 0.0) {
+                Some(radius) => Shape::Radius {
+                    radius,
+                    held,
+                    large: large.unwrap_or(false),
+                    clockwise: clockwise.unwrap_or(false),
+                },
+                None => {
+                    return fail(format!(
+                        "{at}: `radius` must be a positive number or an expression such as \"r\""
+                    ));
+                }
             }
-        },
+        }
         (None, None, None) if tangent => Shape::Tangent,
         (None, None, None) => {
             return fail(format!(
@@ -378,6 +413,9 @@ struct Step {
     /// An arc given by its centre whose end was put on the circle through
     /// its start.
     snapped: Option<Snap>,
+    /// The constraints that hold what was written as expressions: a
+    /// radius, a point the arc passes through.
+    held: Vec<ConstraintId>,
 }
 
 /// How far an end given off its arc's circle may be put onto it, as a
@@ -512,10 +550,11 @@ fn draw_segment(
                 drawn: Drawn { entity, arrives },
                 warning: None,
                 snapped: None,
+                held: Vec::new(),
             });
         }
         Shape::Center { center, clockwise } => (center.place(s)?, !clockwise),
-        Shape::Through(through) => {
+        Shape::Through(through, _) => {
             let (center, ccw) = arc_through(from_at, through, end_at, tolerance)?;
             (s.add_point(center.0, center.1)?, ccw)
         }
@@ -523,6 +562,7 @@ fn draw_segment(
             radius,
             large,
             clockwise,
+            ..
         } => {
             let center = arc_by_radius(from_at, end_at, radius, large, clockwise, tolerance)?;
             (s.add_point(center.0, center.1)?, !clockwise)
@@ -560,6 +600,27 @@ fn draw_segment(
     let Some(arrives) = arc_direction(center_at, end_at, ccw) else {
         return invalid("the arc's centre is on its end: there is no radius");
     };
+    // What was written as expressions follows the variables: the radius
+    // by a radius constraint, a point it passes through as a point of its
+    // own, on the arc and held at its expressions.
+    let mut held = Vec::new();
+    match &segment.shape {
+        Shape::Radius {
+            held: Some(value), ..
+        } => held.push(s.add_constraint(ConstraintKind::Radius {
+            curve: entity,
+            value: value.clone(),
+        })?),
+        Shape::Through(through, at) if *at != Held::default() => {
+            let point = s.add_point(through.0, through.1)?;
+            held.push(s.add_constraint(ConstraintKind::PointOn {
+                point,
+                curve: entity,
+            })?);
+            held.extend(at.pin(s, point)?);
+        }
+        _ => {}
+    }
     Ok(Step {
         end,
         end_at,
@@ -567,6 +628,7 @@ fn draw_segment(
         drawn: Drawn { entity, arrives },
         warning,
         snapped,
+        held,
     })
 }
 
@@ -606,6 +668,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         if let Some(snap) = step.snapped {
             built.snapped.push((index, snap));
         }
+        built.constraints.extend(step.held);
         built.points.push(step.end);
         built.entities.push(step.drawn.entity);
         built.centers.push(step.center);

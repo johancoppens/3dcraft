@@ -242,6 +242,96 @@ fn d_shapes_drawn_as_paths_have_their_volumes() {
     }
 }
 
+/// Every point and the radius of an arc segment may be written with the
+/// document's variables, as the corners of a polyline may (an R1 tester
+/// found the through point refused): drawn where the expressions say and
+/// held there, so the profile follows when a variable changes.
+#[test]
+fn arcs_written_with_expressions_follow_their_variables() {
+    for (units, k) in SCALES {
+        // Half a disc of radius r, the arc through its top.
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": units}));
+        let (r, depth) = (5.0 * k, 2.0 * k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": format!("{r} {units}")}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "P"}));
+        let path = run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "P", "start": ["-r", 0], "segments": [
+                {"arc": ["r", 0], "through": [0, "r"]}
+            ], "closed": true}),
+        );
+        assert_eq!(path["status"], "ok", "{path}");
+        // The through point on the arc, and held at its x and y.
+        assert_eq!(
+            path["constraints"].as_array().unwrap().len(),
+            3,
+            "{units}: {path}"
+        );
+        let made = run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "P", "distance": depth, "name": "Body"}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        assert_volume(&mut s, PI * r * r / 2.0 * depth, units);
+        let r2 = 1.5 * r;
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": format!("{r2} {units}")}),
+        );
+        let solid = assert_volume(&mut s, PI * r2 * r2 / 2.0 * depth, units);
+        // Still bulging upwards: the arc passes through (0, r).
+        let hi = solid["bbox"][1][1].as_f64().unwrap();
+        assert!((hi - r2).abs() <= 1e-9 * r2, "{units}: {}", solid["bbox"]);
+
+        // A shaft with a flat, its radius and corners written with k: the
+        // area scales with k squared.
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": units}));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "k", "expr": format!("{k} {units}")}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "P"}));
+        let path = run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "P", "start": ["-3 * k", "4 * k"], "segments": [
+                {"arc": ["-3 * k", "-4 * k"], "radius": "5 * k", "large": true, "clockwise": true}
+            ], "closed": true}),
+        );
+        assert_eq!(path["status"], "ok", "{path}");
+        assert_eq!(
+            path["constraints"].as_array().unwrap().len(),
+            1,
+            "{units}: {path}"
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "P", "distance": depth, "name": "Body"}),
+        );
+        // As in `d_shapes_drawn_as_paths_have_their_volumes`, per k^2.
+        let a = 0.6_f64.acos();
+        let unit_area = PI * 25.0 - 25.0 * (a - 0.8 * 0.6);
+        assert_volume(&mut s, unit_area * k * k * depth, units);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "k", "expr": format!("{} {units}", 2.0 * k)}),
+        );
+        assert_volume(&mut s, unit_area * 4.0 * k * k * depth, units);
+    }
+}
+
 /// The centre of an arc, and whether the path walks it counter-clockwise.
 type Walked = ((f64, f64), bool);
 
@@ -924,11 +1014,27 @@ fn bad_paths_are_refused_with_a_reason_and_change_nothing() {
         ),
         (
             json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "through": "e1"}]}),
-            "segments[0]: `through` must be two finite numbers",
+            "segments[0]: `through` must be coordinates [x, y]",
         ),
         (
-            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": "5"}]}),
+            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "through": [1, "nope + 1"]}]}),
+            "`segments[0].through`: y: ",
+        ),
+        (
+            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": "nope"}]}),
+            "segments[0]: `radius`: ",
+        ),
+        (
+            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": "-4 mm"}]}),
             "segments[0]: `radius` must be a positive number",
+        ),
+        (
+            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": "30 deg"}]}),
+            "segments[0]: `radius`: ",
+        ),
+        (
+            json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": "9".repeat(1001)}]}),
+            "longer than 1000 characters",
         ),
         (
             json!({"sketch": "P", "start": [0, 5], "segments": [{"arc": [5, 5], "radius": 0}]}),

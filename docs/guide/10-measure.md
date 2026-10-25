@@ -41,10 +41,11 @@ is below, beside the value found at a real place. On the flange of [chapter 3](0
 ]
 ```
 
-- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `distance`, `clearance`,
-  `thickness`, `through`, `interference` (none overlap), `symmetric`.
-- Bounds: `eq` (with `tol`, by default a millionth of the value), or `min` and/or `max`; `is` for the
-  yes-or-no measures. Bounds are expressions in the document's variables, so they follow the design: the
+- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `centerOfMass` (its
+  coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
+  `through`, `overlap` (whether bodies overlap), `symmetric`.
+- Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or `max`;
+  `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it said). Bounds are expressions in the document's variables, so they follow the design: the
   case's volume is right for any `wall`.
 - An assertion may be written before the model meets it, even before its subject exists (it is in
   *error* until then).
@@ -69,8 +70,24 @@ A real *notProven*: with the bound written as `"min": "wall - 0.01 mm"`, the cas
 *thickness: not proven: found 2 mm (at least 1.95750083 mm), expected ≥ 1.99 mm*. The wall is 2 mm, but
 the proof only reaches 1.9575 mm near the rounded corners; a bound of `wall - 0.1 mm` passes.
 
+Two that need a word:
+
+- **The centre of mass** of the bodies weighs each body's centroid by its mass, so different materials
+  pull it their way. A CubeSat's centre of mass must lie within 20 mm of its geometric centre in x and
+  y and 70 mm in z: with that centre in variables, `{"name": "cg x", "measure": "centerOfMass",
+  "axis": "x", "min": "cx - 20 mm", "max": "cx + 20 mm"}`, and the same for y and z. A body without a
+  material is an *error*, as for `mass`: *`Lid` has no material, so no mass; give it one with
+  body.material*.
+- **Overlap** is true when bodies overlap, so `{"measure": "overlap", "of": ["Bolt", "Plate"], "is":
+  false}` asserts they do not (`to` compares `of` with other bodies instead of with each other; leave
+  both out for all bodies). Its message says it in words: *no overlap*, or *Bolt overlaps Plate by
+  12 mm^3, expected no overlap*. `is: true` asserts a press fit. Before 2026-10-25 this measure was
+  `interference`, true when *none* overlap; that form is still read, from files too, and is written
+  as `overlap` with the opposite `is`.
+
 One trap: in an expression a power binds to the number with its unit, so `50 cm^3` would mean
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the
-document's unit (mm³ in a mm document).
+document's unit (mm³ in a mm document). Only `0` and `1` may be written so (`"tol": "0 mm^3"`): for them
+the two readings are the same.
 
 **Next:** [Selection and named sets](11-selection.md).

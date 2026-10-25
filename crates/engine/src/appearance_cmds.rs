@@ -512,7 +512,7 @@ fn shown_bodies(
 }
 
 /// Metres per document length unit.
-fn metres_per_unit(unit: LengthUnit) -> f64 {
+pub(crate) fn metres_per_unit(unit: LengthUnit) -> f64 {
     match unit {
         LengthUnit::Micrometre => 1e-6,
         LengthUnit::Millimetre => 1e-3,

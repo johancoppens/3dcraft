@@ -155,7 +155,7 @@ pub(crate) fn number_expr(v: f64) -> String {
 }
 
 /// Most characters of a coordinate written as an expression.
-const MAX_COORDINATE_EXPR: usize = 1_000;
+pub(crate) const MAX_COORDINATE_EXPR: usize = 1_000;
 
 /// `[x, y]` for a new point: two numbers (where it is drawn), or a pair
 /// with an expression in it (a string, evaluated with the document's

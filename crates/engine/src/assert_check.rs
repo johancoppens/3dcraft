@@ -139,6 +139,18 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion) -> Key {
             _ => {}
         }
     }
+    // A mass follows the materials, which change no body.
+    if matches!(
+        params.get("measure").and_then(Value::as_str),
+        Some("mass" | "centerOfMass")
+    ) {
+        text.push('|');
+        for given in &doc.bodies {
+            if let Some(material) = &given.material {
+                text.push_str(&format!("{}={material:?};", given.feature));
+            }
+        }
+    }
     // A datum plane moves without a body changing.
     if let Some(Value::String(name)) = params.get("plane")
         && let Some(f) = doc.feature_by_name(name).map(|f| f.id).or_else(|| {

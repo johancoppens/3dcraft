@@ -188,6 +188,15 @@ pub(crate) fn power_of_a_quantity(source: &str) -> Option<String> {
         else {
             continue;
         };
+        // (0 mm)^3 is 0 mm^3 and (1 mm)^3 is 1 mm^3: nothing to mistake,
+        // so a zero tolerance can be written as one (`0 mm^3`). Only a
+        // number of its own: the 1 of `2e1` is part of twenty.
+        let own = number_start == 0
+            || b.get(number_start - 1)
+                .is_some_and(|c| !(c.is_ascii_alphanumeric() || *c == b'_' || *c == b'.'));
+        if own && number.parse::<f64>().is_ok_and(|n| n == 0.0 || n == 1.0) {
+            continue;
+        }
         let k: String = source
             .get(i + 1..)
             .unwrap_or("")
@@ -464,17 +473,23 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 11] = [
+/// `interference`, the name `overlap` had before 2026-10-25, with the
+/// opposite yes and no (true when none overlap): still read in documents
+/// and accepted by `assert.add`, which write it as `overlap`.
+pub(crate) const OLD_INTERFERENCE: &str = "interference";
+
+pub(crate) const MEASURES: [&str; 12] = [
     "volume",
     "area",
     "mass",
     "count",
     "extent",
+    "centerOfMass",
     "distance",
     "clearance",
     "thickness",
     "through",
-    "interference",
+    "overlap",
     "symmetric",
 ];
 
@@ -484,11 +499,16 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "volume" | "area" | "mass" => mass_measure(ctx, name, p),
         "count" => count(ctx, p),
         "extent" => extent(ctx, p),
+        "centerOfMass" => center_of_mass(ctx, p),
         "distance" => distance(ctx, p),
         "clearance" => clearance(ctx, p),
         "thickness" => thickness(ctx, p),
         "through" => through(ctx, p),
-        "interference" => no_interference(ctx, p),
+        "overlap" => overlap(ctx, p),
+        OLD_INTERFERENCE => overlap(ctx, p).map(|mut out| {
+            out.flag = out.flag.map(|overlaps| !overlaps);
+            out
+        }),
         "symmetric" => symmetric(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
@@ -590,12 +610,7 @@ fn count(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
 
 fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     only(p, &["of", "axis"])?;
-    let axis = match p.get("axis").and_then(Value::as_str) {
-        Some("x") => 0,
-        Some("y") => 1,
-        Some("z") => 2,
-        _ => return Err("`axis` must be x, y or z".into()),
-    };
+    let axis = axis_param(p)?;
     let found = match p.get("of") {
         None | Some(Value::Null) => all_bodies(ctx),
         Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
@@ -615,6 +630,73 @@ fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     let mut out = Outcome::number(Dim::Length(1), pick(hi) - pick(lo));
     out.detail.insert("min".into(), vec3(lo));
     out.detail.insert("max".into(), vec3(hi));
+    Ok(out)
+}
+
+/// `axis` of a measure: 0, 1 or 2.
+fn axis_param(p: &Map<String, Value>) -> Result<usize, String> {
+    match p.get("axis").and_then(Value::as_str) {
+        Some("x") => Ok(0),
+        Some("y") => Ok(1),
+        Some("z") => Ok(2),
+        _ => Err("`axis` must be x, y or z".into()),
+    }
+}
+
+/// The centre of mass of the bodies (all of them by default) along an
+/// axis: the centroid of each body weighted by its mass, so every body
+/// needs a material. The coordinate is in the model's frame, in the
+/// document's length unit; the whole point is in the detail.
+fn center_of_mass(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+    only(p, &["of", "axis"])?;
+    let axis = axis_param(p)?;
+    let found = match p.get("of") {
+        None | Some(Value::Null) => all_bodies(ctx),
+        Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
+    };
+    let m = crate::appearance_cmds::metres_per_unit(ctx.doc.units.length);
+    let (mut mass, mut moment) = (0.0, Vec3::ZERO);
+    let mut listed = Vec::new();
+    for (id, body) in whole_bodies(ctx, &found, "centerOfMass")? {
+        let fname = ctx.feature_name(id);
+        let Some((_, material)) = crate::appearance::body_material(ctx.doc, ctx.regen, id) else {
+            return Err(format!(
+                "`{fname}` has no material, so no mass; give it one with body.material"
+            ));
+        };
+        let props = crate::mass::mass_of(&body)
+            .map_err(|e| format!("`{fname}` cannot be measured: {e}"))?;
+        let centroid = props
+            .centroid
+            .ok_or_else(|| format!("`{fname}` has no volume, so no centre of mass"))?;
+        let body_mass = props.volume * material.density * m * m * m;
+        if !body_mass.is_finite() {
+            return Err(format!("the mass of `{fname}` is not a finite number"));
+        }
+        mass += body_mass;
+        moment += centroid * body_mass;
+        listed.push(json!({
+            "feature": id.to_string(), "name": fname, "mass": body_mass, "centroid": vec3(centroid),
+        }));
+    }
+    if listed.is_empty() {
+        return Err("there are no bodies to measure".into());
+    }
+    if !(mass.is_finite() && mass > 0.0) {
+        return Err("the bodies have no mass (a density of 0?), so no centre of mass".into());
+    }
+    let center = moment * (1.0 / mass);
+    let at = [center.x, center.y, center.z]
+        .get(axis)
+        .copied()
+        .unwrap_or(0.0);
+    if !at.is_finite() {
+        return Err("the centre of mass is not a finite point".into());
+    }
+    let mut out = Outcome::number(Dim::Length(1), at);
+    out.detail.insert("center".into(), vec3(center));
+    out.detail.insert("mass".into(), mass.into());
+    out.detail.insert("bodies".into(), listed.into());
     Ok(out)
 }
 
@@ -865,19 +947,19 @@ fn through(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-fn no_interference(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     only(p, &["of", "to"])?;
     let a = match p.get("of") {
         None | Some(Value::Null) => all_bodies(ctx),
         Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
     };
-    let ba = whole_bodies(ctx, &a, "interference")?;
+    let ba = whole_bodies(ctx, &a, "overlap")?;
     let bb = match p.get("to") {
         None | Some(Value::Null) => None,
         Some(v) => Some(whole_bodies(
             ctx,
             &nonempty(subject(ctx, v, &["body"])?, "to")?,
-            "interference",
+            "overlap",
         )?),
     };
     let mut pairs: Vec<(usize, usize, bool)> = Vec::new();
@@ -934,11 +1016,40 @@ fn no_interference(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
             }
         }
     }
-    let mut out = Outcome::flag(overlaps.is_empty());
-    out.number = Some(overlaps.len() as f64);
-    if !overlaps.is_empty() {
-        out.note = Some(format!("{} pairs overlap", overlaps.len()));
+    // In words: which pairs overlap and by how much ("Bolt overlaps Plate
+    // by 12 mm^3"), the first few of them, or that none do.
+    const SAID: usize = 3;
+    let unit = length_unit(ctx.doc);
+    let mut words: Vec<String> = overlaps
+        .iter()
+        .take(SAID)
+        .map(|o| {
+            let (a, b) = (
+                o["a"].as_str().unwrap_or("?"),
+                o["b"].as_str().unwrap_or("?"),
+            );
+            match o["volume"].as_f64() {
+                Some(v) => format!(
+                    "{a} overlaps {b} by {} {unit}^3",
+                    crate::assert_cmds::shown(v.abs())
+                ),
+                None => format!("{a} overlaps {b}"),
+            }
+        })
+        .collect();
+    if overlaps.len() > SAID {
+        words.push(format!(
+            "{} more pairs overlap",
+            overlaps.len().saturating_sub(SAID)
+        ));
     }
+    let mut out = Outcome::flag(!overlaps.is_empty());
+    out.number = Some(overlaps.len() as f64);
+    out.note = Some(if words.is_empty() {
+        "no overlap".to_string()
+    } else {
+        words.join("; ")
+    });
     out.detail.insert("overlaps".into(), overlaps.into());
     Ok(out)
 }
