@@ -47,10 +47,14 @@ fail with `causedBy` naming the first one. `document.check` lists them all. Fix 
 - **A reference that was lost** (an upstream edit took away the face or edge a feature names): the
   message names the name it lost and the feature that made it. Point the feature at the right entity
   with `feature.edit` (`edges`, `faces`, `sketch`, `target`), or undo the upstream edit.
-- **Something made from a suppressed or inactive feature** (a fillet of an edge only the suppressed feature
+- **Something made from a suppressed or inactive feature** (a sketch on a face only the suppressed feature
   made, an extrusion of a sketch that is off): switch it on (`feature.suppress {"suppressed": false}`, or
   set the parameter its condition reads), or give the dependent feature the same condition
-  (`feature.when`).
+  (`feature.when`). A fillet, chamfer or face operation does not fail: it leaves out the edges and faces
+  that are not there.
+- **A part that should disappear stays**: its condition is on a feature that changes the body (a
+  transform, a fillet), which passes the body on unchanged when it is off. Put the condition on the
+  feature that makes the part ([chapter 8](08-formulas.md#switching-parts-on-and-off)).
 - ***The body of `Bossed` already went into `Bevel`***: another feature took that body first, most often
   one inserted at the rollback marker. Build on the newer feature: the message gives the `feature.edit`
   (`{"feature": "Drilled", "target": "Bevel"}` for a boolean; for a fillet, a chamfer or a face operation

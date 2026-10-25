@@ -81,7 +81,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
-        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, and a boolean with that body as its tool passes its target on (passesNothing says why there is no body). A reference to a face or edge only the suppressed feature makes (a fillet's face) fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
+        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, a boolean with that body as its tool passes its target on, a union with it as its target passes its tool on, and a subtraction or intersection with it as its target passes nothing on and still takes its tool (passesNothing says why there is no body). A fillet, chamfer or face operation leaves out the faces and edges that are not there (of a body that is not made, or that only the suppressed feature makes) and, with none left, passes on the body it would have changed. The appearance and material given to the suppressed feature do not apply to the body it passes on. A sketch, datum or extrusion up to a face only the suppressed feature makes fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
         "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
@@ -365,7 +365,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
             map.insert("causedBy".into(), root.to_string().into());
         }
-        add_switch(map, feature, outcome);
+        add_switch(map, doc, &regen.features, feature, outcome);
         if let Some(report) = &outcome.sweep {
             map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
@@ -384,9 +384,14 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
 /// off or with an operand switched off, what it passes on to the features
 /// after it: `passesOn` the id of the feature whose body it passes on
 /// unchanged, `passesNothing` why it passes no body on (as it should),
-/// `cannotPass` why the body it would pass on cannot be had.
+/// `cannotPass` why the body it would pass on cannot be had; and
+/// `leftOut`, the faces and edges it names that are not there because a
+/// feature is off ([`craft3d_regen::left_out`]: `{name, why}`, an edge as
+/// `a / b`), which it leaves out.
 pub(crate) fn add_switch(
     map: &mut serde_json::Map<String, Value>,
+    doc: &Document,
+    results: &[craft3d_regen::FeatureResult],
     feature: &Feature,
     outcome: &craft3d_regen::FeatureResult,
 ) {
@@ -405,6 +410,50 @@ pub(crate) fn add_switch(
         }
         None => {}
     }
+    let left = craft3d_regen::left_out(doc, results, feature.id);
+    if !left.is_empty() {
+        let listed: Vec<Value> = left
+            .into_iter()
+            .map(|(name, why)| json!({ "name": name, "why": why }))
+            .collect();
+        map.insert("leftOut".into(), listed.into());
+    }
+}
+
+/// What a feature passes on and leaves out, in a sentence for the feature
+/// list's tooltip: `None` for a feature built as usual from everything it
+/// names.
+pub(crate) fn passes_text(
+    doc: &Document,
+    results: &[craft3d_regen::FeatureResult],
+    feature: &Feature,
+    outcome: &craft3d_regen::FeatureResult,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    match &outcome.passed {
+        Some(craft3d_regen::Passed::Body(from)) => {
+            let by = doc
+                .feature(*from)
+                .map_or_else(|| from.to_string(), |f| f.name.clone());
+            parts.push(format!("Passes on the body of {by} unchanged."));
+        }
+        Some(craft3d_regen::Passed::Nothing(why)) => {
+            parts.push(format!("Makes no body: {why}."));
+        }
+        Some(craft3d_regen::Passed::Broken(why)) => {
+            parts.push(format!("Cannot pass its body on: {why}"));
+        }
+        None => {}
+    }
+    let left = craft3d_regen::left_out(doc, results, feature.id);
+    if !left.is_empty() {
+        let listed: Vec<String> = left
+            .iter()
+            .map(|(name, why)| format!("{name} ({why})"))
+            .collect();
+        parts.push(format!("Left out, not there: {}.", listed.join("; ")));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 fn status_json(status: &Status) -> (&'static str, Option<&str>) {
@@ -2734,7 +2783,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             map.insert("error".into(), error.into());
         }
         if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome) {
-            add_switch(map, feature, outcome);
+            add_switch(map, doc, &regen.features, feature, outcome);
         }
         // Hidden in the view (`feature.visible`): said only when it is.
         if let Some(map) = entry.as_object_mut()

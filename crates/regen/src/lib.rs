@@ -65,7 +65,7 @@ pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
-pub use pass::Passed;
+pub use pass::{Passed, left_out};
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, FittedCurve, SketchResult, fit_formula_curve,
@@ -916,6 +916,16 @@ impl FeatureResult {
             Some(Passed::Body(_)) => true,
             Some(Passed::Nothing(_) | Passed::Broken(_)) => false,
             None => self.status == Status::Ok,
+        }
+    }
+
+    /// The feature whose body this one passes on unchanged (`pass`): its
+    /// body is made from that body alone, in whichever instance its names
+    /// are copies in. `None` for a feature built as usual.
+    pub fn passes_on(&self) -> Option<FeatureId> {
+        match &self.passed {
+            Some(Passed::Body(source)) => Some(*source),
+            _ => None,
         }
     }
 

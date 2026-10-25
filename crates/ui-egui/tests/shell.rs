@@ -1573,6 +1573,9 @@ fn the_tree_marks_are_in_the_fonts() {
 
 /// A feature switched off by its condition is a row of its own state,
 /// `inactive`, with its condition: greyed in the window, said by `ui.get`.
+/// Its tooltip says what it passes on, from the regeneration (a block
+/// makes no body), and so does the row of a fillet that is on but whose
+/// edges are not there (it makes no body, and lists what it left out).
 #[test]
 fn the_tree_shows_an_inactive_feature_with_its_condition() {
     let mut session = part();
@@ -1581,10 +1584,19 @@ fn the_tree_shows_an_inactive_feature_with_its_condition() {
         "variable.set",
         json!({"name": "lid", "expr": "0"}),
     );
-    run(
+    let lid = run(
         &mut session,
         "feature.block",
         json!({"size": [1, 1, 1], "position": [100, 0, 0], "name": "Lid"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(
+        &mut session,
+        "feature.fillet",
+        json!({"edges": [[format!("{lid}:face(1)"), format!("{lid}:face(2)")]], "radius": 0.1,
+               "name": "Soft"}),
     );
     run(
         &mut session,
@@ -1594,23 +1606,42 @@ fn the_tree_shows_an_inactive_feature_with_its_condition() {
     let mut shell = Shell::new();
     let mut window = Window::new(1000.0, 700.0);
     window.idle(&mut shell, &mut session, 3);
-    let row = shell.tree_rows().last().unwrap().clone();
+    let rows = shell.tree_rows();
+    let row = rows[rows.len() - 2].clone();
     assert_eq!(row.state, FeatureState::Inactive);
     assert_eq!(row.status, "inactive");
     assert_eq!(row.when.as_deref(), Some("lid"));
+    assert_eq!(
+        row.passes.as_deref(),
+        Some("Makes no body: `Lid` is inactive (its condition `lid` is 0).")
+    );
+    let soft = rows.last().unwrap().clone();
+    assert_eq!(soft.state, FeatureState::Ok);
+    let passes = soft.passes.clone().unwrap_or_default();
+    assert!(
+        passes.starts_with("Makes no body: `Lid` is inactive")
+            && passes.contains(&format!(
+                "Left out, not there: {lid}:face(1) / {lid}:face(2)"
+            )),
+        "{passes}"
+    );
     let got = shell
         .handle_method(&mut session, "ui.get", None)
         .unwrap()
         .unwrap();
-    let last = got["features"].as_array().unwrap().last().unwrap().clone();
+    let features = got["features"].as_array().unwrap();
+    let last = features[features.len() - 2].clone();
     assert_eq!(last["state"], "inactive", "{last}");
     assert_eq!(last["when"], "lid", "{last}");
     assert_eq!(last["zoomable"], false, "{last}");
+    assert_eq!(features.last().unwrap()["passes"], json!(passes));
     run(
         &mut session,
         "variable.set",
         json!({"name": "lid", "expr": "1"}),
     );
     window.idle(&mut shell, &mut session, 2);
-    assert_eq!(shell.tree_rows().last().unwrap().state, FeatureState::Ok);
+    let rows = shell.tree_rows();
+    assert_eq!(rows[rows.len() - 2].state, FeatureState::Ok);
+    assert_eq!(rows.last().unwrap().passes, None);
 }

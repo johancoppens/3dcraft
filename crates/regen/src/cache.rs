@@ -749,6 +749,23 @@ pub(crate) fn features(
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
+        // A feature that names faces or edges, every one of them absent,
+        // passes on the body it would have changed (`crate::pass`): that
+        // body's feature is one of its inputs, which its definition does
+        // not name, and so are the features it names.
+        let stand_in: Vec<FeatureId> = if !rolled_back
+            && followed.is_ok()
+            && crate::pass::nothing_left(doc, &results, feature).is_some()
+        {
+            crate::pass::stand_in(doc, &results, stated.id)
+                .ok()
+                .flatten()
+                .into_iter()
+                .chain(stated.kind.inputs())
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Its condition with the rest: a change of what it evaluates to
         // switches the feature on or off.
         let mut values = evaluated(variables, &feature.exprs());
@@ -763,6 +780,7 @@ pub(crate) fn features(
                 .kind
                 .inputs()
                 .iter()
+                .chain(&stand_in)
                 .all(|input| !changed.is_marked(*input));
         let known_inputs = index < same_places && unchanged && made_before(feature);
         before.insert(stated.id, stated_before);
@@ -793,6 +811,7 @@ pub(crate) fn features(
                     &at,
                     &results,
                     (index, stated, feature),
+                    &stand_in,
                     Context {
                         rolled_back,
                         followed: followed.clone(),
@@ -839,7 +858,15 @@ pub(crate) fn features(
                                 passed: None,
                             },
                             Ok(as_built) => {
-                                rederive(doc, &mut results, &at, cache, &mut build, feature);
+                                rederive(
+                                    doc,
+                                    &mut results,
+                                    &at,
+                                    cache,
+                                    &mut build,
+                                    feature,
+                                    &stand_in,
+                                );
                                 FeatureResult {
                                     followed: as_built.clone().map(Arc::new),
                                     ..build(feature, rolled_back, &results, cache).0
@@ -885,6 +912,10 @@ pub(crate) fn features(
         let mut takes = Vec::new();
         let sources = match &result.passed {
             Some(crate::Passed::Body(source)) => vec![(*source, false)],
+            Some(crate::Passed::Nothing(_)) => crate::pass::consumed(feature, &result, &results)
+                .map(|tool| (tool, false))
+                .into_iter()
+                .collect(),
             Some(_) => Vec::new(),
             None if matches!(result.status, Status::Ok) => feature.kind.sources(),
             None => Vec::new(),
@@ -965,8 +996,10 @@ fn rederive(
         &mut RegenCache,
     ) -> (FeatureResult, Option<FeatureId>),
     feature: &Feature,
+    also: &[FeatureId],
 ) {
-    let inputs = feature.kind.inputs();
+    let mut inputs = feature.kind.inputs();
+    inputs.extend_from_slice(also);
     rederive_all(doc, results, at, cache, build, &inputs);
 }
 
@@ -1014,6 +1047,12 @@ fn rederive_all(
         };
         open.extend(feature.kind.inputs());
         if let Some(index) = at.get(&id) {
+            // One that passes on the body it would have changed: that body
+            // too (`crate::pass::stand_in`).
+            let earlier = results.get(..*index).unwrap_or_default();
+            if crate::pass::nothing_left(doc, earlier, &feature).is_some() {
+                open.extend(crate::pass::stand_in(doc, earlier, id).ok().flatten());
+            }
             needed.insert(*index, feature);
         }
     }
@@ -1135,9 +1174,10 @@ fn context(
     at: &BTreeMap<FeatureId, usize>,
     results: &[FeatureResult],
     (index, stated, feature): (usize, &Feature, &Feature),
+    also: &[FeatureId],
     partial: Context,
 ) -> Context {
-    let made_from = lookup.dependencies(feature);
+    let mut made_from = lookup.dependencies(feature);
     // Remembered for the features made from this one, when it is the
     // feature of the history with this id, as stated.
     if std::ptr::eq(feature, stated) && lookup.by_id.get(&stated.id).map(|(i, _)| *i) == Some(index)
@@ -1146,6 +1186,19 @@ fn context(
             .made_from
             .entry(stated.id)
             .or_insert_with(|| made_from.clone().into());
+    }
+    // Inputs the definition does not name (`crate::pass::stand_in`), with
+    // what they are made from.
+    if !also.is_empty() {
+        for id in also {
+            made_from.push(*id);
+            if lookup.feature(*id).is_some() {
+                made_from.extend(lookup.made_from(*id).iter().copied());
+            }
+        }
+        made_from.sort();
+        made_from.dedup();
+        made_from.retain(|id| *id != feature.id);
     }
     let mut inputs = Vec::with_capacity(made_from.len());
     for id in made_from {

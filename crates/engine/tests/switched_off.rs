@@ -164,9 +164,10 @@ fn a_suppressed_feature_passes_its_body_on_as_if_it_were_not_there() {
 }
 
 /// A suppressed primitive makes no body: the boolean that drills with it
-/// passes its target on; a suppressed target leaves the boolean without a
-/// body and the drill alone, and the shell and pattern after it pass
-/// nothing on.
+/// passes its target on; a suppressed target leaves the fillet and the
+/// chamfer of its edges and the boolean without a body (the drill goes
+/// into it: from nothing is nothing), and the shell and pattern after it
+/// pass nothing on.
 #[test]
 fn a_suppressed_operand_leaves_the_boolean_as_identity() {
     let mut s = session();
@@ -182,16 +183,14 @@ fn a_suppressed_operand_leaves_the_boolean_as_identity() {
     expected.remove(0);
     same_bodies(&bodies(&mut s), &expected, "drill suppressed");
     run(&mut s, "edit.undo", json!({}));
-    // The plate suppressed: nothing passes on but the drill.
+    // The plate suppressed: nothing passes on but the drill. The fillet
+    // and the chamfer name edges of the plate, which are not there: they
+    // have nothing to change (docs/design/regeneration.md › Switched off).
     run(&mut s, "feature.suppress", json!({"feature": "Plate"}));
     for name in ["Round", "Bevel"] {
-        // A fillet names faces of the plate, which is not there.
         let state = feature(&mut s, name);
-        assert_eq!(state["status"], "failed", "{state}");
-        assert!(
-            state["error"].as_str().unwrap().contains("suppressed"),
-            "{state}"
-        );
+        assert_eq!(state["status"], "ok", "{state}");
+        assert_eq!(state["passesNothing"], "`Plate` is suppressed", "{state}");
     }
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
@@ -213,7 +212,7 @@ fn a_suppressed_operand_leaves_the_boolean_as_identity() {
         .iter()
         .map(|b| b["name"].clone())
         .collect();
-    assert_eq!(names, [json!("Drill")]);
+    assert!(names.is_empty(), "{names:?}");
 }
 
 /// A reference to a face only the switched-off feature makes fails naming
@@ -541,11 +540,13 @@ fn a_vertex_of_a_passed_body_is_found_and_one_only_the_feature_makes_is_not() {
     );
 }
 
-/// A fillet of an edge of a face a suppressed chamfer makes fails naming
-/// the chamfer: right after it, and with a cut in between, through which
-/// its names are followed.
+/// A fillet of an edge of a face a suppressed chamfer makes has nothing
+/// to change: right after it, and with a cut in between, through which
+/// its names are followed, it passes on the body it would have changed,
+/// as if neither were there. Given an edge of the plate too, it rounds
+/// that one. (Before 2026-10-25 it failed naming the chamfer: R1 item 13.)
 #[test]
-fn a_fillet_on_an_edge_of_a_suppressed_chamfer_fails_naming_it() {
+fn a_fillet_on_an_edge_of_a_suppressed_chamfer_rounds_what_is_left() {
     for between in [false, true] {
         let mut s = session();
         bevelled(&mut s);
@@ -561,27 +562,54 @@ fn a_fillet_on_an_edge_of_a_suppressed_chamfer_fails_naming_it() {
                 json!({"op": "subtract", "target": "Bevel", "tool": "Drill", "name": "Cut"}),
             );
         }
+        let before = bodies(&mut s);
         built(
             &mut s,
             "feature.fillet",
             json!({"edges": [["F2:chamfer(0)", "F1:face(0)"]], "radius": 0.5, "name": "Soft"}),
         );
+        let on = model(&mut s);
         run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
         let soft = feature(&mut s, "Soft");
-        assert_eq!(soft["status"], "failed", "{soft}");
-        let reason = soft["error"].as_str().unwrap();
-        assert!(
-            reason.starts_with("edges")
-                && reason.contains("`Bevel`, which makes F2:chamfer(0)")
-                && reason.contains("is suppressed"),
-            "between {between}: {reason}"
-        );
+        assert_eq!(soft["status"], "ok", "{soft}");
+        let passed = if between { "F4" } else { "F2" };
+        assert_eq!(soft["passesOn"], passed, "between {between}: {soft}");
+        // The plate (drilled) as it is without the bevel and the fillet.
+        run(&mut s, "feature.suppress", json!({"feature": "Soft"}));
+        let without = bodies(&mut s);
+        run(&mut s, "edit.undo", json!({}));
+        let got = bodies(&mut s);
+        same_bodies(&got, &without, &format!("between {between}"));
+        assert_ne!(got, before, "between {between}: the bevel is gone");
         run(
             &mut s,
             "feature.suppress",
             json!({"feature": "Bevel", "suppressed": false}),
         );
-        assert_eq!(status(&mut s, "Soft"), "ok");
+        assert_eq!(model(&mut s), on, "between {between}: switched on again");
+
+        // With an edge of the plate as well: that one is rounded.
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Soft",
+                   "edges": [["F2:chamfer(0)", "F1:face(0)"], ["F1:face(1)", "F1:face(3)"]]}),
+        );
+        run(&mut s, "feature.suppress", json!({"feature": "Bevel"}));
+        let soft = feature(&mut s, "Soft");
+        assert_eq!(soft["status"], "ok", "{soft}");
+        assert!(soft.get("passesOn").is_none(), "{soft}");
+        let got = bodies(&mut s);
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Soft", "edges": [["F1:face(1)", "F1:face(3)"]]}),
+        );
+        same_bodies(
+            &got,
+            &bodies(&mut s),
+            &format!("between {between}: one edge"),
+        );
     }
 }
 

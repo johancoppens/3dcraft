@@ -112,7 +112,8 @@ does the same. To build on from that step, move the real marker there with `hist
 
 `feature.suppress {"feature": "Round"}` switches a feature off by hand; `"suppressed": false` switches it
 on again. `feature.when` switches it by a condition, such as a yes-or-no parameter of a Jig. Off, a feature
-behaves as if it were not in the history: one that changes a body passes it on unchanged, one that makes a
-body makes none. [Chapter 8](08-formulas.md#switching-parts-on-and-off) explains both in full.
+behaves as if it were not in the history: one that changes a body passes it on unchanged (an inactive
+transform leaves the body where it was), one that makes a body makes none, and its faces and edges are not
+there for the fillets and face operations after it. [Chapter 8](08-formulas.md#switching-parts-on-and-off) explains both in full.
 
 **Next:** [Measuring and checking](10-measure.md).

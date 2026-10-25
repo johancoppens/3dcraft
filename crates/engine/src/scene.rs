@@ -444,6 +444,11 @@ pub struct SceneFeature {
     pub draws: bool,
     /// The condition that switches it on (`feature.when`), as written.
     pub when: Option<String>,
+    /// What it passes on instead of a body of its own and what it leaves
+    /// out, in a sentence ("Passes on the body of Joined unchanged."):
+    /// for a feature that is off, or on with nothing (or not everything)
+    /// to work on. `None` for one built as usual.
+    pub passes: Option<String>,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -1430,6 +1435,9 @@ fn build(
                 .map(|root| root.to_string()),
             hidden: doc.is_hidden(feature.id),
             when: feature.when.as_ref().map(|when| when.source().to_string()),
+            passes: outcome.and_then(|outcome| {
+                crate::commands::passes_text(doc, &regen.features, feature, outcome)
+            }),
             // A feature switched off that passes a body on draws it.
             draws: outcome.is_some_and(craft3d_regen::FeatureResult::is_built)
                 && (outcome.and_then(|o| o.own_body()).is_some()

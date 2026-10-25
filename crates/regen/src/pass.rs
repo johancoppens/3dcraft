@@ -17,9 +17,18 @@
 //! - one that makes a body of its own (a primitive, an extrusion, a sweep,
 //!   a thicken, a transform that keeps its source) passes nothing on, and a
 //!   feature that reads its body as an operand goes on without it: a
-//!   boolean whose tool is absent passes its target on, one whose target is
-//!   absent passes nothing on (and leaves its tool alone), a pattern,
-//!   transform, mirror or shell of an absent body passes nothing on;
+//!   boolean whose tool is absent passes its target on, a union whose
+//!   target is absent passes its tool on, a subtraction or intersection
+//!   whose target is absent passes nothing on and takes its tool all the
+//!   same ([`consumed`]: from nothing is nothing, and a cutter is never
+//!   left over), a pattern, transform, mirror or shell of an absent body
+//!   passes nothing on;
+//! - a face or an edge that is absent (of a body that is absent, or one
+//!   only a feature that is off makes) is *nothing* to a feature that
+//!   names faces or edges to change (a fillet, a chamfer, a face
+//!   operation, the open faces of a shell, a thread): the feature is built
+//!   with the others, and with none left it passes on the body it would
+//!   have changed ([`stand_in`]), or nothing when there is none;
 //! - a sketch, a datum, an offset of profiles and a split keep the rule
 //!   they had: what refers to them fails saying they are off.
 //!
@@ -29,7 +38,7 @@
 
 use crate::derive::source_body;
 use crate::{FeatureResult, Names, Status};
-use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind};
+use craft3d_doc::{BooleanOp, Document, Expr, Feature, FeatureId, FeatureKind, PersistentName};
 use craft3d_expr::Evaluation;
 use craft3d_math::Transform;
 use craft3d_topo::Body;
@@ -151,23 +160,41 @@ pub(crate) fn switched_off(
         | FeatureKind::DatumHelix(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Split(_) => None,
-        FeatureKind::Boolean(b) => Some(pass(doc, feature.id, earlier, b.target, "target")),
+        FeatureKind::Boolean(b) => Some(pass(doc, feature.id, earlier, b.target, "target", 0)),
         // A copy beside its source, a layer beside its body: new bodies.
         FeatureKind::Transform(t) if t.keep => Some(Through::nothing(why.to_string())),
         FeatureKind::Mirror(m) if m.keep => Some(Through::nothing(why.to_string())),
         FeatureKind::Thicken(_) => Some(Through::nothing(why.to_string())),
-        _ => Some(match kind.source() {
-            Some((source, _)) => pass(doc, feature.id, earlier, source, role(kind)),
-            None => Through::nothing(why.to_string()),
+        _ => Some(match nothing_left(doc, earlier, feature) {
+            Some(absent) => pass_stand_in(doc, feature, earlier, absent),
+            None => match kind.source() {
+                Some((source, _)) => pass(doc, feature.id, earlier, source, role(kind), 0),
+                None => Through::nothing(why.to_string()),
+            },
         }),
+    }
+}
+
+/// What a feature that names faces or edges passes on when none of them
+/// is left ([`nothing_left`]; `absent` says why): the body it would have
+/// changed ([`stand_in`]), or nothing when there is none.
+fn pass_stand_in(
+    doc: &Document,
+    feature: &Feature,
+    earlier: &[FeatureResult],
+    absent: String,
+) -> Through {
+    match stand_in(doc, earlier, feature.id) {
+        Ok(Some(body)) => pass(doc, feature.id, earlier, body, role(&feature.kind), 0),
+        Ok(None) => Through::nothing(absent),
+        Err(reason) => Through::broken(reason),
     }
 }
 
 /// For a feature that is on: what it passes on because a body it reads as
 /// an operand is absent (made by a feature that is off, or passed on as
-/// nothing). `None` when its operands are there (or it reads none as a
-/// body parameter: a fillet or a face operation names faces, and fails
-/// saying the feature that made them is off).
+/// nothing), or because every face or edge it names is absent
+/// ([`nothing_left`]). `None` when what it reads is there.
 pub(crate) fn operand_absent(
     doc: &Document,
     feature: &Feature,
@@ -176,17 +203,44 @@ pub(crate) fn operand_absent(
     match &feature.kind {
         FeatureKind::Boolean(b) => {
             if let Some(why) = absent(earlier, b.target) {
+                // A union of nothing and the tool is the tool, named as
+                // when the union is built (instance 1). A subtraction or
+                // an intersection from nothing is nothing, and takes its
+                // tool as it would (`consumed`); a tool the union keeps
+                // stays a body of its own.
+                if b.op == BooleanOp::Union && !b.keep_tool && absent(earlier, b.tool).is_none() {
+                    return Some(pass(doc, feature.id, earlier, b.tool, "tool", 1));
+                }
                 return Some(Through::nothing(why));
             }
-            absent(earlier, b.tool).map(|_| pass(doc, feature.id, earlier, b.target, "target"))
+            absent(earlier, b.tool).map(|_| pass(doc, feature.id, earlier, b.target, "target", 0))
         }
-        FeatureKind::Transform(_)
-        | FeatureKind::Mirror(_)
-        | FeatureKind::Pattern(_)
-        | FeatureKind::Shell(_) => {
+        FeatureKind::Chamfer(_)
+        | FeatureKind::Fillet(_)
+        | FeatureKind::OffsetFace(_)
+        | FeatureKind::MoveFace(_)
+        | FeatureKind::Draft(_)
+        | FeatureKind::DeleteFace(_)
+        | FeatureKind::Thread(_) => {
+            let why = nothing_left(doc, earlier, feature)?;
+            Some(pass_stand_in(doc, feature, earlier, why))
+        }
+        // A layer on no faces is no body.
+        FeatureKind::Thicken(_) => nothing_left(doc, earlier, feature).map(Through::nothing),
+        FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::Pattern(_) => {
             let (source, _) = feature.kind.source()?;
             absent(earlier, source).map(Through::nothing)
         }
+        // A shell of an absent body is nothing; one opened only on faces
+        // that are absent passes its body on rather than seal a hollow
+        // nobody asked for.
+        FeatureKind::Shell(shell) => match absent(earlier, shell.source) {
+            Some(why) => Some(Through::nothing(why)),
+            None => {
+                let why = nothing_left(doc, earlier, feature)?;
+                Some(pass_stand_in(doc, feature, earlier, why))
+            }
+        },
         _ => None,
     }
 }
@@ -202,13 +256,15 @@ pub(crate) fn absent(earlier: &[FeatureResult], id: FeatureId) -> Option<String>
 }
 
 /// The body of `source` passed on by `feature`: the same body, named as
-/// copies in instance 0, taken from `source`; or why it cannot be.
+/// copies in `instance` (0, or 1 for a union's tool, as when the union is
+/// built), taken from `source`; or why it cannot be.
 fn pass(
     doc: &Document,
     feature: FeatureId,
     earlier: &[FeatureResult],
     source: FeatureId,
     role: &str,
+    instance: u64,
 ) -> Through {
     if let Some(why) = absent(earlier, source) {
         return Through::nothing(why);
@@ -218,7 +274,7 @@ fn pass(
         Err(reason) => return Through::broken(reason),
     };
     let names = match &outcome.names {
-        Some(names) => match Names::copied(feature, vec![(0, Arc::clone(names))]) {
+        Some(names) => match Names::copied(feature, vec![(instance, Arc::clone(names))]) {
             Ok(names) => Some(Arc::new(names)),
             Err(reason) => return Through::broken(reason),
         },
@@ -228,7 +284,12 @@ fn pass(
         passed: Passed::Body(source),
         body: outcome.body.clone(),
         names,
-        instances: Some(Arc::new(vec![Transform::IDENTITY])),
+        // Neither moves: one map per instance up to the one it is.
+        instances: Some(Arc::new(if instance == 0 {
+            vec![Transform::IDENTITY]
+        } else {
+            vec![Transform::IDENTITY; 2]
+        })),
     }
 }
 
@@ -268,4 +329,301 @@ pub(crate) fn lost(
         }
     });
     (!found).then(|| word(&outcome.status))
+}
+
+/// Why the face or edge `name` is absent at this point in the history,
+/// when it is: the feature of one of its links (`F7:copy(0)/F2:face(1)`
+/// has the links F7 and F2) passes nothing on (it is off and makes a body,
+/// or the body it changes is absent), or is off and does not have it
+/// ([`lost`]: a face only that feature makes). `None` when it is there,
+/// and when what is wrong with it is something else (a feature that
+/// failed, comes after, or was deleted), which reading it says.
+pub(crate) fn absent_name(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+) -> Option<String> {
+    let mut link = Some(name);
+    // A name is finite; the cap is for one built by hand.
+    for _ in 0..craft3d_doc::MAX_NAME_DEPTH {
+        let here = link?;
+        if let Some(outcome) = earlier.iter().find(|r| r.id == here.feature) {
+            if let Some(Passed::Nothing(why)) = &outcome.passed {
+                return Some(why.clone());
+            }
+            if let Some(Passed::Body(_)) = &outcome.passed
+                && let Some(off) = lost(outcome, here)
+            {
+                let by = doc
+                    .feature(here.feature)
+                    .map_or_else(|| here.feature.to_string(), |f| f.name.clone());
+                return Some(format!("`{by}`, which makes {here}, is {off}"));
+            }
+        }
+        link = here.of.as_deref();
+    }
+    None
+}
+
+/// For a feature that names faces or edges to change (`feature` as built,
+/// with its names of absent faces and edges left out by
+/// `crate::follow::feature`): why none of them is left, when every one it
+/// was given is absent (for a draft also its neutral face, for a thread
+/// its face or its start). `None` when some are left, and for a feature
+/// given none, which fails as it always did.
+pub(crate) fn nothing_left(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    feature: &Feature,
+) -> Option<String> {
+    if !matches!(
+        feature.kind,
+        FeatureKind::Chamfer(_)
+            | FeatureKind::Fillet(_)
+            | FeatureKind::OffsetFace(_)
+            | FeatureKind::MoveFace(_)
+            | FeatureKind::DeleteFace(_)
+            | FeatureKind::Thicken(_)
+            | FeatureKind::Draft(_)
+            | FeatureKind::Shell(_)
+            | FeatureKind::Thread(_)
+    ) || !any_off(earlier)
+    {
+        return None;
+    }
+    let stated = doc.feature(feature.id).unwrap_or(feature);
+    let pairs = |built: &[[PersistentName; 2]], given: &[[PersistentName; 2]]| {
+        (built.is_empty() && !given.is_empty())
+            .then(|| {
+                given
+                    .iter()
+                    .flatten()
+                    .find_map(|name| absent_name(doc, earlier, name))
+            })
+            .flatten()
+    };
+    let faces = |built: &[PersistentName], given: &[PersistentName]| {
+        (built.is_empty() && !given.is_empty())
+            .then(|| {
+                given
+                    .iter()
+                    .find_map(|name| absent_name(doc, earlier, name))
+            })
+            .flatten()
+    };
+    match (&feature.kind, &stated.kind) {
+        (FeatureKind::Chamfer(built), FeatureKind::Chamfer(given)) => {
+            pairs(&built.edges, &given.edges)
+        }
+        (FeatureKind::Fillet(built), FeatureKind::Fillet(given)) => {
+            pairs(&built.edges, &given.edges)
+        }
+        (FeatureKind::OffsetFace(built), FeatureKind::OffsetFace(given)) => {
+            faces(&built.faces, &given.faces)
+        }
+        (FeatureKind::MoveFace(built), FeatureKind::MoveFace(given)) => {
+            faces(&built.faces, &given.faces)
+        }
+        (FeatureKind::DeleteFace(built), FeatureKind::DeleteFace(given)) => {
+            faces(&built.faces, &given.faces)
+        }
+        (FeatureKind::Thicken(built), FeatureKind::Thicken(given)) => {
+            faces(&built.faces, &given.faces)
+        }
+        (FeatureKind::Draft(built), FeatureKind::Draft(given)) => faces(&built.faces, &given.faces)
+            .or_else(|| match &built.neutral {
+                // Tilted about a face that is not there: nothing to do.
+                craft3d_doc::PlaneRef::Face { face } => absent_name(doc, earlier, face),
+                _ => None,
+            }),
+        // Opened only on faces that are absent: nothing to do (it would
+        // otherwise seal a hollow nobody asked for).
+        (FeatureKind::Shell(built), FeatureKind::Shell(given)) => faces(&built.open, &given.open),
+        (FeatureKind::Thread(built), _) => absent_name(doc, earlier, &built.face)
+            .or_else(|| absent_name(doc, earlier, &built.start)),
+        _ => None,
+    }
+}
+
+/// The feature whose body the feature `id`, which names faces or edges to
+/// change, would have changed when every one it names is absent
+/// ([`nothing_left`]): the body its first name is of, followed to the
+/// newest body before it. When that body is absent itself, the body it
+/// would have gone into stands in for it: the first later feature that
+/// takes it (a union whose tool it is, a fillet of its edges), and so on.
+/// `Ok(None)` when none of them has a body (a fillet of the edges of a
+/// block that is off, with nothing between); `Err` when one on the way
+/// failed, with the reason its body cannot be read. The cache counts the
+/// result as one of the feature's inputs (`cache::features`).
+pub(crate) fn stand_in(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    id: FeatureId,
+) -> Result<Option<FeatureId>, String> {
+    let Some(stated) = doc.feature(id) else {
+        return Ok(None);
+    };
+    let first = match &stated.kind {
+        FeatureKind::Chamfer(c) => c.edges.first().map(|[a, _]| a),
+        FeatureKind::Fillet(f) => f.edges.first().map(|[a, _]| a),
+        FeatureKind::OffsetFace(o) => o.faces.first(),
+        FeatureKind::MoveFace(m) => m.faces.first(),
+        FeatureKind::DeleteFace(d) => d.faces.first(),
+        FeatureKind::Thicken(t) => t.faces.first(),
+        FeatureKind::Draft(d) => d.faces.first(),
+        FeatureKind::Thread(t) => Some(&t.face),
+        _ => None,
+    };
+    let start = match (&stated.kind, first) {
+        (FeatureKind::Shell(shell), _) => shell.source,
+        (_, Some(first)) => first.feature,
+        (_, None) => return Ok(None),
+    };
+    let mut at = start;
+    // Each step goes to a later feature, so the walk ends; bounded all the
+    // same.
+    for _ in 0..=earlier.len() {
+        let Some(place) = earlier.iter().position(|r| r.id == at) else {
+            return Ok(None);
+        };
+        let Some(outcome) = earlier.get(place) else {
+            return Ok(None);
+        };
+        if let Some(Passed::Nothing(_)) = &outcome.passed {
+            // The first feature after it that would take its body.
+            let taker = earlier.iter().skip(place.saturating_add(1)).find(|r| {
+                doc.feature(r.id).is_some_and(|f| {
+                    f.kind
+                        .sources()
+                        .iter()
+                        .any(|&(source, keep)| source == at && !keep)
+                })
+            });
+            match taker {
+                Some(taker) => at = taker.id,
+                None => return Ok(None),
+            }
+        } else if outcome.is_built() {
+            return Ok(Some(newest_before(earlier, at)));
+        } else {
+            return source_body(doc, earlier, at, role(&stated.kind)).map(|_| Some(at));
+        }
+    }
+    Ok(None)
+}
+
+/// The feature whose body the body of `id` is at the end of `earlier`:
+/// followed through the features that took it, as long as they are among
+/// `earlier` (a body derived again is read before what took it later).
+fn newest_before(earlier: &[FeatureResult], id: FeatureId) -> FeatureId {
+    let mut at = id;
+    // Each taker comes later; bounded all the same.
+    for _ in 0..earlier.len() {
+        let taker = earlier
+            .iter()
+            .find(|r| r.id == at)
+            .and_then(|r| r.consumed_by)
+            .filter(|taker| *taker != id && earlier.iter().any(|r| r.id == *taker));
+        match taker {
+            Some(taker) => at = taker,
+            None => break,
+        }
+    }
+    at
+}
+
+/// The tool a boolean that is on takes although it passes nothing on: a
+/// subtraction or an intersection whose target is absent is nothing, and
+/// its tool goes into it as it would with the target there (a cutter is
+/// never left over as a body of its own). Not with `keepTool`, not for a
+/// union (which passes its tool on, and takes it so), and only a tool
+/// that is there to take.
+pub(crate) fn consumed(
+    feature: &Feature,
+    result: &FeatureResult,
+    earlier: &[FeatureResult],
+) -> Option<FeatureId> {
+    let FeatureKind::Boolean(b) = &feature.kind else {
+        return None;
+    };
+    if result.status != Status::Ok
+        || !matches!(result.passed, Some(Passed::Nothing(_)))
+        || b.op == BooleanOp::Union
+        || b.keep_tool
+    {
+        return None;
+    }
+    absent(earlier, b.target)?;
+    let tool = earlier.iter().find(|r| r.id == b.tool)?;
+    (tool.is_built() && tool.consumed_by.is_none()).then_some(b.tool)
+}
+
+/// The faces and edges the feature `id` names that are absent at its
+/// place in `results` (a regeneration's, in history order), each as it was
+/// given (`a / b` for an edge) with why: what the feature leaves out
+/// (`crate::follow`), for `document.inspect` to say under `leftOut`.
+/// Empty for a feature that names none, or none that is absent.
+pub fn left_out(doc: &Document, results: &[FeatureResult], id: FeatureId) -> Vec<(String, String)> {
+    let Some(feature) = doc.feature(id) else {
+        return Vec::new();
+    };
+    let Some(earlier) = results
+        .iter()
+        .position(|r| r.id == id)
+        .and_then(|at| results.get(..at))
+    else {
+        return Vec::new();
+    };
+    if !any_off(earlier) {
+        return Vec::new();
+    }
+    let gone = |name: &PersistentName| absent_name(doc, earlier, name);
+    let mut out = Vec::new();
+    let faces = |list: &[PersistentName], out: &mut Vec<(String, String)>| {
+        for name in list {
+            if let Some(why) = gone(name) {
+                out.push((name.to_string(), why));
+            }
+        }
+    };
+    match &feature.kind {
+        FeatureKind::Chamfer(c) => pairs_left_out(&c.edges, &gone, &mut out),
+        FeatureKind::Fillet(f) => pairs_left_out(&f.edges, &gone, &mut out),
+        FeatureKind::OffsetFace(o) => faces(&o.faces, &mut out),
+        FeatureKind::MoveFace(m) => faces(&m.faces, &mut out),
+        FeatureKind::DeleteFace(d) => faces(&d.faces, &mut out),
+        FeatureKind::Thicken(t) => faces(&t.faces, &mut out),
+        FeatureKind::Shell(s) => faces(&s.open, &mut out),
+        FeatureKind::Draft(d) => {
+            faces(&d.faces, &mut out);
+            if let craft3d_doc::PlaneRef::Face { face } = &d.neutral {
+                faces(std::slice::from_ref(face), &mut out);
+            }
+        }
+        FeatureKind::Thread(t) => faces(&[t.face.clone(), t.start.clone()], &mut out),
+        _ => {}
+    }
+    out
+}
+
+/// [`left_out`] for the pairs of faces edges are named by.
+fn pairs_left_out(
+    edges: &[[PersistentName; 2]],
+    gone: &dyn Fn(&PersistentName) -> Option<String>,
+    out: &mut Vec<(String, String)>,
+) {
+    for [a, b] in edges {
+        if let Some(why) = gone(a).or_else(|| gone(b)) {
+            out.push((format!("{a} / {b}"), why));
+        }
+    }
+}
+
+/// Whether a name can be absent among `earlier` at all: some feature is
+/// off or passes nothing on. Most histories have none, and then no name
+/// is looked at.
+pub(crate) fn any_off(earlier: &[FeatureResult]) -> bool {
+    earlier
+        .iter()
+        .any(|r| r.is_off() || matches!(r.passed, Some(Passed::Nothing(_))))
 }

@@ -105,10 +105,13 @@ pub(crate) fn source_of(
     feature: FeatureId,
     instance: u64,
 ) -> Option<FeatureId> {
-    let built = earlier
-        .iter()
-        .find(|r| r.id == feature)
-        .and_then(|r| r.followed.as_deref());
+    let result = earlier.iter().find(|r| r.id == feature);
+    // One that passes a body on (`crate::pass`) is made from that body,
+    // in the one instance its names are copies in.
+    if let Some(source) = result.and_then(FeatureResult::passes_on) {
+        return Some(source);
+    }
+    let built = result.and_then(|r| r.followed.as_deref());
     let kind = match built {
         Some(built) => &built.kind,
         None => &doc.feature(feature)?.kind,
@@ -441,17 +444,56 @@ fn pairs(
     Ok(changed)
 }
 
+/// Leaves out of the faces and edges a feature changes those that are
+/// absent (`crate::pass::absent_name`: of a body that is absent, or made
+/// only by a feature that is off): they are nothing to it, as if the
+/// feature that is off were not in the history. An edge is left out when
+/// either of its faces is. `true` when one was left out. A single face
+/// (a thread's, a draft's neutral one) is left as it is, and
+/// `crate::pass::nothing_left` says the feature has nothing to do.
+fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> bool {
+    // Nothing is absent where nothing is off or passes nothing on: most
+    // histories, which then pay for no walk of names.
+    if !crate::pass::any_off(earlier) {
+        return false;
+    }
+    let there = |name: &PersistentName| crate::pass::absent_name(doc, earlier, name).is_none();
+    let faces = |list: &mut Vec<PersistentName>| {
+        let before = list.len();
+        list.retain(|name| there(name));
+        list.len() != before
+    };
+    let pairs = |list: &mut Vec<[PersistentName; 2]>| {
+        let before = list.len();
+        list.retain(|[a, b]| there(a) && there(b));
+        list.len() != before
+    };
+    match kind {
+        FeatureKind::Chamfer(chamfer) => pairs(&mut chamfer.edges),
+        FeatureKind::Fillet(fillet) => pairs(&mut fillet.edges),
+        FeatureKind::OffsetFace(offset) => faces(&mut offset.faces),
+        FeatureKind::MoveFace(moving) => faces(&mut moving.faces),
+        FeatureKind::Thicken(layer) => faces(&mut layer.faces),
+        FeatureKind::Draft(tilted) => faces(&mut tilted.faces),
+        FeatureKind::DeleteFace(deletion) => faces(&mut deletion.faces),
+        FeatureKind::Shell(shell) => faces(&mut shell.open),
+        _ => false,
+    }
+}
+
 /// `feature` with the faces and edges it takes given by the names of the
 /// newest body of their chain, at its place in the history (`earlier` are
-/// the results before it); `None` when there is nothing to follow, which
-/// is every feature that does not take faces of a body. An error is the
-/// reason the feature fails.
+/// the results before it), and those that are absent left out ([`prune`]);
+/// `None` when there is nothing to follow or leave out, which is every
+/// feature that does not take faces of a body. An error is the reason the
+/// feature fails.
 pub(crate) fn feature(
     doc: &Document,
     earlier: &[FeatureResult],
     feature: &Feature,
 ) -> Result<Option<Feature>, String> {
     let mut kind = feature.kind.clone();
+    let pruned = prune(doc, earlier, &mut kind);
     let changed = match &mut kind {
         FeatureKind::Chamfer(chamfer) => pairs(doc, earlier, &mut chamfer.edges)?,
         FeatureKind::Fillet(fillet) => pairs(doc, earlier, &mut fillet.edges)?,
@@ -461,6 +503,7 @@ pub(crate) fn feature(
         FeatureKind::Draft(tilted) => {
             let mut changed = faces(doc, earlier, &mut tilted.faces, "faces")?;
             if let craft3d_doc::PlaneRef::Face { face: name } = &mut tilted.neutral
+                && crate::pass::absent_name(doc, earlier, name).is_none()
                 && let Some(followed) = face(doc, earlier, name, "neutral")?
             {
                 *name = followed;
@@ -484,6 +527,9 @@ pub(crate) fn feature(
         FeatureKind::Thread(thread) => {
             let mut changed = false;
             for (name, param) in [(&mut thread.face, "face"), (&mut thread.start, "start")] {
+                if crate::pass::absent_name(doc, earlier, name).is_some() {
+                    continue;
+                }
                 if let Some(followed) = face(doc, earlier, name, param)? {
                     *name = followed;
                     changed = true;
@@ -493,7 +539,7 @@ pub(crate) fn feature(
         }
         _ => return Ok(None),
     };
-    Ok(changed.then(|| Feature {
+    Ok((changed || pruned).then(|| Feature {
         kind,
         ..feature.clone()
     }))

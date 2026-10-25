@@ -408,6 +408,15 @@ fn target<'a>(
             .filter_map(|face| u32::try_from(face).ok().map(FaceId))
             .collect();
     }
+    if faces.is_empty()
+        && let Some(why) = crate::pass::absent_name(doc, earlier, name)
+    {
+        // Through a feature that is off: say which, not only that the
+        // face is missing.
+        return Err(format!(
+            "upTo: `{made_by}`, which makes the face {name}, does not have it: {why}"
+        ));
+    }
     if faces.is_empty() {
         let there: Vec<String> = names
             .faces
