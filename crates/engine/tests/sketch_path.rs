@@ -286,10 +286,11 @@ fn arcs_written_with_expressions_follow_their_variables() {
             "variable.set",
             json!({"name": "r", "expr": format!("{r2} {units}")}),
         );
-        let solid = assert_volume(&mut s, PI * r2 * r2 / 2.0 * depth, units);
-        // Still bulging upwards: the arc passes through (0, r).
-        let hi = solid["bbox"][1][1].as_f64().unwrap();
-        assert!((hi - r2).abs() <= 1e-9 * r2, "{units}: {}", solid["bbox"]);
+        // Half a disc again (any other arc between the ends would cut off
+        // a different area), held whole: nothing is left to the solver.
+        assert_volume(&mut s, PI * r2 * r2 / 2.0 * depth, units);
+        let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+        assert_eq!(inspected["dof"], 0, "{units}: {inspected}");
 
         // A shaft with a flat, its radius and corners written with k: the
         // area scales with k squared.
