@@ -450,8 +450,11 @@ impl fmt::Display for VariableError {
             ),
             VariableError::ReservedName { name } => write!(
                 f,
-                "`{name}` is reserved (a unit, a function or the constant pi) and cannot \
-                 be a variable name"
+                "`{name}` cannot name a variable: in an expression it is {}; call it \
+                 something else, such as {}",
+                crate::variables::reserved_meaning(name)
+                    .unwrap_or_else(|| "a unit, a function or the constant pi".to_string()),
+                crate::variables::instead_of_reserved(name)
             ),
             VariableError::DuplicateName { name } => {
                 write!(f, "a variable named `{name}` already exists")

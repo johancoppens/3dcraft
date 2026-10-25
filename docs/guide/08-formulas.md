@@ -95,6 +95,20 @@ evaluated at every regeneration: the feature is built when it is a number other 
 ]
 ```
 
+**Give the condition with the feature.** The commands that add a feature (`feature.block`,
+`feature.extrude`, `feature.fillet`, `datum.plane`, …; not `sketch.create`, `body.split` and
+`file.import`, whose features get a condition with `feature.when`) take it as `when`, so the feature is switched from
+its very first regeneration: a fillet of a lid that is off is never built, and never fails on the way.
+It is one step, one undo, as if `feature.when` had come with it; an extrusion with `cut` or `join` gives
+the condition to both features it adds.
+
+```json
+[
+  ["feature.cylinder", {"radius": "8 mm", "height": "2 mm", "position": [0, 0, 30], "name": "Lid", "when": "lid"}],
+  ["feature.fillet", {"edges": [["Lid:face(0)", "Lid:face(2)"]], "radius": "0.5 mm", "name": "LidFillet", "when": "lid"}]
+]
+```
+
 A boolean public parameter (`lid`) or a choice (`profile == 2`) then switches parts of the model from a
 form, with `param.set`. `"expr": null` takes the condition away. Comparisons, `&&`, `||`, `!` and `if`
 work as in any expression; a condition with a unit (`3 mm`), or one that does not evaluate, fails the

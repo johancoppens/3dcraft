@@ -11,7 +11,11 @@ its own volume.
 
 `feature.block` (`size`, `position` of its low corner), `feature.cylinder` and `feature.cone` (`radius`,
 `height`, `position` of the centre of the base, `axis`), `feature.sphere`, `feature.torus` (`major`,
-`minor`). Their faces are numbered in a fixed order: a block's 0 bottom, 1 top, 2 front, 3 back, 4 left,
+`minor`). An `axis` (and the axis or normal of a transform, mirror, pattern or face move) is three
+expressions, plain numbers or lengths as a position takes them, so a part can stay square to a wall
+whose angle depends on parameters: `"axis": ["cos(a)", "sin(a)", 0]` or `["dx", "dy", 0]`. Only where it
+points counts; one of no length fails the feature, and so does one that mixes lengths with plain
+numbers other than 0 (`[1, "25 mm", 0]`: give all as lengths or all as numbers). Their faces are numbered in a fixed order: a block's 0 bottom, 1 top, 2 front, 3 back, 4 left,
 5 right; a cylinder's 0 the wall, 1 the base, 2 the top.
 
 ## From sketches

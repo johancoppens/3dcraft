@@ -169,6 +169,27 @@ impl Shell {
         // The active tab's view first: a method reads and changes that,
         // and what it puts back when it refuses is that too.
         self.follow_active_tab(session);
+        // The fields that take face, edge or vertex names may write a
+        // feature by its name, as a command's do (`Plate:face(1)`): looked
+        // up in the active document, so the state holds ids.
+        let name_keys: &[&str] = match method {
+            "ui.highlight" => &["face", "edge", "between", "vertex", "corner"],
+            "ui.set" => &["highlight", "highlightEdge", "highlightVertex", "section"],
+            _ => &[],
+        };
+        let with_ids;
+        let params = match params {
+            Some(given) if !name_keys.is_empty() => {
+                match session.with_feature_ids(name_keys, given) {
+                    Ok(value) => {
+                        with_ids = value;
+                        Some(&with_ids)
+                    }
+                    Err(e) => return Some(Err(format!("{method}: {e}"))),
+                }
+            }
+            other => other,
+        };
         let result = match method {
             "ui.get" => self.ui_get(session, params),
             "ui.set" => self.ui_set(session, params),

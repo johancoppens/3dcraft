@@ -34,7 +34,7 @@ pub(crate) fn motion(
     } else {
         (
             lengths(doc, variables, "pivot", &moving.pivot)?,
-            direction(variables, "axis", &moving.axis)?,
+            direction(doc, variables, "axis", &moving.axis)?,
         )
     };
     Ok(Motion {

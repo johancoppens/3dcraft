@@ -6,7 +6,10 @@
 //! document's bodies, unless the feature keeps it.
 
 use crate::cause::FIX_IT_FIRST;
-use crate::{Contributors, FeatureResult, Kept, Names, Passed, Status, angle, length, number};
+use crate::{
+    Contributors, FeatureResult, Kept, Names, Passed, Status, angle, length, length_or_number,
+    number,
+};
 use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, PatternLayout, PersistentName};
 use craft3d_expr::Evaluation;
 use craft3d_math::{Transform, Vec3};
@@ -192,21 +195,48 @@ pub(crate) fn lengths(
 }
 
 pub(crate) fn direction(
+    doc: &Document,
     variables: &Evaluation,
     name: &str,
     exprs: &[Expr; 3],
 ) -> Result<Vec3, String> {
+    // A direction is read as a position is: each component a plain
+    // number or a length (a bare number in the document's unit), so a
+    // direction can come from lengths (`[wallX, wallY, 0]`) as well as
+    // from ratios (`[cos(a), sin(a), 0]`). Only where it points counts.
+    // Lengths and plain numbers other than 0 together are refused: a
+    // plain number would be read in the document's unit, so `[1, 25 mm, 0]`
+    // would point another way in an inch document.
     let [x, y, z] = exprs;
-    let v = Vec3::new(
-        number(variables, &format!("{name}.x"), x)?,
-        number(variables, &format!("{name}.y"), y)?,
-        number(variables, &format!("{name}.z"), z)?,
-    );
+    let parts = [
+        length_or_number(doc, variables, &format!("{name}.x"), x)?,
+        length_or_number(doc, variables, &format!("{name}.y"), y)?,
+        length_or_number(doc, variables, &format!("{name}.z"), z)?,
+    ];
+    let lengths = parts.iter().any(|&(_, length)| length);
+    let numbers = parts.iter().any(|&(value, length)| !length && value != 0.0);
+    if lengths && numbers {
+        return Err(format!(
+            "{name} mixes lengths and plain numbers (`{}`, `{}`, `{}`); give every component as a length or every one as a plain number (0 goes with either)",
+            x.source(),
+            y.source(),
+            z.source()
+        ));
+    }
+    let [(vx, _), (vy, _), (vz, _)] = parts;
+    let v = Vec3::new(vx, vy, vz);
     match v.normalized() {
         Some(unit) if v.is_finite() => Ok(unit),
         _ => Err(format!(
-            "{name} must be a direction, but it is ({}, {}, {})",
-            v.x, v.y, v.z
+            "{name} must be a direction, but it is ({}, {}, {}){}",
+            v.x,
+            v.y,
+            v.z,
+            if v.is_finite() {
+                ", which has no length"
+            } else {
+                ""
+            }
         )),
     }
 }
@@ -250,7 +280,7 @@ fn instances(
             // No turn: the axis is not looked at, so it need not be valid.
             if turn != 0.0 {
                 let pivot = lengths(doc, variables, "pivot", &t.pivot)?;
-                let axis = direction(variables, "axis", &t.axis)?;
+                let axis = direction(doc, variables, "axis", &t.axis)?;
                 map = Transform::rotation_about(pivot, axis, turn)
                     .ok_or_else(|| degenerate("the rotation"))?;
             }
@@ -266,7 +296,7 @@ fn instances(
                 }
                 None => (
                     lengths(doc, variables, "point", &m.point)?,
-                    direction(variables, "normal", &m.normal)?,
+                    direction(doc, variables, "normal", &m.normal)?,
                 ),
             };
             Ok(vec![
@@ -355,7 +385,7 @@ fn instances(
                         }
                         None => (
                             lengths(doc, variables, "point", point)?,
-                            direction(variables, "axis", axis)?,
+                            direction(doc, variables, "axis", axis)?,
                         ),
                     };
                     for i in 0..n {

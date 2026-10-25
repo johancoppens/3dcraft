@@ -63,10 +63,23 @@ not: a warning, never a pass); **error** (it could not be measured: its subject 
 is missing); **pending** (still being measured, on a large model). They are measured off to the side and
 only when what they depend on changed, so they never slow modelling down or stop a feature.
 
-Where they show: in the result of every feature command and `variable.set` (`assertions: {count, passed,
-broken, unproven}`), in `assert.list` (each with its message), in `document.check` (a broken one makes
+Where they show: in the result of every feature command, `variable.set` and `param.set` (`assertions:
+{count, passed, broken, unproven, pending}`), in `assert.list` (each with its message), in `document.check` (a broken one makes
 `ok` false), in `document.inspect`, and in the window's tree. `assert.edit` and `assert.delete` change
 and remove them.
+
+**Pending after an edit.** An edit's result waits up to two seconds for the assertions it touched; the
+rest count under `pending`, and `whenPending` then says how to have them. A script that checks its
+assertions after a change either gives the edit `"wait": true` (`param.set`, `variable.set`), which waits
+until every assertion is measured (a minute at most: what takes longer stays `pending`, with
+`whenPending`), or runs `assert.list` next, which waits by default:
+
+```json
+[
+  ["param.set", {"values": {"teeth": 31}, "wait": true}],
+  ["assert.list", {}]
+]
+```
 
 A real *notProven*: with the bound written as `"min": "wall - 0.01 mm"`, the case's thickness answers
 *thickness: not proven: found 2 mm (at least 1.95750083 mm), expected ≥ 1.99 mm*. The wall is 2 mm, but

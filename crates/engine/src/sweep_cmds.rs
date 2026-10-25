@@ -8,7 +8,7 @@ use craft3d_doc::{Document, EntityId, Expr, FeatureId, FeatureKind, Revolve, Rev
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.revolve", "Revolve", r#"{"sketch": id or name, "axis": "x" | "y" | line id | datum axis, "angle": expr = "360 deg", "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
+    spec!("feature.revolve", "Revolve", r#"{"sketch": id or name, "axis": "x" | "y" | line id | datum axis, "angle": expr = "360 deg", "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic, "when": expr = always on}"#,
         "Adds a solid by turning the closed profiles of a sketch about an axis in the sketch's plane: its x or y axis, one of its lines (\"e7\"; a construction line does not become part of the profile), or a datum axis that lies in the sketch's plane (its name or id; the solid follows the datum). The profiles may touch the axis but not cross it. angle is counter-clockwise seen from the tip of the axis (for a line: from its start to its end; for a datum axis: along its direction); a negative angle goes the other way, symmetric puts half on each side of the sketch plane, and 360 deg closes the body. cut, join and intersect combine the solid with a body at once, as for feature.extrude.", doc: true, feature_revolve),
 ];
 
