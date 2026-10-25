@@ -599,9 +599,11 @@ fn parameters_that_make_no_body_are_failures_that_name_the_parameter() {
         (json!({"angle": 0}), vec!["angle is zero"]),
         (json!({"angle": "3 mm"}), vec!["angle", "angle is needed"]),
         (json!({"axis": [0, 0, 0]}), vec!["axis", "direction"]),
+        // A length is a direction component, as in a position (R1,
+        // 2026-10-25); an angle is not.
         (
-            json!({"axis": [0, "1 mm", 0]}),
-            vec!["axis.y", "plain number"],
+            json!({"axis": [0, "1 deg", 0]}),
+            vec!["axis.y", "a length is needed"],
         ),
         (json!({"point": [0, "1 deg", 0]}), vec!["point.y", "length"]),
     ] {

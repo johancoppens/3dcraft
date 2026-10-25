@@ -1455,8 +1455,12 @@ struct Reading<'a> {
     /// How a feature written by its name (`Plate:face(1)`) is found: the
     /// command's document resolves it to the id. `None` for a name read
     /// from a file, which has ids only.
-    features: Option<&'a dyn Fn(&str) -> Result<FeatureId, String>>,
+    features: Option<FeatureLookup<'a>>,
 }
+
+/// How a reader finds a feature written by its name: its id, or why
+/// there is none.
+type FeatureLookup<'a> = &'a dyn Fn(&str) -> Result<FeatureId, String>;
 
 /// The feature at the start of a name: `F3`, or with a resolver a
 /// feature's name.
@@ -1700,10 +1704,7 @@ impl PersistentName {
         Self::read(text, Some(features))
     }
 
-    fn read(
-        text: &str,
-        features: Option<&dyn Fn(&str) -> Result<FeatureId, String>>,
-    ) -> Result<Self, String> {
+    fn read(text: &str, features: Option<FeatureLookup<'_>>) -> Result<Self, String> {
         let shown: String = text.chars().take(60).collect();
         let wrong =
             |what: &str| format!("`{shown}` is not a name: {what}; a name looks like F2:side(e7)");
