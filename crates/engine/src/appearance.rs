@@ -84,10 +84,10 @@ fn sources(doc: &Document, regen: &Regen, memo: &mut Memo, feature: FeatureId) -
     }
     // One that passes a body on is made from that body alone, in every
     // instance its names are copies in.
-    let passed = regen.feature(feature).and_then(|r| match &r.passed {
-        Some(craft3d_regen::Passed::Body(source)) => Some(vec![*source]),
-        _ => None,
-    });
+    let passed = regen
+        .feature(feature)
+        .and_then(|r| r.passes_on())
+        .map(|source| vec![source]);
     let found: Vec<FeatureId> = passed
         .or_else(|| {
             built(doc, regen, feature)

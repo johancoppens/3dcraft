@@ -121,11 +121,20 @@ fn kinds() -> Vec<Kind> {
             source: false,
         },
         Kind {
+            // None of its open faces there: it passes its body on, and
+            // never seals a hollow nobody asked for.
             what: "shell, opened on the boss",
             command: "feature.shell",
             params: |k| json!({"open": ["F2:face(2)"], "thickness": k}),
-            // Closed: none of its open faces is there.
-            without_boss: Some(|k| json!({"open": [], "thickness": k})),
+            without_boss: None,
+            makes: false,
+            source: true,
+        },
+        Kind {
+            what: "shell, opened on the boss and under the base",
+            command: "feature.shell",
+            params: |k| json!({"open": ["F2:face(2)", "F1:face(0)"], "thickness": k}),
+            without_boss: Some(|k| json!({"open": ["F1:face(0)"], "thickness": k})),
             makes: false,
             source: true,
         },
@@ -293,9 +302,32 @@ fn a_feature_on_faces_of_an_inactive_feature_changes_what_is_left() {
                 }
                 let joined = feature(&mut s, "Joined");
                 assert_eq!(joined["passesOn"], "F1", "{context}: {joined}");
+                // What it left out, and why.
+                let left = x["leftOut"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{context}: {x}"));
+                assert!(!left.is_empty(), "{context}: {x}");
+                for entry in left {
+                    assert!(
+                        entry["name"].as_str().unwrap().contains("F2:"),
+                        "{context}: {x}"
+                    );
+                    assert_eq!(
+                        entry["why"], "`Boss` is inactive (its condition `boss` is 0)",
+                        "{context}: {x}"
+                    );
+                }
+                // The body is made from the base, through what passed it on.
+                let made = run(
+                    &mut s,
+                    "select.query",
+                    json!({"kind": "body", "where": {"madeBy": "Base"}}),
+                );
+                assert_eq!(made["count"], 1, "{context}: {made}");
 
                 run(&mut s, "param.set", json!({"values": {"boss": true}}));
                 assert_eq!(whole(&mut s), on, "{context}: switched on again");
+                assert!(feature(&mut s, "X").get("leftOut").is_none(), "{context}");
 
                 if k == 1.0 && !conditional {
                     let sampled = run(

@@ -233,6 +233,9 @@ pub struct TreeRow {
     pub zoomable: bool,
     /// The condition that switches it on (`feature.when`), as written.
     pub when: Option<String>,
+    /// What it passes on and leaves out, in a sentence
+    /// (`SceneFeature::passes`).
+    pub passes: Option<String>,
 }
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -1690,6 +1693,7 @@ impl Shell {
                 made_selection: self.made_selection.as_deref() == Some(f.id.as_str()),
                 zoomable: false,
                 when: f.when.clone(),
+                passes: f.passes.clone(),
             })
             .collect();
         if self.state.camera.auto_fit && scene.bbox != self.framed {
@@ -2347,16 +2351,25 @@ impl Shell {
                                     name = name.color(color(tokens.inactive)).italics()
                                 }
                             }
+                            // What it passes on, from the regeneration: a
+                            // body, or none and why, and what it left out.
+                            let passes = row.passes.as_deref().unwrap_or("");
                             let hover = match (&row.error, row.state) {
                                 (Some(error), _) => error.clone(),
                                 (None, FeatureState::Suppressed) => {
-                                    "Suppressed: not built; what it changes is passed on unchanged."
+                                    format!("Suppressed: not built. {passes}")
+                                        .trim_end()
                                         .to_string()
                                 }
                                 (None, FeatureState::Inactive) => format!(
-                                    "Inactive: its condition {} is 0; not built, what it changes is passed on unchanged.",
+                                    "Inactive: its condition {} is 0; not built. {passes}",
                                     row.when.as_deref().unwrap_or("")
-                                ),
+                                )
+                                .trim_end()
+                                .to_string(),
+                                (None, FeatureState::Ok) if !passes.is_empty() => {
+                                    format!("{} · {} · {passes}", row.kind, row.status)
+                                }
                                 (None, FeatureState::RolledBack)
                                     if row.status == timeline::AFTER_SCRUB =>
                                 {

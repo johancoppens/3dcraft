@@ -113,11 +113,13 @@ Off, by hand or by its condition, a feature behaves as if it were not in the his
 - its faces and edges are **not there** for a fillet, a chamfer or a face operation: the others it names
   are changed, and one left with none passes its body on unchanged. An optional boss united with a plate
   and chamfered gives the plain plate when the boss is off, whether the chamfer has the condition too or
-  not. A shell opened on such a face is closed;
+  not. A thicken left with no faces makes no body, and a shell opened only on such faces passes its
+  body on unchanged (it is never sealed shut). `document.inspect` lists what a feature left out under
+  `leftOut`, with the reason, and so does its tooltip in the feature list;
 - what it was given does not apply: its colour (`body.appearance`, `face.appearance`) and material
   (`body.material`) wait until it is on again, and the body it passes on keeps the colour it had;
-- a sketch on a face only the switched-off feature makes, or a datum on such a face, edge or vertex,
-  fails, naming the feature that is off. Give it the same condition, so they come and go together.
+- a sketch on a face only the switched-off feature makes, an extrusion up to (`upTo`) such a face, or a
+  datum on such a face, edge or vertex, fails, naming the feature that is off. Give it the same condition, so they come and go together.
 
 **To make a part disappear, put the condition on the feature that makes it.** A feature that *changes* a
 body passes it on unchanged when it is off: a transform with `"expr": "0"` leaves the body where it was

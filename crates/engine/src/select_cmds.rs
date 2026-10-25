@@ -870,9 +870,13 @@ impl<'a> Context<'a> {
     /// from: a boolean's target (0) or tool (1), a pattern's or a
     /// transform's source for every instance.
     fn source_of(&self, feature: FeatureId, instance: u64) -> Option<FeatureId> {
-        let built = self
-            .regen
-            .feature(feature)
+        // One that passes a body on is made from that body, whatever the
+        // instance (docs/design/regeneration.md › Switched off).
+        let result = self.regen.feature(feature);
+        if let Some(source) = result.and_then(|r| r.passes_on()) {
+            return Some(source);
+        }
+        let built = result
             .and_then(|r| r.followed.as_deref())
             .or_else(|| self.doc.feature(feature))?;
         let sources = built.kind.sources();
@@ -962,11 +966,17 @@ impl<'a> Context<'a> {
             let mut todo = vec![id];
             // Bounded: each feature is visited once.
             while let Some(at) = todo.pop() {
-                let built = regen
-                    .feature(at)
-                    .and_then(|r| r.followed.as_deref())
-                    .or_else(|| doc.feature(at));
-                for (source, _) in built.map(|f| f.kind.sources()).unwrap_or_default() {
+                let result = regen.feature(at);
+                let sources: Vec<FeatureId> = match result.and_then(|r| r.passes_on()) {
+                    // Passed on unchanged: made from that body alone.
+                    Some(source) => vec![source],
+                    None => result
+                        .and_then(|r| r.followed.as_deref())
+                        .or_else(|| doc.feature(at))
+                        .map(|f| f.kind.sources().into_iter().map(|(id, _)| id).collect())
+                        .unwrap_or_default(),
+                };
+                for source in sources {
                     if seen.insert(source) {
                         todo.push(source);
                     }

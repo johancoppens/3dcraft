@@ -365,7 +365,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
             map.insert("causedBy".into(), root.to_string().into());
         }
-        add_switch(map, feature, outcome);
+        add_switch(map, doc, &regen.features, feature, outcome);
         if let Some(report) = &outcome.sweep {
             map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
@@ -384,9 +384,14 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
 /// off or with an operand switched off, what it passes on to the features
 /// after it: `passesOn` the id of the feature whose body it passes on
 /// unchanged, `passesNothing` why it passes no body on (as it should),
-/// `cannotPass` why the body it would pass on cannot be had.
+/// `cannotPass` why the body it would pass on cannot be had; and
+/// `leftOut`, the faces and edges it names that are not there because a
+/// feature is off ([`craft3d_regen::left_out`]: `{name, why}`, an edge as
+/// `a / b`), which it leaves out.
 pub(crate) fn add_switch(
     map: &mut serde_json::Map<String, Value>,
+    doc: &Document,
+    results: &[craft3d_regen::FeatureResult],
     feature: &Feature,
     outcome: &craft3d_regen::FeatureResult,
 ) {
@@ -405,6 +410,50 @@ pub(crate) fn add_switch(
         }
         None => {}
     }
+    let left = craft3d_regen::left_out(doc, results, feature.id);
+    if !left.is_empty() {
+        let listed: Vec<Value> = left
+            .into_iter()
+            .map(|(name, why)| json!({ "name": name, "why": why }))
+            .collect();
+        map.insert("leftOut".into(), listed.into());
+    }
+}
+
+/// What a feature passes on and leaves out, in a sentence for the feature
+/// list's tooltip: `None` for a feature built as usual from everything it
+/// names.
+pub(crate) fn passes_text(
+    doc: &Document,
+    results: &[craft3d_regen::FeatureResult],
+    feature: &Feature,
+    outcome: &craft3d_regen::FeatureResult,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    match &outcome.passed {
+        Some(craft3d_regen::Passed::Body(from)) => {
+            let by = doc
+                .feature(*from)
+                .map_or_else(|| from.to_string(), |f| f.name.clone());
+            parts.push(format!("Passes on the body of {by} unchanged."));
+        }
+        Some(craft3d_regen::Passed::Nothing(why)) => {
+            parts.push(format!("Makes no body: {why}."));
+        }
+        Some(craft3d_regen::Passed::Broken(why)) => {
+            parts.push(format!("Cannot pass its body on: {why}"));
+        }
+        None => {}
+    }
+    let left = craft3d_regen::left_out(doc, results, feature.id);
+    if !left.is_empty() {
+        let listed: Vec<String> = left
+            .iter()
+            .map(|(name, why)| format!("{name} ({why})"))
+            .collect();
+        parts.push(format!("Left out, not there: {}.", listed.join("; ")));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 fn status_json(status: &Status) -> (&'static str, Option<&str>) {
@@ -2734,7 +2783,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             map.insert("error".into(), error.into());
         }
         if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome) {
-            add_switch(map, feature, outcome);
+            add_switch(map, doc, &regen.features, feature, outcome);
         }
         // Hidden in the view (`feature.visible`): said only when it is.
         if let Some(map) = entry.as_object_mut()

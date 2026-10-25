@@ -108,8 +108,8 @@ pub(crate) fn source_of(
     let result = earlier.iter().find(|r| r.id == feature);
     // One that passes a body on (`crate::pass`) is made from that body,
     // in the one instance its names are copies in.
-    if let Some(crate::Passed::Body(source)) = result.and_then(|r| r.passed.as_ref()) {
-        return Some(*source);
+    if let Some(source) = result.and_then(FeatureResult::passes_on) {
+        return Some(source);
     }
     let built = result.and_then(|r| r.followed.as_deref());
     let kind = match built {
@@ -452,6 +452,11 @@ fn pairs(
 /// (a thread's, a draft's neutral one) is left as it is, and
 /// `crate::pass::nothing_left` says the feature has nothing to do.
 fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> bool {
+    // Nothing is absent where nothing is off or passes nothing on: most
+    // histories, which then pay for no walk of names.
+    if !crate::pass::any_off(earlier) {
+        return false;
+    }
     let there = |name: &PersistentName| crate::pass::absent_name(doc, earlier, name).is_none();
     let faces = |list: &mut Vec<PersistentName>| {
         let before = list.len();

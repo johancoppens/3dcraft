@@ -178,6 +178,15 @@ fn an_edit_says_which_features_it_made_fail() {
             .is_none_or(|failed| failed.iter().all(|f| f["feature"] != "Round")),
         "{suppressed}"
     );
+    let round = run(&mut s, "document.inspect", json!({}))["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Round")
+        .unwrap()
+        .clone();
+    assert_eq!(round["status"], "ok", "{round}");
+    assert_eq!(round["passesNothing"], "`Block` is suppressed", "{round}");
     run(&mut s, "edit.undo", json!({}));
     let deleted = run(&mut s, "feature.delete", json!({"feature": "Block"}));
     assert_eq!(deleted["failed"][0]["feature"], "Round", "{deleted}");
