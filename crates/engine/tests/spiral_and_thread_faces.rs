@@ -79,10 +79,10 @@ fn stl_closed_volume(path: &Path) -> (bool, f64) {
             (bits, value)
         };
         let corners = [corner(0), corner(1), corner(2)];
-        let next = ids.len();
         let mut index = [0_usize; 3];
         for (i, (bits, _)) in corners.iter().enumerate() {
-            index[i] = *ids.entry(*bits).or_insert(next + i);
+            let next = ids.len();
+            index[i] = *ids.entry(*bits).or_insert(next);
         }
         let [a, b, c] = corners.map(|(_, v)| v);
         volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
@@ -93,12 +93,15 @@ fn stl_closed_volume(path: &Path) -> (bool, f64) {
             if p == q {
                 continue;
             }
-            *sides.entry((p.min(q), p.max(q))).or_default() += if p < q { 1 } else { -1 };
+            *sides.entry((p, q)).or_default() += 1;
         }
     }
-    // A side used once each way sums to 0; every side of a closed mesh
-    // is used twice (counted by the map's entries: none used once).
-    (sides.values().all(|&n| n == 0), volume)
+    // Every side of a closed, consistently facing mesh is used exactly
+    // once each way: two triangles, no more.
+    let closed = sides
+        .iter()
+        .all(|(&(p, q), &n)| n == 1 && sides.get(&(q, p)) == Some(&1));
+    (closed, volume)
 }
 
 /// The body `name` is valid, has `volume` (within `slack`), passes the deep

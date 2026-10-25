@@ -550,10 +550,6 @@ impl CornerPole {
     }
 }
 
-/// Follows one loop through parameter space.
-///
-/// `sense` is +1 when the loops of this face run counter-clockwise in
-/// `(a, b)` and −1 when clockwise.
 /// How far from a spline surface, as a part of the size of its loop, a
 /// point of the loop may be found by the search over the whole surface
 /// for the point found to be taken as its foot without a second look (see
@@ -573,13 +569,17 @@ const FOUND_ON: f64 = 1e-9;
 /// on one of those, a turn away. Neighbours along the loop are near each
 /// other on the surface, so a walk downhill from where the point before
 /// landed (`Surface::project_from`) ends on the point's own turn. Its
-/// foot is taken when it is less than half as far as the search's: a
-/// point that lies off the surface by the tolerance of its edge is as far
-/// from it either way and keeps what the search found, so a loop the
-/// search placed (every face before this, 2026-10-25) is placed the same,
-/// bit for bit. The walk starts after the point found nearest, and each
-/// point walks from the one before it as found at last.
-fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]) {
+/// foot is taken when it is less than half as far as the search's and
+/// within `tolerance` of the point (the chordal tolerance: a foot further
+/// off is another dip of the distance, not the point's place, and the
+/// search's stays, so the face fails as before rather than give a wrong
+/// mesh). The walk starts after the point found nearest, and each point
+/// walks from the one before it as found at last.
+///
+/// Only a loop that jumps across its surface as the search placed it
+/// ([`ring_jumps`]) is walked, which a face that was meshed never has:
+/// every other loop is placed as before, bit for bit.
+fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv], tolerance: f64) {
     let n = raw.len().min(points.len());
     let mut size = 0.0_f64;
     if let Some(&(first, _)) = points.first() {
@@ -623,6 +623,7 @@ fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]
         let walked = off(uv, point);
         if uv.iter().all(|x| x.is_finite())
             && walked < 0.5 * found
+            && walked <= tolerance
             && let (Some(slot), Some(d)) = (raw.get_mut(i), away.get_mut(i))
         {
             *slot = uv;
@@ -631,12 +632,47 @@ fn follow_along_the_loop(param: &Param, points: &[(Vec3, Chord)], raw: &mut [Uv]
     }
 }
 
+/// Whether `ring` jumps across its surface between two neighbouring
+/// points of an edge: the surface at the middle of the two in parameters
+/// is further from their chord than the chord is long and than twice the
+/// tolerance. The test `mesh_face_in` refuses a face's region by, on the
+/// segments of the loop alone (the region's segments are those, moved by
+/// whole periods, and the seams), so a loop that jumps here would have
+/// had its face refused there.
+fn ring_jumps(param: &Param, ring: &Ring, tolerance: f64) -> bool {
+    if param.is_plane() {
+        return false;
+    }
+    let periods = param.periods();
+    ring.verts.iter().enumerate().any(|(i, p)| {
+        let Some(q) = ring.next(i, periods) else {
+            return false;
+        };
+        if p.chord.is_none() || p.free.is_some() || q.free.is_some() {
+            return false;
+        }
+        let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
+        let image = param.eval([0.5 * (pa + qa), 0.5 * (pb + qb)]);
+        let off = distance_to_chord(image, p.pos, q.pos);
+        exceeds(off, 2.0 * tolerance) && exceeds(off, p.pos.distance(q.pos))
+    })
+}
+
+/// Follows one loop through parameter space.
+///
+/// `sense` is +1 when the loops of this face run counter-clockwise in
+/// `(a, b)` and −1 when clockwise. `walk`: the points the search did not
+/// find on the surface are found again by walking along the loop
+/// ([`follow_along_the_loop`]) within that tolerance; asked for only of
+/// a loop that jumps across its surface as the search placed it
+/// ([`ring_jumps`]).
 fn build_ring(
     param: &Param,
     points: &[(Vec3, Chord)],
     sense: f64,
     face: usize,
     number: usize,
+    walk: Option<f64>,
 ) -> Result<Ring, TessError> {
     let periods = param.periods();
     let domain = param.domain();
@@ -659,8 +695,8 @@ fn build_ring(
         }
         raw.push(uv);
     }
-    if param.is_freeform() {
-        follow_along_the_loop(param, points, &mut raw);
+    if let Some(tolerance) = walk.filter(|_| param.is_freeform()) {
+        follow_along_the_loop(param, points, &mut raw, tolerance);
     }
     for &uv in &raw {
         let (_, [da, db]) = param.derivatives(uv);
@@ -1809,6 +1845,8 @@ fn band_region(
     // face has the circles at its ends and that foot as a hole) is in the
     // way of every straight seam, and the seam in pieces goes up to it
     // where it starts and on from where it ends, turns further round.
+    // Where that is refused for its size, finer chords would only make it
+    // larger: the face is refused with the reason, and asks for none.
     if cut.is_none() {
         let search = Routes {
             param,
@@ -1818,7 +1856,10 @@ fn band_region(
             upper_turns_b,
             crosses_a_loop: &crosses_a_loop,
         };
-        cut = search.cut_wide();
+        cut = match search.cut_wide() {
+            Ok(found) => found,
+            Err(reason) => return unsupported(face, reason),
+        };
     }
     let Some(cut) = cut else {
         // Chords too coarse may be what closes the way (two loops nearer
@@ -1914,12 +1955,30 @@ const ROUTE_TURNS: i32 = 1;
 
 /// How many turns either way the search for a seam in pieces lays the
 /// loops out at most when they run round the axis further than
-/// [`ROUTE_TURNS`] reaches ([`Routes::cut_wide`]).
+/// [`ROUTE_TURNS`] reaches ([`Routes::cut_wide`]). A hole that winds 64
+/// times round is a thread of 64 turns (an M10 thread 96 mm long, a
+/// lead screw); each turn either way is one more copy of every loop.
 const MOST_ROUTE_TURNS: i32 = 64;
 
 /// How many points (vertices of the loops times their copies) that wider
-/// layout may have at most.
+/// layout may have at most: a triangulation of 262,144 points takes a few
+/// tens of MB and well under a second (the face's own triangulations are
+/// held to the same order by their work budget), and the thread of 64
+/// turns at the display tolerance has a few hundred points per turn of
+/// each loop.
 const MOST_ROUTE_POINTS: usize = 1 << 18;
+
+/// How many segment tests (a piece against the segments of the loops, and
+/// against the pieces before it) the search in that wider layout may make
+/// at most: about a second. Every piece is tested against every loop, so
+/// the work grows as the square of the points; a face beyond it is
+/// refused with [`WIDE_ROUTE_TOO_SLOW`].
+const MOST_ROUTE_WORK: usize = 1 << 26;
+
+/// Why a face is refused when [`MOST_ROUTE_WORK`] is not enough.
+const WIDE_ROUTE_TOO_SLOW: &str = "a face around the axis of its surface whose loops wind round \
+     it several times: the search for a seam between them took more work than it is allowed \
+     (a coarser tolerance has fewer points to search)";
 
 /// Whether `p` lies above (towards `+b` of) a loop that winds around `a`
 /// and is moved by `tb` periods of `b`.
@@ -2275,14 +2334,18 @@ impl Routes<'_> {
     /// turned neck), the seam goes up to the hole where it starts and on
     /// from where it ends, turns further round than [`ROUTE_TURNS`]
     /// reaches. Tried only when every other seam failed, so that a face
-    /// meshed before is meshed the same; `None` when the loops run round
-    /// no further than the first layout reached, or so far that laying
-    /// them out would be too much ([`MOST_ROUTE_TURNS`], or more points
-    /// than [`MOST_ROUTE_POINTS`]), or when the triangulation does not
-    /// converge.
-    fn cut_wide(&self) -> Option<Cut> {
+    /// meshed before is meshed the same.
+    ///
+    /// `Ok(None)` when no loop runs round further than the first layout
+    /// already reached (it was laid out that wide: nothing new to try), or
+    /// when the wider layout has no way either. An error, with the
+    /// reason, when laying the loops out that far would be too much: more
+    /// than [`MOST_ROUTE_TURNS`] either way, more than
+    /// [`MOST_ROUTE_POINTS`] points, or the search's work beyond
+    /// [`MOST_ROUTE_WORK`]. Finer chords do not help there.
+    fn cut_wide(&self) -> Result<Option<Cut>, String> {
         let [Some(period), _] = self.param.periods() else {
-            return None;
+            return Ok(None);
         };
         let mut span = 0.0_f64;
         let mut points = 0_usize;
@@ -2302,20 +2365,37 @@ impl Routes<'_> {
             span = span.max(high - low);
             points = points.saturating_add(ring.verts.len());
         }
-        let turns = (span / period).ceil() + 1.0;
-        if !(turns.is_finite() && turns > f64::from(ROUTE_TURNS)) {
-            return None;
+        let around = span / period;
+        if !around.is_finite() {
+            return Err("its loops are not finite".into());
         }
+        // A loop that spans no more than one period was laid out wide
+        // enough already: one turn either way covers it from anywhere.
+        if around <= f64::from(ROUTE_TURNS) {
+            return Ok(None);
+        }
+        let turns = around.ceil() + 1.0;
         if turns > f64::from(MOST_ROUTE_TURNS) {
-            return None;
+            return Err(format!(
+                "a face around the axis of its surface with a loop that winds round the \
+                 axis {} times on its way (more than {MOST_ROUTE_TURNS}, the most a seam \
+                 between its loops is searched for)",
+                around.floor()
+            ));
         }
         // In range by the checks above.
         let turns = turns as i32;
-        let copies = usize::try_from(2 * turns + 1).ok()?;
-        if points.saturating_mul(copies) > MOST_ROUTE_POINTS {
-            return None;
+        let copies = usize::try_from(2 * turns + 1).unwrap_or(usize::MAX);
+        let laid_out = points.saturating_mul(copies);
+        if laid_out > MOST_ROUTE_POINTS {
+            return Err(format!(
+                "a face around the axis of its surface whose loops wind round it {turns} \
+                 times with {points} points: the search for a seam between them would lay \
+                 out {laid_out}, more than {MOST_ROUTE_POINTS} (a coarser tolerance has \
+                 fewer)"
+            ));
         }
-        self.cut_laid_out(turns).ok().flatten()
+        self.cut_laid_out(turns).map_err(str::to_string)
     }
 
     /// The seam in pieces with the loops laid out `turns` periods either
@@ -2356,22 +2436,44 @@ impl Routes<'_> {
         let Some(bridges) = self.bridges(&stations, low_end, high_end, turns)? else {
             return Ok(None);
         };
-        Ok(self.route(&stations, &bridges, source, target))
+        self.route(&stations, &bridges, source, target, turns > ROUTE_TURNS)
     }
 
     /// The shortest chain of `bridges` from station `source` to station
     /// `target`, as a seam.
+    ///
+    /// `wide`: the loops were laid out further round than [`ROUTE_TURNS`]
+    /// ([`Self::cut_wide`]). The pieces of a seam may then lie turns apart:
+    /// each new piece is tested against the copies of the pieces before it
+    /// that lie where it does (from the extents of both in `a`), a piece
+    /// longer round than a period is not used (an edge of the layout's
+    /// triangulation between loops that are a period apart and more is no
+    /// way past them; `crosses_a_loop` looks at the copies of the loops a
+    /// period either side of a piece's start), and the work is held to
+    /// [`MOST_ROUTE_WORK`]: an error beyond it. Otherwise the search is
+    /// as it always was, and never an error.
     fn route(
         &self,
         stations: &[Station],
         bridges: &[Bridge],
         source: usize,
         target: usize,
-    ) -> Option<Cut> {
+        wide: bool,
+    ) -> Result<Option<Cut>, &'static str> {
         let periods = self.param.periods();
-        let period_a = get2(periods, 0)?;
+        let Some(period_a) = get2(periods, 0) else {
+            return Ok(None);
+        };
         let [_, (b_low, b_high)] = self.param.domain();
         let high_end = stations.len() + 1;
+        // What one test of a piece against the loops costs: every segment
+        // of every loop, three copies of each (five times that on a torus).
+        let per_test = stations
+            .iter()
+            .map(|s| s.ring.verts.len())
+            .fold(0_usize, usize::saturating_add)
+            .saturating_mul(if get2(periods, 1).is_some() { 15 } else { 3 });
+        let mut work = 0_usize;
 
         // A piece in parameters, when the station it leaves is moved by
         // `turns` periods.
@@ -2420,19 +2522,27 @@ impl Routes<'_> {
                     return false;
                 };
                 // The copies of the earlier piece a period either side of
-                // the new one; when the pieces lie turns apart (the loops
-                // laid out wider, `Routes::cut_wide`), of those around it.
-                let apart = ((get2(p, 0) - get2(c, 0)) / period_a).round();
-                let apart = if apart.is_finite()
-                    && apart.abs() > 1.0
-                    && apart.abs() <= f64::from(4 * MOST_ROUTE_TURNS)
-                {
-                    // In range by the check.
-                    apart as i32
+                // it; laid out wide, those that lie where the new one
+                // does, by the extents of both in `a` (no more than a
+                // period each there, so a handful).
+                let ks = if wide {
+                    let (pa, qa, ca, da) = (get2(p, 0), get2(q, 0), get2(c, 0), get2(d, 0));
+                    let from = ((pa.min(qa) - ca.max(da)) / period_a).floor() - 1.0;
+                    let to = ((pa.max(qa) - ca.min(da)) / period_a).ceil() + 1.0;
+                    if !(from.is_finite() && to.is_finite())
+                        || from.abs() > 1e6
+                        || to.abs() > 1e6
+                        || to - from > 8.0
+                    {
+                        // Not a piece of a seam: taken as crossing.
+                        return true;
+                    }
+                    // In range by the checks above.
+                    (from as i32)..=(to as i32)
                 } else {
-                    0
+                    -1..=1
                 };
-                for k in (apart - 1).min(-1)..=(apart + 1).max(1) {
+                for k in ks {
                     let (c, d) = (shifted(c, [k, 0], periods), shifted(d, [k, 0], periods));
                     if seam_blocked(p, q, c, d) {
                         return true;
@@ -2465,6 +2575,15 @@ impl Routes<'_> {
                     continue;
                 };
                 let [p, q] = ends;
+                if wide {
+                    if (get2(p, 0) - get2(q, 0)).abs() > period_a {
+                        continue;
+                    }
+                    work = work.saturating_add(per_test).saturating_add(reached.len());
+                    if work > MOST_ROUTE_WORK {
+                        return Err(WIDE_ROUTE_TOO_SLOW);
+                    }
+                }
                 // (No cap on the pieces found to cross: a station is
                 // queued once (it must be unreached), so each bridge is
                 // tried at most once, and the bridges are the sides of a
@@ -2477,17 +2596,32 @@ impl Routes<'_> {
                 if crosses_the_seam(ends, node, &reached) || (self.crosses_a_loop)(p, q) {
                     continue;
                 }
+                let Some(turns) = here.turns.checked_add(bridge.dt) else {
+                    return Ok(None);
+                };
                 if let Some(slot) = reached.get_mut(bridge.to) {
                     *slot = Some(Reached {
                         by: Some(index),
-                        turns: here.turns.checked_add(bridge.dt)?,
+                        turns,
                         piece: Some(ends),
                     });
                     queue.push_back(bridge.to);
                 }
             }
         }
+        Ok(self.chain(stations, bridges, &reached, source, target))
+    }
 
+    /// The seam that [`Self::route`]'s search reached `target` by, back
+    /// along the bridges from there to `source`.
+    fn chain(
+        &self,
+        stations: &[Station],
+        bridges: &[Bridge],
+        reached: &[Option<Reached>],
+        source: usize,
+        target: usize,
+    ) -> Option<Cut> {
         // Back from the upper side along the bridges that reached it.
         let mut chain: Vec<(Bridge, Reached)> = Vec::new();
         let mut node = target;
@@ -4479,7 +4613,15 @@ pub(crate) fn face_boundary<'a>(
         let sense = if swapped != face.reversed { -1.0 } else { 1.0 };
         let mut rings = Vec::with_capacity(loops.len());
         for (number, points) in loops.iter().enumerate() {
-            rings.push(build_ring(&param, points, sense, index, number)?);
+            let mut ring = build_ring(&param, points, sense, index, number, None)?;
+            // A loop on a spline surface that the search placed a turn
+            // away in places (a surface that folds more finely than the
+            // search's grid): found again along the loop. Any other loop
+            // is as the search placed it.
+            if param.is_freeform() && ring_jumps(&param, &ring, tolerance) {
+                ring = build_ring(&param, points, sense, index, number, Some(tolerance))?;
+            }
+            rings.push(ring);
         }
         let around = |k: usize| rings.iter().any(|r| get2(r.winding, k) != 0);
         if rings.iter().any(|r| r.winding.iter().any(|w| w.abs() > 1)) {
@@ -5690,5 +5832,270 @@ mod tests {
             }
         }
         println!("loosest: {loosest:.2}");
+    }
+
+    /// The side of a band between spirals, as an extrusion makes it: a
+    /// ruled spline surface along `r = 3 + 0.5 t / 2π` for `turns` turns
+    /// (u, in 32 straight pieces a turn) and up by 3.3 (v).
+    fn spiral_side(turns: f64) -> Surface {
+        let pieces = (32.0 * turns) as usize;
+        let mut knots = vec![0.0, 0.0];
+        knots.extend((1..pieces).map(|i| i as f64 / pieces as f64));
+        knots.extend([1.0, 1.0]);
+        let mut ctrl = Vec::new();
+        for i in 0..=pieces {
+            let t = turns * std::f64::consts::TAU * i as f64 / pieces as f64;
+            let r = 3.0 + 0.5 * t / std::f64::consts::TAU;
+            for z in [0.0, 3.3] {
+                ctrl.push(Vec3::new(r * t.cos(), r * t.sin(), z));
+            }
+        }
+        let weights = vec![1.0; ctrl.len()];
+        Surface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                knots,
+                vec![0.0, 0.0, 1.0, 1.0],
+                pieces + 1,
+                2,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The points of the loop round the whole of a spline surface's
+    /// domain, `along` points on each long side.
+    fn round_the_domain(surface: &Surface, along: usize) -> Vec<(Vec3, Chord)> {
+        let mut uv: Vec<(f64, f64)> = Vec::new();
+        uv.extend((0..along).map(|i| (i as f64 / along as f64, 0.0)));
+        uv.extend((0..4).map(|j| (1.0, f64::from(j) / 4.0)));
+        uv.extend((0..along).map(|i| (1.0 - i as f64 / along as f64, 1.0)));
+        uv.extend((0..4).map(|j| (0.0, 1.0 - f64::from(j) / 4.0)));
+        uv.iter()
+            .enumerate()
+            .map(|(k, &(u, v))| (surface.eval(u, v), (0, k as u32)))
+            .collect()
+    }
+
+    fn param_of(surface: &Surface) -> Param<'_> {
+        Param {
+            surface,
+            swapped: false,
+            closure: Closure::of(surface),
+        }
+    }
+
+    #[test]
+    fn a_loop_on_a_side_that_winds_more_finely_than_the_search_is_followed_along_it() {
+        let surface = spiral_side(5.5);
+        let param = param_of(&surface);
+        let points = round_the_domain(&surface, 400);
+        let tolerance = 1e-3;
+        let off = |ring: &Ring| {
+            ring.verts
+                .iter()
+                .map(|v| param.eval(v.uv).distance(v.pos))
+                .fold(0.0_f64, f64::max)
+        };
+        // The search alone puts points of the rims a turn away: the loop
+        // jumps across the surface (what refused the field test's band).
+        let searched = build_ring(&param, &points, 1.0, 0, 0, None).unwrap();
+        assert!(off(&searched) > 0.1, "{}", off(&searched));
+        assert!(ring_jumps(&param, &searched, tolerance));
+        // Followed along the loop, every point is on the surface.
+        let followed = build_ring(&param, &points, 1.0, 0, 0, Some(tolerance)).unwrap();
+        assert!(off(&followed) <= 1e-9, "{}", off(&followed));
+        assert!(!ring_jumps(&param, &followed, tolerance));
+    }
+
+    #[test]
+    fn a_foot_further_than_the_tolerance_is_not_taken_from_the_walk() {
+        // The loop 0.01 below the surface's lower rim: the walk's feet are
+        // that far off, beyond the tolerance, and the search's stay, so a
+        // wrong dip never spreads along the loop (the face fails instead).
+        let surface = spiral_side(5.5);
+        let param = param_of(&surface);
+        let points: Vec<(Vec3, Chord)> = round_the_domain(&surface, 400)
+            .into_iter()
+            .map(|(p, chord)| (p - Vec3::new(0.0, 0.0, 0.01), chord))
+            .collect();
+        let searched: Vec<Uv> = points
+            .iter()
+            .map(|&(p, _)| param.project(p).unwrap())
+            .collect();
+        let mut walked = searched.clone();
+        follow_along_the_loop(&param, &points, &mut walked, 1e-3);
+        assert_eq!(walked, searched);
+        // Within a looser tolerance the walk's feet are taken.
+        follow_along_the_loop(&param, &points, &mut walked, 0.02);
+        assert_ne!(walked, searched);
+        for (&uv, &(p, _)) in walked.iter().zip(&points) {
+            let off = param.eval(uv).distance(p);
+            assert!(off <= 0.02 || searched.contains(&uv), "{off}");
+        }
+    }
+
+    #[test]
+    fn the_walk_takes_no_foot_across_the_seam_of_a_closed_spline_surface() {
+        // A spline cylinder, closed in u, and a loop across its seam with
+        // some points put a quarter turn away (as a search that went wrong
+        // would): those away from the seam are found again on the surface;
+        // the one just past the seam, walked from the point before (the
+        // walk does not cross the seam: it stops at the border, a chord
+        // away), is not put there; no foot beyond the tolerance is taken.
+        let surface = Surface::Nurbs(revolved(&[(1.0, 0.0), (1.0, 1.0)], 1));
+        let param = param_of(&surface);
+        let at = |deg: f64, z: f64| {
+            let (s, c) = deg.to_radians().sin_cos();
+            Vec3::new(c, s, z)
+        };
+        let mut points: Vec<(Vec3, Chord)> = Vec::new();
+        for k in 0..=60_u32 {
+            points.push((at(-60.0 + 2.0 * f64::from(k), 0.0), (0, k)));
+        }
+        for k in 0..=60_u32 {
+            points.push((at(60.0 - 2.0 * f64::from(k), 1.0), (1, k)));
+        }
+        let mut raw: Vec<Uv> = points
+            .iter()
+            .map(|&(p, _)| param.project(p).unwrap())
+            .collect();
+        for k in [10, 30, 31, 45, 90] {
+            let [u, v] = raw[k];
+            raw[k] = [(u + 0.25).rem_euclid(1.0), v];
+        }
+        let before = raw.clone();
+        let tolerance = 1e-3;
+        follow_along_the_loop(&param, &points, &mut raw, tolerance);
+        let off = |raw: &[Uv], k: usize| param.eval(raw[k]).distance(points[k].0);
+        for k in 0..raw.len() {
+            assert!(
+                off(&raw, k) <= tolerance || raw[k] == before[k],
+                "{k}: {}",
+                off(&raw, k)
+            );
+        }
+        for k in [10, 45, 90] {
+            assert!(off(&raw, k) <= 1e-9, "{k}: {}", off(&raw, k));
+        }
+    }
+
+    /// A ring of points at `b` round the cylinder of radius 1, running
+    /// round the way `winding` says.
+    fn rim(surface: &Surface, b: f64, winding: i32) -> Ring {
+        let n = 64_u32;
+        let verts = (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * f64::from(k) / f64::from(n);
+                let a = if winding > 0 {
+                    t
+                } else {
+                    std::f64::consts::TAU - t
+                };
+                Bv {
+                    uv: [a, b],
+                    pos: surface.eval(a, b),
+                    free: None,
+                    chord: Some((0, k)),
+                }
+            })
+            .collect();
+        Ring {
+            verts,
+            winding: [winding, 0],
+        }
+    }
+
+    /// The foot of a thread of `turns` turns of pitch 1 on that cylinder:
+    /// a strip 0.5 wide winding up from `b` = 1, `per_turn` points a turn
+    /// on each side.
+    fn foot(surface: &Surface, turns: f64, per_turn: usize) -> Ring {
+        let n = (turns * per_turn as f64) as usize;
+        let tau = std::f64::consts::TAU;
+        let point = |a: f64, up: f64| {
+            let b = 1.0 + up + a / tau;
+            Bv {
+                uv: [a, b],
+                pos: surface.eval(a, b),
+                free: None,
+                chord: Some((1, 0)),
+            }
+        };
+        let mut verts: Vec<Bv> = (0..=n)
+            .map(|k| point(turns * tau * k as f64 / n as f64, 0.5))
+            .collect();
+        verts.extend(
+            (0..=n)
+                .rev()
+                .map(|k| point(turns * tau * k as f64 / n as f64, 0.0)),
+        );
+        Ring {
+            verts,
+            winding: [0, 0],
+        }
+    }
+
+    #[test]
+    fn a_seam_past_a_hole_that_winds_turns_round_is_found_laid_out_wide() {
+        let surface = Surface::Cylinder(
+            craft3d_geom::Cylinder::new(craft3d_math::Frame::WORLD, 1.0).unwrap(),
+        );
+        let param = param_of(&surface);
+        let (lower, upper) = (rim(&surface, 0.0, 1), rim(&surface, 80.0, -1));
+        let periods = param.periods();
+        let period = std::f64::consts::TAU;
+        type Found = (Option<bool>, Result<Option<bool>, String>);
+        let search = |hole: &Ring| -> Found {
+            // As `band_region` tests a piece against the loops.
+            let crosses = |from: Uv, to: Uv| -> bool {
+                [&lower, &upper, hole].iter().any(|ring| {
+                    ring.verts.iter().enumerate().any(|(i, v)| {
+                        let Some(w) = ring.next(i, periods) else {
+                            return false;
+                        };
+                        let around = ((from[0] - v.uv[0]) / period).round() as i32;
+                        (around - 1..=around + 1).any(|ta| {
+                            let p = snapped(shifted(v.uv, [ta, 0], periods), [from, to], period);
+                            let q = snapped(shifted(w.uv, [ta, 0], periods), [from, to], period);
+                            seam_blocked(from, to, p, q) || seam_grazes(from, to, p, q, period)
+                        })
+                    })
+                })
+            };
+            let holes = [(2, hole)];
+            let routes = Routes {
+                param: &param,
+                lower: Some(&lower),
+                upper: Some(&upper),
+                holes: &holes,
+                upper_turns_b: 0,
+                crosses_a_loop: &crosses,
+            };
+            (
+                routes.cut().unwrap().map(|cut| !cut.via.is_empty()),
+                routes
+                    .cut_wide()
+                    .map(|cut| cut.map(|cut| !cut.via.is_empty())),
+            )
+        };
+        // Six turns: no seam one turn either way, one through the hole
+        // laid out wide.
+        let (narrow, wide) = search(&foot(&surface, 6.0, 16));
+        assert_eq!(narrow, None);
+        assert_eq!(wide, Ok(Some(true)));
+        // Seventy turns: refused with the reason, not searched.
+        let (_, wide) = search(&foot(&surface, 70.0, 4));
+        let reason = wide.unwrap_err();
+        assert!(
+            reason.contains("70 times") && reason.contains("more than 64"),
+            "{reason}"
+        );
+        // Too many points to lay out: refused with the reason.
+        let (_, wide) = search(&foot(&surface, 9.0, 2000));
+        let reason = wide.unwrap_err();
+        assert!(reason.contains("more than 262144"), "{reason}");
     }
 }

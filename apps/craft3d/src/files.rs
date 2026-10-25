@@ -448,12 +448,12 @@ impl Host {
             // body that cannot be meshed): said in words, first, rather
             // than at the end of the answer, where the status line cuts
             // it off.
-            Ok(result) => match result.get("thumbnailError").and_then(Value::as_str) {
-                Some(why) => {
-                    let path = result.get("path").and_then(Value::as_str).unwrap_or("");
-                    (true, format!("no thumbnail ({why}); saved {path}"))
-                }
-                None => (true, result.to_string()),
+            Ok(result) => match (
+                result.get("thumbnailError").and_then(Value::as_str),
+                result.get("path").and_then(Value::as_str),
+            ) {
+                (Some(why), Some(path)) => (true, format!("no thumbnail ({why}); saved {path}")),
+                _ => (true, result.to_string()),
             },
             Err(error) => {
                 self.shell.show_error(label, error);
