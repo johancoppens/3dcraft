@@ -102,8 +102,13 @@ constraints (`sketch.constrain`) tie them down:
 **Coordinates written as expressions are held.** In `"points": [["0 mm", "0 mm"], [0, "leg_x"]]` each
 point that has an expression among its coordinates is held where the expressions put it (by `x` and `y`
 constraints, which follow the variables); a point given only as plain numbers, `[0, 0]`, is a starting
-place the solver may move. `sketch.inspect` reports `dof`, the degrees of freedom left: 0 means fully
-constrained, which is what you want for a part that must follow its variables. A sketch with freedom
+place the solver may move. The same holds in every drawing command: the corners and centres of
+`sketch.rect`, `sketch.circle` and `sketch.arc`, and the ends, centres and through points of the arcs
+of `sketch.path` (a through point written so becomes a point kept on its arc's circle: moved far
+enough by a variable, it can end up beyond the arc's ends); a radius written as an expression
+(`sketch.circle`, an arc of `sketch.path`) is held by a `radius` constraint. `sketch.inspect` reports
+`dof`, the degrees of freedom left: 0 means fully constrained, which is what you want for a part that
+must follow its variables. A sketch with freedom
 left builds; `document.check` has one warning (`kind: "underConstrained"`) that lists every such sketch
 with its `dof`.
 

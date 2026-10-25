@@ -1,0 +1,114 @@
+{
+  "format_version": 36,
+  "written_by": "e9134be6380d81960c0457bfebc4e9d8dadd4ef1",
+  "how": "craft3d-cli built from that commit (on the Strix, by a temporary test that ran it and printed the file): run --new '{\"units\": \"mm\"}' --script v36.steps.json --out v36.3dcraft, then info v36.3dcraft, and param.list of it for parameters and info",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Rails",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Panel",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Lid",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 1000000.0000000003,
+      "area": 60000.000000000015,
+      "mass": 2.7000000000000015
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 600.0000000000006,
+      "area": 440.00000000000034,
+      "mass": 0.004710000000000005
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 20000.000000000007,
+      "area": 20800.000000000007,
+      "mass": 0.05400000000000003
+    }
+  ],
+  "assertions": [
+    {
+      "expected": "≤ 56.5 mm",
+      "measure": "boxMax",
+      "measured": "55 mm",
+      "message": "boxMax: 55 mm",
+      "name": "nothing past +x",
+      "status": "passed"
+    },
+    {
+      "expected": "≥ -56.5 mm",
+      "measure": "boxMin",
+      "measured": "-50 mm",
+      "message": "boxMin: -50 mm",
+      "name": "nothing past -x",
+      "status": "passed"
+    },
+    {
+      "expected": "-20 mm to 20 mm",
+      "measure": "centerOfMass",
+      "measured": "0.0887806257 mm",
+      "message": "centerOfMass: 0.0887806257 mm",
+      "name": "balanced in x",
+      "status": "passed"
+    },
+    {
+      "expected": "no overlap",
+      "measure": "overlap",
+      "measured": "no overlap",
+      "message": "no overlap",
+      "name": "lid clear",
+      "status": "passed"
+    },
+    {
+      "expected": "an overlap",
+      "measure": "overlap",
+      "measured": "Panel overlaps Rails by 100 mm^3",
+      "message": "Panel overlaps Rails by 100 mm^3",
+      "name": "panel fitted",
+      "status": "passed"
+    },
+    {
+      "expected": "no overlap",
+      "measure": "overlap",
+      "measured": "no overlap",
+      "message": "no overlap",
+      "name": "old form",
+      "status": "passed"
+    }
+  ],
+  "parameters": [],
+  "info": {
+    "author": "",
+    "description": "",
+    "licence": "",
+    "tags": [],
+    "title": "",
+    "url": ""
+  }
+}

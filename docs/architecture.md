@@ -124,7 +124,7 @@ Edges first: each edge becomes points once, and both faces that share it use the
 
 ## 8. Files
 
-`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 35 at 0.1.0, never silently dropping a field; beside it the imported files' bytes and a thumbnail), and the same format as a published Jig, `.3dcraftjig`; STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ (with a `.mtl`) meshes; DXF and SVG of flat outlines and of projected views. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
+`.3dcraft` (a stored ZIP with a manifest: the history, versioned with migrations, format 36 at 0.1.0, never silently dropping a field; beside it the imported files' bytes and a thumbnail), and the same format as a published Jig, `.3dcraftjig`; STEP AP214 export with colours, and import of its solids (`stepread`, L3, so that regeneration builds an import feature from the bytes the document holds); STL, 3MF (with colours) and OBJ (with a `.mtl`) meshes; DXF and SVG of flat outlines and of projected views. Formats live in standalone crates; the mapping to our model lives in `io`. Details: [`design/files.md`](design/files.md), [`file-formats.md`](file-formats.md).
 
 ## 9. Known structural debt
 

@@ -17,8 +17,8 @@ use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|distance|clearance|thickness|through|interference|symmetric", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean = true}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), interference (of: bodies, to: bodies = each other; none overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through, interference and symmetric take is (default true). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, assert_add),
+    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
@@ -31,16 +31,16 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 fn measure_keys(measure: &str) -> &'static [&'static str] {
     match measure {
         "volume" | "area" | "mass" | "count" | "thickness" | "through" => &["of"],
-        "extent" => &["of", "axis"],
+        "extent" | "boxMin" | "boxMax" | "centerOfMass" => &["of", "axis"],
         "distance" | "clearance" => &["from", "to"],
-        "interference" => &["of", "to"],
+        "overlap" => &["of", "to"],
         "symmetric" => &["of", "plane", "tol"],
         _ => &[],
     }
 }
 
 fn is_flag(measure: &str) -> bool {
-    matches!(measure, "through" | "interference" | "symmetric")
+    matches!(measure, "through" | "overlap" | "symmetric")
 }
 
 /// Keys in a subject's filters whose value names a feature.
@@ -247,6 +247,14 @@ fn expectation(p: &Params, id: &str, measure: &str) -> Result<Expect, CommandErr
                 "{id}: {measure} is yes or no: give `is` (default true), not eq, tol, min or max"
             ));
         }
+        // Whether bodies may overlap is said, not defaulted: an
+        // assertion that they must overlap (a press fit) and one that
+        // none do are both written.
+        if measure == "overlap" && is.is_none() {
+            return fail(format!(
+                "{id}: overlap needs `is`: false asserts that no two of the bodies overlap, true that they do"
+            ));
+        }
         return Ok(Expect::Is(is.unwrap_or(true)));
     }
     if is.is_some() {
@@ -270,6 +278,36 @@ fn expectation(p: &Params, id: &str, measure: &str) -> Result<Expect, CommandErr
             "{id}: say what {measure} must be: eq (and tol) or min and/or max"
         )),
     }
+}
+
+/// `interference`, what `overlap` was called before format 36, with the
+/// opposite yes and no (true when none of the bodies overlap). Saved
+/// documents are migrated on load; a caller that still sends it is taken
+/// at its word.
+const OLD_INTERFERENCE: &str = "interference";
+
+/// The parameters of `assert.add` or `assert.edit` with the old measure
+/// `interference` written as `overlap` and its `is` turned round (absent,
+/// it meant true); any others as they are. An `is` that is no boolean is
+/// left for the parameters to refuse.
+fn without_old_name(params: &Value) -> Value {
+    let mut params = params.clone();
+    if let Value::Object(map) = &mut params
+        && map.get("measure").and_then(Value::as_str) == Some(OLD_INTERFERENCE)
+    {
+        map.insert("measure".into(), "overlap".into());
+        match map.get("is") {
+            None | Some(Value::Null) => {
+                map.insert("is".into(), false.into());
+            }
+            Some(Value::Bool(none_overlap)) => {
+                let is = !*none_overlap;
+                map.insert("is".into(), is.into());
+            }
+            Some(_) => {}
+        }
+    }
+    params
 }
 
 const ADD_KEYS: [&str; 14] = [
@@ -299,6 +337,7 @@ fn check_keys(
 
 fn assert_add(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "assert.add";
+    let params = &without_old_name(params);
     let p = Params::new(ID, params, &ADD_KEYS[..12])?;
     let name = p.required_str("name")?.to_string();
     let map = params_map(params);
@@ -320,6 +359,7 @@ fn assert_add(session: &mut Session, params: &Value) -> Run {
 
 fn assert_edit(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "assert.edit";
+    let params = &without_old_name(params);
     let p = Params::new(ID, params, &ADD_KEYS[..13])?;
     let name = p.required_str("name")?.to_string();
     let map = params_map(params);
@@ -529,7 +569,7 @@ fn expect_json(expect: &Expect) -> Value {
 
 /// A number for reading: at most nine significant digits, no trailing
 /// zeros.
-fn shown(v: f64) -> String {
+pub(crate) fn shown(v: f64) -> String {
     if v == 0.0 || !v.is_finite() {
         return format!("{v}");
     }
@@ -558,7 +598,7 @@ fn dim_of(measure: &str) -> Dim {
         "area" => Dim::Length(2),
         "mass" => Dim::Mass,
         "count" => Dim::Count,
-        "through" | "interference" | "symmetric" => Dim::Flag,
+        "through" | "overlap" | "symmetric" => Dim::Flag,
         _ => Dim::Length(1),
     }
 }
@@ -610,8 +650,13 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
     type Bounds = (Option<f64>, Option<f64>, Option<bool>);
     let bounds: Result<Bounds, String> = match &assertion.expect {
         Expect::Is(is) => {
-            checked.state.expected = is.to_string();
-            Ok((None, None, Some(*is)))
+            let is = *is;
+            checked.state.expected = if measure == "overlap" {
+                if is { "an overlap" } else { "no overlap" }.to_string()
+            } else {
+                is.to_string()
+            };
+            Ok((None, None, Some(is)))
         }
         Expect::Equal { value, tol } => (|| {
             let v = value_of(value, "eq")?;
@@ -650,90 +695,82 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         return checked;
     };
     params.remove("measure");
-    let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            checked.state.message = format!("cannot be measured: {e}");
-            return checked;
+    // A box found on a mesh that leaves the bound undecided is looked at
+    // again on a finer mesh, a few times, while one can be made finer.
+    let refinable = matches!(measure.as_str(), "extent" | "boxMin" | "boxMax");
+    let mut ctx = ctx;
+    let (outcome, verdict) = loop {
+        let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
+        let outcome = match outcome {
+            Ok(o) => o,
+            Err(e) => {
+                checked.state.message = format!("cannot be measured: {e}");
+                return checked;
+            }
+        };
+        let verdict = decide(&outcome, want, (lo, hi), dim, doc.tolerance.linear);
+        let finer = outcome
+            .detail
+            .get("meshTolerance")
+            .and_then(Value::as_f64)
+            .is_some_and(|t| t > 10.0 * doc.tolerance.linear * (1.0 + 1e-9));
+        if verdict.is_some() || !refinable || !finer || ctx.refine >= MAX_REFINE {
+            break (outcome, verdict);
         }
+        ctx.refine = ctx.refine.saturating_add(1);
     };
     checked.detail = outcome.detail;
-    // Yes, no, or not proven either way.
-    let verdict: Option<bool> = if let Some(want) = want {
+    if want.is_some() {
         let got = outcome.flag.unwrap_or(false);
         checked.value = got.into();
         checked.state.measured = Some(match &outcome.note {
+            // Said in words: which bodies overlap by how much, or none.
+            Some(note) if measure == "overlap" => note.clone(),
             Some(note) => format!("{got} ({note})"),
             None => got.to_string(),
         });
-        Some(got == want)
     } else {
         match outcome.number {
             Some(v) => {
                 checked.value = v.into();
                 checked.state.measured = Some(with_unit(v));
-                // The true value lies in [lower, upper]: a bound holds when
-                // the whole of that range is within it, fails when none of
-                // it is, and is not proven otherwise.
                 let lower = outcome.lower.unwrap_or(v);
                 let upper = outcome.upper.unwrap_or(v);
                 if lower < upper {
-                    checked.state.measured =
-                        Some(format!("{} (at least {})", with_unit(v), with_unit(lower)));
-                    checked.detail.insert("atLeast".into(), lower.into());
-                }
-                // Within the document's tolerance (of a length; its square
-                // or cube for an area or a volume, and rounding for the
-                // rest) a bound is met: what the geometry cannot tell
-                // apart does not fail it.
-                let slack = |b: f64| {
-                    let tol = match dim {
-                        Dim::Length(k) => doc.tolerance.linear.powi(k),
-                        _ => 0.0,
+                    // Which bound is proven beside the value: the side it
+                    // is not on (see `Outcome::lower`).
+                    let proven = if v >= upper {
+                        checked.detail.insert("atLeast".into(), lower.into());
+                        format!("at least {}", with_unit(lower))
+                    } else if v <= lower {
+                        checked.detail.insert("atMost".into(), upper.into());
+                        format!("at most {}", with_unit(upper))
+                    } else {
+                        checked.detail.insert("atLeast".into(), lower.into());
+                        checked.detail.insert("atMost".into(), upper.into());
+                        format!("between {} and {}", with_unit(lower), with_unit(upper))
                     };
-                    tol.max(1e-12 * b.abs())
-                };
-                let at_least = |lo: f64| {
-                    if lower >= lo - slack(lo) {
-                        Some(true)
-                    } else if upper < lo - slack(lo) {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                };
-                let at_most = |hi: f64| {
-                    if upper <= hi + slack(hi) {
-                        Some(true)
-                    } else if lower > hi + slack(hi) {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                };
-                let checks = [lo.map(at_least), hi.map(at_most)];
-                if checks.contains(&Some(Some(false))) {
-                    Some(false)
-                } else if checks.contains(&Some(None)) {
-                    None
-                } else {
-                    Some(true)
+                    checked.state.measured = Some(format!("{} ({proven})", with_unit(v)));
                 }
             }
             None => {
                 checked.value = outcome.note.clone().map_or(Value::Null, Value::from);
                 checked.state.measured = outcome.note.clone();
-                Some(false)
             }
         }
-    };
+    }
     let measured = checked
         .state
         .measured
         .clone()
         .unwrap_or_else(|| "nothing".into());
     (checked.state.status, checked.state.message) = match verdict {
+        // What an overlap found is a sentence of its own.
+        Some(true) if measure == "overlap" => (Status::Passed, measured),
+        Some(false) if measure == "overlap" => (
+            Status::Failed,
+            format!("{measured}, expected {}", checked.state.expected),
+        ),
         Some(true) => (Status::Passed, format!("{measure}: {measured}")),
         Some(false) => (
             Status::Failed,
@@ -745,12 +782,74 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         None => (
             Status::NotProven,
             format!(
-                "{measure}: not proven: found {measured}, expected {}; the least there is was not pinned down closely enough to tell",
+                "{measure}: not proven: found {measured}, expected {}; what was measured was not pinned down closely enough to tell",
                 checked.state.expected
             ),
         ),
     };
     checked
+}
+
+/// How many times a box found on a mesh is looked at again, each time on
+/// a mesh eight times finer, while that leaves the bound undecided.
+const MAX_REFINE: u32 = 3;
+
+/// Whether `outcome` meets what is wanted: yes, no, or not proven either
+/// way (`None`). `want` for a yes-or-no measure; else the bounds `lo` and
+/// `hi` against the range the true value lies in, `[lower, upper]`: a
+/// bound holds when the whole of that range is within it, fails when none
+/// of it is, and is not proven otherwise. Within the document's tolerance
+/// `linear` (of a length; its square or cube for an area or a volume, and
+/// rounding for the rest) a bound is met: what the geometry cannot tell
+/// apart does not fail it.
+pub(crate) fn decide(
+    outcome: &Outcome,
+    want: Option<bool>,
+    (lo, hi): (Option<f64>, Option<f64>),
+    dim: Dim,
+    linear: f64,
+) -> Option<bool> {
+    if let Some(want) = want {
+        return Some(outcome.flag.unwrap_or(false) == want);
+    }
+    let Some(v) = outcome.number else {
+        return Some(false);
+    };
+    let lower = outcome.lower.unwrap_or(v);
+    let upper = outcome.upper.unwrap_or(v);
+    let slack = |b: f64| {
+        let tol = match dim {
+            Dim::Length(k) => linear.powi(k),
+            _ => 0.0,
+        };
+        tol.max(1e-12 * b.abs())
+    };
+    let at_least = |lo: f64| {
+        if lower >= lo - slack(lo) {
+            Some(true)
+        } else if upper < lo - slack(lo) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    let at_most = |hi: f64| {
+        if upper <= hi + slack(hi) {
+            Some(true)
+        } else if lower > hi + slack(hi) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    let checks = [lo.map(at_least), hi.map(at_most)];
+    if checks.contains(&Some(Some(false))) {
+        Some(false)
+    } else if checks.contains(&Some(None)) {
+        None
+    } else {
+        Some(true)
+    }
 }
 
 /// Checks one assertion; one that panics is an error, not a lost

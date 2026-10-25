@@ -34,7 +34,7 @@ const STEPS: &[Step] = &[
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
-    v34_to_v35,
+    v34_to_v35, v35_to_v36,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -637,6 +637,58 @@ fn v34_to_v35(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
+/// Version 36 renames the assertion measure `interference` to `overlap`
+/// and turns its yes or no round: `interference` was true when none of
+/// the bodies overlap, which read backwards (`is: true` asserted that
+/// nothing interferes); `overlap` is true when a pair overlaps. An
+/// assertion of version 35 with `{"measure": "interference", ...}` and
+/// `{"is": b}` becomes `{"measure": "overlap", ...}` with `{"is": !b}`,
+/// its subjects as they were: it asserts the same thing. One without an
+/// `is` (which version 35 never wrote) meant the default, true. The
+/// version also adds the measures `centerOfMass`, `boxMin` and `boxMax`,
+/// which an older build would report as unknown.
+fn v35_to_v36(mut manifest: Value) -> Result<Value, String> {
+    let Some(assertions) = manifest
+        .get_mut("document")
+        .and_then(|d| d.get_mut("assertions"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(manifest);
+    };
+    for assertion in assertions {
+        let name: String = assertion
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .chars()
+            .take(80)
+            .collect();
+        let Some(measure) = assertion.get_mut("measure").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if measure.get("measure").and_then(Value::as_str) != Some("interference") {
+            continue;
+        }
+        measure.insert("measure".into(), Value::from("overlap"));
+        let Some(expect) = assertion.get_mut("expect").and_then(Value::as_object_mut) else {
+            return Err(format!(
+                "assertion `{name}` measures interference but has no `expect`"
+            ));
+        };
+        let none_overlap = match expect.get("is") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(is)) => *is,
+            Some(_) => {
+                return Err(format!(
+                    "assertion `{name}` measures interference but its `is` is not true or false"
+                ));
+            }
+        };
+        expect.insert("is".into(), Value::from(!none_overlap));
+    }
+    Ok(manifest)
+}
+
 // One step per version after the first: forgetting either half of a
 // version bump does not compile.
 const _: () = assert!(STEPS.len() + 1 == FORMAT_VERSION as usize);
@@ -905,5 +957,69 @@ mod tests {
             feature(2, false, json!({"type": "fillet", "edges": [[face(1, 0), face(1, 2)]]})),
         ]}});
         assert_eq!(v33_to_v34(plain.clone()).unwrap(), plain);
+    }
+
+    /// Assertions as version 35 wrote them. Never edit this: it stands for
+    /// the files people have on disk.
+    const V35_ASSERTIONS: &str = r#"{
+  "format": "3dcraft",
+  "format_version": 35,
+  "document": {
+    "units": { "length": "mm", "angle": "deg" },
+    "tolerance": { "linear": 1e-6, "angular": 1e-9 },
+    "variables": [],
+    "features": [
+      { "id": 1, "name": "A", "kind": { "type": "block", "position": ["0", "0", "0"], "size": ["10", "10", "10"] } },
+      { "id": 2, "name": "B", "kind": { "type": "block", "position": ["20", "0", "0"], "size": ["10", "10", "10"] } }
+    ],
+    "next_feature_id": 3,
+    "assertions": [
+      { "name": "apart", "measure": { "measure": "interference" }, "expect": { "is": true } },
+      { "name": "fit", "measure": { "measure": "interference", "of": "F1", "to": ["F2"] }, "expect": { "is": false } },
+      { "name": "wide", "measure": { "axis": "x", "measure": "extent" }, "expect": { "max": "30 mm" } }
+    ]
+  }
+}"#;
+
+    #[test]
+    fn version_36_writes_interference_as_overlap_with_the_opposite_is() {
+        use craft3d_doc::Expect;
+        let doc = crate::from_manifest_json(V35_ASSERTIONS.as_bytes()).unwrap();
+        let read: Vec<_> = doc
+            .assertions
+            .iter()
+            .map(|a| {
+                (
+                    a.name.as_str(),
+                    serde_json::from_str::<Value>(&a.measure).unwrap(),
+                    a.expect.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(read[0].1, json!({"measure": "overlap"}));
+        assert_eq!(read[0].2, Expect::Is(false));
+        assert_eq!(
+            read[1].1,
+            json!({"measure": "overlap", "of": "F1", "to": ["F2"]})
+        );
+        assert_eq!(read[1].2, Expect::Is(true));
+        // Other measures are left alone.
+        assert_eq!(read[2].1, json!({"axis": "x", "measure": "extent"}));
+        // No `is` meant true; an `is` that is no boolean is refused.
+        let bare = json!({"document": {"assertions": [
+            {"name": "a", "measure": {"measure": "interference"}, "expect": {}}
+        ]}});
+        let migrated = v35_to_v36(bare).unwrap();
+        assert_eq!(
+            migrated["document"]["assertions"][0]["expect"],
+            json!({"is": false})
+        );
+        let wrong = json!({"document": {"assertions": [
+            {"name": "a", "measure": {"measure": "interference"}, "expect": {"is": 1}}
+        ]}});
+        assert!(v35_to_v36(wrong).is_err());
+        // Nothing to do without assertions.
+        let plain = json!({"document": {"features": []}});
+        assert_eq!(v35_to_v36(plain.clone()).unwrap(), plain);
     }
 }

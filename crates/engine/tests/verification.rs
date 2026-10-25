@@ -1036,10 +1036,641 @@ fn a_unit_with_a_power_after_a_number_is_refused_in_a_bound() {
     let e = s
         .execute(
             "measure.symmetry",
-            &json!({"of": "Cube", "plane": "yz", "tol": "1 mm^1"}),
+            &json!({"of": "Cube", "plane": "yz", "tol": "3 mm^1"}),
         )
         .unwrap_err();
     assert!(e.message().contains("* (1 mm)"), "{e}");
+}
+
+/// `0 mm^3` is `(0 mm)^3`, which is the same: nothing to mistake, so a
+/// zero tolerance (and a zero bound) is taken as written, as
+/// variable.set takes it (an R1 tester found it refused).
+#[test]
+fn zero_tolerances_and_bounds_are_taken() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cube", "size": [10, 10, 10]}),
+    );
+    for (name, params) in [
+        (
+            "exact volume",
+            json!({"measure": "volume", "eq": "1000 * (1 mm)^3", "tol": "0 mm^3"}),
+        ),
+        (
+            "exact area",
+            json!({"measure": "area", "eq": "600 * (1 mm)^2", "tol": "0 mm^2"}),
+        ),
+        (
+            "exact width",
+            json!({"measure": "extent", "axis": "x", "eq": "10 mm", "tol": "0 mm"}),
+        ),
+        (
+            "zero tol as a number",
+            json!({"measure": "extent", "axis": "y", "eq": 10, "tol": 0}),
+        ),
+        (
+            "at least nothing",
+            json!({"measure": "volume", "min": "0 mm^3"}),
+        ),
+        (
+            "a unit volume or more",
+            json!({"measure": "volume", "min": "1 mm^3"}),
+        ),
+        (
+            "one body",
+            json!({"measure": "count", "of": {"kind": "body", "where": {"name": "Cube"}}, "eq": 1, "tol": 0}),
+        ),
+        (
+            "no hole",
+            json!({"measure": "count", "of": {"kind": "face", "where": {"hole": true}}, "eq": 0}),
+        ),
+    ] {
+        let mut params = params;
+        params["name"] = name.into();
+        let added = run(&mut s, "assert.add", params);
+        assert_eq!(added["status"], "passed", "{name}: {added}");
+    }
+    // Exactly: off by a cubic millimetre fails at a tol of 0.
+    let off = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "off", "measure": "volume", "eq": "1001 * (1 mm)^3", "tol": "0 mm^3"}),
+    );
+    assert_eq!(off["status"], "failed", "{off}");
+    // A number of its own only: 2e1 mm^3 is (20 mm)^3, which is refused.
+    for bad in ["2e1 mm^3", "10 mm^3", "1.5 mm^3"] {
+        let e = refused(
+            &mut s,
+            "assert.add",
+            json!({"name": "v", "measure": "volume", "max": bad}),
+        );
+        assert!(e.contains("* (1 "), "{bad}: {e}");
+    }
+}
+
+/// Two blocks of 10 mm (scaled by `k`), `A` at the origin and `B` from
+/// `20 k` along x, with the densities given (none: no material).
+fn two_blocks(k: f64, density_a: Option<f64>, density_b: Option<f64>) -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let size = [10.0 * k, 10.0 * k, 10.0 * k];
+    run(&mut s, "feature.block", json!({"name": "A", "size": size}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "B", "size": size, "position": [20.0 * k, 0, 0]}),
+    );
+    for (body, density) in [("A", density_a), ("B", density_b)] {
+        if let Some(density) = density {
+            run(
+                &mut s,
+                "body.material",
+                json!({"body": body, "name": "stuff", "density": density}),
+            );
+        }
+    }
+    s
+}
+
+/// The centre of mass of bodies of different densities lies where the
+/// masses balance (CubeSat CDS 2.2.11 asks it within ±20/±20/±70 mm of the
+/// geometric centre): `A` of density 1000 centred at x = 5k and `B` of
+/// 3000 at 25k balance at x = (1 · 5 + 3 · 25) / 4 k = 20k.
+#[test]
+fn the_centre_of_mass_is_asserted_per_axis() {
+    for k in [1.0, 1000.0, 1e-3] {
+        let mut s = two_blocks(k, Some(1000.0), Some(3000.0));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "cx", "expr": format!("{} mm", 15.0 * k)}),
+        );
+        let x = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "x", "measure": "centerOfMass", "axis": "x", "eq": format!("{} mm", 20.0 * k)}),
+        );
+        assert_eq!(x["status"], "passed", "{k}: {x}");
+        close(&x["measured"], 20.0 * k, 1e-9 * k, "x");
+        assert_eq!(x["unit"], "mm");
+        // Around the geometric centre of the pair (15k), as a Jig would
+        // write it: within ±6k passes, ±4k does not.
+        let y = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "y", "measure": "centerOfMass", "axis": "y", "min": format!("{} mm", 4.0 * k), "max": format!("{} mm", 6.0 * k)}),
+        );
+        assert_eq!(y["status"], "passed", "{k}: {y}");
+        let near = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "near", "measure": "centerOfMass", "axis": "x", "min": format!("cx - {} mm", 6.0 * k), "max": format!("cx + {} mm", 6.0 * k)}),
+        );
+        assert_eq!(near["status"], "passed", "{k}: {near}");
+        let tight = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "tight", "measure": "centerOfMass", "axis": "x", "min": format!("cx - {} mm", 4.0 * k), "max": format!("cx + {} mm", 4.0 * k)}),
+        );
+        assert_eq!(tight["status"], "failed", "{k}: {tight}");
+        // Of one body: its own centroid.
+        let of_a = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "a", "measure": "centerOfMass", "of": "A", "axis": "z", "eq": format!("{} mm", 5.0 * k)}),
+        );
+        assert_eq!(of_a["status"], "passed", "{k}: {of_a}");
+        // A change of material moves it without a body changing: B as
+        // light as A balances at 15k.
+        run(
+            &mut s,
+            "body.material",
+            json!({"body": "B", "name": "light", "density": 1000}),
+        );
+        let listed = run(&mut s, "assert.list", json!({}));
+        let x = &listed["assertions"][0];
+        assert_eq!(x["status"], "failed", "{k}: {listed}");
+        close(&x["measured"], 15.0 * k, 1e-9 * k, "x after the material");
+        assert_eq!(listed["assertions"][3]["status"], "passed", "{listed}");
+    }
+}
+
+/// Where the box begins and ends along an axis, each side on its own: a
+/// CubeSat (CDS 2.2.3) lets nothing stick out more than 6.5 mm beyond its
+/// rails on +x and on -x separately, which an extent (their sum) cannot
+/// say. Rails of width `w` centred on the origin, a panel sticking out
+/// `p` beyond the +x rail.
+#[test]
+fn each_side_of_the_box_is_asserted_on_its_own() {
+    for k in [1.0, 1000.0, 1e-3] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "w", "expr": format!("{} mm", 100.0 * k)}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "p", "expr": format!("{} mm", 5.0 * k)}),
+        );
+        // What may stick out: 6.5 mm at the scale 1.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "out", "expr": format!("{} mm", 6.5 * k)}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Rails", "size": ["w", "w", "w"], "position": ["-w / 2", "-w / 2", 0]}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Panel", "size": ["p + w / 100", "w / 10", "w / 10"], "position": ["w / 2 - w / 100", 0, 0]}),
+        );
+        let plus = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "+x", "measure": "boxMax", "axis": "x", "max": "w / 2 + out"}),
+        );
+        assert_eq!(plus["status"], "passed", "{k}: {plus}");
+        close(&plus["measured"], 55.0 * k, 1e-9 * k, "+x");
+        let minus = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "-x", "measure": "boxMin", "axis": "x", "min": "-w / 2 - out"}),
+        );
+        assert_eq!(minus["status"], "passed", "{k}: {minus}");
+        close(&minus["measured"], -50.0 * k, 1e-9 * k, "-x");
+        assert_eq!(minus["unit"], "mm");
+        // Of one body, and along another axis.
+        let panel = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "panel", "measure": "boxMin", "of": "Panel", "axis": "x", "eq": "w / 2 - w / 100"}),
+        );
+        assert_eq!(panel["status"], "passed", "{k}: {panel}");
+        let top = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "top", "measure": "boxMax", "axis": "z", "eq": "w"}),
+        );
+        assert_eq!(top["status"], "passed", "{k}: {top}");
+        // The panel out 8: +x fails, -x still passes, while the extent
+        // (the sum, 58 + 50, is within w + 2 × 6.5) would not tell which side.
+        let edit = run(
+            &mut s,
+            "variable.set",
+            json!({"name": "p", "expr": format!("{} mm", 8.0 * k)}),
+        );
+        let broken: Vec<&str> = edit["assertions"]["broken"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(broken, ["+x"], "{k}: {edit}");
+    }
+    // Hostile: no axis, a wrong one, a parameter it does not take.
+    let mut s = two_blocks(1.0, None, None);
+    for measure in ["boxMin", "boxMax"] {
+        let e = refused(
+            &mut s,
+            "assert.add",
+            json!({"name": "q", "measure": measure, "axis": "x", "from": "A", "max": 1}),
+        );
+        assert!(e.contains("`from`"), "{e}");
+        for axis in [json!(null), json!("w"), json!(3)] {
+            let v = run(
+                &mut s,
+                "assert.add",
+                json!({"name": "q", "measure": measure, "axis": axis, "max": 1}),
+            );
+            assert_eq!(v["status"], "error", "{v}");
+            assert!(v["message"].as_str().unwrap().contains("`axis`"), "{v}");
+            run(&mut s, "assert.delete", json!({"name": "q"}));
+        }
+    }
+}
+
+/// The box of a body with a spline face cut by a boolean is the box of
+/// what is left, not of the spline's whole control net (an R1 tester's
+/// gear measured 44.99 x 17 mm where it is 43.99 x 15). A parabolic
+/// segment `y = t^2 / (4 f)` for `t` from `-a` to `a`, closed by its chord
+/// and extruded `d`, with everything past `x = c` cut away: its box is
+/// `x` from `-a` to `c`, `y` from 0 (the vertex) to `a^2 / (4 f)` (the
+/// end at `-a`), `z` from 0 to `d`.
+#[test]
+fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
+    for k in [1.0, 1000.0, 1e-3] {
+        let (f, a, c, d) = (10.0 * k, 20.0 * k, 8.0 * k, 5.0 * k);
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        for (name, value) in [("f", f), ("a", a), ("c", c)] {
+            run(
+                &mut s,
+                "variable.set",
+                json!({"name": name, "expr": format!("{value} mm")}),
+            );
+        }
+        run(&mut s, "sketch.create", json!({"name": "Dish"}));
+        run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": "Dish", "x": "t", "y": "t^2 / (4 * f)", "t": ["-a", "a"]}),
+        );
+        run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "Dish", "from": "e2", "to": "e1"}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Dish", "distance": d, "name": "Segment"}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Cutter", "size": [2.0 * a, 2.0 * a, 3.0 * d], "position": [c, -a, -d]}),
+        );
+        let cut = run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "Cut", "op": "subtract", "target": "Segment", "tool": "Cutter"}),
+        );
+        assert_eq!(cut["status"], "ok", "{k}: {cut}");
+        let top = a * a / (4.0 * f);
+        // The box is found on a mesh: its vertices lie on the body (here to
+        // within the document's tolerance, 1e-6 mm, by which the box
+        // reached is shrunk), and the body lies within twice the mesh's
+        // tolerance of it. That tolerance starts at a hundred-thousandth
+        // of the side of a square of the area (some 3e-4 k here) and a
+        // bound left undecided is looked at again on meshes eight times
+        // finer, down to ten linear tolerances (1e-5 mm). A tol of 1e-4 k
+        // needs that at the scale 1; at the scale 1e-3 the floor makes it
+        // 5e-5 mm.
+        let reached = f64::max(1e-6 * k, 2e-6);
+        let tol = f64::max(1e-4 * k, 5e-5);
+        for (measure, axis, want) in [
+            ("boxMax", "x", c),
+            ("boxMin", "x", -a),
+            ("extent", "x", a + c),
+            ("boxMax", "y", top),
+            ("extent", "z", d),
+        ] {
+            let name = format!("{measure} {axis}");
+            let got = run(
+                &mut s,
+                "assert.add",
+                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{tol} mm")}),
+            );
+            assert_eq!(got["status"], "passed", "{k} {name}: {got}");
+            close(&got["measured"], want, reached, &name);
+        }
+        // At the scale 1 the first look (3e-4) cannot settle 1e-4: the
+        // mesh it was settled on is finer.
+        if k == 1.0 {
+            let listed = run(&mut s, "assert.list", json!({"details": true}));
+            let at = listed["assertions"][0]["detail"]["meshTolerance"]
+                .as_f64()
+                .unwrap();
+            assert!(at < 3e-4 / 7.0, "{listed}");
+        }
+        // The vertex of the parabola lies inside a face: reached within the
+        // mesh's tolerance and settled with that room (at least the floor
+        // of ten linear tolerances, twice over, at the scale 1e-3).
+        let low = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "low", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", -f64::max(0.01 * k, 5e-5)), "max": format!("{} mm", f64::max(0.01 * k, 5e-5))}),
+        );
+        assert_eq!(low["status"], "passed", "{k}: {low}");
+        // Past the vertex by more than the mesh can be off: failed, not
+        // passed and not left unproven.
+        let above = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "above", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", 0.1 * k)}),
+        );
+        assert_eq!(above["status"], "failed", "{k}: {above}");
+    }
+}
+
+#[test]
+fn a_centre_of_mass_without_a_material_says_which_body_lacks_one() {
+    let mut s = two_blocks(1.0, Some(1000.0), None);
+    let added = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "x", "measure": "centerOfMass", "axis": "x", "eq": "20 mm"}),
+    );
+    assert_eq!(added["status"], "error", "{added}");
+    let message = added["message"].as_str().unwrap();
+    assert!(
+        message.contains("`B` has no material, so no mass; give it one with body.material"),
+        "{message}"
+    );
+    // The same words as the mass measure.
+    let mass = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "m", "measure": "mass", "min": 0}),
+    );
+    assert!(
+        mass["message"]
+            .as_str()
+            .unwrap()
+            .contains("`B` has no material, so no mass"),
+        "{mass}"
+    );
+    // Of A alone it is measured.
+    let a = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "a", "measure": "centerOfMass", "of": "A", "axis": "x", "eq": "5 mm"}),
+    );
+    assert_eq!(a["status"], "passed", "{a}");
+    for (params, says) in [
+        (
+            json!({"name": "q", "measure": "centerOfMass", "eq": 1}),
+            "`axis`",
+        ),
+        (
+            json!({"name": "q", "measure": "centerOfMass", "axis": "w", "eq": 1}),
+            "`axis`",
+        ),
+        (
+            json!({"name": "q", "measure": "centerOfMass", "axis": "x", "is": true}),
+            "is a number",
+        ),
+        (
+            json!({"name": "q", "measure": "centerOfMass", "axis": "x", "from": "A", "eq": 1}),
+            "`from`",
+        ),
+    ] {
+        match s.execute("assert.add", &params) {
+            Err(e) => assert!(e.message().contains(says), "{params}: {e}"),
+            // A missing or wrong axis is found when it is measured.
+            Ok(v) => {
+                assert_eq!(v["status"], "error", "{params}: {v}");
+                assert!(v["message"].as_str().unwrap().contains(says), "{v}");
+                run(&mut s, "assert.delete", json!({"name": "q"}));
+            }
+        }
+    }
+}
+
+/// `overlap` is true when bodies overlap, so `is: false` asserts that
+/// none do, and the message says in words which overlap by how much. The
+/// old form `interference` (true when none overlap) means what it meant:
+/// written as overlap with the opposite `is`, and read so from a file.
+#[test]
+fn overlap_reads_the_way_it_is_meant_and_the_old_form_keeps_its_meaning() {
+    // A at 0..10 and B moved to 5..15 along x: 500 mm^3 in common.
+    let mut s = two_blocks(1.0, None, None);
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "B", "position": [5, 0, 0]}),
+    );
+    let none = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "apart", "measure": "overlap", "of": "A", "to": "B", "is": false}),
+    );
+    assert_eq!(none["status"], "failed", "{none}");
+    assert_eq!(
+        none["message"], "A overlaps B by 500 mm^3, expected no overlap",
+        "{none}"
+    );
+    assert_eq!(none["measured"], true);
+    assert_eq!(none["expected"], "no overlap");
+    let fit = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "press fit", "measure": "overlap", "is": true}),
+    );
+    assert_eq!(fit["status"], "passed", "{fit}");
+    assert_eq!(fit["message"], "A overlaps B by 500 mm^3");
+    // `is` is said, not defaulted.
+    let e = refused(
+        &mut s,
+        "assert.add",
+        json!({"name": "q", "measure": "overlap"}),
+    );
+    assert!(e.contains("overlap needs `is`"), "{e}");
+    // The old form, as a Jig written before may still send it: is true
+    // meant none overlap. It is written as overlap, is false.
+    let old = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "old", "measure": "interference", "of": "A", "to": "B"}),
+    );
+    assert_eq!(old["status"], "failed", "{old}");
+    assert_eq!(old["measure"]["measure"], "overlap");
+    assert_eq!(old["expect"], json!({"is": false}));
+    assert_eq!(old["message"], none["message"]);
+    let old_false = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "old fit", "measure": "interference", "is": false}),
+    );
+    assert_eq!(old_false["status"], "passed", "{old_false}");
+    assert_eq!(old_false["expect"], json!({"is": true}));
+    // Apart again: no overlap.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "B", "position": [20, 0, 0]}),
+    );
+    let listed = run(&mut s, "assert.list", json!({}));
+    let by_name = |name: &str| {
+        listed["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_name("apart")["status"], "passed", "{listed}");
+    assert_eq!(by_name("apart")["message"], "no overlap");
+    assert_eq!(by_name("old")["status"], "passed");
+    assert_eq!(by_name("press fit")["status"], "failed");
+    assert_eq!(
+        by_name("press fit")["message"],
+        "no overlap, expected an overlap"
+    );
+}
+
+/// A document saved with the old form (format 35) keeps meaning what it
+/// meant: opened, its `interference` assertion with is true is migrated
+/// to `overlap` with is false, so it passes while none overlap and shows
+/// what was measured against what it must be the same way round.
+#[test]
+fn a_saved_old_interference_assertion_means_what_it_meant() {
+    let dir = std::env::temp_dir().join(format!("craft3d-overlap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("old.3dcraft");
+    let mut w = Session::new(Workspace::unrestricted());
+    run(&mut w, "file.new", json!({"units": "mm"}));
+    run(
+        &mut w,
+        "feature.block",
+        json!({"name": "A", "size": [10, 10, 10]}),
+    );
+    run(
+        &mut w,
+        "feature.block",
+        json!({"name": "B", "size": [10, 10, 10], "position": [20, 0, 0]}),
+    );
+    run(&mut w, "file.save", json!({"path": path.to_str().unwrap()}));
+    // The same file as format 35 wrote it, with two assertions of the old
+    // form.
+    let bytes = std::fs::read(&path).unwrap();
+    let entries = craft3d_zipstore::read_stored(&bytes).unwrap();
+    let manifest = entries
+        .iter()
+        .find(|e| e.name == craft3d_format::MANIFEST_NAME)
+        .unwrap();
+    let mut manifest: Value = serde_json::from_slice(manifest.data).unwrap();
+    manifest["format_version"] = json!(35);
+    manifest["document"]["assertions"] = json!([
+        {"name": "clear", "measure": {"measure": "interference"}, "expect": {"is": true}},
+        {"name": "clash", "measure": {"measure": "interference"}, "expect": {"is": false}},
+    ]);
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    let old =
+        craft3d_zipstore::write_stored(&[(craft3d_format::MANIFEST_NAME, &manifest)]).unwrap();
+    std::fs::write(&path, old).unwrap();
+    let mut r = Session::new(Workspace::unrestricted());
+    run(&mut r, "file.open", json!({"path": path.to_str().unwrap()}));
+    let listed = run(&mut r, "assert.list", json!({}));
+    let clear = &listed["assertions"][0];
+    assert_eq!(clear["status"], "passed", "{listed}");
+    assert_eq!(clear["measure"], json!({"measure": "overlap"}));
+    assert_eq!(clear["expect"], json!({"is": false}));
+    // What was measured agrees with what it must be: no overlap.
+    assert_eq!(clear["measured"], false);
+    assert_eq!(clear["message"], "no overlap");
+    assert_eq!(clear["expected"], "no overlap");
+    let clash = &listed["assertions"][1];
+    assert_eq!(clash["status"], "failed", "{listed}");
+    assert_eq!(clash["expect"], json!({"is": true}));
+    assert_eq!(clash["measured"], false);
+    assert_eq!(clash["message"], "no overlap, expected an overlap");
+    // Edited, it stays as it was migrated.
+    let edited = run(
+        &mut r,
+        "assert.edit",
+        json!({"name": "clear", "rename": "apart"}),
+    );
+    assert_eq!(edited["measure"]["measure"], "overlap");
+    assert_eq!(edited["expect"], json!({"is": false}));
+    assert_eq!(edited["status"], "passed");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A version-35 file written by the build of main abb1cd51
+/// (`crates/format/tests/fixtures/migrations/v35-interference.3dcraft`),
+/// with `interference` assertions of `is` true and false and with `of`
+/// and `to` subjects: opened under version 36 each is the `overlap` with
+/// the opposite `is`, its subjects as they were, and stands as it stood
+/// then (the statuses that build reported).
+#[test]
+fn a_version_35_file_with_interference_assertions_stands_as_it_stood() {
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../format/tests/fixtures/migrations");
+    let dir = std::env::temp_dir().join(format!("craft3d-v35-overlap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("v35-interference.3dcraft");
+    std::fs::copy(fixtures.join("v35-interference.3dcraft"), &path).unwrap();
+    let expected: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("v35-interference.expected.json")).unwrap(),
+    )
+    .unwrap();
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.open", json!({"path": path.to_str().unwrap()}));
+    let listed = run(&mut s, "assert.list", json!({}));
+    let got = listed["assertions"].as_array().unwrap();
+    let was = expected["assertions"].as_array().unwrap();
+    assert_eq!(got.len(), was.len(), "{listed}");
+    for (now, then) in got.iter().zip(was) {
+        assert_eq!(now["name"], then["name"]);
+        assert_eq!(now["status"], then["status"], "{now} / {then}");
+        assert_eq!(now["measure"]["measure"], "overlap", "{now}");
+        let old_is = then["expected"] == "true";
+        assert_eq!(now["expect"], json!({"is": !old_is}), "{now}");
+        // What was measured reads the same way round as what it must be.
+        let measured_overlap = now["measured"].as_bool().unwrap();
+        assert_eq!(
+            measured_overlap == !old_is,
+            now["status"] == "passed",
+            "{now}"
+        );
+    }
+    assert_eq!(
+        got[0]["measure"],
+        json!({"measure": "overlap", "of": "F3", "to": ["F1", "F2"]})
+    );
+    assert_eq!(got[0]["message"], "no overlap");
+    assert_eq!(
+        got[1]["measure"],
+        json!({"measure": "overlap", "of": "F2", "to": "F1"})
+    );
+    assert_eq!(got[1]["message"], "Pin overlaps Base by 500 mm^3");
+    assert_eq!(
+        got[2]["message"],
+        "Base overlaps Pin by 500 mm^3, expected no overlap"
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
