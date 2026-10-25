@@ -34,6 +34,12 @@
 //!   step's body before the body's own appearance. So the nearest
 //!   feature on the way wins, a face over its body at the same feature.
 //!
+//! - **A feature that is off** (suppressed, or inactive by its condition)
+//!   gives nothing: its appearance, material and face colours do not
+//!   apply to the body it passes on, which has the colours it had before
+//!   it, as if the feature were not in the history
+//!   (docs/design/regeneration.md › *Switched off*).
+//!
 //! Neither changes regeneration: a colour is not part of the history.
 
 use craft3d_doc::{
@@ -76,8 +82,17 @@ fn sources(doc: &Document, regen: &Regen, memo: &mut Memo, feature: FeatureId) -
     if let Some(found) = memo.sources.get(&feature) {
         return found.clone();
     }
-    let found: Vec<FeatureId> = built(doc, regen, feature)
-        .map(|f| f.kind.sources().into_iter().map(|(id, _)| id).collect())
+    // One that passes a body on is made from that body alone, in every
+    // instance its names are copies in.
+    let passed = regen.feature(feature).and_then(|r| match &r.passed {
+        Some(craft3d_regen::Passed::Body(source)) => Some(vec![*source]),
+        _ => None,
+    });
+    let found: Vec<FeatureId> = passed
+        .or_else(|| {
+            built(doc, regen, feature)
+                .map(|f| f.kind.sources().into_iter().map(|(id, _)| id).collect())
+        })
         .unwrap_or_default();
     memo.sources.insert(feature, found.clone());
     found
@@ -146,7 +161,15 @@ fn along_instance_zero<T>(
     None
 }
 
-fn own_appearance(doc: &Document, feature: FeatureId) -> Option<Appearance> {
+/// True when `feature` is switched off: what it was given does not apply.
+fn off(regen: &Regen, feature: FeatureId) -> bool {
+    regen.feature(feature).is_some_and(|r| r.is_off())
+}
+
+fn own_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
+    if off(regen, feature) {
+        return None;
+    }
     doc.body_properties(feature)?.appearance
 }
 
@@ -162,7 +185,7 @@ fn own_face_appearance(
     name: &PersistentName,
 ) -> Option<Appearance> {
     let entries = doc.face_properties(at);
-    if entries.is_empty() {
+    if entries.is_empty() || off(regen, at) {
         return None;
     }
     let direct = match way {
@@ -229,7 +252,9 @@ fn body_appearance_with(
     if let Some(&found) = memo.bodies.get(&feature) {
         return found;
     }
-    let found = along_instance_zero(doc, regen, memo, feature, |at| own_appearance(doc, at));
+    let found = along_instance_zero(doc, regen, memo, feature, |at| {
+        own_appearance(doc, regen, at)
+    });
     memo.bodies.insert(feature, found);
     found
 }
@@ -242,6 +267,9 @@ pub fn body_material(
     feature: FeatureId,
 ) -> Option<(FeatureId, Material)> {
     along_instance_zero(doc, regen, &mut Memo::default(), feature, |at| {
+        if off(regen, at) {
+            return None;
+        }
         Some((at, doc.body_properties(at)?.material.clone()?))
     })
 }
@@ -269,7 +297,7 @@ fn face_appearance(
         if let Some(own) = own_face_appearance(doc, regen, at, here, current) {
             return Some(own);
         }
-        if let Some(own) = own_appearance(doc, at) {
+        if let Some(own) = own_appearance(doc, regen, at) {
             return Some(own);
         }
         if way.is_none() {
@@ -332,12 +360,12 @@ pub fn face_appearances(
         .feature(feature)
         .and_then(|result| result.names.as_deref());
     let names = all.map(|names| names.faces.as_slice()).unwrap_or_default();
-    let has_entries = !doc.face_properties(feature).is_empty();
+    let has_entries = !doc.face_properties(feature).is_empty() && !off(regen, feature);
     // A face whose name does not say it came in through an instance of
     // this feature has the body's colour, as the walk would find at its
     // first step (and when the feature has an appearance of its own,
     // every face has that: the body's).
-    let walks = own_appearance(doc, feature).is_none();
+    let walks = own_appearance(doc, regen, feature).is_none();
     (0..faces)
         .map(|face| match names.get(face) {
             Some(name) => {

@@ -107,12 +107,25 @@ Off, by hand or by its condition, a feature behaves as if it were not in the his
   transform or mirror without `keep`) passes that body on unchanged; what comes after it is built from
   the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
 - one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
-  A boolean that used it as its tool passes its target on; one that used it as its target makes no body
-  and leaves its tool alone; a pattern, transform, mirror or shell of it makes none either
-  (`passesNothing` says why);
-- what only the switched-off feature makes is gone: a chamfer of an edge of a fillet's face, a sketch on
-  that face or a face of a pattern's second instance fails, naming the feature that is off. Give it the
-  same condition (`"expr": "lid"` on the lid and on its fillet), so they come and go together.
+  A boolean that used it as its tool passes its target on; a union that used it as its target passes its
+  tool on; a subtraction or intersection that used it as its target makes no body and leaves its tool
+  alone; a pattern, transform, mirror or shell of it makes none either (`passesNothing` says why);
+- its faces and edges are **not there** for a fillet, a chamfer or a face operation: the others it names
+  are changed, and one left with none passes its body on unchanged. An optional boss united with a plate
+  and chamfered gives the plain plate when the boss is off, whether the chamfer has the condition too or
+  not. A shell opened on such a face is closed;
+- what it was given does not apply: its colour (`body.appearance`, `face.appearance`) and material
+  (`body.material`) wait until it is on again, and the body it passes on keeps the colour it had;
+- a sketch on a face only the switched-off feature makes, or a datum on such a face, edge or vertex,
+  fails, naming the feature that is off. Give it the same condition, so they come and go together.
+
+**To make a part disappear, put the condition on the feature that makes it.** A feature that *changes* a
+body passes it on unchanged when it is off: a transform with `"expr": "0"` leaves the body where it was
+(it is not moved, and it does not disappear), and a fillet that is off leaves the edge sharp. The block,
+the extrusion or the union that brings the part in is the feature to switch: with it off, everything made
+from it goes with it. In `document.inspect` a feature that is off says what it passes on: `passesOn` with
+the feature whose body that is, or `passesNothing` with the reason; in the feature list, hold the pointer
+over it.
 
 A sketch or a datum that is off is not there for what refers to it: an extrusion of a sketch that is off
 fails, so give the extrusion the same condition. In `document.inspect`, `ui.get` and the feature list an

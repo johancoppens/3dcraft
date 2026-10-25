@@ -359,8 +359,9 @@ struct Case {
 
 /// True for a case whose `D` reads the upstream body as an operand (a
 /// body parameter of a boolean, a transform, a mirror, a pattern or a
-/// shell): with that body switched off, `D` goes on without it rather
-/// than failing (docs/design/regeneration.md › Switched off).
+/// shell) or changes faces or edges of it (a chamfer, a fillet, a face
+/// operation): with that body switched off, `D` goes on without it
+/// rather than failing (docs/design/regeneration.md › Switched off).
 fn reads_an_operand(case: &Case) -> bool {
     [
         "transform: source",
@@ -369,6 +370,10 @@ fn reads_an_operand(case: &Case) -> bool {
         "boolean: target",
         "boolean: tool",
         "shell: source",
+        "chamfer: edges",
+        "fillet: edges",
+        "offset face: faces",
+        "delete face: faces",
     ]
     .contains(&case.what)
 }
