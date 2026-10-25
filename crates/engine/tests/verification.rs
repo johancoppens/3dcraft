@@ -1350,7 +1350,7 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
         // Where the box is reached at a vertex the mesh has it exactly;
         // what is proven on the other side is within the mesh's tolerance
         // (a hundred-thousandth of the side of a square of the area, some
-        // 3e-4 k here), so a tol of 1e-3 k settles it.
+        // 3e-4 k here), so a tol of 1e-3 k settles it (at the scale 1e-3 the mesh tolerance is held at ten linear tolerances, 1e-5 mm, so 3e-5 mm).
         let tol = 1e-6 * k;
         for (measure, axis, want) in [
             ("boxMax", "x", c),
@@ -1363,7 +1363,7 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
             let got = run(
                 &mut s,
                 "assert.add",
-                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", 1e-3 * k)}),
+                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", (1e-3 * k).max(3e-5))}),
             );
             assert_eq!(got["status"], "passed", "{k} {name}: {got}");
             close(&got["measured"], want, tol, &name);
