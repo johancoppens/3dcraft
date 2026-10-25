@@ -1081,7 +1081,7 @@ fn zero_tolerances_and_bounds_are_taken() {
         ),
         (
             "one body",
-            json!({"measure": "count", "of": {"kind": "body", "where": {}}, "eq": 1, "tol": 0}),
+            json!({"measure": "count", "of": {"kind": "body", "where": {"name": "Cube"}}, "eq": 1, "tol": 0}),
         ),
         (
             "no hole",
