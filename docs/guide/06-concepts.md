@@ -72,6 +72,11 @@ Every length, angle and count may be an **expression** in the document's variabl
   `warning` that says so. An angle variable's `value` is in radians (`angleUnit: "rad"`); its result also gives `degrees`.
 - The variables and their values are listed by `document.inspect` (`variables`); there is no separate
   list command.
+- **Reserved names.** A variable name is ASCII letters, digits and `_`, not starting with a digit, and
+  not a word expressions use themselves: `pi`, the units (`um`, `mm`, `cm`, `m`, `in`, `ft`, `deg`,
+  `rad`) and the functions below. `variable.set` refuses one at once and says what it clashes with and
+  what to call it instead: a gear's module is usually `m`, which is the metre, so call it `module` or
+  `mn`; `mod` is the function `mod(a, b)`.
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
   `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, the conditions
   of [chapter 8](08-formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
@@ -144,6 +149,15 @@ current body:
 | `F3:fillet(0)` | The first round fillet F3 made |
 | `F6:copy(1)/F4:face(0)` | Face 0 of F4 as it is in F6's body, where F4 came in as the tool (instance 1) |
 | `F6:copy(1,3)/F4:face(0)` | The same in instance 3 of a pattern |
+
+**A feature's name stands for its id.** Wherever a name starts with a feature, write its name or its id:
+`Plate:face(1)` is `F2:face(1)` when the feature called `Plate` is `F2`, and so is every feature inside a
+name (`Joined:copy(1)/Pin:side(e2)`). The name is looked up when the command runs, and the document stores
+the id, so a renamed feature keeps its references. A generated script can name faces of what it made in
+an earlier step without building first to learn the ids. A name no feature has (or, in an old file,
+several have) is an error that says so; a feature whose name holds `/`, `,`, `|` or a bracket is written
+by its id. `Plate:startCap` and `Plate:endCap` (with or without `()`) are the start and end cap of an
+extrusion of one profile; with several profiles they are refused, and the error lists the full names.
 
 An edge is named by the two faces it lies between: a fillet takes `"edges": [["F2:side(e9)",
 "F2:side(e10)"]]`. A feature that works on a body (a fillet, a chamfer, a shell, a thread) may use the

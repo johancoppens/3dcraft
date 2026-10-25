@@ -139,9 +139,10 @@ double-click or Enter to type a value, Escape to give up.
 | Functions | `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, `if`, `choose`, `clamp` |
 | Operators | `+ - * / ^`, comparisons `< <= > >= == !=`, `&&`, `\|\|`, `!` |
 | Constant | `pi` (a plain number) |
+| Reserved | `pi`, the units and the functions above cannot name a variable (`m` is the metre: call a module `module` or `mn`) |
 | Tables | `belt[2].pitch`, `belt["GT2"].pitch` |
 | Axes | X, Y and Z, with Z up; planes `xy`, `yz`, `zx` |
-| Faces | `F1:face(1)`, `F2:side(e9)`, `F2:startCap()`, `F2:endCap()`, `F3:fillet(0)` ([chapter 6](06-concepts.md#persistent-names)) |
+| Faces | `F1:face(1)`, `F2:side(e9)`, `F2:startCap()`, `F2:endCap()`, `F3:fillet(0)`; a feature's name for its id: `Plate:face(1)`, `Plate:endCap` ([chapter 6](06-concepts.md#persistent-names)) |
 
 ## The programs
 

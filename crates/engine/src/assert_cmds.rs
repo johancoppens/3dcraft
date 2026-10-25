@@ -814,10 +814,34 @@ pub(crate) fn summary(session: &mut Session, wait: Wait) -> Option<Value> {
 /// `assertions`, when the document has any: waiting at most
 /// [`EDIT_WAIT`] for those the edit touched.
 pub(crate) fn add_summary(session: &mut Session, result: &mut Value) {
-    if let (Some(s), Some(map)) = (
-        summary(session, Wait::For(EDIT_WAIT)),
-        result.as_object_mut(),
-    ) {
+    add_summary_waiting(session, result, false);
+}
+
+/// [`add_summary`], waiting for every assertion when `all` (an edit's
+/// `wait: true`). Assertions still being measured are counted under
+/// `pending`, and `whenPending` then says how to have their results, so
+/// a script does not read "pending" as an answer.
+pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all: bool) {
+    let wait = if all { Wait::All } else { Wait::For(EDIT_WAIT) };
+    let Some(mut s) = summary(session, wait) else {
+        return;
+    };
+    let pending = s.get("pending").and_then(Value::as_u64).unwrap_or(0);
+    if pending > 0
+        && let Some(summary) = s.as_object_mut()
+    {
+        summary.insert("whenPending".into(), Value::String(format!(
+            "{pending} assertion(s) are still being measured in the background; assert.list (it waits by default) gives their results, or give this edit wait: true"
+        )));
+    }
+    if let Some(map) = result.as_object_mut() {
         map.insert("assertions".into(), s);
     }
+}
+
+/// The `wait` parameter of an edit that returns the assertions' summary:
+/// false (the default) waits a short while for the assertions the edit
+/// touched, true until every one is measured.
+pub(crate) fn wait_param(p: &crate::params::Params) -> Result<bool, CommandError> {
+    Ok(p.bool("wait")?.unwrap_or(false))
 }

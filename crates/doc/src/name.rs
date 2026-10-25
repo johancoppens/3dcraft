@@ -641,13 +641,10 @@ fn write_offset(f: &mut fmt::Formatter<'_>, group: &OffsetGroup<'_>) -> fmt::Res
 
 /// Reads one offset curve as [`write_offset`] writes it: its heads and
 /// curves, as numbers.
-fn parse_offset(text: &str) -> Option<Vec<u64>> {
-    fn link(t: &str) -> Option<(u64, OffsetKind, Vec<u64>)> {
-        let (feature, rest) = t.split_once(':')?;
-        let digits = feature.strip_prefix('F')?;
-        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+fn parse_offset(text: &str, reading: &Reading<'_>) -> Option<Vec<u64>> {
+    let link = |t: &str| -> Option<(u64, OffsetKind, Vec<u64>)> {
+        let (feature, rest) = split_feature(t)?;
+        let feature = feature_of(feature, reading).ok()?.0;
         let at = rest.find('(')?;
         let (role, inner) = rest.split_at(at);
         let kind = *OffsetKind::ALL.iter().find(|k| k.name() == role)?;
@@ -657,8 +654,8 @@ fn parse_offset(text: &str) -> Option<Vec<u64>> {
             .map(|part| CurvePath::parse(part.trim()).and_then(|c| c.encode()))
             .collect::<Option<Vec<Vec<u64>>>>()?
             .concat();
-        Some((digits.parse().ok()?, kind, curves))
-    }
+        Some((feature, kind, curves))
+    };
     let mut out = Vec::new();
     let parts = split_outside(text, '/');
     let links = match parts.as_slice() {
@@ -1455,6 +1452,37 @@ struct Reading<'a> {
     wrong: &'a dyn Fn(&str) -> String,
     sources: usize,
     faces: usize,
+    /// How a feature written by its name (`Plate:face(1)`) is found: the
+    /// command's document resolves it to the id. `None` for a name read
+    /// from a file, which has ids only.
+    features: Option<&'a dyn Fn(&str) -> Result<FeatureId, String>>,
+}
+
+/// The feature at the start of a name: `F3`, or with a resolver a
+/// feature's name.
+fn feature_of(text: &str, reading: &Reading<'_>) -> Result<FeatureId, String> {
+    let wrong = reading.wrong;
+    if let Some(digits) = text.strip_prefix('F')
+        && !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return digits
+            .parse::<u64>()
+            .map(FeatureId)
+            .map_err(|_| wrong("the feature must be written F and a number"));
+    }
+    match reading.features {
+        Some(resolve) if !text.is_empty() => resolve(text).map_err(|reason| wrong(&reason)),
+        _ => Err(wrong("the feature must be written F and a number")),
+    }
+}
+
+/// `text` cut at the `:` between the feature and the role: the last `:`
+/// before the first bracket, so that a feature's name may hold a `:`.
+fn split_feature(text: &str) -> Option<(&str, &str)> {
+    let head = text.find(['(', '[']).unwrap_or(text.len());
+    let at = text.get(..head)?.rfind(':')?;
+    Some((text.get(..at)?, text.get(at.saturating_add(1)..)?))
 }
 
 /// The numbers between the brackets of `F2:side(e7,e8)`.
@@ -1476,9 +1504,9 @@ fn parse_sources(
         reading.sources -= 1;
         parts += 1;
         let part = part.trim();
-        if !numbered && part.starts_with('F') {
+        if !numbered && (part.starts_with('F') || part.contains(':')) {
             offsets += 1;
-            let numbers = parse_offset(part).ok_or_else(|| {
+            let numbers = parse_offset(part, reading).ok_or_else(|| {
                 wrong(
                     "an offset curve is written F9:offset(e7), F9:offsetCorner(e7,e8), F9:offsetExtension(e7,e8) or F9:loop(e1,e7)/F9:offset(e7)",
                 )
@@ -1551,13 +1579,14 @@ fn parse_link(
     lists: bool,
 ) -> Result<PersistentName, String> {
     let wrong = reading.wrong;
-    let (feature, rest) = text
-        .split_once(':')
-        .ok_or_else(|| wrong("there is no `:` after the feature"))?;
-    let feature = feature
-        .strip_prefix('F')
-        .and_then(|digits| digits.parse::<u64>().ok())
-        .ok_or_else(|| wrong("the feature must be written F and a number"))?;
+    let (feature, rest) =
+        split_feature(text).ok_or_else(|| wrong("there is no `:` after the feature"))?;
+    let FeatureId(feature) = feature_of(feature, reading)?;
+    // A cap without brackets is its short form: `F2:startCap` is
+    // `F2:startCap()`, the one cap of that role.
+    if let Some(role @ (NameRole::StartCap | NameRole::EndCap)) = NameRole::from_name(rest) {
+        return Ok(PersistentName::new(FeatureId(feature), role, Vec::new()));
+    }
     let at = rest
         .find(['(', '['])
         .ok_or_else(|| wrong("there is no `(` after the role"))?;
@@ -1656,10 +1685,25 @@ fn parse_chain(
     name.ok_or_else(|| wrong("it is empty"))
 }
 
-impl FromStr for PersistentName {
-    type Err = String;
+impl PersistentName {
+    /// Reads a name in which a feature may be written by its name as well
+    /// as by its id, wherever a feature starts a name (`Plate:face(1)`,
+    /// `F7:copy(1)/Pin:side(e2)`, `Off:offset(e7)` inside a cap's
+    /// sources): `features` gives the id of a name, or why there is none
+    /// (unknown, or several features of that name). The name read has
+    /// ids only, as every stored name. A feature's name that holds a `/`,
+    /// a bracket, a `,` or a `|` cannot be read so: write its id.
+    pub fn parse_with_features(
+        text: &str,
+        features: &dyn Fn(&str) -> Result<FeatureId, String>,
+    ) -> Result<Self, String> {
+        Self::read(text, Some(features))
+    }
 
-    fn from_str(text: &str) -> Result<Self, String> {
+    fn read(
+        text: &str,
+        features: Option<&dyn Fn(&str) -> Result<FeatureId, String>>,
+    ) -> Result<Self, String> {
         let shown: String = text.chars().take(60).collect();
         let wrong =
             |what: &str| format!("`{shown}` is not a name: {what}; a name looks like F2:side(e7)");
@@ -1667,11 +1711,20 @@ impl FromStr for PersistentName {
             wrong: &wrong,
             sources: MAX_NAME_SOURCES,
             faces: MAX_NAME_FACES,
+            features,
         };
         // Read in the long form or the short one, it is the same name.
         let name = parse_chain(text, &mut reading, true)?.canonical();
         name.check().map_err(wrong)?;
         Ok(name)
+    }
+}
+
+impl FromStr for PersistentName {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        Self::read(text, None)
     }
 }
 
@@ -1707,6 +1760,72 @@ mod tests {
         assert!(!full.is_short_cap());
         assert!(!full.shortens(&full));
         assert!(!name("F2:side(e5)").is_short_cap());
+    }
+
+    #[test]
+    fn a_cap_without_brackets_is_its_short_form() {
+        let name = |text: &str| text.parse::<PersistentName>().unwrap();
+        assert_eq!(name("F2:startCap"), name("F2:startCap()"));
+        assert_eq!(name("F2:endCap"), name("F2:endCap()"));
+        assert_eq!(name("F7:copy(0)/F2:endCap"), name("F7:copy(0)/F2:endCap()"));
+        assert!(name("F2:endCap").is_short_cap());
+        assert_eq!(name("F2:startCap").to_string(), "F2:startCap()");
+        // Only a cap has a short form.
+        for text in ["F2:side", "F3:face", "F2:startEdge", "F2:startcap"] {
+            assert!(text.parse::<PersistentName>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_feature_may_be_written_by_its_name_when_a_document_resolves_it() {
+        let features = |text: &str| -> Result<FeatureId, String> {
+            match text {
+                "Plate" => Ok(FeatureId(2)),
+                "Off" => Ok(FeatureId(3)),
+                "Joined" => Ok(FeatureId(7)),
+                "a:b" => Ok(FeatureId(9)),
+                "Twice" => Err("several features are called `Twice`".to_string()),
+                other => Err(format!("no feature is called `{other}`")),
+            }
+        };
+        let read = |text: &str| PersistentName::parse_with_features(text, &features);
+        let id = |text: &str| text.parse::<PersistentName>().unwrap();
+        for (by_name, by_id) in [
+            ("Plate:face(1)", "F2:face(1)"),
+            ("Plate:side(e7)", "F2:side(e7)"),
+            ("Plate:startCap", "F2:startCap()"),
+            ("Plate:endCap()", "F2:endCap()"),
+            ("Joined:copy(1)/Plate:side(e7)", "F7:copy(1)/F2:side(e7)"),
+            ("F7:copy(1)/Plate:side(e7)", "F7:copy(1)/F2:side(e7)"),
+            (
+                "Joined:between[Plate:side(e7),F2:endCap(e1)]",
+                "F7:between[F2:side(e7),F2:endCap(e1)]",
+            ),
+            (
+                "Plate:endCap(Off:offset(e1,e2))",
+                "F2:endCap(F3:offset(e1,e2))",
+            ),
+            (
+                "Plate:side(Off:loop(e1,e7)/Off:offset(e7))",
+                "F2:side(F3:loop(e1,e7)/F3:offset(e7))",
+            ),
+            ("a:b:face(0)", "F9:face(0)"),
+            // An id stays an id.
+            ("F2:face(1)", "F2:face(1)"),
+        ] {
+            assert_eq!(read(by_name).unwrap(), id(by_id), "{by_name}");
+            // What is stored has ids only.
+            assert_eq!(read(by_name).unwrap().to_string(), id(by_id).to_string());
+        }
+        let unknown = read("Plat:face(1)").unwrap_err();
+        assert!(unknown.contains("no feature is called `Plat`"), "{unknown}");
+        let nested = read("F7:copy(1)/Nope:side(e7)").unwrap_err();
+        assert!(nested.contains("no feature is called `Nope`"), "{nested}");
+        let twice = read("Twice:face(0)").unwrap_err();
+        assert!(twice.contains("several features"), "{twice}");
+        // Without a document a name has ids only.
+        assert!("Plate:face(1)".parse::<PersistentName>().is_err());
+        assert!(read(":face(1)").is_err());
     }
 
     #[test]

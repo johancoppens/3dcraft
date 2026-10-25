@@ -16,6 +16,8 @@ The engine (`craft3d-engine`): `Session`, the command registry, undo, scenes, au
 
 ## Findings and history
 
+**Authoring papercuts (2026-10-25, R1).** What testers writing generated scripts kept hitting, each fixed in one place: *feature names in face and edge names* resolved before a command runs ([`names.md`](names.md)); *a condition with the feature*: a command that adds features declares `"when": expr = always on` in its params (`when_cmds::WHEN_PARAM`), the dispatch takes `when` out of the parameters (`when_cmds::take_when`, so the command never sees it) and `edit_merging` gives it to every feature the command's edit adds (ids from the document's `next_feature_id` before the change on), in the same undo step, so the first regeneration already honours it; *assertions pending after an edit*: the summary every edit returns has `whenPending` when assertions are still being measured, and `param.set` and `variable.set` take `wait: true` to wait for all of them (`assert_cmds::add_summary_waiting`); *reserved variable names*: `variable.set` and `variable.rename` check the name first, and the error says what it clashes with (`m` the unit metre, `mod` the function) and suggests another (`craft3d_expr::reserved_meaning`, `instead_of_reserved`). A direction (a primitive's `axis`, a transform's, mirror's, pattern's or face move's) is read as a position is, plain numbers or lengths, and normalised (`regen::derive::direction`); one of no length fails the feature.
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
 ### From *Current state (2026-10-12)*

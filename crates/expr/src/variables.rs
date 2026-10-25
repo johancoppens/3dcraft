@@ -22,6 +22,49 @@ pub fn is_reserved_name(name: &str) -> bool {
     name == "pi" || Unit::from_symbol(name).is_some() || Function::from_name(name).is_some()
 }
 
+/// Every reserved name ([`is_reserved_name`]): `pi`, the units, then the
+/// functions, in the order the language lists them.
+pub fn reserved_names() -> Vec<&'static str> {
+    let mut names = vec!["pi"];
+    names.extend(Unit::ALL.iter().map(|unit| unit.symbol()));
+    names.extend(Function::ALL.iter().map(|function| function.name()));
+    names
+}
+
+/// What a reserved name means in an expression, said so that the clash is
+/// plain (`the unit metre, as in 2 m`); `None` for a name that is free.
+pub fn reserved_meaning(name: &str) -> Option<String> {
+    if name == "pi" {
+        return Some("the constant pi".to_string());
+    }
+    if let Some(unit) = Unit::from_symbol(name) {
+        let spelled = match unit {
+            Unit::Micrometre => "micrometre",
+            Unit::Millimetre => "millimetre",
+            Unit::Centimetre => "centimetre",
+            Unit::Metre => "metre",
+            Unit::Inch => "inch",
+            Unit::Foot => "foot",
+            Unit::Degree => "degree",
+            Unit::Radian => "radian",
+        };
+        return Some(format!("the unit {spelled}, as in `2 {name}`"));
+    }
+    Function::from_name(name).map(|function| format!("the function `{}(...)`", function.name()))
+}
+
+/// Names to use instead of the reserved `name`: for the ones a design
+/// reaches for (a gear's module `m`, `mod`), the usual other names.
+pub fn instead_of_reserved(name: &str) -> String {
+    match name {
+        "m" | "mod" => "`module` or `mn`".to_string(),
+        "in" => "`inner` or `inset`".to_string(),
+        "deg" | "rad" => format!("`{name}s` or `angle`"),
+        "min" | "max" => format!("`{name}imum` or `{name}_value`"),
+        _ => format!("`{name}_value` or `my_{name}`"),
+    }
+}
+
 /// Checks that `name` can name a variable: ASCII letters, digits and `_`,
 /// not starting with a digit, at most [`MAX_NAME_LEN`] bytes, not reserved.
 pub fn check_variable_name(name: &str) -> Result<(), VariableError> {
@@ -883,10 +926,33 @@ mod tests {
     }
 
     #[test]
-    fn reserved_names() {
-        let mut reserved = vec!["pi"];
-        reserved.extend(Unit::ALL.iter().map(|u| u.symbol()));
-        reserved.extend(Function::ALL.iter().map(|f| f.name()));
+    fn a_reserved_name_says_what_it_clashes_with_and_what_to_use() {
+        for name in reserved_names() {
+            let meaning = reserved_meaning(name).unwrap();
+            let message = VariableError::ReservedName {
+                name: name.to_string(),
+            }
+            .to_string();
+            assert!(message.contains(&meaning), "{message}");
+            assert!(message.contains("such as"), "{message}");
+            // Every suggestion can itself name a variable.
+            let instead = instead_of_reserved(name);
+            for suggestion in instead.split('`').skip(1).step_by(2) {
+                assert_eq!(check_variable_name(suggestion), Ok(()), "{suggestion}");
+            }
+        }
+        let metre = VariableError::ReservedName { name: "m".into() }.to_string();
+        assert!(metre.contains("the unit metre"), "{metre}");
+        assert!(metre.contains("`module`"), "{metre}");
+        let modulo = VariableError::ReservedName { name: "mod".into() }.to_string();
+        assert!(modulo.contains("the function `mod(...)`"), "{modulo}");
+        assert_eq!(reserved_meaning("module"), None);
+        assert_eq!(reserved_meaning("mn"), None);
+    }
+
+    #[test]
+    fn reserved_names_are_refused() {
+        let reserved = reserved_names();
         assert_eq!(reserved.len(), 1 + 8 + 26);
         for name in reserved {
             assert!(is_reserved_name(name));

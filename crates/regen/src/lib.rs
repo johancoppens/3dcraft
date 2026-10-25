@@ -1062,7 +1062,7 @@ pub(crate) fn collapse_runs(
     }
 }
 
-/// Evaluates a plain number: a direction component.
+/// Evaluates a plain number: a count, a number of turns, a condition.
 fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
     let quantity = variables
         .evaluate(expr.source())
@@ -1122,12 +1122,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
                 return Frame::new(origin, Vec3::Z, Vec3::X)
                     .ok_or("position is not finite".to_string());
             };
-            let [ax, ay, az] = &orientation.axis;
-            let axis = Vec3::new(
-                number(variables, "axis.x", ax)?,
-                number(variables, "axis.y", ay)?,
-                number(variables, "axis.z", az)?,
-            );
+            let axis = derive::direction(doc, variables, "axis", &orientation.axis)?;
             let turn = angle(doc, variables, "angle", &orientation.angle)?;
             let upright = Frame::from_z(origin, axis).ok_or_else(|| {
                 format!(
@@ -2192,11 +2187,8 @@ mod tests {
     fn a_bad_orientation_is_a_failure_that_names_the_parameter() {
         for (axis, angle, expected) in [
             (["0", "0", "0"], "0", "axis must be a direction"),
-            (
-                ["1 mm", "0", "0"],
-                "0",
-                "axis.x: `1 mm` is a length, but a plain number is needed",
-            ),
+            (["0 mm", "0", "0 in"], "0", "which has no length"),
+            (["1 deg", "0", "0"], "0", "but a length is needed"),
             (["0", "nope", "1"], "0", "axis.y"),
             (
                 ["0", "0", "1"],
@@ -2216,6 +2208,43 @@ mod tests {
             };
             assert!(reason.contains(expected), "{reason}");
         }
+    }
+
+    /// An axis is read as a position is: plain numbers or lengths, from
+    /// expressions, so a part can stay square to a wall whose direction
+    /// depends on parameters. Only where it points counts.
+    #[test]
+    fn an_axis_may_be_lengths_or_numbers_from_expressions() {
+        let built = |axis: [&str; 3]| {
+            let (regen, _) = single(FeatureKind::Cylinder(Cylinder {
+                position: exprs(["0", "0", "0"]),
+                radius: Expr::new("1"),
+                height: Expr::new("4"),
+                orientation: turned(axis, "0"),
+            }));
+            assert!(regen.is_ok(), "{axis:?}: {:?}", regen.features[0].status);
+            let body = regen.features[0].body.as_ref().unwrap();
+            mass_properties(body).unwrap().centroid.unwrap()
+        };
+        let along_x = built(["1", "0", "0"]);
+        assert!(
+            along_x.distance(Vec3::new(2.0, 0.0, 0.0)) < 1e-10,
+            "{along_x:?}"
+        );
+        for axis in [
+            ["30 mm", "0 mm", "0"],
+            ["3 cm", "0", "0"],
+            ["cos(0 deg)", "sin(0 deg)", "0"],
+            ["2 * 5 mm", "0", "0 mm"],
+        ] {
+            let centroid = built(axis);
+            assert!(centroid.distance(along_x) < 1e-10, "{axis:?}: {centroid:?}");
+        }
+        let slanted = built(["3 mm", "4 mm", "0"]);
+        assert!(
+            slanted.distance(Vec3::new(1.2, 1.6, 0.0)) < 1e-10,
+            "{slanted:?}"
+        );
     }
 
     #[test]
