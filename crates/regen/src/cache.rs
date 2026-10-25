@@ -912,6 +912,10 @@ pub(crate) fn features(
         let mut takes = Vec::new();
         let sources = match &result.passed {
             Some(crate::Passed::Body(source)) => vec![(*source, false)],
+            Some(crate::Passed::Nothing(_)) => crate::pass::consumed(feature, &result, &results)
+                .map(|tool| (tool, false))
+                .into_iter()
+                .collect(),
             Some(_) => Vec::new(),
             None if matches!(result.status, Status::Ok) => feature.kind.sources(),
             None => Vec::new(),

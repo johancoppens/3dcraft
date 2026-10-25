@@ -165,8 +165,9 @@ fn a_suppressed_feature_passes_its_body_on_as_if_it_were_not_there() {
 
 /// A suppressed primitive makes no body: the boolean that drills with it
 /// passes its target on; a suppressed target leaves the fillet and the
-/// chamfer of its edges and the boolean without a body and the drill
-/// alone, and the shell and pattern after it pass nothing on.
+/// chamfer of its edges and the boolean without a body (the drill goes
+/// into it: from nothing is nothing), and the shell and pattern after it
+/// pass nothing on.
 #[test]
 fn a_suppressed_operand_leaves_the_boolean_as_identity() {
     let mut s = session();
@@ -211,7 +212,7 @@ fn a_suppressed_operand_leaves_the_boolean_as_identity() {
         .iter()
         .map(|b| b["name"].clone())
         .collect();
-    assert_eq!(names, [json!("Drill")]);
+    assert!(names.is_empty(), "{names:?}");
 }
 
 /// A reference to a face only the switched-off feature makes fails naming

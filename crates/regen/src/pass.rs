@@ -18,9 +18,11 @@
 //!   a thicken, a transform that keeps its source) passes nothing on, and a
 //!   feature that reads its body as an operand goes on without it: a
 //!   boolean whose tool is absent passes its target on, a union whose
-//!   target is absent passes its tool on (a subtraction or intersection
-//!   passes nothing on and leaves its tool alone), a pattern, transform,
-//!   mirror or shell of an absent body passes nothing on;
+//!   target is absent passes its tool on, a subtraction or intersection
+//!   whose target is absent passes nothing on and takes its tool all the
+//!   same ([`consumed`]: from nothing is nothing, and a cutter is never
+//!   left over), a pattern, transform, mirror or shell of an absent body
+//!   passes nothing on;
 //! - a face or an edge that is absent (of a body that is absent, or one
 //!   only a feature that is off makes) is *nothing* to a feature that
 //!   names faces or edges to change (a fillet, a chamfer, a face
@@ -203,8 +205,9 @@ pub(crate) fn operand_absent(
             if let Some(why) = absent(earlier, b.target) {
                 // A union of nothing and the tool is the tool, named as
                 // when the union is built (instance 1). A subtraction or
-                // an intersection from nothing is nothing, and a tool the
-                // union keeps stays a body of its own.
+                // an intersection from nothing is nothing, and takes its
+                // tool as it would (`consumed`); a tool the union keeps
+                // stays a body of its own.
                 if b.op == BooleanOp::Union && !b.keep_tool && absent(earlier, b.tool).is_none() {
                     return Some(pass(doc, feature.id, earlier, b.tool, "tool", 1));
                 }
@@ -500,4 +503,30 @@ fn newest_before(earlier: &[FeatureResult], id: FeatureId) -> FeatureId {
         }
     }
     at
+}
+
+/// The tool a boolean that is on takes although it passes nothing on: a
+/// subtraction or an intersection whose target is absent is nothing, and
+/// its tool goes into it as it would with the target there (a cutter is
+/// never left over as a body of its own). Not with `keepTool`, not for a
+/// union (which passes its tool on, and takes it so), and only a tool
+/// that is there to take.
+pub(crate) fn consumed(
+    feature: &Feature,
+    result: &FeatureResult,
+    earlier: &[FeatureResult],
+) -> Option<FeatureId> {
+    let FeatureKind::Boolean(b) = &feature.kind else {
+        return None;
+    };
+    if result.status != Status::Ok
+        || !matches!(result.passed, Some(Passed::Nothing(_)))
+        || b.op == BooleanOp::Union
+        || b.keep_tool
+    {
+        return None;
+    }
+    absent(earlier, b.target)?;
+    let tool = earlier.iter().find(|r| r.id == b.tool)?;
+    (tool.is_built() && tool.consumed_by.is_none()).then_some(b.tool)
 }

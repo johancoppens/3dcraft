@@ -389,15 +389,20 @@ fn a_fillet_of_an_inactive_block_passes_nothing_and_the_union_its_tool() {
 }
 
 /// Item 20 for the other operations and a kept tool: a subtraction or an
-/// intersection from nothing passes nothing on and leaves its tool alone,
-/// and so does a union that keeps its tool.
+/// intersection from nothing passes nothing on and takes its tool as it
+/// would (no cutter is left over), unless it keeps it; a union that keeps
+/// its tool passes nothing on and leaves the tool as it is. Switched on
+/// again, the document is what it was.
 #[test]
 fn a_boolean_whose_target_is_inactive() {
-    for (op, keep, passes_tool) in [
-        ("union", false, true),
-        ("union", true, false),
-        ("subtract", false, false),
-        ("intersect", false, false),
+    // What the operation passes on, and the bodies left.
+    for (op, keep, passes_tool, left) in [
+        ("union", false, true, vec!["Op"]),
+        ("union", true, false, vec!["T"]),
+        ("subtract", false, false, vec![]),
+        ("subtract", true, false, vec!["T"]),
+        ("intersect", false, false, vec![]),
+        ("intersect", true, false, vec!["T"]),
     ] {
         let context = format!("{op} keepTool {keep}");
         let mut s = session();
@@ -417,6 +422,7 @@ fn a_boolean_whose_target_is_inactive() {
             "feature.boolean",
             json!({"op": op, "target": "A", "tool": "T", "keepTool": keep, "name": "Op"}),
         );
+        let on = whole(&mut s);
         run(&mut s, "feature.when", json!({"feature": "A", "expr": "0"}));
         nothing_failed(&mut s, &context);
         let done = feature(&mut s, "Op");
@@ -428,11 +434,19 @@ fn a_boolean_whose_target_is_inactive() {
             .collect();
         if passes_tool {
             assert_eq!(done["passesOn"], "F2", "{context}: {done}");
-            assert_eq!(names, ["Op"], "{context}");
         } else {
-            assert!(done.get("passesNothing").is_some(), "{context}: {done}");
-            assert_eq!(names, ["T"], "{context}");
+            assert_eq!(
+                done["passesNothing"], "`A` is inactive (its condition `0` is 0)",
+                "{context}: {done}"
+            );
         }
+        assert_eq!(names, left, "{context}");
+        run(
+            &mut s,
+            "feature.when",
+            json!({"feature": "A", "expr": null}),
+        );
+        assert_eq!(whole(&mut s), on, "{context}: switched on again");
     }
 }
 

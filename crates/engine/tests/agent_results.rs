@@ -167,10 +167,17 @@ fn an_edit_says_which_features_it_made_fail() {
     );
     assert_eq!(edited["status"], "ok", "{edited}");
     assert_eq!(edited["failed"][0]["feature"], "Round", "{edited}");
-    // So do suppressing and deleting.
+    // So does deleting. Suppressed, the block's edges are not there for
+    // the round, which then has nothing to do and does not fail
+    // (docs/design/regeneration.md › Switched off).
     run(&mut s, "edit.undo", json!({}));
     let suppressed = run(&mut s, "feature.suppress", json!({"feature": "Block"}));
-    assert_eq!(suppressed["failed"][0]["feature"], "Round", "{suppressed}");
+    assert!(
+        suppressed["failed"]
+            .as_array()
+            .is_none_or(|failed| failed.iter().all(|f| f["feature"] != "Round")),
+        "{suppressed}"
+    );
     run(&mut s, "edit.undo", json!({}));
     let deleted = run(&mut s, "feature.delete", json!({"feature": "Block"}));
     assert_eq!(deleted["failed"][0]["feature"], "Round", "{deleted}");

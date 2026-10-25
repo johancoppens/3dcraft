@@ -1258,6 +1258,11 @@ fn made_face(
             .flatten()
     };
     let Some(index) = exact.or_else(same_plane) else {
+        if let Some(why) = crate::pass::absent_name(doc, earlier, whole) {
+            return Err(format!(
+                "plane: `{made_by}`, which makes the face {whole}, does not have it: {why}"
+            ));
+        }
         return Err(no_such_face(made_by, link, &names.faces));
     };
     let Some(face) = body.faces.get(index) else {

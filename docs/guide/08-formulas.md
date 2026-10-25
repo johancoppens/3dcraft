@@ -108,8 +108,8 @@ Off, by hand or by its condition, a feature behaves as if it were not in the his
   the body as it was before it. `document.inspect` says `passesOn` with the feature whose body it is;
 - one that **makes** a body (a block, an extrusion, a sweep, a thicken, a copy with `keep`) makes none.
   A boolean that used it as its tool passes its target on; a union that used it as its target passes its
-  tool on; a subtraction or intersection that used it as its target makes no body and leaves its tool
-  alone; a pattern, transform, mirror or shell of it makes none either (`passesNothing` says why);
+  tool on; a subtraction or intersection that used it as its target makes no body, and its tool goes
+  with it (no cutter is left over; with `keepTool` the tool stays); a pattern, transform, mirror or shell of it makes none either (`passesNothing` says why);
 - its faces and edges are **not there** for a fillet, a chamfer or a face operation: the others it names
   are changed, and one left with none passes its body on unchanged. An optional boss united with a plate
   and chamfered gives the plain plate when the boss is off, whether the chamfer has the condition too or
