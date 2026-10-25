@@ -357,13 +357,13 @@ fn a_held_through_point_moved_past_the_arcs_ends_stays_on_its_circle() {
     let path = run(
         &mut s,
         "sketch.path",
-        json!({"sketch": "P", "start": [-5, 0], "segments": [
-            {"arc": [5, 0], "through": ["tx", "ty"]}
+        json!({"sketch": "P", "start": ["-5 mm", "0 mm"], "segments": [
+            {"arc": ["5 mm", "0 mm"], "through": ["tx", "ty"]}
         ], "closed": true}),
     );
     assert_eq!(path["status"], "ok", "{path}");
-    // The through point, per entity as centers are; none for the closing
-    // line.
+    // The through point, per entity as centers are (listed when a path
+    // has one); none for the closing line.
     let through = path["through"].as_array().unwrap().clone();
     assert_eq!(through.len(), 2, "{path}");
     assert!(through[1].is_null(), "{path}");
@@ -408,7 +408,8 @@ fn a_held_through_point_moved_past_the_arcs_ends_stays_on_its_circle() {
             {"line": [0, -1]}, {"arc": [5, 0], "through": [3, 4]}
         ]}),
     );
-    assert_eq!(path["through"], json!([null, null]), "{path}");
+    // Nothing to say: the result has no `through`, as before.
+    assert!(path.get("through").is_none(), "{path}");
 }
 
 /// The centre of an arc, and whether the path walks it counter-clockwise.
