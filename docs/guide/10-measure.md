@@ -68,7 +68,8 @@ and remove them.
 **Pending after an edit.** An edit's result waits up to two seconds for the assertions it touched; the
 rest count under `pending`, and `whenPending` then says how to have them. A script that checks its
 assertions after a change either gives the edit `"wait": true` (`param.set`, `variable.set`), which waits
-until every assertion is measured, or runs `assert.list` next, which waits by default:
+until every assertion is measured (a minute at most: what takes longer stays `pending`, with
+`whenPending`), or runs `assert.list` next, which waits by default:
 
 ```json
 [

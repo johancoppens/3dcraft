@@ -4,63 +4,55 @@
 //!
 //! A generated script knows the names it gives its features, not the ids
 //! the document hands out, so it could not name a face without building
-//! first. Before a command runs, every string of its parameters that reads
-//! as a persistent name once its features' names are looked up in the
-//! active document is replaced by that name with ids
-//! ([`PersistentName::parse_with_features`]); the command then sees ids
-//! only, as from a file, and what it stores has ids only (the format and
-//! the naming do not change). The lookup is done when the command runs, so
-//! a script may name a feature made by an earlier step.
+//! first. Before a command runs, every string of the parameters its spec
+//! lists as holding names (`CommandSpec::names`: a command opts in, nothing
+//! else is looked into) that reads as a persistent name once its features'
+//! names are looked up in the active document is replaced by that name
+//! with ids ([`PersistentName::parse_with_features`]); the command then sees
+//! ids only, as from a file, and what it stores has ids only (the format
+//! and the naming do not change). The lookup is done when the command runs,
+//! so a script may name a feature made by an earlier step.
 //!
-//! A string that does not read as a name stays as it is, so the command
-//! says what is wrong with it; when that is a feature name no feature has
-//! (or several have), [`Resolved::explain`] adds it to the command's error.
+//! In those parameters a name of a feature no feature has (or several
+//! have) is refused before the command runs. A string that does not read
+//! as a name at all stays as it is, and the command says what is wrong
+//! with it. The command's errors show the names as the caller wrote them
+//! ([`Resolved::explain`]).
 
 use crate::CommandError;
 use craft3d_doc::{Document, FeatureId, PersistentName};
 use serde_json::Value;
-
-/// Parameters whose strings are free text, never a face or an edge: not
-/// looked into, so a label that happens to read `Plate:face(1)` stays.
-const FREE_TEXT: [&str; 10] = [
-    "name",
-    "rename",
-    "label",
-    "description",
-    "text",
-    "title",
-    "path",
-    "message",
-    "group",
-    "author",
-];
 
 /// How deep parameters are looked into, and how many strings at most.
 const MAX_DEPTH: usize = 32;
 const MAX_STRINGS: usize = 100_000;
 
 /// What the lookup found.
-#[derive(Default)]
-pub(crate) struct Resolved {
+#[derive(Default, Debug)]
+pub struct Resolved {
     /// The parameters with ids, when a string changed.
     pub params: Option<Value>,
-    /// Strings that read as names but for a feature name no feature has,
-    /// or several have: the string and the reason.
-    unknown: Vec<(String, String)>,
+    /// Every name that changed: as written, and with ids.
+    rewritten: Vec<(String, String)>,
 }
 
 impl Resolved {
-    /// The command's error with the reason a feature name was not found,
-    /// when the error is about a string that had one.
+    /// The command's error with every name it shows with ids written back
+    /// as the caller wrote it (the longest first, so a name inside another
+    /// is not taken for part of it).
     pub(crate) fn explain(&self, error: CommandError) -> CommandError {
-        let message = error.message();
-        for (text, reason) in &self.unknown {
-            let shown: String = text.chars().take(60).collect();
-            if message.contains(&format!("`{shown}`")) && !message.contains(reason.as_str()) {
-                return CommandError::new(format!("{message} ({reason})"));
+        if self.rewritten.is_empty() {
+            return error;
+        }
+        let mut pairs: Vec<&(String, String)> = self.rewritten.iter().collect();
+        pairs.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.1.cmp(&b.1)));
+        let mut message = error.message().to_string();
+        for (written, with_ids) in pairs {
+            if written != with_ids && message.contains(with_ids.as_str()) {
+                message = message.replace(with_ids.as_str(), written);
             }
         }
-        error
+        CommandError::new(message)
     }
 }
 
@@ -78,90 +70,83 @@ fn feature_called(doc: &Document, name: &str) -> Result<FeatureId, String> {
     }
 }
 
-/// Looks up the features' names in every name of `params` (see the module
-/// documentation).
-pub(crate) fn resolve(doc: &Document, params: &Value) -> Resolved {
+/// Looks up the features' names in every name under the parameters `keys`
+/// of `params` (see the module documentation). `Err` with the parameter,
+/// the text and the reason for a name of a feature that is not there.
+pub fn resolve(doc: &Document, keys: &[&str], params: &Value) -> Result<Resolved, String> {
     let mut resolved = Resolved::default();
-    // Most commands have no name to look up: no copy of their parameters.
+    let Value::Object(map) = params else {
+        return Ok(resolved);
+    };
     let mut budget = MAX_STRINGS;
-    if !any_candidate(params, 0, &mut budget) {
-        return resolved;
-    }
-    let mut budget = MAX_STRINGS;
-    let mut out = params.clone();
-    let changed = walk(doc, &mut out, 0, &mut budget, &mut resolved.unknown);
-    if changed {
-        resolved.params = Some(out);
-    }
-    resolved
-}
-
-/// Whether `value` has a string that may be a name with a feature's name:
-/// one with a `:` that is no name with ids.
-fn any_candidate(value: &Value, depth: usize, budget: &mut usize) -> bool {
-    if depth > MAX_DEPTH || *budget == 0 {
-        return false;
-    }
-    match value {
-        Value::String(text) => {
-            *budget -= 1;
-            text.contains(':') && text.parse::<PersistentName>().is_err()
+    let mut out: Option<serde_json::Map<String, Value>> = None;
+    for key in keys {
+        let Some(value) = map.get(*key) else {
+            continue;
+        };
+        let mut value = value.clone();
+        let changed = walk(
+            doc,
+            key,
+            &mut value,
+            0,
+            &mut budget,
+            &mut resolved.rewritten,
+        )?;
+        if changed {
+            out.get_or_insert_with(|| map.clone())
+                .insert((*key).to_string(), value);
         }
-        Value::Array(items) => items
-            .iter()
-            .any(|item| any_candidate(item, depth + 1, budget)),
-        Value::Object(map) => map.iter().any(|(key, item)| {
-            !FREE_TEXT.contains(&key.as_str()) && any_candidate(item, depth + 1, budget)
-        }),
-        _ => false,
     }
+    resolved.params = out.map(Value::Object);
+    Ok(resolved)
 }
 
 /// Rewrites the names in `value`; true when one changed.
 fn walk(
     doc: &Document,
+    key: &str,
     value: &mut Value,
     depth: usize,
     budget: &mut usize,
-    unknown: &mut Vec<(String, String)>,
-) -> bool {
+    rewritten: &mut Vec<(String, String)>,
+) -> Result<bool, String> {
     if depth > MAX_DEPTH || *budget == 0 {
-        return false;
+        return Ok(false);
     }
     match value {
         Value::String(text) => {
             *budget -= 1;
             match rewrite(doc, text) {
                 Ok(Some(with_ids)) => {
-                    *text = with_ids;
-                    true
-                }
-                Ok(None) => false,
-                Err(reason) => {
-                    if unknown.len() < 16 {
-                        unknown.push((text.clone(), reason));
+                    if rewritten.len() < 1000 {
+                        rewritten.push((text.clone(), with_ids.clone()));
                     }
-                    false
+                    *text = with_ids;
+                    Ok(true)
+                }
+                Ok(None) => Ok(false),
+                Err(reason) => {
+                    let shown: String = text.chars().take(60).collect();
+                    Err(format!("`{key}`: `{shown}`: {reason}"))
                 }
             }
         }
         Value::Array(items) => {
             let mut changed = false;
             for item in items {
-                changed |= walk(doc, item, depth + 1, budget, unknown);
+                changed |= walk(doc, key, item, depth + 1, budget, rewritten)?;
             }
-            changed
+            Ok(changed)
         }
         Value::Object(map) => {
             let mut changed = false;
-            for (key, item) in map.iter_mut() {
-                if !FREE_TEXT.contains(&key.as_str()) {
-                    changed |= walk(doc, item, depth + 1, budget, unknown);
-                }
+            for item in map.values_mut() {
+                changed |= walk(doc, key, item, depth + 1, budget, rewritten)?;
             }
-            changed
+            Ok(changed)
         }
-        _ => false,
+        _ => Ok(false),
     }
 }
 
@@ -220,50 +205,55 @@ mod tests {
     }
 
     #[test]
-    fn names_with_feature_names_get_ids_and_the_rest_stays() {
+    fn only_the_listed_parameters_get_ids() {
         let doc = doc();
         let params = json!({
             "edges": [["Plate:face(1)", "F1:face(2)"], ["Pin:startCap", "Pin:face(0)"]],
             "upTo": "Pin:face(1)",
-            "name": "Plate:face(1)",
+            "label": "Plate:face(1)",
+            "rows": [["Plate:face(1)"]],
             "distance": "2 mm",
-            "feature": "Plate",
         });
-        let resolved = resolve(&doc, &params);
+        let resolved = resolve(&doc, &["edges", "upTo", "missing"], &params).unwrap();
         assert_eq!(
             resolved.params.unwrap(),
             json!({
                 "edges": [["F1:face(1)", "F1:face(2)"], ["F2:startCap()", "F2:face(0)"]],
                 "upTo": "F2:face(1)",
-                "name": "Plate:face(1)",
+                "label": "Plate:face(1)",
+                "rows": [["Plate:face(1)"]],
                 "distance": "2 mm",
-                "feature": "Plate",
             })
         );
         // Nothing to change: no copy.
-        assert!(
-            resolve(&doc, &json!({"edges": [["F1:face(1)", "F1:face(2)"]]}))
-                .params
-                .is_none()
-        );
+        let ids = json!({"edges": [["F1:face(1)", "F1:face(2)"]]});
+        assert!(resolve(&doc, &["edges"], &ids).unwrap().params.is_none());
+        // Nothing listed: nothing looked into.
+        assert!(resolve(&doc, &[], &params).unwrap().params.is_none());
     }
 
     #[test]
-    fn an_unknown_feature_name_is_explained_in_the_commands_error() {
+    fn an_unknown_feature_name_is_refused_and_errors_show_names_as_written() {
         let doc = doc();
-        let resolved = resolve(&doc, &json!({"face": "Plat:face(1)"}));
+        let error = resolve(&doc, &["face"], &json!({"face": "Plat:face(1)"})).unwrap_err();
+        assert!(error.contains("`face`: `Plat:face(1)`"), "{error}");
+        assert!(error.contains("no feature is called `Plat`"), "{error}");
+        // Text that is no name stays, without a reason.
+        let resolved =
+            resolve(&doc, &["face"], &json!({"face": ["a: b", "Plate:roof(1)"]})).unwrap();
         assert!(resolved.params.is_none());
-        let error = CommandError::new(
-            "x: `face`: `Plat:face(1)` is not a name: the feature must be written F and a number",
+        // The command's error shows what was written.
+        let resolved = resolve(
+            &doc,
+            &["faces"],
+            &json!({"faces": ["Plate:face(1)", "Pin:copy(0)/Plate:face(1)"]}),
+        )
+        .unwrap();
+        let error = CommandError::new("x: F2:copy(0)/F1:face(1) and F1:face(1) are not there");
+        assert_eq!(
+            resolved.explain(error).message(),
+            "x: Pin:copy(0)/Plate:face(1) and Plate:face(1) are not there"
         );
-        let explained = resolved.explain(error).message().to_string();
-        assert!(
-            explained.contains("no feature is called `Plat`"),
-            "{explained}"
-        );
-        // Text that is no name stays without a reason.
-        let resolved = resolve(&doc, &json!({"face": "a: b", "x": "Plate:roof(1)"}));
-        assert!(resolved.params.is_none() && resolved.unknown.is_empty());
     }
 
     #[test]
@@ -271,13 +261,8 @@ mod tests {
         let mut doc = doc();
         // Only an old file can hold it; built by hand here.
         doc.features[1].name = "Plate".to_string();
-        let resolved = resolve(&doc, &json!({"face": "Plate:face(1)"}));
-        assert!(resolved.params.is_none());
-        assert!(
-            resolved.unknown[0].1.contains("several features"),
-            "{:?}",
-            resolved.unknown
-        );
+        let error = resolve(&doc, &["face"], &json!({"face": "Plate:face(1)"})).unwrap_err();
+        assert!(error.contains("several features"), "{error}");
     }
 
     #[test]
@@ -288,15 +273,23 @@ mod tests {
             deep = json!([deep]);
         }
         // Too deep to be looked into: left as it is, no panic.
-        assert!(resolve(&doc, &deep).params.is_none());
-        let many = Value::Array(vec![json!("Plate:face(1)"); MAX_STRINGS + 10]);
-        let resolved = resolve(&doc, &many).params.unwrap();
-        let rewritten = resolved
+        let params = json!({ "faces": deep });
+        assert!(resolve(&doc, &["faces"], &params).unwrap().params.is_none());
+        let many = json!({ "faces": vec![json!("Plate:face(1)"); MAX_STRINGS + 10] });
+        let resolved = resolve(&doc, &["faces"], &many).unwrap().params.unwrap();
+        let rewritten = resolved["faces"]
             .as_array()
             .unwrap()
             .iter()
             .filter(|v| *v == "F1:face(1)")
             .count();
         assert_eq!(rewritten, MAX_STRINGS);
+        // Not an object: nothing to look into.
+        assert!(
+            resolve(&doc, &["faces"], &json!([1]))
+                .unwrap()
+                .params
+                .is_none()
+        );
     }
 }

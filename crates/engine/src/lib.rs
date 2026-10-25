@@ -154,6 +154,13 @@ pub struct CommandSpec {
     /// What it does and returns, in a sentence.
     pub summary: &'static str,
     pub needs_document: bool,
+    /// The parameters that hold persistent names of faces, edges or
+    /// vertices, or subjects made of them (a face name, `[face name, ...]`,
+    /// edges as pairs of faces, a subject, a filter, a plane that may be a
+    /// face): where a feature may be written by its name, looked up before
+    /// the command runs (`name_refs`). A command opts in by listing them;
+    /// nothing else of its parameters is looked into.
+    pub names: &'static [&'static str],
     pub(crate) run: fn(&mut Session, &Value) -> Result<Value, CommandError>,
 }
 
@@ -581,10 +588,14 @@ impl Session {
             return Err(CommandError::new(format!("{id}: {reason}")));
         }
         // Features written by their names in face and edge names get their
-        // ids, from the document as it is now (`name_refs`).
+        // ids, from the document as it is now (`name_refs`), in the
+        // parameters the spec lists as holding names.
         let resolved = match self.document() {
-            Ok(open) => name_refs::resolve(open.history.current(), params),
-            Err(_) => name_refs::Resolved::default(),
+            Ok(open) if !spec.names.is_empty() => {
+                name_refs::resolve(open.history.current(), spec.names, params)
+                    .map_err(|e| CommandError::new(format!("{id}: {e}")))?
+            }
+            _ => name_refs::Resolved::default(),
         };
         let mut params = match &resolved.params {
             Some(with_ids) => std::borrow::Cow::Borrowed(with_ids),
@@ -623,6 +634,20 @@ impl Session {
                 )))
             }
         }
+    }
+
+    /// `params` with the features written by their names in the persistent
+    /// names under `keys` replaced by their ids, from the active document,
+    /// as a command gets them (`CommandSpec::names`): for a frontend's own
+    /// methods that take face, edge or vertex names (the window's
+    /// highlight and section). `params` as they are without a document;
+    /// `Err` with the reason for a name of a feature that is not there.
+    pub fn with_feature_ids(&self, keys: &[&str], params: &Value) -> Result<Value, String> {
+        let Ok(open) = self.document() else {
+            return Ok(params.clone());
+        };
+        let resolved = name_refs::resolve(open.history.current(), keys, params)?;
+        Ok(resolved.params.unwrap_or_else(|| params.clone()))
     }
 
     pub(crate) fn document(&self) -> Result<&OpenDocument, CommandError> {

@@ -6,7 +6,10 @@
 //! document's bodies, unless the feature keeps it.
 
 use crate::cause::FIX_IT_FIRST;
-use crate::{Contributors, FeatureResult, Kept, Names, Passed, Status, angle, length, number};
+use crate::{
+    Contributors, FeatureResult, Kept, Names, Passed, Status, angle, length, length_or_number,
+    number,
+};
 use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, PatternLayout, PersistentName};
 use craft3d_expr::Evaluation;
 use craft3d_math::{Transform, Vec3};
@@ -201,12 +204,27 @@ pub(crate) fn direction(
     // number or a length (a bare number in the document's unit), so a
     // direction can come from lengths (`[wallX, wallY, 0]`) as well as
     // from ratios (`[cos(a), sin(a), 0]`). Only where it points counts.
+    // Lengths and plain numbers other than 0 together are refused: a
+    // plain number would be read in the document's unit, so `[1, 25 mm, 0]`
+    // would point another way in an inch document.
     let [x, y, z] = exprs;
-    let v = Vec3::new(
-        length(doc, variables, &format!("{name}.x"), x)?,
-        length(doc, variables, &format!("{name}.y"), y)?,
-        length(doc, variables, &format!("{name}.z"), z)?,
-    );
+    let parts = [
+        length_or_number(doc, variables, &format!("{name}.x"), x)?,
+        length_or_number(doc, variables, &format!("{name}.y"), y)?,
+        length_or_number(doc, variables, &format!("{name}.z"), z)?,
+    ];
+    let lengths = parts.iter().any(|&(_, length)| length);
+    let numbers = parts.iter().any(|&(value, length)| !length && value != 0.0);
+    if lengths && numbers {
+        return Err(format!(
+            "{name} mixes lengths and plain numbers (`{}`, `{}`, `{}`); give every component as a length or every one as a plain number (0 goes with either)",
+            x.source(),
+            y.source(),
+            z.source()
+        ));
+    }
+    let [(vx, _), (vy, _), (vz, _)] = parts;
+    let v = Vec3::new(vx, vy, vz);
     match v.normalized() {
         Some(unit) if v.is_finite() => Ok(unit),
         _ => Err(format!(

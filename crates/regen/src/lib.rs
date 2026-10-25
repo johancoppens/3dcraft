@@ -992,13 +992,24 @@ fn to_document(quantity: Quantity, doc: &Document) -> Value {
 /// is taken to be in that unit, as when typing a dimension in a CAD
 /// system.
 fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
+    length_or_number(doc, variables, name, expr).map(|(value, _)| value)
+}
+
+/// [`length`], and whether the expression was a length (true) or a plain
+/// number (false).
+fn length_or_number(
+    doc: &Document,
+    variables: &Evaluation,
+    name: &str,
+    expr: &Expr,
+) -> Result<(f64, bool), String> {
     let quantity = variables
         .evaluate(expr.source())
         .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
     if quantity.dimension == Dimension::LENGTH {
-        Ok(to_document(quantity, doc).value)
+        Ok((to_document(quantity, doc).value, true))
     } else if quantity.dimension.is_dimensionless() {
-        Ok(quantity.value)
+        Ok((quantity.value, false))
     } else {
         Err(format!(
             "{name}: `{}` is {}, but a length is needed{}",
@@ -2189,6 +2200,14 @@ mod tests {
             (["0", "0", "0"], "0", "axis must be a direction"),
             (["0 mm", "0", "0 in"], "0", "which has no length"),
             (["1 deg", "0", "0"], "0", "but a length is needed"),
+            // A plain number beside a length would be read in the
+            // document's unit: refused, whichever way round.
+            (["1", "1 mm", "0"], "0", "mixes lengths and plain numbers"),
+            (
+                ["0 mm", "0.5", "2 in"],
+                "0",
+                "mixes lengths and plain numbers",
+            ),
             (["0", "nope", "1"], "0", "axis.y"),
             (
                 ["0", "0", "1"],

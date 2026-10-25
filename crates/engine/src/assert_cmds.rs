@@ -18,9 +18,9 @@ use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|distance|clearance|thickness|through|interference|symmetric", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean = true}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), interference (of: bodies, to: bodies = each other; none overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through, interference and symmetric take is (default true). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, assert_add),
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), interference (of: bodies, to: bodies = each other; none overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through, interference and symmetric take is (default true). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
-        "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, assert_edit),
+        "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
         "Removes an assertion from the document (one undo step).", doc: true, assert_delete),
     spec!("assert.list", "Assertions", r#"{"details": boolean = false, "wait": boolean = true}"#,
@@ -817,12 +817,16 @@ pub(crate) fn add_summary(session: &mut Session, result: &mut Value) {
     add_summary_waiting(session, result, false);
 }
 
+/// How long an edit with `wait: true` waits for its assertions at most:
+/// what is not measured by then stays pending, with `whenPending`.
+pub(crate) const WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// [`add_summary`], waiting for every assertion when `all` (an edit's
-/// `wait: true`). Assertions still being measured are counted under
+/// `wait: true`), for [`WAIT_CEILING`] at most. Assertions still being measured are counted under
 /// `pending`, and `whenPending` then says how to have their results, so
 /// a script does not read "pending" as an answer.
 pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all: bool) {
-    let wait = if all { Wait::All } else { Wait::For(EDIT_WAIT) };
+    let wait = Wait::For(if all { WAIT_CEILING } else { EDIT_WAIT });
     let Some(mut s) = summary(session, wait) else {
         return;
     };
@@ -831,7 +835,7 @@ pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all
         && let Some(summary) = s.as_object_mut()
     {
         summary.insert("whenPending".into(), Value::String(format!(
-            "{pending} assertion(s) are still being measured in the background; assert.list (it waits by default) gives their results, or give this edit wait: true"
+            "{pending} assertion(s) are still being measured in the background; assert.list (it waits by default) gives their results, or give this edit wait: true (it waits up to 60 s)"
         )));
     }
     if let Some(map) = result.as_object_mut() {

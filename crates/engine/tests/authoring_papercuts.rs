@@ -236,6 +236,85 @@ fn unknown_or_ambiguous_names_are_refused_clearly() {
     );
 }
 
+fn undo_steps(s: &mut Session) -> usize {
+    run(s, "document.inspect", json!({ "measures": false }))["history"]["undo"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+/// The selection's items name a face by a feature's name too; and what
+/// is no face name (a table's cell, a choice's label, a label) stays as it
+/// was written even when it reads like one.
+#[test]
+fn only_parameters_that_hold_names_are_looked_up() {
+    let mut s = session();
+    plate_and_bar(&mut s);
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({ "op": "union", "target": "Plate", "tool": "Bar", "name": "Joined" }),
+    );
+    let selected = run(
+        &mut s,
+        "select.set",
+        json!({ "items": [{ "kind": "face", "name": "Joined:copy(1)/Bar:endCap", "feature": "Joined" }] }),
+    );
+    assert_eq!(
+        selected["items"][0]["name"], "F5:copy(1)/F4:endCap(e2)",
+        "{selected}"
+    );
+    let message = error(
+        &mut s,
+        "select.set",
+        json!({ "items": [{ "kind": "face", "name": "Nobody:face(1)" }] }),
+    );
+    assert!(
+        message.contains("no feature is called `Nobody`"),
+        "{message}"
+    );
+    // A table's cells, a choice's labels and a label are text.
+    let table = run(
+        &mut s,
+        "table.set",
+        json!({ "name": "t", "columns": ["key", "v"], "rows": [["Plate:face(1)", 1], ["b", 2]] }),
+    );
+    assert_eq!(table["keys"], json!(["Plate:face(1)", "b"]), "{table}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "pick", "expr": "1" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "pick", "kind": "choice", "choices": ["Plate:face(1)", "Joined:face(0)"], "label": "Bar:endCap" }),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    let pick = &list["parameters"][0];
+    assert_eq!(
+        pick["choices"],
+        json!(["Plate:face(1)", "Joined:face(0)"]),
+        "{list}"
+    );
+    assert_eq!(pick["label"], "Bar:endCap", "{list}");
+}
+
+/// The command's error shows a name as the script wrote it, not with ids.
+#[test]
+fn errors_show_names_as_written() {
+    let mut s = session();
+    plate_and_bar(&mut s);
+    // The plate has no side of a curve e99.
+    let message = error(
+        &mut s,
+        "select.set",
+        json!({ "names": ["Plate:side(e99)"] }),
+    );
+    assert!(message.contains("Plate:side(e99)"), "{message}");
+    assert!(!message.contains("F2:side(e99)"), "{message}");
+}
+
 fn centroid(s: &mut Session) -> [f64; 3] {
     let c = run(s, "document.measure", json!({}))["centroid"].clone();
     [0, 1, 2].map(|i| c[i].as_f64().unwrap())
@@ -456,12 +535,15 @@ fn a_condition_given_with_the_feature_holds_from_the_start() {
         "feature.block",
         json!({ "size": [20, 20, 10], "name": "Box" }),
     );
+    let steps_before = undo_steps(&mut s);
     let lid = run(
         &mut s,
         "feature.cylinder",
         json!({ "radius": 3, "height": 2, "position": [10, 10, 10], "name": "Lid", "when": "lid" }),
     );
     assert_eq!(lid["status"], "inactive", "{lid}");
+    // One undo step, the feature and its condition together.
+    assert_eq!(undo_steps(&mut s), steps_before + 1);
     assert_eq!(lid["when"], "lid", "{lid}");
     // A chamfer of the lid's edge: inactive at once, never failed.
     let edge = run(
@@ -513,6 +595,7 @@ fn a_condition_given_with_the_feature_holds_from_the_start() {
         "sketch.circle",
         json!({ "sketch": "Hole", "center": [5, 5], "radius": 1 }),
     );
+    let steps_before = undo_steps(&mut s);
     let cut = run(
         &mut s,
         "feature.extrude",
@@ -520,6 +603,7 @@ fn a_condition_given_with_the_feature_holds_from_the_start() {
     );
     assert_eq!(cut["status"], "inactive", "{cut}");
     assert_eq!(cut["sweep"]["status"], "inactive", "{cut}");
+    assert_eq!(undo_steps(&mut s), steps_before + 1);
     // null is always on.
     let on = run(
         &mut s,
@@ -548,4 +632,39 @@ fn a_bad_condition_is_refused() {
     assert_eq!(inspected["features"], json!([]), "{inspected}");
     let message = error(&mut s, "sketch.create", json!({ "name": "S", "when": "1" }));
     assert!(message.contains("unknown parameter `when`"), "{message}");
+}
+
+/// A command opts in to feature names in its face and edge names by
+/// listing the parameters that hold them; every command whose parameters
+/// take a face, edge or vertex name, a subject or a filter lists them, and
+/// every key listed is one of its parameters.
+#[test]
+fn every_command_that_takes_names_lists_them() {
+    let takes_names = [
+        "face name",
+        "edge name",
+        "vertex name",
+        "persistent name",
+        "subject",
+        "filter",
+    ];
+    for spec in Session::commands() {
+        if takes_names.iter().any(|t| spec.params.contains(t)) {
+            assert!(
+                !spec.names.is_empty(),
+                "{} takes names but lists none",
+                spec.id
+            );
+        }
+        if spec.id == "assert.edit" {
+            continue;
+        }
+        for key in spec.names {
+            assert!(
+                spec.params.contains(&format!("\"{key}\"")),
+                "{} lists `{key}`, which it does not take",
+                spec.id
+            );
+        }
+    }
 }

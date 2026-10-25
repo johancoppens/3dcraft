@@ -95,8 +95,9 @@ evaluated at every regeneration: the feature is built when it is a number other 
 ]
 ```
 
-**Give the condition with the feature.** Every command that adds a feature (`feature.block`,
-`feature.extrude`, `feature.fillet`, `datum.plane`, …) takes it as `when`, so the feature is switched from
+**Give the condition with the feature.** The commands that add a feature (`feature.block`,
+`feature.extrude`, `feature.fillet`, `datum.plane`, …; not `sketch.create`, `body.split` and
+`file.import`, whose features get a condition with `feature.when`) take it as `when`, so the feature is switched from
 its very first regeneration: a fillet of a lid that is off is never built, and never fails on the way.
 It is one step, one undo, as if `feature.when` had come with it; an extrusion with `cut` or `join` gives
 the condition to both features it adds.
