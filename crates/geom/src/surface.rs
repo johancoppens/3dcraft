@@ -477,6 +477,20 @@ impl Surface {
         }
     }
 
+    /// Whether it is freeform (a Bézier patch or a NURBS surface) rather
+    /// than one of the analytic surfaces, whose extremes are known in
+    /// closed form.
+    pub fn is_freeform(&self) -> bool {
+        match self {
+            Surface::Plane(_)
+            | Surface::Cylinder(_)
+            | Surface::Cone(_)
+            | Surface::Sphere(_)
+            | Surface::Torus(_) => false,
+            Surface::Bezier(_) | Surface::Nurbs(_) => true,
+        }
+    }
+
     /// `((u start, u end), (v start, v end))`; infinite where the surface
     /// is unbounded, one period where it closes on itself.
     pub fn domain(&self) -> ((f64, f64), (f64, f64)) {

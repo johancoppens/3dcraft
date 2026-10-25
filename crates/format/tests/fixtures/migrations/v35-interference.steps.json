@@ -1,0 +1,8 @@
+[
+  ["feature.block", {"name": "Base", "size": [40, 40, 10]}],
+  ["feature.block", {"name": "Pin", "size": [10, 10, 20], "position": [15, 15, 5]}],
+  ["feature.block", {"name": "Cap", "size": [40, 40, 5], "position": [0, 0, 30]}],
+  ["assert.add", {"name": "cap clear", "measure": "interference", "of": "Cap", "to": ["Base", "Pin"], "is": true}],
+  ["assert.add", {"name": "pin pressed", "measure": "interference", "of": "Pin", "to": "Base", "is": false}],
+  ["assert.add", {"name": "all clear", "measure": "interference"}]
+]

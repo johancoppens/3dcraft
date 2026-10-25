@@ -1347,11 +1347,17 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
         );
         assert_eq!(cut["status"], "ok", "{k}: {cut}");
         let top = a * a / (4.0 * f);
-        // Where the box is reached at a vertex the mesh has it exactly;
-        // what is proven on the other side is within the mesh's tolerance
-        // (a hundred-thousandth of the side of a square of the area, some
-        // 3e-4 k here), so a tol of 1e-3 k settles it (at the scale 1e-3 the mesh tolerance is held at ten linear tolerances, 1e-5 mm, so 3e-5 mm).
-        let tol = 1e-6 * k;
+        // The box is found on a mesh: its vertices lie on the body (here to
+        // within the document's tolerance, 1e-6 mm, by which the box
+        // reached is shrunk), and the body lies within twice the mesh's
+        // tolerance of it. That tolerance starts at a hundred-thousandth
+        // of the side of a square of the area (some 3e-4 k here) and a
+        // bound left undecided is looked at again on meshes eight times
+        // finer, down to ten linear tolerances (1e-5 mm). A tol of 1e-4 k
+        // needs that at the scale 1; at the scale 1e-3 the floor makes it
+        // 5e-5 mm.
+        let reached = f64::max(1e-6 * k, 2e-6);
+        let tol = f64::max(1e-4 * k, 5e-5);
         for (measure, axis, want) in [
             ("boxMax", "x", c),
             ("boxMin", "x", -a),
@@ -1363,10 +1369,19 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
             let got = run(
                 &mut s,
                 "assert.add",
-                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", f64::max(1e-3 * k, 3e-5))}),
+                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{tol} mm")}),
             );
             assert_eq!(got["status"], "passed", "{k} {name}: {got}");
-            close(&got["measured"], want, tol, &name);
+            close(&got["measured"], want, reached, &name);
+        }
+        // At the scale 1 the first look (3e-4) cannot settle 1e-4: the
+        // mesh it was settled on is finer.
+        if k == 1.0 {
+            let listed = run(&mut s, "assert.list", json!({"details": true}));
+            let at = listed["assertions"][0]["detail"]["meshTolerance"]
+                .as_f64()
+                .unwrap();
+            assert!(at < 3e-4 / 7.0, "{listed}");
         }
         // The vertex of the parabola lies inside a face: reached within the
         // mesh's tolerance, which is proven on both sides.
@@ -1599,6 +1614,61 @@ fn a_saved_old_interference_assertion_means_what_it_meant() {
     assert_eq!(edited["measure"]["measure"], "overlap");
     assert_eq!(edited["expect"], json!({"is": false}));
     assert_eq!(edited["status"], "passed");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A version-35 file written by the build of main abb1cd51
+/// (`crates/format/tests/fixtures/migrations/v35-interference.3dcraft`),
+/// with `interference` assertions of `is` true and false and with `of`
+/// and `to` subjects: opened under version 36 each is the `overlap` with
+/// the opposite `is`, its subjects as they were, and stands as it stood
+/// then (the statuses that build reported).
+#[test]
+fn a_version_35_file_with_interference_assertions_stands_as_it_stood() {
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../format/tests/fixtures/migrations");
+    let dir = std::env::temp_dir().join(format!("craft3d-v35-overlap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("v35-interference.3dcraft");
+    std::fs::copy(fixtures.join("v35-interference.3dcraft"), &path).unwrap();
+    let expected: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("v35-interference.expected.json")).unwrap(),
+    )
+    .unwrap();
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.open", json!({"path": path.to_str().unwrap()}));
+    let listed = run(&mut s, "assert.list", json!({}));
+    let got = listed["assertions"].as_array().unwrap();
+    let was = expected["assertions"].as_array().unwrap();
+    assert_eq!(got.len(), was.len(), "{listed}");
+    for (now, then) in got.iter().zip(was) {
+        assert_eq!(now["name"], then["name"]);
+        assert_eq!(now["status"], then["status"], "{now} / {then}");
+        assert_eq!(now["measure"]["measure"], "overlap", "{now}");
+        let old_is = then["expected"] == "true";
+        assert_eq!(now["expect"], json!({"is": !old_is}), "{now}");
+        // What was measured reads the same way round as what it must be.
+        let measured_overlap = now["measured"].as_bool().unwrap();
+        assert_eq!(
+            measured_overlap == !old_is,
+            now["status"] == "passed",
+            "{now}"
+        );
+    }
+    assert_eq!(
+        got[0]["measure"],
+        json!({"measure": "overlap", "of": "F3", "to": ["F1", "F2"]})
+    );
+    assert_eq!(got[0]["message"], "no overlap");
+    assert_eq!(
+        got[1]["measure"],
+        json!({"measure": "overlap", "of": "F2", "to": "F1"})
+    );
+    assert_eq!(got[1]["message"], "Pin overlaps Base by 500 mm^3");
+    assert_eq!(
+        got[2]["message"],
+        "Base overlaps Pin by 500 mm^3, expected no overlap"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

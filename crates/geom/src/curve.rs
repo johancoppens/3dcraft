@@ -120,6 +120,15 @@ impl Curve3 {
         }
     }
 
+    /// Whether it is freeform (a NURBS curve) rather than a line, circle
+    /// or ellipse, whose extremes are known in closed form.
+    pub fn is_freeform(&self) -> bool {
+        match self {
+            Curve3::Line(_) | Curve3::Circle(_) | Curve3::Ellipse(_) => false,
+            Curve3::Nurbs(_) => true,
+        }
+    }
+
     /// `(start, end)` of the parameter domain; infinite for a line, one
     /// period for closed analytic curves.
     pub fn domain(&self) -> (f64, f64) {

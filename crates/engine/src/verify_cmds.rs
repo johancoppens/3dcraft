@@ -55,6 +55,14 @@ pub(crate) struct Ctx<'a> {
     pub doc: &'a Document,
     pub regen: &'a Regen,
     pub tolerance: Tolerance,
+    /// How many times finer than at first a measure that meshes (the box
+    /// of a freeform body) is to look: each step an eighth of the
+    /// tolerance before. An assertion the first look leaves undecided is
+    /// measured again with this raised.
+    pub refine: u32,
+    /// Most triangles of a mesh made to box one body
+    /// ([`BOX_TRIANGLE_BUDGET`]).
+    pub box_budget: usize,
 }
 
 impl<'a> Ctx<'a> {
@@ -65,6 +73,8 @@ impl<'a> Ctx<'a> {
             doc,
             regen,
             tolerance,
+            refine: 0,
+            box_budget: BOX_TRIANGLE_BUDGET,
         })
     }
 
@@ -440,7 +450,11 @@ pub(crate) struct Outcome {
     /// most `upper`. Equal to `number` for what is measured exactly (an
     /// integral, a count, a box); for the least of something searched for
     /// (a thickness, a distance) `upper` is what was found at a real place
-    /// and `lower` what nothing can be below.
+    /// and `lower` what nothing can be below; for the side of a box found
+    /// on a mesh, the other way round (`number` is reached, the other
+    /// bound is where the body stays within). Which side `number` is on
+    /// says which one is proven beside it: equal to `upper`, at least
+    /// `lower`; equal to `lower`, at most `upper`; else between the two.
     pub lower: Option<f64>,
     pub upper: Option<f64>,
     pub detail: Map<String, Value>,
@@ -611,94 +625,171 @@ fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, 
         None | Some(Value::Null) => all_bodies(ctx),
         Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
     };
-    // The box the bodies certainly reach (`inner`) and the one they
-    // certainly stay within (`outer`).
-    let (mut inner, mut outer) = (Bbox3::from_points([]), Bbox3::from_points([]));
+    // The box the bodies reach (`inner`; none when a body's is not known)
+    // and the one they stay within (`outer`).
+    let (mut inner, mut outer) = (Some(Bbox3::from_points([])), Bbox3::from_points([]));
+    let mut any = false;
+    let mut meshed_at: Option<f64> = None;
     for (id, body) in whole_bodies(ctx, &found, name)? {
-        let boxes = body_box(&body, ctx.doc.tolerance.linear)
+        let boxed = body_box(&body, ctx.doc.tolerance.linear, ctx.refine, ctx.box_budget)
             .map_err(|e| format!("`{}` has no box: {e}", ctx.feature_name(id)))?;
-        if let Some(((ilo, ihi), (olo, ohi))) = boxes {
-            inner.add(ilo);
-            inner.add(ihi);
-            outer.add(olo);
-            outer.add(ohi);
+        let Some(boxed) = boxed else {
+            continue;
+        };
+        any = true;
+        outer.add(boxed.outer.0);
+        outer.add(boxed.outer.1);
+        match (inner.as_mut(), boxed.inner) {
+            (Some(all), Some((lo, hi))) => {
+                all.add(lo);
+                all.add(hi);
+            }
+            _ => inner = None,
+        }
+        if let Some(t) = boxed.meshed_at {
+            meshed_at = Some(meshed_at.map_or(t, |m: f64| m.max(t)));
         }
     }
-    let ((ilo, ihi), (olo, ohi)) = inner
+    let (olo, ohi) = outer
         .corners()
-        .zip(outer.corners())
+        .filter(|_| any)
         .ok_or("there are no bodies to measure")?;
     let pick = |v: Vec3| [v.x, v.y, v.z].get(axis).copied().unwrap_or(0.0);
-    let (ilo, ihi, olo, ohi) = (pick(ilo), pick(ihi), pick(olo), pick(ohi));
-    // The value is where the bodies certainly reach; the true one lies
-    // between it and the outer box.
-    let (value, lower, upper) = match name {
-        "boxMin" => (ilo, olo, ilo),
-        "boxMax" => (ihi, ihi, ohi),
-        _ => (ihi - ilo, ihi - ilo, ohi - olo),
+    let (olo_a, ohi_a) = (pick(olo), pick(ohi));
+    let corners = inner.as_ref().and_then(Bbox3::corners);
+    // The value, and the range the true one lies in. With the box reached
+    // the value is its side (reached: the other bound is where the bodies
+    // stay within); without, it is the outer side, and the range is all
+    // the outer box allows.
+    let (value, lower, upper) = match corners {
+        Some((ilo, ihi)) => {
+            let (ilo, ihi) = (pick(ilo), pick(ihi));
+            match name {
+                "boxMin" => (ilo, olo_a, ilo),
+                "boxMax" => (ihi, ihi, ohi_a),
+                _ => (ihi - ilo, (ihi - ilo).max(0.0), ohi_a - olo_a),
+            }
+        }
+        None => match name {
+            "boxMin" => (olo_a, olo_a, ohi_a),
+            "boxMax" => (ohi_a, olo_a, ohi_a),
+            _ => (ohi_a - olo_a, 0.0, ohi_a - olo_a),
+        },
     };
     let mut out = Outcome::number(Dim::Length(1), value);
     out.lower = Some(lower.min(value));
     out.upper = Some(upper.max(value));
-    if let Some((lo, hi)) = inner.corners() {
+    if let Some((lo, hi)) = corners {
         out.detail.insert("min".into(), vec3(lo));
         out.detail.insert("max".into(), vec3(hi));
     }
-    if let (Some((lo, hi)), true) = (outer.corners(), lower < upper) {
+    if lower < upper {
         out.detail
-            .insert("within".into(), json!([vec3(lo), vec3(hi)]));
+            .insert("within".into(), json!([vec3(olo), vec3(ohi)]));
+    }
+    if let Some(t) = meshed_at {
+        out.detail.insert("meshTolerance".into(), t.into());
     }
     Ok(out)
 }
 
-/// A body's box as two boxes: one it certainly reaches and one it
-/// certainly stays within, the same where the box is known exactly.
-/// Exact ([`Body::held_bbox`]) for a body of planes, cylinders, cones,
-/// spheres and tori bounded by lines, circles and ellipses. That box takes
-/// a Bézier or NURBS face, or a NURBS edge, by its whole control net,
-/// however little of it the trimmed face uses (the flank of a cut gear
-/// tooth), so a body with one is meshed instead: the mesh's vertices lie
-/// on the body, so its box is reached, and no point of the body is farther
-/// from the mesh than the chordal tolerance, so that box grown by it (and
-/// kept within the held box) holds the body. The tolerance is a
-/// hundred-thousandth of the side of a square of the body's area, at least ten
-/// times the document's linear tolerance `linear`. `None` for a body with
-/// nothing to box.
-#[allow(clippy::type_complexity)]
-fn body_box(body: &Arc<Body>, linear: f64) -> Result<Option<((Vec3, Vec3), (Vec3, Vec3))>, String> {
+/// Most triangles a mesh made to box one body may have: past it the mesh
+/// is made coarser, as the viewer's is.
+const BOX_TRIANGLE_BUDGET: usize = 2_000_000;
+
+/// How much farther than the chordal tolerance the outer box is grown: the
+/// tessellator measures its deviation from the surface at a few points of
+/// each triangle and chord (the centroid and the sides' midpoints; a
+/// chord's quarters), so the bound it keeps is a measured one, not a
+/// proof, and a margin is kept beside it.
+const BOX_SAFETY: f64 = 2.0;
+
+/// A body's box: the one it reaches, when known, and the one it stays
+/// within.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BodyBox {
+    inner: Option<(Vec3, Vec3)>,
+    outer: (Vec3, Vec3),
+    /// The chordal tolerance of the mesh it was found on, if it was.
+    meshed_at: Option<f64>,
+}
+
+/// A body's box. Exact ([`Body::held_bbox`], a true bound and the tight
+/// one there) for a body of planes, cylinders, cones, spheres and tori
+/// bounded by lines, circles and ellipses. That box takes a freeform face
+/// (a Bézier patch or a NURBS surface), or a NURBS edge, by its whole
+/// control net, however little of it the trimmed face uses (the flank of
+/// a cut gear tooth), so such a body is meshed instead:
+///
+/// - The mesh's vertices lie on the body, to within the largest tolerance
+///   of its entities (an edge of a STEP import or an intersection curve
+///   may lie that far from its faces), so the mesh's box shrunk by it is
+///   reached.
+/// - Within the tessellator's measured tolerance no point of the body is
+///   farther from the mesh than the chordal tolerance, so the mesh's box
+///   grown by [`BOX_SAFETY`] times it, kept within the held box, is where
+///   the body stays.
+///
+/// The chordal tolerance is a hundred-thousandth of the side of a square
+/// of the body's area, an eighth of that for each step of `refine`, never
+/// below ten times the document's linear tolerance `linear`, and coarser
+/// where `budget` triangles would not do. Where the body cannot be meshed
+/// within the budget, or measured, the box it reaches is not known and the
+/// held box is where it stays. `None` for a body with nothing to box.
+fn body_box(
+    body: &Arc<Body>,
+    linear: f64,
+    refine: u32,
+    budget: usize,
+) -> Result<Option<BodyBox>, String> {
     let held = body.held_bbox().map_err(|e| e.to_string())?;
     let Some((hlo, hhi)) = held.corners() else {
         return Ok(None);
     };
-    let freeform = body.faces.iter().any(|f| {
-        matches!(
-            f.surface,
-            craft3d_geom::Surface::Bezier(_) | craft3d_geom::Surface::Nurbs(_)
-        )
-    }) || body
-        .edges
-        .iter()
-        .any(|e| matches!(e.curve, craft3d_geom::Curve3::Nurbs(_)));
+    let freeform = body.faces.iter().any(|f| f.surface.is_freeform())
+        || body.edges.iter().any(|e| e.curve.is_freeform());
     if !freeform {
-        return Ok(Some(((hlo, hhi), (hlo, hhi))));
+        return Ok(Some(BodyBox {
+            inner: Some((hlo, hhi)),
+            outer: (hlo, hhi),
+            meshed_at: None,
+        }));
     }
-    let area = crate::mass::mass_of(body)
-        .map(|m| m.area)
-        .map_err(|e| e.to_string())?;
-    if !(area.is_finite() && area > 0.0) {
-        return Err("it has no area to mesh".into());
-    }
-    let tolerance = (area.sqrt() * 1e-5).max(10.0 * linear);
+    let unknown = BodyBox {
+        inner: None,
+        outer: (hlo, hhi),
+        meshed_at: None,
+    };
+    let area = match crate::mass::mass_of(body) {
+        Ok(m) if m.area.is_finite() && m.area > 0.0 => m.area,
+        _ => return Ok(Some(unknown)),
+    };
+    let floor = 10.0 * linear;
+    let fine = 8.0_f64.powi(i32::try_from(refine.min(8)).unwrap_or(8));
+    let tolerance = (area.sqrt() * 1e-5 / fine).max(floor);
     let params = craft3d_tess::TessParams {
         chordal_tolerance: tolerance,
+        max_triangles: Some(budget),
         ..craft3d_tess::TessParams::default()
     };
-    let (mlo, mhi) = crate::mass::mesh_box_of(body, &params)
-        .ok_or("its freeform faces cannot be meshed to find the box they reach")?;
-    let t = Vec3::new(tolerance, tolerance, tolerance);
-    let (olo, ohi) = ((mlo - t).max(hlo), (mhi + t).min(hhi));
-    // Rounding aside, the mesh's box lies within the outer one.
-    Ok(Some(((mlo, mhi), (olo.min(mlo), ohi.max(mhi)))))
+    let Some((mlo, mhi, used)) = crate::mass::mesh_box_within(body, &params) else {
+        return Ok(Some(unknown));
+    };
+    let grow = BOX_SAFETY * used;
+    let grow = Vec3::new(grow, grow, grow);
+    let olo = (mlo - grow).max(hlo).min(mlo);
+    let ohi = (mhi + grow).min(hhi).max(mhi);
+    let off = body.tolerances.largest().unwrap_or(0.0).max(linear);
+    let off = Vec3::new(off, off, off);
+    let (ilo, ihi) = (mlo + off, mhi - off);
+    // Shrunk past itself along an axis (a body thinner than its own
+    // tolerance): nothing is known to be reached.
+    let inner = (ilo.x <= ihi.x && ilo.y <= ihi.y && ilo.z <= ihi.z).then_some((ilo, ihi));
+    Ok(Some(BodyBox {
+        inner,
+        outer: (olo, ohi),
+        meshed_at: Some(used),
+    }))
 }
 
 /// `axis` of a measure: 0, 1 or 2.
@@ -1342,4 +1433,142 @@ fn measure_ray(session: &mut Session, params: &Value) -> Run {
         "direction": vec3(dir),
         "lengthUnit": length_unit(doc),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::Workspace;
+
+    /// A parabolic segment (a NURBS face from `sketch.curve`) extruded:
+    /// its body.
+    fn segment() -> Arc<Body> {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("sketch.create", json!({"name": "Dish"})),
+            (
+                "sketch.curve",
+                json!({"sketch": "Dish", "x": "t", "y": "t^2 / 40 mm", "t": ["-20 mm", "20 mm"]}),
+            ),
+            (
+                "sketch.line",
+                json!({"sketch": "Dish", "from": "e2", "to": "e1"}),
+            ),
+            (
+                "feature.extrude",
+                json!({"sketch": "Dish", "distance": 5, "name": "Segment"}),
+            ),
+        ] {
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let regen = s.document_mut().unwrap().regen();
+        let (_, body) = regen.bodies().next().unwrap();
+        Arc::clone(body)
+    }
+
+    /// Past the triangle budget the mesh is made coarser; a body no mesh
+    /// within the budget fits has no box it is known to reach, and the
+    /// held box (a true bound) is where it stays.
+    #[test]
+    fn a_box_too_fine_for_the_budget_is_coarser_or_only_the_held_box() {
+        let body = segment();
+        let held = body.held_bbox().unwrap().corners().unwrap();
+        let fine = body_box(&body, 1e-6, 0, BOX_TRIANGLE_BUDGET)
+            .unwrap()
+            .unwrap();
+        let fine_at = fine.meshed_at.unwrap();
+        // A small budget: a coarser mesh, still a box reached.
+        let coarse = body_box(&body, 1e-6, 0, 400).unwrap().unwrap();
+        assert!(coarse.meshed_at.unwrap() > fine_at, "{coarse:?}");
+        // What is reached lies within where it stays, and that within the
+        // held box.
+        for b in [fine, coarse] {
+            let ((ilo, ihi), (olo, ohi)) = (b.inner.unwrap(), b.outer);
+            assert!(olo.x <= ilo.x && olo.y <= ilo.y && olo.z <= ilo.z, "{b:?}");
+            assert!(ihi.x <= ohi.x && ihi.y <= ohi.y && ihi.z <= ohi.z, "{b:?}");
+            assert!(
+                olo.x >= held.0.x && olo.y >= held.0.y && ohi.x <= held.1.x,
+                "{b:?}"
+            );
+            assert!(ohi.y <= held.1.y, "{b:?}");
+        }
+        // A budget of one triangle: no mesh fits.
+        let none = body_box(&body, 1e-6, 0, 1).unwrap().unwrap();
+        assert_eq!(none.inner, None);
+        assert_eq!(none.outer, held);
+        assert_eq!(none.meshed_at, None);
+        // Finer on request, an eighth each step, down to ten linear
+        // tolerances.
+        let finer = body_box(&body, 1e-6, 1, BOX_TRIANGLE_BUDGET)
+            .unwrap()
+            .unwrap();
+        assert!(finer.meshed_at.unwrap() < fine_at / 7.0, "{finer:?}");
+        let floor = body_box(&body, 1e-3, 3, BOX_TRIANGLE_BUDGET)
+            .unwrap()
+            .unwrap();
+        assert!((floor.meshed_at.unwrap() - 1e-2).abs() < 1e-12, "{floor:?}");
+    }
+
+    /// Where no mesh fits the budget, the box measures still answer, as a
+    /// range: all the held box allows. A bound on the side the held box
+    /// holds is met soundly (a max on boxMax or extent, a min on boxMin);
+    /// any other is left unproven, never passed.
+    #[test]
+    fn without_a_mesh_a_box_measure_is_the_range_the_held_box_allows() {
+        let mut s = Session::new(Workspace::none());
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("sketch.create", json!({"name": "Dish"})),
+            (
+                "sketch.curve",
+                json!({"sketch": "Dish", "x": "t", "y": "t^2 / 40 mm", "t": ["-20 mm", "20 mm"]}),
+            ),
+            (
+                "sketch.line",
+                json!({"sketch": "Dish", "from": "e2", "to": "e1"}),
+            ),
+            (
+                "feature.extrude",
+                json!({"sketch": "Dish", "distance": 5, "name": "Segment"}),
+            ),
+        ] {
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let open = s.document_mut().unwrap();
+        let regen = open.regen();
+        let doc = Arc::clone(open.history.current());
+        let mut ctx = Ctx::new(&doc, &regen).unwrap();
+        ctx.box_budget = 1;
+        let mut along_x = Map::new();
+        along_x.insert("axis".into(), "x".into());
+        let decide = |out: &Outcome, lo: Option<f64>, hi: Option<f64>| {
+            crate::assert_cmds::decide(out, None, (lo, hi), Dim::Length(1), 1e-6)
+        };
+        // The segment spans x from -20 to 20; the held box at least that.
+        let max = take(&ctx, "boxMax", &along_x).unwrap();
+        let (lower, upper) = (max.lower.unwrap(), max.upper.unwrap());
+        assert!(
+            upper >= 20.0 - 1e-9 && lower <= -20.0 + 1e-9,
+            "{lower} {upper}"
+        );
+        assert_eq!(max.number, Some(upper));
+        // At most where the held box ends: met. At least 19: not proven.
+        assert_eq!(decide(&max, None, Some(upper)), Some(true));
+        assert_eq!(decide(&max, Some(19.0), None), None);
+        let min = take(&ctx, "boxMin", &along_x).unwrap();
+        let lowest = min.lower.unwrap();
+        assert_eq!(decide(&min, Some(lowest), None), Some(true));
+        assert_eq!(decide(&min, None, Some(-19.0)), None);
+        let extent = take(&ctx, "extent", &along_x).unwrap();
+        assert_eq!(extent.lower, Some(0.0));
+        assert_eq!(
+            decide(&extent, None, Some(extent.upper.unwrap())),
+            Some(true)
+        );
+        assert_eq!(decide(&extent, Some(39.0), None), None);
+    }
 }

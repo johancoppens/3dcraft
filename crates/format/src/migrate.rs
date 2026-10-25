@@ -656,6 +656,13 @@ fn v35_to_v36(mut manifest: Value) -> Result<Value, String> {
         return Ok(manifest);
     };
     for assertion in assertions {
+        let name: String = assertion
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .chars()
+            .take(80)
+            .collect();
         let Some(measure) = assertion.get_mut("measure").and_then(Value::as_object_mut) else {
             continue;
         };
@@ -664,13 +671,17 @@ fn v35_to_v36(mut manifest: Value) -> Result<Value, String> {
         }
         measure.insert("measure".into(), Value::from("overlap"));
         let Some(expect) = assertion.get_mut("expect").and_then(Value::as_object_mut) else {
-            return Err("an interference assertion without `expect`".into());
+            return Err(format!(
+                "assertion `{name}` measures interference but has no `expect`"
+            ));
         };
         let none_overlap = match expect.get("is") {
             None | Some(Value::Null) => true,
             Some(Value::Bool(is)) => *is,
             Some(_) => {
-                return Err("an interference assertion whose `is` is not true or false".into());
+                return Err(format!(
+                    "assertion `{name}` measures interference but its `is` is not true or false"
+                ));
             }
         };
         expect.insert("is".into(), Value::from(!none_overlap));

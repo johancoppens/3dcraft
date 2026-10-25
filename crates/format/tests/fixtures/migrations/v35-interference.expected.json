@@ -1,0 +1,77 @@
+{
+  "format_version": 35,
+  "written_by": "abb1cd51",
+  "how": "craft3d-cli built from main abb1cd51 (the build in ~/.local/bin): run --new '{\"units\": \"mm\"}' --script v35-interference.steps.json --out v35-interference.3dcraft, then info v35-interference.3dcraft. Not one of the frozen fixtures of tests/fixtures/versions: the case version 36's migration (v35_to_v36) is for, held by crates/engine/tests/verification.rs",
+  "features": [
+    {
+      "id": "F1",
+      "name": "Base",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Pin",
+      "status": "ok"
+    },
+    {
+      "id": "F3",
+      "name": "Cap",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 16000.000000000007,
+      "area": 4800.000000000004
+    },
+    {
+      "feature": "F2",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 2000.000000000001,
+      "area": 1000.0000000000009
+    },
+    {
+      "feature": "F3",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 8000.000000000004,
+      "area": 4000.0000000000027
+    }
+  ],
+  "assertions": [
+    {
+      "expected": "true",
+      "measure": "interference",
+      "measured": "true",
+      "message": "interference: true",
+      "name": "cap clear",
+      "status": "passed"
+    },
+    {
+      "expected": "false",
+      "measure": "interference",
+      "measured": "false (1 pairs overlap)",
+      "message": "interference: false (1 pairs overlap)",
+      "name": "pin pressed",
+      "status": "passed"
+    },
+    {
+      "expected": "true",
+      "measure": "interference",
+      "measured": "false (1 pairs overlap)",
+      "message": "interference: measured false (1 pairs overlap), expected true",
+      "name": "all clear",
+      "status": "failed"
+    }
+  ]
+}

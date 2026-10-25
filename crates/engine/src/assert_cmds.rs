@@ -695,17 +695,32 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         return checked;
     };
     params.remove("measure");
-    let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            checked.state.message = format!("cannot be measured: {e}");
-            return checked;
+    // A box found on a mesh that leaves the bound undecided is looked at
+    // again on a finer mesh, a few times, while one can be made finer.
+    let refinable = matches!(measure.as_str(), "extent" | "boxMin" | "boxMax");
+    let mut ctx = ctx;
+    let (outcome, verdict) = loop {
+        let outcome: Result<Outcome, String> = take(&ctx, &measure, &params);
+        let outcome = match outcome {
+            Ok(o) => o,
+            Err(e) => {
+                checked.state.message = format!("cannot be measured: {e}");
+                return checked;
+            }
+        };
+        let verdict = decide(&outcome, want, (lo, hi), dim, doc.tolerance.linear);
+        let finer = outcome
+            .detail
+            .get("meshTolerance")
+            .and_then(Value::as_f64)
+            .is_some_and(|t| t > 10.0 * doc.tolerance.linear * (1.0 + 1e-9));
+        if verdict.is_some() || !refinable || !finer || ctx.refine >= MAX_REFINE {
+            break (outcome, verdict);
         }
+        ctx.refine = ctx.refine.saturating_add(1);
     };
     checked.detail = outcome.detail;
-    // Yes, no, or not proven either way.
-    let verdict: Option<bool> = if let Some(want) = want {
+    if want.is_some() {
         let got = outcome.flag.unwrap_or(false);
         checked.value = got.into();
         checked.state.measured = Some(match &outcome.note {
@@ -714,76 +729,36 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
             Some(note) => format!("{got} ({note})"),
             None => got.to_string(),
         });
-        Some(got == want)
     } else {
         match outcome.number {
             Some(v) => {
                 checked.value = v.into();
                 checked.state.measured = Some(with_unit(v));
-                // The true value lies in [lower, upper]: a bound holds when
-                // the whole of that range is within it, fails when none of
-                // it is, and is not proven otherwise.
                 let lower = outcome.lower.unwrap_or(v);
                 let upper = outcome.upper.unwrap_or(v);
                 if lower < upper {
-                    // What is proven on the side the value found is not
-                    // on: a least searched for is found at a real place
-                    // (proven: at least), a box reached by a mesh is
-                    // reached (proven: at most).
-                    let proven = if v < upper {
+                    // Which bound is proven beside the value: the side it
+                    // is not on (see `Outcome::lower`).
+                    let proven = if v >= upper {
+                        checked.detail.insert("atLeast".into(), lower.into());
+                        format!("at least {}", with_unit(lower))
+                    } else if v <= lower {
                         checked.detail.insert("atMost".into(), upper.into());
                         format!("at most {}", with_unit(upper))
                     } else {
                         checked.detail.insert("atLeast".into(), lower.into());
-                        format!("at least {}", with_unit(lower))
+                        checked.detail.insert("atMost".into(), upper.into());
+                        format!("between {} and {}", with_unit(lower), with_unit(upper))
                     };
                     checked.state.measured = Some(format!("{} ({proven})", with_unit(v)));
-                }
-                // Within the document's tolerance (of a length; its square
-                // or cube for an area or a volume, and rounding for the
-                // rest) a bound is met: what the geometry cannot tell
-                // apart does not fail it.
-                let slack = |b: f64| {
-                    let tol = match dim {
-                        Dim::Length(k) => doc.tolerance.linear.powi(k),
-                        _ => 0.0,
-                    };
-                    tol.max(1e-12 * b.abs())
-                };
-                let at_least = |lo: f64| {
-                    if lower >= lo - slack(lo) {
-                        Some(true)
-                    } else if upper < lo - slack(lo) {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                };
-                let at_most = |hi: f64| {
-                    if upper <= hi + slack(hi) {
-                        Some(true)
-                    } else if lower > hi + slack(hi) {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                };
-                let checks = [lo.map(at_least), hi.map(at_most)];
-                if checks.contains(&Some(Some(false))) {
-                    Some(false)
-                } else if checks.contains(&Some(None)) {
-                    None
-                } else {
-                    Some(true)
                 }
             }
             None => {
                 checked.value = outcome.note.clone().map_or(Value::Null, Value::from);
                 checked.state.measured = outcome.note.clone();
-                Some(false)
             }
         }
-    };
+    }
     let measured = checked
         .state
         .measured
@@ -813,6 +788,68 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         ),
     };
     checked
+}
+
+/// How many times a box found on a mesh is looked at again, each time on
+/// a mesh eight times finer, while that leaves the bound undecided.
+const MAX_REFINE: u32 = 3;
+
+/// Whether `outcome` meets what is wanted: yes, no, or not proven either
+/// way (`None`). `want` for a yes-or-no measure; else the bounds `lo` and
+/// `hi` against the range the true value lies in, `[lower, upper]`: a
+/// bound holds when the whole of that range is within it, fails when none
+/// of it is, and is not proven otherwise. Within the document's tolerance
+/// `linear` (of a length; its square or cube for an area or a volume, and
+/// rounding for the rest) a bound is met: what the geometry cannot tell
+/// apart does not fail it.
+pub(crate) fn decide(
+    outcome: &Outcome,
+    want: Option<bool>,
+    (lo, hi): (Option<f64>, Option<f64>),
+    dim: Dim,
+    linear: f64,
+) -> Option<bool> {
+    if let Some(want) = want {
+        return Some(outcome.flag.unwrap_or(false) == want);
+    }
+    let Some(v) = outcome.number else {
+        return Some(false);
+    };
+    let lower = outcome.lower.unwrap_or(v);
+    let upper = outcome.upper.unwrap_or(v);
+    let slack = |b: f64| {
+        let tol = match dim {
+            Dim::Length(k) => linear.powi(k),
+            _ => 0.0,
+        };
+        tol.max(1e-12 * b.abs())
+    };
+    let at_least = |lo: f64| {
+        if lower >= lo - slack(lo) {
+            Some(true)
+        } else if upper < lo - slack(lo) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    let at_most = |hi: f64| {
+        if upper <= hi + slack(hi) {
+            Some(true)
+        } else if lower > hi + slack(hi) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    let checks = [lo.map(at_least), hi.map(at_most)];
+    if checks.contains(&Some(Some(false))) {
+        Some(false)
+    } else if checks.contains(&Some(None)) {
+        None
+    } else {
+        Some(true)
+    }
 }
 
 /// Checks one assertion; one that panics is an error, not a lost

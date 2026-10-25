@@ -131,28 +131,56 @@ fn remember<T>(store: &Mutex<Store<T>>, body: &Arc<Body>, value: T) {
     remembered.by_body.insert(at, (key, when, value));
 }
 
-/// The corners of the box around a body's mesh, with the chordal
-/// tolerance it was meshed at (its bits).
-type Boxed = (u64, Option<(Vec3, Vec3)>);
+/// The boxes around a body's meshes, by what they were asked for (the
+/// chordal tolerance's bits and the triangle budget): the corners and the
+/// tolerance the mesh was made at, `None` when it could not be made.
+type Boxed = Vec<(BoxKey, Option<(Vec3, Vec3, f64)>)>;
+type BoxKey = (u64, Option<usize>);
+
+/// Most boxes remembered per body: `document.inspect`'s, and the
+/// assertions' at a few finenesses.
+const MAX_BOXES_PER_BODY: usize = 6;
 
 static REMEMBERED_BOXES: Mutex<Store<Boxed>> = Mutex::new(Store::new());
 
 /// The corners of the box around `body` meshed at `params` (what
-/// `document.inspect` lists as `bbox`; `None` when it cannot be meshed),
-/// worked out once per body and chordal tolerance: the last tolerance is
-/// remembered, which stays the same while no body's area changes.
+/// `document.inspect` lists as `bbox`; `None` when it cannot be meshed).
 pub(crate) fn mesh_box_of(body: &Arc<Body>, params: &TessParams) -> Option<(Vec3, Vec3)> {
-    let tolerance = params.chordal_tolerance.to_bits();
-    if let Some((at, corners)) = recall(&REMEMBERED_BOXES, body)
-        && at == tolerance
-    {
-        return corners;
+    mesh_box_within(body, params).map(|(lo, hi, _)| (lo, hi))
+}
+
+/// The corners of the box around `body` meshed at `params`, with the
+/// chordal tolerance the mesh was made at: the one asked for, or with a
+/// triangle budget (`params.max_triangles`) a coarser one that keeps
+/// within it ([`craft3d_tess::tessellate_within_budget`]). `None` when it
+/// cannot be meshed (within the budget). Worked out once per body and
+/// parameters, a few of them remembered per body.
+pub(crate) fn mesh_box_within(body: &Arc<Body>, params: &TessParams) -> Option<(Vec3, Vec3, f64)> {
+    let key: BoxKey = (params.chordal_tolerance.to_bits(), params.max_triangles);
+    let mut known = recall(&REMEMBERED_BOXES, body).unwrap_or_default();
+    if let Some((_, corners)) = known.iter().find(|(at, _)| *at == key) {
+        return *corners;
     }
-    let corners = tessellate_body(body, params)
-        .ok()
-        .and_then(|mesh| mesh.bbox().corners());
+    let corners = match params.max_triangles {
+        None => tessellate_body(body, params)
+            .ok()
+            .and_then(|mesh| mesh.bbox().corners())
+            .map(|(lo, hi)| (lo, hi, params.chordal_tolerance)),
+        Some(_) => craft3d_tess::tessellate_within_budget(body, params)
+            .ok()
+            .and_then(|made| {
+                made.mesh
+                    .bbox()
+                    .corners()
+                    .map(|(lo, hi)| (lo, hi, made.tolerance))
+            }),
+    };
+    if known.len() >= MAX_BOXES_PER_BODY {
+        known.remove(0);
+    }
+    known.push((key, corners));
     forget(&REMEMBERED_BOXES, body);
-    remember(&REMEMBERED_BOXES, body, (tolerance, corners));
+    remember(&REMEMBERED_BOXES, body, known);
     corners
 }
 

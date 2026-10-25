@@ -83,8 +83,14 @@ Three that need a word:
 - **Each side of the box.** `extent` bounds the size, the sum of both sides. To let nothing stick out
   more than 6.5 mm beyond rails of width `w` centred on the origin, on +x and on -x separately:
   `{"measure": "boxMax", "axis": "x", "max": "w / 2 + 6.5 mm"}` and `{"measure": "boxMin", "axis":
-  "x", "min": "-w / 2 - 6.5 mm"}`. Coordinates are in the model's frame. The box of a body with spline faces is found on a fine mesh: it is
-  exact to within a hundred-thousandth of the body's size, and a bound closer than that is *notProven*.
+  "x", "min": "-w / 2 - 6.5 mm"}`. Coordinates are in the model's frame. The box of a body with spline faces is found on a fine mesh: the
+  value is a side the body reaches, and it stays within twice the mesh's tolerance beyond it (within
+  what the tessellator measures of its own accuracy; the box of the spline's whole control net is the
+  outer limit that always holds). A bound that falls in between is looked at again on finer meshes,
+  down to ten times the document's tolerance; what is still in between is *notProven*. So an `eq` on
+  such a body wants a `tol` of a few ten-thousandths of its size (or a `min`/`max` with that room); a
+  body too large to mesh within two million triangles gives only the outer limit, which settles a
+  `max` on `boxMax` or `extent` and a `min` on `boxMin` and leaves the rest *notProven*.
 - **Overlap** is true when bodies overlap, so `{"measure": "overlap", "of": ["Bolt", "Plate"], "is":
   false}` asserts they do not (`to` compares `of` with other bodies instead of with each other; leave
   both out for all bodies). Its message says it in words: *no overlap*, or *Bolt overlaps Plate by
