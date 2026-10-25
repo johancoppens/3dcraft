@@ -1299,6 +1299,94 @@ fn each_side_of_the_box_is_asserted_on_its_own() {
     }
 }
 
+/// The box of a body with a spline face cut by a boolean is the box of
+/// what is left, not of the spline's whole control net (an R1 tester's
+/// gear measured 44.99 x 17 mm where it is 43.99 x 15). A parabolic
+/// segment `y = t^2 / (4 f)` for `t` from `-a` to `a`, closed by its chord
+/// and extruded `d`, with everything past `x = c` cut away: its box is
+/// `x` from `-a` to `c`, `y` from 0 (the vertex) to `a^2 / (4 f)` (the
+/// end at `-a`), `z` from 0 to `d`.
+#[test]
+fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
+    for k in [1.0, 1000.0, 1e-3] {
+        let (f, a, c, d) = (10.0 * k, 20.0 * k, 8.0 * k, 5.0 * k);
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        for (name, value) in [("f", f), ("a", a), ("c", c)] {
+            run(
+                &mut s,
+                "variable.set",
+                json!({"name": name, "expr": format!("{value} mm")}),
+            );
+        }
+        run(&mut s, "sketch.create", json!({"name": "Dish"}));
+        run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": "Dish", "x": "t", "y": "t^2 / (4 * f)", "t": ["-a", "a"]}),
+        );
+        run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "Dish", "from": "e2", "to": "e1"}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Dish", "distance": d, "name": "Segment"}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Cutter", "size": [2.0 * a, 2.0 * a, 3.0 * d], "position": [c, -a, -d]}),
+        );
+        let cut = run(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "Cut", "op": "subtract", "target": "Segment", "tool": "Cutter"}),
+        );
+        assert_eq!(cut["status"], "ok", "{k}: {cut}");
+        let top = a * a / (4.0 * f);
+        // Where the box is reached at a vertex the mesh has it exactly;
+        // what is proven on the other side is within the mesh's tolerance
+        // (a hundred-thousandth of the side of a square of the area, some
+        // 3e-4 k here), so a tol of 1e-3 k settles it.
+        let tol = 1e-6 * k;
+        for (measure, axis, want) in [
+            ("boxMax", "x", c),
+            ("boxMin", "x", -a),
+            ("extent", "x", a + c),
+            ("boxMax", "y", top),
+            ("extent", "z", d),
+        ] {
+            let name = format!("{measure} {axis}");
+            let got = run(
+                &mut s,
+                "assert.add",
+                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", 1e-3 * k)}),
+            );
+            assert_eq!(got["status"], "passed", "{k} {name}: {got}");
+            close(&got["measured"], want, tol, &name);
+        }
+        // The vertex of the parabola lies inside a face: reached within the
+        // mesh's tolerance, which is proven on both sides.
+        let low = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "low", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", -0.01 * k), "max": format!("{} mm", 0.01 * k)}),
+        );
+        assert_eq!(low["status"], "passed", "{k}: {low}");
+        // Past the vertex by more than the mesh can be off: failed, not
+        // passed and not left unproven.
+        let above = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "above", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", 0.1 * k)}),
+        );
+        assert_eq!(above["status"], "failed", "{k}: {above}");
+    }
+}
+
 #[test]
 fn a_centre_of_mass_without_a_material_says_which_body_lacks_one() {
     let mut s = two_blocks(1.0, Some(1000.0), None);

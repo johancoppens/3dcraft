@@ -611,27 +611,94 @@ fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, 
         None | Some(Value::Null) => all_bodies(ctx),
         Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
     };
-    let mut all = Bbox3::from_points([]);
+    // The box the bodies certainly reach (`inner`) and the one they
+    // certainly stay within (`outer`).
+    let (mut inner, mut outer) = (Bbox3::from_points([]), Bbox3::from_points([]));
     for (id, body) in whole_bodies(ctx, &found, name)? {
-        let b = body
-            .bbox()
+        let boxes = body_box(&body, ctx.doc.tolerance.linear)
             .map_err(|e| format!("`{}` has no box: {e}", ctx.feature_name(id)))?;
-        if let Some((lo, hi)) = b.corners() {
-            all.add(lo);
-            all.add(hi);
+        if let Some(((ilo, ihi), (olo, ohi))) = boxes {
+            inner.add(ilo);
+            inner.add(ihi);
+            outer.add(olo);
+            outer.add(ohi);
         }
     }
-    let (lo, hi) = all.corners().ok_or("there are no bodies to measure")?;
+    let ((ilo, ihi), (olo, ohi)) = inner
+        .corners()
+        .zip(outer.corners())
+        .ok_or("there are no bodies to measure")?;
     let pick = |v: Vec3| [v.x, v.y, v.z].get(axis).copied().unwrap_or(0.0);
-    let value = match name {
-        "boxMin" => pick(lo),
-        "boxMax" => pick(hi),
-        _ => pick(hi) - pick(lo),
+    let (ilo, ihi, olo, ohi) = (pick(ilo), pick(ihi), pick(olo), pick(ohi));
+    // The value is where the bodies certainly reach; the true one lies
+    // between it and the outer box.
+    let (value, lower, upper) = match name {
+        "boxMin" => (ilo, olo, ilo),
+        "boxMax" => (ihi, ihi, ohi),
+        _ => (ihi - ilo, ihi - ilo, ohi - olo),
     };
     let mut out = Outcome::number(Dim::Length(1), value);
-    out.detail.insert("min".into(), vec3(lo));
-    out.detail.insert("max".into(), vec3(hi));
+    out.lower = Some(lower.min(value));
+    out.upper = Some(upper.max(value));
+    if let Some((lo, hi)) = inner.corners() {
+        out.detail.insert("min".into(), vec3(lo));
+        out.detail.insert("max".into(), vec3(hi));
+    }
+    if let (Some((lo, hi)), true) = (outer.corners(), lower < upper) {
+        out.detail
+            .insert("within".into(), json!([vec3(lo), vec3(hi)]));
+    }
     Ok(out)
+}
+
+/// A body's box as two boxes: one it certainly reaches and one it
+/// certainly stays within, the same where the box is known exactly.
+/// Exact ([`Body::held_bbox`]) for a body of planes, cylinders, cones,
+/// spheres and tori bounded by lines, circles and ellipses. That box takes
+/// a Bézier or NURBS face, or a NURBS edge, by its whole control net,
+/// however little of it the trimmed face uses (the flank of a cut gear
+/// tooth), so a body with one is meshed instead: the mesh's vertices lie
+/// on the body, so its box is reached, and no point of the body is farther
+/// from the mesh than the chordal tolerance, so that box grown by it (and
+/// kept within the held box) holds the body. The tolerance is a
+/// hundred-thousandth of the side of a square of the body's area, at least ten
+/// times the document's linear tolerance `linear`. `None` for a body with
+/// nothing to box.
+#[allow(clippy::type_complexity)]
+fn body_box(body: &Arc<Body>, linear: f64) -> Result<Option<((Vec3, Vec3), (Vec3, Vec3))>, String> {
+    let held = body.held_bbox().map_err(|e| e.to_string())?;
+    let Some((hlo, hhi)) = held.corners() else {
+        return Ok(None);
+    };
+    let freeform = body.faces.iter().any(|f| {
+        matches!(
+            f.surface,
+            craft3d_geom::Surface::Bezier(_) | craft3d_geom::Surface::Nurbs(_)
+        )
+    }) || body
+        .edges
+        .iter()
+        .any(|e| matches!(e.curve, craft3d_geom::Curve3::Nurbs(_)));
+    if !freeform {
+        return Ok(Some(((hlo, hhi), (hlo, hhi))));
+    }
+    let area = crate::mass::mass_of(body)
+        .map(|m| m.area)
+        .map_err(|e| e.to_string())?;
+    if !(area.is_finite() && area > 0.0) {
+        return Err("it has no area to mesh".into());
+    }
+    let tolerance = (area.sqrt() * 1e-5).max(10.0 * linear);
+    let params = craft3d_tess::TessParams {
+        chordal_tolerance: tolerance,
+        ..craft3d_tess::TessParams::default()
+    };
+    let (mlo, mhi) = crate::mass::mesh_box_of(body, &params)
+        .ok_or("its freeform faces cannot be meshed to find the box they reach")?;
+    let t = Vec3::new(tolerance, tolerance, tolerance);
+    let (olo, ohi) = ((mlo - t).max(hlo), (mhi + t).min(hhi));
+    // Rounding aside, the mesh's box lies within the outer one.
+    Ok(Some(((mlo, mhi), (olo.min(mlo), ohi.max(mhi)))))
 }
 
 /// `axis` of a measure: 0, 1 or 2.

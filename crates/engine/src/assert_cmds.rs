@@ -726,9 +726,18 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
                 let lower = outcome.lower.unwrap_or(v);
                 let upper = outcome.upper.unwrap_or(v);
                 if lower < upper {
-                    checked.state.measured =
-                        Some(format!("{} (at least {})", with_unit(v), with_unit(lower)));
-                    checked.detail.insert("atLeast".into(), lower.into());
+                    // What is proven on the side the value found is not
+                    // on: a least searched for is found at a real place
+                    // (proven: at least), a box reached by a mesh is
+                    // reached (proven: at most).
+                    let proven = if v < upper {
+                        checked.detail.insert("atMost".into(), upper.into());
+                        format!("at most {}", with_unit(upper))
+                    } else {
+                        checked.detail.insert("atLeast".into(), lower.into());
+                        format!("at least {}", with_unit(lower))
+                    };
+                    checked.state.measured = Some(format!("{} ({proven})", with_unit(v)));
                 }
                 // Within the document's tolerance (of a length; its square
                 // or cube for an area or a volume, and rounding for the
@@ -798,7 +807,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         None => (
             Status::NotProven,
             format!(
-                "{measure}: not proven: found {measured}, expected {}; the least there is was not pinned down closely enough to tell",
+                "{measure}: not proven: found {measured}, expected {}; what was measured was not pinned down closely enough to tell",
                 checked.state.expected
             ),
         ),
