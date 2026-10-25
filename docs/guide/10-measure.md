@@ -41,13 +41,14 @@ is below, beside the value found at a real place. On the flange of [chapter 3](0
 ]
 ```
 
-- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax` (where the box begins and ends
-  along `axis`, so each side is bounded on its own), `centerOfMass` (its
-  coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
+- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax`
+  (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
+  (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`.
-- Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or `max`;
-  `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it said). Bounds are expressions in the document's variables, so they follow the design: the
-  case's volume is right for any `wall`.
+- Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
+  `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
+  said). Bounds are expressions in the document's variables, so they follow the design: the case's
+  volume is right for any `wall`.
 - An assertion may be written before the model meets it, even before its subject exists (it is in
   *error* until then).
 - An assertion names a feature's body as it is at that feature. A feature added on top of it later (a
@@ -87,8 +88,9 @@ Three that need a word:
   false}` asserts they do not (`to` compares `of` with other bodies instead of with each other; leave
   both out for all bodies). Its message says it in words: *no overlap*, or *Bolt overlaps Plate by
   12 mm^3, expected no overlap*. `is: true` asserts a press fit. Before 2026-10-25 this measure was
-  `interference`, true when *none* overlap; that form is still read, from files too, and is written
-  as `overlap` with the opposite `is`.
+  `interference`, true when *none* overlap; files that have it are brought up to date when they open
+  (it becomes `overlap` with the opposite `is`, meaning the same), and a command that still sends it
+  is taken the same way.
 
 One trap: in an expression a power binds to the number with its unit, so `50 cm^3` would mean
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the

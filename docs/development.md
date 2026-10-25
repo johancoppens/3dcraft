@@ -287,7 +287,7 @@ A typical agent loop:
 
 ## Native format (.3dcraft)
 
-See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries holding `manifest.json` (the document: variables, tables, sketches, constraints, features in order, assertions, sets, public parameters and info; format 35 at 0.1.0), content-addressed `blobs/<sha256>.step` for the bytes of imported STEP files, and `thumb.png` (written for a Jig, ignored on load). A published Jig, `.3dcraftjig`, is the same format. Saves are atomic (write a temp file, fsync, rename). Autosave writes snapshots to a recovery directory on a background thread.
+See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries holding `manifest.json` (the document: variables, tables, sketches, constraints, features in order, assertions, sets, public parameters and info; format 36 at 0.1.0), content-addressed `blobs/<sha256>.step` for the bytes of imported STEP files, and `thumb.png` (written for a Jig, ignored on load). A published Jig, `.3dcraftjig`, is the same format. Saves are atomic (write a temp file, fsync, rename). Autosave writes snapshots to a recovery directory on a background thread.
 
 ## Graphics startup and device loss
 

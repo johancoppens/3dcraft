@@ -333,6 +333,84 @@ fn arcs_written_with_expressions_follow_their_variables() {
     }
 }
 
+/// A through point held by expressions is kept on the arc's circle, not
+/// within its span: the arc keeps the way round it was drawn with. Moved
+/// by a large change to the other side of the chord, the point stays on
+/// the circle (the same circle: three points fix it) while the arc stays
+/// the upper half, so it no longer passes through the point. Pinned so the
+/// limit the spec states is the one that holds.
+#[test]
+fn a_held_through_point_moved_past_the_arcs_ends_stays_on_its_circle() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "tx", "expr": "3 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ty", "expr": "4 mm"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "P"}));
+    let path = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "P", "start": [-5, 0], "segments": [
+            {"arc": [5, 0], "through": ["tx", "ty"]}
+        ], "closed": true}),
+    );
+    assert_eq!(path["status"], "ok", "{path}");
+    // The through point, per entity as centers are; none for the closing
+    // line.
+    let through = path["through"].as_array().unwrap().clone();
+    assert_eq!(through.len(), 2, "{path}");
+    assert!(through[1].is_null(), "{path}");
+    let point = text(&through[0]).to_string();
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "P", "distance": 2, "name": "Body"}),
+    );
+    let half = PI * 25.0 / 2.0 * 2.0;
+    assert_volume(&mut s, half, "drawn");
+    // To (4, -3): below the chord, on the same circle.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "tx", "expr": "4 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ty", "expr": "-3 mm"}),
+    );
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+    assert_at(
+        xy(&inspected, &point),
+        (4.0, -3.0),
+        5.0,
+        "the through point",
+    );
+    // Still the upper half disc.
+    let solid = assert_volume(&mut s, half, "moved");
+    let lo = solid["bbox"][0][1].as_f64().unwrap();
+    assert!(lo > -1e-9, "{}", solid["bbox"]);
+    // Numbers make no point of their own.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "P"}));
+    let path = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "P", "start": [-5, 0], "segments": [
+            {"line": [0, -1]}, {"arc": [5, 0], "through": [3, 4]}
+        ]}),
+    );
+    assert_eq!(path["through"], json!([null, null]), "{path}");
+}
+
 /// The centre of an arc, and whether the path walks it counter-clockwise.
 type Walked = ((f64, f64), bool);
 

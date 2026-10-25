@@ -1,0 +1,16 @@
+[
+  ["variable.set", {"name": "w", "expr": "100 mm"}],
+  ["variable.set", {"name": "p", "expr": "5 mm"}],
+  ["feature.block", {"name": "Rails", "size": ["w", "w", "w"], "position": ["-w / 2", "-w / 2", 0]}],
+  ["feature.block", {"name": "Panel", "size": ["p + 1 mm", "10 mm", "10 mm"], "position": ["w / 2 - 1 mm", 0, 0]}],
+  ["feature.block", {"name": "Lid", "size": ["w", "w", "2 mm"], "position": ["-w / 2", "-w / 2", "w + 1 mm"]}],
+  ["body.material", {"body": "Rails", "name": "aluminium", "density": 2700}],
+  ["body.material", {"body": "Panel", "name": "steel", "density": "7.85 g/cm3"}],
+  ["body.material", {"body": "Lid", "name": "aluminium", "density": 2700}],
+  ["assert.add", {"name": "nothing past +x", "measure": "boxMax", "axis": "x", "max": "w / 2 + 6.5 mm"}],
+  ["assert.add", {"name": "nothing past -x", "measure": "boxMin", "axis": "x", "min": "-w / 2 - 6.5 mm"}],
+  ["assert.add", {"name": "balanced in x", "measure": "centerOfMass", "axis": "x", "min": "-20 mm", "max": "20 mm"}],
+  ["assert.add", {"name": "lid clear", "measure": "overlap", "of": "Lid", "to": ["Rails", "Panel"], "is": false}],
+  ["assert.add", {"name": "panel fitted", "measure": "overlap", "of": "Panel", "to": "Rails", "is": true}],
+  ["assert.add", {"name": "old form", "measure": "interference", "of": "Lid", "to": "Rails"}]
+]

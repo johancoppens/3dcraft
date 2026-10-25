@@ -473,11 +473,6 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-/// `interference`, the name `overlap` had before 2026-10-25, with the
-/// opposite yes and no (true when none overlap): still read in documents
-/// and accepted by `assert.add`, which write it as `overlap`.
-pub(crate) const OLD_INTERFERENCE: &str = "interference";
-
 pub(crate) const MEASURES: [&str; 14] = [
     "volume",
     "area",
@@ -507,10 +502,6 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "thickness" => thickness(ctx, p),
         "through" => through(ctx, p),
         "overlap" => overlap(ctx, p),
-        OLD_INTERFERENCE => overlap(ctx, p).map(|mut out| {
-            out.flag = out.flag.map(|overlaps| !overlaps);
-            out
-        }),
         "symmetric" => symmetric(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",

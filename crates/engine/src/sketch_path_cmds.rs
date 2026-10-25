@@ -45,7 +45,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     // params: `panic_hunt` reads every quoted word before a colon in the
     // params as a parameter of the command itself.
     spec!("sketch.path", "Sketch Path", r#"{"sketch": id or name, "start": point id or [x, y], "segments": [segment, ...], "closed": boolean = false, "construction": boolean = false}"#,
-        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number or expr, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. Coordinates [x, y] (of an end, a center or a through point) are numbers or expressions in the document's variables (\"-width / 2\"), a point written with an expression held there by x and y constraints as sketch.polyline holds its corners. An end is a point id, coordinates, or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. A through point written with an expression becomes a point of its own, kept on the arc (pointOn) and held at its expressions; a radius written as an expression is held by a radius constraint. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added, and those that hold a radius or a through point written as expressions). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start (an end rounded to a few decimals): when the end is given as coordinates and is off by at most 1 % of the radius, it is put on that circle, in its direction from the centre, so the start and the segments before it stay where they are; the result then has snapped, one entry per such segment: {\"segment\": i, \"given\": [x, y], \"end\": [x, y], \"moved\": distance}. Otherwise (an end that is a point id or \"start\", or one farther off) it is drawn as given, and the result has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
+        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number or expr, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. Coordinates [x, y] (of an end, a center or a through point) are numbers or expressions in the document's variables (\"-width / 2\"), a point written with an expression held there by x and y constraints as sketch.polyline holds its corners. An end is a point id, coordinates, or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. A through point written with an expression becomes a point of its own, kept on the arc's circle (pointOn) and held at its expressions: the arc keeps the way round it was drawn with, so after a large change of the variables that point can lie on the circle beyond the arc's ends, and the arc no longer passes through it (draw it so that it stays between them, or give the arc a center); a radius written as an expression is held by a radius constraint. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line), through (per entity likewise: the point made for a through point written with expressions, else null) and constraints (the tangent constraints added, and those that hold a radius or a through point written as expressions). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start (an end rounded to a few decimals): when the end is given as coordinates and is off by at most 1 % of the radius, it is put on that circle, in its direction from the centre, so the start and the segments before it stay where they are; the result then has snapped, one entry per such segment: {\"segment\": i, \"given\": [x, y], \"end\": [x, y], \"moved\": distance}. Otherwise (an end that is a point id or \"start\", or one farther off) it is drawn as given, and the result has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
 ];
 
 type Xy = (f64, f64);
@@ -103,6 +103,9 @@ struct Built {
     points: Vec<EntityId>,
     entities: Vec<EntityId>,
     centers: Vec<Option<EntityId>>,
+    /// The point each arc was given to pass through, when it was written
+    /// with expressions and so made a point of its own.
+    through: Vec<Option<EntityId>>,
     constraints: Vec<ConstraintId>,
     /// What the solver will have to put right, one line per segment.
     warnings: Vec<String>,
@@ -416,6 +419,8 @@ struct Step {
     /// The constraints that hold what was written as expressions: a
     /// radius, a point the arc passes through.
     held: Vec<ConstraintId>,
+    /// The through point made for it.
+    through: Option<EntityId>,
 }
 
 /// How far an end given off its arc's circle may be put onto it, as a
@@ -551,6 +556,7 @@ fn draw_segment(
                 warning: None,
                 snapped: None,
                 held: Vec::new(),
+                through: None,
             });
         }
         Shape::Center { center, clockwise } => (center.place(s)?, !clockwise),
@@ -604,6 +610,7 @@ fn draw_segment(
     // by a radius constraint, a point it passes through as a point of its
     // own, on the arc and held at its expressions.
     let mut held = Vec::new();
+    let mut through_point = None;
     match &segment.shape {
         Shape::Radius {
             held: Some(value), ..
@@ -618,6 +625,7 @@ fn draw_segment(
                 curve: entity,
             })?);
             held.extend(at.pin(s, point)?);
+            through_point = Some(point);
         }
         _ => {}
     }
@@ -629,6 +637,7 @@ fn draw_segment(
         warning,
         snapped,
         held,
+        through: through_point,
     })
 }
 
@@ -642,6 +651,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         points: vec![start],
         entities: Vec::with_capacity(path.segments.len().saturating_add(1)),
         centers: Vec::with_capacity(path.segments.len().saturating_add(1)),
+        through: Vec::with_capacity(path.segments.len().saturating_add(1)),
         constraints: Vec::new(),
         warnings: Vec::new(),
         snapped: Vec::new(),
@@ -672,6 +682,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         built.points.push(step.end);
         built.entities.push(step.drawn.entity);
         built.centers.push(step.center);
+        built.through.push(step.through);
         at = (step.end, step.end_at);
         before = Some(step.drawn);
     }
@@ -698,6 +709,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         let line = s.add_line(at.0, start, path.construction)?;
         built.entities.push(line);
         built.centers.push(None);
+        built.through.push(None);
         at.0 = start;
         if let (Some(arrives), Some(last)) = (unit((dx, dy)), before.as_mut()) {
             *last = Drawn {
@@ -777,11 +789,17 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
         .iter()
         .map(|center| center.map_or(Value::Null, |id| id.to_string().into()))
         .collect();
+    let through: Vec<Value> = built
+        .through
+        .iter()
+        .map(|point| point.map_or(Value::Null, |id| id.to_string().into()))
+        .collect();
     let constraints: Vec<String> = built.constraints.iter().map(|c| c.to_string()).collect();
     let mut own = json!({
         "points": ids(&built.points),
         "entities": ids(&built.entities),
         "centers": centers,
+        "through": through,
         "constraints": constraints,
     });
     // Only when there is something to say, so a path without one answers

@@ -1446,9 +1446,10 @@ fn overlap_reads_the_way_it_is_meant_and_the_old_form_keeps_its_meaning() {
     );
 }
 
-/// A document saved with the old form keeps meaning what it meant: an
-/// `interference` assertion with is true passes while none overlap, and
-/// is shown as the overlap it is.
+/// A document saved with the old form (format 35) keeps meaning what it
+/// meant: opened, its `interference` assertion with is true is migrated
+/// to `overlap` with is false, so it passes while none overlap and shows
+/// what was measured against what it must be the same way round.
 #[test]
 fn a_saved_old_interference_assertion_means_what_it_meant() {
     let dir = std::env::temp_dir().join(format!("craft3d-overlap-{}", std::process::id()));
@@ -1467,26 +1468,41 @@ fn a_saved_old_interference_assertion_means_what_it_meant() {
         json!({"name": "B", "size": [10, 10, 10], "position": [20, 0, 0]}),
     );
     run(&mut w, "file.save", json!({"path": path.to_str().unwrap()}));
-    let mut doc = craft3d_format::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
-    for (name, is) in [("clear", true), ("clash", false)] {
-        doc.assertions.push(craft3d_doc::Assertion {
-            name: name.into(),
-            measure: r#"{"measure":"interference"}"#.into(),
-            expect: craft3d_doc::Expect::Is(is),
-        });
-    }
-    std::fs::write(&path, craft3d_format::to_bytes(&doc).unwrap()).unwrap();
+    // The same file as format 35 wrote it, with two assertions of the old
+    // form.
+    let bytes = std::fs::read(&path).unwrap();
+    let entries = craft3d_zipstore::read_stored(&bytes).unwrap();
+    let manifest = entries
+        .iter()
+        .find(|e| e.name == craft3d_format::MANIFEST_NAME)
+        .unwrap();
+    let mut manifest: Value = serde_json::from_slice(manifest.data).unwrap();
+    manifest["format_version"] = json!(35);
+    manifest["document"]["assertions"] = json!([
+        {"name": "clear", "measure": {"measure": "interference"}, "expect": {"is": true}},
+        {"name": "clash", "measure": {"measure": "interference"}, "expect": {"is": false}},
+    ]);
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    let old =
+        craft3d_zipstore::write_stored(&[(craft3d_format::MANIFEST_NAME, &manifest)]).unwrap();
+    std::fs::write(&path, old).unwrap();
     let mut r = Session::new(Workspace::unrestricted());
     run(&mut r, "file.open", json!({"path": path.to_str().unwrap()}));
     let listed = run(&mut r, "assert.list", json!({}));
     let clear = &listed["assertions"][0];
     assert_eq!(clear["status"], "passed", "{listed}");
+    assert_eq!(clear["measure"], json!({"measure": "overlap"}));
+    assert_eq!(clear["expect"], json!({"is": false}));
+    // What was measured agrees with what it must be: no overlap.
+    assert_eq!(clear["measured"], false);
     assert_eq!(clear["message"], "no overlap");
     assert_eq!(clear["expected"], "no overlap");
     let clash = &listed["assertions"][1];
     assert_eq!(clash["status"], "failed", "{listed}");
+    assert_eq!(clash["expect"], json!({"is": true}));
+    assert_eq!(clash["measured"], false);
     assert_eq!(clash["message"], "no overlap, expected an overlap");
-    // Edited, it is written as overlap with the same meaning.
+    // Edited, it stays as it was migrated.
     let edited = run(
         &mut r,
         "assert.edit",
