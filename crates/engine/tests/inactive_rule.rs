@@ -107,7 +107,7 @@ fn kinds() -> Vec<Kind> {
         Kind {
             what: "thread",
             command: "feature.thread",
-            params: |k| json!({"face": "F2:face(0)", "start": "F2:face(2)", "size": 8.0 * k, "pitch": k, "length": 5.0 * k}),
+            params: |k| json!({"face": "F2:face(0)", "start": "F2:face(2)", "size": format!("{} mm", 8.0 * k), "pitch": k, "length": 5.0 * k}),
             without_boss: None,
             makes: false,
             source: false,
