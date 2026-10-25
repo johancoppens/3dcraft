@@ -1384,11 +1384,12 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
             assert!(at < 3e-4 / 7.0, "{listed}");
         }
         // The vertex of the parabola lies inside a face: reached within the
-        // mesh's tolerance, which is proven on both sides.
+        // mesh's tolerance and settled with that room (at least the floor
+        // of ten linear tolerances, twice over, at the scale 1e-3).
         let low = run(
             &mut s,
             "assert.add",
-            json!({"name": "low", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", -0.01 * k), "max": format!("{} mm", 0.01 * k)}),
+            json!({"name": "low", "measure": "boxMin", "of": "Cut", "axis": "y", "min": format!("{} mm", -f64::max(0.01 * k, 5e-5)), "max": format!("{} mm", f64::max(0.01 * k, 5e-5))}),
         );
         assert_eq!(low["status"], "passed", "{k}: {low}");
         // Past the vertex by more than the mesh can be off: failed, not
