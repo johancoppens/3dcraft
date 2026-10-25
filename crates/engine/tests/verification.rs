@@ -1363,7 +1363,7 @@ fn the_box_of_a_cut_spline_face_is_the_box_of_what_is_left() {
             let got = run(
                 &mut s,
                 "assert.add",
-                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", (1e-3 * k).max(3e-5))}),
+                json!({"name": name, "measure": measure, "of": "Cut", "axis": axis, "eq": format!("{want} mm"), "tol": format!("{} mm", f64::max(1e-3 * k, 3e-5))}),
             );
             assert_eq!(got["status"], "passed", "{k} {name}: {got}");
             close(&got["measured"], want, tol, &name);
