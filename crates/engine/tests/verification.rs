@@ -1198,6 +1198,107 @@ fn the_centre_of_mass_is_asserted_per_axis() {
     }
 }
 
+/// Where the box begins and ends along an axis, each side on its own: a
+/// CubeSat (CDS 2.2.3) lets nothing stick out more than 6.5 mm beyond its
+/// rails on +x and on -x separately, which an extent (their sum) cannot
+/// say. Rails of width `w` centred on the origin, a panel sticking out
+/// `p` beyond the +x rail.
+#[test]
+fn each_side_of_the_box_is_asserted_on_its_own() {
+    for k in [1.0, 1000.0, 1e-3] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "w", "expr": format!("{} mm", 100.0 * k)}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "p", "expr": format!("{} mm", 5.0 * k)}),
+        );
+        // What may stick out: 6.5 mm at the scale 1.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "out", "expr": format!("{} mm", 6.5 * k)}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Rails", "size": ["w", "w", "w"], "position": ["-w / 2", "-w / 2", 0]}),
+        );
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Panel", "size": ["p + w / 100", "w / 10", "w / 10"], "position": ["w / 2 - w / 100", 0, 0]}),
+        );
+        let plus = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "+x", "measure": "boxMax", "axis": "x", "max": "w / 2 + out"}),
+        );
+        assert_eq!(plus["status"], "passed", "{k}: {plus}");
+        close(&plus["measured"], 55.0 * k, 1e-9 * k, "+x");
+        let minus = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "-x", "measure": "boxMin", "axis": "x", "min": "-w / 2 - out"}),
+        );
+        assert_eq!(minus["status"], "passed", "{k}: {minus}");
+        close(&minus["measured"], -50.0 * k, 1e-9 * k, "-x");
+        assert_eq!(minus["unit"], "mm");
+        // Of one body, and along another axis.
+        let panel = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "panel", "measure": "boxMin", "of": "Panel", "axis": "x", "eq": "w / 2 - w / 100"}),
+        );
+        assert_eq!(panel["status"], "passed", "{k}: {panel}");
+        let top = run(
+            &mut s,
+            "assert.add",
+            json!({"name": "top", "measure": "boxMax", "axis": "z", "eq": "w"}),
+        );
+        assert_eq!(top["status"], "passed", "{k}: {top}");
+        // The panel out 8: +x fails, -x still passes, while the extent
+        // (the sum, 58 + 50, is within w + 2 × 6.5) would not tell which side.
+        let edit = run(
+            &mut s,
+            "variable.set",
+            json!({"name": "p", "expr": format!("{} mm", 8.0 * k)}),
+        );
+        let broken: Vec<&str> = edit["assertions"]["broken"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(broken, ["+x"], "{k}: {edit}");
+    }
+    // Hostile: no axis, a wrong one, a parameter it does not take.
+    let mut s = two_blocks(1.0, None, None);
+    for measure in ["boxMin", "boxMax"] {
+        let e = refused(
+            &mut s,
+            "assert.add",
+            json!({"name": "q", "measure": measure, "axis": "x", "from": "A", "max": 1}),
+        );
+        assert!(e.contains("`from`"), "{e}");
+        for axis in [json!(null), json!("w"), json!(3)] {
+            let v = run(
+                &mut s,
+                "assert.add",
+                json!({"name": "q", "measure": measure, "axis": axis, "max": 1}),
+            );
+            assert_eq!(v["status"], "error", "{v}");
+            assert!(v["message"].as_str().unwrap().contains("`axis`"), "{v}");
+            run(&mut s, "assert.delete", json!({"name": "q"}));
+        }
+    }
+}
+
 #[test]
 fn a_centre_of_mass_without_a_material_says_which_body_lacks_one() {
     let mut s = two_blocks(1.0, Some(1000.0), None);

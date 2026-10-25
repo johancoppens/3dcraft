@@ -41,7 +41,8 @@ is below, beside the value found at a real place. On the flange of [chapter 3](0
 ]
 ```
 
-- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `centerOfMass` (its
+- Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax` (where the box begins and ends
+  along `axis`, so each side is bounded on its own), `centerOfMass` (its
   coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`.
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or `max`;
@@ -70,7 +71,7 @@ A real *notProven*: with the bound written as `"min": "wall - 0.01 mm"`, the cas
 *thickness: not proven: found 2 mm (at least 1.95750083 mm), expected ≥ 1.99 mm*. The wall is 2 mm, but
 the proof only reaches 1.9575 mm near the rounded corners; a bound of `wall - 0.1 mm` passes.
 
-Two that need a word:
+Three that need a word:
 
 - **The centre of mass** of the bodies weighs each body's centroid by its mass, so different materials
   pull it their way. A CubeSat's centre of mass must lie within 20 mm of its geometric centre in x and
@@ -78,6 +79,10 @@ Two that need a word:
   "axis": "x", "min": "cx - 20 mm", "max": "cx + 20 mm"}`, and the same for y and z. A body without a
   material is an *error*, as for `mass`: *`Lid` has no material, so no mass; give it one with
   body.material*.
+- **Each side of the box.** `extent` bounds the size, the sum of both sides. To let nothing stick out
+  more than 6.5 mm beyond rails of width `w` centred on the origin, on +x and on -x separately:
+  `{"measure": "boxMax", "axis": "x", "max": "w / 2 + 6.5 mm"}` and `{"measure": "boxMin", "axis":
+  "x", "min": "-w / 2 - 6.5 mm"}`. Coordinates are in the model's frame.
 - **Overlap** is true when bodies overlap, so `{"measure": "overlap", "of": ["Bolt", "Plate"], "is":
   false}` asserts they do not (`to` compares `of` with other bodies instead of with each other; leave
   both out for all bodies). Its message says it in words: *no overlap*, or *Bolt overlaps Plate by

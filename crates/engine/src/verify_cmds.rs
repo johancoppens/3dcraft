@@ -478,12 +478,14 @@ impl Outcome {
 /// and accepted by `assert.add`, which write it as `overlap`.
 pub(crate) const OLD_INTERFERENCE: &str = "interference";
 
-pub(crate) const MEASURES: [&str; 12] = [
+pub(crate) const MEASURES: [&str; 14] = [
     "volume",
     "area",
     "mass",
     "count",
     "extent",
+    "boxMin",
+    "boxMax",
     "centerOfMass",
     "distance",
     "clearance",
@@ -498,7 +500,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     match name {
         "volume" | "area" | "mass" => mass_measure(ctx, name, p),
         "count" => count(ctx, p),
-        "extent" => extent(ctx, p),
+        "extent" | "boxMin" | "boxMax" => extent(ctx, name, p),
         "centerOfMass" => center_of_mass(ctx, p),
         "distance" => distance(ctx, p),
         "clearance" => clearance(ctx, p),
@@ -608,7 +610,10 @@ fn count(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+/// The size of the bodies' box along an axis (`extent`), or where it
+/// begins (`boxMin`) or ends (`boxMax`) along it: one side at a time, so
+/// that what sticks out on each side can be bounded on its own.
+fn extent(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
     only(p, &["of", "axis"])?;
     let axis = axis_param(p)?;
     let found = match p.get("of") {
@@ -616,7 +621,7 @@ fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
         Some(v) => nonempty(subject(ctx, v, &["body"])?, "of")?,
     };
     let mut all = Bbox3::from_points([]);
-    for (id, body) in whole_bodies(ctx, &found, "extent")? {
+    for (id, body) in whole_bodies(ctx, &found, name)? {
         let b = body
             .bbox()
             .map_err(|e| format!("`{}` has no box: {e}", ctx.feature_name(id)))?;
@@ -627,7 +632,12 @@ fn extent(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     }
     let (lo, hi) = all.corners().ok_or("there are no bodies to measure")?;
     let pick = |v: Vec3| [v.x, v.y, v.z].get(axis).copied().unwrap_or(0.0);
-    let mut out = Outcome::number(Dim::Length(1), pick(hi) - pick(lo));
+    let value = match name {
+        "boxMin" => pick(lo),
+        "boxMax" => pick(hi),
+        _ => pick(hi) - pick(lo),
+    };
+    let mut out = Outcome::number(Dim::Length(1), value);
     out.detail.insert("min".into(), vec3(lo));
     out.detail.insert("max".into(), vec3(hi));
     Ok(out)
