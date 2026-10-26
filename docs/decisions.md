@@ -1,10 +1,14 @@
 # Decisions
 
-> **Last updated:** 2026-10-23
+> **Last updated:** 2026-10-26
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-26: Sheets, plates and folds reopen R1; general measures in, domain vocabulary out (decided by the developer)
+
+R1 is reopened for one block (`plan/r1-sheets.md`): developable surfaces and unfolding, plates with edge joints, sheet metal, origami and measures below a plane, so that the sea-kayak Jig is built natively, with no geometry computed outside 3DCraft. Two rules came with it. **Measures below a plane stay general:** the platform gives the volume and centroid of what lies on one side of a plane, the area, centroid and second moments of a planar section, and the level at which the volume below equals a given volume; naval quantities (KB, BM, KM, GM, GZ, a waterline for a weight) are computed by a Jig with formulas from these (`docs/design/sections-and-levels.md`). **Sheet metal is fully in R1** (flanges, bends with inner radius and K-factor, unfolding with bend allowance, corner reliefs, manufacturability measures), built on one fold mechanism (the origami linkage) and one unfold mechanism (developable unfolding) in the kernel; the limits per material and thickness come in as expressions or tables, never as a built-in material catalogue. Car bodies and class-A surfacing are R2.
 
 ### 2026-10-23: Jigs, parametric generators that run without AI (decided by the developer)
 
