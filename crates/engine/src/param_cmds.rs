@@ -20,11 +20,11 @@ use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "choicesFrom": table name or null, "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
-        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. Refused, with the reason, when the value or the default is not of its kind or outside its range, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
+        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. step is the spacing of the values a number or an integer takes, counted from min (from 0 without one; an end of the range is always allowed; an integer's step is a whole number). Refused, with the reason, when the value or the default is not of its kind, outside its range or off its step, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false, "clamp": boolean = false, "wait": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, or lies outside its range is refused, with the range: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}) as well as under set, as a parameter form does; the undo step is named for the parameters given, so a merged drag stays one step when it starts or stops clamping. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does. Assertions are measured in the background: the summary waits up to two seconds for those the change touched and counts the rest as pending, with whenPending saying how to have them; wait: true waits until every assertion is measured, so the summary is final (as assert.list, which waits by default), for 60 s at most: what is not measured by then stays pending, with whenPending.", doc: true, param_set),
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, lies outside its range, or is off its step (counted from its minimum; an end of the range is on it) is refused, with the range or the nearest values on the step: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}) as well as under set, as a parameter form does; the undo step is named for the parameters given, so a merged drag stays one step when it starts or stops clamping. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does. Assertions are measured in the background: the summary waits up to two seconds for those the change touched and counts the rest as pending, with whenPending saying how to have them; wait: true waits until every assertion is measured, so the summary is final (as assert.list, which waits by default), for 60 s at most: what is not measured by then stays pending, with whenPending.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
         "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
@@ -42,12 +42,16 @@ fn evaluation(doc: &Document) -> Option<Evaluation> {
     doc.variable_table().ok().map(|table| table.evaluate())
 }
 
-/// What `source` evaluates to against `values`.
+/// What `source` evaluates to against `values`: as a variable of the
+/// document is, with its tables (a range bound may look one up,
+/// `scales[scale].maxNotes`). Without values, only a value evaluates.
 fn eval(source: &str, values: Option<&Evaluation>) -> Result<Quantity, String> {
-    let parsed = craft3d_expr::Expr::parse(source).map_err(|e| e.to_string())?;
-    parsed
-        .eval(|name| values.and_then(|v| v.value(name)))
-        .map_err(|e| e.to_string())
+    match values {
+        Some(values) => values.evaluate(source).map_err(|e| e.to_string()),
+        None => craft3d_expr::Expr::parse(source)
+            .and_then(|parsed| parsed.eval(|_| None))
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// Whether `source` is a value: an expression without variables.
@@ -254,7 +258,71 @@ fn value_problems(
             written(doc, value, unit),
             range_text(doc, bounds, unit)
         ));
+    } else if let Some(between) = off_step(public.kind, low, high, bound(bounds, "step"), value) {
+        let at = |v: f64| {
+            written(
+                doc,
+                Quantity {
+                    value: v,
+                    dimension: value.dimension,
+                },
+                unit,
+            )
+        };
+        let (base, step, [lower, upper]) = between;
+        problems.push(format!(
+            "{what} {} is not on its step of {} counted from {}: the nearest values are {} and {}",
+            written(doc, value, unit),
+            at(step),
+            at(base),
+            at(lower),
+            at(upper)
+        ));
     }
+}
+
+/// For a number or an integer `value` with a step: when it is not on the
+/// step, counted from the minimum (from 0 without one), the base, the
+/// step and the two values on the step around it. An end of the range is
+/// on the step, as a form's slider reaches it. The step of an integer is
+/// a whole number (at least 1), as a form steps it. None when the value is
+/// on its step, or the step is missing, not positive, of another
+/// dimension or too fine to count from the base.
+fn off_step(
+    kind: ParamKind,
+    low: Option<Quantity>,
+    high: Option<Quantity>,
+    step: Option<Quantity>,
+    value: Quantity,
+) -> Option<(f64, f64, [f64; 2])> {
+    if !matches!(kind, ParamKind::Number | ParamKind::Integer) {
+        return None;
+    }
+    let step = step.filter(|s| s.dimension == value.dimension)?.value;
+    let step = if kind == ParamKind::Integer {
+        step.round().max(1.0)
+    } else {
+        step
+    };
+    if !(step.is_finite() && step > 0.0) {
+        return None;
+    }
+    let same = |a: f64, b: f64| !below(a, b) && !below(b, a);
+    if [low, high]
+        .iter()
+        .flatten()
+        .any(|end| same(end.value, value.value))
+    {
+        return None;
+    }
+    let base = low.map_or(0.0, |min| min.value);
+    let k = (value.value - base) / step;
+    // Beyond 1e15 steps a step count is no longer exact: not checked.
+    if !k.is_finite() || k.abs() > 1e15 || whole(k) {
+        return None;
+    }
+    let lower = base + k.floor() * step;
+    Some((base, step, [lower, lower + step]))
 }
 
 /// The variables of `doc` with every public parameter at its default:

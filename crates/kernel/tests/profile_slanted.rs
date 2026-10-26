@@ -132,6 +132,15 @@ fn random_star_shaped_polygons_are_profiles_at_every_scale() {
             let turn = uniform(&mut rng, 0.0, TAU);
             let mut angles: Vec<f64> = (0..n).map(|_| uniform(&mut rng, 0.0, TAU)).collect();
             angles.sort_by(f64::total_cmp);
+            // With a gap of half a turn or more between two corners, the
+            // side across it passes the centre and may cross others.
+            let wide = (0..n).any(|i| {
+                let next = if i + 1 < n { angles[i + 1] } else { angles[0] + TAU };
+                next - angles[i] >= 0.9 * std::f64::consts::PI
+            });
+            if wide {
+                continue;
+            }
             let mut points: Vec<P> = angles
                 .iter()
                 .map(|a| {
