@@ -116,16 +116,22 @@ vertex:
   ["sketch.line", {"sketch": "Square", "from": [-50, -50], "to": [50, 50], "construction": true}],
   ["sketch.line", {"sketch": "Square", "from": [50, -50], "to": [-50, 50], "construction": true}],
   ["feature.fold", {"sketch": "Square", "name": "Waterbomb", "creases": [
-    {"line": "e11", "kind": "mountain"},
-    {"line": "e14", "kind": "valley"},
+    {"line": "e11", "kind": "mountain", "angle": "36.03846874550981 deg"},
+    {"line": "e14", "kind": "valley", "angle": "49.40777113928209 deg"},
     {"line": "e17", "kind": "valley"}]}],
+  ["fold.inspect", {"fold": "Waterbomb"}],
   ["fold.check", {"fold": "Waterbomb"}],
   ["file.export", {"path": "waterbomb.svg", "fold": "Waterbomb"}]
 ]
 ```
 
-With no angle given it lies flat. A vertex with six creases has three degrees of freedom: give three of
-them an angle to fold it.
+A vertex with six creases has three degrees of freedom, so it needs three angles: here the middle line
+(both of its halves) and one diagonal are given, and `fold.inspect` gives the other diagonal: 49.41
+degrees for both halves, as the base's symmetry says. Give fewer, or none at all, and the fold fails with
+*nothing determines the fold angles of …*: a crease pattern with solved creases folds only when the
+angles you give decide how (even the flat sheet, with every given angle 0, does not decide which way the
+others would go). `fold.check` and the export only read the pattern, so they work whether the fold
+does or not.
 
 ## Exporting the crease pattern
 

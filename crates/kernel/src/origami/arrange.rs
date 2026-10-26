@@ -437,25 +437,9 @@ pub fn arrange(
     // cycle of another piece around it, or the outside of everything. (A
     // cycle of the same piece shares its vertices, so containment is only
     // asked of the others, whose edges its vertices are not on.)
-    let mut piece_of: Vec<usize> = (0..vertices.len()).collect();
-    fn root(parent: &mut [usize], mut i: usize) -> usize {
-        let mut steps = 0usize;
-        while let Some(&p) = parent.get(i) {
-            if p == i || steps > parent.len() {
-                break;
-            }
-            i = p;
-            steps += 1;
-        }
-        i
-    }
+    let mut piece_of = Union::new(vertices.len());
     for e in &edges {
-        let (a, b) = (root(&mut piece_of, e.from), root(&mut piece_of, e.to));
-        if a != b
-            && let Some(slot) = piece_of.get_mut(a.max(b))
-        {
-            *slot = a.min(b);
-        }
+        piece_of.join(e.from, e.to);
     }
     let piece_of_cycle: Vec<usize> = cycles
         .iter()
@@ -468,7 +452,7 @@ pub fn arrange(
                         .map(|e| if h.is_multiple_of(2) { e.from } else { e.to })
                 })
                 .unwrap_or(0);
-            root(&mut piece_of, v)
+            piece_of.find(v)
         })
         .collect();
     let mut holes_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -688,22 +672,7 @@ fn meet(i: &Seg, j: &Seg, tol: f64) -> Result<(Vec<(f64, P2)>, Vec<(f64, P2)>), 
 /// four tolerances is refused: the pattern is finer than the tolerance.
 fn clusters(points: &[(u64, P2)], tol: f64) -> Result<Vec<usize>, FoldError> {
     let n = points.len();
-    let mut parent: Vec<usize> = (0..n).collect();
-    fn find(parent: &mut [usize], mut i: usize) -> usize {
-        let mut steps = 0usize;
-        while let Some(&p) = parent.get(i) {
-            if p == i || steps > parent.len() {
-                break;
-            }
-            let grand = parent.get(p).copied().unwrap_or(p);
-            if let Some(slot) = parent.get_mut(i) {
-                *slot = grand;
-            }
-            i = p;
-            steps += 1;
-        }
-        i
-    }
+    let mut parent = Union::new(n);
     let mut order: Vec<usize> = (0..n).collect();
     let x = |i: usize| points.get(i).map_or(0.0, |(_, p)| p[0]);
     order.sort_by(|&a, &b| x(a).total_cmp(&x(b)).then(a.cmp(&b)));
@@ -719,21 +688,13 @@ fn clusters(points: &[(u64, P2)], tol: f64) -> Result<Vec<usize>, FoldError> {
                 break;
             }
             if dist(pa, pb) <= tol {
-                let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-                if ra != rb {
-                    // The smaller index leads, so the representative is the
-                    // first point of the cluster.
-                    let (lo, hi) = (ra.min(rb), ra.max(rb));
-                    if let Some(slot) = parent.get_mut(hi) {
-                        *slot = lo;
-                    }
-                }
+                parent.join(a, b);
             }
         }
     }
     let mut rep = Vec::with_capacity(n);
     for i in 0..n {
-        rep.push(find(&mut parent, i));
+        rep.push(parent.find(i));
     }
     for (i, &r) in rep.iter().enumerate() {
         if let (Some(&(s, p)), Some(&(_, q))) = (points.get(i), points.get(r))
@@ -783,4 +744,39 @@ fn perimeter(ring: &[P2]) -> f64 {
     (0..n)
         .filter_map(|i| Some(dist(*ring.get(i)?, *ring.get((i + 1) % n)?)))
         .sum()
+}
+
+/// Union-find whose representative is the smallest index of its set (so
+/// a cluster is represented by its first point, deterministically).
+struct Union(Vec<usize>);
+
+impl Union {
+    fn new(n: usize) -> Self {
+        Union((0..n).collect())
+    }
+
+    fn find(&mut self, mut i: usize) -> usize {
+        let mut steps = 0usize;
+        while let Some(&p) = self.0.get(i) {
+            if p == i || steps > self.0.len() {
+                break;
+            }
+            let grand = self.0.get(p).copied().unwrap_or(p);
+            if let Some(slot) = self.0.get_mut(i) {
+                *slot = grand;
+            }
+            i = p;
+            steps += 1;
+        }
+        i
+    }
+
+    fn join(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb
+            && let Some(slot) = self.0.get_mut(ra.max(rb))
+        {
+            *slot = ra.min(rb);
+        }
+    }
 }

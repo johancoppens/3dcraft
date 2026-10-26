@@ -234,6 +234,7 @@ fn the_origami_chapter_folds_as_it_says() {
     let mut s = common::session_in(&dir);
     let mut ran = 0;
     let mut last: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    let mut inspects: Vec<Value> = Vec::new();
     for block in json_blocks(&text) {
         let value: Value = serde_json::from_str(&block).unwrap();
         let Some(steps) = steps(&value) else {
@@ -242,6 +243,9 @@ fn the_origami_chapter_folds_as_it_says() {
         for (id, params) in steps {
             let result = run(&mut s, &id, params.clone());
             assert_ne!(result["status"], "failed", "{id} {params}: {result}");
+            if id == "fold.inspect" {
+                inspects.push(result.clone());
+            }
             last.insert(id, result);
             ran += 1;
         }
@@ -249,7 +253,16 @@ fn the_origami_chapter_folds_as_it_says() {
         assert_eq!(check["ok"], true, "{check}");
     }
     assert!(ran >= 20, "{ran} steps");
-    let inspect = &last["fold.inspect"];
+    // The last fold.inspect is the waterbomb's: the other diagonal solved
+    // to the linkage's angle.
+    let waterbomb = &last["fold.inspect"];
+    for piece in waterbomb["creases"][2]["pieces"].as_array().unwrap() {
+        assert!(
+            (piece["angle"].as_f64().unwrap() - 49.40777113928209).abs() < 1e-7,
+            "{waterbomb}"
+        );
+    }
+    let inspect = &inspects[0];
     let angle = |line: &str| {
         inspect["creases"]
             .as_array()

@@ -25,16 +25,17 @@
 mod arrange;
 mod checks;
 mod collide;
-mod rigid;
 mod sheet;
 mod solve;
 
 pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
-pub use collide::{Contact, ContactKind, first_contact};
-pub use rigid::Rigid;
+pub use collide::{FacetMeeting, Meeting, first_meeting};
 pub use sheet::folded_sheet;
-pub use solve::{Angle, Folded, fold};
+pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, RATIO, fold_linkage};
+
+pub(crate) use crate::profile::{P2, cross, distance as dist, dot, sub};
+use craft3d_math::{Bbox3, Transform, Vec3};
 
 use std::fmt;
 
@@ -153,9 +154,15 @@ pub enum FoldError {
     /// (or past 180 degrees), by `angle` radians (signed, valley
     /// positive).
     WrongWay { id: u64, angle: f64 },
+    /// The continuation from the flat sheet could not follow the fold
+    /// past `at` radians of the largest given angle: no step, however
+    /// small, found a solution that follows on from the last one.
+    NotFollowed { at: f64 },
+    /// The fold needs more work than [`MAX_WORK`].
+    TooMuchWork,
     /// Two facets of the folded sheet pass through each other or touch
     /// (other than along the creases and at the vertices they share).
-    Contact(Contact),
+    Meets(Meeting),
     /// The body could not be built: see the reason.
     Build(String),
 }
@@ -211,39 +218,24 @@ impl fmt::Display for FoldError {
             FoldError::WrongWay { id, angle } => {
                 write!(f, "crease {id} would fold the other way ({angle} rad)")
             }
-            FoldError::Contact(c) => write!(
+            FoldError::Meets(c) => write!(
                 f,
                 "facets {} and {} {}",
                 c.facets[0],
                 c.facets[1],
                 c.kind.verb()
             ),
+            FoldError::NotFollowed { at } => write!(
+                f,
+                "the fold could not be followed from the flat sheet past {at} rad"
+            ),
+            FoldError::TooMuchWork => write!(f, "the fold needs more work than {MAX_WORK} steps"),
             FoldError::Build(reason) => write!(f, "{reason}"),
         }
     }
 }
 
 impl std::error::Error for FoldError {}
-
-/// Points in the plane.
-pub(crate) type P2 = [f64; 2];
-
-pub(crate) fn sub(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-pub(crate) fn cross(a: P2, b: P2) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-pub(crate) fn dot(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-pub(crate) fn dist(a: P2, b: P2) -> f64 {
-    let d = sub(a, b);
-    d[0].hypot(d[1])
-}
 
 /// The distance from `p` to the segment `a`–`b`, and the parameter of the
 /// nearest point (0 at `a`, 1 at `b`).
@@ -278,4 +270,76 @@ pub(crate) fn inside_loops<'a>(p: P2, loops: impl IntoIterator<Item = &'a [P2]>)
         }
     }
     inside
+}
+
+/// The distance from `p` to the nearest edge of the closed `rings`.
+pub(crate) fn ring_distance(rings: &[Vec<P2>], p: P2) -> f64 {
+    let mut best = f64::INFINITY;
+    for ring in rings {
+        let n = ring.len();
+        for i in 0..n {
+            if let (Some(&a), Some(&b)) = (ring.get(i), ring.get((i + 1) % n)) {
+                best = best.min(to_segment(p, a, b).0);
+            }
+        }
+    }
+    best
+}
+
+pub(crate) fn lift(p: P2) -> Vec3 {
+    Vec3::new(p[0], p[1], 0.0)
+}
+
+/// Folds the arrangement by `angles` (one per hinge), keeping facet
+/// `fixed` in place: the facets as the bodies of a [`Linkage`] whose
+/// joints are the creases (axes in the sheet's plane, z = 0), solved
+/// about the middle of the sheet's box (so a sheet far from the sketch's
+/// origin loses no digits) and returned in the sheet's coordinates.
+pub fn fold(
+    arr: &Arrangement,
+    angles: &[Angle],
+    fixed: usize,
+    tol: f64,
+    angular: f64,
+) -> Result<Folded, FoldError> {
+    let box_ = Bbox3::from_points(arr.vertices.iter().map(|&p| lift(p)));
+    let centre = box_.center().unwrap_or(Vec3::ZERO);
+    let mut joints = Vec::with_capacity(arr.hinges.len());
+    for h in &arr.hinges {
+        let e = arr.edges.get(h.edge).ok_or(FoldError::Broken {
+            reason: "a hinge has no edge",
+        })?;
+        let (Some(a), Some(b)) = (arr.point(e.from), arr.point(e.to)) else {
+            return Err(FoldError::Broken {
+                reason: "an edge has no vertex",
+            });
+        };
+        let (a, b) = (lift(a) - centre, lift(b) - centre);
+        let direction = (b - a)
+            .normalized()
+            .ok_or(FoldError::TooShort { id: e.source })?;
+        joints.push(Joint {
+            left: h.left,
+            right: h.right,
+            point: a,
+            direction,
+            side: Vec3::Z.cross(direction),
+            reach: a.distance(b),
+            id: e.source,
+        });
+    }
+    let link = Linkage {
+        bodies: arr.facets.len(),
+        joints,
+        size: box_.diagonal(),
+    };
+    let mut folded = fold_linkage(&link, angles, fixed, tol, angular)?;
+    let (from, to) = (
+        Transform::translation(-centre),
+        Transform::translation(centre),
+    );
+    for t in &mut folded.transforms {
+        *t = from.then(t).then(&to);
+    }
+    Ok(folded)
 }

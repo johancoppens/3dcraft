@@ -10,8 +10,8 @@
 )]
 
 use craft3d_kernel::origami::{
-    Angle, Arrangement, BoundarySegment, ContactKind, Crease, CreaseKind, FoldError, Folded,
-    arrange, first_contact, fold, folded_sheet, vertex_checks,
+    Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FacetMeeting, FoldError, Folded,
+    arrange, first_meeting, fold, folded_sheet, vertex_checks,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::PI;
@@ -149,7 +149,11 @@ fn a_single_fold_keeps_the_area_and_turns_by_its_angle() {
             assert!(close(between, theta, 1e-9), "{between} vs {theta}");
             // A valley lifts the turned half towards the normal.
             assert!(far.z >= -1e-12 * s);
-            assert!(first_contact(&arr, &folded, tol(scale), ANGULAR).is_none());
+            assert!(
+                first_meeting(&arr, &folded, tol(scale), ANGULAR)
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }
@@ -388,7 +392,11 @@ fn the_waterbomb_base_folds_by_its_spherical_linkage_and_needs_three_angles() {
             let made = folded_sheet(&arr, &all, &frame(), &tolerance(s)).unwrap();
             let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
             assert!(close(area, 4.0 * s * s, 1e-11 * s * s));
-            assert!(first_contact(&arr, &all, tol(s), ANGULAR).is_none());
+            assert!(
+                first_meeting(&arr, &all, tol(s), ANGULAR)
+                    .unwrap()
+                    .is_none()
+            );
             // The midline alone leaves two angles free.
             let loose = fold(&arr, &angles(&arr, &[(10, mu)]), 0, tol(s), ANGULAR);
             assert!(
@@ -520,7 +528,9 @@ fn a_miura_ori_sheet_folds_with_one_degree_of_freedom_by_its_closed_form() {
             assert!(close(area, flat, 1e-10 * flat));
             assert!(close(flat, 16.0 * l * h * scale * scale, 1e-10 * flat));
             assert!(
-                first_contact(&arr, &folded, tol(scale), ANGULAR).is_none(),
+                first_meeting(&arr, &folded, tol(scale), ANGULAR)
+                    .unwrap()
+                    .is_none(),
                 "{degrees}"
             );
         }
@@ -557,14 +567,14 @@ fn a_strip_folded_back_on_itself_touches_then_passes_through() {
                 ANGULAR,
             )
             .unwrap();
-            first_contact(&arr, &folded, tol(scale), ANGULAR)
+            first_meeting(&arr, &folded, tol(scale), ANGULAR).unwrap()
         };
         assert!(at(100.0).is_none());
         // An equilateral triangle: the far edge lands on the first one's.
         let touch = at(120.0).unwrap();
-        assert_eq!(touch.kind, ContactKind::Touch);
+        assert_eq!(touch.kind, FacetMeeting::Touch);
         let through = at(130.0).unwrap();
-        assert_eq!(through.kind, ContactKind::Through);
+        assert_eq!(through.kind, FacetMeeting::Through);
         // Folded flat on itself: the halves lie on each other.
         let folded = fold(
             &arr,
@@ -575,10 +585,11 @@ fn a_strip_folded_back_on_itself_touches_then_passes_through() {
         )
         .unwrap();
         assert_eq!(
-            first_contact(&arr, &folded, tol(scale), ANGULAR)
+            first_meeting(&arr, &folded, tol(scale), ANGULAR)
+                .unwrap()
                 .unwrap()
                 .kind,
-            ContactKind::Touch
+            FacetMeeting::Touch
         );
     }
 }
@@ -622,7 +633,11 @@ fn a_cut_separates_the_sheet_and_each_piece_folds_on_its_own() {
             .filter(|o| o.sources == [10])
             .count();
         assert_eq!(cut_edges, 4);
-        assert!(first_contact(&arr, &folded, tol(s), ANGULAR).is_none());
+        assert!(
+            first_meeting(&arr, &folded, tol(s), ANGULAR)
+                .unwrap()
+                .is_none()
+        );
         // Kawasaki and Maekawa are about vertices joined all round.
         let (checks, cuts) = vertex_checks(&arr, ANGULAR);
         assert!(checks.is_empty());
@@ -735,10 +750,71 @@ fn what_a_crease_pattern_must_be() {
     assert!(
         matches!(
             e,
-            Err(FoldError::WrongWay { .. }) | Err(FoldError::NotClosing { .. })
+            Err(FoldError::WrongWay { .. })
+                | Err(FoldError::NotClosing { .. })
+                | Err(FoldError::NotFollowed { .. })
         ),
         "{e:?}"
     );
+}
+
+#[test]
+fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
+    use CreaseKind::{Mountain as M, Valley as V};
+    let t = tol(1.0);
+    let (a, b) = (70f64.to_radians(), 50f64.to_radians());
+    let arr = single_vertex(1.0, &[0.0, a, a + b, PI + b], &[V, M, V, V]);
+    // No angle at all, or only zeros: at the flat sheet the branches of
+    // the vertex meet, and nothing says how the solved creases go.
+    for given in [vec![], vec![(10, 0.0)]] {
+        let e = fold(&arr, &angles(&arr, &given), 0, t, ANGULAR);
+        assert!(
+            matches!(e, Err(FoldError::Undetermined { .. })),
+            "{given:?}: {e:?}"
+        );
+    }
+    // A facet that cannot be placed is an error, never "no contact".
+    let mut folded = fold(&arr, &angles(&arr, &[(10, 0.3)]), 0, t, ANGULAR).unwrap();
+    folded.transforms.pop();
+    assert!(first_meeting(&arr, &folded, t, ANGULAR).is_err());
+}
+
+#[test]
+fn a_small_sheet_far_from_the_origin_folds_as_one_at_the_origin() {
+    use CreaseKind::{Mountain as M, Valley as V};
+    let (a, b) = (70f64.to_radians(), 50f64.to_radians());
+    let dirs = [0.0, a, a + b, PI + b];
+    let r1 = 30f64.to_radians();
+    let p = ((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
+    let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+    let want = [r1, r2, r1, -r2];
+    for far in [0.0, 1e7] {
+        // A sheet of side 2 about (far, far), the tolerance 1e-7.
+        let at = |q: [f64; 2]| [q[0] + far, q[1] + far];
+        let boundary = polygon(&[
+            at([-1.0, -1.0]),
+            at([1.0, -1.0]),
+            at([1.0, 1.0]),
+            at([-1.0, 1.0]),
+        ]);
+        let creases: Vec<Crease> = dirs
+            .iter()
+            .zip([V, M, V, V])
+            .enumerate()
+            .map(|(i, (&d, kind))| {
+                let (c, sn) = (d.cos(), d.sin());
+                let r = 1.0 / c.abs().max(sn.abs());
+                crease(10 + i as u64, at([0.0, 0.0]), at([r * c, r * sn]), kind)
+            })
+            .collect();
+        let arr = arrange(&boundary, &creases, 1e-7).unwrap();
+        let folded = fold(&arr, &angles(&arr, &[(10, r1)]), 0, 1e-7, ANGULAR).unwrap();
+        for (id, w) in (10..14).zip(want) {
+            let got = solved(&arr, &folded, id)[0];
+            assert!(close(got, w, 1e-7), "far {far}: e{id} {got} vs {w}");
+        }
+        assert!(folded.gap <= 1e-7, "far {far}: gap {}", folded.gap);
+    }
 }
 
 #[test]

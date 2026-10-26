@@ -351,8 +351,8 @@ fn freecad_reads_a_crease_pattern() {
         &mut s,
         "feature.fold",
         json!({"sketch": "Paper", "name": "Waterbomb", "creases": [
-            {"line": lines[0], "kind": "mountain"},
-            {"line": lines[1], "kind": "valley"},
+            {"line": lines[0], "kind": "mountain", "angle": "36.03846874550981 deg"},
+            {"line": lines[1], "kind": "valley", "angle": "49.40777113928209 deg"},
             {"line": lines[2], "kind": "valley"}]}),
     );
     let mut cases = Vec::new();

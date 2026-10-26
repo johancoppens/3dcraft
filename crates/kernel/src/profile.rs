@@ -84,9 +84,9 @@ pub(crate) const ONE_SEGMENT_OPEN: &str =
 /// reason.
 pub(crate) const CIRCLE_NOT_ALONE: &str = "a circle is a loop on its own";
 
-type P2 = [f64; 2];
+pub(crate) type P2 = [f64; 2];
 
-fn sub(a: P2, b: P2) -> P2 {
+pub(crate) fn sub(a: P2, b: P2) -> P2 {
     [a[0] - b[0], a[1] - b[1]]
 }
 
@@ -98,11 +98,11 @@ fn scaled(a: P2, s: f64) -> P2 {
     [a[0] * s, a[1] * s]
 }
 
-fn dot(a: P2, b: P2) -> f64 {
+pub(crate) fn dot(a: P2, b: P2) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-fn cross(a: P2, b: P2) -> f64 {
+pub(crate) fn cross(a: P2, b: P2) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
 
@@ -110,7 +110,7 @@ fn length(a: P2) -> f64 {
     a[0].hypot(a[1])
 }
 
-fn distance(a: P2, b: P2) -> f64 {
+pub(crate) fn distance(a: P2, b: P2) -> f64 {
     length(sub(a, b))
 }
 

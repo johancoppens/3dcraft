@@ -64,7 +64,7 @@ pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
-pub use fold::{FoldAnalysis, fold_analysis};
+pub use fold::{FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};

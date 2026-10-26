@@ -18,25 +18,25 @@
 //! shared vertices: a fold of 180 degrees lays two facets on one another,
 //! which a sheet of no thickness cannot be, so it is a *touch*.
 
-use super::rigid::lift;
-use super::{Arrangement, Folded, P2, inside_loops, to_segment};
-use craft3d_math::Vec3;
+use super::{Arrangement, FoldError, Folded, P2, inside_loops, lift, ring_distance};
+use crate::boxtree::BoxTree;
+use craft3d_math::{Bbox3, Transform, Vec3};
 use std::collections::BTreeSet;
 
 /// How two facets meet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContactKind {
+pub enum FacetMeeting {
     /// They pass through each other.
     Through,
     /// They touch: along an edge, at a point, or lying on each other.
     Touch,
 }
 
-impl ContactKind {
+impl FacetMeeting {
     pub fn verb(self) -> &'static str {
         match self {
-            ContactKind::Through => "pass through each other",
-            ContactKind::Touch => "touch or lie on each other",
+            FacetMeeting::Through => "pass through each other",
+            FacetMeeting::Touch => "touch or lie on each other",
         }
     }
 }
@@ -44,9 +44,9 @@ impl ContactKind {
 /// Two facets that meet, and a point where they do (sheet coordinates,
 /// folded).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Contact {
+pub struct Meeting {
     pub facets: [usize; 2],
-    pub kind: ContactKind,
+    pub kind: FacetMeeting,
     pub at: Vec3,
 }
 
@@ -65,8 +65,9 @@ struct Placed {
     origin: Vec3,
     lo: Vec3,
     hi: Vec3,
-    /// From folded to flat.
-    back: super::Rigid,
+    /// From flat to folded, and back.
+    forth: Transform,
+    back: Transform,
 }
 
 fn placed(arr: &Arrangement, folded: &Folded, f: usize) -> Option<Placed> {
@@ -115,23 +116,15 @@ fn placed(arr: &Arrangement, folded: &Folded, f: usize) -> Option<Placed> {
         origin,
         lo,
         hi,
-        back: t.inverse(),
+        forth: *t,
+        back: t.inverse()?,
     })
 }
 
 impl Placed {
     /// Distance from a flat point to the facet's edges.
     fn edge_distance(&self, p: P2) -> f64 {
-        let mut best = f64::INFINITY;
-        for ring in &self.flat {
-            let n = ring.len();
-            for i in 0..n {
-                if let (Some(&a), Some(&b)) = (ring.get(i), ring.get((i + 1) % n)) {
-                    best = best.min(to_segment(p, a, b).0);
-                }
-            }
-        }
-        best
+        ring_distance(&self.flat, p)
     }
 
     fn inside_flat(&self, p: P2) -> bool {
@@ -150,47 +143,70 @@ impl Placed {
 }
 
 /// The first pair of facets (in the order of their indices) that pass
-/// through each other or touch, if any.
-pub fn first_contact(
+/// through each other or touch, if any. Fails closed: a facet that cannot
+/// be placed is an error, never "no meeting". The pairs looked at are those
+/// whose boxes (grown by the tolerance) meet, found by a box tree, so the
+/// work grows with the facets and the pairs that are near, not with every
+/// pair.
+pub fn first_meeting(
     arr: &Arrangement,
     folded: &Folded,
     tol: f64,
     angular: f64,
-) -> Option<Contact> {
-    let all: Vec<Placed> = (0..arr.facets.len())
-        .filter_map(|f| placed(arr, folded, f))
-        .collect();
-    if all.len() != arr.facets.len() {
-        return None;
+) -> Result<Option<Meeting>, FoldError> {
+    let mut all = Vec::with_capacity(arr.facets.len());
+    for f in 0..arr.facets.len() {
+        all.push(placed(arr, folded, f).ok_or(FoldError::Broken {
+            reason: "a facet could not be placed to look for meetings",
+        })?);
     }
+    let grow = Vec3::new(tol, tol, tol);
+    let boxes: Vec<Bbox3> = all
+        .iter()
+        .map(|p| Bbox3::from_points([p.lo - grow, p.hi + grow]))
+        .collect();
+    let tree = BoxTree::new(boxes.clone());
+    let mut near = Vec::new();
     for (i, p) in all.iter().enumerate() {
-        for (j, q) in all.iter().enumerate().skip(i + 1) {
-            let apart = p.lo.x > q.hi.x + tol
-                || q.lo.x > p.hi.x + tol
-                || p.lo.y > q.hi.y + tol
-                || q.lo.y > p.hi.y + tol
-                || p.lo.z > q.hi.z + tol
-                || q.lo.z > p.hi.z + tol;
-            if apart {
-                continue;
-            }
+        let Some(mine) = boxes.get(i) else { continue };
+        let mut budget = usize::MAX;
+        tree.search(|b| boxes_meet(b, mine), &mut near, &mut budget);
+        near.retain(|&j| j > i);
+        near.sort_unstable();
+        for &j in &near {
+            let Some(q) = all.get(j) else { continue };
             if let Some((kind, at)) = meet(p, q, tol, angular) {
-                return Some(Contact {
+                return Ok(Some(Meeting {
                     facets: [i, j],
                     kind,
                     at,
-                });
+                }));
             }
         }
     }
-    None
+    Ok(None)
 }
 
-fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(ContactKind, Vec3)> {
+fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
+    match (a.corners(), b.corners()) {
+        (Some((alo, ahi)), Some((blo, bhi))) => {
+            alo.x <= bhi.x
+                && blo.x <= ahi.x
+                && alo.y <= bhi.y
+                && blo.y <= ahi.y
+                && alo.z <= bhi.z
+                && blo.z <= ahi.z
+        }
+        _ => false,
+    }
+}
+
+fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(FacetMeeting, Vec3)> {
     let shared_v: BTreeSet<usize> = p.vertices.intersection(&q.vertices).copied().collect();
     let shared_e: BTreeSet<usize> = p.edges.intersection(&q.edges).copied().collect();
-    let c = p.normal.dot(q.normal);
-    let parallel = 1.0 - c.abs() <= 0.5 * angular * angular + 4.0 * f64::EPSILON;
+    // Parallel when the normals are within the angular tolerance (the
+    // sine of the angle between them).
+    let parallel = p.normal.cross(q.normal).length() <= angular;
     if parallel {
         let off = |x: Vec3| (x - p.origin).dot(p.normal).abs();
         if q.folded.iter().flatten().any(|&x| off(x) > tol) {
@@ -256,9 +272,9 @@ fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(ContactKind, 
     let (_, inner_p) = p.holds(mid, tol);
     let (_, inner_q) = q.holds(mid, tol);
     let kind = if inner_p && inner_q && hi - lo > tol {
-        ContactKind::Through
+        FacetMeeting::Through
     } else {
-        ContactKind::Touch
+        FacetMeeting::Touch
     };
     Some((kind, mid))
 }
@@ -334,7 +350,7 @@ fn coplanar(
     shared_v: &BTreeSet<usize>,
     shared_e: &BTreeSet<usize>,
     tol: f64,
-) -> Option<(ContactKind, Vec3)> {
+) -> Option<(FacetMeeting, Vec3)> {
     // Everything in the flat coordinates of `p`.
     let to_p = |x: Vec3| {
         let y = p.back.point(x);
@@ -345,18 +361,7 @@ fn coplanar(
         .iter()
         .map(|r| r.iter().map(|&x| to_p(x)).collect())
         .collect();
-    let q_dist = |pt: P2| {
-        let mut best = f64::INFINITY;
-        for ring in &q_flat {
-            let n = ring.len();
-            for i in 0..n {
-                if let (Some(&a), Some(&b)) = (ring.get(i), ring.get((i + 1) % n)) {
-                    best = best.min(to_segment(pt, a, b).0);
-                }
-            }
-        }
-        best
-    };
+    let q_dist = |pt: P2| ring_distance(&q_flat, pt);
     let q_inside = |pt: P2| inside_loops(pt, q_flat.iter().map(Vec::as_slice));
     let p_point = |pt: P2| p.folded_of(pt);
     // A corner of q, not shared, in p.
@@ -367,7 +372,7 @@ fn coplanar(
             }
             let pt = to_p(x);
             if p.inside_flat(pt) || p.edge_distance(pt) <= tol {
-                return Some((ContactKind::Touch, x));
+                return Some((FacetMeeting::Touch, x));
             }
         }
     }
@@ -378,7 +383,7 @@ fn coplanar(
                 continue;
             }
             if q_inside(pt) || q_dist(pt) <= tol {
-                return Some((ContactKind::Touch, p_point(pt)));
+                return Some((FacetMeeting::Touch, p_point(pt)));
             }
         }
     }
@@ -409,7 +414,7 @@ fn coplanar(
                     if let Some(x) = crossing(a, b, c, d)
                         && shared_points.iter().all(|s| super::dist(*s, x) > tol)
                     {
-                        return Some((ContactKind::Touch, p_point(x)));
+                        return Some((FacetMeeting::Touch, p_point(x)));
                     }
                 }
             }
@@ -420,7 +425,7 @@ fn coplanar(
 
 impl Placed {
     fn folded_of(&self, p: P2) -> Vec3 {
-        self.back.inverse().point(lift(p))
+        self.forth.point(lift(p))
     }
 }
 

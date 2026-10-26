@@ -15,20 +15,28 @@ use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::Body;
 use std::collections::BTreeSet;
 
-/// A fold's crease pattern, laid out and (when it could be) folded.
+/// A fold's crease pattern, laid out flat: what `fold.check` and the
+/// crease-pattern export read, without folding it.
 #[derive(Clone, Debug)]
-pub struct FoldAnalysis {
+pub struct FoldPattern {
     /// The sheet divided into facets, in the sketch's axes.
     pub arrangement: Arrangement,
-    /// Where each facet went, or why the fold failed.
-    pub folded: Result<Folded, String>,
     /// The sketch's plane.
     pub plane: Frame,
-    /// The facet that stays in place.
-    pub fixed: usize,
     /// The sheet's outline: each loop as its corners, outer loops
     /// counter-clockwise and holes clockwise, in the sketch's axes.
     pub outline: Vec<Vec<[f64; 2]>>,
+    pub tolerance: Tolerance,
+}
+
+/// A fold's crease pattern and (when it could be) its fold.
+#[derive(Clone, Debug)]
+pub struct FoldAnalysis {
+    pub pattern: FoldPattern,
+    /// Where each facet went, or why the fold failed.
+    pub folded: Result<Folded, String>,
+    /// The facet that stays in place.
+    pub fixed: usize,
 }
 
 /// What a curve id is called in messages: `e7`.
@@ -102,6 +110,14 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             "not rigidly foldable at these angles: the facets round the loop through {} do not meet again (they stay {gap:e} apart); change the angles, or leave more of them to be solved",
             curve(*id)
         ),
+        FoldError::NotFollowed { at } => format!(
+            "the fold could not be followed from the flat sheet past {:.6} degrees of its largest angle: no step found a fold that follows on from the last (a solved crease would jump, or turn against its kind)",
+            at.to_degrees()
+        ),
+        FoldError::TooMuchWork => format!(
+            "the fold needs more work than its budget ({} steps): give more creases an angle",
+            origami::MAX_WORK
+        ),
         FoldError::NotConverged { gap } => format!(
             "the fold did not converge (the facets stay {gap:e} apart): leave more angles to be solved, or fold less far"
         ),
@@ -110,7 +126,7 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             curve(*id),
             angle.to_degrees()
         ),
-        FoldError::Contact(c) => match arr {
+        FoldError::Meets(c) => match arr {
             Some(arr) => format!(
                 "{} and {} {} at these angles (at {:?} in the sketch's axes, folded): a sheet may not pass through or lie on itself",
                 facet_name(arr, c.facets[0]),
@@ -124,13 +140,8 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
     }
 }
 
-/// Lays out the crease pattern of `fold` and folds it.
-pub(crate) fn analyse(
-    doc: &Document,
-    variables: &Evaluation,
-    fold: &Fold,
-    earlier: &[FeatureResult],
-) -> Result<(FoldAnalysis, Tolerance), String> {
+/// Lays out the crease pattern of `fold`.
+fn pattern(doc: &Document, fold: &Fold, earlier: &[FeatureResult]) -> Result<FoldPattern, String> {
     let source = doc.feature(fold.sketch).ok_or_else(|| {
         format!(
             "sketch: there is no feature {} (was the sketch deleted?)",
@@ -233,6 +244,24 @@ pub(crate) fn analyse(
     }
     let arrangement =
         origami::arrange(&boundary, &creases, tol.linear).map_err(|e| described(&e, None))?;
+    Ok(FoldPattern {
+        arrangement,
+        plane: drawn.plane,
+        outline,
+        tolerance: tol,
+    })
+}
+
+/// Lays out the crease pattern of `fold` and folds it.
+pub(crate) fn analyse(
+    doc: &Document,
+    variables: &Evaluation,
+    fold: &Fold,
+    earlier: &[FeatureResult],
+) -> Result<FoldAnalysis, String> {
+    let pattern = pattern(doc, fold, earlier)?;
+    let arrangement = &pattern.arrangement;
+    let tol = pattern.tolerance;
 
     // Which facet stays.
     let fixed = match &fold.fixed {
@@ -243,7 +272,7 @@ pub(crate) fn analyse(
             ];
             arrangement
                 .facet_at(at)
-                .ok_or_else(|| described(&FoldError::Fixed, Some(&arrangement)))?
+                .ok_or_else(|| described(&FoldError::Fixed, Some(arrangement)))?
         }
         None => {
             arrangement
@@ -284,24 +313,20 @@ pub(crate) fn analyse(
             None => Angle::Free { sign },
         });
     }
-    let folded = origami::fold(&arrangement, &angles, fixed, tol.linear, tol.angular)
-        .map_err(|e| described(&e, Some(&arrangement)))
+    let folded = origami::fold(arrangement, &angles, fixed, tol.linear, tol.angular)
+        .map_err(|e| described(&e, Some(arrangement)))
         .and_then(|folded| {
-            match origami::first_contact(&arrangement, &folded, tol.linear, tol.angular) {
-                Some(contact) => Err(described(&FoldError::Contact(contact), Some(&arrangement))),
-                None => Ok(folded),
+            match origami::first_meeting(arrangement, &folded, tol.linear, tol.angular) {
+                Ok(Some(meeting)) => Err(described(&FoldError::Meets(meeting), Some(arrangement))),
+                Ok(None) => Ok(folded),
+                Err(e) => Err(described(&e, Some(arrangement))),
             }
         });
-    Ok((
-        FoldAnalysis {
-            arrangement,
-            folded,
-            plane: drawn.plane,
-            fixed,
-            outline,
-        },
-        tol,
-    ))
+    Ok(FoldAnalysis {
+        pattern,
+        folded,
+        fixed,
+    })
 }
 
 /// Builds a fold: the folded sheet and the names of its faces, edges and
@@ -313,33 +338,47 @@ pub(crate) fn build(
     fold: &Fold,
     earlier: &[FeatureResult],
 ) -> Result<(Body, Names), String> {
-    let (analysis, tol) = analyse(doc, variables, fold, earlier)?;
+    let analysis = analyse(doc, variables, fold, earlier)?;
     let folded = analysis.folded?;
-    let made = origami::folded_sheet(&analysis.arrangement, &folded, &analysis.plane, &tol)
-        .map_err(|e| described(&e, Some(&analysis.arrangement)))?;
+    let p = &analysis.pattern;
+    let made = origami::folded_sheet(&p.arrangement, &folded, &p.plane, &p.tolerance)
+        .map_err(|e| described(&e, Some(&p.arrangement)))?;
     let names = Names::of_origins(id, &made.origins);
     Ok((made.body, names))
 }
 
-/// The crease pattern of fold `id` of `doc`, laid out and folded, with
-/// the results of regeneration (`regen`) for the sketch it reads: what
-/// `fold.check` and the crease-pattern export read. Errors when the
+fn fold_of(doc: &Document, id: FeatureId) -> Result<&Fold, String> {
+    let feature = doc
+        .feature(id)
+        .ok_or_else(|| format!("there is no feature {id}"))?;
+    match &feature.kind {
+        craft3d_doc::FeatureKind::Fold(fold) => Ok(fold),
+        other => Err(format!(
+            "`{}` is a {}, not a fold",
+            feature.name,
+            other.type_name()
+        )),
+    }
+}
+
+/// The crease pattern of fold `id` of `doc`, laid out flat (not folded),
+/// with the results of regeneration (`regen`) for the sketch it reads:
+/// what `fold.check` and the crease-pattern export read. Errors when the
 /// feature is no fold or its pattern cannot be laid out.
+pub fn fold_pattern(
+    doc: &Document,
+    regen: &crate::Regen,
+    id: FeatureId,
+) -> Result<FoldPattern, String> {
+    pattern(doc, fold_of(doc, id)?, &regen.features)
+}
+
+/// The crease pattern of fold `id`, laid out and folded (`fold.inspect`).
 pub fn fold_analysis(
     doc: &Document,
     regen: &crate::Regen,
     id: FeatureId,
 ) -> Result<FoldAnalysis, String> {
-    let feature = doc
-        .feature(id)
-        .ok_or_else(|| format!("there is no feature {id}"))?;
-    let craft3d_doc::FeatureKind::Fold(fold) = &feature.kind else {
-        return Err(format!(
-            "`{}` is a {}, not a fold",
-            feature.name,
-            feature.kind.type_name()
-        ));
-    };
     let variables = crate::feature_variables(doc);
-    analyse(doc, &variables, fold, &regen.features).map(|(analysis, _)| analysis)
+    analyse(doc, &variables, fold_of(doc, id)?, &regen.features)
 }

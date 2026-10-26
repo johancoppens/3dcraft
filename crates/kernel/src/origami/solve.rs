@@ -1,38 +1,40 @@
-//! Rigid folding: each facet moves as a rigid body, turned about the
-//! creases it shares with its neighbours by their fold angles.
+//! Rigid folding: bodies (the facets) joined by hinges (the fold creases),
+//! each body moving rigidly, turned about its hinges by their angles.
 //!
-//! The facets and fold creases form a graph; a breadth-first forest from
-//! the fixed facet (and from the first facet of each other piece, which
-//! stays where it is) places every facet by the product of the rotations
-//! along its path: `T_child = T_parent ∘ R(crease, ±ρ)`, each rotation
-//! about the crease as it lies in the flat sheet. Every crease that is not
-//! in the forest closes a loop, and holds only when the two facets it
-//! joins agree: `T_right = T_left ∘ R(crease, −ρ)`. That is the
-//! loop-closure condition of rigid origami (Belcastro and Hull's
-//! condition, Demaine and O'Rourke 2007, §13.1), here for every
-//! fundamental cycle of the graph, so it holds for any sheet, with holes,
-//! cuts and pieces. It is written as three points of the right facet that
-//! must land in the same place by both ways round (nine numbers per loop,
-//! lengths, zero when the loop closes), and the unknown angles are found by
-//! Levenberg–Marquardt on them, with the exact derivative: turning crease
-//! `k` moves a point `X` beyond it by `s D × (X − P)` per radian, `P` and
-//! `D` the crease's place and direction as its parent facet has it. The
-//! given angles are approached from the flat sheet in steps (continuation),
-//! each step starting from the last, so the fold stays on the branch it
-//! started on; the first guess turns every unknown crease the way its kind
-//! says. At the end the solution must close within the tolerance, every
-//! solved crease must turn the way its kind says, and the angles must be
-//! determined: the derivative's columns, scaled to unit length, have full
-//! rank (a pivoted elimination; a pivot below 1e-10 leaves its crease
-//! free).
+//! The solve knows nothing of crease patterns: it takes a [`Linkage`],
+//! bodies and joints, each joint with its own axis in space (a point, a
+//! direction, a side to sample) and the motion of its right body
+//! relative to its left one at an angle ([`Joint::motion`]: a turn about
+//! the axis by −ρ). A crease pattern is one linkage ([`fold`] builds it
+//! from an [`Arrangement`]); a bend of sheet metal would be another, its
+//! joint's motion a turn plus the offset of its radius
+//! (docs/design/origami.md › *One fold mechanism*).
+//!
+//! A breadth-first forest from the fixed body (and from the first body of
+//! each other piece, which stays where it is) places every body by the
+//! motions along its path, `T_child = T_parent ∘ M(±ρ)`. Every joint
+//! outside the forest closes a loop and holds only when its two bodies
+//! agree, `T_right = T_left ∘ M(ρ)`: the loop-closure condition of rigid
+//! origami (Belcastro and Hull; Demaine and O'Rourke 2007, §13.1), for
+//! every fundamental cycle, so any graph of bodies (holes, cuts, pieces)
+//! is handled alike. It is written as three points of the right body that
+//! must land in the same place both ways round (nine lengths per loop),
+//! and the unknown angles are found by Levenberg–Marquardt on them with
+//! the exact derivative: turning joint `k` moves a point `X` beyond it by
+//! `s D × (X − P)` per radian, `P` and `D` its axis as its parent body
+//! has it. The given angles are reached from the flat sheet by
+//! continuation: each step's solution must follow on from the last one
+//! (no solved angle moves by more than [`RATIO`] times the step of the
+//! given ones), and a step that does not is halved. At the end the
+//! solution must close within the tolerance, have full rank and turn
+//! every solved joint its kind's way.
 
-use super::rigid::lift;
-use super::{Arrangement, FoldError, MAX_FREE, Rigid};
-use craft3d_math::Vec3;
+use super::{FoldError, MAX_FREE};
+use craft3d_math::{Transform, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
 
-/// The fold angle of one hinge: signed, valley positive.
+/// The fold angle of one joint: signed, valley positive.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Angle {
     /// Given, in radians.
@@ -41,71 +43,125 @@ pub enum Angle {
     Free { sign: f64 },
 }
 
-/// A folded sheet: where each facet went, and the angle of every hinge.
+/// A hinge between two bodies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Joint {
+    pub left: usize,
+    pub right: usize,
+    /// A point on the axis, and its unit direction, with the left body on
+    /// the left of the axis seen from the side `side × direction` points
+    /// to.
+    pub point: Vec3,
+    pub direction: Vec3,
+    /// A unit vector square to the axis: where the third point the loops
+    /// are sampled at lies.
+    pub side: Vec3,
+    /// How far from `point` the loop's sample points lie (the hinge's
+    /// length): the residuals are lengths at this reach.
+    pub reach: f64,
+    /// The curve the joint is, for messages.
+    pub id: u64,
+}
+
+impl Joint {
+    /// The motion of the right body relative to the left one at angle
+    /// `rho`: `T_right = T_left ∘ motion(rho)`. A turn about the axis by
+    /// −ρ; a joint with an offset (a bend's radius) would add its
+    /// translation here and its velocity in [`Joint::velocity`].
+    fn motion(&self, rho: f64) -> Option<Transform> {
+        Transform::rotation_about(self.point, self.direction, -rho)
+    }
+
+    /// d/dρ of a point `x` carried by `motion`, with the axis where the
+    /// motion `t` before it puts it.
+    fn velocity(&self, t: &Transform, x: Vec3) -> Vec3 {
+        -(t.vector(self.direction).cross(x - t.point(self.point)))
+    }
+}
+
+/// Bodies joined by hinges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Linkage {
+    pub bodies: usize,
+    pub joints: Vec<Joint>,
+    /// The size of the whole (the diagonal of its box): the scale of the
+    /// stopping rule and of the kinds' penalty.
+    pub size: f64,
+}
+
+/// A folded linkage: where each body went, and the angle of every joint.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Folded {
-    /// Per facet, from its flat place to its folded one, in the sheet's
-    /// plane coordinates.
-    pub transforms: Vec<Rigid>,
-    /// Per hinge, the fold angle (valley positive), in radians.
+    /// Per body, from its flat place to its folded one.
+    pub transforms: Vec<Transform>,
+    /// Per joint, the fold angle (valley positive), in radians.
     pub angles: Vec<f64>,
     /// The largest distance by which a loop fails to close.
     pub gap: f64,
-    /// The facets that stay in place: the fixed one, then one per other
-    /// piece of the sheet.
+    /// The bodies that stay in place: the fixed one, then one per other
+    /// piece.
     pub roots: Vec<usize>,
+    /// Per body, which piece (index into `roots`) it belongs to.
+    pub piece: Vec<usize>,
 }
 
-/// Steps from the flat sheet to the given angles: one per this many
-/// radians of the largest given angle (10 degrees).
-const STEP: f64 = PI / 18.0;
-const MAX_STEPS: usize = 18;
-const MAX_ITERATIONS: usize = 60;
-/// How far the first step's guesses turn the unknown creases, in units of
-/// the largest given angle.
+/// The largest step of the given angles (10 degrees), and the first one
+/// from the flat sheet (1 degree).
+const MAX_STEP: f64 = PI / 18.0;
+const FIRST_STEP: f64 = PI / 180.0;
+/// A step is accepted only when no solved angle moved by more than this
+/// many times the largest given angle's step (plus the angular
+/// tolerance): the solution follows on from the last one.
+pub const RATIO: f64 = 15.0;
+/// The first step's guesses, in units of its given step: every unknown
+/// turned its kind's way by this much (all within [`RATIO`]).
 const FIRST_GUESSES: [f64; 4] = [1.0, 3.0, 0.3, 10.0];
-/// A pivot of the scaled normal equations below this leaves its crease
+/// A step is halved at most this many times in a row.
+const MAX_HALVINGS: usize = 24;
+const MAX_ITERATIONS: usize = 60;
+/// The most work one fold may do, counted as the multiplications of the
+/// dense factorisations and of the residual evaluations (about 20 s on
+/// a laptop at the worst).
+pub const MAX_WORK: u64 = 20_000_000_000;
+/// A pivot of the scaled normal equations below this leaves its joint
 /// undetermined.
 const RANK_PIVOT: f64 = 1e-10;
 
 struct Forest {
-    /// Per facet: the hinge to its parent and the parent, `None` for a
-    /// root.
     parent: Vec<Option<(usize, usize)>>,
-    /// Facets in the order they were reached.
     order: Vec<usize>,
     depth: Vec<usize>,
-    /// Per hinge: whether it is in the forest.
     tree: Vec<bool>,
-    /// Per hinge in the forest: −1 when its parent facet is on its left
-    /// (the child turns by −ρ), +1 when on its right.
+    /// −1 when the parent is the joint's left body, +1 when its right.
     sign: Vec<f64>,
     roots: Vec<usize>,
+    piece: Vec<usize>,
 }
 
-fn forest(arr: &Arrangement, fixed: usize) -> Forest {
-    let nf = arr.facets.len();
-    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nf];
-    for (k, h) in arr.hinges.iter().enumerate() {
-        if let Some(list) = adj.get_mut(h.left) {
-            list.push((k, h.right));
+fn forest(link: &Linkage, fixed: usize) -> Forest {
+    let n = link.bodies;
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for (k, j) in link.joints.iter().enumerate() {
+        if let Some(list) = adj.get_mut(j.left) {
+            list.push((k, j.right));
         }
-        if let Some(list) = adj.get_mut(h.right) {
-            list.push((k, h.left));
+        if let Some(list) = adj.get_mut(j.right) {
+            list.push((k, j.left));
         }
     }
-    let mut parent = vec![None; nf];
-    let mut seen = vec![false; nf];
-    let mut depth = vec![0usize; nf];
-    let mut tree = vec![false; arr.hinges.len()];
-    let mut sign = vec![0.0; arr.hinges.len()];
-    let mut order = Vec::with_capacity(nf);
+    let mut parent = vec![None; n];
+    let mut seen = vec![false; n];
+    let mut depth = vec![0usize; n];
+    let mut piece = vec![0usize; n];
+    let mut tree = vec![false; link.joints.len()];
+    let mut sign = vec![0.0; link.joints.len()];
+    let mut order = Vec::with_capacity(n);
     let mut roots = Vec::new();
-    let starts = std::iter::once(fixed).chain(0..nf);
-    for root in starts {
+    for root in std::iter::once(fixed).chain(0..n) {
         if seen.get(root).copied() != Some(false) {
             continue;
         }
+        let index = roots.len();
         roots.push(root);
         if let Some(s) = seen.get_mut(root) {
             *s = true;
@@ -113,6 +169,9 @@ fn forest(arr: &Arrangement, fixed: usize) -> Forest {
         let mut queue = VecDeque::from([root]);
         while let Some(f) = queue.pop_front() {
             order.push(f);
+            if let Some(p) = piece.get_mut(f) {
+                *p = index;
+            }
             let d = depth.get(f).copied().unwrap_or(0);
             for &(k, g) in adj.get(f).into_iter().flatten() {
                 if seen.get(g).copied() != Some(false) {
@@ -130,7 +189,7 @@ fn forest(arr: &Arrangement, fixed: usize) -> Forest {
                 if let Some(t) = tree.get_mut(k) {
                     *t = true;
                 }
-                let left = arr.hinges.get(k).is_some_and(|h| h.left == f);
+                let left = link.joints.get(k).is_some_and(|j| j.left == f);
                 if let Some(s) = sign.get_mut(k) {
                     *s = if left { -1.0 } else { 1.0 };
                 }
@@ -145,50 +204,41 @@ fn forest(arr: &Arrangement, fixed: usize) -> Forest {
         tree,
         sign,
         roots,
+        piece,
     }
 }
 
-/// A crease's line in the flat sheet: a point, the unit direction, and
-/// its length.
-fn axis(arr: &Arrangement, hinge: usize) -> Option<(Vec3, Vec3, f64)> {
-    let h = arr.hinges.get(hinge)?;
-    let e = arr.edges.get(h.edge)?;
-    let a = lift(arr.point(e.from)?);
-    let b = lift(arr.point(e.to)?);
-    let len = a.distance(b);
-    Some((a, (b - a).normalized()?, len))
-}
-
-/// Everything one evaluation gives.
+/// Where every body is at the angles `rho`, and per joint of the forest
+/// the motion of its parent (which places its axis).
 struct State {
-    transforms: Vec<Rigid>,
-    /// Per hinge in the forest: its line as its parent facet has it.
-    world: Vec<(Vec3, Vec3)>,
+    transforms: Vec<Transform>,
+    parent_motion: Vec<Transform>,
 }
 
-fn place(arr: &Arrangement, forest: &Forest, rho: &[f64]) -> Option<State> {
-    let nf = arr.facets.len();
-    let mut transforms = vec![Rigid::IDENTITY; nf];
-    let mut world = vec![(Vec3::ZERO, Vec3::Z); arr.hinges.len()];
+fn place(link: &Linkage, forest: &Forest, rho: &[f64]) -> Option<State> {
+    let mut transforms = vec![Transform::IDENTITY; link.bodies];
+    let mut parent_motion = vec![Transform::IDENTITY; link.joints.len()];
     for &f in &forest.order {
         let Some(Some((k, p))) = forest.parent.get(f).copied() else {
             continue;
         };
         let tp = *transforms.get(p)?;
-        let (point, dir, _) = axis(arr, k)?;
-        let angle = forest.sign.get(k)? * rho.get(k)?;
-        if let Some(slot) = world.get_mut(k) {
-            *slot = (tp.point(point), tp.vector(dir));
+        let joint = link.joints.get(k)?;
+        let motion = joint.motion(-forest.sign.get(k)? * rho.get(k)?)?;
+        if let Some(slot) = parent_motion.get_mut(k) {
+            *slot = tp;
         }
-        let t = tp.after(&Rigid::about(point, dir, angle));
+        // T_child = T_parent ∘ motion: the motion first.
         if let Some(slot) = transforms.get_mut(f) {
-            *slot = t;
+            *slot = motion.then(&tp);
         }
     }
-    Some(State { transforms, world })
+    Some(State {
+        transforms,
+        parent_motion,
+    })
 }
 
-/// The hinges on the path from facet `f` up to its root.
 fn path(forest: &Forest, mut f: usize) -> Vec<usize> {
     let mut out = Vec::new();
     while let Some(Some((k, p))) = forest.parent.get(f).copied() {
@@ -201,52 +251,69 @@ fn path(forest: &Forest, mut f: usize) -> Vec<usize> {
     out
 }
 
-/// One row of three: a gap vector and its derivative per unknown.
 struct Row {
     gap: Vec3,
     by: Vec<(usize, Vec3)>,
 }
 
-/// The loops' gaps (and derivatives, when `column` gives the unknown of
-/// each hinge) at the angles `rho`.
+/// One loop: the joint that closes it and the paths of its two bodies.
+type Loop = (usize, Vec<usize>, Vec<usize>);
+
+/// Counts the work done, and refuses past [`MAX_WORK`].
+struct Budget(u64);
+
+impl Budget {
+    fn spend(&mut self, work: u64) -> Result<(), FoldError> {
+        self.0 = self.0.saturating_add(work);
+        if self.0 > MAX_WORK {
+            Err(FoldError::TooMuchWork)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 fn rows(
-    arr: &Arrangement,
+    link: &Linkage,
     forest: &Forest,
-    loops: &[(usize, Vec<usize>, Vec<usize>)],
+    loops: &[Loop],
     rho: &[f64],
     column: Option<&[Option<usize>]>,
-) -> Option<Vec<Row>> {
-    let state = place(arr, forest, rho)?;
+    budget: &mut Budget,
+) -> Result<Vec<Row>, FoldError> {
+    let state = place(link, forest, rho).ok_or(BROKEN)?;
     let mut out = Vec::with_capacity(loops.len() * 3);
+    let mut work = link.bodies as u64;
     for (l, path_a, path_b) in loops {
-        let h = arr.hinges.get(*l)?;
-        let (p, d, len) = axis(arr, *l)?;
-        let ta = *state.transforms.get(h.left)?;
-        let tb = *state.transforms.get(h.right)?;
-        let r = Rigid::about(p, d, -*rho.get(*l)?);
-        let side = Vec3::new(-d.y, d.x, 0.0);
-        for q in [p, p + d * len, p + side * len] {
-            let x1 = ta.point(r.point(q));
+        let joint = link.joints.get(*l).ok_or(BROKEN)?;
+        let ta = *state.transforms.get(joint.left).ok_or(BROKEN)?;
+        let tb = *state.transforms.get(joint.right).ok_or(BROKEN)?;
+        let motion = joint.motion(*rho.get(*l).ok_or(BROKEN)?).ok_or(BROKEN)?;
+        let (p, d, s, r) = (joint.point, joint.direction, joint.side, joint.reach);
+        for q in [p, p + d * r, p + s * r] {
+            let x1 = ta.point(motion.point(q));
             let x2 = tb.point(q);
             let mut by: BTreeMap<usize, Vec3> = BTreeMap::new();
             if let Some(column) = column {
+                work = work.saturating_add((path_a.len() + path_b.len()) as u64);
                 let mut add = |k: usize, v: Vec3| {
                     if let Some(Some(c)) = column.get(k) {
-                        let slot = by.entry(*c).or_insert(Vec3::ZERO);
-                        *slot += v;
+                        *by.entry(*c).or_insert(Vec3::ZERO) += v;
                     }
                 };
-                for &k in path_a {
-                    if let (Some(&(wp, wd)), Some(&s)) = (state.world.get(k), forest.sign.get(k)) {
-                        add(k, wd.cross(x1 - wp) * s);
+                for (path, x, s) in [(path_a, x1, 1.0), (path_b, x2, -1.0)] {
+                    for &k in path {
+                        if let (Some(j), Some(t), Some(&sign)) = (
+                            link.joints.get(k),
+                            state.parent_motion.get(k),
+                            forest.sign.get(k),
+                        ) {
+                            // The child turns by −sign ρ through the motion.
+                            add(k, j.velocity(t, x) * (-sign * s));
+                        }
                     }
                 }
-                for &k in path_b {
-                    if let (Some(&(wp, wd)), Some(&s)) = (state.world.get(k), forest.sign.get(k)) {
-                        add(k, wd.cross(x2 - wp) * (-s));
-                    }
-                }
-                add(*l, -(ta.vector(d).cross(x1 - ta.point(p))));
+                add(*l, joint.velocity(&ta, x1));
             }
             out.push(Row {
                 gap: x1 - x2,
@@ -254,8 +321,13 @@ fn rows(
             });
         }
     }
-    Some(out)
+    budget.spend(work)?;
+    Ok(out)
 }
+
+const BROKEN: FoldError = FoldError::Broken {
+    reason: "a joint or a body is missing, or a motion is not finite",
+};
 
 fn largest_gap(rows: &[Row]) -> f64 {
     rows.iter().map(|r| r.gap.length()).fold(0.0, f64::max)
@@ -265,10 +337,10 @@ fn cost(rows: &[Row]) -> f64 {
     rows.iter().map(|r| r.gap.length_squared()).sum()
 }
 
-/// Folds the arrangement by `angles` (one per hinge), keeping facet
-/// `fixed` in place. `tol` and `angular` are the document's tolerances.
-pub fn fold(
-    arr: &Arrangement,
+/// Folds the linkage by `angles` (one per joint), keeping body `fixed` in
+/// place. `tol` and `angular` are the document's tolerances.
+pub fn fold_linkage(
+    link: &Linkage,
     angles: &[Angle],
     fixed: usize,
     tol: f64,
@@ -277,18 +349,13 @@ pub fn fold(
     if !(tol.is_finite() && tol > 0.0 && angular.is_finite() && angular > 0.0) {
         return Err(FoldError::Tolerance);
     }
-    let nh = arr.hinges.len();
-    if angles.len() != nh || fixed >= arr.facets.len() {
+    let nj = link.joints.len();
+    if angles.len() != nj || fixed >= link.bodies {
         return Err(FoldError::Broken {
-            reason: "the angles do not match the creases",
+            reason: "the angles do not match the joints",
         });
     }
-    let source = |k: usize| {
-        arr.hinges
-            .get(k)
-            .and_then(|h| arr.edges.get(h.edge))
-            .map_or(0, |e| e.source)
-    };
+    let source = |k: usize| link.joints.get(k).map_or(0, |j| j.id);
     for (k, a) in angles.iter().enumerate() {
         if let Angle::Given(v) = a
             && !(v.is_finite() && v.abs() <= PI)
@@ -296,50 +363,37 @@ pub fn fold(
             return Err(FoldError::AngleRange { id: source(k) });
         }
     }
-    let forest = forest(arr, fixed);
+    let forest = forest(link, fixed);
 
-    // The loops: each hinge outside the forest, with the paths of its two
-    // facets; the forest's hinges that lie on some loop.
-    let mut loops = Vec::new();
-    let mut on_loop = vec![false; nh];
-    for (k, h) in arr.hinges.iter().enumerate() {
+    // The loops, and the forest's joints that lie on one.
+    let mut loops: Vec<Loop> = Vec::new();
+    let mut on_loop = vec![false; nj];
+    for (k, j) in link.joints.iter().enumerate() {
         if forest.tree.get(k).copied().unwrap_or(false) {
             continue;
         }
-        let pa = path(&forest, h.left);
-        let pb = path(&forest, h.right);
-        // Below the common ancestor the two paths are the loop.
-        let (mut a, mut b) = (h.left, h.right);
+        let (mut a, mut b) = (j.left, j.right);
         let mut guard = 0usize;
-        while a != b && guard <= 2 * arr.facets.len() {
+        while a != b && guard <= 2 * link.bodies {
             guard += 1;
-            let (da, db) = (
-                forest.depth.get(a).copied().unwrap_or(0),
-                forest.depth.get(b).copied().unwrap_or(0),
-            );
-            let up = |f: usize| forest.parent.get(f).copied().flatten();
-            if da >= db {
-                let Some((kk, p)) = up(a) else { break };
-                if let Some(m) = on_loop.get_mut(kk) {
-                    *m = true;
-                }
-                a = p;
-            } else {
-                let Some((kk, p)) = up(b) else { break };
-                if let Some(m) = on_loop.get_mut(kk) {
-                    *m = true;
-                }
-                b = p;
+            let deeper_a = forest.depth.get(a) >= forest.depth.get(b);
+            let at = if deeper_a { &mut a } else { &mut b };
+            let Some((kk, p)) = forest.parent.get(*at).copied().flatten() else {
+                break;
+            };
+            if let Some(m) = on_loop.get_mut(kk) {
+                *m = true;
             }
+            *at = p;
         }
         if let Some(m) = on_loop.get_mut(k) {
             *m = true;
         }
-        loops.push((k, pa, pb));
+        loops.push((k, path(&forest, j.left), path(&forest, j.right)));
     }
 
-    // The unknowns.
-    let mut column: Vec<Option<usize>> = vec![None; nh];
+    // The unknowns; one on no loop is determined by nothing.
+    let mut column: Vec<Option<usize>> = vec![None; nj];
     let mut signs = Vec::new();
     let mut free = Vec::new();
     let mut lonely = Vec::new();
@@ -380,87 +434,98 @@ pub fn fold(
             Angle::Free { .. } => 0.0,
         })
         .fold(0.0, f64::max);
-    let span = arr
-        .vertices
-        .iter()
-        .map(|p| p[0].abs().max(p[1].abs()))
-        .fold(0.0, f64::max);
-    let goal = (tol * 1e-3).max(span * 1e-13);
-    let broken = || FoldError::Broken {
-        reason: "a crease has no length",
+    let size = if link.size.is_finite() && link.size > 0.0 {
+        link.size
+    } else {
+        1.0
+    };
+    let goal = (tol * 1e-3).max(size * 1e-13);
+    let mut budget = Budget(0);
+    let solver = Solver {
+        link,
+        forest: &forest,
+        loops: &loops,
+        free: &free,
+        column: &column,
+        signs: &signs,
+        goal,
+        weight: size,
     };
 
-    let mut rho = given(1.0);
+    // Continuation from the flat sheet.
     let mut x = vec![0.0; free.len()];
     let mut exhausted = false;
     if largest > 0.0 && !free.is_empty() {
-        let steps = ((largest / STEP).ceil() as usize).clamp(1, MAX_STEPS);
-        let weight = span.max(f64::MIN_POSITIVE);
-        let mut previous: Option<Vec<f64>> = None;
-        for step in 1..=steps {
-            let scale = step as f64 / steps as f64;
-            let base = given(scale);
-            // The guesses: on the first step the unknown creases turned the
-            // way their kinds say, as far as the largest given one, then
-            // three and a third and ten times as far, until one closes with
-            // every crease turned its kind's way (near the flat sheet the
-            // branches of a vertex meet, and the kinds pick one); later
-            // steps go on from the last two.
-            let guesses: Vec<Vec<f64>> = match &previous {
+        let mut done = 0.0f64;
+        let mut h = (FIRST_STEP / largest).min(1.0);
+        let mut last_step: Option<(Vec<f64>, f64)> = None;
+        let mut halvings = 0usize;
+        while done < 1.0 {
+            let target = (done + h).min(1.0);
+            let step = (target - done) * largest;
+            let base = given(target);
+            let guesses: Vec<Vec<f64>> = match &last_step {
                 None => FIRST_GUESSES
                     .iter()
-                    .map(|f| signs.iter().map(|s| s * largest * scale * f).collect())
+                    .map(|f| signs.iter().map(|s| s * step * f).collect())
                     .collect(),
-                Some(before) => vec![
-                    x.iter()
-                        .zip(before)
-                        .map(|(now, was)| 2.0 * now - was)
-                        .collect(),
-                ],
+                // On from the last two solutions, scaled to this step.
+                Some((before, last_h)) => {
+                    let r = (target - done) / last_h;
+                    vec![
+                        x.iter()
+                            .zip(before)
+                            .map(|(now, was)| now + (now - was) * r)
+                            .collect(),
+                    ]
+                }
             };
-            previous = Some(x.clone());
-            let mut best: Option<(f64, Vec<f64>, bool)> = None;
+            let mut found = None;
             for guess in guesses {
-                let (solved, ran_out) = levenberg(
-                    arr,
+                let (solved, ran_out) = solver.levenberg(&base, guess, &mut budget)?;
+                let here = rows(
+                    link,
                     &forest,
                     &loops,
-                    &base,
-                    (&free, &column, &signs),
-                    guess,
-                    (goal, weight),
-                )
-                .ok_or_else(broken)?;
-                let mut rho_try = base.clone();
-                for (c, &k) in free.iter().enumerate() {
-                    if let (Some(slot), Some(&v)) = (rho_try.get_mut(k), solved.get(c)) {
-                        *slot = v;
-                    }
-                }
-                let here = rows(arr, &forest, &loops, &rho_try, None).ok_or_else(broken)?;
-                let wrong = solved.iter().zip(&signs).any(|(v, s)| s * v < -angular);
-                let score = largest_gap(&here);
-                let good = score <= goal.max(tol * 1e-2) && !wrong;
-                let better = best.as_ref().is_none_or(|(b, ..)| score < *b);
-                if good || better {
-                    best = Some((score, solved, ran_out));
-                }
-                if good {
+                    &solver.with(&base, &solved),
+                    None,
+                    &mut budget,
+                )?;
+                let follows = solved
+                    .iter()
+                    .zip(&x)
+                    .all(|(now, was)| (now - was).abs() <= RATIO * step + angular);
+                let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
+                if largest_gap(&here) <= tol && follows && kinds {
+                    found = Some((solved, ran_out));
                     break;
                 }
             }
-            if let Some((_, solved, ran_out)) = best {
-                x = solved;
-                exhausted = ran_out;
+            match found {
+                Some((solved, ran_out)) => {
+                    last_step = Some((std::mem::replace(&mut x, solved), target - done));
+                    exhausted = ran_out;
+                    done = target;
+                    halvings = 0;
+                    h = (h * 2.0).min(MAX_STEP / largest);
+                }
+                None => {
+                    halvings += 1;
+                    h /= 2.0;
+                    if halvings > MAX_HALVINGS {
+                        return Err(FoldError::NotFollowed { at: done * largest });
+                    }
+                }
             }
         }
     }
+    let mut rho = given(1.0);
     for (c, &k) in free.iter().enumerate() {
         if let (Some(slot), Some(&v)) = (rho.get_mut(k), x.get(c)) {
             *slot = v;
         }
     }
-    let final_rows = rows(arr, &forest, &loops, &rho, Some(&column)).ok_or_else(broken)?;
+    let final_rows = rows(link, &forest, &loops, &rho, Some(&column), &mut budget)?;
     let gap = largest_gap(&final_rows);
     if gap > tol {
         if exhausted {
@@ -476,8 +541,10 @@ pub fn fold(
             gap,
         });
     }
-    if largest > 0.0 && !free.is_empty() {
-        let loose = undetermined(&final_rows, free.len());
+    // Determined: also at the flat sheet, where the branches meet and the
+    // angles given do not say which way the others go.
+    if !free.is_empty() {
+        let loose = undetermined(&final_rows, free.len(), &mut budget)?;
         if !loose.is_empty() {
             let mut ids: Vec<u64> = loose
                 .iter()
@@ -489,14 +556,14 @@ pub fn fold(
             return Err(FoldError::Undetermined { ids });
         }
     }
-    // Every solved crease turns the way its kind says, and no further
-    // than flat on itself.
+    // Every solved joint turns its kind's way, and no further than flat
+    // on itself (the angle wrapped into (−π, π] first).
     for (c, &k) in free.iter().enumerate() {
         let (Some(&v), Some(&s)) = (rho.get(k), signs.get(c)) else {
             continue;
         };
         let wrapped = v.sin().atan2(v.cos());
-        if s * wrapped < -angular || (v.abs() > PI + angular) {
+        if s * wrapped < -angular {
             return Err(FoldError::WrongWay {
                 id: source(k),
                 angle: wrapped,
@@ -506,8 +573,12 @@ pub fn fold(
             *slot = wrapped;
         }
     }
-    let state = place(arr, &forest, &rho).ok_or_else(broken)?;
-    if !state.transforms.iter().all(Rigid::is_finite) {
+    let state = place(link, &forest, &rho).ok_or(BROKEN)?;
+    if !state
+        .transforms
+        .iter()
+        .all(|t| t.point(Vec3::ZERO).is_finite() && t.vector(Vec3::new(1.0, 1.0, 1.0)).is_finite())
+    {
         return Err(FoldError::NotConverged { gap: f64::INFINITY });
     }
     Ok(Folded {
@@ -515,91 +586,119 @@ pub fn fold(
         angles: rho,
         gap,
         roots: forest.roots,
+        piece: forest.piece,
     })
 }
 
-/// Levenberg–Marquardt on the loops' gaps from `x`; the solution and
-/// whether the iterations ran out first.
-fn levenberg(
-    arr: &Arrangement,
-    forest: &Forest,
-    loops: &[(usize, Vec<usize>, Vec<usize>)],
-    base: &[f64],
-    (free, column, signs): (&[usize], &[Option<usize>], &[f64]),
-    mut x: Vec<f64>,
-    (goal, weight): (f64, f64),
-) -> Option<(Vec<f64>, bool)> {
-    let n = free.len();
-    // The crease's kind says which way it turns: an unknown turned the
-    // other way costs `weight` (the sheet's size) per radian, as a gap
-    // would. Zero at every solution that keeps the kinds, so it only
-    // keeps the solve off the branches that do not.
-    let penalty = |x: &[f64]| -> f64 {
-        x.iter()
-            .zip(signs)
-            .map(|(v, s)| {
-                let wrong = (s * v).min(0.0) * weight;
-                wrong * wrong
-            })
-            .sum()
-    };
-    let with = |x: &[f64]| -> Vec<f64> {
+struct Solver<'a> {
+    link: &'a Linkage,
+    forest: &'a Forest,
+    loops: &'a [Loop],
+    free: &'a [usize],
+    column: &'a [Option<usize>],
+    signs: &'a [f64],
+    goal: f64,
+    weight: f64,
+}
+
+impl Solver<'_> {
+    fn with(&self, base: &[f64], x: &[f64]) -> Vec<f64> {
         let mut rho = base.to_vec();
-        for (c, &k) in free.iter().enumerate() {
+        for (c, &k) in self.free.iter().enumerate() {
             if let (Some(slot), Some(&v)) = (rho.get_mut(k), x.get(c)) {
                 *slot = v;
             }
         }
         rho
-    };
-    let mut lambda = 1e-3;
-    for _ in 0..MAX_ITERATIONS {
-        let now = rows(arr, forest, loops, &with(&x), Some(column))?;
-        if largest_gap(&now) <= goal {
-            return Some((x, false));
-        }
-        let c0 = cost(&now) + penalty(&x);
-        let (mut gram, mut grad) = normal(&now, n);
-        for (i, (v, s)) in x.iter().zip(signs).enumerate() {
-            if s * v < 0.0 {
-                if let Some(d) = gram.get_mut(i * n + i) {
-                    *d += weight * weight;
-                }
-                if let Some(g) = grad.get_mut(i) {
-                    *g += weight * weight * v;
-                }
-            }
-        }
-        let mut moved = false;
-        for _ in 0..12 {
-            let mut a = gram.clone();
-            for i in 0..n {
-                if let Some(d) = a.get_mut(i * n + i) {
-                    *d += lambda * (*d + 1e-12);
-                }
-            }
-            let mut b: Vec<f64> = grad.iter().map(|g| -g).collect();
-            if solve_dense(&mut a, &mut b, n).is_some() {
-                let trial: Vec<f64> = x.iter().zip(&b).map(|(x, d)| x + d).collect();
-                let rows_trial = rows(arr, forest, loops, &with(&trial), None)?;
-                if cost(&rows_trial) + penalty(&trial) < c0 {
-                    x = trial;
-                    lambda = (lambda / 3.0).max(1e-15);
-                    moved = true;
-                    break;
-                }
-            }
-            lambda *= 4.0;
-        }
-        if !moved {
-            // Stalled: this is as close as the loops come.
-            return Some((x, false));
-        }
     }
-    Some((x, true))
+
+    /// The kinds' penalty: an unknown turned against its kind costs the
+    /// sheet's size per radian, as a gap would; zero at every solution
+    /// that keeps the kinds.
+    fn penalty(&self, x: &[f64]) -> f64 {
+        x.iter()
+            .zip(self.signs)
+            .map(|(v, s)| {
+                let wrong = (s * v).min(0.0) * self.weight;
+                wrong * wrong
+            })
+            .sum()
+    }
+
+    /// Levenberg–Marquardt from `x`; the solution and whether the
+    /// iterations ran out first.
+    fn levenberg(
+        &self,
+        base: &[f64],
+        mut x: Vec<f64>,
+        budget: &mut Budget,
+    ) -> Result<(Vec<f64>, bool), FoldError> {
+        let n = self.free.len();
+        let cube = (n as u64).saturating_pow(3);
+        let mut lambda = 1e-3;
+        for _ in 0..MAX_ITERATIONS {
+            let now = rows(
+                self.link,
+                self.forest,
+                self.loops,
+                &self.with(base, &x),
+                Some(self.column),
+                budget,
+            )?;
+            if largest_gap(&now) <= self.goal {
+                return Ok((x, false));
+            }
+            let c0 = cost(&now) + self.penalty(&x);
+            let (mut gram, mut grad) = normal(&now, n);
+            let w2 = self.weight * self.weight;
+            for (i, (v, s)) in x.iter().zip(self.signs).enumerate() {
+                if s * v < 0.0 {
+                    if let Some(d) = gram.get_mut(i * n + i) {
+                        *d += w2;
+                    }
+                    if let Some(g) = grad.get_mut(i) {
+                        *g += w2 * v;
+                    }
+                }
+            }
+            let mut moved = false;
+            for _ in 0..12 {
+                budget.spend(cube / 3 + 1)?;
+                let mut a = gram.clone();
+                for i in 0..n {
+                    if let Some(d) = a.get_mut(i * n + i) {
+                        *d += lambda * (*d + 1e-12);
+                    }
+                }
+                let mut b: Vec<f64> = grad.iter().map(|g| -g).collect();
+                if solve_dense(&mut a, &mut b, n).is_some() {
+                    let trial: Vec<f64> = x.iter().zip(&b).map(|(x, d)| x + d).collect();
+                    let rows_trial = rows(
+                        self.link,
+                        self.forest,
+                        self.loops,
+                        &self.with(base, &trial),
+                        None,
+                        budget,
+                    )?;
+                    if cost(&rows_trial) + self.penalty(&trial) < c0 {
+                        x = trial;
+                        lambda = (lambda / 3.0).max(1e-15);
+                        moved = true;
+                        break;
+                    }
+                }
+                lambda *= 4.0;
+            }
+            if !moved {
+                return Ok((x, false));
+            }
+        }
+        Ok((x, true))
+    }
 }
 
-/// `JᵀJ` (dense, row-major) and `Jᵀr`.
+/// `JᵀJ` (dense, row-major) and `Jᵀr`, from each row's few entries.
 fn normal(rows: &[Row], n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut gram = vec![0.0; n * n];
     let mut grad = vec![0.0; n];
@@ -667,12 +766,12 @@ fn solve_dense(a: &mut [f64], b: &mut [f64], n: usize) -> Option<()> {
 /// The unknowns the derivative leaves free: a symmetric pivoted
 /// elimination of the normal equations with their columns scaled to unit
 /// length, the columns never pivoted.
-fn undetermined(rows: &[Row], n: usize) -> Vec<usize> {
+fn undetermined(rows: &[Row], n: usize, budget: &mut Budget) -> Result<Vec<usize>, FoldError> {
+    budget.spend((n as u64).saturating_pow(3))?;
     let (mut gram, _) = normal(rows, n);
     let diag: Vec<f64> = (0..n)
         .map(|i| gram.get(i * n + i).copied().unwrap_or(0.0))
         .collect();
-    let mut loose = Vec::new();
     for i in 0..n {
         for j in 0..n {
             let (di, dj) = (
@@ -688,15 +787,15 @@ fn undetermined(rows: &[Row], n: usize) -> Vec<usize> {
             }
         }
     }
+    let mut loose = Vec::new();
     let mut left: Vec<usize> = (0..n).collect();
     while !left.is_empty() {
-        let (at, &p) = match left.iter().enumerate().max_by(|a, b| {
+        let Some((at, &p)) = left.iter().enumerate().max_by(|a, b| {
             let va = gram.get(a.1 * n + a.1).copied().unwrap_or(0.0);
             let vb = gram.get(b.1 * n + b.1).copied().unwrap_or(0.0);
             va.total_cmp(&vb).then(b.1.cmp(a.1))
-        }) {
-            Some(found) => found,
-            None => break,
+        }) else {
+            break;
         };
         let pivot = gram.get(p * n + p).copied().unwrap_or(0.0);
         if pivot.is_nan() || pivot <= RANK_PIVOT {
@@ -715,5 +814,5 @@ fn undetermined(rows: &[Row], n: usize) -> Vec<usize> {
         }
     }
     loose.sort_unstable();
-    loose
+    Ok(loose)
 }

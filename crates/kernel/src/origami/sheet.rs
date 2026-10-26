@@ -13,8 +13,7 @@
 //! sides are pieces `2 i` and `2 i + 1`), a vertex after the curves that
 //! meet there and its fan.
 
-use super::rigid::lift;
-use super::{Arrangement, FoldError, Folded};
+use super::{Arrangement, FoldError, Folded, lift};
 use crate::extrude::{OpResult, Origin, Origins, Role};
 use craft3d_geom::{Curve3, Line, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -199,39 +198,13 @@ pub fn folded_sheet(
         faces.push(body.add_face(Surface::Plane(Plane::new(frame)), false, loops));
     }
 
-    // One shell per piece of the sheet: the facets the hinges join.
-    let mut piece_of: Vec<Option<usize>> = vec![None; arr.facets.len()];
-    let mut pieces: Vec<Vec<usize>> = Vec::new();
-    for start in 0..arr.facets.len() {
-        if piece_of.get(start).copied().flatten().is_some() {
-            continue;
-        }
-        let index = pieces.len();
-        let mut members = vec![start];
-        if let Some(slot) = piece_of.get_mut(start) {
-            *slot = Some(index);
-        }
-        let mut k = 0;
-        while let Some(&f) = members.get(k) {
-            k += 1;
-            for h in &arr.hinges {
-                let other = if h.left == f {
-                    h.right
-                } else if h.right == f {
-                    h.left
-                } else {
-                    continue;
-                };
-                if piece_of.get(other).copied().flatten().is_none() {
-                    if let Some(slot) = piece_of.get_mut(other) {
-                        *slot = Some(index);
-                    }
-                    members.push(other);
-                }
-            }
-        }
-        members.sort_unstable();
-        pieces.push(members);
+    // One shell per piece of the sheet, as the fold's forest found them.
+    let mut pieces: Vec<Vec<usize>> = vec![Vec::new(); folded.roots.len()];
+    for (f, &piece) in folded.piece.iter().enumerate() {
+        pieces
+            .get_mut(piece)
+            .ok_or_else(|| build_error("a facet belongs to no piece"))?
+            .push(f);
     }
     for members in pieces {
         body.add_shell(
