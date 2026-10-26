@@ -676,17 +676,19 @@ where
 
     /// How much cutting `rec` along each direction would gain against
     /// direction `d`; `None` for a direction that cannot be cut further.
-    fn spread(&self, rec: &Rec, d: Option<Vec3>) -> [Option<f64>; 2] {
+    fn spread(&self, rec: &Rec, d: Option<Vec3>, meet: bool) -> [Option<f64>; 2] {
         let narrow = |r: (f64, f64)| r.1 - r.0 <= 1e-12 * (1.0 + r.0.abs().max(r.1.abs()));
         // How much `d · x` spreads along the direction (its change end to
         // end and the bow at the middle); a millionth of the length breaks
         // ties where it does not spread at all (a flat piece square to d).
-        // Without a direction (pieces whose boxes meet), how long it is.
+        // Where the boxes meet, half the length as well; without a
+        // direction, the length.
         let score = |p0: Vec3, p1: Vec3, pm: Vec3| {
             let len = p1.distance(p0);
             let bend = pm.distance((p0 + p1) * 0.5);
+            let weight = if meet { 0.5 } else { 1e-6 };
             match d {
-                Some(d) => d.dot(p1 - p0).abs() + 4.0 * bend + 1e-6 * len,
+                Some(d) => d.dot(p1 - p0).abs() + 4.0 * bend + weight * len,
                 None => len + 4.0 * bend,
             }
         };
@@ -718,49 +720,6 @@ where
             }
             Param::Vertex(_) => [None, None],
         }
-    }
-
-    /// For pieces whose boxes meet: how far from `other` the nearer half
-    /// of `rec` cut along `dir` is (what cutting there separates), and
-    /// the length cut; `None` for a direction that cannot be cut.
-    fn half_gain(&self, rec: &Rec, dir: usize, other: &Bbox3) -> Option<(f64, f64)> {
-        let narrow = |r: (f64, f64)| r.1 - r.0 <= 1e-12 * (1.0 + r.0.abs().max(r.1.abs()));
-        let prim = self.prims.get(rec.prim)?;
-        let halves: [Piece; 2] = match rec.param {
-            Param::Face(u, v) => {
-                let s = prim.surface?;
-                let (cut, keep) = if dir == 0 { (u, v) } else { (v, u) };
-                if narrow(cut) {
-                    return None;
-                }
-                let m = 0.5 * (cut.0 + cut.1);
-                let make = |c: (f64, f64)| {
-                    if dir == 0 {
-                        surface_piece(s, &prim.snets, c, keep)
-                    } else {
-                        surface_piece(s, &prim.snets, keep, c)
-                    }
-                };
-                [make((cut.0, m))?, make((m, cut.1))?]
-            }
-            Param::Edge(t) => {
-                let c = prim.curve?;
-                if dir != 0 || narrow(t) {
-                    return None;
-                }
-                let m = 0.5 * (t.0 + t.1);
-                [
-                    curve_piece(c, &prim.cnets, (t.0, m))?,
-                    curve_piece(c, &prim.cnets, (m, t.1))?,
-                ]
-            }
-            Param::Vertex(_) => return None,
-        };
-        let [h0, h1] = halves;
-        let (b0, b1) = (h0.bbox(), h1.bbox());
-        let gain = boxes_distance(&b0, other).min(boxes_distance(&b1, other));
-        let len = (center(&b1) - center(&b0)).length();
-        Some((gain, len))
     }
 
     /// The proven bound on a pair of pieces; `None` when the pair cannot
@@ -1180,30 +1139,15 @@ pub(crate) fn prove(
         let (Some(ra), Some(rb)) = (search.recs.get(node.a), search.recs.get(node.b)) else {
             continue;
         };
-        // Pieces whose boxes meet are cut by size; apart, along the line
-        // between them.
+        // Cut the piece that spreads most along the line between them;
+        // where their boxes meet, the length counts too (pieces that lie
+        // in one another are cut down to size), and without a line (one
+        // box's middle at the other's) the length alone.
         let c = center(&rb.bbox) - center(&ra.bbox);
-        let d = c
-            .normalized()
-            .filter(|_| boxes_distance(&ra.bbox, &rb.bbox) > 0.0);
-        let cut = match d {
-            Some(d) => cut_apart(&search, ra, rb, d),
-            None => {
-                // Boxes that meet: the cut that separates most, else the
-                // longest.
-                let mut best: Option<((f64, f64), usize, usize)> = None;
-                for (which, rec, other) in [(0, ra, &rb.bbox), (1, rb, &ra.bbox)] {
-                    for dir in 0..2 {
-                        if let Some(score) = search.half_gain(rec, dir, other)
-                            && best.is_none_or(|(b, ..)| score > b)
-                        {
-                            best = Some((score, which, dir));
-                        }
-                    }
-                }
-                best.map(|(_, which, dir)| (which, dir))
-            }
-        };
+        let meet = boxes_distance(&ra.bbox, &rb.bbox) <= 0.0;
+        let size = ra.bbox.diagonal() + rb.bbox.diagonal();
+        let d = c.normalized().filter(|_| c.length() > 1e-9 * size);
+        let cut = cut_apart(&search, ra, rb, d, meet);
         let Some((which, dir)) = cut else {
             // Nothing left to cut: this bound is final.
             if let Some(slot) = least.get_mut(node.pair) {
@@ -1278,10 +1222,16 @@ pub(crate) fn prove(
     Proof { lower, nearer }
 }
 
-/// For pieces apart: the piece and direction to cut, the one that spreads
-/// most along `d` (the larger piece where neither spreads).
-fn cut_apart(search: &Search<'_, '_>, ra: &Rec, rb: &Rec, d: Vec3) -> Option<(usize, usize)> {
-    let (mut sa, mut sb) = (search.spread(ra, Some(d)), search.spread(rb, Some(d)));
+/// The piece and direction to cut: the one that spreads most along `d`
+/// (the larger piece where neither spreads).
+fn cut_apart(
+    search: &Search<'_, '_>,
+    ra: &Rec,
+    rb: &Rec,
+    d: Option<Vec3>,
+    meet: bool,
+) -> Option<(usize, usize)> {
+    let (mut sa, mut sb) = (search.spread(ra, d, meet), search.spread(rb, d, meet));
     let flat =
         |s: &[Option<f64>; 2], r: &Rec| s.iter().flatten().all(|x| *x <= 1e-6 * r.bbox.diagonal());
     if flat(&sa, ra) && flat(&sb, rb) {
