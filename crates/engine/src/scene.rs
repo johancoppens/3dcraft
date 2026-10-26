@@ -1414,6 +1414,7 @@ fn build(
     // in the scene's mesh so far.
     let mut next_face_id: u32 = 0;
     let steps = doc.features.len();
+    let values = crate::appearance::Values::new(doc);
     for (index, feature) in doc.features.iter().enumerate() {
         let outcome = regen.feature(feature.id);
         let (state, error) = match outcome.map(|o| &o.status) {
@@ -1587,7 +1588,7 @@ fn build(
         let facts = meshes.facts(body, outcome.and_then(|o| o.names.as_ref()));
         crate::appearance::color_faces(
             Arc::make_mut(&mut scene.face_colors),
-            doc,
+            &values,
             regen,
             feature.id,
             first_face_id,

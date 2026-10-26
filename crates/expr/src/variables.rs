@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn reserved_names_are_refused() {
         let reserved = reserved_names();
-        assert_eq!(reserved.len(), 1 + 8 + 26);
+        assert_eq!(reserved.len(), 1 + 8 + 32);
         for name in reserved {
             assert!(is_reserved_name(name));
             assert_eq!(

@@ -15,7 +15,8 @@
 //! leaves the face's name in that body, and reaches the faces later
 //! features make of it by the same rule.
 
-use crate::{DocError, Document, FeatureId, MAX_NAME_LEN, PersistentName};
+use crate::{DocError, Document, Expr, FeatureId, MAX_NAME_LEN, PersistentName};
+use craft3d_expr::Evaluation;
 use serde::{Deserialize, Serialize};
 
 /// How a body is drawn. `color` is sRGB; `metallic` and `roughness` are
@@ -62,14 +63,50 @@ impl Appearance {
 /// What a body is made of: a name for people and a density, in kg/m³
 /// whatever the document's length unit, so a body's mass is its volume
 /// (converted to m³) times this.
+///
+/// The density is a number, or an expression of the variables
+/// (`density_expr`, a plain number such as `sheets[material].density`
+/// or `if(pla, 1.24, 0.7)`) in a unit of `density` kg/m³ (1 for kg/m³,
+/// 1000 for g/cm³), evaluated whenever the density is asked for, so a
+/// body's mass follows a parameter ([`Material::density_with`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
-    /// kg/m³, positive and finite.
+    /// kg/m³, positive and finite; with `density_expr`, kg/m³ per unit of
+    /// its value.
     pub density: f64,
+    #[serde(default)]
+    pub density_expr: Option<Expr>,
 }
 
 impl Material {
+    /// A material of a fixed density, in kg/m³.
+    pub fn new(name: impl Into<String>, density: f64) -> Self {
+        Self {
+            name: name.into(),
+            density,
+            density_expr: None,
+        }
+    }
+
+    /// The density in kg/m³, its expression evaluated against `values`
+    /// (the document's variables and tables): why not, when the
+    /// expression does not evaluate to a positive plain number.
+    pub fn density_with(&self, values: Option<&Evaluation>) -> Result<f64, String> {
+        let Some(expr) = &self.density_expr else {
+            return Ok(self.density);
+        };
+        let value = plain_value(expr, values)?;
+        let density = value * self.density;
+        if !(density.is_finite() && density > 0.0) {
+            return Err(format!(
+                "the density `{}` is {value}, not a positive number",
+                expr.source()
+            ));
+        }
+        Ok(density)
+    }
+
     /// Why this is not a material: an empty or overlong name, or a density
     /// that is not a positive number.
     pub fn check(&self) -> Result<(), String> {
@@ -92,7 +129,135 @@ impl Material {
                 self.density
             ));
         }
+        if let Some(expr) = &self.density_expr {
+            check_expr("the density", expr)?;
+        }
         Ok(())
+    }
+}
+
+/// Why `expr` cannot be what `what` is: empty or too long to be an
+/// expression.
+fn check_expr(what: &str, expr: &Expr) -> Result<(), String> {
+    if expr.source().trim().is_empty() {
+        return Err(format!("{what} is an empty expression"));
+    }
+    if expr.source().len() > craft3d_expr::MAX_SOURCE_LEN {
+        return Err(format!(
+            "{what} is longer than {} bytes",
+            craft3d_expr::MAX_SOURCE_LEN
+        ));
+    }
+    Ok(())
+}
+
+/// The value of `expr`, a plain number, against `values`.
+fn plain_value(expr: &Expr, values: Option<&Evaluation>) -> Result<f64, String> {
+    let source = expr.source();
+    let quantity = match values {
+        Some(values) => values.evaluate(source),
+        None => craft3d_expr::Expr::parse(source).and_then(|parsed| parsed.eval(|_| None)),
+    }
+    .map_err(|e| format!("`{source}` does not evaluate: {e}"))?;
+    if !quantity.dimension.is_dimensionless() {
+        return Err(format!(
+            "`{source}` is {}, not a plain number",
+            quantity.dimension.described()
+        ));
+    }
+    Ok(quantity.value)
+}
+
+/// The colour of a body: sRGB, or red, green and blue as expressions of
+/// the variables, each a plain number from 0 to 255 (rounded to a whole
+/// number), evaluated whenever the colour is asked for, so a body's colour
+/// follows a parameter (`woods[wood].red`, `if(alu, 200, 160)`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BodyColor {
+    Fixed([u8; 3]),
+    Exprs(Box<[Expr; 3]>),
+}
+
+/// How a body is drawn: an [`Appearance`] whose colour may follow the
+/// variables ([`BodyColor`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BodyAppearance {
+    pub color: BodyColor,
+    #[serde(default)]
+    pub metallic: Option<f64>,
+    #[serde(default)]
+    pub roughness: Option<f64>,
+}
+
+impl From<Appearance> for BodyAppearance {
+    fn from(appearance: Appearance) -> Self {
+        Self {
+            color: BodyColor::Fixed(appearance.color),
+            metallic: appearance.metallic,
+            roughness: appearance.roughness,
+        }
+    }
+}
+
+/// The channels of a colour, for messages.
+const CHANNELS: [&str; 3] = ["red", "green", "blue"];
+
+impl BodyAppearance {
+    /// Why this is not an appearance: a factor outside 0 to 1, or a
+    /// colour expression that is empty or too long.
+    pub fn check(&self) -> Result<(), String> {
+        self.with_color([0; 3]).check()?;
+        if let BodyColor::Exprs(exprs) = &self.color {
+            for (channel, expr) in CHANNELS.iter().zip(exprs.iter()) {
+                check_expr(&format!("the {channel} of the colour"), expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The appearance with its colour evaluated against `values` (the
+    /// document's variables and tables): why not, when a channel does not
+    /// evaluate to a plain number from 0 to 255.
+    pub fn resolve(&self, values: Option<&Evaluation>) -> Result<Appearance, String> {
+        let color = match &self.color {
+            BodyColor::Fixed(color) => *color,
+            BodyColor::Exprs(exprs) => {
+                let mut color = [0_u8; 3];
+                for ((slot, expr), channel) in color.iter_mut().zip(exprs.iter()).zip(CHANNELS) {
+                    let value = plain_value(expr, values)
+                        .map_err(|why| format!("the {channel} of the colour: {why}"))?;
+                    let whole = value.round();
+                    if !(0.0..=255.0).contains(&whole) {
+                        return Err(format!(
+                            "the {channel} of the colour, `{}`, is {value}: give a number from 0 to 255",
+                            expr.source()
+                        ));
+                    }
+                    // A whole number from 0 to 255, checked above.
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let channel_value = whole as u8;
+                    *slot = channel_value;
+                }
+                color
+            }
+        };
+        Ok(self.with_color(color))
+    }
+
+    fn with_color(&self, color: [u8; 3]) -> Appearance {
+        Appearance {
+            color,
+            metallic: self.metallic,
+            roughness: self.roughness,
+        }
+    }
+
+    /// The expressions it keeps: the colour's, when it has them.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match &mut self.color {
+            BodyColor::Fixed(_) => Vec::new(),
+            BodyColor::Exprs(exprs) => exprs.iter_mut().collect(),
+        }
     }
 }
 
@@ -102,9 +267,33 @@ impl Material {
 pub struct BodyProperties {
     pub feature: FeatureId,
     #[serde(default)]
-    pub appearance: Option<Appearance>,
+    pub appearance: Option<BodyAppearance>,
     #[serde(default)]
     pub material: Option<Material>,
+}
+
+impl BodyProperties {
+    /// The expressions the entry keeps: its colour's and its density's,
+    /// for the renames that rewrite expressions.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = self
+            .appearance
+            .as_mut()
+            .map(BodyAppearance::exprs_mut)
+            .unwrap_or_default();
+        out.extend(self.material.as_mut().and_then(|m| m.density_expr.as_mut()));
+        out
+    }
+
+    /// The expressions the entry keeps, to read.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut out: Vec<&Expr> = match self.appearance.as_ref().map(|a| &a.color) {
+            Some(BodyColor::Exprs(exprs)) => exprs.iter().collect(),
+            _ => Vec::new(),
+        };
+        out.extend(self.material.as_ref().and_then(|m| m.density_expr.as_ref()));
+        out
+    }
 }
 
 /// Most face appearances a document holds.
@@ -241,6 +430,16 @@ impl Document {
         &mut self,
         feature: FeatureId,
         appearance: Option<Appearance>,
+    ) -> Result<(), DocError> {
+        self.set_body_appearance(feature, appearance.map(BodyAppearance::from))
+    }
+
+    /// [`Document::set_appearance`] with a colour that may follow the
+    /// variables ([`BodyColor::Exprs`]).
+    pub fn set_body_appearance(
+        &mut self,
+        feature: FeatureId,
+        appearance: Option<BodyAppearance>,
     ) -> Result<(), DocError> {
         if let Some(appearance) = &appearance {
             appearance.check().map_err(DocError::Invalid)?;
@@ -380,14 +579,8 @@ mod tests {
         let (mut doc, ids) = doc_with_blocks(3);
         doc.set_appearance(ids[2], Some(Appearance::color([1, 2, 3])))
             .unwrap();
-        doc.set_material(
-            ids[0],
-            Some(Material {
-                name: "Steel".into(),
-                density: 7850.0,
-            }),
-        )
-        .unwrap();
+        doc.set_material(ids[0], Some(Material::new("Steel", 7850.0)))
+            .unwrap();
         doc.set_appearance(ids[0], Some(Appearance::color([9, 9, 9])))
             .unwrap();
         let order: Vec<FeatureId> = doc.bodies.iter().map(|b| b.feature).collect();
@@ -413,17 +606,11 @@ mod tests {
         };
         assert!(doc.set_appearance(ids[0], Some(shiny)).is_err());
         for density in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let material = Material {
-                name: "X".into(),
-                density,
-            };
+            let material = Material::new("X", density);
             assert!(doc.set_material(ids[0], Some(material)).is_err());
         }
         for name in ["", " x", "a\nb"] {
-            let material = Material {
-                name: name.into(),
-                density: 1.0,
-            };
+            let material = Material::new(name, 1.0);
             assert!(doc.set_material(ids[0], Some(material)).is_err());
         }
         assert!(doc.bodies.is_empty());
@@ -504,11 +691,59 @@ mod tests {
     }
 
     #[test]
+    fn colours_and_densities_from_expressions_resolve_against_the_variables() {
+        let (mut doc, ids) = doc_with_blocks(1);
+        doc.set_variable("k", "2").unwrap();
+        let values = doc.variable_table().unwrap().evaluate();
+        let exprs = |r: &str, g: &str, b: &str| BodyAppearance {
+            color: BodyColor::Exprs(Box::new([Expr::new(r), Expr::new(g), Expr::new(b)])),
+            metallic: Some(0.5),
+            roughness: None,
+        };
+        let resolved = exprs("k * 100", "254.5", "0.49")
+            .resolve(Some(&values))
+            .unwrap();
+        // 254.5 rounds away from zero, to 255.
+        assert_eq!(resolved.color, [200, 255, 0]);
+        assert_eq!(resolved.metallic, Some(0.5));
+        for (r, why) in [
+            ("k * 200", "from 0 to 255"),
+            ("-1", "from 0 to 255"),
+            ("k * 1 mm", "not a plain number"),
+            ("nope", "does not evaluate"),
+            ("1 / 0", "does not evaluate"),
+        ] {
+            let e = exprs(r, "0", "0").resolve(Some(&values)).unwrap_err();
+            assert!(e.contains(why) && e.contains("red"), "{r}: {e}");
+        }
+        assert!(exprs("", "0", "0").check().is_err());
+        doc.set_body_appearance(ids[0], Some(exprs("k", "k", "k")))
+            .unwrap();
+        let mut wood = Material::new("Wood", 1000.0);
+        wood.density_expr = Some(Expr::new("k / 4"));
+        assert_eq!(wood.density_with(Some(&values)), Ok(500.0));
+        wood.density_expr = Some(Expr::new("k - 2"));
+        assert!(wood.density_with(Some(&values)).is_err());
+        wood.density_expr = Some(Expr::new(" "));
+        assert!(doc.set_material(ids[0], Some(wood)).is_err());
+        assert_eq!(
+            Material::new("Steel", 7850.0).density_with(None),
+            Ok(7850.0)
+        );
+        // The renames reach them.
+        doc.rename_variable("k", "kk").unwrap();
+        let entry = doc.body_properties(ids[0]).unwrap();
+        let sources: Vec<&str> = entry.exprs().iter().map(|e| e.source()).collect();
+        assert_eq!(sources, ["kk", "kk", "kk"]);
+        doc.validate().unwrap();
+    }
+
+    #[test]
     fn validate_catches_hand_edited_entries() {
         let (mut doc, ids) = doc_with_blocks(2);
         let entry = |feature| BodyProperties {
             feature,
-            appearance: Some(Appearance::color([0; 3])),
+            appearance: Some(Appearance::color([0; 3]).into()),
             material: None,
         };
         doc.bodies = vec![entry(ids[1]), entry(ids[0])];

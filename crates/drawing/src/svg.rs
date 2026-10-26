@@ -21,6 +21,13 @@ use std::f64::consts::PI;
 
 /// The stroke width, in millimetres, that laser software takes for a line
 /// to cut rather than to engrave ("hairline").
+///
+/// A browser draws it at its true width, a hundredth of a pixel at the
+/// size it opens the file in, so the outline looks faint or empty there:
+/// a known limit. A screen-only CSS rule (`@media screen`, a 1px
+/// `non-scaling-stroke`) was tried and dropped (2026-10-26): Inkscape
+/// applies it, so its 1px is one user unit, 1 mm, and its PDF export
+/// writes 2.83 pt lines, which a laser's print driver engraves.
 pub const HAIRLINE_MM: f64 = 0.01;
 
 /// The longest arc written as one `A` command: a quarter turn, and a

@@ -576,3 +576,80 @@ fn an_extruded_part_is_saved_reopened_rendered_and_exported() {
     assert!(dir.join("bracket.png").metadata().unwrap().len() > 1000);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_thin_slanted_rectangle_extrudes() {
+    // plan/repro/repro-sundial-2.json: a clean 44 x 1.2 mm rectangle at a
+    // slant was refused as "e7, e8 cross or touch each other".
+    let corners = [
+        [16.697056638762756_f64, -31.352678659982697_f64],
+        [56.860039611356406, -50.52974301317225],
+        [56.342980354640936, -51.612632538952624],
+        [16.179997382047294, -32.435568185763074],
+    ];
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "S", "plane": "xy"}));
+    let points: Vec<Value> = corners
+        .iter()
+        .map(|[x, y]| json!([format!("{x} mm"), format!("{y} mm")]))
+        .collect();
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "S", "closed": true, "points": points}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": "-2 mm", "name": "Tool"}),
+    );
+    let solid = body(&mut s, "Tool");
+    // The shoelace area of the four corners, two deep.
+    let area = (0..4)
+        .map(|i| {
+            let ([ax, ay], [bx, by]) = (corners[i], corners[(i + 1) % 4]);
+            ax * by - ay * bx
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    assert_close(&solid["volume"], area * 2.0, "volume");
+}
+
+/// plan/repro/repro-orrery-1.json: a gear of involute teeth, one tooth
+/// chained into a ring pattern, where the root arc of each tooth meets the
+/// radial line of the next. About a third of the tooth counts were refused
+/// as "e19[k], e3[k+1] cross or touch" (the same rounding at the
+/// tolerance as the slanted rectangle above). Every count from 10 to 60
+/// extrudes now.
+#[test]
+fn a_chained_gear_extrudes_at_every_tooth_count() {
+    let script: Value =
+        serde_json::from_str(include_str!("profile_findings/orrery-gear.json")).unwrap();
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for step in script.as_array().unwrap() {
+        run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+    }
+    let mut failed = Vec::new();
+    for z in 10..=60 {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "z_T16q", "expr": z.to_string()}),
+        );
+        let document = run(&mut s, "document.inspect", json!({"measures": false}));
+        let extrude = document["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "T16q0")
+            .unwrap()
+            .clone();
+        if extrude["status"] != "ok" {
+            failed.push(format!("{z}: {}", extrude["error"]));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

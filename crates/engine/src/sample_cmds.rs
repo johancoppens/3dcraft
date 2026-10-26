@@ -129,19 +129,27 @@ fn moves(range: &Range) -> bool {
     }
 }
 
-/// The value `u` picks of those from `lo` in steps of `step` within `hi`,
-/// held to `[lo, hi]` (rounding must not step past an end: a range that
-/// ends at 0 ends at 0, not at 5.6e-17).
-fn pick(lo: f64, hi: f64, step: f64, u: f64) -> Option<f64> {
-    if !(hi >= lo && step > 0.0) {
+/// The value `u` picks of those on the grid `base + k * step` within
+/// `[lo, hi]` (`param_cmds::step_grid`, so a point is a value `param.set`
+/// takes), held to `[lo, hi]` (rounding must not step past an end: a
+/// range that ends at 0 ends at 0, not at 5.6e-17). A range with no value
+/// of the grid in it has only its ends, which are always taken.
+fn pick(lo: f64, hi: f64, (base, step): (f64, f64), u: f64) -> Option<f64> {
+    if !(hi >= lo && step > 0.0 && base.is_finite()) {
         return None;
     }
-    let span = ((hi - lo) / step * (1.0 + 1e-12)).floor();
-    if !span.is_finite() || span >= 9.0e15 {
+    // Within rounding of a grid value counts as on it.
+    const SLACK: f64 = 1e-9;
+    let first = ((lo - base) / step - SLACK).ceil();
+    let last = ((hi - base) / step + SLACK).floor();
+    if !(first.is_finite() && last.is_finite()) || last - first >= 9.0e15 {
         return None;
     }
-    let k = (u * (span + 1.0)).floor().min(span);
-    Some((lo + k * step).clamp(lo, hi))
+    if first > last {
+        return Some(if u < 0.5 { lo } else { hi });
+    }
+    let k = first + (u * (last - first + 1.0)).floor().min(last - first);
+    Some((base + k * step).clamp(lo, hi))
 }
 
 /// The whole numbers from `lo` to `hi` (a boolean's 0 and 1, a choice's 1
@@ -162,17 +170,18 @@ fn value_at(range: &Range, u: f64) -> Option<f64> {
     match range.kind {
         ParamKind::Boolean => {
             let (lo, hi) = whole_values(range, 0.0, 1.0);
-            pick(lo, hi, 1.0, u)
+            pick(lo, hi, (0.0, 1.0), u)
         }
         ParamKind::Choice => {
             let (lo, hi) = whole_values(range, 1.0, range.choices as f64);
-            pick(lo, hi, 1.0, u)
+            pick(lo, hi, (0.0, 1.0), u)
         }
         ParamKind::Integer => {
             let lo = range.min.or(range.default)?.ceil();
             let hi = range.max.or(range.default)?.floor();
-            let step = range.step.map_or(1.0, |s| s.round().max(1.0));
-            pick(lo, hi, step, u)
+            // Its grid, else every whole number.
+            let grid = range.grid().unwrap_or((0.0, 1.0));
+            pick(lo, hi, grid, u)
         }
         ParamKind::Number => {
             let lo = range.min.or(range.default)?;
@@ -180,8 +189,8 @@ fn value_at(range: &Range, u: f64) -> Option<f64> {
             if hi < lo {
                 return None;
             }
-            match range.step {
-                Some(step) => pick(lo, hi, step, u),
+            match range.grid() {
+                Some(grid) => pick(lo, hi, grid, u),
                 None if u >= 1.0 => Some(hi),
                 None => Some((lo + u * (hi - lo)).clamp(lo, hi)),
             }
@@ -1135,12 +1144,22 @@ mod tests {
         // -0.3 + 3 * 0.1 is 5.6e-17 in floating point.
         let ends: Vec<f64> = [0.0, 0.3, 0.6, 0.99, 1.0]
             .iter()
-            .filter_map(|u| pick(-0.3, 0.0, 0.1, *u))
+            .filter_map(|u| pick(-0.3, 0.0, (-0.3, 0.1), *u))
             .collect();
         assert_eq!(ends.first(), Some(&-0.3));
         assert_eq!(ends.last(), Some(&0.0));
         assert!(ends.iter().all(|v| (-0.3..=0.0).contains(v)), "{ends:?}");
-        assert_eq!(pick(1.0, 0.0, 0.1, 0.5), None);
-        assert_eq!(pick(0.0, 1.0, 0.0, 0.5), None);
+        assert_eq!(pick(1.0, 0.0, (0.0, 0.1), 0.5), None);
+        assert_eq!(pick(0.0, 1.0, (0.0, 0.0), 0.5), None);
+        // Counted from 0 under a minimum that is a formula: 26.3 mm to
+        // 30 mm in steps of 1 mm gives 27, 28, 29 and 30.
+        let picks: Vec<f64> = [0.0, 0.3, 0.6, 0.99]
+            .iter()
+            .filter_map(|u| pick(26.3, 30.0, (0.0, 1.0), *u))
+            .collect();
+        assert_eq!(picks, [27.0, 28.0, 29.0, 30.0]);
+        // No grid value inside: only the ends.
+        assert_eq!(pick(26.3, 26.7, (0.0, 1.0), 0.2), Some(26.3));
+        assert_eq!(pick(26.3, 26.7, (0.0, 1.0), 0.8), Some(26.7));
     }
 }

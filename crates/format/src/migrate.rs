@@ -34,7 +34,7 @@ const STEPS: &[Step] = &[
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
-    v34_to_v35, v35_to_v36,
+    v34_to_v35, v35_to_v36, v36_to_v37,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -686,6 +686,24 @@ fn v35_to_v36(mut manifest: Value) -> Result<Value, String> {
         };
         expect.insert("is".into(), Value::from(!none_overlap));
     }
+    Ok(manifest)
+}
+
+/// Version 37 adds the functions `asinh`, `acosh`, `atanh`, `log2`,
+/// `hypot` and `sign` to expressions, and lets a body's colour and
+/// density follow the variables: a body appearance's `color` may be three
+/// expressions (`["woods[wood].red", "120", "40"]`) and a material may
+/// have a `density_expr`. A file of version 36 has neither, which is what
+/// their absence reads as, so nothing changes here. The new function
+/// names become reserved, so a variable an older file gave one of them is
+/// renamed `sign_1` (the first free name), and every expression that
+/// refers to it with it, after the manifest is read into a document
+/// (`Document::rename_reserved_variables`, called by
+/// `from_manifest_json_noted` for a file older than 37, with a warning
+/// per rename), as version 31 did for `ln`. The version was raised so
+/// that an older build says a newer 3DCraft is needed instead of failing
+/// an expression or refusing a colour it cannot read.
+fn v36_to_v37(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

@@ -111,13 +111,19 @@ pub enum Function {
     Sinh,
     Cosh,
     Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+    Log2,
+    Hypot,
+    Sign,
     If,
     Clamp,
     Choose,
 }
 
 impl Function {
-    pub const ALL: [Function; 26] = [
+    pub const ALL: [Function; 32] = [
         Function::Sin,
         Function::Cos,
         Function::Tan,
@@ -141,6 +147,12 @@ impl Function {
         Function::Sinh,
         Function::Cosh,
         Function::Tanh,
+        Function::Asinh,
+        Function::Acosh,
+        Function::Atanh,
+        Function::Log2,
+        Function::Hypot,
+        Function::Sign,
         Function::If,
         Function::Clamp,
         Function::Choose,
@@ -171,6 +183,12 @@ impl Function {
             Function::Sinh => "sinh",
             Function::Cosh => "cosh",
             Function::Tanh => "tanh",
+            Function::Asinh => "asinh",
+            Function::Acosh => "acosh",
+            Function::Atanh => "atanh",
+            Function::Log2 => "log2",
+            Function::Hypot => "hypot",
+            Function::Sign => "sign",
             Function::If => "if",
             Function::Clamp => "clamp",
             Function::Choose => "choose",
@@ -200,8 +218,8 @@ impl Function {
                 Ok(())
             }
             Function::Floor | Function::Ceil | Function::Round | Function::Trunc => Err("1 or 2"),
-            Function::Min | Function::Max if count == 0 => Err("at least 1"),
-            Function::Min | Function::Max => Ok(()),
+            Function::Min | Function::Max | Function::Hypot if count == 0 => Err("at least 1"),
+            Function::Min | Function::Max | Function::Hypot => Ok(()),
             _ if count != 1 => Err("1"),
             _ => Ok(()),
         }

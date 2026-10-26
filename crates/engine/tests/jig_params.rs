@@ -848,3 +848,247 @@ fn the_thumbnail_shows_the_document_not_where_the_view_is_scrubbed() {
     assert_eq!(still["base64"], scrubbed["base64"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// plan/repro/repro-orrery-2.json: a minimum looked up by an integer
+/// parameter, as a variable looks it up.
+#[test]
+fn a_minimum_looks_up_a_table_by_another_parameter() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "lim", "columns": ["key", "lo"], "rows": [["a", 10], ["b", 20]]}),
+    );
+    for (name, expr) in [("pick", "1"), ("n", "30"), ("probe", "lim[pick].lo")] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "pick", "kind": "integer", "min": "1", "max": "2"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "n", "kind": "integer", "min": "lim[pick].lo", "max": "40"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_close(&param(&list, "n")["min"]["value"], 10.0, "min of n");
+    run(&mut s, "param.set", json!({"values": {"n": 15}}));
+    let e = refused(&mut s, "param.set", json!({"values": {"pick": 2}}));
+    assert!(e.contains("would make `n` invalid"), "{e}");
+    run(&mut s, "param.set", json!({"values": {"pick": 2, "n": 25}}));
+    let list = run(&mut s, "param.list", json!({}));
+    assert_close(&param(&list, "n")["min"]["value"], 20.0, "min of n");
+}
+
+/// plan/repro/repro-tuned-chimes-1.json: a range bound looks a table up
+/// as a variable does (it said "unknown table `scales`").
+#[test]
+fn a_range_bound_looks_up_a_table() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "scales", "columns": ["scale", "maxNotes"], "rows": [["A", 8], ["B", 10]]}),
+    );
+    for (name, expr) in [
+        ("scale", "1"),
+        ("N", "6"),
+        ("probe", "scales[scale].maxNotes"),
+    ] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "scale", "kind": "choice", "choicesFrom": "scales"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "N", "kind": "integer", "min": "3", "max": "scales[scale].maxNotes"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    let n = param(&list, "N");
+    assert_eq!(n["valid"], true, "{n}");
+    assert_close(&n["max"]["value"], 8.0, "max of N for scale A");
+    // The bound follows the choice: 9 notes only on scale B.
+    let e = refused(&mut s, "param.set", json!({"values": {"N": 9}}));
+    assert!(e.contains("outside its range, from 3 to 8"), "{e}");
+    run(
+        &mut s,
+        "param.set",
+        json!({"values": {"scale": "B", "N": 9}}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_close(&param(&list, "N")["max"]["value"], 10.0, "max of N for B");
+    // Back to A puts N outside: refused, or clamped to the new maximum.
+    let e = refused(&mut s, "param.set", json!({"values": {"scale": "A"}}));
+    assert!(e.contains("would make `N` invalid"), "{e}");
+    let r = run(
+        &mut s,
+        "param.set",
+        json!({"values": {"scale": "A"}, "clamp": true}),
+    );
+    assert_eq!(r["clamped"], json!([{"name": "N", "expr": "8"}]));
+    // A bound that names a table that does not exist says so.
+    let e = refused(
+        &mut s,
+        "variable.publish",
+        json!({"name": "N", "max": "nope[scale].maxNotes"}),
+    );
+    assert!(e.contains("unknown table `nope`"), "{e}");
+}
+
+/// A value off its step is refused with the nearest values on it,
+/// counted from the minimum (from 0 without one); an end of the range is
+/// always allowed (plan/r1-cleanup.md item 60).
+#[test]
+fn a_value_off_its_step_is_refused_with_the_nearest_on_it() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (name, expr) in [("n", "12"), ("t", "2 mm")] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "n", "kind": "integer", "max": "21", "step": "2"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "t", "min": "1 mm", "max": "2.7 mm", "step": "0.5 mm"}),
+    );
+    let e = refused(&mut s, "param.set", json!({"values": {"n": 13}}));
+    assert!(
+        e.contains("13 is not on its step of 2 counted from 0: the nearest values are 12 and 14"),
+        "{e}"
+    );
+    let e = refused(&mut s, "param.set", json!({"values": {"t": "2.3 mm"}}));
+    assert!(
+        e.contains("2.3 mm is not on its step of 0.5 mm counted from 1 mm: the nearest values are 2 mm and 2.5 mm"),
+        "{e}"
+    );
+    // On the step, and the ends of the range, are taken.
+    for (name, value) in [("n", json!(14)), ("n", json!(21)), ("t", json!("2.5 mm"))] {
+        run(&mut s, "param.set", json!({"values": {name: value}}));
+    }
+    run(&mut s, "param.set", json!({"values": {"t": "2.7 mm"}}));
+    run(&mut s, "param.set", json!({"values": {"t": "1 mm"}}));
+    // Publishing with a value off the step is refused, and so is a
+    // default off it.
+    run(&mut s, "variable.set", json!({"name": "q", "expr": "7"}));
+    let e = refused(
+        &mut s,
+        "variable.publish",
+        json!({"name": "q", "kind": "integer", "step": "2"}),
+    );
+    assert!(e.contains("not on its step"), "{e}");
+    let e = refused(
+        &mut s,
+        "variable.publish",
+        json!({"name": "q", "kind": "integer", "min": "1", "step": "2", "default": "4"}),
+    );
+    assert!(e.contains("its default 4 is not on its step"), "{e}");
+    // Under a minimum that is a formula the step counts from 0, so the
+    // grid does not move with it, and a parameter whose minimum moved is
+    // not refused for its step: only a value set is checked.
+    run(&mut s, "variable.set", json!({"name": "lo", "expr": "1"}));
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "6"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "lo", "kind": "integer", "min": "0", "max": "4"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "k", "kind": "integer", "min": "lo + 0.5", "max": "20", "step": "2"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "k")["stepFrom"], 0.0);
+    assert_eq!(param(&list, "t")["stepFrom"], 1.0);
+    assert_eq!(param(&list, "n")["stepFrom"], 0.0);
+    run(&mut s, "param.set", json!({"values": {"lo": 3}}));
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "k")["valid"], true, "{list}");
+    let e = refused(&mut s, "param.set", json!({"values": {"k": 7}}));
+    assert!(
+        e.contains("7 is not on its step of 2 counted from 0: the nearest values are 6 and 8"),
+        "{e}"
+    );
+    run(&mut s, "param.set", json!({"values": {"k": 8}}));
+    // Moving lo up past k clamps k onto the grid within its new range.
+    run(&mut s, "param.set", json!({"values": {"k": 4}}));
+    let r = run(
+        &mut s,
+        "param.set",
+        json!({"values": {"lo": 4}, "clamp": true}),
+    );
+    assert_eq!(r["clamped"], json!([{"name": "k", "expr": "6"}]), "{r}");
+    // A minimum that does not work: the step is not checked.
+    run(&mut s, "variable.set", json!({"name": "u", "expr": "6"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "u", "kind": "integer", "min": "2", "max": "20", "step": "2"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "u_lo", "expr": "1"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "u", "min": "u_lo"}),
+    );
+    run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "u_lo", "force": true}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "u")["stepFrom"], Value::Null, "{list}");
+}
+
+/// The Jigs shipped in the 3dcraft-jigs repository (dist/, 2026-10-26),
+/// their variables and tables only (`jig_fixtures/parameters.json`, the
+/// features left out: a parameter's validity reads nothing else). Every
+/// parameter is valid, and setting every one to the value it has is
+/// taken: a rule about steps or ranges that would make a shipped Jig
+/// invalid, or refuse its own values, fails here (screw-jar's height,
+/// min 26.3 mm and step 1 mm, once did).
+#[test]
+fn every_shipped_jig_has_valid_parameters_that_set_again() {
+    let all: Value = serde_json::from_str(include_str!("jig_fixtures/parameters.json")).unwrap();
+    let dir = workdir("jig-params", "shipped");
+    let mut bad = Vec::new();
+    for (name, manifest) in all.as_object().unwrap() {
+        let text = manifest.to_string();
+        let bytes = craft3d_zipstore::write_stored(&[("manifest.json", text.as_bytes())]).unwrap();
+        let file = format!("{name}.3dcraft");
+        std::fs::write(dir.join(&file), bytes).unwrap();
+        let mut s = session_in(&dir);
+        run(&mut s, "file.open", json!({"path": file}));
+        let list = run(&mut s, "param.list", json!({}));
+        let parameters = list["parameters"].as_array().unwrap();
+        assert!(!parameters.is_empty(), "{name} has no parameters");
+        let mut values = serde_json::Map::new();
+        for p in parameters {
+            if p["valid"] != true {
+                bad.push(format!("{name} `{}`: {}", p["name"], p["problems"]));
+            }
+            let value = if p["kind"] == "number" {
+                p["expr"].clone()
+            } else {
+                p["value"].clone()
+            };
+            values.insert(p["name"].as_str().unwrap().to_string(), value);
+        }
+        if let Err(e) = s.execute("param.set", &json!({ "values": values })) {
+            bad.push(format!("{name}: setting its own values: {e}"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

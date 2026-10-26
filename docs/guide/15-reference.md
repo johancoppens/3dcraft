@@ -136,7 +136,7 @@ double-click or Enter to type a value, Escape to give up.
 |---|---|
 | Lengths | `um`, `mm`, `cm`, `m`, `in`, `ft` (lower case, right after the number: `3 mm`) |
 | Angles | `deg`, `rad`; a plain number where an angle is expected is in degrees, inside `sin`, `cos`, `tan` in radians |
-| Functions | `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, `if`, `choose`, `clamp` |
+| Functions | `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `log2`, `pow`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `hypot`, `sign`, `if`, `choose`, `clamp` |
 | Operators | `+ - * / ^`, comparisons `< <= > >= == !=`, `&&`, `\|\|`, `!` |
 | Constant | `pi` (a plain number) |
 | Reserved | `pi`, the units and the functions above cannot name a variable (`m` is the metre: call a module `module` or `mn`) |

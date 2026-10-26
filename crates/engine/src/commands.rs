@@ -960,6 +960,7 @@ fn meshes(
 ) -> Result<Vec<BodyMesh>, CommandError> {
     let regen = open.regen();
     let doc = open.history.current();
+    let values = crate::appearance::Values::new(doc);
     let mut out = Vec::new();
     for (id, body) in regen.bodies() {
         if only.is_some_and(|only| !only.contains(&id)) {
@@ -982,8 +983,8 @@ fn meshes(
         out.push(BodyMesh {
             name,
             mesh,
-            appearance: crate::appearance::body_appearance(doc, &regen, id),
-            faces: crate::appearance::face_appearances(doc, &regen, id, body.faces.len()),
+            appearance: crate::appearance::body_appearance_in(&values, &regen, id),
+            faces: crate::appearance::face_appearances_in(&values, &regen, id, body.faces.len()),
         });
     }
     if out.is_empty() {
@@ -1675,6 +1676,15 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             .is_ok_and(|query| json_mentions(&query, name, 0))
         {
             users.push(format!("the set `{}`", set.name));
+        }
+    }
+    for body in &doc.bodies {
+        if body
+            .exprs()
+            .iter()
+            .any(|expr| mentions(expr.source(), name))
+        {
+            users.push(format!("the colour or material of {}", body.feature));
         }
     }
     users
@@ -2786,6 +2796,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         chordal_tolerance: automatic_tolerance(&regen),
         ..TessParams::default()
     });
+    let values = crate::appearance::Values::new(doc);
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -2912,7 +2923,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             if let Some(map) = entry.as_object_mut() {
                 crate::appearance_cmds::physical_fields(
                     map,
-                    doc,
+                    &values,
                     &regen,
                     (feature.id, body),
                     unit,
@@ -3060,6 +3071,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
+    let values = crate::appearance::Values::new(doc);
     let unit = length_unit(doc);
     let mut bodies = Vec::new();
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
@@ -3110,7 +3122,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
                 map.insert("volumeBound".into(), bound.volume.into());
                 map.insert("areaBound".into(), bound.area.into());
             }
-            crate::appearance_cmds::physical_fields(map, doc, &regen, (id, body), unit, true);
+            crate::appearance_cmds::physical_fields(map, &values, &regen, (id, body), unit, true);
             total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
                 (Some(sum), Some(m)) => Some(sum + m),
                 _ => None,
@@ -3202,6 +3214,19 @@ pub(crate) fn check_document(
     if only.is_none() {
         for (name, problem) in crate::param_cmds::parameter_problems(doc) {
             problems.push(json!({ "parameter": name, "problem": problem }));
+        }
+        // A colour or a density that follows the variables and does not
+        // evaluate (the body is drawn or weighed without it).
+        if !doc.bodies.is_empty() {
+            let values = crate::appearance::evaluation(doc);
+            for (feature, problem) in crate::appearance::property_errors(doc, values.as_ref()) {
+                let name = doc
+                    .feature(feature)
+                    .map_or_else(|| feature.to_string(), |f| f.name.clone());
+                problems.push(json!({
+                    "feature": feature.to_string(), "name": name, "problem": problem,
+                }));
+            }
         }
     }
     let mut checked = 0;

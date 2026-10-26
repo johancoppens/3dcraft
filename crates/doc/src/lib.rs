@@ -22,7 +22,10 @@ pub mod sketch;
 pub mod table;
 pub mod visibility;
 
-pub use appearance::{Appearance, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES, Material};
+pub use appearance::{
+    Appearance, BodyAppearance, BodyColor, BodyProperties, FaceProperties, MAX_FACE_APPEARANCES,
+    Material,
+};
 pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
 pub use blob::{Blob, sha256};
 pub use datum::{
@@ -1877,8 +1880,16 @@ impl Document {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
         }
+        // A body's colour and density may be expressions too.
+        let mut renamed_bodies = self.bodies.clone();
+        for body in &mut renamed_bodies {
+            for expr in body.exprs_mut() {
+                *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
+            }
+        }
         self.features = renamed_features;
         self.assertions = renamed_assertions;
+        self.bodies = renamed_bodies;
         Ok(())
     }
 
@@ -1897,6 +1908,8 @@ impl Document {
     pub fn rename_reserved_variables(&mut self) -> Result<Vec<(String, String)>, DocError> {
         let mut renames: Vec<(String, String)> = Vec::new();
         let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // A table's name is as taken as a variable's.
+        used.extend(self.tables.iter().map(|t| t.name.clone()));
         for variable in &self.variables {
             used.insert(variable.name.clone());
             used.extend(
@@ -1924,6 +1937,15 @@ impl Document {
         }
         for assertion in &mut self.assertions {
             for expr in assertion.expect.exprs_mut() {
+                used.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+        }
+        for body in &self.bodies {
+            for expr in body.exprs() {
                 used.extend(
                     craft3d_expr::names_in(expr.source())
                         .into_iter()
@@ -1978,6 +2000,11 @@ impl Document {
             }
             for assertion in &mut self.assertions {
                 for expr in assertion.expect.exprs_mut() {
+                    rename(expr)?;
+                }
+            }
+            for body in &mut self.bodies {
+                for expr in body.exprs_mut() {
                     rename(expr)?;
                 }
             }

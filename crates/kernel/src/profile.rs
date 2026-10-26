@@ -922,6 +922,14 @@ fn crossings(a: &Segment, bound: &Bound, out: &mut Vec<f64>) {
 /// while where they join (a long while when they join tangentially), but a
 /// curve that is close all along lies on the other, and one that is close
 /// anywhere else touches or crosses it.
+///
+/// A sample at the tolerance, give or take rounding, lies on the boundary
+/// of that region: every break does, and so does the middle of two breaks
+/// that (nearly) coincide, as where `a` leaves the region through the
+/// corner of an offset line and an end circle. Which side such a sample
+/// falls on is rounding noise (a slanted rectangle was refused for it), so
+/// it counts as neither close nor clear and the runs are read from the
+/// samples that are clearly one or the other ([`clear_band`]).
 fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
     if matches!(a.shape, Shape::Spline(_)) || matches!(b.shape, Shape::Spline(_)) {
         return spline2::keeps_clear(&a.parts(), &b.parts(), shared, tol);
@@ -930,7 +938,8 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
     for bound in offset_bounds(b, tol) {
         crossings(a, &bound, &mut breaks);
     }
-    let close = |t: f64| b.distance_to(a.point_at(t), tol) <= tol;
+    let band = clear_band(a, b, tol);
+    let distance = |t: f64| b.distance_to(a.point_at(t), tol);
     if matches!(a.shape, Shape::Circle { .. }) {
         // No ends: nothing of a circle may be close. It is sampled at the
         // breaks and halfway between them, around the turn.
@@ -938,22 +947,28 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
         breaks.sort_by(f64::total_cmp);
         let first = breaks.first().copied().unwrap_or(0.0);
         let after = breaks.iter().skip(1).copied().chain([first + 1.0]);
-        return !breaks
-            .iter()
-            .zip(after)
-            .any(|(&t, next)| close(t) || close((t + next) / 2.0));
+        let mut distances = Vec::with_capacity(breaks.len() * 2);
+        for (&t, next) in breaks.iter().zip(after) {
+            distances.push(distance(t));
+            distances.push(distance((t + next) / 2.0));
+        }
+        return !classify(&distances, tol, band)
+            .into_iter()
+            .any(|close| close);
     }
     breaks.push(0.0);
     breaks.push(1.0);
     breaks.sort_by(f64::total_cmp);
     breaks.dedup();
-    let mut samples = Vec::with_capacity(breaks.len() * 2);
+    let mut distances = Vec::with_capacity(breaks.len() * 2);
     for (&t, &next) in breaks.iter().zip(breaks.iter().skip(1)) {
-        samples.push(close(t));
-        samples.push(close((t + next) / 2.0));
+        distances.push(distance(t));
+        distances.push(distance((t + next) / 2.0));
     }
-    samples.push(close(1.0));
-    let last = samples.len() - 1;
+    distances.push(distance(1.0));
+    let samples = classify(&distances, tol, band);
+    // A run that only boundary samples separate from an end reaches it.
+    let last = samples.len().saturating_sub(1);
     let mut run_start = None;
     for (i, &is_close) in samples.iter().enumerate() {
         if is_close && run_start.is_none() {
@@ -973,6 +988,54 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
         }
     }
     true
+}
+
+/// Which of the sampled `distances` are close (`true`) and clear
+/// (`false`), leaving out those within `band` of `tol`, whose side is
+/// rounding noise ([`keeps_clear`]). The band is accepted: a gap in
+/// `(tol - band, tol]` is taken as clear when other samples decide, so
+/// two curves that come that close without touching are not refused,
+/// and one that comes closer than `tol - band` is. When no sample is
+/// clearly either (every one within the band: a curve that runs at the
+/// tolerance from the other all along), each is taken as `d <= tol`.
+fn classify(distances: &[f64], tol: f64, band: f64) -> Vec<bool> {
+    let clear: Vec<bool> = distances
+        .iter()
+        .filter_map(|&d| {
+            if d <= tol - band {
+                Some(true)
+            } else if d > tol + band {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if clear.is_empty() {
+        distances.iter().map(|&d| d <= tol).collect()
+    } else {
+        clear
+    }
+}
+
+/// How far from the tolerance a distance between `a` and `b` has to be
+/// to say on which side of it a point lies: a thousandth of the
+/// tolerance, and at least the rounding of coordinates as large as theirs
+/// (8 units in the last place: a distance computed from them is a few
+/// off), so that the band is not lost below the rounding far from the
+/// origin; never more than half the tolerance, so that a crossing is
+/// still seen where the tolerance is finer than the rounding. At the
+/// default tolerance of 1e-6 and coordinates of 5e7 (a part of 1e6
+/// scaled) it is 8.9e-8, so a corner at 0.75 tol of a side is still
+/// clearly within it (`profile_slanted.rs`); 256 units, first chosen,
+/// were 2.8e-6 there, capped at half the tolerance, and let it pass.
+fn clear_band(a: &Segment, b: &Segment, tol: f64) -> f64 {
+    let size = a
+        .bbox()
+        .into_iter()
+        .chain(b.bbox())
+        .fold(0.0_f64, |m, c| m.max(c.abs()));
+    (tol / 1024.0).max(8.0 * f64::EPSILON * size).min(tol / 2.0)
 }
 
 /// Boxes of the segments grown by the tolerance: no part of a segment
