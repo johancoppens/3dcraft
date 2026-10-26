@@ -1,6 +1,6 @@
 //! Oracles: closed forms of naval architecture for a box barge, a
 //! sphere, a horizontal cylinder and a V-shaped prism (Biran &
-//! López-Pulido ch. 2; Tupper ch. 4), the wall-sided formula for the
+//! López-Pulido; Tupper), the wall-sided formula for the
 //! righting arm of a heeled box, invariance under a rigid motion, at three
 //! scales with the tolerance scaled along.
 
@@ -204,7 +204,7 @@ fn results_do_not_depend_on_where_the_body_lies() {
 }
 
 /// A wall-sided box heeled while its deck edge stays dry and its bilge
-/// under water: GZ = sin φ (GM + BM tan²φ / 2) (Tupper, ch. 4).
+/// under water: GZ = sin φ (GM + BM tan²φ / 2) (Tupper).
 #[test]
 fn a_heeled_box_follows_the_wall_sided_formula() {
     for k in SCALES {

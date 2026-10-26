@@ -1,8 +1,8 @@
 //! Hydrostatics (`measure.hydrostatics` and the assertion measure
 //! `hydrostatic`) against the closed forms of a box barge (Biran &
-//! López-Pulido ch. 2): waterline T = m / (ρ L B), KB = T/2,
+//! López-Pulido): waterline T = m / (ρ L B), KB = T/2,
 //! BM = B²/(12 T), GM's sign at the stability limit, the wall-sided
-//! formula for GZ (Tupper ch. 4), loads and given weights, and the errors
+//! formula for GZ (Tupper), loads and given weights, and the errors
 //! for what cannot float.
 
 #![allow(

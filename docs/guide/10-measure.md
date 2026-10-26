@@ -19,6 +19,7 @@ after every change.
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
+| `measure.hydrostatics {"of"}` | How bodies float: waterline, displaced volume, centre of buoyancy, waterplane, KB, BM, KM, GM, GZ ([below](#hydrostatics)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
 `select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
@@ -27,6 +28,54 @@ A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, 
 What is searched for (a thickness, a distance) comes with what is **proven**: `atLeast`, a bound nothing
 is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
+
+## Hydrostatics
+
+`measure.hydrostatics` floats any closed bodies (a hull, a buoy, a pontoon, a bottle) in water and
+answers on the exact geometry: the part below the water is cut off by the kernel and integrated, and the
+waterplane's area and second moments come from the curves in which the water cuts the bodies. By default
+the water is sea water (1025 kg/m³), its surface square to z, and the bodies weigh what their materials
+make them; the kernel finds the waterline where they displace their weight.
+
+```json
+[
+ ["feature.block", {"size": [4000, 1300, 1000], "position": [-2000, -650, 0], "name": "Barge"}],
+ ["body.material", {"body": "Barge", "name": "Spruce", "density": 500}],
+ ["measure.hydrostatics", {"of": "Barge", "density": "1 g/cm3"}],
+ ["measure.hydrostatics", {"of": "Barge", "density": "1 g/cm3", "heel": "10 deg"}]
+]
+```
+
+The first answers `draft` 500 (mm: half under, as the barge is half as dense as the water), `KB` 250,
+`BM` 281.7 (B²/12T), `KG` 500 and `GM` 31.7; the second, heeled 10°, `GZ` 6.26, the righting arm (the wall-sided sin φ (GM + ½ BM tan² φ)).
+
+- **What it returns:** `volume` (∇), `displacement` (ρ∇ in kg), `mass`, `level` and `draft`,
+  `centerOfBuoyancy`, `waterplane` (`area`, `centroid`, `iTransverse`, `iLongitudinal`, `iProduct`),
+  `wettedArea`, `KB`, `BM`, `BMl`, `KM`, `KMl`, `KG`, `GM`, `GMl`, `GZ`, and `steps` (how many levels the
+  waterline took). Lengths in the document's unit, masses in kg, second moments in the unit to the fourth.
+- **The weight:** `mass` (kg: `"80"`, `"1.2 t"`, an expression) instead of the materials, `loads`
+  (`[{"mass": 80, "at": [0, 0, 250]}]`: a paddler, an engine) on top of either, and `centerOfGravity` or
+  `kg` (its height above the keel) for where it acts. Without any, GM and GZ are `null`, with `why`.
+- **The water:** `density` (kg/m³, `"1 g/cm3"`, a variable), `up` (default z), `along` (the length,
+  default x), `heel` (an angle about `along`; a plain number is degrees), or `level` to measure at a given
+  waterline instead of solving for one. `keel` is the height heights are measured from (default 0).
+- **Errors you can act on:** *the bodies sink* (the weight needs more water than they hold out), *nothing
+  to float* (no weight), *a sheet holds no water out* (close the hull), and *did not converge* after 64
+  steps.
+- **Limits:** the trim is held (the water turns about `along` only), and bodies that overlap are counted
+  once each.
+
+As an assertion, `hydrostatic` with the `quantity` to check and the same parameters keeps a stability
+requirement with the design, checked at every change:
+
+```json
+[
+ ["assert.add", {"name": "stable", "measure": "hydrostatic", "of": "Barge", "quantity": "GM", "density": 1000, "min": "20 mm"}],
+ ["assert.add", {"name": "rights at 10 degrees", "measure": "hydrostatic", "of": "Barge", "quantity": "GZ", "heel": "10 deg", "density": 1000, "min": 0}]
+]
+```
+
+How it is computed and what it is checked against: [`design/hydrostatics.md`](../design/hydrostatics.md).
 
 ## Assertions
 
@@ -44,7 +93,8 @@ is below, beside the value found at a real place. On the flange of [chapter 3](0
 - Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax`
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
-  `through`, `overlap` (whether bodies overlap), `symmetric`.
+  `through`, `overlap` (whether bodies overlap), `symmetric`, `hydrostatic` (one quantity of
+  `measure.hydrostatics`, [above](#hydrostatics)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
   said). Bounds are expressions in the document's variables, so they follow the design: the case's

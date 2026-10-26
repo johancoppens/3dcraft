@@ -28,10 +28,10 @@
 //! after which "did not converge" is an error like any other.
 //!
 //! Sources: Biran & López-Pulido, *Ship Hydrostatics and Stability*,
-//! 2nd ed., Butterworth-Heinemann 2014, ch. 2 (centre of buoyancy,
-//! waterplane moments, metacentre BM = I/∇) and ch. 4 (heel, righting arm
-//! GZ); Tupper, *Introduction to Naval Architecture*, 5th ed., 2013, ch. 4
-//! (the wall-sided formula used as an oracle).
+//! 2nd ed., Butterworth-Heinemann 2014 (centre of buoyancy, waterplane
+//! moments, the metacentre BM = I/∇, the righting arm GZ); Tupper,
+//! *Introduction to Naval Architecture*, 5th ed., 2013 (the wall-sided
+//! formula used as an oracle).
 
 use crate::KernelError;
 use crate::boolean::{BooleanOp, FaceSource, Operand, boolean};
