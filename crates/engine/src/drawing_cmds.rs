@@ -43,12 +43,12 @@ pub(crate) fn drawing_unit(unit: LengthUnit) -> Unit {
 }
 
 /// What the paths were taken from, for the result.
-struct Source {
-    json: Value,
+pub(crate) struct Source {
+    pub(crate) json: Value,
     /// Layers of their own (a sheet's faces), before `paths`.
-    layers: Vec<Layer>,
-    paths: Vec<DrawingPath>,
-    construction: Vec<DrawingPath>,
+    pub(crate) layers: Vec<Layer>,
+    pub(crate) paths: Vec<DrawingPath>,
+    pub(crate) construction: Vec<DrawingPath>,
 }
 
 /// Writes the outline of the sketch or the face the params name to
@@ -60,7 +60,7 @@ pub(crate) fn export(
     resolved: &Path,
     format: DrawingFormat,
 ) -> Run {
-    let given: Vec<&str> = ["sketch", "face", "faces", "set"]
+    let given: Vec<&str> = ["sketch", "face", "faces", "set", "fold"]
         .into_iter()
         .filter(|key| p.has(key))
         .collect();
@@ -84,6 +84,13 @@ pub(crate) fn export(
                 "{ID}: a .{} file is the outline of a sketch, of a flat face or of a sheet of flat faces: give `sketch` (its id or name), `face` (a name from document.inspect, faceNames), `faces` (a list of them) or `set` (a named set of faces, set.define)",
                 format.name()
             ));
+        }
+        ["fold"] => {
+            refuse(
+                &["feature", "construction", "xAxis", "origin", "gap", "width"],
+                "is about the outline of a sketch or of faces; a crease pattern is drawn in its sketch's axes",
+            )?;
+            crate::fold_cmds::crease_pattern(session, p, ID)?
         }
         ["sketch"] => {
             refuse(

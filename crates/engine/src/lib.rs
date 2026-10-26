@@ -26,6 +26,7 @@ mod drawing_cmds;
 mod export_bodies;
 mod face_cmds;
 mod file_cmds;
+mod fold_cmds;
 mod helix_cmds;
 mod import_cmds;
 mod interference_cmds;
@@ -478,6 +479,7 @@ impl Session {
                 helix_cmds::SPECS,
                 offset_cmds::SPECS,
                 sheet_cmds::SPECS,
+                fold_cmds::SPECS,
                 split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,

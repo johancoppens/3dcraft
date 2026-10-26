@@ -26,6 +26,9 @@ pub struct FoldAnalysis {
     pub plane: Frame,
     /// The facet that stays in place.
     pub fixed: usize,
+    /// The sheet's outline: each loop as its corners, outer loops
+    /// counter-clockwise and holes clockwise, in the sketch's axes.
+    pub outline: Vec<Vec<[f64; 2]>>,
 }
 
 /// What a curve id is called in messages: `e7`.
@@ -208,8 +211,10 @@ pub(crate) fn analyse(
         )
     })?;
     let mut boundary = Vec::new();
+    let mut outline = Vec::new();
     for profile in &profiles {
         for path in std::iter::once(&profile.outer).chain(&profile.holes) {
+            outline.push(path.segments.iter().map(|s| s.start).collect::<Vec<_>>());
             for segment in &path.segments {
                 if segment.shape != Shape::Line {
                     return Err(format!(
@@ -293,6 +298,7 @@ pub(crate) fn analyse(
             folded,
             plane: drawn.plane,
             fixed,
+            outline,
         },
         tol,
     ))
