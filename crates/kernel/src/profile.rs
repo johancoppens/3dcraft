@@ -1035,9 +1035,7 @@ fn clear_band(a: &Segment, b: &Segment, tol: f64) -> f64 {
         .into_iter()
         .chain(b.bbox())
         .fold(0.0_f64, |m, c| m.max(c.abs()));
-    (tol / 1024.0)
-        .max(8.0 * f64::EPSILON * size)
-        .min(tol / 2.0)
+    (tol / 1024.0).max(8.0 * f64::EPSILON * size).min(tol / 2.0)
 }
 
 /// Boxes of the segments grown by the tolerance: no part of a segment
