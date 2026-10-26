@@ -482,15 +482,25 @@ pub fn fold_linkage(
             };
             let mut found = None;
             for guess in guesses {
-                let (solved, ran_out) = solver.levenberg(&base, guess, &mut budget)?;
-                let here = rows(
+                // A guess that runs into motions that are not finite is a
+                // guess that failed; only the budget ends the fold.
+                let (solved, ran_out) = match solver.levenberg(&base, guess, &mut budget) {
+                    Ok(found) => found,
+                    Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+                    Err(_) => continue,
+                };
+                let here = match rows(
                     link,
                     &forest,
                     &loops,
                     &solver.with(&base, &solved),
                     None,
                     &mut budget,
-                )?;
+                ) {
+                    Ok(here) => here,
+                    Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+                    Err(_) => continue,
+                };
                 let follows = solved
                     .iter()
                     .zip(&x)
@@ -673,15 +683,20 @@ impl Solver<'_> {
                 let mut b: Vec<f64> = grad.iter().map(|g| -g).collect();
                 if solve_dense(&mut a, &mut b, n).is_some() {
                     let trial: Vec<f64> = x.iter().zip(&b).map(|(x, d)| x + d).collect();
-                    let rows_trial = rows(
+                    // A trial whose motions are not finite is no better.
+                    let tried = match rows(
                         self.link,
                         self.forest,
                         self.loops,
                         &self.with(base, &trial),
                         None,
                         budget,
-                    )?;
-                    if cost(&rows_trial) + self.penalty(&trial) < c0 {
+                    ) {
+                        Ok(r) => cost(&r) + self.penalty(&trial),
+                        Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+                        Err(_) => f64::INFINITY,
+                    };
+                    if tried < c0 {
                         x = trial;
                         lambda = (lambda / 3.0).max(1e-15);
                         moved = true;

@@ -773,6 +773,20 @@ fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
             "{given:?}: {e:?}"
         );
     }
+    // Mode B of a vertex whose sectors nearly pair up (61 and 59 degrees):
+    // near the flat sheet its solved creases move 50 times as fast as the
+    // driving one, past the continuation's ratio of 15: refused, not
+    // guessed.
+    let (a2, b2) = (61f64.to_radians(), 59f64.to_radians());
+    let steep = single_vertex(1.0, &[0.0, a2, a2 + b2, PI + b2], &[V, V, M, V]);
+    let e = fold(
+        &steep,
+        &angles(&steep, &[(10, 10f64.to_radians())]),
+        0,
+        t,
+        ANGULAR,
+    );
+    assert!(matches!(e, Err(FoldError::NotFollowed { .. })), "{e:?}");
     // A facet that cannot be placed is an error, never "no contact".
     let mut folded = fold(&arr, &angles(&arr, &[(10, 0.3)]), 0, t, ANGULAR).unwrap();
     folded.transforms.pop();
