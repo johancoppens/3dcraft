@@ -466,16 +466,11 @@ impl Page {
                     }
                 }));
         }
-        let mut shell = Shell::threaded_with_gpu(choice, state);
-        if state.is_some_and(|s| s.adapter.get_info().backend == wgpu::Backend::Gl) {
-            // WebGL2 reads 0 from a depth texture its passes for
-            // see-through bodies and the section load without a sampler
-            // (OpenGL ES 3.0 takes it for incomplete; the lines' distance
-            // pass samples it, `craft3d_gpu::onscreen`): those pictures are
-            // the CPU renderer's there.
-            shell.without_gpu_see_through();
-            shell.without_gpu_section();
-        }
+        // On WebGL2 too every picture is the GPU's: the passes that read
+        // the depth buffer (the lines' distances, see-through bodies, the
+        // section's layers) sample it with the nearest filter, which
+        // OpenGL ES 3.0 needs of a depth texture (`craft3d_gpu::peel`).
+        let shell = Shell::threaded_with_gpu(choice, state);
         log::info!("viewport renderer: {}", shell.renderer_report().describe());
         let mut host = WebHost::new(shell);
         let prefs = load_prefs(Prefs::of(&host.shell.state, None));

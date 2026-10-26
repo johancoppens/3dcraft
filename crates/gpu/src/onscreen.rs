@@ -2188,7 +2188,13 @@ impl Onscreen {
         let device = &self.device;
         if targets.cut.is_none() {
             let parity = cut::parity_view(device, targets.width, targets.height, self.samples);
-            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, None, &parity);
+            let cap_bind = cut::cap_bind(
+                device,
+                &pipelines.cap_layout,
+                self.samples > 1,
+                None,
+                &parity,
+            );
             targets.cut = Some(CutTargets {
                 parity,
                 cap_bind,
@@ -2206,6 +2212,7 @@ impl Onscreen {
             count.cap_behind_bind = Some(cut::cap_bind(
                 device,
                 &peeled.cap_behind_layout,
+                self.samples > 1,
                 Some(peel.key.as_ref().unwrap_or(&targets.depth)),
                 &count.parity,
             ));
@@ -2215,7 +2222,7 @@ impl Onscreen {
             && let Some(layout) = &pipelines.cap_flat_layout
         {
             let parity = cut::parity_view(device, targets.width, targets.height, 1);
-            let bind = cut::cap_bind(device, layout, None, &parity);
+            let bind = cut::cap_bind(device, layout, false, None, &parity);
             count.flat = Some((parity, bind));
         }
     }
@@ -2260,11 +2267,12 @@ impl Onscreen {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
         };
-        let peel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("craft3d front"),
-            layout: &pipelines.peel_layout,
-            entries: &[bound(0, key.as_ref().unwrap_or(&targets.depth))],
-        });
+        let peel_bind = peel::peel_bind(
+            device,
+            &pipelines.peel_layout,
+            self.samples > 1,
+            key.as_ref().unwrap_or(&targets.depth),
+        );
         let blend_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d blend"),
             layout: &pipelines.blend_layout,
@@ -2902,40 +2910,27 @@ mod tests {
                 assert!(!source.contains("{{"), "{label}: a marker was left");
                 let module = naga::front::wgsl::parse_str(source)
                     .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-                let info = naga::valid::Validator::new(
+                naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::all(),
                 )
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-                if samples > 1 {
-                    continue;
+                if samples == 1 {
+                    // OpenGL has one sample per pixel: what it runs is
+                    // what WebGL2 (GLSL ES 3.00) takes.
+                    crate::renderer::template_tests::translate_for_webgl2(&label, source);
                 }
-                for entry in &module.entry_points {
-                    let options = naga::back::glsl::Options {
-                        version: naga::back::glsl::Version::Embedded {
-                            version: 310,
-                            is_webgl: false,
-                        },
-                        ..naga::back::glsl::Options::default()
-                    };
-                    let pipeline = naga::back::glsl::PipelineOptions {
-                        shader_stage: entry.stage,
-                        entry_point: entry.name.clone(),
-                        multiview: None,
-                    };
-                    let mut out = String::new();
-                    naga::back::glsl::Writer::new(
-                        &mut out,
-                        &module,
-                        &info,
-                        &options,
-                        &pipeline,
-                        naga::proc::BoundsCheckPolicies::default(),
-                    )
-                    .and_then(|mut writer| writer.write().map(|_| ()))
-                    .unwrap_or_else(|e| panic!("{label}, {}: GLSL: {e}", entry.name));
-                }
+            }
+            // The one pass a window runs that reads the depth buffer
+            // samples it with one sample per pixel (WebGL2 reads 0 from a
+            // depth texture loaded there); the depth read is for tests.
+            let (loads, reads) =
+                crate::renderer::template_tests::reads_of(&sources.distance, "depth_texture");
+            if samples == 1 {
+                assert_eq!((loads, reads), (0, 1), "distance, {samples} samples");
+            } else {
+                assert_eq!((loads > 0, reads), (true, 0), "distance, {samples} samples");
             }
         }
     }

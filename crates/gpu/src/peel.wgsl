@@ -28,8 +28,17 @@
 // This file is for a depth buffer with one sample per pixel, where the
 // fragment's own depth is the number the depth test stored. With several
 // samples per pixel that is not so (`peel_samples.wgsl`).
+//
+// How the front's depth is read is a template (`renderer::scene_source_for`):
+// `{{FRONT_DEPTH}}` is the front's depth at the fragment's pixel, loaded,
+// or on OpenGL sampled through the nearest sampler `{{FRONT_SAMPLER}}`
+// declares, at the texel's centre, which gives the texel itself. OpenGL ES
+// 3.0 (WebGL2) takes a depth texture whose filter is not the nearest texel
+// for incomplete and reads 0 from it, `texelFetch` too, and wgpu's OpenGL
+// backend binds no sampler to a texture that is only loaded from.
 
 @group(1) @binding(0) var front_depth: texture_2d<f32>;
+{{FRONT_SAMPLER}}
 
 // The shaded colour with the alpha that says whether it is seen through.
 fn front_of(in: VertexOut) -> vec4<f32> {
@@ -62,7 +71,7 @@ fn fs_front_color(in: VertexOut) -> ColorOut {
 // The surface behind the front one.
 @fragment
 fn fs_behind(in: VertexOut) -> ColorOut {
-    let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
+    let front = {{FRONT_DEPTH}};
     // Behind is less with reversed depth (scene.wgsl). Negated, so that a
     // depth that is not a number is dropped.
     if !(stored_depth(in.clip.z, in.dist) < front) {
