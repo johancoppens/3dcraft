@@ -531,6 +531,14 @@ fn material_json(doc: &Document, regen: &Regen, at: FeatureId) -> Option<Value> 
     if let (Some(map), true) = (described.as_object_mut(), from != at) {
         map.insert("from".into(), from.to_string().into());
     }
+    // Given to a feature that is off: it weighs this body only because
+    // nothing that is on gives it a material (docs/design/document.md 4.2).
+    if let (Some(map), true) = (
+        described.as_object_mut(),
+        regen.feature(from).is_some_and(|r| r.is_off()),
+    ) {
+        map.insert("off".into(), true.into());
+    }
     Some(described)
 }
 

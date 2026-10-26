@@ -6,7 +6,8 @@
 //! passes on the body it would have changed; a union whose target is off
 //! passes its tool on; the appearance, the material and the face colours
 //! of a feature that is off apply to the body it passes on only where
-//! that body has none of its own (decided by the developer, 2026-10-26). Every command is followed by a regeneration from
+//! that body has none of its own (decided by the developer on
+//! 2026-10-26). Every command is followed by a regeneration from
 //! nothing (`checked`), and the range is proven with `document.sample`,
 //! which regenerates every point fresh.
 
@@ -536,6 +537,7 @@ fn an_inactive_feature_gives_its_colour_and_material_only_where_its_source_has_n
     let on = holder(&mut s);
     assert_eq!(on["appearance"]["color"], "#2f6fd6", "{on}");
     assert_eq!(on["material"]["name"], "Steel", "{on}");
+    assert!(on["material"].get("off").is_none(), "{on}");
 
     run(
         &mut s,
@@ -549,6 +551,7 @@ fn an_inactive_feature_gives_its_colour_and_material_only_where_its_source_has_n
     // item 74): the part has no material, so the inactive transform's
     // steel follows the body it passes on (it had none before).
     assert_eq!(off["material"]["name"], "Steel", "{off}");
+    assert_eq!(off["material"]["off"], true, "{off}");
     assert_close(&off["mass"], 7850.0 * 4000.0 * 1e-9, "mass");
     // The face colour given in its body: kept, and not shown.
     let face = run(
@@ -859,4 +862,65 @@ fn a_face_colour_of_a_cut_switched_off_breaks_no_picture() {
         run(&mut s, "file.export", json!({"path": "sundial.3mf"}));
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A mass assertion follows a material that changes with a feature's
+/// switch alone: a fillet whose edges are all on a boss that is off
+/// passes on its source's very body, on or off, so switching the fillet
+/// changes no body, only whose material counts (its own while it is on,
+/// the source's while it is off). The assertion is measured again, never
+/// taken from before the switch.
+#[test]
+fn a_mass_assertion_follows_a_material_switched_with_no_body_changed() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "boss", "expr": "0"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 10], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [5, 5, 5], "position": [5, 5, 10], "name": "Boss", "when": "boss"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Base", "tool": "Boss", "name": "Joined"}),
+    );
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [["F2:face(0)", "F2:face(2)"]], "radius": 1, "name": "Rounded"}),
+    );
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Base", "name": "Light", "density": 1000}),
+    );
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Rounded", "name": "Heavy", "density": 2000}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "m", "measure": "mass", "of": "Rounded", "min": 0}),
+    );
+    let measured = |s: &mut Session| {
+        run(s, "assert.list", json!({"details": true}))["assertions"][0]["measured"].clone()
+    };
+    for (when, mass) in [(None, 0.008), (Some("0"), 0.004), (None, 0.008)] {
+        run(
+            &mut s,
+            "feature.when",
+            json!({"feature": "Rounded", "expr": when}),
+        );
+        assert_close(&measured(&mut s), mass, "mass");
+        let body = inspect(&mut s)["bodies"][0].clone();
+        assert_close(&body["mass"], mass, "inspect's mass");
+    }
 }

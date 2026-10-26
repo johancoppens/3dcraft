@@ -195,10 +195,16 @@ impl Memo {
 }
 
 /// True when some feature that is off has an entry (a colour, a material
-/// or a face colour): only then can the second look find anything.
+/// or a face colour): only then can the second look find anything. One
+/// pass over the features and two binary searches for each that is off,
+/// so a document with nothing off, or with many face colours (a STEP
+/// import), pays next to nothing.
 fn any_off_entry(doc: &Document, regen: &Regen) -> bool {
-    doc.bodies.iter().any(|e| off(regen, e.feature))
-        || doc.faces.iter().any(|e| off(regen, e.feature))
+    regen
+        .features
+        .iter()
+        .filter(|r| r.is_off())
+        .any(|r| doc.body_properties(r.id).is_some() || !doc.face_properties(r.id).is_empty())
 }
 
 /// The appearance given to `feature` itself, when it is read in this
