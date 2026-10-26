@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// Most pairs of pieces one distance looks at.
-pub(crate) const MAX_NODES: usize = 200_000;
+pub(crate) const MAX_NODES: usize = 100_000;
 /// Most pairs of strata of one pair of faces.
 const MAX_STRATA_PAIRS: usize = 4_000_000;
 /// How deep an edge is halved to tell whether it meets a piece's box.
@@ -681,12 +681,12 @@ where
         // How much `d · x` spreads along the direction (its change end to
         // end and the bow at the middle); a millionth of the length breaks
         // ties where it does not spread at all (a flat piece square to d).
-        // Where the boxes meet, half the length as well; without a
-        // direction, the length.
+        // Where the boxes meet, a twentieth of the length as well; without
+        // a direction, the length.
         let score = |p0: Vec3, p1: Vec3, pm: Vec3| {
             let len = p1.distance(p0);
             let bend = pm.distance((p0 + p1) * 0.5);
-            let weight = if meet { 0.5 } else { 1e-6 };
+            let weight = if meet { 0.05 } else { 1e-6 };
             match d {
                 Some(d) => d.dot(p1 - p0).abs() + 4.0 * bend + weight * len,
                 None => len + 4.0 * bend,
@@ -1180,32 +1180,6 @@ pub(crate) fn prove(
                 &mut heap,
                 &mut seq,
                 enough,
-            );
-        }
-    }
-    // TRACE (temporary)
-    for (&(pa, pb), &id) in &stratum_pairs {
-        if let Some(l) = least.get(id)
-            && *l < enough(best)
-        {
-            let d = |p: usize| {
-                search.prims.get(p).map(|x| {
-                    format!(
-                        "{:?}#{} {}",
-                        x.kind,
-                        x.index,
-                        x.surface
-                            .map(|s| s.kind())
-                            .or(x.curve.map(|c| c.kind()))
-                            .unwrap_or("point")
-                    )
-                })
-            };
-            eprintln!(
-                "TRACE short {l} < {}: {:?} vs {:?} work {work}",
-                enough(best),
-                d(pa),
-                d(pb)
             );
         }
     }
