@@ -30,7 +30,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 /// The keys of each measure's parameters.
 fn measure_keys(measure: &str) -> &'static [&'static str] {
     match measure {
-        "volume" | "area" | "mass" | "count" | "thickness" | "through" => &["of"],
+        "volume" | "area" | "mass" | "count" | "thickness" | "through" | "curvature"
+        | "developable" => &["of"],
         "extent" | "boxMin" | "boxMax" | "centerOfMass" => &["of", "axis"],
         "distance" | "clearance" => &["from", "to"],
         "overlap" => &["of", "to"],
@@ -40,7 +41,7 @@ fn measure_keys(measure: &str) -> &'static [&'static str] {
 }
 
 fn is_flag(measure: &str) -> bool {
-    matches!(measure, "through" | "overlap" | "symmetric")
+    matches!(measure, "through" | "overlap" | "symmetric" | "developable")
 }
 
 /// Keys in a subject's filters whose value names a feature.
@@ -603,7 +604,8 @@ fn dim_of(measure: &str) -> Dim {
         m if let Some(dim) = crate::below_cmds::dim_of(m) => dim,
         "mass" => Dim::Mass,
         "count" => Dim::Count,
-        "through" | "overlap" | "symmetric" => Dim::Flag,
+        "through" | "overlap" | "symmetric" | "developable" => Dim::Flag,
+        "curvature" => Dim::Length(-2),
         _ => Dim::Length(1),
     }
 }

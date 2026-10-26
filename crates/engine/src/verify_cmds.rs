@@ -78,7 +78,7 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn feature_name(&self, id: FeatureId) -> String {
+    pub(crate) fn feature_name(&self, id: FeatureId) -> String {
         self.doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone())
@@ -332,6 +332,42 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
 
 /// The bodies and faces a subject names: per body, every face (`None`) or
 /// the faces named.
+/// The faces a subject names (default every body), per body: the
+/// feature, its body, the faces' indices (every face of a body named as a
+/// whole) and a name for messages.
+#[allow(clippy::type_complexity)]
+pub(crate) fn faces_of_subject(
+    ctx: &Ctx<'_>,
+    of: Option<&Value>,
+) -> Result<Vec<(FeatureId, Arc<Body>, Vec<usize>, String)>, String> {
+    let found = match of {
+        None | Some(Value::Null) => all_bodies(ctx),
+        Some(v) => nonempty(subject(ctx, v, &["face"])?, "of")?,
+    };
+    let mut out: Vec<(FeatureId, Arc<Body>, Vec<usize>, String)> = Vec::new();
+    for item in &found {
+        let body = Arc::clone(ctx.body(item.feature)?);
+        let faces: Vec<usize> = match item.kind {
+            SelectionKind::Face => item.indices.clone(),
+            SelectionKind::Body | SelectionKind::Feature => (0..body.faces.len()).collect(),
+            other => {
+                return Err(format!(
+                    "curvature is measured of faces and bodies; the subject names {} `{}`",
+                    other.name(),
+                    item.name
+                ));
+            }
+        };
+        let name = if item.name.is_empty() {
+            ctx.feature_name(item.feature)
+        } else {
+            item.name.clone()
+        };
+        out.push((item.feature, body, faces, name));
+    }
+    Ok(out)
+}
+
 fn bodies_of(ctx: &Ctx<'_>, found: &[Found]) -> Result<Vec<Named>, String> {
     let mut by: BTreeMap<FeatureId, Option<Vec<usize>>> = BTreeMap::new();
     let mut order: Vec<FeatureId> = Vec::new();
@@ -473,7 +509,7 @@ impl Outcome {
         }
     }
 
-    fn flag(value: bool) -> Self {
+    pub(crate) fn flag(value: bool) -> Self {
         Outcome {
             dim: Dim::Flag,
             number: None,
@@ -487,7 +523,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 20] = [
+pub(crate) const MEASURES: [&str; 22] = [
     "volume",
     "area",
     "mass",
@@ -508,6 +544,8 @@ pub(crate) const MEASURES: [&str; 20] = [
     "sectionCentroid",
     "sectionInertia",
     "levelFor",
+    "curvature",
+    "developable",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -525,6 +563,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "symmetric" => symmetric(ctx, p),
         "volumeBelow" | "centroidBelow" | "sectionArea" | "sectionCentroid" | "sectionInertia"
         | "levelFor" => crate::below_cmds::measure(ctx, name, p),
+        "curvature" | "developable" => crate::develop_cmds::take(ctx, name, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),

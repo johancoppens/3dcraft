@@ -1,0 +1,10 @@
+[
+  ["variable.set", {"name": "r", "expr": "20 mm"}],
+  ["sketch.create", {"name": "Low"}],
+  ["sketch.arc", {"sketch": "Low", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+  ["sketch.create", {"name": "High", "offset": "15 mm"}],
+  ["sketch.arc", {"sketch": "High", "center": [0, 0], "start": [10, 0], "end": [0, 10]}],
+  ["feature.developable", {"a": "Low", "b": "High", "name": "Panel"}],
+  ["feature.unfold", {"faces": ["F3:face(0)"], "at": [0, "-r * 2", 0], "angle": "30 deg", "name": "Pattern"}],
+  ["assert.add", {"name": "flat panel", "measure": "developable", "of": "Panel", "is": true}]
+]

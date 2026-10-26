@@ -94,6 +94,45 @@ the sheet (`subtract`, the side its normal points to) or behind it (`intersect`)
 [wedge](../examples/wedge.json). An open chain in a loft gives a sheet too, and `feature.thicken` turns
 faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([chapter 16](16-origami.md)).
 
+## Developable surfaces and unfolding
+
+A **developable** surface is one a flat sheet bends onto without stretching: plywood panels of a boat,
+sheet metal, paper, a lampshade. `feature.developable` makes the developable sheet between two curves
+(`a` and `b`): each a sketch whose curves make one open chain, or `{"edges": [...]}`, edges of earlier
+bodies in order (the chines of a hull, for instance). Straight lines (*rulings*) join the two curves where
+both curves' tangents and the line lie in one plane, which is what makes the sheet developable; where the
+ruling from an end does not reach the other curve's end, a fan (a cone from that end) fills the corner.
+The sheet's edges are the curves themselves, so two panels on one curve meet edge to edge. `feature.unfold`
+lays faces flat as one piece, the pattern to cut, with every length, angle and area kept:
+
+```json
+[
+ ["sketch.create", {"name": "Low"}],
+ ["sketch.arc", {"sketch": "Low", "center": [0, 0], "start": [20, 0], "end": [0, 20]}],
+ ["sketch.create", {"name": "High", "offset": "15 mm"}],
+ ["sketch.arc", {"sketch": "High", "center": [0, 0], "start": [10, 0], "end": [0, 10]}],
+ ["feature.developable", {"a": "Low", "b": "High", "name": "Panel"}],
+ ["feature.unfold", {"faces": ["F3:face(0)"], "at": [0, "-40 mm", 0], "name": "Pattern"}],
+ ["unfold.map", {"unfold": "Pattern", "points": [[10.6, 10.6, 7.5]], "to": "flat"}]
+]
+```
+
+The two arcs make a piece of a cone; unfolded it is a piece of a flat ring. The unfold's result says how
+far the pattern is from the part (`lengthChange`, `areaChange`, `mapError`), and `unfold.map` takes points
+from the part to the pattern (`"to": "flat"`) or back (`"to": "part"`): a hole drawn on the pattern is found
+on the panel, and the other way round.
+
+- `measure.developability` tells how far faces are from developable: the largest Gaussian curvature found
+  on each face (in 1/mm²; a sphere of radius r has 1/r² everywhere, planes, cylinders and cones 0) and
+  whether the stretch a flat sheet would need over the face is within the document's tolerance. As
+  assertions: `"measure": "curvature"` with `max`, and `"measure": "developable"` with `is`.
+- A face that is not developable (a sphere, a torus, a double-curved loft) is not unfolded: the reason
+  gives its curvature and where. Two faces whose shared edge bends differently on its two sides (two hull
+  panels at a chine, a fold) do not lie flat as one piece: unfold each on its own.
+- A developable is refused, with where, when its rulings would cross (an inflection of a curve, a curve
+  that winds about the other), when the curves lie in one plane over a stretch only, when they meet
+  between their ends, and for closed curves and curves with a corner (not supported yet).
+
 ## Several bodies
 
 A document may hold any number of bodies; every feature that does not consume another body adds one.

@@ -22,6 +22,7 @@ mod blend_cmds;
 mod body_cmds;
 mod commands;
 mod datum_cmds;
+mod develop_cmds;
 mod drawing_cmds;
 mod export_bodies;
 mod face_cmds;
@@ -470,6 +471,7 @@ impl Session {
                 sketch_curve_cmds::SPECS,
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
+                develop_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
                 appearance_cmds::SPECS,

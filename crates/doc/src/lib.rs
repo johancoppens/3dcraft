@@ -580,6 +580,69 @@ pub struct Fill {
     pub sketch: FeatureId,
 }
 
+/// A curve a developable runs along, from its first end to its last.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Rail {
+    /// The one open chain the curves of a sketch make, run from the free
+    /// end of its curve with the smallest id.
+    Sketch(FeatureId),
+    /// Edges of earlier bodies, in order, end to end (each run the way
+    /// that meets the next).
+    Edges(Vec<PersistentName>),
+}
+
+impl Rail {
+    /// The features it is made from, in order, each once.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        match self {
+            Rail::Sketch(id) => vec![*id],
+            Rail::Edges(edges) => {
+                let mut out: Vec<FeatureId> = Vec::new();
+                for e in edges {
+                    if !out.contains(&e.feature) {
+                        out.push(e.feature);
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+/// Most edges in one rail of a developable.
+pub const MAX_RAIL_EDGES: usize = 1024;
+
+/// The developable sheet between two curves: a ruled surface whose
+/// rulings are chosen so that its Gaussian curvature is zero
+/// (docs/design/developable.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Developable {
+    pub a: Rail,
+    pub b: Rail,
+}
+
+/// Faces of an earlier body laid flat as one piece, a flat sheet of its
+/// own in the plane `z = at.z`: the first face's first vertex at `at`,
+/// that vertex's first edge along +x turned by `angle` about +z. The
+/// faces' body stays.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unfold {
+    pub faces: Vec<PersistentName>,
+    #[serde(default = "zero3")]
+    pub at: [Expr; 3],
+    #[serde(default = "no_angle")]
+    pub angle: Expr,
+}
+
+impl Unfold {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
 /// One lump of the body of an earlier feature as a body of its own: the
 /// shell that bounds the lump from outside and the cavities in it
 /// (`craft3d_kernel::lumps`). The body goes into this feature; the other
@@ -988,6 +1051,8 @@ pub enum FeatureKind {
     Split(Split),
     Import(Import),
     Fold(Fold),
+    Developable(Developable),
+    Unfold(Unfold),
 }
 
 impl FeatureKind {
@@ -1024,6 +1089,8 @@ impl FeatureKind {
             FeatureKind::OffsetProfile(_) => "offsetProfile",
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
+            FeatureKind::Developable(_) => "developable",
+            FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
         }
@@ -1090,6 +1157,8 @@ impl FeatureKind {
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
             FeatureKind::Split(s) => Some((s.source, false)),
+            // The faces' body stays: the pattern is a body of its own.
+            FeatureKind::Unfold(u) => u.source().map(|id| (id, true)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -1108,6 +1177,7 @@ impl FeatureKind {
             | FeatureKind::OffsetProfile(_)
             | FeatureKind::Fill(_)
             | FeatureKind::Fold(_)
+            | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1130,6 +1200,15 @@ impl FeatureKind {
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
             FeatureKind::Fold(f) => vec![f.sketch],
+            FeatureKind::Developable(d) => {
+                let mut out = d.a.inputs();
+                for id in d.b.inputs() {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+                out
+            }
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -1226,8 +1305,13 @@ impl FeatureKind {
             | FeatureKind::DeleteFace(_)
             | FeatureKind::Fill(_)
             | FeatureKind::Split(_)
+            | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => {
                 out = Vec::new();
+            }
+            FeatureKind::Unfold(u) => {
+                out = triple("at", &u.at);
+                out.push(named("angle", &u.angle));
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
@@ -1356,7 +1440,9 @@ impl FeatureKind {
             | FeatureKind::DeleteFace(_)
             | FeatureKind::Fill(_)
             | FeatureKind::Split(_)
+            | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => Vec::new(),
+            FeatureKind::Unfold(u) => u.at.iter_mut().chain([&mut u.angle]).collect(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -1733,6 +1819,30 @@ impl Document {
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 FeatureKind::Split(split) => vec![&split.face],
+                FeatureKind::Developable(d) => {
+                    let mut names = Vec::new();
+                    for rail in [&d.a, &d.b] {
+                        if let Rail::Edges(edges) = rail {
+                            if edges.len() > MAX_RAIL_EDGES {
+                                return Err(DocError::Invalid(format!(
+                                    "`{}` has a rail of more than {MAX_RAIL_EDGES} edges",
+                                    feature.name
+                                )));
+                            }
+                            names.extend(edges.iter());
+                        }
+                    }
+                    names
+                }
+                FeatureKind::Unfold(u) => {
+                    if u.faces.len() > MAX_FACE_OP_FACES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FACE_OP_FACES} faces",
+                            feature.name
+                        )));
+                    }
+                    u.faces.iter().collect()
+                }
                 FeatureKind::Draft(draft) => {
                     if draft.faces.len() > MAX_FACE_OP_FACES {
                         return Err(DocError::Invalid(format!(

@@ -649,6 +649,17 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         number: Option<u64>,
     },
+    /// The developable sheet between two rails (format version 39): each
+    /// rail is `{"sketch": id}` (the one open chain of its curves) or
+    /// `{"edges": [names]}` (edges of earlier bodies, end to end).
+    Developable { a: Rail, b: Rail },
+    /// Faces of an earlier body laid flat as one piece (format version
+    /// 39), placed at `at` and turned by `angle` about +z.
+    Unfold {
+        faces: Vec<Name>,
+        at: [String; 3],
+        angle: String,
+    },
     /// Solid or sheet number `solid` (in file order) of an imported STEP
     /// file whose bytes are the ZIP entry `blobs/<sha256>.step`; `file_name`
     /// is the name it had, for messages (format version 25).
@@ -688,6 +699,14 @@ pub enum CreaseKind {
     Mountain,
     Valley,
     Cut,
+}
+
+/// A rail of a developable (format version 39).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Rail {
+    Sketch(u64),
+    Edges(Vec<Name>),
 }
 
 /// How an offset profile goes round a corner where its curves part.

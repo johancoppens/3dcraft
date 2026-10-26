@@ -75,7 +75,7 @@ fn shown(text: &str) -> String {
 }
 
 /// A persistent name, as `document.inspect` lists it.
-fn name_value(
+pub(crate) fn name_value(
     command: &str,
     key: &str,
     value: &Value,

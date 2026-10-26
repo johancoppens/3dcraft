@@ -869,6 +869,7 @@ pub(crate) fn features(
                                 instances: None,
                                 sweep: None,
                                 thread: None,
+                                developed: None,
                                 offset: None,
                                 consumed_by: None,
                                 followed: None,

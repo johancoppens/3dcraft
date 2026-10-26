@@ -16,6 +16,7 @@ mod boxtree;
 pub use boolean::{release_unused, shelf_size};
 pub mod chamfer;
 pub mod delete_face;
+pub mod developable;
 pub mod draft;
 pub mod extrude;
 pub mod extrude_to;
@@ -40,6 +41,7 @@ pub mod sweep;
 pub mod thicken;
 pub mod thread;
 mod tweak;
+pub mod unfold;
 pub mod work;
 
 use craft3d_geom::GeomError;
@@ -202,6 +204,14 @@ pub enum KernelError {
     /// profile misses it).
     NoEnd {
         reason: &'static str,
+    },
+    /// The operation cannot make what it was asked for from this input:
+    /// `reason` says why and where, with the numbers (a developable whose
+    /// rulings would cross, a face that is not developable and by how
+    /// much). Valid input, refused rather than guessed at.
+    Refused {
+        operation: &'static str,
+        reason: String,
     },
     /// The boolean built a valid body that is not the boolean of its
     /// operands: it breaks a rule every exact boolean keeps
@@ -525,6 +535,7 @@ impl fmt::Display for KernelError {
                 )
             }
             KernelError::NoEnd { reason } => write!(f, "the extrusion has no end: {reason}"),
+            KernelError::Refused { operation, reason } => write!(f, "{operation}: {reason}"),
             KernelError::WrongResult {
                 operation,
                 violation,

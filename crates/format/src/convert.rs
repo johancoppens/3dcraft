@@ -671,6 +671,19 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 face: name_to_manifest(face),
                 number: *number,
             },
+            doc::FeatureKind::Developable(doc::Developable { a, b }) => {
+                manifest::FeatureKind::Developable {
+                    a: rail_to_manifest(a),
+                    b: rail_to_manifest(b),
+                }
+            }
+            doc::FeatureKind::Unfold(doc::Unfold { faces, at, angle }) => {
+                manifest::FeatureKind::Unfold {
+                    faces: faces.iter().map(name_to_manifest).collect(),
+                    at: at.clone().map(|e| expr_to_manifest(&e)),
+                    angle: expr_to_manifest(angle),
+                }
+            }
             doc::FeatureKind::Import(doc::Import {
                 file_name,
                 solid,
@@ -1179,6 +1192,24 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
 // where there is none to be is kept as one empty name per entry on the way
 // in, so that validation refuses the name instead of the list being
 // dropped.
+fn rail_to_manifest(rail: &doc::Rail) -> manifest::Rail {
+    match rail {
+        doc::Rail::Sketch(doc::FeatureId(id)) => manifest::Rail::Sketch(*id),
+        doc::Rail::Edges(edges) => {
+            manifest::Rail::Edges(edges.iter().map(name_to_manifest).collect())
+        }
+    }
+}
+
+fn rail_to_doc(rail: manifest::Rail) -> doc::Rail {
+    match rail {
+        manifest::Rail::Sketch(id) => doc::Rail::Sketch(doc::FeatureId(id)),
+        manifest::Rail::Edges(edges) => {
+            doc::Rail::Edges(edges.into_iter().map(name_to_doc).collect())
+        }
+    }
+}
+
 fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
     name_to_manifest_with(name, true)
 }
@@ -1958,6 +1989,19 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 face: name_to_doc(face),
                 number,
             }),
+            manifest::FeatureKind::Developable { a, b } => {
+                doc::FeatureKind::Developable(doc::Developable {
+                    a: rail_to_doc(a),
+                    b: rail_to_doc(b),
+                })
+            }
+            manifest::FeatureKind::Unfold { faces, at, angle } => {
+                doc::FeatureKind::Unfold(doc::Unfold {
+                    faces: faces.into_iter().map(name_to_doc).collect(),
+                    at: exprs_to_doc(at),
+                    angle: doc::Expr(angle),
+                })
+            }
             manifest::FeatureKind::Import {
                 file_name,
                 solid,

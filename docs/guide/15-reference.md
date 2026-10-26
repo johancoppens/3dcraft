@@ -54,6 +54,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.extrude`, `feature.revolve`, `feature.sweep`, `feature.loft` | Solids from sketches |
 | `feature.fill`, `feature.thicken` | Sheets, and a layer on faces |
 | `feature.fold`, `fold.edit`, `fold.inspect`, `fold.check` | Origami: a crease pattern folded rigidly, its solved angles, Kawasaki and Maekawa ([chapter 16](16-origami.md)) |
+| `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([chapter 9](09-features.md#developable-surfaces-and-unfolding)) |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |

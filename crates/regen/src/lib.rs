@@ -25,6 +25,8 @@ mod chamfer;
 pub mod curve_fit;
 mod datum;
 mod delete_face;
+mod developable;
+pub use developable::{Developed, placement};
 mod derive;
 mod draft;
 mod entity;
@@ -887,6 +889,9 @@ pub struct FeatureResult {
     pub sweep: Option<SweepReport>,
     /// For a thread that was built: what it is.
     pub thread: Option<ThreadReport>,
+    /// For a developable or an unfold that was built: what it made beside
+    /// its body (`developable::Developed`).
+    pub developed: Option<Developed>,
     /// For an offset of the profiles of a sketch that was built: its
     /// outline.
     pub offset: Option<Arc<OffsetResult>>,
@@ -1094,7 +1099,12 @@ fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String
 
 /// Evaluates an angle, in radians. A bare number is taken in the
 /// document's angle unit.
-fn angle(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
+pub(crate) fn angle(
+    doc: &Document,
+    variables: &Evaluation,
+    name: &str,
+    expr: &Expr,
+) -> Result<f64, String> {
     let quantity = variables
         .evaluate(expr.source())
         .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
@@ -1197,6 +1207,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
         FeatureKind::Loft(_) => return Err("a loft needs its sketches".to_string()),
         FeatureKind::Sweep(_) => return Err("a sweep needs its sketches".to_string()),
+        FeatureKind::Developable(_) => {
+            return Err("a developable needs the curves it runs between".to_string());
+        }
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_)
         | FeatureKind::DatumAxis(_)
@@ -1218,7 +1231,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
-        | FeatureKind::Split(_) => {
+        | FeatureKind::Split(_)
+        | FeatureKind::Unfold(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -1522,6 +1536,7 @@ fn build_feature(
     let mut placed = None;
     let mut followed = None;
     let mut threaded = None;
+    let mut developed = None;
     let mut outline = None;
     let mut passed = None;
     let switch = if rolled_back {
@@ -1689,6 +1704,28 @@ fn build_feature(
         {
             Ok((body, made_names)) => {
                 names = Some(Arc::new(made_names));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Developable(sheet) = &feature.kind {
+        match developable::build_developable(doc, feature.id, sheet, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(report);
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Unfold(pattern) = &feature.kind {
+        match developable::build_unfold(doc, variables, feature.id, pattern, earlier)
+            .and_then(|(body, names, dev)| checked(doc, body).map(|body| (body, names, dev)))
+        {
+            Ok((body, made_names, dev)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::Pattern(dev));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),
@@ -1883,6 +1920,7 @@ fn build_feature(
             instances,
             sweep: followed,
             thread: threaded,
+            developed,
             offset: outline,
             consumed_by: None,
             followed: None,

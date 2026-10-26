@@ -88,7 +88,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis (expressions, as for feature.block), centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic, "when": expr = always on}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, names: ["upTo"], feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both", "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean}"#,
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3] or a thread's "M10" or expr or null, "position": [expr; 3], "axis": [expr; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [expr; 3], "plane": datum plane id or name, "step": [expr; 3] (a circular pattern: expr along its axis, or null for a plain turn), "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "side": "outside|inside|both", "neutral": plane, "open": [face name, ...], "pitch": expr (or null for a thread: the coarse pitch of its size), "turns": expr, "leftHanded": boolean, "length": expr, "cosmetic": boolean, "modeled": boolean, "a": sketch or {edges}, "b": sketch or {edges}, "at": [expr; 3]}"#,
         "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point; a circular pattern becomes a screw with step (one length along the axis) and a plain turn again with step null. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion, a revolution or a sweep (its profile), path for a sweep, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. An offset's faces and distance are changed with faces and distance (the faces also choose its body, as the edges of a chamfer do), a moved face's with faces, translate, pivot, axis and angle, a thickened one's with faces, thickness and side, a draft's with faces, neutral, angle and reversed, a deletion's faces with faces; a shell's with source, thickness and open. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, names: ["upTo", "edges", "faces", "neutral", "open", "plane"], feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
@@ -391,6 +391,9 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         }
         if let Some(report) = &outcome.thread {
             map.insert("thread".into(), crate::helix_cmds::thread_json(report));
+        }
+        if let Some(made) = &outcome.developed {
+            crate::develop_cmds::report_json(map, made);
         }
         if let Some(made) = &outcome.offset {
             map.insert("offset".into(), crate::offset_cmds::offset_json(made));
@@ -1885,7 +1888,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 46] = [
+const EDITABLE: [&str; 49] = [
     "sketch",
     "sections",
     "ruled",
@@ -1932,6 +1935,9 @@ const EDITABLE: [&str; 46] = [
     "cosmetic",
     "modeled",
     "corners",
+    "a",
+    "b",
+    "at",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -2246,6 +2252,18 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         // Its creases and fixed point are changed by fold.edit.
         FeatureKind::Fold(_) => ("fold", vec![("sketch", Slot::Elsewhere)]),
         FeatureKind::Split(_) => ("split", vec![("source", Slot::Elsewhere)]),
+        FeatureKind::Developable(_) => (
+            "developable",
+            vec![("a", Slot::Elsewhere), ("b", Slot::Elsewhere)],
+        ),
+        FeatureKind::Unfold(u) => (
+            "unfold",
+            vec![
+                ("faces", Slot::Elsewhere),
+                ("at", Slot::Triple(&mut u.at)),
+                ("angle", Slot::One(&mut u.angle)),
+            ],
+        ),
         // What an import is, is the file: import it again to change it.
         FeatureKind::Import(_) => ("import", Vec::new()),
         FeatureKind::OffsetProfile(o) => (
@@ -2610,6 +2628,16 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::DeleteFace(deletion) => crate::face_cmds::edit_delete(&p, deletion)?,
         FeatureKind::MoveFace(moving) => crate::face_cmds::edit_move(&p, moving)?,
         FeatureKind::Thicken(layer) => crate::face_cmds::edit_thicken(&p, layer)?,
+        FeatureKind::Developable(sheet) => {
+            let doc = session.document()?.history.current();
+            crate::develop_cmds::edit_developable(doc, &p, sheet)?;
+        }
+        FeatureKind::Unfold(pattern) => {
+            if let Some(value) = p.get("faces") {
+                pattern.faces =
+                    crate::face_cmds::faces_value("feature.edit", "faces", value, "unfold", false)?;
+            }
+        }
         FeatureKind::Draft(tilted) => {
             crate::face_cmds::edit_draft(&p, tilted)?;
             tilted.neutral = new_neutral.unwrap_or_else(|| tilted.neutral.clone());

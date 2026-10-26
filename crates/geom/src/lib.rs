@@ -7,6 +7,7 @@
 pub mod allowance;
 pub mod certify;
 pub mod closure;
+pub mod curvature;
 mod curve;
 mod extend;
 pub mod intersect;

@@ -474,6 +474,7 @@ fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> b
         FeatureKind::OffsetFace(offset) => faces(&mut offset.faces),
         FeatureKind::MoveFace(moving) => faces(&mut moving.faces),
         FeatureKind::Thicken(layer) => faces(&mut layer.faces),
+        FeatureKind::Unfold(pattern) => faces(&mut pattern.faces),
         FeatureKind::Draft(tilted) => faces(&mut tilted.faces),
         FeatureKind::DeleteFace(deletion) => faces(&mut deletion.faces),
         FeatureKind::Shell(shell) => faces(&mut shell.open),
@@ -500,6 +501,7 @@ pub(crate) fn feature(
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,
+        FeatureKind::Unfold(pattern) => faces(doc, earlier, &mut pattern.faces, "faces")?,
         FeatureKind::Draft(tilted) => {
             let mut changed = faces(doc, earlier, &mut tilted.faces, "faces")?;
             if let craft3d_doc::PlaneRef::Face { face: name } = &mut tilted.neutral
