@@ -155,15 +155,30 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion) -> Key {
             _ => {}
         }
     }
-    // A mass follows the materials, which change no body.
+    // A mass follows the materials, which change no body, and whether the
+    // feature each is given to is off (a material of a feature that is off
+    // weighs the body it passes on only where that body has none: a
+    // fillet left with no edges passes on its source's very body, so
+    // switching it changes the material and no body).
     if matches!(
         params.get("measure").and_then(Value::as_str),
         Some("mass" | "centerOfMass")
     ) {
         text.push('|');
+        let off: std::collections::BTreeSet<craft3d_doc::FeatureId> = regen
+            .features
+            .iter()
+            .filter(|r| r.is_off())
+            .map(|r| r.id)
+            .collect();
         for given in &doc.bodies {
             if let Some(material) = &given.material {
-                text.push_str(&format!("{}={material:?};", given.feature));
+                let state = if off.contains(&given.feature) {
+                    "off"
+                } else {
+                    "on"
+                };
+                text.push_str(&format!("{}={material:?}:{state};", given.feature));
             }
         }
     }

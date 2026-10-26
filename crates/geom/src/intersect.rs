@@ -29,6 +29,19 @@ mod meet;
 
 pub use meet::{Meeting, MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric};
 
+/// Lets go of what the intersections keep between calls: the
+/// intersections of surfaces asked for lately and the projectors and
+/// pieces of the surfaces they met. Each is worked out again, the same,
+/// when asked for (only the time differs). Returns how many there were.
+pub fn forget_kept() -> usize {
+    meet::forget_shelf().saturating_add(field::forget_shelves())
+}
+
+/// How many intersections, projectors and pieces of surfaces are kept.
+pub fn kept() -> usize {
+    meet::shelf_len().saturating_add(field::shelves_len())
+}
+
 use crate::{Circle, Curve3, Ellipse, GeomError, Line, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::TAU;

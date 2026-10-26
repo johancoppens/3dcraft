@@ -65,7 +65,7 @@ pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
-pub use pass::{Passed, left_out};
+pub use pass::{Passed, absent_name, left_out};
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, FittedCurve, SketchResult, fit_formula_curve,
