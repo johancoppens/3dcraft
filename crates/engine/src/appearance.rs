@@ -35,10 +35,27 @@
 //!   feature on the way wins, a face over its body at the same feature.
 //!
 //! - **A feature that is off** (suppressed, or inactive by its condition)
-//!   gives nothing: its appearance, material and face colours do not
-//!   apply to the body it passes on, which has the colours it had before
-//!   it, as if the feature were not in the history
-//!   (docs/design/regeneration.md › *Switched off*).
+//!   and passes a body on gives that body its appearance, material and
+//!   face colours only where the body has none of its own (decided by the
+//!   developer, 2026-10-26; docs/design/regeneration.md › *Switched
+//!   off*). Each is found twice: first with the entries of the features
+//!   that are on alone, as if those that are off were not in the
+//!   history, so a red part moved by an inactive transform given blue
+//!   stays red (R1 item 23); only when that finds nothing are the entries
+//!   of the features that are off read too, the nearest on the same way
+//!   first, so a material given to a pattern that is switched off still
+//!   weighs the body the pattern passes on (the CubeSat's spacers). The
+//!   colour and the material are found apart: a body can have the colour
+//!   of its source and the material of the feature that is off.
+//!
+//! - **A colour that follows the variables** (`BodyColor::Exprs`) is
+//!   evaluated when it is read, against the document's variables found
+//!   once per command ([`Values`]). An entry whose colour does not
+//!   evaluate (a variable it uses was deleted) decides the walk all the
+//!   same: the body has no colour from it, and none from an earlier body
+//!   or from a feature that is off, so a broken colour shows as the
+//!   theme's, never silently as another entry's; `document.check` and
+//!   `document.inspect` (`colorError`) say why (decided 2026-10-26).
 //!
 //! Neither changes regeneration: a colour is not part of the history.
 
@@ -48,7 +65,83 @@ use craft3d_doc::{
 };
 use craft3d_expr::Evaluation;
 use craft3d_regen::Regen;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
+
+/// The document's variables and tables as expressions are evaluated
+/// against them; none when its table does not build (a hand-edited file).
+pub(crate) fn evaluation(doc: &Document) -> Option<Evaluation> {
+    doc.variable_table().ok().map(|table| table.evaluate())
+}
+
+/// The document and its variables, evaluated the first time a colour or
+/// a density that follows them is read: make one per command and pass it
+/// to the `_in` functions, so the variables are evaluated once however
+/// many bodies and faces are coloured or weighed. A document without such
+/// a colour or density never evaluates them here.
+pub struct Values<'d> {
+    doc: &'d Document,
+    values: OnceCell<Option<Evaluation>>,
+}
+
+impl<'d> Values<'d> {
+    pub fn new(doc: &'d Document) -> Self {
+        Values {
+            doc,
+            values: OnceCell::new(),
+        }
+    }
+
+    /// The document they are of.
+    pub fn doc(&self) -> &'d Document {
+        self.doc
+    }
+
+    /// The variables, evaluated once.
+    pub fn get(&self) -> Option<&Evaluation> {
+        self.values.get_or_init(|| evaluation(self.doc)).as_ref()
+    }
+}
+
+/// The density of `material` in kg/m³, its expression evaluated against
+/// the document's variables: why not, when it does not evaluate.
+pub fn density_in(values: &Values, material: &Material) -> Result<f64, String> {
+    if material.density_expr.is_none() {
+        return Ok(material.density);
+    }
+    material.density_with(values.get())
+}
+
+/// [`density_in`] for one material.
+pub fn density(doc: &Document, material: &Material) -> Result<f64, String> {
+    density_in(&Values::new(doc), material)
+}
+
+/// Why the colour or the density given to the body of a feature does not
+/// evaluate, for each that does not: for `document.check`.
+pub(crate) fn property_errors(
+    doc: &Document,
+    values: Option<&Evaluation>,
+) -> Vec<(FeatureId, String)> {
+    let mut out = Vec::new();
+    for entry in &doc.bodies {
+        if let Some(appearance) = &entry.appearance
+            && matches!(appearance.color, BodyColor::Exprs(_))
+            && let Err(why) = appearance.resolve(values)
+        {
+            out.push((entry.feature, why));
+        }
+        if let Some(material) = &entry.material
+            && let Err(why) = material.density_with(values)
+        {
+            out.push((
+                entry.feature,
+                format!("material `{}`: {why}", material.name),
+            ));
+        }
+    }
+    out
+}
 
 /// What the walks below ask of the document and the regeneration, by
 /// feature, found once per walk: each is a function of the document and
@@ -58,38 +151,26 @@ use std::collections::BTreeMap;
 /// result and definition, which the regeneration and the document find
 /// by a search through the features.
 #[derive(Default)]
-struct Memo {
+struct Memo<'v> {
+    /// Whether the entries of features that are off are read (the second
+    /// look, see the module documentation).
+    with_off: bool,
+    /// The variables, for a colour that follows them.
+    values: Option<&'v Values<'v>>,
     /// [`sources`] of a feature.
     sources: BTreeMap<FeatureId, Vec<FeatureId>>,
     /// Whether a feature's definition is a subtraction, for
     /// [`keeps_material`].
     subtracts: BTreeMap<FeatureId, bool>,
-    /// [`body_appearance`] of a feature.
-    bodies: BTreeMap<FeatureId, Option<Appearance>>,
-    /// The document's variables, for a colour that follows them, once
-    /// one is met ([`values`]).
-    values: Option<Option<Evaluation>>,
+    /// [`body_appearance_with`] of a feature: what decided its colour in
+    /// this look, if anything did.
+    bodies: BTreeMap<FeatureId, Decided>,
 }
 
-/// The document's variables and tables as expressions are evaluated
-/// against them; none when its table does not build (a hand-edited file).
-pub(crate) fn evaluation(doc: &Document) -> Option<Evaluation> {
-    doc.variable_table().ok().map(|table| table.evaluate())
-}
-
-/// [`evaluation`], found once per walk.
-fn values<'m>(doc: &Document, memo: &'m mut Memo) -> Option<&'m Evaluation> {
-    memo.values.get_or_insert_with(|| evaluation(doc)).as_ref()
-}
-
-/// The density of `material` in kg/m³, its expression evaluated against
-/// the document's variables: why not, when it does not evaluate.
-pub fn density(doc: &Document, material: &Material) -> Result<f64, String> {
-    if material.density_expr.is_none() {
-        return Ok(material.density);
-    }
-    material.density_with(evaluation(doc).as_ref())
-}
+/// What a look found for a body's colour: `None` when nothing on the way
+/// decides it, `Some(None)` when an entry does but its colour does not
+/// evaluate, `Some(Some(appearance))` when an entry gives it.
+type Decided = Option<Option<Appearance>>;
 
 /// The definition of `feature` as it was built (with its references
 /// followed to the newest body, when they were), else as it stands.
@@ -172,12 +253,12 @@ fn along_instance_zero<T>(
     regen: &Regen,
     memo: &mut Memo,
     feature: FeatureId,
-    mut pick: impl FnMut(&mut Memo, FeatureId) -> Option<T>,
+    pick: impl Fn(FeatureId) -> Option<T>,
 ) -> Option<T> {
     let mut at = feature;
     // Each step goes to an earlier feature; the cap is for a bad file.
     for _ in 0..=doc.features.len() {
-        if let Some(found) = pick(memo, at) {
+        if let Some(found) = pick(at) {
             return Some(found);
         }
         at = source_of(doc, regen, memo, at, 0)?;
@@ -185,56 +266,73 @@ fn along_instance_zero<T>(
     None
 }
 
-/// True when `feature` is switched off: what it was given does not apply.
+/// True when `feature` is switched off: what it was given applies only
+/// where nothing that is on gives one.
 fn off(regen: &Regen, feature: FeatureId) -> bool {
     regen.feature(feature).is_some_and(|r| r.is_off())
 }
 
-/// The appearance given to the body of `feature` itself. A colour that
-/// follows the variables and does not evaluate gives none (the body is
-/// drawn as if it had no colour of its own; `document.check` and
-/// `document.inspect` say why).
-fn own_appearance(
-    doc: &Document,
-    regen: &Regen,
-    memo: &mut Memo,
-    feature: FeatureId,
-) -> Option<Appearance> {
-    if off(regen, feature) {
-        return None;
+impl<'v> Memo<'v> {
+    /// The memo of the first look, which reads the entries of features
+    /// that are on.
+    fn first(values: &'v Values<'v>) -> Self {
+        Memo {
+            values: Some(values),
+            ..Memo::default()
+        }
     }
-    let given = doc.body_properties(feature)?.appearance.as_ref()?;
-    match &given.color {
-        BodyColor::Fixed(_) => given.resolve(None).ok(),
-        BodyColor::Exprs(_) => given.resolve(values(doc, memo)).ok(),
+
+    /// The memo of the second look, which reads the entries of features
+    /// that are off too.
+    fn with_off(values: &'v Values<'v>) -> Self {
+        Memo {
+            with_off: true,
+            values: Some(values),
+            ..Memo::default()
+        }
+    }
+
+    /// True when the entries of `feature` are not read in this look.
+    fn skips(&self, regen: &Regen, feature: FeatureId) -> bool {
+        !self.with_off && off(regen, feature)
     }
 }
 
-/// Why the colour or the density given to the body of `feature` does not
-/// evaluate, if one does not: for `document.check` and
-/// `document.inspect`.
-pub(crate) fn property_errors(
+/// True when some feature that is off has an entry (a colour, a material
+/// or a face colour): only then can the second look find anything. One
+/// pass over the features and two binary searches for each that is off,
+/// so a document with nothing off, or with many face colours (a STEP
+/// import), pays next to nothing.
+fn any_off_entry(doc: &Document, regen: &Regen) -> bool {
+    regen
+        .features
+        .iter()
+        .filter(|r| r.is_off())
+        .any(|r| doc.body_properties(r.id).is_some() || !doc.face_properties(r.id).is_empty())
+}
+
+/// The appearance given to `feature` itself, when it is read in this
+/// look (`with_off`: also when the feature is off): `Some(None)` when it
+/// has one whose colour does not evaluate ([`Decided`]).
+fn own_appearance(
     doc: &Document,
-    values: Option<&Evaluation>,
-) -> Vec<(FeatureId, String)> {
-    let mut out = Vec::new();
-    for entry in &doc.bodies {
-        if let Some(appearance) = &entry.appearance
-            && matches!(appearance.color, BodyColor::Exprs(_))
-            && let Err(why) = appearance.resolve(values)
-        {
-            out.push((entry.feature, why));
-        }
-        if let Some(material) = &entry.material
-            && let Err(why) = material.density_with(values)
-        {
-            out.push((
-                entry.feature,
-                format!("material `{}`: {why}", material.name),
-            ));
-        }
+    regen: &Regen,
+    (with_off, values): (bool, Option<&Values>),
+    feature: FeatureId,
+) -> Decided {
+    if !with_off && off(regen, feature) {
+        return None;
     }
-    out
+    let given = doc.body_properties(feature)?.appearance.as_ref()?;
+    Some(match given.color {
+        BodyColor::Fixed(_) => given.resolve(None).ok(),
+        BodyColor::Exprs(_) => given.resolve(values.and_then(Values::get)).ok(),
+    })
+}
+
+/// What [`own_appearance`] needs of a memo.
+fn look<'v>(memo: &Memo<'v>) -> (bool, Option<&'v Values<'v>>) {
+    (memo.with_off, memo.values)
 }
 
 /// The colour given to a face of the body of `at` whose name there is the
@@ -244,12 +342,13 @@ pub(crate) fn property_errors(
 fn own_face_appearance(
     doc: &Document,
     regen: &Regen,
+    memo: &Memo,
     at: FeatureId,
     way: Option<(&[u64], &PersistentName)>,
     name: &PersistentName,
 ) -> Option<Appearance> {
     let entries = doc.face_properties(at);
-    if entries.is_empty() || off(regen, at) {
+    if entries.is_empty() || memo.skips(regen, at) {
         return None;
     }
     let direct = match way {
@@ -304,7 +403,24 @@ fn colour_by_names(
 /// The appearance of the body `feature` makes (see the module
 /// documentation); `None` for the default look.
 pub fn body_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
-    body_appearance_with(doc, regen, &mut Memo::default(), feature)
+    body_appearance_in(&Values::new(doc), regen, feature)
+}
+
+/// [`body_appearance`] with the document's variables found once for the
+/// command ([`Values`]).
+pub fn body_appearance_in(
+    values: &Values,
+    regen: &Regen,
+    feature: FeatureId,
+) -> Option<Appearance> {
+    let doc = values.doc;
+    match body_appearance_with(doc, regen, &mut Memo::first(values), feature) {
+        Some(decided) => decided,
+        None if any_off_entry(doc, regen) => {
+            body_appearance_with(doc, regen, &mut Memo::with_off(values), feature).flatten()
+        }
+        None => None,
+    }
 }
 
 fn body_appearance_with(
@@ -312,12 +428,13 @@ fn body_appearance_with(
     regen: &Regen,
     memo: &mut Memo,
     feature: FeatureId,
-) -> Option<Appearance> {
+) -> Decided {
     if let Some(&found) = memo.bodies.get(&feature) {
         return found;
     }
-    let found = along_instance_zero(doc, regen, memo, feature, |memo, at| {
-        own_appearance(doc, regen, memo, at)
+    let how = (memo.with_off, memo.values);
+    let found = along_instance_zero(doc, regen, memo, feature, |at| {
+        own_appearance(doc, regen, how, at)
     });
     memo.bodies.insert(feature, found);
     found
@@ -330,11 +447,24 @@ pub fn body_material(
     regen: &Regen,
     feature: FeatureId,
 ) -> Option<(FeatureId, Material)> {
-    along_instance_zero(doc, regen, &mut Memo::default(), feature, |_, at| {
-        if off(regen, at) {
-            return None;
+    let look = |with_off: bool| {
+        let mut memo = Memo {
+            with_off,
+            ..Memo::default()
+        };
+        along_instance_zero(doc, regen, &mut memo, feature, |at| {
+            if !with_off && off(regen, at) {
+                return None;
+            }
+            Some((at, doc.body_properties(at)?.material.clone()?))
+        })
+    };
+    look(false).or_else(|| {
+        if any_off_entry(doc, regen) {
+            look(true)
+        } else {
+            None
         }
-        Some((at, doc.body_properties(at)?.material.clone()?))
     })
 }
 
@@ -358,11 +488,11 @@ fn face_appearance(
     let mut current = name;
     for _ in 0..=doc.features.len().saturating_mul(2) {
         let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
-        if let Some(own) = own_face_appearance(doc, regen, at, here, current) {
+        if let Some(own) = own_face_appearance(doc, regen, memo, at, here, current) {
             return Some(own);
         }
-        if let Some(own) = own_appearance(doc, regen, memo, at) {
-            return Some(own);
+        if let Some(own) = own_appearance(doc, regen, look(memo), at) {
+            return own;
         }
         if way.is_none() {
             if current.role == NameRole::Copy
@@ -373,21 +503,21 @@ fn face_appearance(
             } else {
                 // Made here (or named in a way that does not say): the
                 // body's colour.
-                return body_appearance_with(doc, regen, memo, at);
+                return body_appearance_with(doc, regen, memo, at).flatten();
             }
         }
         let Some((path, of)) = way.take() else {
-            return body_appearance_with(doc, regen, memo, at);
+            return body_appearance_with(doc, regen, memo, at).flatten();
         };
         let Some((&first, rest)) = path.split_first() else {
-            return body_appearance_with(doc, regen, memo, at);
+            return body_appearance_with(doc, regen, memo, at).flatten();
         };
         if !keeps_material(doc, regen, memo, at, first) {
             // Cut by a tool: the face bounds this body's material.
-            return body_appearance_with(doc, regen, memo, at);
+            return body_appearance_with(doc, regen, memo, at).flatten();
         }
         let Some(next) = source_of(doc, regen, memo, at, first) else {
-            return body_appearance_with(doc, regen, memo, at);
+            return body_appearance_with(doc, regen, memo, at).flatten();
         };
         at = next;
         if path == [0] && next != of.feature {
@@ -404,7 +534,7 @@ fn face_appearance(
             current = of;
         }
     }
-    body_appearance_with(doc, regen, memo, feature)
+    body_appearance_with(doc, regen, memo, feature).flatten()
 }
 
 /// The appearance of every face of the body of `feature`, in the order of
@@ -415,21 +545,59 @@ pub fn face_appearances(
     feature: FeatureId,
     faces: usize,
 ) -> Vec<Option<Appearance>> {
+    face_appearances_in(&Values::new(doc), regen, feature, faces)
+}
+
+/// [`face_appearances`] with the document's variables found once for the
+/// command ([`Values`]).
+pub fn face_appearances_in(
+    values: &Values,
+    regen: &Regen,
+    feature: FeatureId,
+    faces: usize,
+) -> Vec<Option<Appearance>> {
+    let doc = values.doc;
     if doc.bodies.is_empty() && doc.faces.is_empty() {
         return vec![None; faces];
     }
-    let mut memo = Memo::default();
-    let body = body_appearance_with(doc, regen, &mut memo, feature);
+    let mut first = Memo::first(values);
+    // A colour of the body's own way that does not evaluate decides it:
+    // no second look fills its faces in from a feature that is off.
+    let broken = matches!(
+        body_appearance_with(doc, regen, &mut first, feature),
+        Some(None)
+    );
+    let mut found = face_appearances_with(doc, regen, &mut first, feature, faces);
+    // The faces nothing that is on gives a colour: the second look.
+    if !broken && found.iter().any(Option::is_none) && any_off_entry(doc, regen) {
+        let again = face_appearances_with(doc, regen, &mut Memo::with_off(values), feature, faces);
+        for (face, second) in found.iter_mut().zip(again) {
+            if face.is_none() {
+                *face = second;
+            }
+        }
+    }
+    found
+}
+
+fn face_appearances_with(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    faces: usize,
+) -> Vec<Option<Appearance>> {
+    let body = body_appearance_with(doc, regen, memo, feature).flatten();
     let all = regen
         .feature(feature)
         .and_then(|result| result.names.as_deref());
     let names = all.map(|names| names.faces.as_slice()).unwrap_or_default();
-    let has_entries = !doc.face_properties(feature).is_empty() && !off(regen, feature);
+    let has_entries = !doc.face_properties(feature).is_empty() && !memo.skips(regen, feature);
     // A face whose name does not say it came in through an instance of
     // this feature has the body's colour, as the walk would find at its
     // first step (and when the feature has an appearance of its own,
     // every face has that: the body's).
-    let walks = own_appearance(doc, regen, &mut memo, feature).is_none();
+    let walks = own_appearance(doc, regen, look(memo), feature).is_none();
     (0..faces)
         .map(|face| match names.get(face) {
             Some(name) => {
@@ -441,7 +609,7 @@ pub fn face_appearances(
                 if own.is_some() {
                     own
                 } else if walks && name.role == NameRole::Copy && name.feature == feature {
-                    face_appearance(doc, regen, &mut memo, feature, name).or(body)
+                    face_appearance(doc, regen, memo, feature, name).or(body)
                 } else {
                     body
                 }
@@ -460,13 +628,13 @@ pub(crate) fn finish(appearance: &craft3d_doc::Appearance) -> craft3d_render::Fi
 /// picture's mesh start at `first_face_id`, their colours in `colors`.
 pub(crate) fn color_faces(
     colors: &mut craft3d_render::FaceColors,
-    doc: &Document,
+    values: &Values,
     regen: &Regen,
     feature: FeatureId,
     first_face_id: u32,
     faces: usize,
 ) {
-    for (face, appearance) in face_appearances(doc, regen, feature, faces)
+    for (face, appearance) in face_appearances_in(values, regen, feature, faces)
         .into_iter()
         .enumerate()
     {
@@ -490,7 +658,12 @@ pub struct LostFace {
 
 /// The face colours of the document whose faces are gone (see
 /// [`LostFace`]). One of a feature that did not build (failed,
-/// suppressed, rolled back) is not lost: it waits for the body.
+/// suppressed, rolled back) is not lost: it waits for the body. Nor is
+/// one whose face is absent because a feature that is off would make it
+/// (`craft3d_regen::absent_name`: the tool's face of a subtraction that
+/// is inactive, an instance of a pattern that is suppressed): it waits
+/// for that feature to be switched on, as the rule for what is off says
+/// (docs/design/regeneration.md › *Switched off*).
 pub fn lost_faces(doc: &Document, regen: &Regen) -> Vec<LostFace> {
     let mut lost = Vec::new();
     let mut at = 0;
@@ -506,7 +679,9 @@ pub fn lost_faces(doc: &Document, regen: &Regen) -> Vec<LostFace> {
             continue;
         };
         for entry in entries {
-            if craft3d_regen::faces_named(names, &entry.face).is_empty() {
+            if craft3d_regen::faces_named(names, &entry.face).is_empty()
+                && craft3d_regen::absent_name(doc, &regen.features, &entry.face).is_none()
+            {
                 lost.push(LostFace {
                     feature,
                     face: entry.face.clone(),

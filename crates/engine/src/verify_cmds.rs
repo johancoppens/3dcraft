@@ -567,7 +567,7 @@ fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Out
                         let mut entry = Map::new();
                         crate::appearance_cmds::physical_fields(
                             &mut entry,
-                            ctx.doc,
+                            &crate::appearance::Values::new(ctx.doc),
                             ctx.regen,
                             (id, &body),
                             unit,

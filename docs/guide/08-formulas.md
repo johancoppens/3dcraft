@@ -130,8 +130,17 @@ Off, by hand or by its condition, a feature behaves as if it were not in the his
   not. A thicken left with no faces makes no body, and a shell opened only on such faces passes its
   body on unchanged (it is never sealed shut). `document.inspect` lists what a feature left out under
   `leftOut`, with the reason, and so does its tooltip in the feature list;
-- what it was given does not apply: its colour (`body.appearance`, `face.appearance`) and material
-  (`body.material`) wait until it is on again, and the body it passes on keeps the colour it had;
+- what it was given follows the body it passes on, where that body has none of its own: a material
+  (`body.material`), colour (`body.appearance`) or face colour (`face.appearance`) set on a pattern of
+  spacers still weighs and colours the one spacer it passes on when it is off, so set them on the last
+  feature of a part. A colour or material the passed-on body has already (given to it or to what it is
+  made from, by a feature that is on) wins: a red part moved by a transform that is off and given blue
+  stays red. Colours are filled in face by face: a face that has a colour without the feature that is
+  off (its body's, or one of its own) keeps it, and only the faces that have none take that feature's
+  face colour or body colour, so a plain spacer with one green face, passed on by a pattern given blue,
+  is blue with its green face. `document.inspect` marks a material that comes from a feature that is off
+  with `"off": true`. A face colour on a face that is gone while the feature is off (the second instance of a
+  pattern, the wall a cut would make) colours nothing and waits; it never stops a picture or an export;
 - a sketch on a face only the switched-off feature makes, an extrusion up to (`upTo`) such a face, or a
   datum on such a face, edge or vertex, fails, naming the feature that is off. Give it the same condition, so they come and go together.
 

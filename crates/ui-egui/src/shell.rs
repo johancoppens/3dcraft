@@ -1609,7 +1609,7 @@ impl Shell {
         };
         self.resolve_section(session, &scene);
         self.sync_selection(session, &scene);
-        if let Some(first) = scene.problems.first() {
+        if let Some(first) = scene.problems.first().or(scene.notices.first()) {
             self.problem = Some(first.clone());
         }
         if self

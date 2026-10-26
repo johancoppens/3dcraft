@@ -4,8 +4,10 @@
 //! face or an edge of what is off is nothing to a fillet, a chamfer or a
 //! face operation: the others are changed, and with none left the feature
 //! passes on the body it would have changed; a union whose target is off
-//! passes its tool on; the appearance and the material of a feature that
-//! is off do not apply. Every command is followed by a regeneration from
+//! passes its tool on; the appearance, the material and the face colours
+//! of a feature that is off apply to the body it passes on only where
+//! that body has none of its own (decided by the developer on
+//! 2026-10-26). Every command is followed by a regeneration from
 //! nothing (`checked`), and the range is proven with `document.sample`,
 //! which regenerates every point fresh.
 
@@ -18,7 +20,9 @@
 
 mod common;
 
-use common::checked::{built, feature, inspect, new_document, run, session};
+use common::checked::{
+    assert_close, built, feature, inspect, new_document, run, session, session_in, workdir,
+};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 
@@ -482,12 +486,16 @@ fn a_boolean_whose_target_is_inactive() {
     }
 }
 
-/// Item 23: the colour and the material of an inactive feature do not
-/// apply to the body it passes on, which has those it had before it (a
-/// transform chain, the second transform inactive); switched on, they
-/// apply again. A face colour given in its body is ignored the same way.
+/// Item 23 and the developer's decision of 2026-10-26: the colour and the
+/// material of an inactive feature apply to the body it passes on only
+/// where that body has none of its own (a transform chain, the second
+/// transform inactive). The part's own red wins over the inactive
+/// transform's blue; the part has no material, so the transform's steel
+/// weighs it; given a material of its own, the part's wins. Switched on,
+/// the transform's apply again. A face colour given in its body gives way
+/// to the part's red the same way.
 #[test]
-fn an_inactive_feature_gives_no_colour_and_no_material() {
+fn an_inactive_feature_gives_its_colour_and_material_only_where_its_source_has_none() {
     let mut s = session();
     new_document(&mut s, 1.0);
     built(
@@ -529,6 +537,7 @@ fn an_inactive_feature_gives_no_colour_and_no_material() {
     let on = holder(&mut s);
     assert_eq!(on["appearance"]["color"], "#2f6fd6", "{on}");
     assert_eq!(on["material"]["name"], "Steel", "{on}");
+    assert!(on["material"].get("off").is_none(), "{on}");
 
     run(
         &mut s,
@@ -538,7 +547,12 @@ fn an_inactive_feature_gives_no_colour_and_no_material() {
     let off = holder(&mut s);
     assert_eq!(off["name"], "Turned", "{off}");
     assert_eq!(off["appearance"]["color"], "#c8102e", "{off}");
-    assert!(off.get("material").is_none(), "{off}");
+    // Expectation changed on 2026-10-26 (the developer's decision, R1
+    // item 74): the part has no material, so the inactive transform's
+    // steel follows the body it passes on (it had none before).
+    assert_eq!(off["material"]["name"], "Steel", "{off}");
+    assert_eq!(off["material"]["off"], true, "{off}");
+    assert_close(&off["mass"], 7850.0 * 4000.0 * 1e-9, "mass");
     // The face colour given in its body: kept, and not shown.
     let face = run(
         &mut s,
@@ -546,6 +560,15 @@ fn an_inactive_feature_gives_no_colour_and_no_material() {
         json!({"faces": ["F3:copy(0)/F1:face(1)"], "body": "Turned", "color": "#00ff00"}),
     );
     assert_eq!(face["faces"][0]["shown"]["color"], "#c8102e", "{face}");
+
+    // The part's own material wins over the inactive transform's.
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Part", "name": "Aluminium", "density": 2700}),
+    );
+    assert_eq!(holder(&mut s)["material"]["name"], "Aluminium");
+    run(&mut s, "edit.undo", json!({}));
 
     run(
         &mut s,
@@ -555,5 +578,349 @@ fn an_inactive_feature_gives_no_colour_and_no_material() {
     assert_eq!(holder(&mut s), on);
     // Suppressed: the same.
     run(&mut s, "feature.suppress", json!({"feature": "Turned"}));
-    assert_eq!(holder(&mut s)["appearance"]["color"], "#c8102e");
+    let suppressed = holder(&mut s);
+    assert_eq!(suppressed["appearance"]["color"], "#c8102e");
+    assert_eq!(suppressed["material"]["name"], "Steel");
+}
+
+/// The colours of the body of `feature` in the scene the pictures draw,
+/// face by face as `(name, colour)`.
+fn scene_colours(s: &mut Session, feature: &str) -> Vec<(String, Option<[u8; 3]>)> {
+    let scene = s.scene(None).unwrap().unwrap();
+    let body = scene.bodies.iter().find(|b| b.name == feature).unwrap();
+    body.face_names
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let id = body.first_face_id + u32::try_from(k).unwrap();
+            (name.clone(), scene.face_colors.get(id))
+        })
+        .collect()
+}
+
+const BLUE: [u8; 3] = [0x2f, 0x6f, 0xd6];
+const GREEN: [u8; 3] = [0x14, 0xa0, 0x3c];
+
+/// The CubeSat's spacers (R1 item 74, the developer's decision of
+/// 2026-10-26): a material, a colour and a face colour given to a pattern
+/// that is switched off follow the body it passes on, its source, which
+/// has none of its own: the mass, the centre of mass, the scene, 3MF and
+/// OBJ all have them, and nothing is said to be lost (the second
+/// instance's face colour waits for the pattern). Given a material of its
+/// own, the source's wins while the pattern is off.
+#[test]
+fn a_switched_off_pattern_passes_its_material_and_colours_on() {
+    let dir = workdir("inactive-rule", "pattern-looks");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "on", "expr": "1"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Spacer"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Spacer", "count": 3, "step": [20, 0, 0], "name": "Spacers",
+               "when": "on"}),
+    );
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Spacers", "name": "PLA", "density": 1250}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Spacers", "color": BLUE}),
+    );
+    let tops = ["F2:copy(0)/F1:face(1)", "F2:copy(1)/F1:face(1)"];
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": tops, "body": "Spacers", "color": GREEN}),
+    );
+    // The mass and the centre of mass, held by assertions that read the
+    // switch (1.25 g a spacer; centred at x = 25 mm, or 5 mm alone).
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "mass", "measure": "mass", "of": "Spacers",
+               "eq": "0.00125 * (1 + 2 * on)"}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "centre", "measure": "centerOfMass", "of": "Spacers", "axis": "x",
+               "eq": "5 mm + 20 mm * on"}),
+    );
+    for on in [1_u8, 0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "on", "expr": on.to_string()}),
+        );
+        let context = format!("on = {on}");
+        let spacers = inspect(&mut s)["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "Spacers")
+            .unwrap()
+            .clone();
+        assert_eq!(spacers["material"]["name"], "PLA", "{context}: {spacers}");
+        assert_close(&spacers["mass"], 0.00125 * f64::from(1 + 2 * on), "mass");
+        let check = run(&mut s, "document.check", json!({}));
+        assert_eq!(check["ok"], true, "{context}: {check}");
+        assert!(check.get("warnings").is_none(), "{context}: {check}");
+        assert!(
+            inspect(&mut s).get("lostFaces").is_none(),
+            "{context}: a face colour waiting for the pattern is not lost"
+        );
+        // The scene: the tops of the instances named are green, the rest
+        // blue.
+        let faces = scene_colours(&mut s, "Spacers");
+        let green: Vec<&str> = faces
+            .iter()
+            .filter(|(_, c)| *c == Some(GREEN))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        if on == 1 {
+            assert_eq!(green, tops, "{context}: {faces:?}");
+        } else {
+            assert_eq!(green, [tops[0]], "{context}: {faces:?}");
+        }
+        assert!(
+            faces
+                .iter()
+                .all(|(_, c)| *c == Some(GREEN) || *c == Some(BLUE)),
+            "{context}: {faces:?}"
+        );
+        // A picture, a 3MF and an OBJ file with the same colours.
+        run(
+            &mut s,
+            "view.render",
+            json!({"path": format!("spacers-{on}.png"), "width": 64, "height": 48}),
+        );
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": format!("spacers-{on}.3mf")}),
+        );
+        let objects = craft3d_testkit::readers::read_3mf_colors(
+            &std::fs::read(dir.join(format!("spacers-{on}.3mf"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(objects.len(), 1, "{context}");
+        let colours: std::collections::BTreeSet<Option<[u8; 3]>> =
+            objects[0].colors.iter().copied().collect();
+        assert_eq!(
+            colours,
+            [Some(BLUE), Some(GREEN)].into_iter().collect(),
+            "{context}"
+        );
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": format!("spacers-{on}.obj")}),
+        );
+        let library = craft3d_testkit::readers::read_mtl(
+            &std::fs::read_to_string(dir.join(format!("spacers-{on}.mtl"))).unwrap(),
+        )
+        .unwrap();
+        let diffuse: std::collections::BTreeSet<[u8; 3]> = library
+            .values()
+            .filter_map(|m| m.diffuse)
+            .map(|d| d.map(|x| (x * 255.0).round() as u8))
+            .collect();
+        assert_eq!(diffuse, [BLUE, GREEN].into_iter().collect(), "{context}");
+    }
+    // The spacer's own material wins while the pattern is off: what is
+    // passed on is the spacer, made of what it is made of.
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Spacer", "name": "Aluminium", "density": 2700}),
+    );
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], false, "the mass is the aluminium's: {check}");
+    let spacers = inspect(&mut s)["bodies"][0].clone();
+    assert_eq!(spacers["material"]["name"], "Aluminium", "{spacers}");
+    assert_close(&spacers["mass"], 0.0027, "mass");
+    // Switched on, the pattern's material is the nearest again.
+    run(&mut s, "variable.set", json!({"name": "on", "expr": "1"}));
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Two features that are off one after the other, neither source with a
+/// colour: the nearest to the body as it comes out gives it (the one whose
+/// name it is listed under); one that is on goes first.
+#[test]
+fn of_several_switched_off_the_nearest_gives_the_colour() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "name": "Part"}),
+    );
+    for (name, source, colour) in [("Moved", "Part", "#14a03c"), ("Turned", "Moved", "#2f6fd6")] {
+        built(
+            &mut s,
+            "feature.transform",
+            json!({"source": source, "translate": [5, 0, 0], "name": name}),
+        );
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": name, "color": colour}),
+        );
+    }
+    let colour = |s: &mut Session| inspect(s)["bodies"][0]["appearance"]["color"].clone();
+    assert_eq!(colour(&mut s), "#2f6fd6");
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Turned", "expr": "0"}),
+    );
+    assert_eq!(colour(&mut s), "#14a03c", "Moved is on: its green");
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Moved", "expr": "0"}),
+    );
+    assert_eq!(colour(&mut s), "#2f6fd6", "both off: the nearest, Turned");
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Turned", "expr": null}),
+    );
+    assert_eq!(colour(&mut s), "#2f6fd6", "Turned on: its own");
+}
+
+/// R1 item 57 (the sundial): a face colour on the tool's face of a
+/// subtraction that its condition switches off colours nothing while it
+/// is off, is not lost (it waits for the cut), and pictures and exports
+/// are made.
+#[test]
+fn a_face_colour_of_a_cut_switched_off_breaks_no_picture() {
+    let dir = workdir("inactive-rule", "sundial");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "on", "expr": "1"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 40, 10], "name": "Plate"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5, "height": 20, "position": [20, 20, 5], "name": "Tool",
+               "when": "on"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Tool", "name": "Cut",
+               "when": "on"}),
+    );
+    let wall = "Cut:copy(1)/Tool:face(0)";
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": [wall], "body": "Cut", "color": "#7A5638"}),
+    );
+    let brown = [0x7a, 0x56, 0x38];
+    for on in [1_u8, 0, 1] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "on", "expr": on.to_string()}),
+        );
+        let context = format!("on = {on}");
+        run(
+            &mut s,
+            "view.render",
+            json!({"path": format!("sundial-{on}.png"), "width": 200, "height": 150}),
+        );
+        let scene = s.scene(None).unwrap().unwrap();
+        assert!(scene.problems.is_empty(), "{context}: {:?}", scene.problems);
+        assert!(scene.notices.is_empty(), "{context}: {:?}", scene.notices);
+        let browns = scene_colours(&mut s, "Cut")
+            .into_iter()
+            .filter(|(_, c)| *c == Some(brown))
+            .count();
+        assert_eq!(browns, usize::from(on == 1), "{context}");
+        assert!(inspect(&mut s).get("lostFaces").is_none(), "{context}");
+        let check = run(&mut s, "document.check", json!({}));
+        assert_eq!(check["ok"], true, "{context}: {check}");
+        assert!(check.get("warnings").is_none(), "{context}: {check}");
+        run(&mut s, "file.export", json!({"path": "sundial.3mf"}));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A mass assertion follows a material that changes with a feature's
+/// switch alone: a fillet whose edges are all on a boss that is off
+/// passes on its source's very body, on or off, so switching the fillet
+/// changes no body, only whose material counts (its own while it is on,
+/// the source's while it is off). The assertion is measured again, never
+/// taken from before the switch.
+#[test]
+fn a_mass_assertion_follows_a_material_switched_with_no_body_changed() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "boss", "expr": "0"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 10], "name": "Base"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [5, 5, 5], "position": [5, 5, 10], "name": "Boss", "when": "boss"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Base", "tool": "Boss", "name": "Joined"}),
+    );
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [["F2:face(0)", "F2:face(2)"]], "radius": 1, "name": "Rounded"}),
+    );
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Base", "name": "Light", "density": 1000}),
+    );
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Rounded", "name": "Heavy", "density": 2000}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "m", "measure": "mass", "of": "Rounded", "min": 0}),
+    );
+    let measured = |s: &mut Session| {
+        run(s, "assert.list", json!({"details": true}))["assertions"][0]["measured"].clone()
+    };
+    for (when, mass) in [(None, 0.008), (Some("0"), 0.004), (None, 0.008)] {
+        run(
+            &mut s,
+            "feature.when",
+            json!({"feature": "Rounded", "expr": when}),
+        );
+        assert_close(&measured(&mut s), mass, "mass");
+        let body = inspect(&mut s)["bodies"][0].clone();
+        assert_close(&body["mass"], mass, "inspect's mass");
+    }
 }

@@ -494,6 +494,10 @@ pub struct Scene {
     pub features: Vec<SceneFeature>,
     /// Bodies that could not be tessellated, as sentences.
     pub problems: Vec<String>,
+    /// What the window says without the picture being wrong, as
+    /// sentences: a face colour whose face is gone (it colours nothing).
+    /// A picture is drawn all the same (`view.render`).
+    pub notices: Vec<String>,
     /// The box around the meshes and the sketch geometry.
     pub bbox: Bbox3,
     /// The box around the bodies from their B-rep, whatever the tolerance:
@@ -1389,6 +1393,7 @@ fn build(
         datums: Vec::new(),
         features: Vec::new(),
         problems: Vec::new(),
+        notices: Vec::new(),
         bbox: Bbox3::EMPTY,
         bodies_box: bodies_box(doc, regen),
     };
@@ -1409,6 +1414,7 @@ fn build(
     // in the scene's mesh so far.
     let mut next_face_id: u32 = 0;
     let steps = doc.features.len();
+    let values = crate::appearance::Values::new(doc);
     for (index, feature) in doc.features.iter().enumerate() {
         let outcome = regen.feature(feature.id);
         let (state, error) = match outcome.map(|o| &o.status) {
@@ -1582,7 +1588,7 @@ fn build(
         let facts = meshes.facts(body, outcome.and_then(|o| o.names.as_ref()));
         crate::appearance::color_faces(
             Arc::make_mut(&mut scene.face_colors),
-            doc,
+            &values,
             regen,
             feature.id,
             first_face_id,
@@ -1625,12 +1631,13 @@ fn build(
     scene.bbox = bbox;
     scene.datums = scene_datums(doc, regen, &bbox);
     // A face colour whose face an edit took away colours nothing (never
-    // another face); said here so the window shows it.
+    // another face); said here so the window shows it. It is no problem
+    // of the picture, which is drawn without it.
     for lost in crate::appearance::lost_faces(doc, regen) {
         let made = doc
             .feature(lost.feature)
             .map_or_else(|| lost.feature.to_string(), |f| f.name.clone());
-        scene.problems.push(format!(
+        scene.notices.push(format!(
             "the colour of face {} of `{made}` colours nothing: the face is gone (undo brings it back; face.appearance with clear takes the colour away)",
             lost.face
         ));

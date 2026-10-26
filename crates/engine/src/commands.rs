@@ -93,7 +93,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
-        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, a boolean with that body as its tool passes its target on, a union with it as its target passes its tool on, and a subtraction or intersection with it as its target passes nothing on and still takes its tool (passesNothing says why there is no body). A fillet, chamfer or face operation leaves out the faces and edges that are not there (of a body that is not made, or that only the suppressed feature makes) and, with none left, passes on the body it would have changed. The appearance and material given to the suppressed feature do not apply to the body it passes on. A sketch, datum or extrusion up to a face only the suppressed feature makes fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
+        "Switches a feature off (or back on) without deleting it. The features after it go on as if it were not there: one that changes a body (a boolean, fillet, chamfer, face operation, shell, thread, pattern, or a transform or mirror without keep) passes that body on unchanged, so what is made from it is made from the body as it was before (document.inspect says passesOn); one that makes a body of its own passes nothing on, a boolean with that body as its tool passes its target on, a union with it as its target passes its tool on, and a subtraction or intersection with it as its target passes nothing on and still takes its tool (passesNothing says why there is no body). A fillet, chamfer or face operation leaves out the faces and edges that are not there (of a body that is not made, or that only the suppressed feature makes) and, with none left, passes on the body it would have changed. The appearance, material and face colours given to the suppressed feature apply to the body it passes on only where that body has none of its own (the source's own wins). A sketch, datum or extrusion up to a face only the suppressed feature makes fails naming it. feature.when switches a feature by a condition instead. The result lists the features that fail under failed.", doc: true, feature_suppress),
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
         "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
@@ -103,7 +103,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
         "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light"}"#,
@@ -960,6 +960,7 @@ fn meshes(
 ) -> Result<Vec<BodyMesh>, CommandError> {
     let regen = open.regen();
     let doc = open.history.current();
+    let values = crate::appearance::Values::new(doc);
     let mut out = Vec::new();
     for (id, body) in regen.bodies() {
         if only.is_some_and(|only| !only.contains(&id)) {
@@ -982,8 +983,8 @@ fn meshes(
         out.push(BodyMesh {
             name,
             mesh,
-            appearance: crate::appearance::body_appearance(doc, &regen, id),
-            faces: crate::appearance::face_appearances(doc, &regen, id, body.faces.len()),
+            appearance: crate::appearance::body_appearance_in(&values, &regen, id),
+            faces: crate::appearance::face_appearances_in(&values, &regen, id, body.faces.len()),
         });
     }
     if out.is_empty() {
@@ -2795,6 +2796,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         chordal_tolerance: automatic_tolerance(&regen),
         ..TessParams::default()
     });
+    let values = crate::appearance::Values::new(doc);
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -2921,7 +2923,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             if let Some(map) = entry.as_object_mut() {
                 crate::appearance_cmds::physical_fields(
                     map,
-                    doc,
+                    &values,
                     &regen,
                     (feature.id, body),
                     unit,
@@ -3069,6 +3071,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
+    let values = crate::appearance::Values::new(doc);
     let unit = length_unit(doc);
     let mut bodies = Vec::new();
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
@@ -3119,7 +3122,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
                 map.insert("volumeBound".into(), bound.volume.into());
                 map.insert("areaBound".into(), bound.area.into());
             }
-            crate::appearance_cmds::physical_fields(map, doc, &regen, (id, body), unit, true);
+            crate::appearance_cmds::physical_fields(map, &values, &regen, (id, body), unit, true);
             total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
                 (Some(sum), Some(m)) => Some(sum + m),
                 _ => None,
@@ -3413,6 +3416,18 @@ pub(crate) fn check_document(
     // solver reports as holding) and sketches with freedom left.
     let mut sketch_warnings = Vec::new();
     crate::sketch_warnings::check_sketches(doc, &regen, only, &mut problems, &mut sketch_warnings);
+    // A face colour whose face is gone colours nothing: a warning, never a
+    // problem (the bodies are what they are; R1 item 57).
+    if only.is_none() {
+        for lost in crate::appearance_cmds::lost_faces_json(doc, &regen) {
+            sketch_warnings.push(json!({
+                "kind": "lostFace",
+                "feature": lost.get("feature"),
+                "face": lost.get("face"),
+                "warning": lost.get("notice"),
+            }));
+        }
+    }
     // Broken assertions are problems of the design, like failed
     // features (only when the whole document is checked); those that are
     // not proven either way are warnings.
