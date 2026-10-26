@@ -20,6 +20,7 @@ pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
 pub mod helix;
+pub mod hydro;
 pub mod loft;
 mod loose_op;
 pub mod lumps;
