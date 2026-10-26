@@ -1,0 +1,41 @@
+{
+  "format_version": 38,
+  "written_by": "4ca5061800b45c008d95d474e9acce11cb1e495a",
+  "how": "the engine of that commit (on the Strix, by a temporary test, crates/engine/tests/zz_write_fixture_v38.rs, that ran v38.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v38.3dcraft and printed it), then document.inspect and param.list of the file opened again",
+  "bodies": [
+    {
+      "appearance": null,
+      "area": 9999.999999999338,
+      "edges": 12,
+      "faces": 4,
+      "feature": "F2",
+      "kind": "sheet",
+      "mass": null,
+      "material": null,
+      "vertices": 9,
+      "volume": 0.0
+    }
+  ],
+  "features": [
+    {
+      "id": "F1",
+      "name": "Vertex",
+      "status": "ok"
+    },
+    {
+      "id": "F2",
+      "name": "Twist",
+      "status": "ok"
+    }
+  ],
+  "info": {
+    "author": "",
+    "description": "",
+    "licence": "",
+    "tags": [],
+    "title": "",
+    "url": ""
+  },
+  "parameters": [],
+  "rollback": null
+}
