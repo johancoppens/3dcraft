@@ -139,7 +139,9 @@ Any design whose sizes are variables can become a Jig. You design it as an ordin
    `document.sample`): it builds the design at the defaults, at the corners of the ranges, at every choice
    and at random points, checks each, and lists every combination that fails with the values to
    reproduce it ([chapter 13](13-command-line.md#check-a-jig-over-its-range)). Fix the model or narrow the
-   range until it passes.
+   range until it passes. An assertion that could be neither proven nor disproven at a point is counted
+   apart (*with unproven assertions*); `--strict` treats it as a failure. With many parameters, give
+   `--max-corners 8` for a quick run.
 6. **Publish it**: **File › Export as Jig…** (the command `jig.export`) writes the `.3dcraftjig`, with a
    picture of the model. That is the file you hand out; keep the `.3dcraft` to go on designing.
 

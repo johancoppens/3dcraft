@@ -95,6 +95,7 @@ pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
     set_build_commit,
 };
+pub use sample_cmds::with_point_sink;
 pub use scene::{
     AUTOMATIC_RELATIVE_TOLERANCE, DATUM_AXIS_EXTENT, DATUM_PLANE_EXTENT, DEFAULT_SCENE_BUDGET,
     DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
@@ -341,6 +342,8 @@ pub struct Session {
     trees_held_for: Vec<(u64, Option<u64>)>,
     /// [`Session::set_body_budget`], for documents opened later.
     body_budget: Option<usize>,
+    /// [`Session::set_lean_sampling`].
+    pub(crate) lean_sampling: bool,
     /// The files of a session without a file system (`memory_files.rs`).
     pub(crate) memory: memory_files::MemoryFiles,
     /// The last command that failed, for the bug report (`report.rs`).
@@ -369,6 +372,7 @@ impl Session {
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
             body_budget: None,
+            lean_sampling: false,
             memory: memory_files::MemoryFiles::default(),
             last_failure: None,
             host_details: Vec::new(),
@@ -490,6 +494,16 @@ impl Session {
         let open = self.documents.get_mut(self.active)?;
         let held = open.regen_needing(Need::All);
         Some(*held == craft3d_regen::regenerate(open.history.current()))
+    }
+
+    /// Whether `document.sample` lets go of what the kernel keeps per
+    /// process (intersections, projections, meshes of faces) after every
+    /// point, so that a long run holds one point's memory
+    /// (`craft3d-cli check-range` asks for it), rather than once at the end
+    /// of the run (the default: a window's run is short, and its open
+    /// document's answers stay warm meanwhile). No result changes.
+    pub fn set_lean_sampling(&mut self, lean: bool) {
+        self.lean_sampling = lean;
     }
 
     /// Sets, for every open document and those opened later, the most

@@ -450,6 +450,30 @@ fn shelf_put(key: String, result: &Result<SurfaceMeeting, GeomError>, units: u64
     );
 }
 
+/// Lets go of every intersection on the shelf (each is found again, the
+/// same, when asked for), and says how many there were.
+pub(super) fn forget_shelf() -> usize {
+    let mut guard = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let kept = guard.by_key.len();
+    *guard = Shelf {
+        by_key: BTreeMap::new(),
+        by_use: BTreeMap::new(),
+        clock: guard.clock,
+        points: 0,
+        bytes: 0,
+    };
+    kept
+}
+
+/// How many intersections the shelf holds.
+pub(super) fn shelf_len() -> usize {
+    SHELF
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .by_key
+        .len()
+}
+
 /// [`meet_surfaces`] without its closed forms: the numeric marcher on any
 /// pair. For tests that hold the marcher against the exact results.
 #[doc(hidden)]
