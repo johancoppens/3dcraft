@@ -41,6 +41,7 @@ mod offset_cmds;
 mod param_cmds;
 mod params;
 mod pick_cmds;
+mod plate_cmds;
 mod pool;
 mod query_cmds;
 mod recovery;
@@ -472,6 +473,7 @@ impl Session {
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
                 develop_cmds::SPECS,
+                plate_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
                 appearance_cmds::SPECS,

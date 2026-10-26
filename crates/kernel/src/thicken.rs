@@ -1,7 +1,8 @@
 //! Thicken: faces of a solid given a thickness, as a solid of their own.
 //!
-//! There are no sheet bodies to thicken yet (nothing in the history makes
-//! one), so what is thickened is a set of faces of a solid: the layer
+//! What is thickened is a set of faces of a solid (faces of a sheet, or
+//! faces that end on rims of their own with joints to other plates, are
+//! [`crate::plate`]'s): the layer
 //! between those faces and the same faces moved along their normals by
 //! the thickness, outside the solid (away from the material), inside it,
 //! or half on each side. At its rim the layer is bounded by the faces

@@ -822,6 +822,46 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 angle: expr_to_manifest(angle),
                 reversed: *reversed,
             },
+            doc::FeatureKind::Plate(doc::Plate {
+                faces,
+                thickness,
+                side,
+                joints,
+            }) => manifest::FeatureKind::Plate {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                thickness: expr_to_manifest(thickness),
+                side: plate_side_to_manifest(*side),
+                joints: joints
+                    .iter()
+                    .map(
+                        |doc::PlateJoint {
+                             edge,
+                             kind,
+                             with,
+                             thickness,
+                             side,
+                             angle,
+                             onto,
+                         }| manifest::PlateJoint {
+                            edge: name_to_manifest(edge),
+                            kind: match kind {
+                                doc::JointKind::Square => manifest::JointKind::Square,
+                                doc::JointKind::Bevel => manifest::JointKind::Bevel,
+                                doc::JointKind::Mitre => manifest::JointKind::Mitre,
+                                doc::JointKind::Touch => manifest::JointKind::Touch,
+                                doc::JointKind::Over => manifest::JointKind::Over,
+                                doc::JointKind::Under => manifest::JointKind::Under,
+                                doc::JointKind::Onto => manifest::JointKind::Onto,
+                            },
+                            with: with.as_ref().map(name_to_manifest),
+                            thickness: thickness.as_ref().map(expr_to_manifest),
+                            side: side.map(plate_side_to_manifest),
+                            angle: angle.as_ref().map(expr_to_manifest),
+                            onto: onto.as_ref().map(plane_ref_to_manifest),
+                        },
+                    )
+                    .collect(),
+            },
             doc::FeatureKind::Thicken(doc::Thicken {
                 faces,
                 thickness,
@@ -1154,6 +1194,7 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::Fillet => M::Fillet,
         D::FilletCorner => M::FilletCorner,
         D::Thread => M::Thread,
+        D::Rim => M::Rim,
     }
 }
 
@@ -1181,6 +1222,7 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::Fillet => D::Fillet,
         M::FilletCorner => D::FilletCorner,
         M::Thread => D::Thread,
+        M::Rim => D::Rim,
     }
 }
 
@@ -1207,6 +1249,22 @@ fn rail_to_doc(rail: manifest::Rail) -> doc::Rail {
         manifest::Rail::Edges(edges) => {
             doc::Rail::Edges(edges.into_iter().map(name_to_doc).collect())
         }
+    }
+}
+
+fn plate_side_to_manifest(side: doc::PlateSide) -> manifest::PlateSide {
+    match side {
+        doc::PlateSide::In => manifest::PlateSide::In,
+        doc::PlateSide::Out => manifest::PlateSide::Out,
+        doc::PlateSide::Mid => manifest::PlateSide::Mid,
+    }
+}
+
+fn plate_side_to_doc(side: manifest::PlateSide) -> doc::PlateSide {
+    match side {
+        manifest::PlateSide::In => doc::PlateSide::In,
+        manifest::PlateSide::Out => doc::PlateSide::Out,
+        manifest::PlateSide::Mid => doc::PlateSide::Mid,
     }
 }
 
@@ -2141,6 +2199,36 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 neutral: plane_ref_to_doc(neutral),
                 angle: doc::Expr(angle),
                 reversed,
+            }),
+            manifest::FeatureKind::Plate {
+                faces,
+                thickness,
+                side,
+                joints,
+            } => doc::FeatureKind::Plate(doc::Plate {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                thickness: doc::Expr(thickness),
+                side: plate_side_to_doc(side),
+                joints: joints
+                    .into_iter()
+                    .map(|j| doc::PlateJoint {
+                        edge: name_to_doc(j.edge),
+                        kind: match j.kind {
+                            manifest::JointKind::Square => doc::JointKind::Square,
+                            manifest::JointKind::Bevel => doc::JointKind::Bevel,
+                            manifest::JointKind::Mitre => doc::JointKind::Mitre,
+                            manifest::JointKind::Touch => doc::JointKind::Touch,
+                            manifest::JointKind::Over => doc::JointKind::Over,
+                            manifest::JointKind::Under => doc::JointKind::Under,
+                            manifest::JointKind::Onto => doc::JointKind::Onto,
+                        },
+                        with: j.with.map(name_to_doc),
+                        thickness: j.thickness.map(doc::Expr),
+                        side: j.side.map(plate_side_to_doc),
+                        angle: j.angle.map(doc::Expr),
+                        onto: j.onto.map(plane_ref_to_doc),
+                    })
+                    .collect(),
             }),
             manifest::FeatureKind::Thicken {
                 faces,

@@ -31,6 +31,7 @@ pub mod offset_face;
 mod offset_normal;
 pub mod offset_profile;
 pub mod origami;
+pub mod plate;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
@@ -335,6 +336,13 @@ pub enum KernelError {
     /// [`MAX_REPORTED`]), `largest` the largest distance of the same sign
     /// at which the offset still has every loop it had, when one was
     /// found.
+    /// A plate cannot be made of these faces with these joints
+    /// ([`plate`]): `edge` is the edge of the faces it is about, when
+    /// there is one.
+    Plate {
+        edge: Option<craft3d_topo::EdgeId>,
+        reason: String,
+    },
     OffsetProfile {
         reason: &'static str,
         curves: Vec<u64>,
@@ -665,7 +673,9 @@ impl fmt::Display for KernelError {
             KernelError::FaceOpBoolean { operation, error } => {
                 write!(f, "{operation}: {error}")
             }
-            KernelError::Loft { reason, .. } | KernelError::Sweep { reason, .. } => {
+            KernelError::Loft { reason, .. }
+            | KernelError::Sweep { reason, .. }
+            | KernelError::Plate { reason, .. } => {
                 write!(f, "{reason}")
             }
         }

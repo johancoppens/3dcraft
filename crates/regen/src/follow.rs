@@ -408,6 +408,141 @@ pub fn follow_face(
     face(doc, results, name, role)
 }
 
+/// The copies the taker `taker` made of the edge `name`: the instances
+/// `k` for which an edge of `names` answers to `taker:copy(k)/name`.
+fn edge_copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeSet<u64> {
+    let mut out = BTreeSet::new();
+    for edge in 0..names.edge_count() {
+        for own in names.edge_names_of(edge) {
+            if own.feature != taker || own.role != NameRole::Copy {
+                continue;
+            }
+            if let Some(&k) = own.sources.first()
+                && own == PersistentName::copy(taker, k, name.clone())
+            {
+                out.insert(k);
+            }
+        }
+    }
+    out
+}
+
+/// The name, in the newest body of its chain, of the edge `name` of an
+/// earlier body, followed as [`face`] follows a face: through every
+/// feature that took the body, by the copy that feature made of it.
+/// `None` when that body is its own still.
+pub(crate) fn edge(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Option<PersistentName>, String> {
+    let takers = chain(earlier, name.feature);
+    if takers.is_empty() || !name.is_edge() {
+        return Ok(None);
+    }
+    let start = called(doc, name.feature);
+    let made = earlier
+        .iter()
+        .find(|r| r.id == name.feature)
+        .and_then(|r| r.names.as_ref());
+    if let Some(names) = made
+        && names.edge_named(name).is_none()
+    {
+        return Err(format!(
+            "{role}: `{start}` has no edge {name}; document.edges lists its edges"
+        ));
+    }
+    let mut current = name.clone();
+    let mut from = start;
+    for _ in 0..earlier.len() {
+        let Some(taker) = earlier
+            .iter()
+            .find(|r| r.id == current.feature)
+            .and_then(|r| r.consumed_by)
+        else {
+            break;
+        };
+        let group = if crate::split::shared_by_splits(doc, current.feature, taker) {
+            crate::split::siblings(doc, earlier, current.feature)
+        } else {
+            vec![taker]
+        };
+        let by = called(doc, taker);
+        let kind = doc.feature(taker).map_or("feature", |f| f.kind.type_name());
+        let mut found: Vec<(FeatureId, u64)> = Vec::new();
+        for &member in &group {
+            let Some(names) = earlier
+                .iter()
+                .find(|r| r.id == member)
+                .and_then(|r| r.names.as_ref())
+            else {
+                return Err(format!(
+                    "{role}: the body of `{from}` went into `{by}`, a {kind} that does not name its edges, so {name} cannot be followed there"
+                ));
+            };
+            found.extend(
+                edge_copies(names, member, &current)
+                    .into_iter()
+                    .map(|k| (member, k)),
+            );
+        }
+        match found.as_slice() {
+            [] => {
+                return Err(format!(
+                    "{role}: the edge {name} is gone: the body of `{from}` went into `{by}`, a {kind}, which left no edge of it"
+                ));
+            }
+            [(member, k)] => {
+                from = called(doc, *member);
+                current = PersistentName::copy(*member, *k, current);
+            }
+            _ => {
+                let all: Vec<String> = found
+                    .iter()
+                    .map(|&(member, k)| {
+                        PersistentName::copy(member, k, current.clone()).to_string()
+                    })
+                    .collect();
+                return Err(format!(
+                    "{role}: the edge {name} is more than one edge after `{by}`, a {kind} the body of `{from}` went into: {}; give one of these names",
+                    all.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(Some(current))
+}
+
+/// A plate's faces, the edges of its joints and their neighbours' faces,
+/// each followed to the newest body of its chain.
+fn plate(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    made: &mut craft3d_doc::Plate,
+) -> Result<bool, String> {
+    let mut changed = faces(doc, earlier, &mut made.faces, "faces")?;
+    for (i, joint) in made.joints.iter_mut().enumerate() {
+        if let Some(followed) = edge(doc, earlier, &joint.edge, &format!("joints.{i}.edge"))? {
+            joint.edge = followed;
+            changed = true;
+        }
+        if let Some(with) = &mut joint.with
+            && let Some(followed) = face(doc, earlier, with, &format!("joints.{i}.with"))?
+        {
+            *with = followed;
+            changed = true;
+        }
+        if let Some(craft3d_doc::PlaneRef::Face { face: end }) = &mut joint.onto
+            && let Some(followed) = face(doc, earlier, end, &format!("joints.{i}.onto"))?
+        {
+            *end = followed;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 /// Follows every name in `list`, each as `{param}.{i}`; `true` when one
 /// changed.
 fn faces(
@@ -475,6 +610,21 @@ fn prune(doc: &Document, earlier: &[FeatureResult], kind: &mut FeatureKind) -> b
         FeatureKind::MoveFace(moving) => faces(&mut moving.faces),
         FeatureKind::Thicken(layer) => faces(&mut layer.faces),
         FeatureKind::Unfold(pattern) => faces(&mut pattern.faces),
+        FeatureKind::Plate(made) => {
+            let before = made.joints.len();
+            // A joint whose edge or neighbour is absent is no joint: the
+            // edge ends square.
+            made.joints.retain(|j| {
+                there(&j.edge)
+                    && j.with.as_ref().is_none_or(there)
+                    && j.onto.as_ref().is_none_or(|o| match o {
+                        craft3d_doc::PlaneRef::Face { face } => there(face),
+                        _ => true,
+                    })
+            });
+            let joints = made.joints.len() != before;
+            faces(&mut made.faces) || joints
+        }
         FeatureKind::Draft(tilted) => faces(&mut tilted.faces),
         FeatureKind::DeleteFace(deletion) => faces(&mut deletion.faces),
         FeatureKind::Shell(shell) => faces(&mut shell.open),
@@ -502,6 +652,7 @@ pub(crate) fn feature(
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,
         FeatureKind::Unfold(pattern) => faces(doc, earlier, &mut pattern.faces, "faces")?,
+        FeatureKind::Plate(made) => plate(doc, earlier, made)?,
         FeatureKind::Draft(tilted) => {
             let mut changed = faces(doc, earlier, &mut tilted.faces, "faces")?;
             if let craft3d_doc::PlaneRef::Face { face: name } = &mut tilted.neutral

@@ -136,7 +136,8 @@ fn role(kind: &FeatureKind) -> &'static str {
         | FeatureKind::MoveFace(_)
         | FeatureKind::Draft(_)
         | FeatureKind::DeleteFace(_)
-        | FeatureKind::Thicken(_) => "faces",
+        | FeatureKind::Thicken(_)
+        | FeatureKind::Plate(_) => "faces",
         _ => "source",
     }
 }
@@ -164,7 +165,7 @@ pub(crate) fn switched_off(
         // A copy beside its source, a layer beside its body: new bodies.
         FeatureKind::Transform(t) if t.keep => Some(Through::nothing(why.to_string())),
         FeatureKind::Mirror(m) if m.keep => Some(Through::nothing(why.to_string())),
-        FeatureKind::Thicken(_) => Some(Through::nothing(why.to_string())),
+        FeatureKind::Thicken(_) | FeatureKind::Plate(_) => Some(Through::nothing(why.to_string())),
         _ => Some(match nothing_left(doc, earlier, feature) {
             Some(absent) => pass_stand_in(doc, feature, earlier, absent),
             None => match kind.source() {
@@ -226,7 +227,9 @@ pub(crate) fn operand_absent(
             Some(pass_stand_in(doc, feature, earlier, why))
         }
         // A layer on no faces is no body.
-        FeatureKind::Thicken(_) => nothing_left(doc, earlier, feature).map(Through::nothing),
+        FeatureKind::Thicken(_) | FeatureKind::Plate(_) => {
+            nothing_left(doc, earlier, feature).map(Through::nothing)
+        }
         FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::Pattern(_) => {
             let (source, _) = feature.kind.source()?;
             absent(earlier, source).map(Through::nothing)
@@ -384,6 +387,7 @@ pub(crate) fn nothing_left(
             | FeatureKind::MoveFace(_)
             | FeatureKind::DeleteFace(_)
             | FeatureKind::Thicken(_)
+            | FeatureKind::Plate(_)
             | FeatureKind::Draft(_)
             | FeatureKind::Shell(_)
             | FeatureKind::Thread(_)
@@ -430,6 +434,7 @@ pub(crate) fn nothing_left(
         (FeatureKind::Thicken(built), FeatureKind::Thicken(given)) => {
             faces(&built.faces, &given.faces)
         }
+        (FeatureKind::Plate(built), FeatureKind::Plate(given)) => faces(&built.faces, &given.faces),
         (FeatureKind::Draft(built), FeatureKind::Draft(given)) => faces(&built.faces, &given.faces)
             .or_else(|| match &built.neutral {
                 // Tilted about a face that is not there: nothing to do.
@@ -470,6 +475,7 @@ pub(crate) fn stand_in(
         FeatureKind::MoveFace(m) => m.faces.first(),
         FeatureKind::DeleteFace(d) => d.faces.first(),
         FeatureKind::Thicken(t) => t.faces.first(),
+        FeatureKind::Plate(p) => p.faces.first(),
         FeatureKind::Draft(d) => d.faces.first(),
         FeatureKind::Thread(t) => Some(&t.face),
         _ => None,
@@ -593,6 +599,7 @@ pub fn left_out(doc: &Document, results: &[FeatureResult], id: FeatureId) -> Vec
         FeatureKind::MoveFace(m) => faces(&m.faces, &mut out),
         FeatureKind::DeleteFace(d) => faces(&d.faces, &mut out),
         FeatureKind::Thicken(t) => faces(&t.faces, &mut out),
+        FeatureKind::Plate(p) => faces(&p.faces, &mut out),
         FeatureKind::Shell(s) => faces(&s.open, &mut out),
         FeatureKind::Draft(d) => {
             faces(&d.faces, &mut out);

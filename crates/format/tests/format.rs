@@ -1381,6 +1381,13 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
             face: if role == NameRole::Piece {
                 // The fourth face that the name after it would name.
                 PersistentName::piece(3, face.clone())
+            } else if role == NameRole::Rim {
+                // A plate's rim along an edge of the face.
+                PersistentName::rim(
+                    FeatureId(6),
+                    &PersistentName::new(FeatureId(6), NameRole::Edge, vec![3]),
+                    face.clone(),
+                )
             } else if role.is_derived() {
                 PersistentName::copy(FeatureId(6), 3, face.clone())
             } else if role.is_numbered() {
@@ -3447,6 +3454,67 @@ fn thicken_is_written_like_this_and_round_trips() {
     assert!(from_manifest_json(bad.as_bytes()).is_err());
 }
 
+/// A plate with its joints, and a rim's name, as they are written.
+#[test]
+fn a_plate_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{JointKind, NameRole, PersistentName, Plate, PlateJoint, PlateSide};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let edge = |n: u64| PersistentName::new(FeatureId(1), NameRole::Edge, vec![n]);
+    let mut doc = small();
+    doc.add_feature(
+        Some("Panel"),
+        FeatureKind::Plate(Plate {
+            faces: vec![face(1)],
+            thickness: Expr::new("width / 20"),
+            side: PlateSide::Mid,
+            joints: vec![
+                PlateJoint {
+                    edge: edge(4),
+                    kind: JointKind::Mitre,
+                    with: Some(face(2)),
+                    thickness: Some(Expr::new("3 mm")),
+                    side: Some(PlateSide::Out),
+                    angle: None,
+                    onto: None,
+                },
+                PlateJoint {
+                    edge: edge(5),
+                    kind: JointKind::Bevel,
+                    with: None,
+                    thickness: None,
+                    side: None,
+                    angle: Some(Expr::new("10 deg")),
+                    onto: None,
+                },
+            ],
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let kind = &value["document"]["features"][1]["kind"];
+    assert_eq!(kind["type"], "plate", "{kind}");
+    assert_eq!(kind["side"], "mid");
+    assert_eq!(kind["joints"][0]["kind"], "mitre");
+    assert_eq!(kind["joints"][0]["side"], "out");
+    assert_eq!(kind["joints"][1]["angle"], "10 deg");
+    assert!(kind["joints"][1].get("with").is_none(), "{kind}");
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A rim's name reads back as itself and is a face.
+    let rim = PersistentName::rim(FeatureId(2), &edge(4), face(1));
+    let text = rim.to_string();
+    assert!(
+        text.starts_with("F2:rim(") && text.ends_with(")/F1:face(1)"),
+        "{text}"
+    );
+    let back: PersistentName = text.parse().unwrap();
+    assert_eq!(back, rim);
+    assert!(back.is_face());
+    assert_ne!(rim, PersistentName::rim(FeatureId(2), &edge(5), face(1)));
+}
+
 /// Version 16: draft, as it is written.
 #[test]
 fn draft_is_written_like_this_and_round_trips() {
@@ -4146,11 +4214,13 @@ fn a_fold_is_written_like_this_and_round_trips() {
                     line: EntityId(6),
                     kind: CreaseKind::Mountain,
                     angle: None,
+                    onto: None,
                 },
                 Crease {
                     line: EntityId(9),
                     kind: CreaseKind::Cut,
                     angle: None,
+                    onto: None,
                 },
             ],
             fixed: Some([Expr::new("1 mm"), Expr::new("2 mm")]),

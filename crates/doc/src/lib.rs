@@ -932,6 +932,113 @@ impl Thicken {
     }
 }
 
+/// Where the material of a [`Plate`] lies against its faces, along their
+/// outward normal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlateSide {
+    /// Behind the faces (levels −t..0): the faces are the plate's outside.
+    #[default]
+    In,
+    /// In front of them (levels 0..t): the faces are its inside.
+    Out,
+    /// Half on each side.
+    Mid,
+}
+
+/// How a plate ends along an edge of its faces (docs/design/plates.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JointKind {
+    /// Along the faces' normal.
+    Square,
+    /// Turned from the normal by `angle` about the edge.
+    Bevel,
+    /// On the surface between where the two plates' outer skins meet and
+    /// where their inner ones meet.
+    Mitre,
+    /// Square, through where the skins facing each other's material
+    /// meet: the inner edges touch.
+    Touch,
+    /// Covering the neighbour's edge, flush with its far skin.
+    Over,
+    /// Covered by the neighbour, resting on its near skin.
+    Under,
+    /// Ending on a surface (`onto`): a datum plane, a world plane or a
+    /// face by its name (a stem, a transom).
+    Onto,
+}
+
+impl JointKind {
+    /// True for the kinds that join with a neighbouring plate.
+    pub fn has_neighbour(self) -> bool {
+        matches!(
+            self,
+            JointKind::Mitre | JointKind::Touch | JointKind::Over | JointKind::Under
+        )
+    }
+}
+
+/// The joint of a plate along one edge of its faces. `with` is a face of
+/// the neighbouring sheet whose boundary the edge runs along, `thickness`
+/// and `side` that plate's (the plate's own when not given); `angle` is a
+/// bevel's; `onto` the surface an `onto` end lies on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateJoint {
+    pub edge: PersistentName,
+    pub kind: JointKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<PersistentName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<PlateSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onto: Option<PlaneRef>,
+}
+
+/// Most joints one plate lists.
+pub const MAX_PLATE_JOINTS: usize = 1024;
+
+/// A solid of its own: faces of the body of an earlier feature (a sheet,
+/// developable or any) given `thickness` to `side` of them, ending along
+/// each edge as its joint says (square where none is listed). The faces'
+/// body stays (docs/design/plates.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Plate {
+    pub faces: Vec<PersistentName>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub side: PlateSide,
+    #[serde(default)]
+    pub joints: Vec<PlateJoint>,
+}
+
+impl Plate {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+
+    /// The features of the neighbouring sheets and of the surfaces ends
+    /// lie on, in order, each once.
+    pub fn neighbours(&self) -> Vec<FeatureId> {
+        let mut out: Vec<FeatureId> = Vec::new();
+        for joint in &self.joints {
+            let onto = joint.onto.iter().flat_map(PlaneRef::inputs);
+            for id in joint.with.iter().map(|w| w.feature).chain(onto) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Faces of the body of an earlier feature taken out, and the body closed
 /// again where they were by the faces round them: a hole, a boss or a
 /// pocket filled from the faces it was cut into or stood on, a chamfer or
@@ -1042,6 +1149,7 @@ pub enum FeatureKind {
     OffsetFace(OffsetFace),
     MoveFace(MoveFace),
     Thicken(Thicken),
+    Plate(Plate),
     Draft(Draft),
     Shell(Shell),
     DeleteFace(DeleteFace),
@@ -1082,6 +1190,7 @@ impl FeatureKind {
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::MoveFace(_) => "moveFace",
             FeatureKind::Thicken(_) => "thicken",
+            FeatureKind::Plate(_) => "plate",
             FeatureKind::Draft(_) => "draft",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
@@ -1152,6 +1261,8 @@ impl FeatureKind {
             FeatureKind::MoveFace(m) => m.source().map(|id| (id, false)),
             // The body stays: the layer is a body of its own.
             FeatureKind::Thicken(t) => t.source().map(|id| (id, true)),
+            // The sheet stays: the plate is a body of its own.
+            FeatureKind::Plate(p) => p.source().map(|id| (id, true)),
             FeatureKind::Draft(d) => d.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
@@ -1227,6 +1338,15 @@ impl FeatureKind {
             }
             FeatureKind::Mirror(m) => std::iter::once(m.source).chain(m.plane).collect(),
             FeatureKind::Draft(d) => d.source().into_iter().chain(d.neutral.inputs()).collect(),
+            FeatureKind::Plate(p) => {
+                let mut out: Vec<FeatureId> = p.source().into_iter().collect();
+                for id in p.neighbours() {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+                out
+            }
             other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
     }
@@ -1321,6 +1441,17 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
+            FeatureKind::Plate(p) => {
+                out = vec![named("thickness", &p.thickness)];
+                for (i, joint) in p.joints.iter().enumerate() {
+                    if let Some(t) = &joint.thickness {
+                        out.push((format!("joints.{i}.thickness"), t));
+                    }
+                    if let Some(a) = &joint.angle {
+                        out.push((format!("joints.{i}.angle"), a));
+                    }
+                }
+            }
             FeatureKind::Draft(d) => out = vec![named("angle", &d.angle)],
             FeatureKind::MoveFace(m) => {
                 out = triple("translate", &m.translate);
@@ -1451,6 +1582,14 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Thicken(t) => vec![&mut t.thickness],
+            FeatureKind::Plate(p) => {
+                let mut out = vec![&mut p.thickness];
+                for joint in &mut p.joints {
+                    out.extend(joint.thickness.as_mut());
+                    out.extend(joint.angle.as_mut());
+                }
+                out
+            }
             FeatureKind::Draft(d) => vec![&mut d.angle],
             FeatureKind::MoveFace(m) => m
                 .translate
@@ -1842,6 +1981,28 @@ impl Document {
                         )));
                     }
                     u.faces.iter().collect()
+                }
+                FeatureKind::Plate(p) => {
+                    if p.faces.len() > MAX_FACE_OP_FACES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FACE_OP_FACES} faces",
+                            feature.name
+                        )));
+                    }
+                    if p.joints.len() > MAX_PLATE_JOINTS {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_PLATE_JOINTS} joints",
+                            feature.name
+                        )));
+                    }
+                    p.faces
+                        .iter()
+                        .chain(p.joints.iter().flat_map(|j| {
+                            std::iter::once(&j.edge)
+                                .chain(&j.with)
+                                .chain(j.onto.iter().flat_map(PlaneRef::names))
+                        }))
+                        .collect()
                 }
                 FeatureKind::Draft(draft) => {
                     if draft.faces.len() > MAX_FACE_OP_FACES {

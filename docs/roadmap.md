@@ -502,8 +502,10 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - Developable surfaces and unfolding (the sheets block, reopened 2026-10-26): `feature.developable` between two curves (sketch chains or edges; rulings on the coplanarity condition, fans at the ends), `feature.unfold` (developable faces laid flat as one piece, isometric, with `unfold.map` between pattern and part), `measure.developability` and the assertion measures `curvature` and `developable`; format 39 ([`design/developable.md`](design/developable.md)) (2026-10-26)
 
 - What lies on one side of a plane, for any closed bodies (`measure.below`, `measure.section`, `measure.levelFor`; assertion measures `volumeBelow`, `centroidBelow`, `sectionArea`, `sectionCentroid`, `sectionInertia`, `levelFor`): cut off by the boolean and integrated exactly, the section's moments by Green's theorem, the level for a volume by Newton's method ([`design/sections-and-levels.md`](design/sections-and-levels.md)) (2026-10-26)
+- Plates and edge joints: `feature.plate` gives faces (a sheet, developable or any) a thickness in, out or in the middle, with square, bevel, mitre, touch and over/under joints to neighbouring plates that meet them without gap or overlap ([`design/plates.md`](design/plates.md)) (2026-10-26)
 
 #### Open
+- [ ] Sheet metal (flanges, bends with inner radius and K-factor, the flat pattern with bend allowance, corner reliefs, manufacturability measures) on `feature.fold` and `feature.unfold` ([`design/plates.md`](design/plates.md) › *Sheet metal*)
 - [ ] A level with a tilt (the offset and the plane's turn for a given volume and centroid) is a Jig's loop over `measure.levelFor`, one plane per call
 - [ ] Origami: curved creases and curved outlines, thickness, slits, a sparse solve for more than 400 angles ([`design/origami.md`](design/origami.md) › *Limits*)
 - [ ] Developables: rails that close on themselves (a tube) or have a corner, a connection split where the rulings would cross, an approximate flatten of a doubly curved face, marks drawn on a pattern carried onto the part as geometry ([`design/developable.md`](design/developable.md) › *Open*)

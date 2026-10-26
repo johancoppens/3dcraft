@@ -40,6 +40,7 @@ mod move_face;
 mod offset_face;
 mod offset_profile;
 mod pass;
+mod plate;
 pub mod progress;
 mod query;
 mod revolve;
@@ -1227,6 +1228,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::OffsetFace(_)
         | FeatureKind::MoveFace(_)
         | FeatureKind::Thicken(_)
+        | FeatureKind::Plate(_)
         | FeatureKind::Draft(_)
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
@@ -1801,6 +1803,19 @@ fn build_feature(
                 names = made_names.map(Arc::new);
                 // Instance 0 lies on or along the faces of the source,
                 // 1 under them; neither moves as a whole.
+                instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Plate(made) = &feature.kind {
+        match plate::build(doc, variables, feature.id, made, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // Instance 0 is the front skin, 1 the back; neither moves
+                // as a whole.
                 instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
                 (Status::Ok, Some(Arc::new(body)))
             }

@@ -1176,6 +1176,7 @@ fn walk_copy(
         | FeatureKind::MoveFace(_)
         | FeatureKind::Draft(_)
         | FeatureKind::Thicken(_)
+        | FeatureKind::Plate(_)
         | FeatureKind::Shell(_) => {
             let index = names.and_then(|names| {
                 (0..names.faces.len())
@@ -1194,9 +1195,10 @@ fn walk_copy(
                     // behind.
                     // So do the faces a layer has from under the faces
                     // it thickens.
-                    let hollow =
-                        matches!(source.kind, FeatureKind::Shell(_) | FeatureKind::Thicken(_))
-                            && instance == 1;
+                    let hollow = matches!(
+                        source.kind,
+                        FeatureKind::Shell(_) | FeatureKind::Thicken(_) | FeatureKind::Plate(_)
+                    ) && instance == 1;
                     // A moved or drafted face may also have turned.
                     let turns = matches!(
                         source.kind,

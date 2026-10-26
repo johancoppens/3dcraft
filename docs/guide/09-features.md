@@ -132,6 +132,43 @@ on the panel, and the other way round.
 - A developable is refused, with where, when its rulings would cross (an inflection of a curve, a curve
   that winds about the other), when the curves lie in one plane over a stretch only, when they meet
   between their ends, and for closed curves and curves with a corner (not supported yet).
+## Plates and joints
+
+`feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a
+**plate**, a solid of its own beside the sheet. `side` says where the material goes along the faces'
+normal: `in` behind them (the faces are the plate's outside, as when a hull is drawn as its outside), `out`
+in front, `mid` half each way. Along each edge of its outline a plate ends square unless `joints` says
+otherwise: `bevel` (turned by `angle`), or, with the neighbouring plate's sheet (`with`, a face of it whose
+edge the plate's edge runs along), `mitre` (both end on one surface, the bisector for equal thicknesses),
+`touch` (square ends whose inner edges just touch, as stitch-and-glue panels), and `over` with `under`
+(one plate covers the other's edge: a deck resting on the side panel). Give both plates the matching
+joint and they meet face to face, with no gap and no overlap. A floor and a wall in an L, mitred:
+
+```json
+[
+ ["variable.set", {"name": "t", "expr": "4 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "FloorSketch"}],
+ ["sketch.rect", {"sketch": "FloorSketch", "from": [0, 0], "to": [300, 150]}],
+ ["feature.fill", {"sketch": "FloorSketch", "name": "FloorSheet"}],
+ ["sketch.create", {"plane": "yz", "name": "WallSketch"}],
+ ["sketch.rect", {"sketch": "WallSketch", "from": [0, 0], "to": [150, 200]}],
+ ["feature.fill", {"sketch": "WallSketch", "name": "WallSheet"}],
+ ["feature.plate", {"faces": ["FloorSheet:startCap()"], "thickness": "t", "side": "out", "name": "Floor",
+   "joints": [{"edge": "FloorSheet:startEdge(e8)", "kind": "mitre", "with": "WallSheet:startCap()"}]}],
+ ["feature.plate", {"faces": ["WallSheet:startCap()"], "thickness": "t", "side": "out", "name": "Wall",
+   "joints": [{"edge": "WallSheet:startEdge(e5)", "kind": "mitre", "with": "FloorSheet:startCap()"}]}],
+ ["document.interference", {"pairs": [["Floor", "Wall"]]}]
+]
+```
+
+`document.edges` lists the edges of a sheet to give a joint (here the floor's edge along x = 0 and the
+wall's along z = 0); `document.interference` says the two plates touch on the mitre face and do not
+overlap. The plate's faces are named `F9:copy(0)/…` (the front skin, the side the normal points to),
+`F9:copy(1)/…` (the back) and `F9:rim(…)/…` (the end along an edge of the sheet). To cut a plate from
+sheet stock, lay one of its skins flat; the outline follows the joints. Refused, with the
+edge: faces that meet at a crease (plate them apart and join them), plates in line with each other (no
+corner to join at), an edge that does not run along the neighbour's outline, a plate so thick that its
+ends run into each other.
 
 ## Several bodies
 

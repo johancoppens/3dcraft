@@ -100,6 +100,7 @@ pub(crate) fn of_one_body(
         FeatureKind::DeleteFace(d) => ("faces", "deletion", d.faces.iter().collect()),
         FeatureKind::MoveFace(m) => ("faces", "move", m.faces.iter().collect()),
         FeatureKind::Thicken(t) => ("faces", "layer", t.faces.iter().collect()),
+        FeatureKind::Plate(p) => ("faces", "plate", p.faces.iter().collect()),
         FeatureKind::Draft(d) => ("faces", "draft", d.faces.iter().collect()),
         FeatureKind::Shell(s) => ("open", "shell", s.open.iter().collect()),
         _ => return Ok(()),

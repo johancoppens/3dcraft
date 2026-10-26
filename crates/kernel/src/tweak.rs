@@ -189,7 +189,7 @@ const SHALLOW: f64 = 0.05;
 const MEET_STEPS: usize = 64;
 
 /// The point nearest `start` where `surfaces` meet, within `tol` of each.
-fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
+pub(crate) fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
     meet_near(surfaces, start, tol, &mut vec![None; surfaces.len()])
 }
 

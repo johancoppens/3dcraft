@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 122 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 123 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -55,6 +55,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.fill`, `feature.thicken` | Sheets, and a layer on faces |
 | `feature.fold`, `fold.edit`, `fold.inspect`, `fold.check` | Origami: a crease pattern folded rigidly, its solved angles, Kawasaki and Maekawa ([chapter 16](16-origami.md)) |
 | `feature.developable`, `feature.unfold`, `unfold.map`, `measure.developability` | Developable sheets between two curves, flat patterns ([chapter 9](09-features.md#developable-surfaces-and-unfolding)) |
+| `feature.plate` | A plate of a sheet, with joints to its neighbours |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |

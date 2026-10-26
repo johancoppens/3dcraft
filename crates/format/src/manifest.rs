@@ -581,6 +581,15 @@ pub enum FeatureKind {
         thickness: String,
         side: ThickenSide,
     },
+    /// Faces of an earlier body given `thickness` to `side` of them, a
+    /// solid of its own, with a joint per listed edge (docs/design/plates.md).
+    Plate {
+        faces: Vec<Name>,
+        thickness: String,
+        side: PlateSide,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        joints: Vec<PlateJoint>,
+    },
     /// Faces of the body of an earlier feature tilted by `angle` about
     /// the plane `neutral`, the pull along its normal (into the body for
     /// a face), the other way when `reversed` (written only when set).
@@ -731,6 +740,45 @@ pub enum ThickenSide {
     Outside,
     Inside,
     Both,
+}
+
+/// Where a plate's material lies against its faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlateSide {
+    In,
+    Out,
+    Mid,
+}
+
+/// How a plate ends along an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JointKind {
+    Square,
+    Bevel,
+    Mitre,
+    Touch,
+    Over,
+    Under,
+    Onto,
+}
+
+/// The joint of a plate along one edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlateJoint {
+    pub edge: Name,
+    pub kind: JointKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<Name>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<PlateSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onto: Option<PlaneRef>,
 }
 
 /// The size of a thread: a designation of ISO 261 (`"M10"`), or the
@@ -1012,6 +1060,10 @@ pub enum NameRole {
     /// A face of the groove of a thread; `sources` is one plain number:
     /// 0 the root, 1 and 2 the flanks (format version 13).
     Thread,
+    /// The face a plate ends on along an edge of its sheet; `sources` is
+    /// one plain number (the hash of the edge's name), followed by the
+    /// sheet's face.
+    Rim,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

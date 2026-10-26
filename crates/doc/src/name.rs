@@ -761,10 +761,19 @@ pub enum NameRole {
     /// groove are one per half turn, numbered as pieces
     /// (`F9:piece(3)/F9:thread(1)`).
     Thread,
+    /// The face a plate ends on along one boundary edge of the faces it
+    /// is made of: `F9:rim(h)/F5:face(0)`, after the face of the sheet the
+    /// edge bounds. Its one source is a plain number that stands for the
+    /// sheet's edge: the hash of that edge's name
+    /// ([`PersistentName::rim`]), so it names the same rim as long as the
+    /// edge keeps its name, and a face's name never lists faces (the name
+    /// of an edge may: `between[…]`). It is a face because the name after
+    /// `/` is one.
+    Rim,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 20] = [
+    pub const ALL: [NameRole; 21] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -785,6 +794,7 @@ impl NameRole {
         NameRole::Fillet,
         NameRole::FilletCorner,
         NameRole::Thread,
+        NameRole::Rim,
     ];
 
     pub fn name(self) -> &'static str {
@@ -809,6 +819,7 @@ impl NameRole {
             NameRole::Fillet => "fillet",
             NameRole::FilletCorner => "filletCorner",
             NameRole::Thread => "thread",
+            NameRole::Rim => "rim",
         }
     }
 
@@ -864,7 +875,7 @@ impl NameRole {
     /// True for a role whose name continues after `/` with the name of the
     /// entity it was made from.
     pub fn is_derived(self) -> bool {
-        matches!(self, NameRole::Copy | NameRole::Piece)
+        matches!(self, NameRole::Copy | NameRole::Piece | NameRole::Rim)
     }
 
     /// True for a role whose sources are plain numbers, one or more,
@@ -887,7 +898,12 @@ impl NameRole {
     pub fn is_numbered(self) -> bool {
         matches!(
             self,
-            NameRole::Piece | NameRole::Face | NameRole::Edge | NameRole::Vertex | NameRole::Thread
+            NameRole::Piece
+                | NameRole::Face
+                | NameRole::Edge
+                | NameRole::Vertex
+                | NameRole::Thread
+                | NameRole::Rim
         )
     }
 }
@@ -1058,6 +1074,24 @@ impl PersistentName {
         }
         // There is always at least one link; the fallback is never used.
         built.unwrap_or_else(|| Self::new(FeatureId(0), NameRole::Side, Vec::new()))
+    }
+
+    /// The rim of `feature` along the edge called `edge` of the face called
+    /// `face` (see [`NameRole::Rim`]): `F9:rim(h)/F5:face(0)` with `h` the
+    /// FNV-1a hash of the edge's name as written, in 48 bits.
+    pub fn rim(feature: FeatureId, edge: &PersistentName, face: PersistentName) -> Self {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in edge.to_string().bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self {
+            feature,
+            role: NameRole::Rim,
+            sources: vec![hash & 0xffff_ffff_ffff],
+            of: Some(Arc::new(face)),
+            by: None,
+        }
     }
 
     /// Entity number `piece` of those `of` would name in its own feature
