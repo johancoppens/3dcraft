@@ -487,7 +487,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 15] = [
+pub(crate) const MEASURES: [&str; 20] = [
     "volume",
     "area",
     "mass",
@@ -502,7 +502,12 @@ pub(crate) const MEASURES: [&str; 15] = [
     "through",
     "overlap",
     "symmetric",
-    "hydrostatic",
+    "volumeBelow",
+    "centroidBelow",
+    "sectionArea",
+    "sectionCentroid",
+    "sectionInertia",
+    "levelFor",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -518,7 +523,8 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "through" => through(ctx, p),
         "overlap" => overlap(ctx, p),
         "symmetric" => symmetric(ctx, p),
-        "hydrostatic" => crate::hydro_cmds::measure(ctx, p),
+        "volumeBelow" | "centroidBelow" | "sectionArea" | "sectionCentroid" | "sectionInertia"
+        | "levelFor" => crate::below_cmds::measure(ctx, name, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),

@@ -74,7 +74,7 @@ The full description of any command, with every value it takes and what it refus
 | `document.inspect` | The whole state (`doc_inspect` over MCP) |
 | `document.check` | Every problem in one list |
 | `document.measure`, `document.edges`, `document.interference` | Volumes and areas, edges, clashes |
-| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.hydrostatics` | Questions to the geometry ([chapter 10](10-measure.md)) |
+| `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor` | Questions to the geometry ([chapter 10](10-measure.md)) |
 | `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document |
 | `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([chapter 11](11-selection.md)) |
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |

@@ -19,7 +19,7 @@ after every change.
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
-| `measure.hydrostatics {"of"}` | How bodies float: waterline, displaced volume, centre of buoyancy, waterplane, KB, BM, KM, GM, GZ ([below](#hydrostatics)) |
+| `measure.below`, `measure.section`, `measure.levelFor` | The volume below a plane, a section's area and second moments, the level for a volume ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
 `select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
@@ -29,53 +29,52 @@ What is searched for (a thickness, a distance) comes with what is **proven**: `a
 is below, beside the value found at a real place. On the flange of [chapter 3](03-agent.md#a-full-session): `"thickness": 6.0,
 "atLeast": 5.75`.
 
-## Hydrostatics
+## Below a plane, sections and levels
 
-`measure.hydrostatics` floats any closed bodies (a hull, a buoy, a pontoon, a bottle) in water and
-answers on the exact geometry: the part below the water is cut off by the kernel and integrated, and the
-waterplane's area and second moments come from the curves in which the water cuts the bodies. By default
-the water is sea water (1025 kg/m³), its surface square to z, and the bodies weigh what their materials
-make them; the kernel finds the waterline where they displace their weight.
+Three questions about a plane through closed bodies, answered on the exact geometry (the part below
+the plane is cut off by the kernel and integrated; the section's moments come from the curves in which
+the plane cuts the bodies). The plane is the points p with p · `normal` = `offset` (default the xy plane,
+normal z); *below* is the side the normal points away from.
 
-```json
-[
- ["feature.block", {"size": [4000, 1300, 1000], "position": [-2000, -650, 0], "name": "Barge"}],
- ["body.material", {"body": "Barge", "name": "Spruce", "density": 500}],
- ["measure.hydrostatics", {"of": "Barge", "density": "1 g/cm3"}],
- ["measure.hydrostatics", {"of": "Barge", "density": "1 g/cm3", "heel": "10 deg"}]
-]
-```
-
-The first answers `draft` 500 (mm: half under, as the barge is half as dense as the water), `KB` 250,
-`BM` 281.7 (B²/12T), `KG` 500 and `GM` 31.7; the second, heeled 10°, `GZ` 6.26, the righting arm (the wall-sided sin φ (GM + ½ BM tan² φ)).
-
-- **What it returns:** `volume` (∇), `displacement` (ρ∇ in kg), `mass`, `level` and `draft`,
-  `centerOfBuoyancy`, `waterplane` (`area`, `centroid`, `iTransverse`, `iLongitudinal`, `iProduct`),
-  `wettedArea`, `KB`, `BM`, `BMl`, `KM`, `KMl`, `KG`, `GM`, `GMl`, `GZ`, and `steps` (how many levels the
-  waterline took). Lengths in the document's unit, masses in kg, second moments in the unit to the fourth.
-- **The weight:** `mass` (kg: `"80"`, `"1.2 t"`, an expression) instead of the materials, `loads`
-  (`[{"mass": 80, "at": [0, 0, 250]}]`: a paddler, an engine) on top of either, and `centerOfGravity` or
-  `kg` (its height above the keel) for where it acts. Without any, GM and GZ are `null`, with `why`.
-- **The water:** `density` (kg/m³, `"1 g/cm3"`, a variable), `up` (default z), `along` (the length,
-  default x), `heel` (an angle about `along`; a plain number is degrees), or `level` to measure at a given
-  waterline instead of solving for one. `keel` is the height heights are measured from (default 0).
-- **Errors you can act on:** *the bodies sink* (the weight needs more water than they hold out), *nothing
-  to float* (no weight), *a sheet holds no water out* (close the hull), and *did not converge* after 64
-  steps.
-- **Limits:** the trim is held (the water turns about `along` only), and bodies that overlap are counted
-  once each.
-
-As an assertion, `hydrostatic` with the `quantity` to check and the same parameters keeps a stability
-requirement with the design, checked at every change:
+| Command | Answers |
+|---|---|
+| `measure.below {"of", "normal", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
+| `measure.section {"of", "normal", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis` |
+| `measure.levelFor {"of", "normal", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
 
 ```json
 [
- ["assert.add", {"name": "stable", "measure": "hydrostatic", "of": "Barge", "quantity": "GM", "density": 1000, "min": "20 mm"}],
- ["assert.add", {"name": "rights at 10 degrees", "measure": "hydrostatic", "of": "Barge", "quantity": "GZ", "heel": "10 deg", "density": 1000, "min": 0}]
+ ["feature.block", {"size": [4000, 1300, 1000], "position": [-2000, -650, 0], "name": "Tank"}],
+ ["measure.below", {"of": "Tank", "offset": "300 mm"}],
+ ["measure.levelFor", {"of": "Tank", "volume": "1.56 * (1 m)^3"}],
+ ["measure.section", {"of": "Tank", "normal": [1, 0, 0], "offset": 0}]
 ]
 ```
 
-How it is computed and what it is checked against: [`design/hydrostatics.md`](../design/hydrostatics.md).
+The first answers `volume` 1.56e9 (mm³), `centroid` [0, 0, 150]; the second, the fill level for 1.56 m³ of
+liquid, `offset` 300 (the kernel finds it by Newton's method, `steps` saying how many levels it measured);
+the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxis` z, `ix` = 1300 × 1000³/12
+(about the axis along y) and `iy` = 1000 × 1300³/12.
+
+- `offset` is a length, `volume` a volume, both expressions of the variables; `xAxis` sets the
+  section's x axis (square to the normal; by default the world axis most square to it).
+- Errors you can act on: *outside (0, total)* (no plane leaves that volume below), *a sheet has no
+  inside* (close it first), *did not converge* after 64 steps.
+- Bodies that overlap are counted once each.
+- Floating objects: a body of mass m in a liquid of density ρ settles where `levelFor` of m/ρ puts the
+  plane; a Jig computes its stability from the centroid and the section's moments (the worked example
+  is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
+
+As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
+`axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`) and `levelFor` (with
+`volume`), each with the same `of`, `normal`, `offset` and `xAxis`:
+
+```json
+[
+ ["assert.add", {"name": "stiff enough", "measure": "sectionInertia", "of": "Tank", "normal": [1, 0, 0], "about": "minor", "min": "1e11"}],
+ ["assert.add", {"name": "fill level", "measure": "levelFor", "of": "Tank", "volume": "1.56 * (1 m)^3", "max": "350 mm"}]
+]
+```
 
 ## Assertions
 
@@ -93,8 +92,8 @@ How it is computed and what it is checked against: [`design/hydrostatics.md`](..
 - Measures: `volume`, `area`, `mass`, `count`, `extent` (size along `axis`), `boxMin` and `boxMax`
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
-  `through`, `overlap` (whether bodies overlap), `symmetric`, `hydrostatic` (one quantity of
-  `measure.hydrostatics`, [above](#hydrostatics)).
+  `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
+  `sectionArea`, `sectionCentroid`, `sectionInertia`, `levelFor` ([above](#below-a-plane-sections-and-levels)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
   said). Bounds are expressions in the document's variables, so they follow the design: the case's

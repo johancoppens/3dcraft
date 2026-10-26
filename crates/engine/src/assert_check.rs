@@ -163,7 +163,7 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion) -> Key {
     // switching it changes the material and no body).
     if matches!(
         params.get("measure").and_then(Value::as_str),
-        Some("mass" | "centerOfMass" | "hydrostatic")
+        Some("mass" | "centerOfMass")
     ) {
         text.push('|');
         let off: std::collections::BTreeSet<craft3d_doc::FeatureId> = regen

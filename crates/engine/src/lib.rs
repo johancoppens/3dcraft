@@ -17,6 +17,7 @@ mod appearance_cmds;
 mod assert_check;
 mod assert_cmds;
 mod base64;
+mod below_cmds;
 mod blend_cmds;
 mod body_cmds;
 mod commands;
@@ -26,7 +27,6 @@ mod export_bodies;
 mod face_cmds;
 mod file_cmds;
 mod helix_cmds;
-mod hydro_cmds;
 mod import_cmds;
 mod interference_cmds;
 mod jig_cmds;
@@ -482,7 +482,7 @@ impl Session {
                 query_cmds::SPECS,
                 interference_cmds::SPECS,
                 verify_cmds::SPECS,
-                hydro_cmds::SPECS,
+                below_cmds::SPECS,
                 assert_cmds::SPECS,
                 pick_cmds::SPECS,
                 select_cmds::SPECS,

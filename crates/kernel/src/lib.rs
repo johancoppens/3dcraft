@@ -9,6 +9,7 @@
 //! chamfers ([`chamfer`]), fillets ([`fillet`]) and the face operations
 //! ([`offset_face`], [`shell`]).
 
+pub mod below;
 mod blend;
 pub mod boolean;
 mod boxtree;
@@ -20,7 +21,6 @@ pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
 pub mod helix;
-pub mod hydro;
 pub mod loft;
 mod loose_op;
 pub mod lumps;

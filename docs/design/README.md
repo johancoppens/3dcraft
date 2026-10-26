@@ -19,7 +19,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`engine.md`](engine.md) | Session, commands, undo, threads, scenes, recovery, automation |
 | [`selection.md`](selection.md) | the selection shared by the window and agents, picking through, and selecting by description (`select.query`) |
 | [`verification.md`](verification.md) | checking a design by questions: distance, clearance, wall thickness, ray, through, symmetry, assertions kept in the document, and the proof of a Jig over its parameter range (`document.sample`, `check-range`) |
-| [`hydrostatics.md`](hydrostatics.md) | floating any closed bodies: the part below a waterplane cut off and integrated exactly, the waterplane by Green's theorem, the waterline by Newton's method, BM, GM and GZ |
+| [`sections-and-levels.md`](sections-and-levels.md) | what lies on one side of a plane: the volume and centroid below it cut off and integrated exactly, a section's area and second moments by Green's theorem, the level for a volume by Newton's method |
 | [`step-import.md`](step-import.md) | STEP files read into bodies: typed reading, sewing on topology only, the import feature and its data, names, oracles |
 | [`files.md`](files.md) | `.3dcraft`, STEP, meshes, flat outlines (the formats themselves: [`../file-formats.md`](../file-formats.md)) |
 | [`plan.md`](plan.md) | the design plan of 2026-10-12 as written then: goals, principles, the CAD holes, workspace, layering, the workspace sketch, the revision history of `architecture.md` |
