@@ -805,7 +805,10 @@ where
         };
         let (na, nb) = (x.frame().z(), y.frame().z());
         let offset = (y.frame().origin() - x.frame().origin()).dot(na).abs();
-        if na.cross(nb).length() > SAME_AXIS || !(offset <= self.tol.min(0.25 * enough)) {
+        if na.cross(nb).length() > SAME_AXIS
+            || offset.is_nan()
+            || offset > self.tol.min(0.25 * enough)
+        {
             return false;
         }
         let out_of = |inner: &Prim<'_>, outer: &Prim<'_>, n: Vec3, o: Vec3| -> bool {
