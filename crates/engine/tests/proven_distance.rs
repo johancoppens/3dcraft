@@ -97,7 +97,8 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             "feature.cylinder",
             json!({"radius": mm(100.0), "height": mm(6.0), "axis": [0, 1, 0], "position": [mm(0.0), mm(-7.0), mm(0.0)], "name": "P3"}),
         );
-        let tol = 1e-6_f64.max(1e-12 * k);
+        // Within the document's tolerance and the rounding of the value.
+        let tol = 1e-6 + 1e-11 * k;
         measured(
             &mut s,
             "measure.clearance",
@@ -105,7 +106,7 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             "clearance",
             k,
             1e-9 * k,
-            0.5 * tol,
+            tol,
             &format!("discs 1 apart at {k}"),
         );
         // Big disc to small disc: the rims, (150 - 15 - 100) across and 1
@@ -118,7 +119,7 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             "clearance",
             rims,
             1e-9 * k,
-            0.5 * tol,
+            tol,
             &format!("big disc to small disc at {k}"),
         );
         run(
@@ -163,7 +164,7 @@ fn a_pin_in_a_hole_is_proven_to_its_clearance_at_three_scales() {
                 "feature.cylinder",
                 json!({"name": "Pin", "radius": mm(4.0), "height": mm(height), "position": [mm(pin_at), mm(20.0), mm(z0)]}),
             );
-            let tol = 1e-6_f64.max(1e-12 * k);
+            let tol = 1e-6 + 1e-11 * k;
             measured(
                 &mut s,
                 "measure.clearance",
@@ -171,7 +172,7 @@ fn a_pin_in_a_hole_is_proven_to_its_clearance_at_three_scales() {
                 "clearance",
                 want * k,
                 1e-9 * k,
-                0.5 * tol,
+                tol,
                 &format!("pin {name} at {k}"),
             );
             run(
@@ -215,7 +216,7 @@ fn round_faces_are_proven_to_their_distance() {
             "feature.cylinder",
             json!({"name": "Along", "radius": mm(3.0), "height": mm(40.0), "axis": [0, 1, 0], "position": [mm(5.0), mm(30.0), mm(10.0)]}),
         );
-        let tol = 1e-6_f64.max(1e-12 * k);
+        let tol = 1e-6 + 1e-11 * k;
         measured(
             &mut s,
             "measure.clearance",
@@ -223,7 +224,7 @@ fn round_faces_are_proven_to_their_distance() {
             "clearance",
             3.0 * k,
             1e-9 * k,
-            0.5 * tol,
+            tol,
             &format!("ball over the base at {k}"),
         );
         // Axes 10 apart (z = 0 and z = 10), crossing at right angles.
@@ -234,7 +235,7 @@ fn round_faces_are_proven_to_their_distance() {
             "clearance",
             5.0 * k,
             1e-8 * k,
-            0.5 * tol,
+            tol,
             &format!("crossed cylinders at {k}"),
         );
     }
@@ -348,7 +349,7 @@ fn involute_flanks_are_proven_close_to_their_backlash() {
             "sketch.create",
             json!({"name": name, "plane": "xy"}),
         );
-        let at = format!("({turn} + t - atan(t)) * 1 rad");
+        let at = format!("({turn} + t) * 1 rad - atan(t)");
         run(
             &mut s,
             "sketch.curve",

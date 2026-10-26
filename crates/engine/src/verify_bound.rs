@@ -1198,6 +1198,32 @@ pub(crate) fn prove(
             );
         }
     }
+    // TRACE (temporary)
+    for (&(pa, pb), &id) in &stratum_pairs {
+        if let Some(l) = least.get(id)
+            && *l < enough(best)
+        {
+            let d = |p: usize| {
+                search.prims.get(p).map(|x| {
+                    format!(
+                        "{:?}#{} {}",
+                        x.kind,
+                        x.index,
+                        x.surface
+                            .map(|s| s.kind())
+                            .or(x.curve.map(|c| c.kind()))
+                            .unwrap_or("point")
+                    )
+                })
+            };
+            eprintln!(
+                "TRACE short {l} < {}: {:?} vs {:?} work {work}",
+                enough(best),
+                d(pa),
+                d(pb)
+            );
+        }
+    }
     let lower = per_face
         .into_iter()
         .map(|list| {
