@@ -112,7 +112,13 @@ struct Bound<'a> {
     nets: CurveNets,
     range: (f64, f64),
     bbox: Bbox3,
+    /// The boxes of its range cut in [`LEAVES`] equal pieces, made when
+    /// first asked (`None` inside: a piece could not be enclosed).
+    leaves: std::cell::OnceCell<Option<Vec<((f64, f64), Bbox3)>>>,
 }
+
+/// How many pieces an edge's boxes are kept for at once.
+const LEAVES: u32 = 32;
 
 /// A stratum ready to be cut.
 struct Prim<'a> {
@@ -512,6 +518,7 @@ where
                         nets,
                         range: edge.range,
                         bbox: piece.bbox(),
+                        leaves: std::cell::OnceCell::new(),
                     });
                 }
                 let root = face_root(part, index, surface, slack)?;
@@ -624,7 +631,7 @@ where
         let part = self.part(prim.side, prim.part)?;
         let reach = grown(bbox, 2.0 * self.tol + prim.slack);
         for edge in &prim.boundary {
-            if edge_meets(edge, edge.range, &reach, EDGE_DEPTH) {
+            if edge_near(edge, &reach) {
                 return None;
             }
         }
@@ -985,6 +992,35 @@ fn excluded(a: &Rec, b: &Rec) -> bool {
         }
     }
     false
+}
+
+/// Whether the edge may meet the box `b`: its kept pieces' boxes first,
+/// then those that meet `b` halved further.
+fn edge_near(edge: &Bound<'_>, b: &Bbox3) -> bool {
+    if boxes_distance(&edge.bbox, b) > 0.0 {
+        return false;
+    }
+    let leaves = edge.leaves.get_or_init(|| {
+        let (t0, t1) = edge.range;
+        let n = f64::from(LEAVES);
+        (0..LEAVES)
+            .map(|k| {
+                let a = t0 + (t1 - t0) * f64::from(k) / n;
+                let z = if k + 1 == LEAVES {
+                    t1
+                } else {
+                    t0 + (t1 - t0) * f64::from(k + 1) / n
+                };
+                curve_piece(edge.curve, &edge.nets, (a, z)).map(|p| ((a, z), p.bbox()))
+            })
+            .collect()
+    });
+    let Some(leaves) = leaves else {
+        return edge_meets(edge, edge.range, b, EDGE_DEPTH);
+    };
+    leaves.iter().any(|(t, bbox)| {
+        boxes_distance(bbox, b) <= 0.0 && edge_meets(edge, *t, b, EDGE_DEPTH.saturating_sub(5))
+    })
 }
 
 /// Whether the edge's piece over `t` may meet the box `b`.
