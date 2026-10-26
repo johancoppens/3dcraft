@@ -576,3 +576,47 @@ fn an_extruded_part_is_saved_reopened_rendered_and_exported() {
     assert!(dir.join("bracket.png").metadata().unwrap().len() > 1000);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_thin_slanted_rectangle_extrudes() {
+    // plan/repro/repro-sundial-2.json: a clean 44 x 1.2 mm rectangle at a
+    // slant was refused as "e7, e8 cross or touch each other".
+    let corners = [
+        [16.697056638762756_f64, -31.352678659982697_f64],
+        [56.860039611356406, -50.52974301317225],
+        [56.342980354640936, -51.612632538952624],
+        [16.179997382047294, -32.435568185763074],
+    ];
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "S", "plane": "xy"}),
+    );
+    let points: Vec<Value> = corners
+        .iter()
+        .map(|[x, y]| json!([format!("{x} mm"), format!("{y} mm")]))
+        .collect();
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "S", "closed": true, "points": points}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": "-2 mm", "name": "Tool"}),
+    );
+    let solid = body(&mut s, "Tool");
+    // The shoelace area of the four corners, two deep.
+    let area = (0..4)
+        .map(|i| {
+            let ([ax, ay], [bx, by]) = (corners[i], corners[(i + 1) % 4]);
+            ax * by - ay * bx
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    assert_close(&solid["volume"], area * 2.0, "volume");
+}
