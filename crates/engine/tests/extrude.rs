@@ -616,3 +616,40 @@ fn a_thin_slanted_rectangle_extrudes() {
         / 2.0;
     assert_close(&solid["volume"], area * 2.0, "volume");
 }
+
+/// plan/repro/repro-orrery-1.json: a gear of involute teeth, one tooth
+/// chained into a ring pattern, where the root arc of each tooth meets the
+/// radial line of the next. About a third of the tooth counts were refused
+/// as "e19[k], e3[k+1] cross or touch" (the same rounding at the
+/// tolerance as the slanted rectangle above). Every count from 10 to 60
+/// extrudes now.
+#[test]
+fn a_chained_gear_extrudes_at_every_tooth_count() {
+    let script: Value =
+        serde_json::from_str(include_str!("profile_findings/orrery-gear.json")).unwrap();
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for step in script.as_array().unwrap() {
+        run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+    }
+    let mut failed = Vec::new();
+    for z in 10..=60 {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "z_T16q", "expr": z.to_string()}),
+        );
+        let document = run(&mut s, "document.inspect", json!({"measures": false}));
+        let extrude = document["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "T16q0")
+            .unwrap()
+            .clone();
+        if extrude["status"] != "ok" {
+            failed.push(format!("{z}: {}", extrude["error"]));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

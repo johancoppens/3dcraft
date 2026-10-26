@@ -849,6 +849,40 @@ fn the_thumbnail_shows_the_document_not_where_the_view_is_scrubbed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// plan/repro/repro-orrery-2.json: a minimum looked up by an integer
+/// parameter, as a variable looks it up.
+#[test]
+fn a_minimum_looks_up_a_table_by_another_parameter() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "lim", "columns": ["key", "lo"], "rows": [["a", 10], ["b", 20]]}),
+    );
+    for (name, expr) in [("pick", "1"), ("n", "30"), ("probe", "lim[pick].lo")] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
+    }
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "pick", "kind": "integer", "min": "1", "max": "2"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "n", "kind": "integer", "min": "lim[pick].lo", "max": "40"}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_close(&param(&list, "n")["min"]["value"], 10.0, "min of n");
+    run(&mut s, "param.set", json!({"values": {"n": 15}}));
+    let e = refused(&mut s, "param.set", json!({"values": {"pick": 2}}));
+    assert!(e.contains("would make `n` invalid"), "{e}");
+    run(&mut s, "param.set", json!({"values": {"pick": 2, "n": 25}}));
+    let list = run(&mut s, "param.list", json!({}));
+    assert_close(&param(&list, "n")["min"]["value"], 20.0, "min of n");
+}
+
 /// plan/repro/repro-tuned-chimes-1.json: a range bound looks a table up
 /// as a variable does (it said "unknown table `scales`").
 #[test]

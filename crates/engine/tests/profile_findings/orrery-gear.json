@@ -1,0 +1,249 @@
+[
+ [
+  "variable.set",
+  {
+   "name": "mn",
+   "expr": "1 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "alpha",
+   "expr": "20 deg"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "jt",
+   "expr": "0.15 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "b",
+   "expr": "4 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "z_T16q",
+   "expr": "16"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "r_T16q",
+   "expr": "mn * z_T16q / 2"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rb_T16q",
+   "expr": "r_T16q * cos(alpha)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ra_T16q",
+   "expr": "r_T16q + mn"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rf_T16q",
+   "expr": "r_T16q - 1.25 * mn"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "g_T16q",
+   "expr": "-pi / (2 * z_T16q) - (tan(alpha) - alpha / 1 rad) + jt / (4 * r_T16q)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rs_T16q",
+   "expr": "max(rb_T16q, rf_T16q + 0.1 * mn)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "t0_T16q",
+   "expr": "sqrt((rs_T16q / rb_T16q)^2 - 1)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "ta_T16q",
+   "expr": "sqrt((ra_T16q / rb_T16q)^2 - 1)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "tm_T16q",
+   "expr": "sqrt((t0_T16q^2 + ta_T16q^2) / 2)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "rm_T16q",
+   "expr": "rb_T16q * sqrt(1 + tm_T16q^2)"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "phis_T16q",
+   "expr": "g_T16q + t0_T16q - atan(t0_T16q) / 1 rad"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "phim_T16q",
+   "expr": "g_T16q + tm_T16q - atan(tm_T16q) / 1 rad"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "half_T16q",
+   "expr": "pi / z_T16q"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "thetaA_T16q",
+   "expr": "g_T16q + ta_T16q - atan(ta_T16q) / 1 rad"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "name": "S_T16q",
+   "plane": "xy"
+  }
+ ],
+ [
+  "sketch.path",
+  {
+   "sketch": "S_T16q",
+   "start": [
+    "rf_T16q * cos((phis_T16q) * 1 rad)",
+    "rf_T16q * sin((phis_T16q) * 1 rad)"
+   ],
+   "segments": [
+    {
+     "line": [
+      "rs_T16q * cos((phis_T16q) * 1 rad)",
+      "rs_T16q * sin((phis_T16q) * 1 rad)"
+     ]
+    },
+    {
+     "arc": [
+      "ra_T16q * cos((thetaA_T16q) * 1 rad)",
+      "ra_T16q * sin((thetaA_T16q) * 1 rad)"
+     ],
+     "through": [
+      "rm_T16q * cos((phim_T16q) * 1 rad)",
+      "rm_T16q * sin((phim_T16q) * 1 rad)"
+     ]
+    },
+    {
+     "arc": [
+      "ra_T16q * cos((-thetaA_T16q) * 1 rad)",
+      "ra_T16q * sin((-thetaA_T16q) * 1 rad)"
+     ],
+     "center": [
+      "0 mm",
+      "0 mm"
+     ]
+    },
+    {
+     "arc": [
+      "rs_T16q * cos((-phis_T16q) * 1 rad)",
+      "rs_T16q * sin((-phis_T16q) * 1 rad)"
+     ],
+     "through": [
+      "rm_T16q * cos((-phim_T16q) * 1 rad)",
+      "rm_T16q * sin((-phim_T16q) * 1 rad)"
+     ]
+    },
+    {
+     "line": [
+      "rf_T16q * cos((-phis_T16q) * 1 rad)",
+      "rf_T16q * sin((-phis_T16q) * 1 rad)"
+     ]
+    },
+    {
+     "arc": [
+      "rf_T16q * cos((2 * half_T16q + phis_T16q) * 1 rad)",
+      "rf_T16q * sin((2 * half_T16q + phis_T16q) * 1 rad)"
+     ],
+     "center": [
+      "0 mm",
+      "0 mm"
+     ]
+    }
+   ]
+  }
+ ],
+ [
+  "sketch.pattern",
+  {
+   "sketch": "S_T16q",
+   "entities": [
+    "e3",
+    "e6",
+    "e10",
+    "e13",
+    "e16",
+    "e19"
+   ],
+   "chain": [
+    "e1",
+    "e17"
+   ],
+   "angle": "360 deg / z_T16q",
+   "center": [
+    "0 mm",
+    "0 mm"
+   ],
+   "count": "z_T16q"
+  }
+ ],
+ [
+  "sketch.circle",
+  {
+   "sketch": "S_T16q",
+   "center": [
+    "0 mm",
+    "0 mm"
+   ],
+   "radius": "3 mm"
+  }
+ ],
+ [
+  "feature.extrude",
+  {
+   "sketch": "S_T16q",
+   "distance": "b",
+   "name": "T16q0"
+  }
+ ]
+]
