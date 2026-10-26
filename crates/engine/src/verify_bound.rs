@@ -1196,11 +1196,12 @@ pub(crate) fn prove(
             continue;
         };
         // Cut the piece that spreads most along the line between them;
-        // where their boxes meet, the length counts too (pieces that lie
-        // in one another are cut down to size), and without a line (one
-        // box's middle at the other's) the length alone.
+        // where nothing keeps them apart yet (a bound of 0), the length
+        // counts too (pieces that lie in one another are cut down to
+        // size), and without a line (one box's middle at the other's) the
+        // length alone.
         let c = center(&rb.bbox) - center(&ra.bbox);
-        let meet = boxes_distance(&ra.bbox, &rb.bbox) <= 0.0;
+        let meet = node.bound <= 0.0;
         let size = ra.bbox.diagonal() + rb.bbox.diagonal();
         let d = c.normalized().filter(|_| c.length() > 1e-9 * size);
         let cut = cut_apart(&search, ra, rb, d, meet);
