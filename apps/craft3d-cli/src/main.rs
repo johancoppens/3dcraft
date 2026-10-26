@@ -262,8 +262,8 @@ every other choice of a choice, and to N random points chosen by the seed;
 each point is regenerated from nothing and checked as document.check
 checks (no failed feature, valid bodies, no broken assertion, no invalid
 parameter). Away from the defaults, a parameter whose range the point
-narrows is moved into it, as the parameter form moves it. Prints a line
-per point as it is checked (on standard error with --json), then a
+narrows is moved into it, as the parameter form moves it (the point's
+line says so: clamped n 5 -> 3). Prints a line per point as it is checked (on standard error with --json), then a
 report: the totals (passed, with unproven assertions, failed), one block
 per failing point with the values that reproduce it (param.set), and one
 per point with an assertion that is not proven (neither passed nor
@@ -279,8 +279,15 @@ The report says how many of the box's corners were tried.
 Exit codes: 0 no point failed (points with unproven assertions are
 counted apart; --strict fails them); 1 a point failed; 2 a usage error (also
 --samples above 10000 or --max-corners above 4096); 3 the file could not
-be opened or checked (no public parameters, say); 4 the run stopped at
---time-limit-ms before every point was checked, none failing so far.
+be opened or checked (no public parameters, say), or the check was
+stopped by a signal (9: killed, as the out-of-memory killer does); 4 the
+run stopped at --time-limit-ms before every point was checked, none
+failing so far.
+
+On Linux the check runs in a process of its own whose memory allocator
+keeps two arenas (MALLOC_ARENA_MAX=2, unless the environment sets it), so
+a long run holds about one point's memory; that process stops when the
+one that started it is gone.
 
 Options:
   --samples N       Random points, at most 10000. Default 32
@@ -494,14 +501,26 @@ fn main() -> ExitCode {
     let outcome = Args::from_os(std::env::args_os().skip(1)).and_then(run);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
-        Err(CliError::Quiet(code)) => ExitCode::from(code),
         Err(error) => {
-            // If stderr is gone too there is nobody left to tell.
-            let _ = writeln!(std::io::stderr(), "craft3d-cli: {error}");
+            let said = |error: &CliError| {
+                // If stderr is gone too there is nobody left to tell.
+                let _ = writeln!(std::io::stderr(), "craft3d-cli: {error}");
+            };
             match error {
-                CliError::Usage(_) => ExitCode::from(2),
-                CliError::Failed(_) => ExitCode::FAILURE,
-                CliError::Code(code, _) | CliError::Quiet(code) => ExitCode::from(code),
+                // The run that ended so said why itself.
+                CliError::Quiet(code) => ExitCode::from(code),
+                CliError::Usage(_) => {
+                    said(&error);
+                    ExitCode::from(2)
+                }
+                CliError::Failed(_) => {
+                    said(&error);
+                    ExitCode::FAILURE
+                }
+                CliError::Code(code, _) => {
+                    said(&error);
+                    ExitCode::from(code)
+                }
             }
         }
     }

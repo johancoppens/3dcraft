@@ -4,9 +4,11 @@
 //!
 //! Exit codes: 0 no point failed (a point with an assertion not proven is
 //! counted and listed apart, and fails with `--strict`); 1 a point failed; 2 a usage error
-//! (the caps included); 3 the file could not be opened or checked; 4 the
-//! run stopped at `--time-limit-ms` before every point was checked, with
-//! none failing so far.
+//! (the caps included); 3 the file could not be opened or checked, or the
+//! check's process was stopped by a signal (the out-of-memory killer); 4
+//! the run stopped at `--time-limit-ms` (or because the process that
+//! started its own is gone) before every point was checked, with none
+//! failing so far.
 
 use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed, print};
@@ -165,7 +167,7 @@ fn point_line(point: &Value) -> String {
         .flatten()
         .filter_map(|a| field(a, "assertion").as_str())
         .collect();
-    if field(point, "ok") != true {
+    let line = if field(point, "ok") != true {
         let first = field(point, "problems")
             .get(0)
             .map(problem_text)
@@ -183,6 +185,30 @@ fn point_line(point: &Value) -> String {
         )
     } else {
         format!("{head}: passed")
+    };
+    line + &clamped_text(point)
+}
+
+/// The moves of the parameters a point clamped into their ranges, to go
+/// after its line: ` (clamped n 5 -> 3)`; empty when there are none.
+fn clamped_text(point: &Value) -> String {
+    let moves: Vec<String> = field(point, "clamped")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| {
+            format!(
+                "{} {} -> {}",
+                field(m, "parameter").as_str().unwrap_or("?"),
+                field(m, "from").as_str().unwrap_or("?"),
+                field(m, "to").as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    if moves.is_empty() {
+        String::new()
+    } else {
+        format!(" (clamped {})", moves.join(", "))
     }
 }
 
@@ -303,11 +329,17 @@ fn report(file: &str, result: &Value) -> String {
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const ARENAS: &str = "2";
 
+/// The variable that tells the process of [`in_few_arenas`] which process
+/// started it (its id): it is not started again, and it stops when that
+/// process is gone (killed by a timeout or by hand), not to run on
+/// unwatched.
+const PARENT: &str = "CRAFT3D_CHECK_PARENT";
+
 /// Runs this same check again in a process of its own whose allocator
-/// keeps [`ARENAS`] arenas, and gives its outcome; `None` where that
-/// cannot be done (the program cannot be found or started), or need not
-/// be: the environment names a number of arenas already (the user's, or
-/// this is that process).
+/// keeps [`ARENAS`] arenas (unless the environment names a number of its
+/// own), and gives its outcome; `None` where that cannot be done (the
+/// program cannot be found or started), or need not be: this is that
+/// process ([`PARENT`] is set).
 ///
 /// Why: the C library's allocator (glibc) gives threads arenas of their
 /// own, as many as eight per core, and keeps what each arena held at its
@@ -324,23 +356,53 @@ const ARENAS: &str = "2";
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn in_few_arenas() -> Option<Result<Parsed<()>, CliError>> {
     const SETTING: &str = "MALLOC_ARENA_MAX";
-    if std::env::var_os(SETTING).is_some() {
+    if std::env::var_os(PARENT).is_some() {
         return None;
     }
     let program = std::env::current_exe().ok()?;
-    let status = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(std::env::args_os().skip(1))
-        .env(SETTING, ARENAS)
-        .status()
-        .ok()?;
-    Some(match status.code() {
-        Some(0) => Ok(Parsed::Run(())),
-        // It said why itself.
-        Some(code) => Err(CliError::Quiet(u8::try_from(code).unwrap_or(1))),
-        None => Err(CliError::Failed(
-            "the check was stopped by a signal before it finished".to_string(),
+        .env(PARENT, std::process::id().to_string());
+    if std::env::var_os(SETTING).is_none() {
+        command.env(SETTING, ARENAS);
+    }
+    let status = command.status().ok()?;
+    Some(outcome_of(status))
+}
+
+/// The outcome of the check's own process, from how it ended: its exit
+/// code, which it explained itself; or a signal, which is an error of the
+/// check (exit code 3), not a failing point: the kernel's out-of-memory
+/// killer sends 9.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn outcome_of(status: std::process::ExitStatus) -> Result<Parsed<()>, CliError> {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(0), _) => Ok(Parsed::Run(())),
+        (Some(code), _) => Err(CliError::Quiet(u8::try_from(code).unwrap_or(1))),
+        (None, signal) => Err(CliError::Code(
+            EXIT_ERROR,
+            format!(
+                "the check was stopped by signal {} before it finished (9: killed, as the out-of-memory killer does)",
+                signal.map_or_else(|| "?".to_string(), |s| s.to_string())
+            ),
         )),
-    })
+    }
+}
+
+/// Whether the process that started this one (the one [`PARENT`] names)
+/// is gone: this one is then an orphan nobody waits for.
+fn orphaned(parent: Option<u32>) -> bool {
+    #[cfg(unix)]
+    {
+        parent.is_some_and(|pid| std::os::unix::process::parent_id() != pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        false
+    }
 }
 
 pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
@@ -355,9 +417,12 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
     let error =
         |e: craft3d_engine::CommandError| CliError::Code(EXIT_ERROR, e.message().to_string());
     let mut session = Session::new(Workspace::unrestricted());
+    // A run may take hours: what the kernel keeps goes after every point.
+    session.set_lean_sampling(true);
     session
         .execute("file.open", &json!({ "path": options.file }))
         .map_err(error)?;
+    let parent: Option<u32> = std::env::var(PARENT).ok().and_then(|p| p.parse().ok());
     // A line per point as it is checked, so a run stopped from outside (a
     // timeout, a kill) has said what it found: on standard output before
     // the report, or on standard error with --json, whose standard output
@@ -374,6 +439,8 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
                 let mut out = std::io::stdout().lock();
                 writeln!(out, "{line}").and_then(|()| out.flush())
             };
+            // Started by another run of this program that is gone: stop.
+            !orphaned(parent)
         },
         || session.execute("document.sample", &params),
     )
@@ -401,5 +468,48 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
         ))
     } else {
         Ok(Parsed::Run(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A check's process killed by a signal (the out-of-memory killer
+    /// sends 9) is an error of the check, exit code 3, not a failing point
+    /// (exit code 1, which it was).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn a_check_killed_by_a_signal_is_an_error_not_a_failing_point() {
+        use std::os::unix::process::ExitStatusExt;
+        match outcome_of(std::process::ExitStatus::from_raw(9)) {
+            Err(CliError::Code(code, message)) => {
+                assert_eq!(code, EXIT_ERROR);
+                assert!(message.contains("signal 9"), "{message}");
+            }
+            _ => panic!("not an error of the check"),
+        }
+        // An exit code is passed on as it is: that run said why itself.
+        assert!(matches!(
+            outcome_of(std::process::ExitStatus::from_raw(1 << 8)),
+            Err(CliError::Quiet(1))
+        ));
+        assert!(matches!(
+            outcome_of(std::process::ExitStatus::from_raw(0)),
+            Ok(Parsed::Run(()))
+        ));
+    }
+
+    #[test]
+    fn a_point_line_says_what_was_clamped() {
+        let point = json!({
+            "index": 3, "kind": "choice", "ok": true, "ms": 1.0, "problems": [],
+            "unproven": [], "values": {"size": "1", "n": "3"},
+            "clamped": [{"parameter": "n", "from": "5", "to": "3"}],
+        });
+        assert_eq!(
+            point_line(&point),
+            "point 3 (choice, 1.0 ms): passed (clamped n 5 -> 3)"
+        );
     }
 }

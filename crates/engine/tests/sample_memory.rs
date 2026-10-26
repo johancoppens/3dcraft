@@ -7,8 +7,10 @@
 //! check over many points of a freeform part (the spur-gear Jig with a
 //! copy meshing with it and an overlap assertion between them, 2026-10-24)
 //! grew from 134 MB at one point to 1.2 GB at thirteen, and was killed for
-//! its memory on a laptop. What a point leaves behind is now let go of
-//! before the next one, so a run holds what one point needs.
+//! its memory on a laptop. What the points leave behind is now let go of:
+//! after each point where the host asks for that
+//! (`Session::set_lean_sampling`, as check-range does), so a run holds
+//! what one point needs; else at the end of the run (a window's).
 //!
 //! The caches are one per process, so this file holds its tests apart
 //! from the others.
@@ -69,6 +71,7 @@ fn kept() -> [usize; 4] {
 
 #[test]
 fn a_check_over_the_range_leaves_nothing_the_kernel_kept_behind() {
+    // As a window runs it: let go of at the end of the run.
     let mut s = gear_pair();
     let checked = run(&mut s, "document.check", json!({}));
     // Building and checking the pair filled what the kernel keeps.
@@ -130,6 +133,8 @@ fn the_memory_of_a_long_check_levels_off() {
         return;
     }
     let mut s = gear_pair();
+    // As check-range runs: what the kernel keeps goes after every point.
+    s.set_lean_sampling(true);
     println!("threads: {}", craft3d_math::available_threads());
     let mut seen = Vec::new();
     for seed in 1..=20_u64 {

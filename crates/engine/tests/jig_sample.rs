@@ -582,6 +582,18 @@ fn a_choice_that_narrows_another_range_moves_that_parameter_into_it() {
     assert_eq!(choices.len(), 1, "{result}");
     assert_eq!(choices[0]["size"], "1", "{result}");
     assert_eq!(choices[0]["n"], "3", "{result}");
+    // And says so.
+    let point = result["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "choice")
+        .unwrap();
+    assert_eq!(
+        point["clamped"],
+        json!([{"parameter": "n", "from": "5", "to": "3"}]),
+        "{point}"
+    );
     // The values listed reproduce the point through param.set.
     run(&mut s, "param.set", json!({"values": choices[0].clone()}));
     // The defaults are checked as they are: no clamping there.
@@ -698,7 +710,10 @@ fn each_point_is_told_as_soon_as_it_is_checked() {
     let told = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let into = std::rc::Rc::clone(&told);
     let result = craft3d_engine::with_point_sink(
-        move |point| into.borrow_mut().push(point.clone()),
+        move |point| {
+            into.borrow_mut().push(point.clone());
+            true
+        },
         || sample(&mut s, json!({"samples": 2, "seed": 4})),
     );
     assert_eq!(told.borrow().len(), 5, "{told:?}");
@@ -714,6 +729,57 @@ fn each_point_is_told_as_soon_as_it_is_checked() {
     unproven_jig(&mut other);
     sample(&mut other, json!({"samples": 0}));
     assert_eq!(told.borrow().len(), 5);
+}
+
+#[test]
+fn a_sink_that_says_stop_stops_the_run_as_a_time_limit_does() {
+    let mut s = session();
+    unproven_jig(&mut s);
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let count = std::rc::Rc::clone(&seen);
+    let result = craft3d_engine::with_point_sink(
+        move |_| {
+            count.set(count.get() + 1);
+            count.get() < 2
+        },
+        || sample(&mut s, json!({"samples": 4, "seed": 1})),
+    );
+    // Stopped after the second point, before the third.
+    assert_eq!(seen.get(), 2);
+    assert_eq!(result["counts"]["points"], 2, "{result}");
+    assert_eq!(result["complete"], false, "{result}");
+    assert_eq!(result["stoppedBy"], "caller", "{result}");
+    assert_eq!(result["ok"], Value::Null, "{result}");
+}
+
+#[test]
+fn a_choice_outside_its_own_range_is_not_a_point() {
+    // `style` offers three choices, but its max is 2 at the defaults: the
+    // form does not offer the third, and the check does not make it (it
+    // used to move it onto the second, a point made twice).
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "style", "expr": "1"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "style", "kind": "choice", "choices": ["Plain", "Slotted", "Round"], "max": "2"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["10 mm", "10 mm", "10 mm"]}),
+    );
+    let result = sample(&mut s, json!({"samples": 0, "values": true}));
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["counts"]["skipped"], 1, "{result}");
+    let choices = values_of(&result, "choice");
+    assert_eq!(choices.len(), 1, "{result}");
+    assert_eq!(choices[0]["style"], "2", "{result}");
 }
 
 #[test]

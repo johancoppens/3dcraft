@@ -93,14 +93,17 @@ craft3d-cli check-range box.3dcraft --samples 100 --seed 7
 at the defaults, at the corners of the ranges, at every choice and at random points chosen by the seed,
 and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
 default (a choice that allows fewer holes), that parameter is moved into its new range, as the parameter
-form moves it; a switch whose maximum is another switch stays off while that one is off.
+form moves it, and that point's line says so (`clamped holes 8 -> 4`); a choice the form does not offer
+at the defaults is not tried; a switch whose maximum is another switch stays off while that one is off.
 
 It prints a line per point as soon as that point is checked (so a run you stop still shows what it
 found), then the totals: how many points passed, how many have an assertion that is **not proven**
 (neither passed nor failed, for instance a clearance between curved faces whose least value could not be
 pinned down), and how many failed. It lists every failing point, and every point with an unproven
-assertion, with the values that reproduce it. It exits with 1 when a point failed (2 a usage mistake, 3
-the file cannot be checked, 4 stopped by `--time-limit-ms` before the end); `--strict` also fails the
+assertion, with the values that reproduce it. A point with an unproven assertion does not count as
+passed: a script that checks for *passed = points* should check *0 failed* instead, or use `--strict`.
+It exits with 1 when a point failed (2 a usage mistake, 3 the file cannot be checked or the check was
+killed, for instance for lack of memory, 4 stopped by `--time-limit-ms` before the end); `--strict` also fails the
 points whose assertions are not proven. `--deep` checks each point more thoroughly and takes longer.
 
 The corners of the ranges (every parameter at its low or high end) are all tried while there are at most

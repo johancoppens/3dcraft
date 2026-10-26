@@ -102,6 +102,27 @@ fn cli(args: &[&str]) -> Ran {
     cli_in(Path::new(env!("CARGO_TARGET_TMPDIR")), args, None)
 }
 
+/// [`cli`] with environment variables set (`Some`) or removed (`None`).
+fn cli_env(args: &[&str], env: &[(&str, Option<&str>)]) -> Ran {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_craft3d-cli"));
+    command
+        .args(args)
+        .current_dir(env!("CARGO_TARGET_TMPDIR"))
+        .stdin(Stdio::null());
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let output = command.output().expect("the binary runs");
+    Ran {
+        code: output.status.code().expect("an exit code, not a signal"),
+        stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+    }
+}
+
 /// A fresh directory for one test.
 fn workdir(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cli-{name}"));
@@ -1647,6 +1668,43 @@ fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
         "{}",
         ran.stdout
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// On Linux with glibc `check-range` runs the check in a process of its
+/// own (two allocator arenas), told by `CRAFT3D_CHECK_PARENT` which
+/// process started it: that one is not started again, and stops before its
+/// next point when its starter is gone (killed by a timeout), rather than
+/// run on unwatched.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn check_range_runs_in_a_process_of_its_own_that_stops_when_orphaned() {
+    let dir = workdir("check-range-process");
+    let good = build_jig(&dir, "good.3dcraft", "6 mm");
+    let args = ["check-range", good.as_str(), "--samples", "2"];
+    // Neither variable set: started again, the whole run, the same report.
+    let ran = cli_env(
+        &args,
+        &[("MALLOC_ARENA_MAX", None), ("CRAFT3D_CHECK_PARENT", None)],
+    );
+    assert_eq!(ran.code, 0, "{}\n{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout.contains("11 points (1 default, all 8 corners"),
+        "{}",
+        ran.stdout
+    );
+    // As that process, its starter alive (this test): to the end.
+    let me = std::process::id().to_string();
+    let ran = cli_env(&args, &[("CRAFT3D_CHECK_PARENT", Some(me.as_str()))]);
+    assert_eq!(ran.code, 0, "{}\n{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("point 10 (random, "), "{}", ran.stdout);
+    // As that process, its starter gone (it names another): stops after
+    // the point it was checking, as at a time limit (exit code 4).
+    let ran = cli_env(&args, &[("CRAFT3D_CHECK_PARENT", Some("1"))]);
+    assert_eq!(ran.code, 4, "{}\n{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("point 0 (default, "), "{}", ran.stdout);
+    assert!(!ran.stdout.contains("point 1 ("), "{}", ran.stdout);
+    assert!(ran.stderr.contains("stopped (caller)"), "{}", ran.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
