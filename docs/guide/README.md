@@ -54,6 +54,7 @@ numbers yourself.
 | [12. Files, export and drawings](12-files.md) | Saving, STEP, meshes for 3D printing, outlines for laser cutting, drawings of the model, the web version |
 | [13. The command line and scripts](13-command-line.md) | `craft3d-cli`: run commands and scripts, render pictures, convert files, check a Jig |
 | [14. Troubleshooting](14-troubleshooting.md) | What a refusal means, failed features, undo, crash recovery, reporting a problem |
+| [16. Origami](16-origami.md) | Crease patterns (mountain, valley, cut), folding by angles and variables with the other creases solved, Kawasaki and Maekawa (and what they do not prove), crease patterns to SVG and DXF |
 
 **Reference**
 

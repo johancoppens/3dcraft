@@ -92,7 +92,7 @@ by.
 cutting tool: `feature.boolean` of a solid with a sheet that reaches across it keeps the part in front of
 the sheet (`subtract`, the side its normal points to) or behind it (`intersect`). Example:
 [wedge](../examples/wedge.json). An open chain in a loft gives a sheet too, and `feature.thicken` turns
-faces into a solid layer.
+faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([chapter 16](16-origami.md)).
 
 ## Several bodies
 

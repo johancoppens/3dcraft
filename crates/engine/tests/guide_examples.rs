@@ -221,3 +221,55 @@ fn the_guide_names_only_commands_and_params_that_exist() {
     );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// The origami chapter's scripts run as written, one after the other, and
+/// fold as the text says: no feature fails, the solved angles of the
+/// four-crease vertex are the closed form's (about 20.6 degrees), and the
+/// waterbomb passes Kawasaki and Maekawa with the note that this proves
+/// no flat fold.
+#[test]
+fn the_origami_chapter_folds_as_it_says() {
+    let text = read_text(&docs().join("guide/16-origami.md"));
+    let dir = common::workdir("guide", "origami");
+    let mut s = common::session_in(&dir);
+    let mut ran = 0;
+    let mut last: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for block in json_blocks(&text) {
+        let value: Value = serde_json::from_str(&block).unwrap();
+        let Some(steps) = steps(&value) else {
+            continue;
+        };
+        for (id, params) in steps {
+            let result = run(&mut s, &id, params.clone());
+            assert_ne!(result["status"], "failed", "{id} {params}: {result}");
+            last.insert(id, result);
+            ran += 1;
+        }
+        let check = run(&mut s, "document.check", json!({}));
+        assert_eq!(check["ok"], true, "{check}");
+    }
+    assert!(ran >= 20, "{ran} steps");
+    let inspect = &last["fold.inspect"];
+    let angle = |line: &str| {
+        inspect["creases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["line"] == line)
+            .unwrap()["pieces"][0]["angle"]
+            .as_f64()
+            .unwrap()
+    };
+    let r2 = 2.0 * (-0.5 * 20f64.to_radians().tan()).atan().to_degrees();
+    assert!(
+        (angle("e14") - r2).abs() < 1e-7 && (r2 + 20.6).abs() < 0.05,
+        "{inspect}"
+    );
+    assert!((angle("e17") - 40.0).abs() < 1e-7, "{inspect}");
+    assert!((angle("e20") + r2).abs() < 1e-7, "{inspect}");
+    let check = &last["fold.check"];
+    assert_eq!(check["kawasakiFails"], 0, "{check}");
+    assert_eq!(check["maekawaFails"], 0, "{check}");
+    assert!(check["note"].as_str().unwrap().contains("not sufficient"));
+    assert!(dir.join("waterbomb.svg").exists());
+}

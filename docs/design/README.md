@@ -18,6 +18,7 @@ The detail documents behind the map in [`../architecture.md`](../architecture.md
 | [`rendering.md`](rendering.md) | the CPU oracle, the GPU renderer and its tolerances, see-through, section, pointing, the viewport |
 | [`engine.md`](engine.md) | Session, commands, undo, threads, scenes, recovery, automation |
 | [`selection.md`](selection.md) | the selection shared by the window and agents, picking through, and selecting by description (`select.query`) |
+| [`origami.md`](origami.md) | crease patterns on a flat sheet: facets of the arrangement, rigid folding by loop closure, contact between facets, Kawasaki and Maekawa (necessary, not sufficient), crease patterns to SVG and DXF |
 | [`verification.md`](verification.md) | checking a design by questions: distance, clearance, wall thickness, ray, through, symmetry, assertions kept in the document, and the proof of a Jig over its parameter range (`document.sample`, `check-range`) |
 | [`sections-and-levels.md`](sections-and-levels.md) | what lies on one side of a plane: the volume and centroid below it cut off and integrated exactly, a section's area and second moments by Green's theorem, the level for a volume by Newton's method |
 | [`step-import.md`](step-import.md) | STEP files read into bodies: typed reading, sewing on topology only, the import feature and its data, names, oracles |

@@ -1,0 +1,14 @@
+[
+  ["variable.set", {"name": "drive", "expr": "40 deg"}],
+  ["sketch.create", {"plane": "xy", "name": "Vertex"}],
+  ["sketch.polyline", {"sketch": "Vertex", "points": [[-50, -50], [50, -50], [50, 50], [-50, 50]], "closed": true}],
+  ["sketch.line", {"sketch": "Vertex", "from": [0, 0], "to": [50, 0], "construction": true}],
+  ["sketch.line", {"sketch": "Vertex", "from": [0, 0], "to": [28.867513459481287, 50], "construction": true}],
+  ["sketch.line", {"sketch": "Vertex", "from": [0, 0], "to": [-28.867513459481287, 50], "construction": true}],
+  ["sketch.line", {"sketch": "Vertex", "from": [0, 0], "to": [-28.867513459481287, -50], "construction": true}],
+  ["feature.fold", {"sketch": "Vertex", "name": "Twist", "fixed": ["25 mm", "-10 mm"], "creases": [
+    {"line": "e11", "kind": "valley", "angle": "drive"},
+    {"line": "e14", "kind": "mountain"},
+    {"line": "e17", "kind": "valley"},
+    {"line": "e20", "kind": "valley"}]}]
+]

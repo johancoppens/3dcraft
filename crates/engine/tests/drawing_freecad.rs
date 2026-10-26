@@ -312,3 +312,83 @@ fn freecad_reads_a_projected_view() {
         }
     }
 }
+
+/// A fold's crease pattern (`file.export` with `fold`): FreeCAD reads the
+/// outline and the mountain (dash-dot) and valley (dashed) lines of a
+/// waterbomb base as straight edges, as long as ours and in the same box.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_crease_pattern() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-fold");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let c = 50.0;
+    run(&mut s, "sketch.create", json!({"name": "Paper"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Paper", "points": [[-c, -c], [c, -c], [c, c], [-c, c]], "closed": true}),
+    );
+    let mut lines = Vec::new();
+    for (from, to) in [
+        ([-c, 0.0], [c, 0.0]),
+        ([-c, -c], [c, c]),
+        ([c, -c], [-c, c]),
+    ] {
+        let made = run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "Paper", "from": from, "to": to}),
+        );
+        lines.push(made["entity"].clone());
+    }
+    run(
+        &mut s,
+        "feature.fold",
+        json!({"sketch": "Paper", "name": "Waterbomb", "creases": [
+            {"line": lines[0], "kind": "mountain"},
+            {"line": lines[1], "kind": "valley"},
+            {"line": lines[2], "kind": "valley"}]}),
+    );
+    let mut cases = Vec::new();
+    for format in ["dxf", "svg"] {
+        let file = format!("waterbomb.{format}");
+        let result = run(
+            &mut s,
+            "file.export",
+            json!({"path": file, "fold": "Waterbomb"}),
+        );
+        cases.push((file, result));
+    }
+    let reports = freecad_reads(&dir);
+    assert_eq!(reports.len(), cases.len());
+    let length = 8.0 * c + 2.0 * c + 4.0 * 2f64.sqrt() * c;
+    for (file, ours) in &cases {
+        let report = &reports[file];
+        let number = |key: &str| -> f64 { report[key].parse().unwrap() };
+        println!(
+            "{file}: length {} (ours {}), bbox {}, {} edges ({})",
+            report["length"], ours["length"], report["bbox"], report["edges"], report["kinds"]
+        );
+        assert!(
+            near(ours["length"].as_f64().unwrap(), length, 1e-12),
+            "{file}"
+        );
+        assert!(near(number("length"), length, 1e-9), "{file}");
+        let bbox: Vec<f64> = report["bbox"]
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        for (got, expected) in bbox.iter().zip([-c, -c, c, c]) {
+            assert!((got - expected).abs() <= 1e-9 * c, "{file}: {bbox:?}");
+        }
+        if file.ends_with(".dxf") {
+            assert_eq!(report["kinds"], "Line:7", "{file}");
+        }
+    }
+}
