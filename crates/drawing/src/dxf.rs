@@ -25,6 +25,9 @@ const MODEL_SPACE: &str = "1F";
 /// The name and the handle of the line type of a dashed layer.
 const DASHED: &str = "DASHED";
 const DASHED_HANDLE: &str = "17";
+/// The name and the handle of the line type of a dash-dot layer.
+const DASHDOT: &str = "DASHDOT";
+const DASHDOT_HANDLE: &str = "18";
 /// The first handle given to a layer or an entity.
 const FIRST_FREE_HANDLE: u64 = 0x100;
 
@@ -240,8 +243,19 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
     // A dashed layer's line type, only when there is one (a drawing
     // without one is written as before, byte for byte): the first dashed
     // layer's dash, a gap half as long.
-    let dash = drawing.layers.iter().find_map(|layer| layer.dash);
-    table(&mut out, "LTYPE", "5", if dash.is_some() { 4 } else { 3 });
+    let dash = drawing
+        .layers
+        .iter()
+        .filter(|layer| !layer.dot)
+        .find_map(|layer| layer.dash);
+    // A dash-dot layer's: the first one's dash, gaps a quarter of it.
+    let dash_dot = drawing
+        .layers
+        .iter()
+        .filter(|layer| layer.dot)
+        .find_map(|layer| layer.dash);
+    let types = 3 + usize::from(dash.is_some()) + usize::from(dash_dot.is_some());
+    table(&mut out, "LTYPE", "5", types);
     for (handle, name, description) in [
         ("14", "ByBlock", ""),
         ("15", "ByLayer", ""),
@@ -278,6 +292,31 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
         out.real(49, -dash * 0.5)?;
         out.group(74, "0");
     }
+    if let Some(dash) = dash_dot {
+        record(
+            &mut out,
+            "LTYPE",
+            DASHDOT_HANDLE,
+            "5",
+            "AcDbLinetypeTableRecord",
+        );
+        out.groups(&[
+            (2, DASHDOT),
+            (70, "0"),
+            (3, "Dash dot __ . __ . __"),
+            (72, "65"),
+            (73, "4"),
+        ]);
+        out.real(40, dash * 1.5)?;
+        out.real(49, dash)?;
+        out.group(74, "0");
+        out.real(49, -dash * 0.25)?;
+        out.group(74, "0");
+        out.real(49, 0.0)?;
+        out.group(74, "0");
+        out.real(49, -dash * 0.25)?;
+        out.group(74, "0");
+    }
     out.groups(&[(0, "ENDTAB")]);
 
     table(&mut out, "LAYER", "2", layers.len().saturating_add(1));
@@ -293,10 +332,10 @@ pub fn write_dxf(drawing: &Drawing) -> Result<String, DrawingError> {
             (62, &layer.color.aci().to_string()),
             (
                 6,
-                if layer.dash.is_some() {
-                    DASHED
-                } else {
-                    "Continuous"
+                match (layer.dash, layer.dot) {
+                    (Some(_), true) => DASHDOT,
+                    (Some(_), false) => DASHED,
+                    (None, _) => "Continuous",
                 },
             ),
         ]);

@@ -15,6 +15,7 @@ pub mod appearance;
 pub mod assertion;
 pub mod blob;
 pub mod datum;
+pub mod fold;
 pub mod name;
 pub mod public;
 pub mod sets;
@@ -32,6 +33,7 @@ pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
     PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
+pub use fold::{Crease, CreaseKind, Fold, MAX_FOLD_CREASES};
 pub use name::{
     CurveIndex, CurvePath, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
@@ -985,6 +987,7 @@ pub enum FeatureKind {
     Fill(Fill),
     Split(Split),
     Import(Import),
+    Fold(Fold),
 }
 
 impl FeatureKind {
@@ -1022,6 +1025,7 @@ impl FeatureKind {
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
             FeatureKind::Import(_) => "import",
+            FeatureKind::Fold(_) => "fold",
         }
     }
 
@@ -1103,6 +1107,7 @@ impl FeatureKind {
             | FeatureKind::DatumHelix(_)
             | FeatureKind::OffsetProfile(_)
             | FeatureKind::Fill(_)
+            | FeatureKind::Fold(_)
             | FeatureKind::Import(_) => None,
         }
     }
@@ -1124,6 +1129,7 @@ impl FeatureKind {
             FeatureKind::Sweep(s) => vec![s.sketch, s.path],
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
+            FeatureKind::Fold(f) => vec![f.sketch],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -1227,6 +1233,7 @@ impl FeatureKind {
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
             FeatureKind::DatumHelix(d) => out = d.exprs(),
+            FeatureKind::Fold(f) => out = f.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
@@ -1354,6 +1361,7 @@ impl FeatureKind {
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
             FeatureKind::DatumHelix(d) => d.exprs_mut(),
+            FeatureKind::Fold(f) => f.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Thicken(t) => vec![&mut t.thickness],
@@ -1668,6 +1676,15 @@ impl Document {
                         feature.name
                     ))
                 })?;
+            }
+            if let FeatureKind::Fold(fold) = &feature.kind
+                && fold.creases.len() > MAX_FOLD_CREASES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the fold `{}` has {} creases; the most is {MAX_FOLD_CREASES}",
+                    feature.name,
+                    fold.creases.len()
+                )));
             }
             if let FeatureKind::Loft(loft) = &feature.kind
                 && loft.sections.len() > MAX_LOFT_SECTIONS

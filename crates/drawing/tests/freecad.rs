@@ -138,6 +138,7 @@ fn drawing(unit: Unit, paths: Vec<Path>) -> Drawing {
             name: "outline".into(),
             color: Color::Black,
             dash: None,
+            dot: false,
             paths,
         }],
     }

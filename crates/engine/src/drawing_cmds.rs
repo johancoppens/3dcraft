@@ -148,6 +148,7 @@ pub(crate) fn export(
                 name: name.to_string(),
                 color,
                 dash: None,
+                dot: false,
                 paths,
             });
         }
@@ -583,6 +584,7 @@ fn bbox(paths: &[DrawingPath]) -> Result<[f64; 4], CommandError> {
             name: "outline".into(),
             color: Color::Black,
             dash: None,
+            dot: false,
             paths: paths.to_vec(),
         }],
     };
@@ -962,6 +964,7 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
                 name: layer,
                 color: Color::Black,
                 dash: None,
+                dot: false,
                 paths,
             }),
         }

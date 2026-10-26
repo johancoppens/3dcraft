@@ -1333,6 +1333,7 @@ pub(crate) fn export(
                 name: name.to_string(),
                 color: Color::Black,
                 dash,
+                dot: false,
                 paths,
             });
         }

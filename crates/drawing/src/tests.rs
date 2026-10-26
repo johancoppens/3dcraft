@@ -50,6 +50,7 @@ fn drawing(paths: Vec<Path>) -> Drawing {
             name: "outline".into(),
             color: Color::Black,
             dash: None,
+            dot: false,
             paths,
         }],
     }
@@ -541,6 +542,7 @@ fn tiny() -> Drawing {
             name: "cut".into(),
             color: Color::Red,
             dash: None,
+            dot: false,
             paths: vec![
                 closed(
                     [0.0, 0.0],
@@ -1424,12 +1426,14 @@ fn layers_keep_their_names_and_colours() {
         name: "engrave-2".into(),
         color: Color::Blue,
         dash: None,
+        dot: false,
         paths: vec![open([1.0, 1.0], vec![line([2.0, 2.0])])],
     });
     drawing.layers.push(Layer {
         name: "empty".into(),
         color: Color::Green,
         dash: None,
+        dot: false,
         paths: vec![],
     });
     let dxf = write_dxf(&drawing).unwrap();
@@ -1858,6 +1862,7 @@ fn a_dashed_layer_is_dashed_in_both_formats_and_others_are_as_before() {
         name: "hidden".into(),
         color: Color::Black,
         dash: Some(2.0),
+        dot: false,
         paths: vec![open([0.0, 5.0], vec![line([10.0, 5.0])])],
     });
     let before = write_dxf(&plain).unwrap();
@@ -1887,4 +1892,50 @@ fn a_dashed_layer_is_dashed_in_both_formats_and_others_are_as_before() {
     assert!(matches!(write_dxf(&dashed), Err(DrawingError::Option(_))));
     dashed.layers[1].dash = Some(f64::NAN);
     assert!(write_svg(&dashed, &SvgOptions::default()).is_err());
+}
+
+#[test]
+fn a_dash_dot_layer_has_its_own_line_type_beside_a_dashed_one() {
+    let mut both = drawing(vec![open([0.0, 0.0], vec![line([10.0, 0.0])])]);
+    both.layers.push(Layer {
+        name: "valley".into(),
+        color: Color::Blue,
+        dash: Some(2.0),
+        dot: false,
+        paths: vec![open([0.0, 5.0], vec![line([10.0, 5.0])])],
+    });
+    both.layers.push(Layer {
+        name: "mountain".into(),
+        color: Color::Red,
+        dash: Some(4.0),
+        dot: true,
+        paths: vec![open([0.0, 8.0], vec![line([10.0, 8.0])])],
+    });
+    let dxf = write_dxf(&both).unwrap();
+    // 6 long: a dash of 4, a gap of 1, a dot, a gap of 1.
+    assert!(
+        dxf.contains("  2\nDASHDOT\n 70\n0\n  3\nDash dot __ . __ . __\n 72\n65\n 73\n4\n 40\n6.0\n 49\n4.0\n 74\n0\n 49\n-1.0\n 74\n0\n 49\n0.0\n 74\n0\n 49\n-1.0\n 74\n0\n"),
+        "{dxf}"
+    );
+    assert!(dxf.contains("  2\nDASHED\n 70\n0\n"), "{dxf}");
+    assert!(
+        dxf.contains("  2\nmountain\n 70\n0\n 62\n1\n  6\nDASHDOT\n"),
+        "{dxf}"
+    );
+    assert!(
+        dxf.contains("  2\nvalley\n 70\n0\n 62\n5\n  6\nDASHED\n"),
+        "{dxf}"
+    );
+    // Five line types: ByBlock, ByLayer, Continuous, DASHED, DASHDOT.
+    assert!(
+        dxf.contains("  2\nLTYPE\n  5\n5\n330\n0\n100\nAcDbSymbolTable\n 70\n5\n"),
+        "{dxf}"
+    );
+    let (svg, _) = write_svg(&both, &SvgOptions::default()).unwrap();
+    assert!(svg.contains("stroke-dasharray=\"4 1 0.4 1\""), "{svg}");
+    assert!(svg.contains("stroke-dasharray=\"2 1\""), "{svg}");
+    // A dot without a dash is refused.
+    both.layers[2].dash = None;
+    assert!(matches!(write_dxf(&both), Err(DrawingError::Option(_))));
+    assert!(write_svg(&both, &SvgOptions::default()).is_err());
 }

@@ -348,6 +348,15 @@ pub fn write_svg(
         report = out.report;
         // A dashed layer: dashes of its length, gaps half as long.
         let dashes = match layer.dash {
+            // Dash, gap, dot, gap: the dot a tenth of the dash, so it shows
+            // with the stroke's butt ends.
+            Some(dash) if layer.dot => format!(
+                " stroke-dasharray=\"{} {} {} {}\"",
+                text(dash)?,
+                text(dash * 0.25)?,
+                text(dash * 0.1)?,
+                text(dash * 0.25)?
+            ),
             Some(dash) => format!(
                 " stroke-dasharray=\"{} {}\"",
                 text(dash)?,

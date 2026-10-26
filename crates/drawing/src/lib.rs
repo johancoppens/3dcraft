@@ -361,6 +361,11 @@ pub struct Layer {
     /// the drawing's unit: a DXF line type `DASHED`, an SVG
     /// `stroke-dasharray`. `None`: a continuous line.
     pub dash: Option<f64>,
+    /// With `dash`: a dot in each gap (dash, gap, dot, gap, the gaps a
+    /// quarter of the dash): a DXF line type `DASHDOT`, an SVG
+    /// `stroke-dasharray` of four. The chain line drawings and crease
+    /// patterns draw mountain folds with.
+    pub dot: bool,
     pub paths: Vec<Path>,
 }
 
@@ -772,6 +777,11 @@ impl Drawing {
                 .is_some_and(|dash| !(dash.is_finite() && dash > 0.0))
             {
                 return Err(DrawingError::Option("a dash must be positive and finite"));
+            }
+            if layer.dot && layer.dash.is_none() {
+                return Err(DrawingError::Option(
+                    "a dash-dot layer needs the length of its dashes",
+                ));
             }
             for (path_index, path) in layer.paths.iter().enumerate() {
                 path.check(index, path_index)?;

@@ -31,6 +31,7 @@ mod entity;
 mod extrude;
 mod face_ops;
 mod fillet;
+mod fold;
 mod follow;
 mod loft;
 mod move_face;
@@ -63,6 +64,7 @@ pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
+pub use fold::{FoldAnalysis, fold_analysis};
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
@@ -1189,6 +1191,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
         FeatureKind::OffsetProfile(_) => return Err("an offset has no body".to_string()),
         FeatureKind::Fill(_) => return Err("a fill needs its sketch".to_string()),
+        FeatureKind::Fold(_) => return Err("a fold needs its sketch".to_string()),
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
@@ -1666,6 +1669,16 @@ fn build_feature(
         match made {
             Ok((body, named)) => {
                 names = Some(Arc::new(named));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Fold(folding) = &feature.kind {
+        match fold::build(doc, variables, feature.id, folding, earlier)
+            .and_then(|(body, made_names)| checked(doc, body).map(|body| (body, made_names)))
+        {
+            Ok((body, made_names)) => {
+                names = Some(Arc::new(made_names));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

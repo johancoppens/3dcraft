@@ -61,6 +61,9 @@ pub struct Folded {
 const STEP: f64 = PI / 18.0;
 const MAX_STEPS: usize = 18;
 const MAX_ITERATIONS: usize = 60;
+/// How far the first step's guesses turn the unknown creases, in units of
+/// the largest given angle.
+const FIRST_GUESSES: [f64; 4] = [1.0, 3.0, 0.3, 10.0];
 /// A pivot of the scaled normal equations below this leaves its crease
 /// undetermined.
 const RANK_PIVOT: f64 = 1e-10;
@@ -392,27 +395,64 @@ pub fn fold(
     let mut exhausted = false;
     if largest > 0.0 && !free.is_empty() {
         let steps = ((largest / STEP).ceil() as usize).clamp(1, MAX_STEPS);
+        let weight = span.max(f64::MIN_POSITIVE);
         let mut previous: Option<Vec<f64>> = None;
         for step in 1..=steps {
             let scale = step as f64 / steps as f64;
             let base = given(scale);
-            // The guess: the unknown creases turned the way their kinds
-            // say, as far as the largest given one; later steps go on from
-            // the last two.
-            let guess: Vec<f64> = match &previous {
-                None => signs.iter().map(|s| s * largest * scale).collect(),
-                Some(before) => x
+            // The guesses: on the first step the unknown creases turned the
+            // way their kinds say, as far as the largest given one, then
+            // three and a third and ten times as far, until one closes with
+            // every crease turned its kind's way (near the flat sheet the
+            // branches of a vertex meet, and the kinds pick one); later
+            // steps go on from the last two.
+            let guesses: Vec<Vec<f64>> = match &previous {
+                None => FIRST_GUESSES
                     .iter()
-                    .zip(before)
-                    .map(|(now, was)| 2.0 * now - was)
+                    .map(|f| signs.iter().map(|s| s * largest * scale * f).collect())
                     .collect(),
+                Some(before) => vec![
+                    x.iter()
+                        .zip(before)
+                        .map(|(now, was)| 2.0 * now - was)
+                        .collect(),
+                ],
             };
             previous = Some(x.clone());
-            x = guess;
-            let (solved, ran_out) = levenberg(arr, &forest, &loops, &base, &free, &column, x, goal)
+            let mut best: Option<(f64, Vec<f64>, bool)> = None;
+            for guess in guesses {
+                let (solved, ran_out) = levenberg(
+                    arr,
+                    &forest,
+                    &loops,
+                    &base,
+                    (&free, &column, &signs),
+                    guess,
+                    (goal, weight),
+                )
                 .ok_or_else(broken)?;
-            x = solved;
-            exhausted = ran_out;
+                let mut rho_try = base.clone();
+                for (c, &k) in free.iter().enumerate() {
+                    if let (Some(slot), Some(&v)) = (rho_try.get_mut(k), solved.get(c)) {
+                        *slot = v;
+                    }
+                }
+                let here = rows(arr, &forest, &loops, &rho_try, None).ok_or_else(broken)?;
+                let wrong = solved.iter().zip(&signs).any(|(v, s)| s * v < -angular);
+                let score = largest_gap(&here);
+                let good = score <= goal.max(tol * 1e-2) && !wrong;
+                let better = best.as_ref().is_none_or(|(b, ..)| score < *b);
+                if good || better {
+                    best = Some((score, solved, ran_out));
+                }
+                if good {
+                    break;
+                }
+            }
+            if let Some((_, solved, ran_out)) = best {
+                x = solved;
+                exhausted = ran_out;
+            }
         }
     }
     for (c, &k) in free.iter().enumerate() {
@@ -480,18 +520,29 @@ pub fn fold(
 
 /// Levenberg–Marquardt on the loops' gaps from `x`; the solution and
 /// whether the iterations ran out first.
-#[allow(clippy::too_many_arguments)]
 fn levenberg(
     arr: &Arrangement,
     forest: &Forest,
     loops: &[(usize, Vec<usize>, Vec<usize>)],
     base: &[f64],
-    free: &[usize],
-    column: &[Option<usize>],
+    (free, column, signs): (&[usize], &[Option<usize>], &[f64]),
     mut x: Vec<f64>,
-    goal: f64,
+    (goal, weight): (f64, f64),
 ) -> Option<(Vec<f64>, bool)> {
     let n = free.len();
+    // The crease's kind says which way it turns: an unknown turned the
+    // other way costs `weight` (the sheet's size) per radian, as a gap
+    // would. Zero at every solution that keeps the kinds, so it only
+    // keeps the solve off the branches that do not.
+    let penalty = |x: &[f64]| -> f64 {
+        x.iter()
+            .zip(signs)
+            .map(|(v, s)| {
+                let wrong = (s * v).min(0.0) * weight;
+                wrong * wrong
+            })
+            .sum()
+    };
     let with = |x: &[f64]| -> Vec<f64> {
         let mut rho = base.to_vec();
         for (c, &k) in free.iter().enumerate() {
@@ -507,8 +558,18 @@ fn levenberg(
         if largest_gap(&now) <= goal {
             return Some((x, false));
         }
-        let c0 = cost(&now);
-        let (gram, grad) = normal(&now, n);
+        let c0 = cost(&now) + penalty(&x);
+        let (mut gram, mut grad) = normal(&now, n);
+        for (i, (v, s)) in x.iter().zip(signs).enumerate() {
+            if s * v < 0.0 {
+                if let Some(d) = gram.get_mut(i * n + i) {
+                    *d += weight * weight;
+                }
+                if let Some(g) = grad.get_mut(i) {
+                    *g += weight * weight * v;
+                }
+            }
+        }
         let mut moved = false;
         for _ in 0..12 {
             let mut a = gram.clone();
@@ -521,7 +582,7 @@ fn levenberg(
             if solve_dense(&mut a, &mut b, n).is_some() {
                 let trial: Vec<f64> = x.iter().zip(&b).map(|(x, d)| x + d).collect();
                 let rows_trial = rows(arr, forest, loops, &with(&trial), None)?;
-                if cost(&rows_trial) < c0 {
+                if cost(&rows_trial) + penalty(&trial) < c0 {
                     x = trial;
                     lambda = (lambda / 3.0).max(1e-15);
                     moved = true;

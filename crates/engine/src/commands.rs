@@ -2241,6 +2241,8 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
         ),
         FeatureKind::Fill(_) => ("fill", vec![("sketch", Slot::Elsewhere)]),
+        // Its creases and fixed point are changed by fold.edit.
+        FeatureKind::Fold(_) => ("fold", vec![("sketch", Slot::Elsewhere)]),
         FeatureKind::Split(_) => ("split", vec![("source", Slot::Elsewhere)]),
         // What an import is, is the file: import it again to change it.
         FeatureKind::Import(_) => ("import", Vec::new()),
@@ -2568,6 +2570,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             }
         }
         FeatureKind::Fill(fill) => fill.sketch = new_sketch.unwrap_or(fill.sketch),
+        FeatureKind::Fold(fold) => fold.sketch = new_sketch.unwrap_or(fold.sketch),
         FeatureKind::OffsetProfile(offset) => {
             offset.sketch = new_sketch.unwrap_or(offset.sketch);
             if let Some(corners) = crate::offset_cmds::corners_param(&p, "feature.edit")? {

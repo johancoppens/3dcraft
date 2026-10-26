@@ -657,6 +657,37 @@ pub enum FeatureKind {
         solid: u32,
         sha256: String,
     },
+    /// A sheet folded along a crease pattern: the closed profiles of the
+    /// other lines of sketch `sketch` bound the sheet, `creases` are its
+    /// lines by entity id, each a mountain, valley or cut with its fold
+    /// angle (absent: solved), and `fixed` (absent: the largest facet) is
+    /// a point in the facet that stays in place (format version 38).
+    Fold {
+        sketch: u64,
+        creases: Vec<FoldCrease>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fixed: Option<[String; 2]>,
+    },
+}
+
+/// A crease of a fold: a line of the sketch by entity id, `mountain`,
+/// `valley` or `cut`, and its fold angle when it is given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FoldCrease {
+    pub line: u64,
+    pub kind: CreaseKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<String>,
+}
+
+/// How a crease folds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CreaseKind {
+    Mountain,
+    Valley,
+    Cut,
 }
 
 /// How an offset profile goes round a corner where its curves part.

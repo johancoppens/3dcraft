@@ -634,6 +634,34 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
             }) => manifest::FeatureKind::Fill { sketch: *sketch },
+            doc::FeatureKind::Fold(doc::Fold {
+                sketch: doc::FeatureId(sketch),
+                creases,
+                fixed,
+            }) => manifest::FeatureKind::Fold {
+                sketch: *sketch,
+                creases: creases
+                    .iter()
+                    .map(
+                        |doc::Crease {
+                             line: doc::EntityId(line),
+                             kind,
+                             angle,
+                         }| manifest::FoldCrease {
+                            line: *line,
+                            kind: match kind {
+                                doc::CreaseKind::Mountain => manifest::CreaseKind::Mountain,
+                                doc::CreaseKind::Valley => manifest::CreaseKind::Valley,
+                                doc::CreaseKind::Cut => manifest::CreaseKind::Cut,
+                            },
+                            angle: angle.as_ref().map(expr_to_manifest),
+                        },
+                    )
+                    .collect(),
+                fixed: fixed
+                    .as_ref()
+                    .map(|[x, y]| [expr_to_manifest(x), expr_to_manifest(y)]),
+            },
             doc::FeatureKind::Split(doc::Split {
                 source: doc::FeatureId(source),
                 face,
@@ -1900,6 +1928,26 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
             }),
             manifest::FeatureKind::Fill { sketch } => doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
+            }),
+            manifest::FeatureKind::Fold {
+                sketch,
+                creases,
+                fixed,
+            } => doc::FeatureKind::Fold(doc::Fold {
+                sketch: doc::FeatureId(sketch),
+                creases: creases
+                    .into_iter()
+                    .map(|manifest::FoldCrease { line, kind, angle }| doc::Crease {
+                        line: doc::EntityId(line),
+                        kind: match kind {
+                            manifest::CreaseKind::Mountain => doc::CreaseKind::Mountain,
+                            manifest::CreaseKind::Valley => doc::CreaseKind::Valley,
+                            manifest::CreaseKind::Cut => doc::CreaseKind::Cut,
+                        },
+                        angle: angle.map(doc::Expr),
+                    })
+                    .collect(),
+                fixed: fixed.map(|[x, y]| [doc::Expr(x), doc::Expr(y)]),
             }),
             manifest::FeatureKind::Split {
                 source,
