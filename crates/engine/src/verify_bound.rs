@@ -72,6 +72,10 @@ enum Kind {
 
 /// A stratum: (side, part, kind, index in the body).
 type Key = (u8, usize, Kind, usize);
+/// A pair of faces: (part, face) of each side.
+pub(crate) type FacePair = ((usize, usize), (usize, usize));
+/// An edge's pieces: their ranges and boxes.
+type Leaves = Option<Vec<((f64, f64), Bbox3)>>;
 
 /// What a stratum's kind is turned about or drawn along.
 #[derive(Clone, Copy, Debug)]
@@ -114,7 +118,7 @@ struct Bound<'a> {
     bbox: Bbox3,
     /// The boxes of its range cut in [`LEAVES`] equal pieces, made when
     /// first asked (`None` inside: a piece could not be enclosed).
-    leaves: std::cell::OnceCell<Option<Vec<((f64, f64), Bbox3)>>>,
+    leaves: std::cell::OnceCell<Leaves>,
 }
 
 /// How many pieces an edge's boxes are kept for at once.
@@ -1077,7 +1081,7 @@ fn strata(part: &Part<'_>, side: u8, part_index: usize, face: usize) -> Vec<Key>
 pub(crate) fn prove(
     a: &[Part<'_>],
     b: &[Part<'_>],
-    pairs: &[((usize, usize), (usize, usize))],
+    pairs: &[FacePair],
     found: f64,
     close: f64,
     tol: f64,
@@ -1093,7 +1097,7 @@ pub(crate) fn prove(
     let mut nearer: Option<Nearer> = None;
     // Pairs of strata, once each, with the pairs of faces they belong to.
     let mut stratum_pairs: BTreeMap<(usize, usize), usize> = BTreeMap::new();
-    let mut pair_faces: Vec<((usize, usize), (usize, usize))> = Vec::new();
+    let mut pair_faces: Vec<FacePair> = Vec::new();
     let mut per_face: Vec<Option<Vec<usize>>> = Vec::new();
     for &(fa, fb) in pairs {
         let (Some(part_a), Some(part_b)) = (a.get(fa.0), b.get(fb.0)) else {
@@ -1278,7 +1282,7 @@ fn consider(
     a: usize,
     b: usize,
     pair: usize,
-    pair_faces: &[((usize, usize), (usize, usize))],
+    pair_faces: &[FacePair],
     best: &mut f64,
     nearer: &mut Option<Nearer>,
     least: &mut [f64],

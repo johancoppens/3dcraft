@@ -32,6 +32,7 @@ fn new() -> Session {
 /// Measures `id` and checks that the value found is `want` within
 /// `found_tol` and the proven bound is within `proof_tol` of the value
 /// found (and never above it). Returns (found, proven).
+#[allow(clippy::too_many_arguments)]
 fn measured(
     s: &mut Session,
     id: &str,
