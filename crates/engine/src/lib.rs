@@ -76,6 +76,7 @@ mod table_cmds;
 pub mod task_score;
 mod typed;
 mod verify;
+mod verify_bound;
 mod verify_cmds;
 mod view_export;
 mod visibility_cmds;

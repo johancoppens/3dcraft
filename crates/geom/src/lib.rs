@@ -15,6 +15,7 @@ mod nurbs;
 pub mod offset;
 pub mod pole;
 pub mod refine;
+pub mod support;
 mod surface;
 mod transform;
 

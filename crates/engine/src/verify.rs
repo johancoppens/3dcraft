@@ -54,6 +54,8 @@ pub(crate) struct Part<'a> {
     /// triangles cover it exactly), the chordal tolerance otherwise (the
     /// tessellator's promise).
     pub err: Vec<f64>,
+    /// The document's linear tolerance.
+    pub linear: f64,
 }
 
 impl<'a> Part<'a> {
@@ -133,6 +135,7 @@ impl<'a> Part<'a> {
             every,
             every_boxes,
             err,
+            linear: tolerance.linear,
         })
     }
 
@@ -359,10 +362,14 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     let mut best = f64::INFINITY;
     let mut work = 0_u64;
     let mut found: Vec<(f64, Key, Vec3, Vec3)> = Vec::new();
-    let mut lower = f64::INFINITY;
+    // Per pair of faces compared: what the mesh proves.
+    let mut meshed: Vec<(Key, f64)> = Vec::new();
+    // The pairs not compared are at least this far apart.
+    let mut beyond = f64::INFINITY;
     let err = |parts: &[Part<'_>], (i, f): (usize, usize)| parts.get(i).map_or(chord, |p| p.err(f));
     for (box_distance, (ka, kb)) in pairs {
         if box_distance > best + slack {
+            beyond = box_distance;
             break;
         }
         let (ta, tb) = (tris(a, ka), tris(b, kb));
@@ -392,11 +399,13 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         }
         if let Some((d, p, q)) = pair_best {
             found.push((d, (ka, kb), p, q));
-            lower = lower.min(d - err(a, ka) - err(b, kb));
+            // Triangle pairs left out were further than `best + slack`.
+            let d = d.min(best + slack);
+            meshed.push(((ka, kb), d - err(a, ka) - err(b, kb)));
         }
         // A face pair without triangles: from points of their edges.
         if ta.is_empty() || tb.is_empty() {
-            lower = lower.min(box_distance);
+            meshed.push(((ka, kb), box_distance));
             found.push((f64::INFINITY, (ka, kb), Vec3::ZERO, Vec3::ZERO));
         }
     }
@@ -434,6 +443,41 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         }
     }
     let mut answer = answer.ok_or("the nearest places could not be settled on the exact faces")?;
+    // What the mesh cannot prove close enough, the exact faces do
+    // (verify_bound.rs): per pair of faces the better of the two.
+    let linear = a
+        .iter()
+        .chain(b.iter())
+        .map(|p| p.linear)
+        .fold(0.0_f64, f64::max);
+    let close = (0.25 * linear).max(1e-12 * answer.distance);
+    let short: Vec<Key> = meshed
+        .iter()
+        .filter(|(_, l)| *l < answer.distance - close)
+        .map(|(k, _)| *k)
+        .collect();
+    let mut proven: BTreeMap<Key, f64> = BTreeMap::new();
+    if !short.is_empty() && answer.distance > close {
+        let proof = crate::verify_bound::prove(a, b, &short, answer.distance, close, linear);
+        for (key, lower) in short.iter().zip(proof.lower) {
+            if let Some(lower) = lower {
+                proven.insert(*key, lower);
+            }
+        }
+        if let Some(n) = proof.nearer
+            && n.distance < answer.distance
+        {
+            answer.distance = n.distance;
+            answer.a = n.a;
+            answer.b = n.b;
+            answer.face_a = n.face_a;
+            answer.face_b = n.face_b;
+        }
+    }
+    let lower = meshed
+        .iter()
+        .map(|(k, l)| proven.get(k).map_or(*l, |p| p.max(*l)))
+        .fold(beyond, f64::min);
     answer.lower = lower.min(answer.distance).max(0.0);
     Ok(answer)
 }
