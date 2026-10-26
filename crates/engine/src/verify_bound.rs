@@ -676,15 +676,19 @@ where
 
     /// How much cutting `rec` along each direction would gain against
     /// direction `d`; `None` for a direction that cannot be cut further.
-    fn spread(&self, rec: &Rec, d: Vec3) -> [Option<f64>; 2] {
+    fn spread(&self, rec: &Rec, d: Option<Vec3>) -> [Option<f64>; 2] {
         let narrow = |r: (f64, f64)| r.1 - r.0 <= 1e-12 * (1.0 + r.0.abs().max(r.1.abs()));
         // How much `d · x` spreads along the direction (its change end to
         // end and the bow at the middle); a millionth of the length breaks
         // ties where it does not spread at all (a flat piece square to d).
+        // Without a direction (pieces whose boxes meet), how long it is.
         let score = |p0: Vec3, p1: Vec3, pm: Vec3| {
             let len = p1.distance(p0);
             let bend = pm.distance((p0 + p1) * 0.5);
-            d.dot(p1 - p0).abs() + 4.0 * bend + 1e-6 * len
+            match d {
+                Some(d) => d.dot(p1 - p0).abs() + 4.0 * bend + 1e-6 * len,
+                None => len + 4.0 * bend,
+            }
         };
         let Some(prim) = self.prims.get(rec.prim) else {
             return [None, None];
@@ -1133,20 +1137,12 @@ pub(crate) fn prove(
         let (Some(ra), Some(rb)) = (search.recs.get(node.a), search.recs.get(node.b)) else {
             continue;
         };
-        if work > MAX_NODES - 6 {
-            eprintln!(
-                "TRACE node {} a {:?} {:?} in {} | b {:?} {:?} in {}",
-                node.bound,
-                ra.param,
-                ra.bbox.corners(),
-                ra.inside,
-                rb.param,
-                rb.bbox.corners(),
-                rb.inside
-            );
-        }
+        // Pieces whose boxes meet are cut by size; apart, along the line
+        // between them.
         let c = center(&rb.bbox) - center(&ra.bbox);
-        let d = c.normalized().unwrap_or(Vec3::Z);
+        let d = c
+            .normalized()
+            .filter(|_| boxes_distance(&ra.bbox, &rb.bbox) > 0.0);
         let (mut sa, mut sb) = (search.spread(ra, d), search.spread(rb, d));
         // Where neither spreads along d, the larger piece.
         let flat = |s: &[Option<f64>; 2], r: &Rec| {
