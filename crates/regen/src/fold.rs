@@ -111,8 +111,12 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             curve(*id)
         ),
         FoldError::NotFollowed { at } => format!(
-            "the fold could not be followed from the flat sheet past {:.6} degrees of its largest angle: no step found a fold that follows on from the last (a solved crease would jump, or turn against its kind)",
+            "the fold could not be followed from the flat sheet past {:.6} degrees of its largest angle: no step, however small, found a fold that follows on from the last along its tangent (or the first step found no branch through the flat sheet that keeps the kinds)",
             at.to_degrees()
+        ),
+        FoldError::Bifurcation { ids } => format!(
+            "partway the fold reaches a bifurcation at {}: there the solved creases can go on more than one way (or the fold stops), so the given angles do not say how; give one of them an angle",
+            list(ids)
         ),
         FoldError::TooMuchWork => format!(
             "the fold needs more work than its budget ({} steps): give more creases an angle",

@@ -32,7 +32,7 @@ pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
 pub use collide::{FacetMeeting, Meeting, first_meeting};
 pub use sheet::folded_sheet;
-pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, RATIO, fold_linkage};
+pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage};
 
 pub(crate) use crate::profile::{P2, cross, distance as dist, dot, sub};
 use craft3d_math::{Bbox3, Transform, Vec3};
@@ -160,6 +160,10 @@ pub enum FoldError {
     NotFollowed { at: f64 },
     /// The fold needs more work than [`MAX_WORK`].
     TooMuchWork,
+    /// Partway through the fold the solved joints `ids` have no tangent:
+    /// a bifurcation (or a branch that stops), where the fold does not go
+    /// on one way.
+    Bifurcation { ids: Vec<u64> },
     /// Two facets of the folded sheet pass through each other or touch
     /// (other than along the creases and at the vertices they share).
     Meets(Meeting),
@@ -230,6 +234,9 @@ impl fmt::Display for FoldError {
                 "the fold could not be followed from the flat sheet past {at} rad"
             ),
             FoldError::TooMuchWork => write!(f, "the fold needs more work than {MAX_WORK} steps"),
+            FoldError::Bifurcation { ids } => {
+                write!(f, "the fold reaches a bifurcation at creases {ids:?}")
+            }
             FoldError::Build(reason) => write!(f, "{reason}"),
         }
     }

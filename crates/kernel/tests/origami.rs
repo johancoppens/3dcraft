@@ -538,6 +538,36 @@ fn a_miura_ori_sheet_folds_with_one_degree_of_freedom_by_its_closed_form() {
 }
 
 #[test]
+fn a_miura_ori_sheet_of_steep_parallelograms_folds_by_its_closed_form() {
+    // The parallelograms' acute angle 88 degrees: the zigzag creases fold
+    // 1 / cos 88° = 28.7 times as fast as the straight ones near flat.
+    let gamma = 88f64.to_radians();
+    let (l, h) = (1.0, 1.0);
+    let d = h / gamma.tan();
+    let (boundary, creases) = miura(1.0, 3, 3, l, d, h);
+    let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
+    let driver = creases
+        .iter()
+        .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+        .unwrap()
+        .id;
+    for degrees in [2.0f64, 10.0, 30.0] {
+        let rho = degrees.to_radians();
+        let folded = fold(&arr, &angles(&arr, &[(driver, rho)]), 0, tol(1.0), ANGULAR).unwrap();
+        let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+        for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
+            let c = &arr.creases[hinge.crease];
+            let want = if c.start[1] == c.end[1] { rho } else { zig };
+            assert!(
+                close(a.abs(), want, 1e-8),
+                "{degrees}: crease {} folds {a} not {want}",
+                c.id
+            );
+        }
+    }
+}
+
+#[test]
 fn a_strip_folded_back_on_itself_touches_then_passes_through() {
     for scale in SCALES {
         let boundary = polygon(&[
@@ -774,19 +804,20 @@ fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
         );
     }
     // Mode B of a vertex whose sectors nearly pair up (61 and 59 degrees):
-    // near the flat sheet its solved creases move 50 times as fast as the
-    // driving one, past the continuation's ratio of 15: refused, not
-    // guessed.
+    // near the flat sheet its solved creases fold 50 times as fast as the
+    // driving one. It folds, by the closed form.
     let (a2, b2) = (61f64.to_radians(), 59f64.to_radians());
     let steep = single_vertex(1.0, &[0.0, a2, a2 + b2, PI + b2], &[V, V, M, V]);
-    let e = fold(
-        &steep,
-        &angles(&steep, &[(10, 10f64.to_radians())]),
-        0,
-        t,
-        ANGULAR,
-    );
-    assert!(matches!(e, Err(FoldError::NotFollowed { .. })), "{e:?}");
+    let q = ((a2 + b2) / 2.0).sin() / ((a2 - b2) / 2.0).sin();
+    for degrees in [1.0f64, 3.0, 10.0] {
+        let r1 = degrees.to_radians();
+        let folded = fold(&steep, &angles(&steep, &[(10, r1)]), 0, t, ANGULAR).unwrap();
+        let r2 = 2.0 * (q * (r1 / 2.0).tan()).atan();
+        for (id, w) in (10..14).zip([r1, r2, -r1, r2]) {
+            let got = solved(&steep, &folded, id)[0];
+            assert!(close(got, w, 1e-8), "{degrees}: e{id} {got} vs {w}");
+        }
+    }
     // A facet that cannot be placed is an error, never "no contact".
     let mut folded = fold(&arr, &angles(&arr, &[(10, 0.3)]), 0, t, ANGULAR).unwrap();
     folded.transforms.pop();

@@ -23,9 +23,11 @@
 //! the exact derivative: turning joint `k` moves a point `X` beyond it by
 //! `s D × (X − P)` per radian, `P` and `D` its axis as its parent body
 //! has it. The given angles are reached from the flat sheet by
-//! continuation: each step's solution must follow on from the last one
-//! (no solved angle moves by more than [`RATIO`] times the step of the
-//! given ones), and a step that does not is halved. At the end the
+//! continuation: the first step picks the branch through the flat sheet
+//! by the kinds (and checks it is one, by halving), every later step is
+//! predicted along the tangent (`J_free dx = −J_given dg`) and corrected;
+//! a step whose corrector strays from the prediction is halved, and a
+//! tangent that does not exist (a bifurcation) is refused by name. At the end the
 //! solution must close within the tolerance, have full rank and turn
 //! every solved joint its kind's way.
 
@@ -109,13 +111,11 @@ pub struct Folded {
 /// from the flat sheet (1 degree).
 const MAX_STEP: f64 = PI / 18.0;
 const FIRST_STEP: f64 = PI / 180.0;
-/// A step is accepted only when no solved angle moved by more than this
-/// many times the largest given angle's step (plus the angular
-/// tolerance): the solution follows on from the last one.
-pub const RATIO: f64 = 15.0;
 /// The first step's guesses, in units of its given step: every unknown
-/// turned its kind's way by this much (all within [`RATIO`]).
-const FIRST_GUESSES: [f64; 4] = [1.0, 3.0, 0.3, 10.0];
+/// turned its kind's way by this much, at most [`FIRST_CAP`]. Which one is
+/// taken is decided by the half-step test, not by the guess.
+const FIRST_GUESSES: [f64; 5] = [1.0, 3.0, 10.0, 30.0, 100.0];
+const FIRST_CAP: f64 = PI * 17.0 / 18.0;
 /// A step is halved at most this many times in a row.
 const MAX_HALVINGS: usize = 24;
 const MAX_ITERATIONS: usize = 60;
@@ -452,70 +452,102 @@ pub fn fold_linkage(
         weight: size,
     };
 
-    // Continuation from the flat sheet.
+    // Continuation from the flat sheet: a first step by the kinds, then a
+    // tangent predictor and a corrector.
     let mut x = vec![0.0; free.len()];
     let mut exhausted = false;
     if largest > 0.0 && !free.is_empty() {
+        // A guess solved at `base`: the solution when it closes within the
+        // tolerance with every solved joint its kind's way.
+        let attempt = |base: &[f64],
+                       guess: Vec<f64>,
+                       budget: &mut Budget|
+         -> Result<Option<(Vec<f64>, bool)>, FoldError> {
+            let (solved, ran_out) = match solver.levenberg(base, guess, budget) {
+                Ok(found) => found,
+                Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+                Err(_) => return Ok(None),
+            };
+            let here = match rows(
+                link,
+                &forest,
+                &loops,
+                &solver.with(base, &solved),
+                None,
+                budget,
+            ) {
+                Ok(here) => here,
+                Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+                Err(_) => return Ok(None),
+            };
+            let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
+            Ok((largest_gap(&here) <= tol && kinds).then_some((solved, ran_out)))
+        };
+        let size_of = |v: &[f64]| v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
         let mut done = 0.0f64;
         let mut h = (FIRST_STEP / largest).min(1.0);
-        let mut last_step: Option<(Vec<f64>, f64)> = None;
         let mut halvings = 0usize;
+        let mut first = true;
         while done < 1.0 {
             let target = (done + h).min(1.0);
-            let step = (target - done) * largest;
             let base = given(target);
-            let guesses: Vec<Vec<f64>> = match &last_step {
-                None => FIRST_GUESSES
-                    .iter()
-                    .map(|f| signs.iter().map(|s| s * step * f).collect())
-                    .collect(),
-                // On from the last two solutions, scaled to this step.
-                Some((before, last_h)) => {
-                    let r = (target - done) / last_h;
-                    vec![
-                        x.iter()
-                            .zip(before)
-                            .map(|(now, was)| now + (now - was) * r)
-                            .collect(),
-                    ]
-                }
-            };
             let mut found = None;
-            for guess in guesses {
-                // A guess that runs into motions that are not finite is a
-                // guess that failed; only the budget ends the fold.
-                let (solved, ran_out) = match solver.levenberg(&base, guess, &mut budget) {
-                    Ok(found) => found,
-                    Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
-                    Err(_) => continue,
-                };
-                let here = match rows(
-                    link,
-                    &forest,
-                    &loops,
-                    &solver.with(&base, &solved),
-                    None,
-                    &mut budget,
-                ) {
-                    Ok(here) => here,
-                    Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
-                    Err(_) => continue,
-                };
-                let follows = solved
-                    .iter()
-                    .zip(&x)
-                    .all(|(now, was)| (now - was).abs() <= RATIO * step + angular);
-                let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
-                if largest_gap(&here) <= tol && follows && kinds {
-                    found = Some((solved, ran_out));
-                    break;
+            if first {
+                // At the flat sheet the branches meet and there is no
+                // tangent: the kinds pick the branch. A solution is taken
+                // when it lies on a branch through the flat sheet: solved
+                // again at half the step, it is half as far (within a
+                // quarter), as every smooth branch through the flat sheet
+                // is near it, whatever its slope.
+                let step = (target - done) * largest;
+                for f in FIRST_GUESSES {
+                    let guess: Vec<f64> = signs
+                        .iter()
+                        .map(|s| s * (step * f).min(FIRST_CAP))
+                        .collect();
+                    let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
+                        continue;
+                    };
+                    let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
+                    let Some((half, _)) =
+                        attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
+                    else {
+                        continue;
+                    };
+                    let off = half
+                        .iter()
+                        .zip(&half_guess)
+                        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+                    if off <= 0.25 * size_of(&half_guess) + angular {
+                        found = Some((solved, ran_out));
+                        break;
+                    }
+                }
+            } else {
+                // Predict along the tangent: J_free dx = −J_given dg at the
+                // last solution; correct from there. Taken when the
+                // corrector lands within a quarter of the predicted motion.
+                let now = given(done);
+                let dg: Vec<f64> = base.iter().zip(&now).map(|(a, b)| a - b).collect();
+                let dx = solver.tangent(&solver.with(&now, &x), &dg, &mut budget)?;
+                let moved = size_of(&dx);
+                let predicted: Vec<f64> = x.iter().zip(&dx).map(|(a, d)| a + d).collect();
+                if let Some((solved, ran_out)) = attempt(&base, predicted.clone(), &mut budget)? {
+                    let off = solved
+                        .iter()
+                        .zip(&predicted)
+                        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+                    if off <= 0.25 * moved + angular {
+                        found = Some((solved, ran_out));
+                    }
                 }
             }
             match found {
                 Some((solved, ran_out)) => {
-                    last_step = Some((std::mem::replace(&mut x, solved), target - done));
+                    x = solved;
                     exhausted = ran_out;
                     done = target;
+                    first = false;
                     halvings = 0;
                     h = (h * 2.0).min(MAX_STEP / largest);
                 }
@@ -620,6 +652,75 @@ impl Solver<'_> {
             }
         }
         rho
+    }
+
+    /// The tangent of the branch: the motion `dx` of the solved angles
+    /// for a change `dg` of the given ones (per joint) at the angles `rho`,
+    /// from `J_free dx = −J_given dg` in least squares. Fails, naming the
+    /// joints, where `J_free` is singular: a bifurcation, where the branch
+    /// does not go on one way.
+    fn tangent(&self, rho: &[f64], dg: &[f64], budget: &mut Budget) -> Result<Vec<f64>, FoldError> {
+        let n = self.free.len();
+        let free_rows = rows(
+            self.link,
+            self.forest,
+            self.loops,
+            rho,
+            Some(self.column),
+            budget,
+        )?;
+        let loose = undetermined(&free_rows, n, budget)?;
+        if !loose.is_empty() {
+            let mut ids: Vec<u64> = loose
+                .iter()
+                .filter_map(|&c| self.free.get(c))
+                .filter_map(|&k| self.link.joints.get(k).map(|j| j.id))
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            return Err(FoldError::Bifurcation { ids });
+        }
+        // Every joint as a column: the free ones first, then the given.
+        let mut all: Vec<Option<usize>> = self.column.to_vec();
+        let mut given_change = Vec::new();
+        for (k, slot) in all.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(n + given_change.len());
+                given_change.push(dg.get(k).copied().unwrap_or(0.0));
+            }
+        }
+        let m = n + given_change.len();
+        let all_rows = rows(self.link, self.forest, self.loops, rho, Some(&all), budget)?;
+        budget.spend(
+            (m as u64)
+                .saturating_pow(2)
+                .saturating_add((n as u64).saturating_pow(3) / 3),
+        )?;
+        let (gram, _) = normal(&all_rows, m);
+        let mut a = vec![0.0; n * n];
+        let mut b = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                if let (Some(slot), Some(&v)) = (a.get_mut(i * n + j), gram.get(i * m + j)) {
+                    *slot = v;
+                }
+            }
+            let mut sum = 0.0;
+            for (g, d) in given_change.iter().enumerate() {
+                sum -= gram.get(i * m + n + g).copied().unwrap_or(0.0) * d;
+            }
+            if let Some(slot) = b.get_mut(i) {
+                *slot = sum;
+            }
+        }
+        solve_dense(&mut a, &mut b, n).ok_or(FoldError::Bifurcation {
+            ids: self
+                .free
+                .iter()
+                .filter_map(|&k| self.link.joints.get(k).map(|j| j.id))
+                .collect(),
+        })?;
+        Ok(b)
     }
 
     /// The kinds' penalty: an unknown turned against its kind costs the
