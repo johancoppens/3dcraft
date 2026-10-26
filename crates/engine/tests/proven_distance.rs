@@ -331,3 +331,48 @@ fn spline_faces_are_proven_close_to_their_distance() {
         "parabola under parabola",
     );
 }
+
+/// Two involutes of one base circle (radius 20) turned 0.05 rad apart are
+/// parallel curves, `20 × 0.05 = 1` apart along every common normal: the
+/// flanks of two teeth with backlash (r1-cleanup 42 and 71), a spline
+/// face at one distance from another all along its profile.
+#[test]
+fn involute_flanks_are_proven_close_to_their_backlash() {
+    let mut s = new();
+    for (name, turn, ends) in [
+        ("A", "0", [["26 mm", "-5 mm"], ["20 mm", "-5 mm"]]),
+        ("B", "0.05", [["25 mm", "10 mm"], ["19 mm", "10 mm"]]),
+    ] {
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"name": name, "plane": "xy"}),
+        );
+        let at = format!("({turn} + t - atan(t)) * 1 rad");
+        run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": name, "x": format!("20 mm * sqrt(1 + t^2) * cos({at})"), "y": format!("20 mm * sqrt(1 + t^2) * sin({at})"), "t": [0.2, 0.8]}),
+        );
+        run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": name, "start": "e2", "segments": [{"line": ends[0]}, {"line": ends[1]}, {"line": "e1"}]}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": name, "distance": "6 mm", "symmetric": true, "name": format!("Tooth{name}")}),
+        );
+    }
+    measured(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "ToothA", "to": "ToothB"}),
+        "clearance",
+        1.0,
+        1e-5,
+        1e-5,
+        "involute flanks",
+    );
+}

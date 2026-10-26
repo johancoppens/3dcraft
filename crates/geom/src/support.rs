@@ -244,7 +244,7 @@ pub fn least_cos(a: f64, b: f64, (t0, t1): (f64, f64)) -> f64 {
         let at = b.atan2(a) + PI;
         let k = ((t0 - at) / TAU).ceil();
         let t = at + k * TAU;
-        if t >= t0 && t <= t1 {
+        if (t0..=t1).contains(&t) {
             least = -m;
         }
     }
@@ -359,7 +359,7 @@ pub fn surface_piece(
                 slope: c.half_angle().tan(),
                 u,
                 v,
-                apex: v.0 <= apex && apex <= v.1,
+                apex: (v.0..=v.1).contains(&apex),
             }
         }
         Surface::Sphere(s) => {
