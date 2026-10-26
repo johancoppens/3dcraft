@@ -828,7 +828,9 @@ fn center_of_mass(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Stri
         let centroid = props
             .centroid
             .ok_or_else(|| format!("`{fname}` has no volume, so no centre of mass"))?;
-        let body_mass = props.volume * material.density * m * m * m;
+        let density = crate::appearance::density(ctx.doc, &material)
+            .map_err(|why| format!("`{fname}`: {why}"))?;
+        let body_mass = props.volume * density * m * m * m;
         if !body_mass.is_finite() {
             return Err(format!("the mass of `{fname}` is not a finite number"));
         }

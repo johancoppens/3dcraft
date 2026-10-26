@@ -1677,6 +1677,15 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             users.push(format!("the set `{}`", set.name));
         }
     }
+    for body in &doc.bodies {
+        if body
+            .exprs()
+            .iter()
+            .any(|expr| mentions(expr.source(), name))
+        {
+            users.push(format!("the colour or material of {}", body.feature));
+        }
+    }
     users
 }
 
@@ -3202,6 +3211,19 @@ pub(crate) fn check_document(
     if only.is_none() {
         for (name, problem) in crate::param_cmds::parameter_problems(doc) {
             problems.push(json!({ "parameter": name, "problem": problem }));
+        }
+        // A colour or a density that follows the variables and does not
+        // evaluate (the body is drawn or weighed without it).
+        if !doc.bodies.is_empty() {
+            let values = crate::appearance::evaluation(doc);
+            for (feature, problem) in crate::appearance::property_errors(doc, values.as_ref()) {
+                let name = doc
+                    .feature(feature)
+                    .map_or_else(|| feature.to_string(), |f| f.name.clone());
+                problems.push(json!({
+                    "feature": feature.to_string(), "name": name, "problem": problem,
+                }));
+            }
         }
     }
     let mut checked = 0;

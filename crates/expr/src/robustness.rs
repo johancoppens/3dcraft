@@ -311,7 +311,7 @@ fn random_expression(rng: &mut XorShift, depth: usize, out: &mut String) {
         3 => {
             let function = rng.pick(&[
                 "sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "exp", "ln", "log10",
-                "sinh", "cosh", "tanh",
+                "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "log2", "sign", "hypot",
             ]);
             out.push_str(function);
             out.push('(');

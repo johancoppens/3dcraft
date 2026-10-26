@@ -406,6 +406,11 @@ impl Document {
                 users.push(format!("assertion `{}`", assertion.name));
             }
         }
+        for body in &self.bodies {
+            if body.exprs().into_iter().any(uses) {
+                users.push(format!("the colour or material of {}", body.feature));
+            }
+        }
         users
     }
 
@@ -462,6 +467,11 @@ impl Document {
         }
         for assertion in &mut doc.assertions {
             for expr in assertion.expect.exprs_mut() {
+                rename(expr)?;
+            }
+        }
+        for body in &mut doc.bodies {
+            for expr in body.exprs_mut() {
                 rename(expr)?;
             }
         }

@@ -23,6 +23,18 @@ use std::f64::consts::PI;
 /// to cut rather than to engrave ("hairline").
 pub const HAIRLINE_MM: f64 = 0.01;
 
+/// What a screen draws instead of the hairline: a line one pixel wide
+/// whatever the zoom (`vector-effect: non-scaling-stroke`), the way
+/// Inkscape draws its own hairline. At its true width of 0.01 mm a line
+/// is a hundredth of a pixel at the size a browser or a viewer opens the
+/// file in, and the page looks empty. Only for `@media screen`: the
+/// `stroke-width` attribute stays the hairline, which is what a laser's
+/// print driver and a cutting service read (an Epilog driver engraves a
+/// line of 0.05 mm instead of cutting it), and a CSS rule beats the
+/// attribute only where the reader applies CSS for a screen. LightBurn
+/// takes every stroke as a line to follow, whatever its width.
+pub const SCREEN_STYLE: &str = "<style type=\"text/css\">@media screen{path{vector-effect:non-scaling-stroke;stroke-width:1px}}</style>\n";
+
 /// The longest arc written as one `A` command: a quarter turn, and a
 /// rounding error more so that a quarter stays one. An SVG arc is given
 /// by its end points and its radii, from which a reader works out the
@@ -316,6 +328,7 @@ pub fn write_svg(
         text(width)?,
         text(height)?,
     ));
+    svg.push_str(SCREEN_STYLE);
     for (index, layer) in drawing.layers.iter().enumerate() {
         if layer.paths.is_empty() {
             continue;

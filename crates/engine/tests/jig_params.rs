@@ -860,7 +860,11 @@ fn a_range_bound_looks_up_a_table() {
         "table.set",
         json!({"name": "scales", "columns": ["scale", "maxNotes"], "rows": [["A", 8], ["B", 10]]}),
     );
-    for (name, expr) in [("scale", "1"), ("N", "6"), ("probe", "scales[scale].maxNotes")] {
+    for (name, expr) in [
+        ("scale", "1"),
+        ("N", "6"),
+        ("probe", "scales[scale].maxNotes"),
+    ] {
         run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
     }
     run(
@@ -943,17 +947,17 @@ fn a_value_off_its_step_is_refused_with_the_nearest_on_it() {
     run(&mut s, "param.set", json!({"values": {"t": "1 mm"}}));
     // Publishing with a value off the step is refused, and so is a
     // default off it.
-    run(&mut s, "variable.set", json!({"name": "m", "expr": "7"}));
+    run(&mut s, "variable.set", json!({"name": "q", "expr": "7"}));
     let e = refused(
         &mut s,
         "variable.publish",
-        json!({"name": "m", "kind": "integer", "step": "2"}),
+        json!({"name": "q", "kind": "integer", "step": "2"}),
     );
     assert!(e.contains("not on its step"), "{e}");
     let e = refused(
         &mut s,
         "variable.publish",
-        json!({"name": "m", "kind": "integer", "min": "1", "step": "2", "default": "4"}),
+        json!({"name": "q", "kind": "integer", "min": "1", "step": "2", "default": "4"}),
     );
     assert!(e.contains("its default 4 is not on its step"), "{e}");
     // A step that moves with the minimum: clamp puts the other parameter

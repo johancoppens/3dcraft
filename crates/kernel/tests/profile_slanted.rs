@@ -135,7 +135,11 @@ fn random_star_shaped_polygons_are_profiles_at_every_scale() {
             // With a gap of half a turn or more between two corners, the
             // side across it passes the centre and may cross others.
             let wide = (0..n).any(|i| {
-                let next = if i + 1 < n { angles[i + 1] } else { angles[0] + TAU };
+                let next = if i + 1 < n {
+                    angles[i + 1]
+                } else {
+                    angles[0] + TAU
+                };
                 next - angles[i] >= 0.9 * std::f64::consts::PI
             });
             if wide {
@@ -155,9 +159,7 @@ fn random_star_shaped_polygons_are_profiles_at_every_scale() {
             let crowded = (0..n).any(|i| {
                 (0..n).any(|j| {
                     let next = (j + 1) % n;
-                    i != j
-                        && i != next
-                        && to_segment(points[i], points[j], points[next]) < 0.04 * k
+                    i != j && i != next && to_segment(points[i], points[j], points[next]) < 0.04 * k
                 })
             });
             if crowded || shoelace(&points) < 1.0 * k * k {

@@ -406,23 +406,33 @@ fn body_to_manifest(body: &doc::BodyProperties) -> manifest::BodyProperties {
     } = body;
     manifest::BodyProperties {
         feature: *feature,
-        appearance: appearance.map(|appearance| {
-            let doc::Appearance {
+        appearance: appearance.as_ref().map(|appearance| {
+            let doc::BodyAppearance {
                 color,
                 metallic,
                 roughness,
             } = appearance;
-            manifest::Appearance {
-                color,
-                metallic,
-                roughness,
+            manifest::BodyAppearance {
+                color: match color {
+                    doc::BodyColor::Fixed(color) => manifest::BodyColor::Fixed(*color),
+                    doc::BodyColor::Exprs(exprs) => {
+                        manifest::BodyColor::Exprs(exprs.clone().map(|e| e.0))
+                    }
+                },
+                metallic: *metallic,
+                roughness: *roughness,
             }
         }),
         material: material.as_ref().map(|material| {
-            let doc::Material { name, density } = material;
+            let doc::Material {
+                name,
+                density,
+                density_expr,
+            } = material;
             manifest::Material {
                 name: name.clone(),
                 density: *density,
+                density_expr: density_expr.as_ref().map(|e| e.0.clone()),
             }
         }),
     }
@@ -437,20 +447,33 @@ fn body_to_doc(body: manifest::BodyProperties) -> doc::BodyProperties {
     doc::BodyProperties {
         feature: doc::FeatureId(feature),
         appearance: appearance.map(|appearance| {
-            let manifest::Appearance {
+            let manifest::BodyAppearance {
                 color,
                 metallic,
                 roughness,
             } = appearance;
-            doc::Appearance {
-                color,
+            doc::BodyAppearance {
+                color: match color {
+                    manifest::BodyColor::Fixed(color) => doc::BodyColor::Fixed(color),
+                    manifest::BodyColor::Exprs(exprs) => {
+                        doc::BodyColor::Exprs(Box::new(exprs.map(doc::Expr)))
+                    }
+                },
                 metallic,
                 roughness,
             }
         }),
         material: material.map(|material| {
-            let manifest::Material { name, density } = material;
-            doc::Material { name, density }
+            let manifest::Material {
+                name,
+                density,
+                density_expr,
+            } = material;
+            doc::Material {
+                name,
+                density,
+                density_expr: density_expr.map(doc::Expr),
+            }
         }),
     }
 }

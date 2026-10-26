@@ -1,0 +1,11 @@
+[
+  ["table.set", {"name": "woods", "columns": ["wood", "red", "green", "blue", "density"], "rows": [["oak", 160, 110, 60, 0.75], ["walnut", 90, 60, 40, 0.65]]}],
+  ["variable.set", {"name": "wood", "expr": "2"}],
+  ["variable.set", {"name": "w", "expr": "40 mm"}],
+  ["variable.set", {"name": "k", "expr": "hypot(3, 4) * sign(-2) * -1"}],
+  ["variable.set", {"name": "t", "expr": "(asinh(sinh(1)) + acosh(cosh(1)) + atanh(tanh(0.5)) * log2(4)) * 2 mm"}],
+  ["feature.block", {"name": "Board", "size": ["w", "k * 4 mm", "t"]}],
+  ["variable.publish", {"name": "wood", "label": "Wood", "kind": "choice", "choicesFrom": "woods"}],
+  ["body.appearance", {"body": "Board", "color": ["woods[wood].red", "woods[wood].green", "woods[wood].blue"], "roughness": 0.6}],
+  ["body.material", {"body": "Board", "name": "Wood", "density": "woods[wood].density g/cm3"}]
+]

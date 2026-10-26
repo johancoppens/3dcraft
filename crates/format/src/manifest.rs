@@ -177,9 +177,30 @@ pub struct FaceProperties {
 pub struct BodyProperties {
     pub feature: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub appearance: Option<Appearance>,
+    pub appearance: Option<BodyAppearance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<Material>,
+}
+
+/// A body's [`Appearance`], whose `color` may also be three expressions
+/// of the variables (red, green and blue, each a plain number from 0 to
+/// 255; version 37).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BodyAppearance {
+    pub color: BodyColor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f64>,
+}
+
+/// `[200, 16, 46]`, or `["woods[wood].red", "120", "if(dark, 40, 90)"]`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BodyColor {
+    Fixed([u8; 3]),
+    Exprs([String; 3]),
 }
 
 /// `color` is sRGB, three bytes. `metallic` and `roughness` lie between
@@ -194,12 +215,16 @@ pub struct Appearance {
     pub roughness: Option<f64>,
 }
 
-/// `density` is in kg/m³, whatever the document's length unit.
+/// `density` is in kg/m³, whatever the document's length unit; with
+/// `density_expr` (version 37), an expression of the variables that gives
+/// a plain number, the density is its value times `density`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Material {
     pub name: String,
     pub density: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density_expr: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

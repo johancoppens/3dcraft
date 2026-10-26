@@ -720,3 +720,174 @@ fn a_3mf_and_a_step_export_carry_the_colours() {
     assert_eq!(step.matches("=COLOUR_RGB(").count(), 3);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A Jig's choice of wood: the plate's colour and density follow it, by a
+/// table lookup and by a condition (plan/r1-cleanup.md items 51 and 62).
+#[test]
+fn a_colour_and_a_density_follow_a_parameter() {
+    let dir = std::env::temp_dir().join(format!("craft3d-colour-exprs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = session_in(Some(&dir));
+    plate_and_pin(&mut s);
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "woods", "columns": ["wood", "red", "green", "blue", "density"],
+               "rows": [["oak", 160, 110, 60, 0.75], ["walnut", 90, 60, 40, 0.65]]}),
+    );
+    run(&mut s, "variable.set", json!({"name": "wood", "expr": "1"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "wood", "kind": "choice", "choicesFrom": "woods"}),
+    );
+    let out = run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Plate", "color": ["woods[wood].red", "woods[wood].green", 60]}),
+    );
+    assert_eq!(
+        out["appearance"],
+        json!({"color": "#a06e3c", "colorExprs": ["woods[wood].red", "woods[wood].green", "60"]})
+    );
+    let out = run(
+        &mut s,
+        "body.material",
+        json!({"body": "Plate", "name": "Wood", "density": "woods[wood].density g/cm3"}),
+    );
+    assert_eq!(out["material"]["densityExpr"], "woods[wood].density");
+    assert!(close(out["material"]["density"].as_f64().unwrap(), 750.0));
+    run(
+        &mut s,
+        "body.material",
+        json!({"body": "Pin", "name": "Pin", "density": "if(wood == 1, 7850, 2700)"}),
+    );
+    let mass = |s: &mut Session, name: &str| inspect_body(s, name)["mass"].as_f64().unwrap();
+    let plate_volume = 40.0 * 30.0 * 10.0 * 1e-9;
+    assert!(close(mass(&mut s, "Plate"), plate_volume * 750.0));
+    // The choice moves the colour, the density and the mass with it.
+    run(&mut s, "param.set", json!({"values": {"wood": "walnut"}}));
+    let plate = inspect_body(&mut s, "Plate");
+    assert_eq!(plate["appearance"]["color"], "#5a3c3c");
+    assert!(close(plate["material"]["density"].as_f64().unwrap(), 650.0));
+    assert!(close(mass(&mut s, "Plate"), plate_volume * 650.0));
+    let pin_volume = PI * 25.0 * 20.0 * 1e-9;
+    assert!(close(mass(&mut s, "Pin"), pin_volume * 2700.0));
+    let faces = scene_faces(&mut s, "F1");
+    assert!(
+        faces.iter().all(|(_, c)| *c == Some([90, 60, 60])),
+        "{faces:?}"
+    );
+    // Saved and opened again, the expressions are kept.
+    run(&mut s, "file.save", json!({"path": "wood.3dcraft"}));
+    let mut t = session_in(Some(&dir));
+    run(&mut t, "file.open", json!({"path": "wood.3dcraft"}));
+    assert_eq!(
+        inspect_body(&mut t, "Plate")["appearance"]["color"],
+        "#5a3c3c"
+    );
+    run(&mut t, "param.set", json!({"values": {"wood": "oak"}}));
+    assert_eq!(
+        inspect_body(&mut t, "Plate")["appearance"]["color"],
+        "#a06e3c"
+    );
+    // Renaming the variable renames it there; deleting it leaves a colour
+    // that does not evaluate: drawn without it, and said by
+    // document.check, not a crash.
+    run(&mut t, "variable.unpublish", json!({"name": "wood"}));
+    run(
+        &mut t,
+        "variable.rename",
+        json!({"name": "wood", "to": "timber"}),
+    );
+    assert_eq!(
+        inspect_body(&mut t, "Plate")["appearance"]["colorExprs"][0],
+        "woods[timber].red"
+    );
+    let e = error(&mut t, "variable.delete", json!({"name": "timber"}));
+    assert!(e.contains("the colour or material of F1"), "{e}");
+    run(
+        &mut t,
+        "variable.delete",
+        json!({"name": "timber", "force": true}),
+    );
+    let plate = inspect_body(&mut t, "Plate");
+    assert!(plate["appearance"].get("color").is_none(), "{plate}");
+    assert!(
+        plate["appearance"]["colorError"]
+            .as_str()
+            .unwrap()
+            .contains("timber"),
+        "{plate}"
+    );
+    assert!(
+        plate["material"]["densityError"]
+            .as_str()
+            .unwrap()
+            .contains("timber"),
+        "{plate}"
+    );
+    assert!(plate.get("mass").is_none(), "{plate}");
+    let check = run(&mut t, "document.check", json!({}));
+    let problems = check["problems"].to_string();
+    assert!(problems.contains("the red of the colour"), "{check}");
+    assert!(problems.contains("material `Wood`"), "{check}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn colour_and_density_expressions_that_do_not_work_are_refused() {
+    let mut s = session_in(None);
+    plate_and_pin(&mut s);
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "2"}));
+    let before = run(&mut s, "document.inspect", json!({}));
+    let colours = [
+        (json!(["nope", 0, 0]), "unknown variable"),
+        (json!(["k * 200", 0, 0]), "from 0 to 255"),
+        (json!(["-k", 0, 0]), "from 0 to 255"),
+        (json!(["1 mm", 0, 0]), "not a plain number"),
+        (json!(["((", 0, 0]), "does not evaluate"),
+        (json!(["", 0, 0]), "with expressions"),
+        (json!(["k", true, 0]), "with expressions"),
+        (json!(["k", 0]), "`color`"),
+        (json!(["k", 0, 0, 0]), "`color`"),
+    ];
+    for (color, expected) in colours {
+        let e = error(
+            &mut s,
+            "body.appearance",
+            json!({"body": "Plate", "color": color}),
+        );
+        assert!(
+            e.starts_with("body.appearance") && e.contains(expected),
+            "{color}: {e}"
+        );
+    }
+    let densities = [
+        ("nope * 2", "unknown variable"),
+        ("k - 3", "not a positive number"),
+        ("k * 1 mm", "not a plain number"),
+        ("k / 0", "does not evaluate"),
+    ];
+    for (density, expected) in densities {
+        let e = error(
+            &mut s,
+            "body.material",
+            json!({"body": "Plate", "name": "X", "density": density}),
+        );
+        assert!(
+            e.starts_with("body.material") && e.contains(expected),
+            "{density}: {e}"
+        );
+    }
+    let after = run(&mut s, "document.inspect", json!({}));
+    assert_eq!(before["bodies"], after["bodies"]);
+    assert_eq!(before["history"], after["history"]);
+    // Rounded to the nearest whole number: 254.6 is 255.
+    let out = run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Plate", "color": ["254.6", "k", "0.4"]}),
+    );
+    assert_eq!(out["appearance"]["color"], "#ff0200");
+}

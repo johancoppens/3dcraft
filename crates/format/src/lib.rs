@@ -60,7 +60,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 36;
+pub const FORMAT_VERSION: u32 = 37;
 
 /// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
 /// function names: a variable of an older file with such a name is
@@ -73,11 +73,18 @@ const FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS: u32 = 17;
 /// name is renamed on reading (`migrate::v30_to_v31`).
 const FORMAT_VERSION_OF_CONDITION_FUNCTIONS: u32 = 31;
 
+/// The version that made `asinh`, `acosh`, `atanh`, `log2`, `hypot` and
+/// `sign` function names (`migrate::v36_to_v37`).
+const FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS: u32 = 37;
+
 /// The format version since which `name` is reserved in expressions, for
 /// the warning that a variable of an older file was renamed.
 fn reserved_since(name: &str) -> u32 {
     match name {
         "floor" | "ceil" | "round" | "trunc" | "mod" => FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS,
+        "asinh" | "acosh" | "atanh" | "log2" | "hypot" | "sign" => {
+            FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS
+        }
         _ => FORMAT_VERSION_OF_CONDITION_FUNCTIONS,
     }
 }
@@ -637,7 +644,7 @@ fn read_manifest(
         ));
         document.tolerance = read;
     }
-    if version < FORMAT_VERSION_OF_CONDITION_FUNCTIONS {
+    if version < FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS {
         for (old, new) in document
             .rename_reserved_variables()
             .map_err(FormatError::InvalidDocument)?

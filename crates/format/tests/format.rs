@@ -3508,14 +3508,8 @@ fn body_appearances_and_materials_are_written_like_this_and_round_trip() {
         }),
     )
     .unwrap();
-    doc.set_material(
-        FeatureId(1),
-        Some(Material {
-            name: "Cast iron".into(),
-            density: 7200.0,
-        }),
-    )
-    .unwrap();
+    doc.set_material(FeatureId(1), Some(Material::new("Cast iron", 7200.0)))
+        .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(
@@ -3529,6 +3523,114 @@ fn body_appearances_and_materials_are_written_like_this_and_round_trip() {
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
     // A document without any writes no `bodies` at all.
     assert!(!to_manifest_json(&small()).unwrap().contains("bodies"));
+}
+
+/// Version 37: a body's colour and density may follow the variables,
+/// written as their expressions; a fixed colour is written as before.
+#[test]
+fn body_colours_and_densities_from_expressions_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{BodyAppearance, BodyColor, Expr, Material};
+    let mut doc = small();
+    doc.set_variable("wood", "2").unwrap();
+    doc.set_body_appearance(
+        FeatureId(1),
+        Some(BodyAppearance {
+            color: BodyColor::Exprs(Box::new([
+                Expr::new("if(wood == 1, 200, 160)"),
+                Expr::new("120"),
+                Expr::new("40 + wood"),
+            ])),
+            metallic: None,
+            roughness: Some(0.75),
+        }),
+    )
+    .unwrap();
+    doc.set_material(
+        FeatureId(1),
+        Some(Material {
+            name: "Wood".into(),
+            density: 1000.0,
+            density_expr: Some(Expr::new("choose(wood, 0.7, 0.45)")),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["document"]["bodies"],
+        serde_json::json!([{
+            "feature": 1,
+            "appearance": {"color": ["if(wood == 1, 200, 160)", "120", "40 + wood"], "roughness": 0.75},
+            "material": {"name": "Wood", "density": 1000.0, "density_expr": "choose(wood, 0.7, 0.45)"}
+        }])
+    );
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Renaming the variable renames it there too.
+    doc.rename_variable("wood", "timber").unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    assert!(json.contains("choose(timber, 0.7, 0.45)"), "{json}");
+    assert!(json.contains("40 + timber"), "{json}");
+    assert!(!json.contains("wood"), "{json}");
+    // A colour of mixed numbers and texts is no colour.
+    let mixed = json.replace("\"120\"", "120");
+    assert_ne!(mixed, json);
+    assert!(from_manifest_json(mixed.as_bytes()).is_err());
+}
+
+/// Version 37 made `asinh`, `acosh`, `atanh`, `log2`, `hypot` and `sign`
+/// function names. An older file that gave a variable such a name opens
+/// with the variable renamed everywhere, and says so. Never edit this
+/// fixture: it stands for the files people have on disk.
+#[test]
+fn a_version_36_file_with_a_variable_named_like_a_new_function_opens_renamed() {
+    let v36 = r#"{"format": "3dcraft", "format_version": 36, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [
+          {"name": "sign", "expr": "1"},
+          {"name": "hypot", "expr": "5 mm * sign"},
+          {"name": "width", "expr": "40 mm"}],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["width", "hypot", "hypot + 1 mm"]}}],
+        "rollback": null, "next_feature_id": 2}}"#;
+    let (doc, warnings) = match craft3d_format::from_manifest_json_noted(v36.as_bytes()) {
+        Ok(read) => read,
+        Err(error) => panic!("{error}"),
+    };
+    let variables: Vec<(&str, &str)> = doc
+        .variables
+        .iter()
+        .map(|v| (v.name.as_str(), v.expr.source()))
+        .collect();
+    assert_eq!(
+        variables,
+        [
+            ("sign_1", "1"),
+            ("hypot_1", "5 mm * sign_1"),
+            ("width", "40 mm")
+        ]
+    );
+    let FeatureKind::Block(block) = &doc.features[0].kind else {
+        panic!("not a block")
+    };
+    assert_eq!(block.size[1].source(), "hypot_1");
+    assert_eq!(block.size[2].source(), "hypot_1 + 1 mm");
+    assert_eq!(
+        warnings,
+        [
+            "variable `sign` renamed `sign_1`: `sign` is a function in expressions since format \
+             version 37",
+            "variable `hypot` renamed `hypot_1`: `hypot` is a function in expressions since \
+             format version 37"
+        ]
+    );
+    // In a file of the current version the names are reserved.
+    let current = v36.replace(
+        "\"format_version\": 36",
+        &format!("\"format_version\": {FORMAT_VERSION}"),
+    );
+    assert!(from_manifest_json(current.as_bytes()).is_err());
 }
 
 /// Version 26: a colour per face, by the body's feature and the face's

@@ -99,7 +99,9 @@ faces into a solid layer.
 A document may hold any number of bodies; every feature that does not consume another body adds one.
 `body.split` splits a body that fell into pieces (a cut through the middle) into one body per piece.
 `body.appearance` and `face.appearance` give colours, `body.material` a density (then `document.inspect`
-gives the mass), `document.interference` says whether bodies overlap.
+gives the mass), `document.interference` says whether bodies overlap. A body's colour channels and its
+density may be expressions of the variables (`["if(dark, 60, 200)", 120, 40]`, `"sheets[sheet].density
+g/cm3"`), so they follow a parameter.
 
 ## Hiding and looking back
 

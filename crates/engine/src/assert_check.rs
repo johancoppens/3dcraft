@@ -145,9 +145,21 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion) -> Key {
         Some("mass" | "centerOfMass")
     ) {
         text.push('|');
+        let values = doc
+            .bodies
+            .iter()
+            .any(|b| {
+                b.material
+                    .as_ref()
+                    .is_some_and(|m| m.density_expr.is_some())
+            })
+            .then(|| crate::appearance::evaluation(doc))
+            .flatten();
         for given in &doc.bodies {
             if let Some(material) = &given.material {
-                text.push_str(&format!("{}={material:?};", given.feature));
+                // A density that follows the variables: its value now.
+                let density = material.density_with(values.as_ref());
+                text.push_str(&format!("{}={material:?}={density:?};", given.feature));
             }
         }
     }

@@ -589,11 +589,7 @@ fn a_thin_slanted_rectangle_extrudes() {
     ];
     let mut s = session();
     run(&mut s, "file.new", json!({"units": "mm"}));
-    run(
-        &mut s,
-        "sketch.create",
-        json!({"name": "S", "plane": "xy"}),
-    );
+    run(&mut s, "sketch.create", json!({"name": "S", "plane": "xy"}));
     let points: Vec<Value> = corners
         .iter()
         .map(|[x, y]| json!([format!("{x} mm"), format!("{y} mm")]))

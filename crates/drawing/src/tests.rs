@@ -561,6 +561,7 @@ fn a_tiny_drawing_is_the_svg_written_by_hand() {
     let expected = concat!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
         "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"10mm\" height=\"5mm\" viewBox=\"0 -5 10 5\">\n",
+        "<style type=\"text/css\">@media screen{path{vector-effect:non-scaling-stroke;stroke-width:1px}}</style>\n",
         "<path id=\"layer-cut\" d=\"M0,0 L10,0 A5,5 0 0 0 5,-5 A5,5 0 0 0 0,0 Z ",
         "M6,-2 A1,1 0 0 0 5,-3 A1,1 0 0 0 4,-2 A1,1 0 0 0 5,-1 A1,1 0 0 0 6,-2 Z\" ",
         "fill=\"none\" fill-rule=\"evenodd\" stroke=\"#ff0000\" stroke-width=\"0.01\"/>\n",

@@ -78,8 +78,11 @@ Every length, angle and count may be an **expression** in the document's variabl
   what to call it instead: a gear's module is usually `m`, which is the metre, so call it `module` or
   `mn`; `mod` is the function `mod(a, b)`.
 - Functions: `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `floor`,
-  `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `pow`, `sinh`, `cosh`, `tanh`, the conditions
-  of [chapter 8](08-formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
+  `ceil`, `round`, `trunc`, `mod`, `exp`, `ln`, `log10`, `log2`, `pow`, `sinh`, `cosh`, `tanh`,
+  `asinh`, `acosh`, `atanh` (plain numbers in and out), `hypot(dx, dy)` or `hypot(dx, dy, dz)` (the
+  length of a vector, in its components' unit), `sign(x)` (-1, 0 or 1, of a value of any unit;
+  `round(x, step)` rounds to a step, as `floor` and `ceil` do), the conditions of
+  [chapter 8](08-formulas.md), the constant `pi`, and `^` for powers (a whole-number exponent; `pow(x, y)` takes any exponent of
   a plain number).
 
 Conditions (`if`, `choose`, comparisons), tables of values and curves drawn from formulas have a chapter of

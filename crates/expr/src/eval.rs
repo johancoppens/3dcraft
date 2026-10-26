@@ -513,6 +513,52 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
             };
             Ok(Quantity::dimensionless(value))
         }
+        Function::Asinh | Function::Acosh | Function::Atanh | Function::Log2 => {
+            let x = dimensionless(name, single(args)?)?;
+            let inside = match function {
+                Function::Asinh => true,
+                Function::Acosh => x >= 1.0,
+                Function::Atanh => x > -1.0 && x < 1.0,
+                _ => x > 0.0,
+            };
+            if !inside {
+                return Err(ErrorKind::OutOfDomain {
+                    function: name,
+                    value: x,
+                });
+            }
+            let value = match function {
+                Function::Asinh => x.asinh(),
+                Function::Acosh => x.acosh(),
+                Function::Atanh => x.atanh(),
+                _ => x.log2(),
+            };
+            Ok(Quantity::dimensionless(value))
+        }
+        Function::Hypot => {
+            // The length of a vector of components of one dimension:
+            // hypot(dx, dy) or hypot(dx, dy, dz), without overflow on the
+            // way.
+            let (first, rest) = args.split_first().ok_or(ErrorKind::Internal)?;
+            let mut length = first.value.abs();
+            for &next in rest {
+                same_dimension(name, *first, next)?;
+                length = length.hypot(next.value);
+            }
+            Ok(Quantity::new(length, first.dimension))
+        }
+        Function::Sign => {
+            // -1, 0 or 1, of a value of any dimension.
+            let x = single(args)?;
+            let sign = if x.value > 0.0 {
+                1.0
+            } else if x.value < 0.0 {
+                -1.0
+            } else {
+                0.0
+            };
+            Ok(Quantity::dimensionless(sign))
+        }
         Function::Pow => {
             let [base, exponent] = args else {
                 return Err(ErrorKind::Internal);
@@ -1700,6 +1746,52 @@ mod tests {
             );
         }
         assert!(err("pow(width, 2)").to_string().contains("`r ^ 2`"));
+    }
+
+    #[test]
+    fn inverse_hyperbolics_log2_hypot_and_sign() {
+        // Each inverse undoes its function.
+        check("asinh(sinh(1.5))", 1.5, NONE);
+        check("acosh(cosh(1.5))", 1.5, NONE);
+        check("atanh(tanh(0.5))", 0.5, NONE);
+        check("asinh(0)", 0.0, NONE);
+        check("acosh(1)", 0.0, NONE);
+        check("asinh(-2)", -(2f64.asinh()), NONE);
+        // A solar cooker's gore: asinh(u) is ln(u + sqrt(1 + u^2)).
+        check("asinh(width / r)", (8.0 + 65f64.sqrt()).ln(), NONE);
+        check("log2(8)", 3.0, NONE);
+        check("log2(width / 5 mm)", 3.0, NONE);
+        // hypot keeps the dimension of its components.
+        check("hypot(3 mm, 4 mm)", 5.0, LENGTH);
+        check("hypot(width, 30 mm)", 50.0, LENGTH);
+        check("hypot(2, 3, 6)", 7.0, NONE);
+        check("hypot(-5 mm)", 5.0, LENGTH);
+        check("hypot(1e300, 1e300)", 1e300 * 2f64.sqrt(), NONE);
+        check("sign(-3 mm)", -1.0, NONE);
+        check("sign(0 mm)", 0.0, NONE);
+        check("sign(-0)", 0.0, NONE);
+        check("sign(tilt)", 1.0, NONE);
+        check("sign(2) * 4 mm", 4.0, LENGTH);
+        let domain = |source: &str| match err(source).kind {
+            ErrorKind::OutOfDomain { function, value } => (function, value),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        assert_eq!(domain("acosh(0.5)"), ("acosh", 0.5));
+        assert_eq!(domain("atanh(1)"), ("atanh", 1.0));
+        assert_eq!(domain("atanh(-1)"), ("atanh", -1.0));
+        assert_eq!(domain("atanh(2)"), ("atanh", 2.0));
+        assert_eq!(domain("log2(0)"), ("log2", 0.0));
+        assert_eq!(domain("log2(-4)"), ("log2", -4.0));
+        for source in ["asinh(width)", "acosh(1 mm)", "atanh(tilt)", "log2(width)"] {
+            assert!(
+                matches!(err(source).kind, ErrorKind::ArgumentDimension { .. }),
+                "`{source}`"
+            );
+        }
+        assert!(matches!(
+            err("hypot(3 mm, 4)").kind,
+            ErrorKind::DimensionMismatch { .. }
+        ));
     }
 
     #[test]
