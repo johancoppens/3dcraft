@@ -84,7 +84,7 @@ fn fs_behind_cut(in: CutOut) -> ColorOut {
     if clipped(in) {
         discard;
     }
-    let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
+    let front = {{FRONT_DEPTH}};
     if !(stored_depth(in.clip.z, in.dist) < front) {
         discard;
     }
@@ -102,7 +102,7 @@ fn fs_cap_behind(in: CutOut) -> ColorOut {
     if !cap_here(in) {
         discard;
     }
-    let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
+    let front = {{FRONT_DEPTH}};
     if !(stored_depth(in.clip.z, in.dist) < front) {
         discard;
     }

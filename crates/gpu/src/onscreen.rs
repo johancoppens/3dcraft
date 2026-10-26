@@ -754,7 +754,8 @@ pub struct Onscreen {
     distance_pipeline: wgpu::RenderPipeline,
     distance_layout: wgpu::BindGroupLayout,
     /// The nearest texel of a single-sampled depth buffer, for the
-    /// distance pass ([`SAMPLED_DEPTH`]).
+    /// distance pass ([`SAMPLED_DEPTH`]) and on OpenGL for the passes
+    /// behind the front (`peel::sampled_front`).
     depth_sampler: wgpu::Sampler,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
@@ -927,7 +928,9 @@ pub(crate) struct OverlaySources {
 /// takes a depth texture whose filter is not the nearest texel for
 /// incomplete and reads 0 from it (`texelFetch` too), and a texture only
 /// loaded from gets no sampler there (wgpu-hal's GL backend), so its
-/// default linear filter stays.
+/// default linear filter stays. The see-through and section passes read
+/// the front's depth the same way on OpenGL (`renderer::SAMPLED_FRONT`,
+/// through this same sampler); keep the two alike.
 const SAMPLED_DEPTH: &str = "textureSampleLevel(depth_texture, depth_sampler, \
      (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(textureDimensions(depth_texture)), 0.0).r";
 
@@ -2188,7 +2191,13 @@ impl Onscreen {
         let device = &self.device;
         if targets.cut.is_none() {
             let parity = cut::parity_view(device, targets.width, targets.height, self.samples);
-            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, None, &parity);
+            let cap_bind = cut::cap_bind(
+                device,
+                &pipelines.cap_layout,
+                self.samples > 1,
+                None,
+                &parity,
+            );
             targets.cut = Some(CutTargets {
                 parity,
                 cap_bind,
@@ -2206,7 +2215,11 @@ impl Onscreen {
             count.cap_behind_bind = Some(cut::cap_bind(
                 device,
                 &peeled.cap_behind_layout,
-                Some(peel.key.as_ref().unwrap_or(&targets.depth)),
+                self.samples > 1,
+                Some((
+                    peel.key.as_ref().unwrap_or(&targets.depth),
+                    &self.depth_sampler,
+                )),
                 &count.parity,
             ));
         }
@@ -2215,7 +2228,7 @@ impl Onscreen {
             && let Some(layout) = &pipelines.cap_flat_layout
         {
             let parity = cut::parity_view(device, targets.width, targets.height, 1);
-            let bind = cut::cap_bind(device, layout, None, &parity);
+            let bind = cut::cap_bind(device, layout, false, None, &parity);
             count.flat = Some((parity, bind));
         }
     }
@@ -2260,11 +2273,13 @@ impl Onscreen {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
         };
-        let peel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("craft3d front"),
-            layout: &pipelines.peel_layout,
-            entries: &[bound(0, key.as_ref().unwrap_or(&targets.depth))],
-        });
+        let peel_bind = peel::peel_bind(
+            device,
+            &pipelines.peel_layout,
+            self.samples > 1,
+            key.as_ref().unwrap_or(&targets.depth),
+            &self.depth_sampler,
+        );
         let blend_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d blend"),
             layout: &pipelines.blend_layout,
@@ -2902,40 +2917,27 @@ mod tests {
                 assert!(!source.contains("{{"), "{label}: a marker was left");
                 let module = naga::front::wgsl::parse_str(source)
                     .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-                let info = naga::valid::Validator::new(
+                naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::all(),
                 )
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
-                if samples > 1 {
-                    continue;
+                if samples == 1 {
+                    // OpenGL has one sample per pixel: what it runs is
+                    // what WebGL2 (GLSL ES 3.00) takes.
+                    crate::renderer::template_tests::translate_for_webgl2(&label, source);
                 }
-                for entry in &module.entry_points {
-                    let options = naga::back::glsl::Options {
-                        version: naga::back::glsl::Version::Embedded {
-                            version: 310,
-                            is_webgl: false,
-                        },
-                        ..naga::back::glsl::Options::default()
-                    };
-                    let pipeline = naga::back::glsl::PipelineOptions {
-                        shader_stage: entry.stage,
-                        entry_point: entry.name.clone(),
-                        multiview: None,
-                    };
-                    let mut out = String::new();
-                    naga::back::glsl::Writer::new(
-                        &mut out,
-                        &module,
-                        &info,
-                        &options,
-                        &pipeline,
-                        naga::proc::BoundsCheckPolicies::default(),
-                    )
-                    .and_then(|mut writer| writer.write().map(|_| ()))
-                    .unwrap_or_else(|e| panic!("{label}, {}: GLSL: {e}", entry.name));
-                }
+            }
+            // The one pass a window runs that reads the depth buffer
+            // samples it with one sample per pixel (WebGL2 reads 0 from a
+            // depth texture loaded there); the depth read is for tests.
+            let (loads, reads) =
+                crate::renderer::template_tests::reads_of(&sources.distance, "depth_texture");
+            if samples == 1 {
+                assert_eq!((loads, reads), (0, 1), "distance, {samples} samples");
+            } else {
+                assert_eq!((loads > 0, reads), (true, 0), "distance, {samples} samples");
             }
         }
     }

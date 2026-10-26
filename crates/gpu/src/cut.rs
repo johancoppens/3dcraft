@@ -30,6 +30,7 @@
 //! cut-open frame.
 
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
+use crate::peel;
 use crate::renderer::{
     MESH_ATTRIBUTES, Step, float_bytes, fragment_depth, scene_primitive, scene_source_for,
 };
@@ -197,7 +198,7 @@ fn texture_entry(binding: u32, multisampled: bool) -> wgpu::BindGroupLayoutEntry
 
 /// Group 1 of a pass that draws the cap: the count at binding 1 and, for
 /// the pass behind the front of a see-through picture (`front`), what
-/// `peel::peel_layout` has at binding 0.
+/// `peel::peel_layout` has at bindings 0 and 2.
 pub(crate) fn cap_layout(
     device: &wgpu::Device,
     multisampled: bool,
@@ -206,6 +207,9 @@ pub(crate) fn cap_layout(
     let mut entries = Vec::new();
     if front {
         entries.push(texture_entry(0, multisampled));
+        if peel::sampled_front(device, multisampled) {
+            entries.push(peel::front_sampler_entry());
+        }
     }
     entries.push(texture_entry(1, multisampled));
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -214,19 +218,28 @@ pub(crate) fn cap_layout(
     })
 }
 
-/// The bind group of [`cap_layout`].
+/// The bind group of [`cap_layout`], for a count of several samples per
+/// pixel (`multisampled`) or one; `front` is what `peel::peel_bind` is
+/// given, the front and the nearest sampler.
 pub(crate) fn cap_bind(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    front: Option<&wgpu::TextureView>,
+    multisampled: bool,
+    front: Option<(&wgpu::TextureView, &wgpu::Sampler)>,
     parity: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let mut entries = Vec::new();
-    if let Some(front) = front {
+    if let Some((front, sampler)) = front {
         entries.push(wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::TextureView(front),
         });
+        if peel::sampled_front(device, multisampled) {
+            entries.push(wgpu::BindGroupEntry {
+                binding: peel::FRONT_SAMPLER_BINDING,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
+        }
     }
     entries.push(wgpu::BindGroupEntry {
         binding: 1,

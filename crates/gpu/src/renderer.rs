@@ -392,6 +392,9 @@ struct SeeThrough {
     peel_layout: wgpu::BindGroupLayout,
     blend_layout: wgpu::BindGroupLayout,
     table: peel::Table,
+    /// The nearest sampler the pass behind reads the front's depth
+    /// through on OpenGL (`peel::sampled_front`).
+    front_sampler: wgpu::Sampler,
 }
 
 /// A renderer on a device and queue the caller owns. It keeps its
@@ -623,6 +626,23 @@ pub(crate) fn scene_source(device: &wgpu::Device, more: &[&str]) -> String {
     scene_source_for(fragment_depth(device), false, false, more)
 }
 
+/// The front's depth at the fragment's pixel, loaded from the depth buffer
+/// of the front (`peel.wgsl`).
+const LOADED_FRONT: &str = "textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r";
+
+/// The same texel, sampled at its centre through the nearest sampler of
+/// [`FRONT_SAMPLER`]: what OpenGL ES 3.0 (WebGL2) reads a depth texture
+/// with, since it takes one whose filter is not the nearest texel for
+/// incomplete and loads 0 from it (`peel::sampled_front`). The lines'
+/// distance pass reads the depth buffer the same way, for the same reason
+/// (`onscreen::SAMPLED_DEPTH`, with the texel's coordinates already
+/// integers there); keep the two alike.
+const SAMPLED_FRONT: &str = "textureSampleLevel(front_depth, front_sampler, \
+     (floor(in.clip.xy) + vec2<f32>(0.5)) / vec2<f32>(textureDimensions(front_depth)), 0.0).r";
+
+/// The declaration of that sampler, at `peel::FRONT_SAMPLER_BINDING`.
+const FRONT_SAMPLER: &str = "@group(1) @binding(2) var front_sampler: sampler;";
+
 /// [`scene_source`] for a backend that does (`fragment_depth`) or does
 /// not write the depth in the fragment shader, and for a renderer with
 /// several samples per pixel (`multisampled`: a drawn fragment's cut is
@@ -662,10 +682,21 @@ pub(crate) fn scene_source_for(
     } else {
         ""
     };
+    // How the pass behind the front reads the front's depth buffer
+    // (`peel.wgsl`, `cut_flat.wgsl`): on OpenGL, the backend that writes
+    // the depth in the fragment shader, through a sampler that takes the
+    // nearest texel (`peel::sampled_front`).
+    let (front_sampler, front_depth) = if fragment_depth {
+        (FRONT_SAMPLER, SAMPLED_FRONT)
+    } else {
+        ("", LOADED_FRONT)
+    };
     source
         .replace("{{FRAG_DEPTH}}", declare)
         .replace("{{SET_DEPTH}}", set)
         .replace("{{STORED_DEPTH}}", stored)
+        .replace("{{FRONT_SAMPLER}}", front_sampler)
+        .replace("{{FRONT_DEPTH}}", front_depth)
         .replace("{{SIDE_SAMPLE}}", sample)
         .replace("{{SIDE_CENTROID}}", centroid)
 }
@@ -774,6 +805,7 @@ impl SeeThrough {
             peel_layout,
             blend_layout,
             table: peel::Table::new(device),
+            front_sampler: peel::front_sampler(device),
         }
     }
 }
@@ -1247,14 +1279,13 @@ impl Renderer {
             depth_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         ));
-        let peel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("craft3d front depth"),
-            layout: &pipelines.peel_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&targets.samples_depth_read),
-            }],
-        });
+        let peel_bind = peel::peel_bind(
+            device,
+            &pipelines.peel_layout,
+            false,
+            &targets.samples_depth_read,
+            &pipelines.front_sampler,
+        );
         let bound = |binding, view| wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
@@ -1295,7 +1326,7 @@ impl Renderer {
                 targets.height.saturating_mul(targets.ssaa),
                 1,
             );
-            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, None, &parity);
+            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, false, None, &parity);
             targets.cut = Some(CutTargets {
                 parity,
                 cap_bind,
@@ -1303,13 +1334,15 @@ impl Renderer {
             });
         }
         if see_through
-            && let (Some(cut), Some(peeled)) = (&mut targets.cut, &pipelines.peeled)
+            && let (Some(cut), Some(peeled), Ok(peel)) =
+                (&mut targets.cut, &pipelines.peeled, &self.see_through)
             && cut.cap_behind_bind.is_none()
         {
             cut.cap_behind_bind = Some(cut::cap_bind(
                 device,
                 &peeled.cap_behind_layout,
-                Some(&targets.samples_depth_read),
+                false,
+                Some((&targets.samples_depth_read, &peel.front_sampler)),
                 &cut.parity,
             ));
         }
@@ -1749,7 +1782,7 @@ mod tests {
 /// The shader template in both variants: what a machine without an
 /// OpenGL adapter never compiles at runtime is parsed and validated here.
 #[cfg(test)]
-mod template_tests {
+pub(crate) mod template_tests {
     use super::scene_source_for;
     use wgpu::naga;
 
@@ -1790,6 +1823,125 @@ mod template_tests {
             .validate(&module)
             .map(|_| module)
             .map_err(|e| e.emit_to_string(source))
+    }
+
+    /// Translates every entry point of `source` to GLSL ES 3.00 as wgpu's
+    /// OpenGL backend does in a browser on WebGL2 (wgpu-hal: the context's
+    /// shading language version, `is_webgl`), after validating it with no
+    /// optional capability. What GLSL ES 3.00 lacks and naga knows it
+    /// lacks (arrays of arrays, per-sample interpolation, a sample mask,
+    /// multisampled textures) fails here, on a machine without a browser.
+    pub(crate) fn translate_for_webgl2(label: &str, source: &str) {
+        let module = naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
+        assert!(!module.entry_points.is_empty(), "{label}: no entry points");
+        for entry in &module.entry_points {
+            let options = naga::back::glsl::Options {
+                version: naga::back::glsl::Version::Embedded {
+                    version: 300,
+                    is_webgl: true,
+                },
+                ..naga::back::glsl::Options::default()
+            };
+            let pipeline = naga::back::glsl::PipelineOptions {
+                shader_stage: entry.stage,
+                entry_point: entry.name.clone(),
+                multiview: None,
+            };
+            let mut out = String::new();
+            naga::back::glsl::Writer::new(
+                &mut out,
+                &module,
+                &info,
+                &options,
+                &pipeline,
+                naga::proc::BoundsCheckPolicies::default(),
+            )
+            .and_then(|mut writer| writer.write().map(|_| ()))
+            .unwrap_or_else(|e| panic!("{label}, {}: GLSL ES 3.00: {e}", entry.name));
+            assert!(out.starts_with("#version 300 es"), "{label}: {out}");
+        }
+    }
+
+    /// What OpenGL runs, single-sampled with the depth written by the
+    /// fragment (`fragment_depth`), is what WebGL2 takes: every
+    /// composition and the blend translate to GLSL ES 3.00. On OpenGL the
+    /// pass behind the front samples the front's depth through the nearest
+    /// sampler (WebGL2 reads 0 from a depth texture loaded without one,
+    /// `peel::sampled_front`); everywhere else it loads it, as before.
+    #[test]
+    fn what_opengl_runs_translates_to_glsl_es_300() {
+        for (name, multisampled, more) in compositions() {
+            let peels = more.iter().any(|m| m.contains("fn fs_behind("));
+            for fragment_depth in [false, true] {
+                let label = format!("{name}, fragment depth {fragment_depth}");
+                let source = scene_source_for(fragment_depth, multisampled, multisampled, &more);
+                let (loads, samples) = reads_of(&source, "front_depth");
+                if !peels {
+                    assert_eq!((loads, samples), (0, 0), "{label}");
+                } else if fragment_depth {
+                    // OpenGL: never loaded, always sampled (the pass
+                    // behind the front, and in a cut-open picture the
+                    // pass behind and the cap behind).
+                    assert_eq!(loads, 0, "{label}: the front's depth is loaded");
+                    assert!(samples > 0, "{label}");
+                } else {
+                    // Every other backend: loaded, as before.
+                    assert!(loads > 0, "{label}");
+                    assert_eq!(samples, 0, "{label}");
+                }
+                if fragment_depth && !multisampled {
+                    translate_for_webgl2(&format!("{name}, OpenGL"), &source);
+                }
+            }
+        }
+        translate_for_webgl2("blend", &crate::peel::blend_source(false));
+        // The sampler is declared where the layouts put it.
+        assert!(
+            super::FRONT_SAMPLER
+                .contains(&format!("@binding({})", crate::peel::FRONT_SAMPLER_BINDING))
+        );
+    }
+
+    /// How often the shader `source` loads (`textureLoad`) and samples
+    /// (`textureSample*`) the texture `global`, over all its functions.
+    /// WebGL2 reads 0 from a depth texture that is loaded rather than
+    /// sampled with the nearest filter, and the drivers the GPU tests run
+    /// on (Mesa) do not: what tells the two apart without a browser.
+    pub(crate) fn reads_of(source: &str, global: &str) -> (usize, usize) {
+        let module = naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{global}: {}", e.emit_to_string(source)));
+        let functions = module
+            .functions
+            .iter()
+            .map(|(_, f)| f)
+            .chain(module.entry_points.iter().map(|e| &e.function));
+        let (mut loads, mut samples) = (0, 0);
+        for function in functions {
+            let is_global =
+                |handle: naga::Handle<naga::Expression>| match function.expressions[handle] {
+                    naga::Expression::GlobalVariable(g) => {
+                        module.global_variables[g].name.as_deref() == Some(global)
+                    }
+                    _ => false,
+                };
+            for (_, expression) in function.expressions.iter() {
+                match *expression {
+                    naga::Expression::ImageLoad { image, .. } if is_global(image) => loads += 1,
+                    naga::Expression::ImageSample { image, .. } if is_global(image) => {
+                        samples += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (loads, samples)
     }
 
     /// The multisampled cut composition on a device that cannot shade per

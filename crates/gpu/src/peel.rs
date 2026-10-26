@@ -13,7 +13,9 @@
 //! that the first pass stored per sample (`peel_samples.wgsl`). Both files
 //! say why; docs/design/rendering.md has the measurements.
 
-use crate::renderer::{COLOR_FORMAT, DATA_FORMAT, scene_source, texture_entry, uniform_entry};
+use crate::renderer::{
+    COLOR_FORMAT, DATA_FORMAT, fragment_depth, scene_source, texture_entry, uniform_entry,
+};
 use std::cell::Cell;
 
 /// Levels of a colour channel.
@@ -113,15 +115,20 @@ pub(crate) fn scene_module(device: &wgpu::Device, multisampled: bool) -> wgpu::S
 }
 
 /// `blend.wgsl` for layers with several samples per pixel or with one.
-pub(crate) fn blend_module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
+pub(crate) fn blend_source(multisampled: bool) -> String {
     let (color, index) = if multisampled {
         ("texture_multisampled_2d<f32>", "i32(k)")
     } else {
         ("texture_2d<f32>", "0")
     };
-    let source = include_str!("blend.wgsl")
+    include_str!("blend.wgsl")
         .replace("{{COLOR}}", color)
-        .replace("{{INDEX}}", index);
+        .replace("{{INDEX}}", index)
+}
+
+/// [`blend_source`] as a module of `device`.
+pub(crate) fn blend_module(device: &wgpu::Device, multisampled: bool) -> wgpu::ShaderModule {
+    let source = blend_source(multisampled);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("craft3d blend"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -141,14 +148,88 @@ fn layer_entry(binding: u32, multisampled: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// The binding, in group 1 of the pass behind the front, of the sampler
+/// the front's depth is read through where [`sampled_front`] (0 is the
+/// front's depth, 1 a section's count). `renderer::scene_source_for`
+/// declares it there.
+pub(crate) const FRONT_SAMPLER_BINDING: u32 = 2;
+
+/// True when the pass behind the front reads the front's depth buffer
+/// through a sampler that takes the nearest texel, at the texel's centre,
+/// rather than loading it: on OpenGL (the backend whose fragments write
+/// their depth, `renderer::fragment_depth`; it has one sample per pixel).
+/// OpenGL ES 3.0, which is WebGL2 in a browser, takes a depth texture
+/// whose filter is not the nearest texel for incomplete (§3.8.13) and
+/// reads 0 from it, `texelFetch` too, and wgpu's OpenGL backend (wgpu-hal
+/// 30.0.1) leaves a depth texture's own filter linear and binds no sampler
+/// to a texture that is only loaded from. Every fragment was then behind
+/// nothing and the picture showed no layer behind the front. Sampled at
+/// its centre with the nearest filter the texel is read as it is, so the
+/// comparison is the one of the load; the other backends keep the load.
+pub(crate) fn sampled_front(device: &wgpu::Device, multisampled: bool) -> bool {
+    !multisampled && fragment_depth(device)
+}
+
+/// The layout entry of that sampler.
+pub(crate) fn front_sampler_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: FRONT_SAMPLER_BINDING,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+        count: None,
+    }
+}
+
+/// A sampler that takes the nearest texel (wgpu's default filters), for a
+/// renderer that has none yet (`Onscreen` passes its own, the one its
+/// distance pass reads the depth buffer through).
+pub(crate) fn front_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("craft3d front depth"),
+        ..wgpu::SamplerDescriptor::default()
+    })
+}
+
 /// Group 1 of the pass behind the front: the front's depth buffer (one
-/// sample per pixel) or the front's keys (several). The depth buffer is
-/// bound as an unfilterable float texture, as the lines bind it (naga's
-/// GLSL backend cannot `textureLoad` a depth texture).
+/// sample per pixel) or the front's keys (several), and where
+/// [`sampled_front`] the sampler the depth is read through. The depth
+/// buffer is bound as an unfilterable float texture, as the lines bind it
+/// (naga's GLSL backend cannot `textureLoad` a depth texture).
 pub(crate) fn peel_layout(device: &wgpu::Device, multisampled: bool) -> wgpu::BindGroupLayout {
+    let mut entries = vec![layer_entry(0, multisampled)];
+    if sampled_front(device, multisampled) {
+        entries.push(front_sampler_entry());
+    }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("craft3d front"),
-        entries: &[layer_entry(0, multisampled)],
+        entries: &entries,
+    })
+}
+
+/// The bind group of [`peel_layout`] for the front's depth buffer or keys,
+/// `front`, with `sampler` (one that takes the nearest texel) where
+/// [`sampled_front`].
+pub(crate) fn peel_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    multisampled: bool,
+    front: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    let mut entries = vec![wgpu::BindGroupEntry {
+        binding: 0,
+        resource: wgpu::BindingResource::TextureView(front),
+    }];
+    if sampled_front(device, multisampled) {
+        entries.push(wgpu::BindGroupEntry {
+            binding: FRONT_SAMPLER_BINDING,
+            resource: wgpu::BindingResource::Sampler(sampler),
+        });
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("craft3d front"),
+        layout,
+        entries: &entries,
     })
 }
 
