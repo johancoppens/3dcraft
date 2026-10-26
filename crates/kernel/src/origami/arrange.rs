@@ -432,8 +432,45 @@ pub fn arrange(
         })
         .collect();
 
-    // Counter-clockwise cycles bound faces; clockwise ones are holes of
-    // the smallest of those around them, or the outside.
+    // The connected pieces of the graph. Each has one clockwise cycle,
+    // round its outside; it is the hole of the smallest counter-clockwise
+    // cycle of another piece around it, or the outside of everything. (A
+    // cycle of the same piece shares its vertices, so containment is only
+    // asked of the others, whose edges its vertices are not on.)
+    let mut piece_of: Vec<usize> = (0..vertices.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        let mut steps = 0usize;
+        while let Some(&p) = parent.get(i) {
+            if p == i || steps > parent.len() {
+                break;
+            }
+            i = p;
+            steps += 1;
+        }
+        i
+    }
+    for e in &edges {
+        let (a, b) = (root(&mut piece_of, e.from), root(&mut piece_of, e.to));
+        if a != b
+            && let Some(slot) = piece_of.get_mut(a.max(b))
+        {
+            *slot = a.min(b);
+        }
+    }
+    let piece_of_cycle: Vec<usize> = cycles
+        .iter()
+        .map(|c| {
+            let v = c
+                .first()
+                .and_then(|&h| {
+                    edges
+                        .get(h / 2)
+                        .map(|e| if h % 2 == 0 { e.from } else { e.to })
+                })
+                .unwrap_or(0);
+            root(&mut piece_of, v)
+        })
+        .collect();
     let mut holes_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, (area, length)) in measures.iter().enumerate() {
         if area.abs() <= tol * length {
@@ -468,7 +505,10 @@ pub fn arrange(
         };
         let mut best: Option<(usize, f64)> = None;
         for (j, (outer, _)) in measures.iter().enumerate() {
-            if *outer <= 0.0 || best.is_some_and(|(_, a)| a <= *outer) {
+            if *outer <= 0.0
+                || best.is_some_and(|(_, a)| a <= *outer)
+                || piece_of_cycle.get(j) == piece_of_cycle.get(i)
+            {
                 continue;
             }
             let ring = cycles.get(j).map(|c| polygon(c)).unwrap_or_default();
