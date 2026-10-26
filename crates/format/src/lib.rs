@@ -645,6 +645,17 @@ fn read_manifest(
         document.tolerance = read;
     }
     if version < FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS {
+        // Tables first (tables came with version 33, after every other
+        // reserved name but those of version 37).
+        for (old, new) in document
+            .rename_reserved_tables()
+            .map_err(FormatError::InvalidDocument)?
+        {
+            let since = reserved_since(&old);
+            warnings.push(format!(
+                "table `{old}` renamed `{new}`: `{old}` is a function in expressions since format version {since}"
+            ));
+        }
         for (old, new) in document
             .rename_reserved_variables()
             .map_err(FormatError::InvalidDocument)?

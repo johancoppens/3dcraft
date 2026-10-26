@@ -20,13 +20,13 @@ use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.publish", "Publish Variable", r#"{"name": string, "label": string, "description": string, "group": string, "order": integer, "kind": "number|integer|boolean|choice" = number, "choices": [string, ...], "choicesFrom": table name or null, "min": expr or null, "max": expr or null, "step": expr or null, "unit": "um|mm|cm|m|in|ft|deg|rad" or null, "default": expr = its value now}"#,
-        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. step is the spacing of the values a number or an integer takes, counted from min (from 0 without one; an end of the range is always allowed; an integer's step is a whole number). Refused, with the reason, when the value or the default is not of its kind, outside its range or off its step, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
+        "Makes a variable a public parameter: one a parameter form, or an agent, sets without knowing the model (a document with one is a Jig). Its expression must be a value, not a formula (40 mm, 20, 1 in / 16). kind: number (any value of its dimension), integer (a plain whole number), boolean (0 or 1), choice (a whole number from 1 to the number of choices, which are the labels shown, the first for 1; choicesFrom takes them from a table's key column instead, row 1 for 1, and follows the table: table.set). min, max and step are expressions and may use other variables (a bore less than the root diameter), not the variable itself. unit is the unit a form shows it in (the document's for a length or angle when not given). default is what a reset goes back to (its value now when not given). On a variable that is public already, only what is given changes, and null takes min, max, step or unit away. step is the spacing of the values a number or an integer takes, counted from min when that is a value and from 0 otherwise (no min, or a min that is a formula), an end of the range always allowed, an integer's step a whole number (param.list stepFrom). Refused, with the reason, when the value or the default is not of its kind or outside its range, the default is off its step, or a range does not evaluate, and when it would make another parameter invalid (a default is checked with every parameter at its default). One undo step. Returns the parameter as param.list does.", doc: true, variable_publish),
     spec!("variable.unpublish", "Unpublish Variable", r#"{"name": string}"#,
         "Makes a public parameter an ordinary variable again; its value stays. One undo step; nothing changes when it was not public.", doc: true, variable_unpublish),
     spec!("param.set", "Set Parameters", r#"{"values": {name: value, ...} = {}, "reset": boolean = false, "merge": boolean = false, "clamp": boolean = false, "wait": boolean = false}"#,
-        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, lies outside its range, or is off its step (counted from its minimum; an end of the range is on it) is refused, with the range or the nearest values on the step: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}) as well as under set, as a parameter form does; the undo step is named for the parameters given, so a merged drag stays one step when it starts or stops clamping. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does. Assertions are measured in the background: the summary waits up to two seconds for those the change touched and counts the rest as pending, with whenPending saying how to have them; wait: true waits until every assertion is measured, so the summary is final (as assert.list, which waits by default), for 60 s at most: what is not measured by then stays pending, with whenPending.", doc: true, param_set),
+        "Sets public parameters (param.list), all in one edit and one regeneration. A value is a string of a value with its unit (\"6 mm\", \"20\", \"400 * (1 mm)^2\" for an area; a formula of variables is refused), a number, taken in the parameter's unit (param.list unit; not for a dimension without one, such as an area), true or false (or \"true\", \"false\") for a boolean, or a choice's label (a JSON number is always the choice's number; a label that is also a number, as a table keyed by numbers gives, is refused when it names another row than its number). A whole-number kind (integer, boolean, choice) is stored as the exact whole number. reset first sets every public parameter back to its default, then applies values. A value that is not of its parameter's kind (whole number, 0 or 1, a choice from 1 to the number of choices), has another dimension, lies outside its range, or (a value given here) is off its step (param.list stepFrom; an end of the range is on it) is refused, with the range or the nearest values on the step: nothing is changed, so an agent can correct it (a form clamps before it sends). So is a change that would put another parameter outside a range that depends on it: set both in one param.set, or give clamp: true, which moves such a parameter to the nearest value of its new range (on its step) in the same edit and lists it under clamped ({name, expr}) as well as under set, as a parameter form does; the undo step is named for the parameters given, so a merged drag stays one step when it starts or stops clamping. A range or default that does not work (a variable it uses was deleted) does not refuse a value; it is listed under warnings. merge folds this change into the last undo step when that was a param.set of the same parameters (a slider being dragged: one undo step for the whole drag). Returns the parameters set with their values, failed (the features that fail now and did not before) and the assertions' summary, as variable.set does. Assertions are measured in the background: the summary waits up to two seconds for those the change touched and counts the rest as pending, with whenPending saying how to have them; wait: true waits until every assertion is measured, so the summary is final (as assert.list, which waits by default), for 60 s at most: what is not measured by then stays pending, with whenPending.", doc: true, param_set),
     spec!("param.list", "List Parameters", "{}",
-        "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
+        "Lists the public parameters of the active document as a form shows them: in order (by order, then the variables' order), each with name, label, description, group, kind, choices (and choicesFrom, the table they come from), its expression and value in its unit, default (with atDefault), min, max and step (each its expression and its value now, or error), stepFrom (where the step counts from, in its unit: min when that is a value, else 0; null when there is no step or min does not evaluate), valid and the problems that make it invalid (a value out of range or not of its kind, a range that does not evaluate). groups lists the groups in the order they first appear; jig says whether there is any parameter; info is document.info.", doc: true, param_list),
     spec!("document.info", "Document Info", r#"{"title": string, "description": string, "author": string, "licence": string, "url": string, "tags": [string, ...]}"#,
         "Sets what a gallery shows of the document: title, description, author, licence (an SPDX identifier, such as CC-BY-4.0 or MIT), url and tags; only what is given changes, and an empty string, an empty list or null clears a field. Saved with the document; one undo step. Without params it changes nothing and returns the info.", doc: true, document_info),
 ];
@@ -258,71 +258,91 @@ fn value_problems(
             written(doc, value, unit),
             range_text(doc, bounds, unit)
         ));
-    } else if let Some(between) = off_step(public.kind, low, high, bound(bounds, "step"), value) {
-        let at = |v: f64| {
-            written(
-                doc,
-                Quantity {
-                    value: v,
-                    dimension: value.dimension,
-                },
-                unit,
-            )
-        };
-        let (base, step, [lower, upper]) = between;
-        problems.push(format!(
-            "{what} {} is not on its step of {} counted from {}: the nearest values are {} and {}",
-            written(doc, value, unit),
-            at(step),
-            at(base),
-            at(lower),
-            at(upper)
-        ));
     }
 }
 
-/// For a number or an integer `value` with a step: when it is not on the
-/// step, counted from the minimum (from 0 without one), the base, the
-/// step and the two values on the step around it. An end of the range is
-/// on the step, as a form's slider reaches it. The step of an integer is
-/// a whole number (at least 1), as a form steps it. None when the value is
-/// on its step, or the step is missing, not positive, of another
-/// dimension or too fine to count from the base.
-fn off_step(
-    kind: ParamKind,
-    low: Option<Quantity>,
-    high: Option<Quantity>,
-    step: Option<Quantity>,
-    value: Quantity,
-) -> Option<(f64, f64, [f64; 2])> {
-    if !matches!(kind, ParamKind::Number | ParamKind::Integer) {
+/// The grid a step puts a parameter's values on: `(base, step)`, the
+/// values `base + k * step`. A whole-number kind steps by a whole number,
+/// at least 1. None for a step that is not positive and finite. The one
+/// rule for `param.set`, `variable.publish`, `param.set` with `clamp`,
+/// `document.sample` and the parameter form (`ui-egui`), with `from`
+/// from [`param.list`]'s `stepFrom` (the parameter's minimum when that is
+/// a value, else 0).
+pub fn step_grid(whole: bool, step: f64, from: f64) -> Option<(f64, f64)> {
+    let step = if whole { step.round().max(1.0) } else { step };
+    (step.is_finite() && step > 0.0 && from.is_finite()).then_some((from, step))
+}
+
+/// Where the step of a parameter counts from, in base units: its minimum
+/// when that is a value (`26.3 mm`), else 0, also when the minimum is a
+/// formula (`wall + 2 mm`): a grid that moved with other parameters would
+/// put a value that was on it off it. None when a minimum is given that
+/// does not evaluate to a value of the parameter's dimension: the step is
+/// not checked then.
+fn step_from(bounds: &Bounds, dimension: Dimension) -> Option<f64> {
+    let given = bounds
+        .iter()
+        .find(|(what, _)| *what == "min")
+        .and_then(|(_, bound)| bound.as_ref());
+    match given {
+        None => Some(0.0),
+        Some((source, Ok(q))) if q.dimension == dimension && q.value.is_finite() => {
+            Some(if is_value(source.source()) {
+                q.value
+            } else {
+                0.0
+            })
+        }
+        Some(_) => None,
+    }
+}
+
+/// When the number or integer `value` of the parameter `e` is not on its
+/// step ([`step_grid`] from [`step_from`]): why, with the two values on
+/// the step around it. An end of the range is on the step, as a form's
+/// slider reaches it. Checked only for a value that is set (`param.set`)
+/// or a default that is published, never for a parameter whose range
+/// moved under it.
+fn step_problem(doc: &Document, e: &Evaluated, what: &str, value: Quantity) -> Option<String> {
+    if !matches!(e.public.kind, ParamKind::Number | ParamKind::Integer) {
         return None;
     }
-    let step = step.filter(|s| s.dimension == value.dimension)?.value;
-    let step = if kind == ParamKind::Integer {
-        step.round().max(1.0)
-    } else {
-        step
-    };
-    if !(step.is_finite() && step > 0.0) {
-        return None;
-    }
+    let step = bound(&e.bounds, "step").filter(|s| s.dimension == value.dimension)?;
+    let from = step_from(&e.bounds, value.dimension)?;
+    let (base, step) = step_grid(e.public.kind == ParamKind::Integer, step.value, from)?;
     let same = |a: f64, b: f64| !below(a, b) && !below(b, a);
-    if [low, high]
+    let end = |w: &str| bound(&e.bounds, w).filter(|q| q.dimension == value.dimension);
+    if [end("min"), end("max")]
         .iter()
         .flatten()
-        .any(|end| same(end.value, value.value))
+        .any(|q| same(q.value, value.value))
     {
         return None;
     }
-    let base = low.map_or(0.0, |min| min.value);
     let k = (value.value - base) / step;
     // Beyond 1e15 steps a step count is no longer exact: not checked.
     if !k.is_finite() || k.abs() > 1e15 || whole(k) {
         return None;
     }
+    let at = |v: f64| {
+        written(
+            doc,
+            Quantity {
+                value: v,
+                dimension: value.dimension,
+            },
+            e.unit,
+        )
+    };
     let lower = base + k.floor() * step;
-    Some((base, step, [lower, lower + step]))
+    Some(format!(
+        "{what} {} is not on its step of {} counted from {}: the nearest values are {} and {}",
+        at(value.value),
+        at(step),
+        at(base),
+        at(lower),
+        at(lower + step)
+    ))
 }
 
 /// The variables of `doc` with every public parameter at its default:
@@ -573,6 +593,26 @@ fn param_json(doc: &Document, e: &Evaluated) -> Value {
         });
         out.insert((*what).into(), value);
     }
+    // Where a step counts from, in the parameter's unit: what a form
+    // snaps to (`step_grid`); null when the step is not checked.
+    let dimension = e
+        .value
+        .as_ref()
+        .or(e.default.as_ref())
+        .map_or(Dimension::NONE, |q| q.dimension);
+    let from = bound(&e.bounds, "step")
+        .and_then(|_| step_from(&e.bounds, dimension))
+        .map(|from| {
+            shown(
+                doc,
+                Quantity {
+                    value: from,
+                    dimension,
+                },
+                e.unit,
+            )
+        });
+    out.insert("stepFrom".into(), from.map_or(Value::Null, Value::from));
     out.insert("valid".into(), e.problems.is_empty().into());
     out.insert("problems".into(), e.problems.clone().into());
     Value::Object(out)
@@ -781,13 +821,19 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
     let mut refusals: Vec<String> = Vec::new();
     let values = evaluation(&next);
     let after = evaluate_all(&next, values.as_ref());
-    if let Some(e) = after.iter().find(|e| e.name == name)
-        && !e.problems.is_empty()
-    {
-        refusals.push(format!(
-            "`{name}` cannot be published so: {}",
-            e.problems.join("; ")
-        ));
+    if let Some(e) = after.iter().find(|e| e.name == name) {
+        let mut problems = e.problems.clone();
+        if let Ok(default) = &e.default
+            && let Some(off) = step_problem(&next, e, "its default", *default)
+        {
+            problems.push(off);
+        }
+        if !problems.is_empty() {
+            refusals.push(format!(
+                "`{name}` cannot be published so: {}",
+                problems.join("; ")
+            ));
+        }
     }
     let values_before = evaluation(doc);
     let before = evaluate_all(doc, values_before.as_ref());
@@ -1135,6 +1181,14 @@ pub(crate) fn prepare_set_clamping(
             ));
             continue;
         }
+        // The step, of a value given here only.
+        if given.contains_key(e.name)
+            && let Ok(q) = &e.value
+            && let Some(off) = step_problem(&next, e, "its value", *q)
+        {
+            refusals.push(format!("`{}`: {off}", e.name));
+            continue;
+        }
         if e.value_problems().is_empty() || (!set && !was_valid) {
             continue;
         }
@@ -1215,20 +1269,17 @@ fn nearest_in_range(range: &Range, value: f64) -> Option<f64> {
     let inside =
         |x: f64| x.is_finite() && !below(x, lo) && !below(hi, x) && (!whole_kind || whole(x));
     let target = value.clamp(lo, hi);
-    // On the step, counted from the minimum: the step nearest the value
-    // among those within the range.
-    let base = range.min.unwrap_or(0.0);
-    let steps = range
-        .step
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .and_then(|step| {
-            // An open end is as far as a step count stays exact.
-            const FAR: f64 = 1e15;
-            let first = ((lo - base) / step).ceil().max(-FAR);
-            let last = ((hi - base) / step).floor().min(FAR);
-            (first.is_finite() && last.is_finite() && first <= last).then_some((step, first, last))
-        });
-    if let Some((step, first, last)) = steps {
+    // On the step's grid ([`step_grid`]): the value on it nearest the
+    // value among those within the range.
+    let steps = range.grid().and_then(|(base, step)| {
+        // An open end is as far as a step count stays exact.
+        const FAR: f64 = 1e15;
+        let first = ((lo - base) / step).ceil().max(-FAR);
+        let last = ((hi - base) / step).floor().min(FAR);
+        (first.is_finite() && last.is_finite() && first <= last)
+            .then_some((base, step, first, last))
+    });
+    if let Some((base, step, first, last)) = steps {
         let at = |k: f64| base + k * step;
         let k = ((target - base) / step).round().clamp(first, last);
         for k in [k, k - 1.0, k + 1.0] {
@@ -1273,10 +1324,21 @@ pub(crate) struct Range {
     pub(crate) max: Option<f64>,
     /// Only a positive one.
     pub(crate) step: Option<f64>,
+    /// Where the step counts from ([`step_from`]), in the parameter's
+    /// unit; none when the step is not checked.
+    pub(crate) step_from: Option<f64>,
     /// The parameter's unit and dimension, for [`value_text`].
     unit: Option<Unit>,
     dimension: Dimension,
     length_symbol: &'static str,
+}
+
+impl Range {
+    /// The grid of its step ([`step_grid`]), when it has one that is
+    /// checked.
+    pub(crate) fn grid(&self) -> Option<(f64, f64)> {
+        step_grid(self.kind != ParamKind::Number, self.step?, self.step_from?)
+    }
 }
 
 /// Every public parameter of `doc` with its range evaluated against
@@ -1311,6 +1373,16 @@ pub(crate) fn ranges(doc: &Document) -> Vec<Range> {
                 min: number("min"),
                 max: number("max"),
                 step: number("step").filter(|s| *s > 0.0),
+                step_from: step_from(&e.bounds, dimension).map(|from| {
+                    shown(
+                        doc,
+                        Quantity {
+                            value: from,
+                            dimension,
+                        },
+                        e.unit,
+                    )
+                }),
                 unit: e.unit,
                 dimension,
                 length_symbol: doc.units.length.symbol(),
@@ -1484,6 +1556,8 @@ mod tests {
             min: Some(min),
             max: Some(max),
             step,
+            // The minimum is a value in these cases.
+            step_from: Some(min),
             unit: None,
             dimension: Dimension::NONE,
             length_symbol: "mm",
@@ -1518,5 +1592,17 @@ mod tests {
         assert_eq!(integer(2.0, 9.0, Some(2.0), -5.0), Some(2.0));
         assert_eq!(integer(2.5, 9.0, None, 1.0), Some(3.0));
         assert_eq!(integer(2.2, 2.8, None, 1.0), None);
+        // Counted from 0 under a minimum that is a formula.
+        let formula = Range {
+            step_from: Some(0.0),
+            ..range(ParamKind::Number, 26.3, 100.0, Some(1.0))
+        };
+        assert_eq!(nearest_in_range(&formula, 20.0), Some(27.0));
+        assert_eq!(nearest_in_range(&formula, 70.4), Some(70.0));
+        // The grid is the one rule: a whole kind's step of 0.4 is 1.
+        assert_eq!(step_grid(true, 0.4, 0.0), Some((0.0, 1.0)));
+        assert_eq!(step_grid(false, 0.4, 2.0), Some((2.0, 0.4)));
+        assert_eq!(step_grid(false, -1.0, 0.0), None);
+        assert_eq!(step_grid(false, 1.0, f64::NAN), None);
     }
 }

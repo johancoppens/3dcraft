@@ -102,7 +102,9 @@ naming the part of the file at fault.
 
 Select one or more **flat faces**, or one **sketch**, and export to `.dxf` or `.svg`: you get the outline
 at true size, with its holes. Lines, arcs, circles and splines stay what they are, so the laser follows
-them smoothly. A face is drawn as seen from outside the body, never mirrored.
+them smoothly. A face is drawn as seen from outside the body, never mirrored. The SVG's lines are a
+0.01 mm hairline, the width laser software cuts rather than engraves; opened in a web browser they look
+very thin or even invisible, so check the outline in Inkscape or your laser software instead.
 
 **A whole cut sheet at once.** When the design has a **named set** of the panels to cut (as the
 laser-cut box Jig has, *Cut sheet*), the export dialog offers **Sheet of set: …**: every flat face of

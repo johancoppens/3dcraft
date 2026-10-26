@@ -939,18 +939,7 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
         crossings(a, &bound, &mut breaks);
     }
     let band = clear_band(a, b, tol);
-    // `Some(true)` clearly close, `Some(false)` clearly clear, `None` on
-    // the boundary.
-    let side = |t: f64| {
-        let d = b.distance_to(a.point_at(t), tol);
-        if d <= tol - band {
-            Some(true)
-        } else if d > tol + band {
-            Some(false)
-        } else {
-            None
-        }
-    };
+    let distance = |t: f64| b.distance_to(a.point_at(t), tol);
     if matches!(a.shape, Shape::Circle { .. }) {
         // No ends: nothing of a circle may be close. It is sampled at the
         // breaks and halfway between them, around the turn.
@@ -958,21 +947,26 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
         breaks.sort_by(f64::total_cmp);
         let first = breaks.first().copied().unwrap_or(0.0);
         let after = breaks.iter().skip(1).copied().chain([first + 1.0]);
-        return !breaks
-            .iter()
-            .zip(after)
-            .any(|(&t, next)| side(t) == Some(true) || side((t + next) / 2.0) == Some(true));
+        let mut distances = Vec::with_capacity(breaks.len() * 2);
+        for (&t, next) in breaks.iter().zip(after) {
+            distances.push(distance(t));
+            distances.push(distance((t + next) / 2.0));
+        }
+        return !classify(&distances, tol, band)
+            .into_iter()
+            .any(|close| close);
     }
     breaks.push(0.0);
     breaks.push(1.0);
     breaks.sort_by(f64::total_cmp);
     breaks.dedup();
-    let mut samples = Vec::with_capacity(breaks.len() * 2);
+    let mut distances = Vec::with_capacity(breaks.len() * 2);
     for (&t, &next) in breaks.iter().zip(breaks.iter().skip(1)) {
-        samples.extend(side(t));
-        samples.extend(side((t + next) / 2.0));
+        distances.push(distance(t));
+        distances.push(distance((t + next) / 2.0));
     }
-    samples.extend(side(1.0));
+    distances.push(distance(1.0));
+    let samples = classify(&distances, tol, band);
     // A run that only boundary samples separate from an end reaches it.
     let last = samples.len().saturating_sub(1);
     let mut run_start = None;
@@ -994,6 +988,34 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
         }
     }
     true
+}
+
+/// Which of the sampled `distances` are close (`true`) and clear
+/// (`false`), leaving out those within `band` of `tol`, whose side is
+/// rounding noise ([`keeps_clear`]). The band is accepted: a gap in
+/// `(tol - band, tol]` is taken as clear when other samples decide, so
+/// two curves that come that close without touching are not refused,
+/// and one that comes closer than `tol - band` is. When no sample is
+/// clearly either (every one within the band: a curve that runs at the
+/// tolerance from the other all along), each is taken as `d <= tol`.
+fn classify(distances: &[f64], tol: f64, band: f64) -> Vec<bool> {
+    let clear: Vec<bool> = distances
+        .iter()
+        .filter_map(|&d| {
+            if d <= tol - band {
+                Some(true)
+            } else if d > tol + band {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if clear.is_empty() {
+        distances.iter().map(|&d| d <= tol).collect()
+    } else {
+        clear
+    }
 }
 
 /// How far from the tolerance a distance between `a` and `b` has to be

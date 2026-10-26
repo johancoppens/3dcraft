@@ -414,6 +414,69 @@ impl Document {
         users
     }
 
+    /// Renames every table whose name has become reserved since the
+    /// document was written (a function added to the expression language,
+    /// such as `sign` in format version 37) to the first free name
+    /// `{name}_1`, `{name}_2`, …, as [`Document::rename_table`] does: the
+    /// lookups in every expression and the choice parameters that take
+    /// their labels from it. A name is free when no variable, table or
+    /// expression uses it. Returns the renames made, old name first, in
+    /// the order of the tables. For reading old files only.
+    pub fn rename_reserved_tables(&mut self) -> Result<Vec<(String, String)>, DocError> {
+        let reserved: Vec<String> = self
+            .tables
+            .iter()
+            .map(|t| t.name.clone())
+            .filter(|name| craft3d_expr::is_reserved_name(name))
+            .collect();
+        let mut renames = Vec::new();
+        for old in reserved {
+            let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            used.extend(self.variables.iter().map(|v| v.name.clone()));
+            used.extend(self.tables.iter().map(|t| t.name.clone()));
+            let mut sources: Vec<&Expr> = Vec::new();
+            for variable in &self.variables {
+                sources.push(&variable.expr);
+                sources.extend(variable.public.iter().flat_map(crate::PublicParam::exprs));
+            }
+            let formulas: Vec<&Expr> = self
+                .features
+                .iter()
+                .flat_map(|f| {
+                    let mut all: Vec<&Expr> = f.exprs().into_iter().map(|(_, e)| e).collect();
+                    all.extend(f.kind.formula_exprs().into_iter().map(|(_, e)| e));
+                    all
+                })
+                .collect();
+            sources.extend(formulas);
+            for assertion in &self.assertions {
+                sources.extend(assertion.expect.exprs());
+            }
+            for body in &self.bodies {
+                sources.extend(body.exprs());
+            }
+            for expr in sources {
+                used.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+            let taken = |name: &str| used.contains(name) || craft3d_expr::is_reserved_name(name);
+            let Some(new) = (1..=used.len().saturating_add(1))
+                .map(|k| format!("{old}_{k}"))
+                .find(|name| !taken(name))
+            else {
+                return Err(DocError::Invalid(format!(
+                    "the table `{old}` has a name that is now reserved, and no free name was found for it"
+                )));
+            };
+            self.rename_table(&old, &new)?;
+            renames.push((old, new));
+        }
+        Ok(renames)
+    }
+
     /// Renames a table everywhere: the lookups in every expression and the
     /// choice parameters that take their labels from it. All or nothing.
     pub fn rename_table(&mut self, old: &str, new: &str) -> Result<(), DocError> {

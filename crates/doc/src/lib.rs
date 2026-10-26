@@ -1908,6 +1908,8 @@ impl Document {
     pub fn rename_reserved_variables(&mut self) -> Result<Vec<(String, String)>, DocError> {
         let mut renames: Vec<(String, String)> = Vec::new();
         let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // A table's name is as taken as a variable's.
+        used.extend(self.tables.iter().map(|t| t.name.clone()));
         for variable in &self.variables {
             used.insert(variable.name.clone());
             used.extend(

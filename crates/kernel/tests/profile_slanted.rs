@@ -209,3 +209,43 @@ fn polygons_that_cross_or_touch_themselves_are_still_refused() {
         }
     }
 }
+
+/// A corner that comes within three quarters of the tolerance of a side
+/// it is not on touches it, at a scale where the tolerance is large next
+/// to the rounding (1) and where it is small (1e6, coordinates of 5e7):
+/// the band that leaves rounding noise undecided is far narrower than a
+/// quarter of the tolerance. A corner twice the tolerance off is clear.
+#[test]
+fn a_corner_within_the_tolerance_of_a_side_touches_it() {
+    let tol = Tolerance::default().linear;
+    let mut rng = Rng(61);
+    for k in [1.0, 1e6] {
+        for i in 0..200 {
+            let c = [
+                uniform(&mut rng, -50.0, 50.0) * k,
+                uniform(&mut rng, -50.0, 50.0) * k,
+            ];
+            let angle = uniform(&mut rng, 0.0, TAU);
+            let corners = rectangle(c, 40.0 * k, 10.0 * k, angle, false);
+            let (a, b, cc, d) = (corners[0], corners[1], corners[2], corners[3]);
+            // The side from a to b, and the way into the rectangle.
+            let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+            let inward = [d[0] - a[0], d[1] - a[1]];
+            let length = inward[0].hypot(inward[1]);
+            let near = |gap: f64| {
+                [
+                    mid[0] + inward[0] / length * gap,
+                    mid[1] + inward[1] / length * gap,
+                ]
+            };
+            assert_crossing(
+                &[a, b, cc, near(0.75 * tol), d],
+                &format!("scale {k}, near touch {i}"),
+            );
+            assert_profile(
+                &[a, b, cc, near(2.0 * tol), d],
+                &format!("scale {k}, clear {i}"),
+            );
+        }
+    }
+}

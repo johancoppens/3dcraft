@@ -891,3 +891,79 @@ fn colour_and_density_expressions_that_do_not_work_are_refused() {
     );
     assert_eq!(out["appearance"]["color"], "#ff0200");
 }
+
+/// A colour expression of a feature that is on decides its body's colour
+/// even when it stops evaluating: the body is drawn without a colour (and
+/// the error is shown), and the colour of a feature that is off, which
+/// would colour the body only where nothing that is on gives one, does not
+/// silently take its place (decided 2026-10-26).
+#[test]
+fn a_broken_colour_expression_is_no_colour_not_a_switched_off_features() {
+    let mut s = session_in(None);
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "20"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, 10], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [["F1:face(1)", "F1:face(2)"]], "radius": 1, "name": "Round"}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Plate", "color": ["k * 10", 0, 0]}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "Round", "color": "#0000ff"}),
+    );
+    run(
+        &mut s,
+        "feature.when",
+        json!({"feature": "Round", "expr": "0"}),
+    );
+    let colours = |s: &mut Session| -> Vec<Value> {
+        let document = run(s, "document.inspect", json!({"measures": false}));
+        document["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["appearance"].clone())
+            .collect()
+    };
+    // The fillet is off: the plate's own colour, from its expression.
+    let now = colours(&mut s);
+    assert_eq!(now.len(), 1, "{now:?}");
+    assert_eq!(now[0]["color"], "#c80000", "{now:?}");
+    // The expression breaks: no colour, with the reason; not the blue of
+    // the fillet that is off.
+    run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "k", "force": true}),
+    );
+    let now = colours(&mut s);
+    assert!(
+        now.iter()
+            .all(|a| a.get("color").is_none_or(|c| c != "#0000ff")),
+        "{now:?}"
+    );
+    let scene = s.scene(None).unwrap().unwrap();
+    for body in scene.bodies.iter() {
+        for k in 0..body.face_names.len() {
+            let colour = scene.face_colors.get(body.first_face_id + k as u32);
+            assert_ne!(colour, Some([0, 0, 255]), "face {k} of {}", body.feature);
+        }
+    }
+    let check = run(&mut s, "document.check", json!({}));
+    assert!(
+        check["problems"]
+            .to_string()
+            .contains("the red of the colour"),
+        "{check}"
+    );
+}

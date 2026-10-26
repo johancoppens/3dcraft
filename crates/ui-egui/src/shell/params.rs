@@ -98,6 +98,9 @@ pub struct Param {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub step: Option<f64>,
+    /// Where the step counts from (`param.list` `stepFrom`): the minimum
+    /// when that is a value, else 0; none when the step is not checked.
+    pub step_from: Option<f64>,
     pub valid: bool,
     pub problems: Vec<String>,
 }
@@ -257,6 +260,7 @@ impl ParamList {
                             min: bound(get("min")),
                             max: bound(get("max")),
                             step: bound(get("step")).filter(|s| *s > 0.0),
+                            step_from: number(get("stepFrom")),
                             valid: get("valid").and_then(Value::as_bool).unwrap_or(true),
                             problems: get("problems")
                                 .and_then(Value::as_array)
@@ -308,16 +312,17 @@ pub struct Settled {
 
 /// `wanted` made a value `p` takes: a whole number for a whole kind (0 or
 /// 1 for a boolean, 1 to the number of choices for a choice), on its step
-/// (counted from its minimum), within its range. None for a value that is
-/// not a number.
+/// (the engine's grid, `craft3d_engine::step_grid`, from `stepFrom`),
+/// within its range. None for a value that is not a number.
 pub fn settle(p: &Param, wanted: f64) -> Option<Settled> {
     if !wanted.is_finite() {
         return None;
     }
     let mut value = wanted;
     let mut rounded = false;
-    if let Some(step) = p.step.filter(|s| s.is_finite() && *s > 0.0) {
-        let base = p.min.unwrap_or(0.0);
+    if let (Some(step), Some(from)) = (p.step, p.step_from)
+        && let Some((base, step)) = craft3d_engine::step_grid(p.kind.whole(), step, from)
+    {
         let snapped = base + ((value - base) / step).round() * step;
         if snapped.is_finite() {
             // Keep the decimals the step has: 0.1 * 3 is 0.30000000000000004.
@@ -1905,6 +1910,7 @@ mod tests {
             min: Some(20.0),
             max: Some(120.0),
             step: Some(0.5),
+            step_from: Some(20.0),
             valid: true,
             ..Param::default()
         }
@@ -1980,11 +1986,41 @@ mod tests {
         // A step of 0.1 keeps its decimals.
         let tenth = Param {
             step: Some(0.1),
+            step_from: Some(0.0),
             min: Some(0.0),
             ..width()
         };
         assert_eq!(settle(&tenth, 0.3).unwrap().value, 0.3);
         assert_eq!(settle(&tenth, 0.30000000000000004).unwrap().note, None);
+        // Counted from 0 under a minimum that is a formula (stepFrom 0),
+        // as param.set counts; the minimum itself is always taken.
+        let formula = Param {
+            min: Some(26.3),
+            max: Some(100.0),
+            step: Some(1.0),
+            step_from: Some(0.0),
+            ..width()
+        };
+        assert_eq!(settle(&formula, 70.4).unwrap().value, 70.0);
+        assert_eq!(settle(&formula, 26.0).unwrap().value, 26.3);
+        // A step that is not checked (a minimum that does not work) does
+        // not snap.
+        let unchecked = Param {
+            step_from: None,
+            ..width()
+        };
+        assert_eq!(settle(&unchecked, 33.3).unwrap().value, 33.3);
+        // A whole kind steps by a whole number, at least 1.
+        let tens = Param {
+            kind: ParamKind::Integer,
+            min: Some(0.0),
+            max: Some(9.0),
+            step: Some(0.4),
+            step_from: Some(0.0),
+            unit: None,
+            ..width()
+        };
+        assert_eq!(settle(&tens, 4.4).unwrap().value, 4.0);
         assert!(settle(&p, f64::NAN).is_none());
         assert!(settle(&p, f64::INFINITY).is_none());
         // Whole kinds: whole numbers within their own range.

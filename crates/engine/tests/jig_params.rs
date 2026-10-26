@@ -994,10 +994,11 @@ fn a_value_off_its_step_is_refused_with_the_nearest_on_it() {
         json!({"name": "q", "kind": "integer", "min": "1", "step": "2", "default": "4"}),
     );
     assert!(e.contains("its default 4 is not on its step"), "{e}");
-    // A step that moves with the minimum: clamp puts the other parameter
-    // back on its step.
+    // Under a minimum that is a formula the step counts from 0, so the
+    // grid does not move with it, and a parameter whose minimum moved is
+    // not refused for its step: only a value set is checked.
     run(&mut s, "variable.set", json!({"name": "lo", "expr": "1"}));
-    run(&mut s, "variable.set", json!({"name": "k", "expr": "5"}));
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "6"}));
     run(
         &mut s,
         "variable.publish",
@@ -1006,15 +1007,88 @@ fn a_value_off_its_step_is_refused_with_the_nearest_on_it() {
     run(
         &mut s,
         "variable.publish",
-        json!({"name": "k", "kind": "integer", "min": "lo", "max": "20", "step": "2"}),
+        json!({"name": "k", "kind": "integer", "min": "lo + 0.5", "max": "20", "step": "2"}),
     );
-    let e = refused(&mut s, "param.set", json!({"values": {"lo": 2}}));
-    assert!(e.contains("would make `k` invalid"), "{e}");
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "k")["stepFrom"], 0.0);
+    assert_eq!(param(&list, "t")["stepFrom"], 1.0);
+    assert_eq!(param(&list, "n")["stepFrom"], 0.0);
+    run(&mut s, "param.set", json!({"values": {"lo": 3}}));
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "k")["valid"], true, "{list}");
+    let e = refused(&mut s, "param.set", json!({"values": {"k": 7}}));
+    assert!(
+        e.contains("7 is not on its step of 2 counted from 0: the nearest values are 6 and 8"),
+        "{e}"
+    );
+    run(&mut s, "param.set", json!({"values": {"k": 8}}));
+    // Moving lo up past k clamps k onto the grid within its new range.
+    run(&mut s, "param.set", json!({"values": {"k": 4}}));
     let r = run(
         &mut s,
         "param.set",
-        json!({"values": {"lo": 2}, "clamp": true}),
+        json!({"values": {"lo": 4}, "clamp": true}),
     );
-    let k = r["clamped"][0]["expr"].as_str().unwrap();
-    assert!(k == "4" || k == "6", "{r}");
+    assert_eq!(r["clamped"], json!([{"name": "k", "expr": "6"}]), "{r}");
+    // A minimum that does not work: the step is not checked.
+    run(&mut s, "variable.set", json!({"name": "u", "expr": "6"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "u", "kind": "integer", "min": "2", "max": "20", "step": "2"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "u_lo", "expr": "1"}));
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "u", "min": "u_lo"}),
+    );
+    run(
+        &mut s,
+        "variable.delete",
+        json!({"name": "u_lo", "force": true}),
+    );
+    let list = run(&mut s, "param.list", json!({}));
+    assert_eq!(param(&list, "u")["stepFrom"], Value::Null, "{list}");
+}
+
+/// The Jigs shipped in the 3dcraft-jigs repository (dist/, 2026-10-26),
+/// their variables and tables only (`jig_fixtures/parameters.json`, the
+/// features left out: a parameter's validity reads nothing else). Every
+/// parameter is valid, and setting every one to the value it has is
+/// taken: a rule about steps or ranges that would make a shipped Jig
+/// invalid, or refuse its own values, fails here (screw-jar's height,
+/// min 26.3 mm and step 1 mm, once did).
+#[test]
+fn every_shipped_jig_has_valid_parameters_that_set_again() {
+    let all: Value = serde_json::from_str(include_str!("jig_fixtures/parameters.json")).unwrap();
+    let dir = workdir("jig-params", "shipped");
+    let mut bad = Vec::new();
+    for (name, manifest) in all.as_object().unwrap() {
+        let text = manifest.to_string();
+        let bytes = craft3d_zipstore::write_stored(&[("manifest.json", text.as_bytes())]).unwrap();
+        let file = format!("{name}.3dcraft");
+        std::fs::write(dir.join(&file), bytes).unwrap();
+        let mut s = session_in(&dir);
+        run(&mut s, "file.open", json!({"path": file}));
+        let list = run(&mut s, "param.list", json!({}));
+        let parameters = list["parameters"].as_array().unwrap();
+        assert!(!parameters.is_empty(), "{name} has no parameters");
+        let mut values = serde_json::Map::new();
+        for p in parameters {
+            if p["valid"] != true {
+                bad.push(format!("{name} `{}`: {}", p["name"], p["problems"]));
+            }
+            let value = if p["kind"] == "number" {
+                p["expr"].clone()
+            } else {
+                p["value"].clone()
+            };
+            values.insert(p["name"].as_str().unwrap().to_string(), value);
+        }
+        if let Err(e) = s.execute("param.set", &json!({ "values": values })) {
+            bad.push(format!("{name}: setting its own values: {e}"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

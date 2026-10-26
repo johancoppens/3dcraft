@@ -21,19 +21,14 @@ use std::f64::consts::PI;
 
 /// The stroke width, in millimetres, that laser software takes for a line
 /// to cut rather than to engrave ("hairline").
+///
+/// A browser draws it at its true width, a hundredth of a pixel at the
+/// size it opens the file in, so the outline looks faint or empty there:
+/// a known limit. A screen-only CSS rule (`@media screen`, a 1px
+/// `non-scaling-stroke`) was tried and dropped (2026-10-26): Inkscape
+/// applies it, so its 1px is one user unit, 1 mm, and its PDF export
+/// writes 2.83 pt lines, which a laser's print driver engraves.
 pub const HAIRLINE_MM: f64 = 0.01;
-
-/// What a screen draws instead of the hairline: a line one pixel wide
-/// whatever the zoom (`vector-effect: non-scaling-stroke`), the way
-/// Inkscape draws its own hairline. At its true width of 0.01 mm a line
-/// is a hundredth of a pixel at the size a browser or a viewer opens the
-/// file in, and the page looks empty. Only for `@media screen`: the
-/// `stroke-width` attribute stays the hairline, which is what a laser's
-/// print driver and a cutting service read (an Epilog driver engraves a
-/// line of 0.05 mm instead of cutting it), and a CSS rule beats the
-/// attribute only where the reader applies CSS for a screen. LightBurn
-/// takes every stroke as a line to follow, whatever its width.
-pub const SCREEN_STYLE: &str = "<style type=\"text/css\">@media screen{path{vector-effect:non-scaling-stroke;stroke-width:1px}}</style>\n";
 
 /// The longest arc written as one `A` command: a quarter turn, and a
 /// rounding error more so that a quarter stays one. An SVG arc is given
@@ -328,7 +323,6 @@ pub fn write_svg(
         text(width)?,
         text(height)?,
     ));
-    svg.push_str(SCREEN_STYLE);
     for (index, layer) in drawing.layers.iter().enumerate() {
         if layer.paths.is_empty() {
             continue;

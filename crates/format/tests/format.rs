@@ -3589,10 +3589,19 @@ fn a_version_36_file_with_a_variable_named_like_a_new_function_opens_renamed() {
         "variables": [
           {"name": "sign", "expr": "1"},
           {"name": "hypot", "expr": "5 mm * sign"},
-          {"name": "width", "expr": "40 mm"}],
+          {"name": "width", "expr": "40 mm",
+           "public": {"kind": "number", "min": "hypot * 2", "max": "log2[sign].hi", "default": "40 mm"}},
+          {"name": "pick", "expr": "1",
+           "public": {"kind": "choice", "choices_from": "log2", "default": "1"}},
+          {"name": "sign_1", "expr": "log2[pick].hi"}],
+        "tables": [{"name": "log2", "key": "k", "columns": [{"name": "k"}, {"name": "hi", "unit": "mm"}],
+                    "rows": [["a", 50.0], ["b", 60.0]]}],
         "features": [
           {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
             "position": ["0", "0", "0"], "size": ["width", "hypot", "hypot + 1 mm"]}}],
+        "assertions": [
+          {"name": "wide", "measure": {"measure": "volume", "of": "F1"},
+           "expect": {"min": "hypot * sign * 1 mm^2", "max": "log2[1].hi^3"}}],
         "rollback": null, "next_feature_id": 2}}"#;
     let (doc, warnings) = match craft3d_format::from_manifest_json_noted(v36.as_bytes()) {
         Ok(read) => read,
@@ -3603,14 +3612,30 @@ fn a_version_36_file_with_a_variable_named_like_a_new_function_opens_renamed() {
         .iter()
         .map(|v| (v.name.as_str(), v.expr.source()))
         .collect();
+    // `sign_1` is taken by a variable already: `sign` becomes `sign_2`.
     assert_eq!(
         variables,
         [
-            ("sign_1", "1"),
-            ("hypot_1", "5 mm * sign_1"),
-            ("width", "40 mm")
+            ("sign_2", "1"),
+            ("hypot_1", "5 mm * sign_2"),
+            ("width", "40 mm"),
+            ("pick", "1"),
+            ("sign_1", "log2_1[pick].hi")
         ]
     );
+    assert_eq!(doc.tables[0].name, "log2_1");
+    let width = doc.variables[2].public.as_ref().unwrap();
+    assert_eq!(width.min.as_ref().unwrap().source(), "hypot_1 * 2");
+    assert_eq!(width.max.as_ref().unwrap().source(), "log2_1[sign_2].hi");
+    let pick = doc.variables[3].public.as_ref().unwrap();
+    assert_eq!(pick.choices_from.as_deref(), Some("log2_1"));
+    let bounds: Vec<&str> = doc.assertions[0]
+        .expect
+        .exprs()
+        .iter()
+        .map(|e| e.source())
+        .collect();
+    assert_eq!(bounds, ["hypot_1 * sign_2 * 1 mm^2", "log2_1[1].hi^3"]);
     let FeatureKind::Block(block) = &doc.features[0].kind else {
         panic!("not a block")
     };
@@ -3619,7 +3644,9 @@ fn a_version_36_file_with_a_variable_named_like_a_new_function_opens_renamed() {
     assert_eq!(
         warnings,
         [
-            "variable `sign` renamed `sign_1`: `sign` is a function in expressions since format \
+            "table `log2` renamed `log2_1`: `log2` is a function in expressions since format \
+             version 37",
+            "variable `sign` renamed `sign_2`: `sign` is a function in expressions since format \
              version 37",
             "variable `hypot` renamed `hypot_1`: `hypot` is a function in expressions since \
              format version 37"

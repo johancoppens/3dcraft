@@ -80,6 +80,7 @@ pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
+pub use param_cmds::step_grid;
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
     SceneFaces, SceneNear, ScenePick, ScenePointed, SceneVertices,
