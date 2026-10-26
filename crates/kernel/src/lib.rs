@@ -29,6 +29,7 @@ mod offset_blend;
 pub mod offset_face;
 mod offset_normal;
 pub mod offset_profile;
+pub mod origami;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
