@@ -511,3 +511,29 @@ fn a_level_on_a_flat_face_of_the_body_is_found() {
         );
     }
 }
+
+/// A sphere cut along an oblique normal: its extent along it is the
+/// sphere's own (from the held box of the body turned onto the normal,
+/// not the corners of its axis-aligned box), so the tangent plane meets
+/// nothing and a plane a little inside it cuts the spherical cap.
+#[test]
+fn an_oblique_tangent_plane_to_a_sphere_cuts_nothing() {
+    for k in SCALES {
+        let r = k;
+        let body = sphere(&Frame::WORLD, r).unwrap();
+        let plane = CutPlane::new(Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, -1.0, 0.0)).unwrap();
+        let (lo, hi, _) = extent(&[&body], plane.normal).unwrap();
+        close(lo, -r, k, "the sphere's own extent");
+        close(hi, r, k, "the sphere's own extent");
+        let none = below(&[&body], &plane, -r, &tol(k)).unwrap();
+        assert_eq!(none.volume, 0.0);
+        let s = 0.1 * r;
+        let cap = below(&[&body], &plane, -r + s, &tol(k)).unwrap();
+        close(
+            cap.volume,
+            PI * s * s * (3.0 * r - s) / 3.0,
+            k.powi(3),
+            "cap",
+        );
+    }
+}

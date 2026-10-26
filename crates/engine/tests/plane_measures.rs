@@ -95,9 +95,25 @@ fn a_block_below_a_level_matches_its_closed_forms() {
     let above = run(
         &mut s,
         "measure.below",
-        json!({"normal": "-z", "offset": "-300 mm"}),
+        json!({"plane": {"point": [0, 0, 0], "normal": [0, 0, -1]}, "offset": "-300 mm"}),
     );
     close(&above["volume"], l * b * (d - t), "volume above");
+    // A flat face by its name: the top (z = d, facing up), moved down.
+    let from_top = run(
+        &mut s,
+        "measure.below",
+        json!({"plane": "F1:face(1)", "offset": -(d - t)}),
+    );
+    close(
+        &from_top["volume"],
+        l * b * t,
+        "below the top face moved down",
+    );
+    close(
+        &from_top["offset"],
+        -(d - t),
+        "the offset from the plane given",
+    );
     // The level for a volume: the fill level of the block as a tank.
     let level = run(&mut s, "measure.levelFor", json!({"volume": l * b * t}));
     close(&level["offset"], t, "level for a volume");
@@ -235,7 +251,15 @@ fn expressions_follow_the_variables() {
 fn what_cannot_be_measured_is_refused() {
     let mut s = block(4000.0, 1000.0, 1000.0);
     for id in ["measure.below", "measure.section"] {
-        assert!(refused(&mut s, id, json!({"normal": [0, 0, 0]})).contains("normal"));
+        assert!(
+            refused(
+                &mut s,
+                id,
+                json!({"plane": {"point": [0, 0, 0], "normal": [0, 0, 0]}})
+            )
+            .contains("normal")
+        );
+        assert!(refused(&mut s, id, json!({"plane": "NoSuchFace"})).contains("plane"));
         assert!(refused(&mut s, id, json!({"xAxis": "z"})).contains("square"));
         assert!(refused(&mut s, id, json!({"offset": "nope"})).contains("offset"));
         assert!(refused(&mut s, id, json!({"offset": "5 deg"})).contains("length"));

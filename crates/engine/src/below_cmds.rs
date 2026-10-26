@@ -10,7 +10,7 @@
 use crate::commands::{Run, length_unit, spec, vec3};
 use crate::params::Params;
 use crate::verify_cmds::{
-    Ctx, Dim, Outcome, all_bodies, direction, nonempty, subject, whole_bodies,
+    Ctx, Dim, Outcome, all_bodies, direction, nonempty, plane, subject, whole_bodies,
 };
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_kernel::below::{BelowPlane, CutPlane, Level, below, level_for};
@@ -22,15 +22,16 @@ use serde_json::{Map, Value};
 const MAX_BODIES: usize = 200;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("measure.below", "Volume Below a Plane", r#"{"of": subject = all bodies, "normal": direction = "z", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
-        "The part of closed bodies on one side of a plane, exactly: the plane is the points p with p · normal = offset (normal made unit; offset a length along it from the origin), and below is the side the normal points away from. Returns volume (the document's unit cubed), centroid (null when nothing is below), surface (the area of the bodies' surface below the plane), and section, the section of the bodies by the plane, as measure.section gives it. The part below is the boolean intersection with a half-space and is integrated on the exact B-rep; the section's moments are Green's theorem along the curves in which the plane cuts the bodies. A body wholly below gives all of itself and no section; wholly above, nothing. Bodies that overlap are counted once each. Refused: a sheet (no inside), a normal of no length. Read-only.", doc: true, names: ["of"], measure_below),
-    spec!("measure.section", "Section by a Plane", r#"{"of": subject = all bodies, "normal": direction = "z", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
-        "The section of closed bodies by a plane (p · normal = offset), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. Read-only.", doc: true, names: ["of"], measure_section),
-    spec!("measure.levelFor", "Level for a Volume", r#"{"of": subject = all bodies, "normal": direction = "z", "volume": volume expr, "xAxis": direction = the world axis most square to the normal}"#,
-        "The offset of a plane square to normal at which the volume of the bodies below it is volume (the fill level of a tank for a volume of liquid; the plane at which a body floating with a known volume under it lies): found by the kernel by Newton's method on the section's area within a bracket, at most 64 steps (not converging is an error, and so is a volume not strictly between 0 and the bodies' whole volume). Returns offset, steps, residual (how far the volume below is from the one asked for) and everything measure.below gives at that offset. Read-only.", doc: true, names: ["of"], measure_level_for),
+    spec!("measure.below", "Volume Below a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
+        "The part of closed bodies on one side of a plane, exactly: the plane is given as measure.symmetry takes it (a base plane, a datum plane, a flat face by its persistent name with its outward normal, or a point and a normal) and moved by offset along its normal, and below is the side the normal points away from. Returns volume (the document's unit cubed), centroid (null when nothing is below), surface (the area of the bodies' surface below the plane), and section, the section of the bodies by the plane, as measure.section gives it. The part below is the boolean intersection with a half-space and is integrated on the exact B-rep; the section's moments are Green's theorem along the curves in which the plane cuts the bodies. A body wholly below gives all of itself and no section; wholly above, nothing. Bodies that overlap are counted once each. offset in the result is how far the plane was moved. Refused: a sheet (no inside), a normal of no length, nothing found below where a vertex of a body lies below the plane. Read-only.", doc: true, names: ["of"], measure_below),
+    spec!("measure.section", "Section by a Plane", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "offset": length expr = 0, "xAxis": direction = the world axis most square to the normal}"#,
+        "The section of closed bodies by a plane (plane, moved by offset along its normal, as measure.below takes them), exactly: area, centroid, and the second moments about axes through the centroid, ix = ∫y² dA about the axis along xAxis (square to the normal; by default the world axis most square to it, made square), iy = ∫x² dA about the axis along y = normal × xAxis, ixy = ∫xy dA, and the principal moments (major, minor, and majorAxis, the direction of the axis about which the moment is largest), in the document's unit to the fourth power; xAxis and yAxis say the axes used. From Green's theorem along the curves in which the plane cuts the bodies (each edge summed by two Gauss–Legendre rules until they agree); a cross-section of a beam, the cut of a body at a level. Read-only.", doc: true, names: ["of"], measure_section),
+    spec!("measure.levelFor", "Level for a Volume", r#"{"of": subject = all bodies, "plane": "xy|yz|zx" or datum plane (name or id) or a flat face by name or {point: [expr, expr, expr], normal: [number, number, number]} = "xy", "volume": volume expr, "xAxis": direction = the world axis most square to the normal}"#,
+        "The offset along its normal of plane (as measure.below takes it; only its direction and the point it is measured from count) at which the volume of the bodies below it is volume (the fill level of a tank for a volume of liquid; the plane at which a body floating with a known volume under it lies): found by the kernel by Newton's method on the section's area within a bracket, an offset the boolean refuses stepped around by halving, at most 64 steps (not converging is an error, and so is a volume not strictly between 0 and the bodies' whole volume). Returns offset, steps, residual (how far the volume below is from the one asked for) and everything measure.below gives at that offset. Read-only.", doc: true, names: ["of"], measure_level_for),
 ];
 
-/// The assertion measures and their dimensions.
+/// The assertion measures and their dimensions: the one list
+/// `assert_cmds` reads them from.
 pub(crate) const MEASURES: [(&str, Dim); 6] = [
     ("volumeBelow", Dim::Length(3)),
     ("centroidBelow", Dim::Length(1)),
@@ -40,13 +41,18 @@ pub(crate) const MEASURES: [(&str, Dim); 6] = [
     ("levelFor", Dim::Length(1)),
 ];
 
+/// The dimension of assertion measure `name`, when it is one of these.
+pub(crate) fn dim_of(name: &str) -> Option<Dim> {
+    MEASURES.iter().find(|(m, _)| *m == name).map(|(_, d)| *d)
+}
+
 /// The parameters of each assertion measure.
 pub(crate) fn keys_of(measure: &str) -> &'static [&'static str] {
     match measure {
-        "volumeBelow" | "sectionArea" => &["of", "normal", "offset", "xAxis"],
-        "centroidBelow" | "sectionCentroid" => &["of", "normal", "offset", "xAxis", "axis"],
-        "sectionInertia" => &["of", "normal", "offset", "xAxis", "about"],
-        "levelFor" => &["of", "normal", "volume", "xAxis"],
+        "volumeBelow" | "sectionArea" => &["of", "plane", "offset", "xAxis"],
+        "centroidBelow" | "sectionCentroid" => &["of", "plane", "offset", "xAxis", "axis"],
+        "sectionInertia" => &["of", "plane", "offset", "xAxis", "about"],
+        "levelFor" => &["of", "plane", "volume", "xAxis"],
         _ => &[],
     }
 }
@@ -80,14 +86,19 @@ fn bodies_named(
     Ok(bodies)
 }
 
-/// The plane's directions: `normal` (default z) and `xAxis`, by default
-/// the world axis least parallel to the normal (x, y, z in that order
-/// where two are as square to it), made square to it.
-fn cut_plane(p: &Map<String, Value>) -> Result<CutPlane, String> {
-    let normal = match given(p, "normal") {
-        None => Vec3::new(0.0, 0.0, 1.0),
-        Some(v) => direction(Some(v), "normal")?,
+/// The cutting plane: `plane` (default xy, as measure.symmetry takes it)
+/// with its normal, and `xAxis`, by default the world axis least parallel
+/// to the normal (x, y, z in that order where two are as square to it),
+/// made square to it; and the offset of the given plane along the normal
+/// from the origin (`point · normal`).
+fn cut_plane(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<(CutPlane, f64), String> {
+    let (point, normal) = match given(p, "plane") {
+        None => (Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0)),
+        Some(v) => plane(ctx, Some(v))?,
     };
+    let normal = normal
+        .normalized()
+        .ok_or("the plane's normal has no length")?;
     let x_axis = match given(p, "xAxis") {
         Some(v) => direction(Some(v), "xAxis")?,
         None => {
@@ -107,10 +118,15 @@ fn cut_plane(p: &Map<String, Value>) -> Result<CutPlane, String> {
             }
             (best - normal * best.dot(normal))
                 .normalized()
-                .ok_or("`normal` gives no plane")?
+                .ok_or("the plane's normal gives no plane")?
         }
     };
-    CutPlane::new(normal, x_axis).map_err(|e| e.to_string())
+    let side = CutPlane::new(normal, x_axis).map_err(|e| e.to_string())?;
+    let base = point.dot(side.normal);
+    if !base.is_finite() {
+        return Err("the plane's point is not finite".into());
+    }
+    Ok((side, base))
 }
 
 fn num(v: f64) -> Value {
@@ -170,16 +186,23 @@ fn measured(
 ) -> Result<(BelowPlane, CutPlane, Option<Level>), String> {
     crate::verify_cmds::only(p, allowed)?;
     let bodies = bodies_named(ctx, p)?;
-    let plane = cut_plane(p)?;
+    let (plane, base) = cut_plane(ctx, p)?;
     let plain: Vec<&Body> = bodies.iter().map(|(_, b)| b.as_ref()).collect();
+    // The kernel's offset is from the origin; the commands' from the
+    // plane given.
+    let from_given = |mut found: BelowPlane| {
+        found.offset -= base;
+        found
+    };
     match asked {
         Asked::At => {
             let offset = given(p, "offset")
                 .map(|v| ctx.quantity(v, "offset", 1))
                 .transpose()?
                 .unwrap_or(0.0);
-            let found = below(&plain, &plane, offset, &ctx.tolerance).map_err(|e| e.to_string())?;
-            Ok((found, plane, None))
+            let found =
+                below(&plain, &plane, base + offset, &ctx.tolerance).map_err(|e| e.to_string())?;
+            Ok((from_given(found), plane, None))
         }
         Asked::For => {
             let volume = ctx.quantity(
@@ -189,13 +212,13 @@ fn measured(
             )?;
             let level =
                 level_for(&plain, &plane, volume, &ctx.tolerance).map_err(|e| e.to_string())?;
-            Ok((level.below, plane, Some(level)))
+            Ok((from_given(level.below), plane, Some(level)))
         }
     }
 }
 
-const PLANE_KEYS: [&str; 4] = ["of", "normal", "offset", "xAxis"];
-const LEVEL_KEYS: [&str; 4] = ["of", "normal", "volume", "xAxis"];
+const PLANE_KEYS: [&str; 4] = ["of", "plane", "offset", "xAxis"];
+const LEVEL_KEYS: [&str; 4] = ["of", "plane", "volume", "xAxis"];
 
 fn run_command(
     session: &mut Session,

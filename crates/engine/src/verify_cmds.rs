@@ -151,7 +151,7 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| format!("`{key}` must be a finite number or an expression"))
     }
 
-    pub(crate) fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
+    fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
         let Some(Value::Array(items)) = value else {
             return Err(format!("`{key}` must be a point [x, y, z]"));
         };
@@ -1242,22 +1242,26 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-/// A plane: a point on it and its normal.
-fn plane(ctx: &Ctx<'_>, value: Option<&Value>) -> Result<(Vec3, Vec3), String> {
-    let wrong =
-        || "`plane` must be xy, yz, zx, a datum plane (name or id) or {point, normal}".to_string();
+/// A plane: a point on it and its normal. A base plane, a datum plane, a
+/// flat face by its persistent name (its outward normal; one face of that
+/// name in the document), or `{point, normal}`.
+pub(crate) fn plane(ctx: &Ctx<'_>, value: Option<&Value>) -> Result<(Vec3, Vec3), String> {
+    let wrong = || {
+        "`plane` must be xy, yz, zx, a datum plane (name or id), a flat face by its name or {point, normal}"
+            .to_string()
+    };
     match value {
         Some(Value::String(word)) => match word.as_str() {
             "xy" | "yx" => Ok((Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0))),
             "yz" | "zy" => Ok((Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0))),
             "zx" | "xz" => Ok((Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0))),
-            _ => {
-                let id = feature_of(ctx.doc, word).map_err(|_| wrong())?;
-                match ctx.regen.feature(id).and_then(|f| f.datum.as_ref()) {
+            _ => match feature_of(ctx.doc, word) {
+                Ok(id) => match ctx.regen.feature(id).and_then(|f| f.datum.as_ref()) {
                     Some(craft3d_regen::Datum::Plane(frame)) => Ok((frame.origin(), frame.z())),
                     _ => Err(format!("`{word}` is not a placed datum plane")),
-                }
-            }
+                },
+                Err(_) => face_plane(ctx, word).map_err(|why| format!("{}: {why}", wrong())),
+            },
         },
         Some(Value::Object(map)) => {
             only(map, &["point", "normal"]).map_err(|_| wrong())?;
@@ -1267,6 +1271,43 @@ fn plane(ctx: &Ctx<'_>, value: Option<&Value>) -> Result<(Vec3, Vec3), String> {
         }
         _ => Err(wrong()),
     }
+}
+
+/// The plane of the flat face named `name`: a point of it and its outward
+/// normal, from the face's exact surface.
+fn face_plane(ctx: &Ctx<'_>, name: &str) -> Result<(Vec3, Vec3), String> {
+    let found = query(
+        ctx.doc,
+        ctx.regen,
+        Some(&json!(["face"])),
+        Some(&json!({ "name": name })),
+        2,
+    )?;
+    let [item] = found.as_slice() else {
+        return Err(if found.is_empty() {
+            format!(
+                "there is no face named `{}`",
+                name.chars().take(80).collect::<String>()
+            )
+        } else {
+            format!(
+                "more than one face is named `{}`",
+                name.chars().take(80).collect::<String>()
+            )
+        });
+    };
+    let body = ctx.body(item.feature)?;
+    let face = item
+        .indices
+        .first()
+        .and_then(|&i| body.faces.get(i))
+        .ok_or("the face is not in its body")?;
+    let craft3d_geom::Surface::Plane(plane) = &face.surface else {
+        return Err(format!("the face `{name}` is not flat"));
+    };
+    let frame = plane.frame();
+    let normal = if face.reversed { -frame.z() } else { frame.z() };
+    Ok((frame.origin(), normal))
 }
 
 fn symmetric(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {

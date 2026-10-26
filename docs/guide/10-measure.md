@@ -33,21 +33,23 @@ is below, beside the value found at a real place. On the flange of [chapter 3](0
 
 Three questions about a plane through closed bodies, answered on the exact geometry (the part below
 the plane is cut off by the kernel and integrated; the section's moments come from the curves in which
-the plane cuts the bodies). The plane is the points p with p · `normal` = `offset` (default the xy plane,
-normal z); *below* is the side the normal points away from.
+the plane cuts the bodies). The plane is given as `measure.symmetry` takes it (`xy`, `yz`, `zx`, a datum
+plane, `{"point", "normal"}`) or as a flat face by its name (`"F1:face(1)"`, with its outward normal),
+moved by `offset` along its normal; the default is the xy plane. *Below* is the side the normal points
+away from.
 
 | Command | Answers |
 |---|---|
-| `measure.below {"of", "normal", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
-| `measure.section {"of", "normal", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis` |
-| `measure.levelFor {"of", "normal", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
+| `measure.below {"of", "plane", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
+| `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis` |
+| `measure.levelFor {"of", "plane", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
 
 ```json
 [
  ["feature.block", {"size": [4000, 1300, 1000], "position": [-2000, -650, 0], "name": "Tank"}],
  ["measure.below", {"of": "Tank", "offset": "300 mm"}],
  ["measure.levelFor", {"of": "Tank", "volume": "1.56 * (1 m)^3"}],
- ["measure.section", {"of": "Tank", "normal": [1, 0, 0], "offset": 0}]
+ ["measure.section", {"of": "Tank", "plane": "yz"}]
 ]
 ```
 
@@ -62,16 +64,16 @@ the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxi
   inside* (close it first), *did not converge* after 64 steps.
 - Bodies that overlap are counted once each.
 - Floating objects: a body of mass m in a liquid of density ρ settles where `levelFor` of m/ρ puts the
-  plane; a Jig computes its stability from the centroid and the section's moments (the worked example
+  plane; a Jig computes what it needs from the centroid and the section's moments (the worked example
   is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
 
 As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
 `axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`) and `levelFor` (with
-`volume`), each with the same `of`, `normal`, `offset` and `xAxis`:
+`volume`), each with the same `of`, `plane`, `offset` (not for `levelFor`) and `xAxis`:
 
 ```json
 [
- ["assert.add", {"name": "stiff enough", "measure": "sectionInertia", "of": "Tank", "normal": [1, 0, 0], "about": "minor", "min": "1e11"}],
+ ["assert.add", {"name": "stiff enough", "measure": "sectionInertia", "of": "Tank", "plane": "yz", "about": "minor", "min": "1e11"}],
  ["assert.add", {"name": "fill level", "measure": "levelFor", "of": "Tank", "volume": "1.56 * (1 m)^3", "max": "350 mm"}]
 ]
 ```
