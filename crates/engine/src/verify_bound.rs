@@ -784,6 +784,54 @@ where
         Some(lb.max(0.0))
     }
 
+    /// Whether two face strata lie in one plane (normals parallel to
+    /// 1e-12, apart along them by no more than the tolerance and a quarter
+    /// of `enough`) and do not overlap: then their interiors hold no
+    /// critical pair. Points of two faces of one plane are apart within it,
+    /// never along its normal, so only coincident points (an overlap)
+    /// could be critical. The faces overlap only if one boundary meets the
+    /// other face (then a pair of their strata is at 0, which bounds the
+    /// pair of faces anyway) or one face lies inside the other: told by a
+    /// vertex of each, put on the other's plane, out of the other.
+    fn one_plane_apart(&self, pa: usize, pb: usize, enough: f64) -> bool {
+        let (Some(a), Some(b)) = (self.prims.get(pa), self.prims.get(pb)) else {
+            return false;
+        };
+        if a.kind != Kind::Face || b.kind != Kind::Face {
+            return false;
+        }
+        let (Some(Surface::Plane(x)), Some(Surface::Plane(y))) = (a.surface, b.surface) else {
+            return false;
+        };
+        let (na, nb) = (x.frame().z(), y.frame().z());
+        let offset = (y.frame().origin() - x.frame().origin()).dot(na).abs();
+        if na.cross(nb).length() > SAME_AXIS || !(offset <= self.tol.min(0.25 * enough)) {
+            return false;
+        }
+        let out_of = |inner: &Prim<'_>, outer: &Prim<'_>, n: Vec3, o: Vec3| -> bool {
+            let (Some(pi), Some(po)) = (
+                self.part(inner.side, inner.part),
+                self.part(outer.side, outer.part),
+            ) else {
+                return false;
+            };
+            let Some(v) = pi.body().faces.get(inner.index).and_then(|f| {
+                f.loops
+                    .iter()
+                    .filter_map(|l| pi.body().loops.get(l.0 as usize))
+                    .flat_map(|l| l.coedges.iter())
+                    .filter_map(|c| pi.body().edges.get(c.edge.0 as usize))
+                    .map(|e| e.curve.eval(e.range.0))
+                    .next()
+            }) else {
+                return false;
+            };
+            let on = v - n * (v - o).dot(n);
+            matches!(po.probe.on_face(outer.index, on), Ok(OnFace::Out))
+        };
+        out_of(a, b, nb, y.frame().origin()) && out_of(b, a, na, x.frame().origin())
+    }
+
     /// The distance in the plane through the axis `(o, z)` of what the
     /// two pieces sweep turning about it.
     fn meridian(&self, pa: &Prim<'_>, a: &Rec, pb: &Prim<'_>, b: &Rec, o: Vec3, z: Vec3) -> f64 {
@@ -1148,6 +1196,11 @@ pub(crate) fn prove(
         let (Some(&ra), Some(&rb)) = (first.get(&pa), first.get(&pb)) else {
             continue;
         };
+        // Two faces of one plane: their interiors hold no critical pair
+        // apart from where they overlap, which they do not (below).
+        if search.one_plane_apart(pa, pb, enough(best)) {
+            continue;
+        }
         // Strata far apart (most of a face's edges from most of the
         // other's) by their boxes alone, without counting as work.
         if let (Some(x), Some(y), Some(px), Some(py)) = (
