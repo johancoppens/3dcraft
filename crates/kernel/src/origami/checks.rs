@@ -108,7 +108,7 @@ pub fn vertex_checks(arr: &Arrangement, angular: f64) -> (Vec<VertexCheck>, Vec<
             })
             .fold(f64::INFINITY, f64::min);
         let slack = angular + arr.tolerance / shortest;
-        let kawasaki = (n % 2 == 0).then(|| sums[0] - PI);
+        let kawasaki = n.is_multiple_of(2).then(|| sums[0] - PI);
         let maekawa = mountains.abs_diff(valleys);
         out.push(VertexCheck {
             vertex: v,

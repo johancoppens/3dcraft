@@ -250,7 +250,7 @@ pub(crate) fn dist(a: P2, b: P2) -> f64 {
 pub(crate) fn to_segment(p: P2, a: P2, b: P2) -> (f64, f64) {
     let d = sub(b, a);
     let len2 = dot(d, d);
-    if !(len2 > 0.0) {
+    if len2.is_nan() || len2 <= 0.0 {
         return (dist(p, a), 0.0);
     }
     let t = (dot(sub(p, a), d) / len2).clamp(0.0, 1.0);

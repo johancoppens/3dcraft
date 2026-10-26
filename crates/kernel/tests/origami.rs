@@ -445,7 +445,7 @@ fn miura(
     let boundary = polygon(&outline);
     let mut creases = Vec::new();
     let mut id = 100;
-    let zig = |i: usize| if i % 2 == 0 { 1.0 } else { -1.0 };
+    let zig = |i: usize| if i.is_multiple_of(2) { 1.0 } else { -1.0 };
     let kind = |sign: f64| {
         if sign > 0.0 {
             CreaseKind::Valley
@@ -461,7 +461,7 @@ fn miura(
     }
     for j in 1..rows {
         for i in 0..cols {
-            let sign = if j % 2 == 0 { -zig(i) } else { zig(i) };
+            let sign = if j.is_multiple_of(2) { -zig(i) } else { zig(i) };
             creases.push(crease(id, at(i, j), at(i + 1, j), kind(sign)));
             id += 1;
         }

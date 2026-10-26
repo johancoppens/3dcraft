@@ -92,7 +92,7 @@ impl Arrangement {
     /// The vertex half-edge `h` leaves.
     pub fn tail(&self, h: usize) -> Option<usize> {
         let e = self.edges.get(h / 2)?;
-        Some(if h % 2 == 0 { e.from } else { e.to })
+        Some(if h.is_multiple_of(2) { e.from } else { e.to })
     }
 
     /// The vertex half-edge `h` arrives at.
@@ -342,7 +342,7 @@ pub fn arrange(
         let Some(e) = edges.get(h / 2) else {
             return 0.0;
         };
-        let (from, to) = if h % 2 == 0 {
+        let (from, to) = if h.is_multiple_of(2) {
             (e.from, e.to)
         } else {
             (e.to, e.from)
@@ -357,7 +357,7 @@ pub fn arrange(
     };
     for h in 0..halves {
         let Some(e) = edges.get(h / 2) else { continue };
-        let tail = if h % 2 == 0 { e.from } else { e.to };
+        let tail = if h.is_multiple_of(2) { e.from } else { e.to };
         if let Some(list) = around.get_mut(tail) {
             list.push(h);
         }
@@ -375,7 +375,7 @@ pub fn arrange(
     for h in 0..halves {
         let twin = h ^ 1;
         let Some(e) = edges.get(h / 2) else { continue };
-        let head = if h % 2 == 0 { e.to } else { e.from };
+        let head = if h.is_multiple_of(2) { e.to } else { e.from };
         let Some(list) = around.get(head) else {
             continue;
         };
@@ -419,7 +419,7 @@ pub fn arrange(
             .filter_map(|&h| {
                 let e = edges.get(h / 2)?;
                 vertices
-                    .get(if h % 2 == 0 { e.from } else { e.to })
+                    .get(if h.is_multiple_of(2) { e.from } else { e.to })
                     .copied()
             })
             .collect()
@@ -465,7 +465,7 @@ pub fn arrange(
                 .and_then(|&h| {
                     edges
                         .get(h / 2)
-                        .map(|e| if h % 2 == 0 { e.from } else { e.to })
+                        .map(|e| if h.is_multiple_of(2) { e.from } else { e.to })
                 })
                 .unwrap_or(0);
             root(&mut piece_of, v)
@@ -498,7 +498,13 @@ pub fn arrange(
         };
         let Some(p) = edges
             .get(first / 2)
-            .and_then(|e| vertices.get(if first % 2 == 0 { e.from } else { e.to }))
+            .and_then(|e| {
+                vertices.get(if first.is_multiple_of(2) {
+                    e.from
+                } else {
+                    e.to
+                })
+            })
             .copied()
         else {
             continue;
@@ -538,7 +544,7 @@ pub fn arrange(
                     ..
                 }) = edges.get(h / 2)
                 {
-                    if h % 2 == 0 {
+                    if h.is_multiple_of(2) {
                         ins += 1;
                     } else {
                         outs += 1;

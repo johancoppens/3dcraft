@@ -699,7 +699,7 @@ fn undetermined(rows: &[Row], n: usize) -> Vec<usize> {
             None => break,
         };
         let pivot = gram.get(p * n + p).copied().unwrap_or(0.0);
-        if !(pivot > RANK_PIVOT) {
+        if pivot.is_nan() || pivot <= RANK_PIVOT {
             loose.extend(left.iter().copied());
             break;
         }
