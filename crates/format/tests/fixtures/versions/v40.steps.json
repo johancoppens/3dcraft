@@ -1,0 +1,14 @@
+[
+  ["variable.set", {"name": "t", "expr": "4 mm"}],
+  ["sketch.create", {"plane": "xy", "name": "FloorSketch"}],
+  ["sketch.rect", {"sketch": "FloorSketch", "from": [0, 0], "to": [300, 150]}],
+  ["feature.fill", {"sketch": "FloorSketch", "name": "FloorSheet"}],
+  ["sketch.create", {"plane": "yz", "name": "WallSketch"}],
+  ["sketch.rect", {"sketch": "WallSketch", "from": [0, 0], "to": [150, 200]}],
+  ["feature.fill", {"sketch": "WallSketch", "name": "WallSheet"}],
+  ["feature.plate", {"faces": ["FloorSheet:startCap()"], "thickness": "t", "side": "out", "name": "Floor",
+    "joints": [{"edge": "FloorSheet:startEdge(e8)", "kind": "over", "with": "WallSheet:startCap()"},
+               {"edge": "FloorSheet:startEdge(e6)", "kind": "bevel", "angle": "15 deg"}]}],
+  ["feature.plate", {"faces": ["WallSheet:startCap()"], "thickness": "t", "side": "out", "name": "Wall",
+    "joints": [{"edge": "WallSheet:startEdge(e5)", "kind": "under", "with": "FloorSheet:startCap()"}]}]
+]

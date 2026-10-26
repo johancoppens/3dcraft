@@ -141,7 +141,9 @@ in front, `mid` half each way. Along each edge of its outline a plate ends squar
 otherwise: `bevel` (turned by `angle`), or, with the neighbouring plate's sheet (`with`, a face of it whose
 edge the plate's edge runs along), `mitre` (both end on one surface, the bisector for equal thicknesses),
 `touch` (square ends whose inner edges just touch, as stitch-and-glue panels), and `over` with `under`
-(one plate covers the other's edge: a deck resting on the side panel). Give both plates the matching
+(one plate covers the other's edge: a deck resting on the side panel), and `onto` (the plate ends on a
+surface given as `onto`: `xy`, a datum plane or any face by its name, a stem too; two panels whose ends
+lie on one surface meet there in one corner, as at the bow of a hull). Give both plates the matching
 joint and they meet face to face, with no gap and no overlap. A floor and a wall in an L, mitred:
 
 ```json
@@ -165,7 +167,7 @@ joint and they meet face to face, with no gap and no overlap. A floor and a wall
 wall's along z = 0); `document.interference` says the two plates touch on the mitre face and do not
 overlap. The plate's faces are named `F9:copy(0)/…` (the front skin, the side the normal points to),
 `F9:copy(1)/…` (the back) and `F9:rim(…)/…` (the end along an edge of the sheet). To cut a plate from
-sheet stock, lay one of its skins flat; the outline follows the joints. Refused, with the
+sheet stock, `feature.unfold` lays one of its skins flat; the outline follows the joints. Refused, with the
 edge: faces that meet at a crease (plate them apart and join them), plates in line with each other (no
 corner to join at), an edge that does not run along the neighbour's outline, a plate so thick that its
 ends run into each other.
