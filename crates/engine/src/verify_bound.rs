@@ -1133,6 +1133,18 @@ pub(crate) fn prove(
         let (Some(ra), Some(rb)) = (search.recs.get(node.a), search.recs.get(node.b)) else {
             continue;
         };
+        if work > MAX_NODES - 6 {
+            eprintln!(
+                "TRACE node {} a {:?} {:?} in {} | b {:?} {:?} in {}",
+                node.bound,
+                ra.param,
+                ra.bbox.corners(),
+                ra.inside,
+                rb.param,
+                rb.bbox.corners(),
+                rb.inside
+            );
+        }
         let c = center(&rb.bbox) - center(&ra.bbox);
         let d = c.normalized().unwrap_or(Vec3::Z);
         let (mut sa, mut sb) = (search.spread(ra, d), search.spread(rb, d));
