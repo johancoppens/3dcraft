@@ -76,3 +76,4 @@ No tessellation is integrated anywhere. The error bound is that of the B-rep: th
 ## Findings and history
 
 - 2026-10-26: built (r1-hydro). The kernel's oracles hold to 1e-9 at all three scales on the first run; the waterline settles in at most 8 steps on them.
+- 2026-10-26: the acceptance cross-check, the sea-kayak Jig's hull (branch `jig-sea-kayak`, its `build.json` at the defaults: three chines, 99.9 kg in sea water) floated by `measure.hydrostatics {of: "Env4", mass: "Delta", kg: "KG", density: "rho"}`, against the numbers its formulas computed outside 3DCraft (Clenshaw–Curtis over 49 stations): draft 107.577 mm (formula 107.577, 0.001 mm apart), KB 67.090 (67.091), BM 204.01 (203.98), KM 271.10 (README 271), GM 23.16 (formula 23.13, README 23), the waterplane 1.44497 m² (formula 1.44292, the kernel's area of its water body's top 1.4450), I_T 1.98854e10 mm⁴ (1.98824e10), LCB −124.0 mm (LCG −124.0). Solved in 4 steps, 2.4 s on the Strix (one level 0.8 s).
