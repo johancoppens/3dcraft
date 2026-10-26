@@ -99,7 +99,7 @@ What this needs from the two mechanisms (said to the coordinator, not built into
 ## Limits and what is owed
 
 - **Sheet metal** (item 3 of the block) is not built: `feature.fold` is on main (format 38), `feature.unfold` follows (format 39); its design is above. First step owed in `craft3d_kernel::origami::solve::Joint`: the bend's shift (`R + K T` along `û`) in `motion` and `velocity`.
-- **The format.** `feature.plate` (with its joints, `onto` included) and the role `rim` are format 40 (its fixture written by the build on the Strix, `crates/format/tests/fixtures/versions/v40.*`).
+- **The format.** `feature.plate` (with its joints, `onto` included) and the role `rim` are format 40 (its fixture, with onto ends on a datum and a world plane, written by the build on the Strix, `crates/format/tests/fixtures/versions/v40.*`).
 - A plate whose faces meet at a crease is refused: plate them apart and join them.
 - Two plates that touch over a freeform face (an over/under lap of twisted panels) are what they should be (each one's rim lies on the other's skin within the tolerance, checked in the hull oracle), but the boolean refuses their union as coincident freeform faces at the edge of the tolerance ([`booleans.md`](booleans.md)); flat and cylindrical laps unite. The two plates continue the shared surface each in its own way (each continues it as far as its own joints need), so they are the same surface within the tolerance, not the same representation; making them one would let the boolean see it.
 - A joint is between two plates along one edge each; three plates meeting along one edge (a T joint) are two joints the user chooses.

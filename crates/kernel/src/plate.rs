@@ -1701,7 +1701,14 @@ fn reaches(
                 flat_corners(b, &st, sides, face.levels, tolerance.angular).ok_or_else(|| {
                     refuse(
                         Some(b.edge_id),
-                        format!("the joint has no corner at {}", at(st.point)),
+                        if matches!(b.joint, Joint::Onto(_)) {
+                            format!(
+                                "the surface the edge ends on runs along the plate at {} (across the edge it holds the plate's own direction): it cuts no end",
+                                at(st.point)
+                            )
+                        } else {
+                            format!("the joint has no corner at {}", at(st.point))
+                        },
                     )
                 })?;
             let d = b.edge.curve.derivatives(t).1;
