@@ -691,11 +691,59 @@ mod tests {
     }
 
     #[test]
+    fn colours_and_densities_from_expressions_resolve_against_the_variables() {
+        let (mut doc, ids) = doc_with_blocks(1);
+        doc.set_variable("k", "2").unwrap();
+        let values = doc.variable_table().unwrap().evaluate();
+        let exprs = |r: &str, g: &str, b: &str| BodyAppearance {
+            color: BodyColor::Exprs(Box::new([Expr::new(r), Expr::new(g), Expr::new(b)])),
+            metallic: Some(0.5),
+            roughness: None,
+        };
+        let resolved = exprs("k * 100", "254.5", "0.49")
+            .resolve(Some(&values))
+            .unwrap();
+        // 254.5 rounds away from zero, to 255.
+        assert_eq!(resolved.color, [200, 255, 0]);
+        assert_eq!(resolved.metallic, Some(0.5));
+        for (r, why) in [
+            ("k * 200", "from 0 to 255"),
+            ("-1", "from 0 to 255"),
+            ("k * 1 mm", "not a plain number"),
+            ("nope", "does not evaluate"),
+            ("1 / 0", "does not evaluate"),
+        ] {
+            let e = exprs(r, "0", "0").resolve(Some(&values)).unwrap_err();
+            assert!(e.contains(why) && e.contains("red"), "{r}: {e}");
+        }
+        assert!(exprs("", "0", "0").check().is_err());
+        doc.set_body_appearance(ids[0], Some(exprs("k", "k", "k")))
+            .unwrap();
+        let mut wood = Material::new("Wood", 1000.0);
+        wood.density_expr = Some(Expr::new("k / 4"));
+        assert_eq!(wood.density_with(Some(&values)), Ok(500.0));
+        wood.density_expr = Some(Expr::new("k - 2"));
+        assert!(wood.density_with(Some(&values)).is_err());
+        wood.density_expr = Some(Expr::new(" "));
+        assert!(doc.set_material(ids[0], Some(wood)).is_err());
+        assert_eq!(
+            Material::new("Steel", 7850.0).density_with(None),
+            Ok(7850.0)
+        );
+        // The renames reach them.
+        doc.rename_variable("k", "kk").unwrap();
+        let entry = doc.body_properties(ids[0]).unwrap();
+        let sources: Vec<&str> = entry.exprs().iter().map(|e| e.source()).collect();
+        assert_eq!(sources, ["kk", "kk", "kk"]);
+        doc.validate().unwrap();
+    }
+
+    #[test]
     fn validate_catches_hand_edited_entries() {
         let (mut doc, ids) = doc_with_blocks(2);
         let entry = |feature| BodyProperties {
             feature,
-            appearance: Some(Appearance::color([0; 3])),
+            appearance: Some(Appearance::color([0; 3]).into()),
             material: None,
         };
         doc.bodies = vec![entry(ids[1]), entry(ids[0])];
