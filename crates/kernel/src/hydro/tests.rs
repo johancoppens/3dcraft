@@ -313,3 +313,43 @@ fn two_hulls_sum_and_move_their_moments() {
     );
     close(im.waterplane.centroid.unwrap().y, 0.0, 1.0, "centre");
 }
+
+/// A freeform body: the cone a cubic spline sweeps about an axis (a
+/// spline surface), apex down. The waterplane is bounded by the curve in
+/// which the plane meets the spline surface, which lies on both within
+/// the modelling tolerance: so the closed forms hold to that tolerance
+/// times the size to the integral's power less one.
+#[test]
+fn a_spline_cone_apex_down_matches_the_cone() {
+    for k in SCALES {
+        let (r_top, height, h) = (0.5 * k, k, 0.6 * k);
+        let frame = Frame::new(
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let body = craft3d_testkit::solids::spline_cone(&frame, r_top, height)
+            .unwrap()
+            .body;
+        let t = tol(k);
+        let im = immersion(&[&body], &upright(), h, &t).unwrap();
+        let r = r_top * h / height;
+        let within = |got: f64, want: f64, power: i32, what: &str| {
+            let allowed = 1e-9 * want.abs() + 20.0 * t.linear * k.powi(power - 1);
+            assert!(
+                (got - want).abs() <= allowed,
+                "{what} at scale {k}: got {got}, want {want} (allowed {allowed})"
+            );
+        };
+        within(im.volume, PI * r * r * h / 3.0, 3, "volume");
+        within(im.buoyancy.unwrap().z, 0.75 * h, 1, "KB = 3h/4");
+        within(im.waterplane.area, PI * r * r, 2, "waterplane");
+        within(im.waterplane.i_along, PI * r.powi(4) / 4.0, 4, "I_T");
+        within(im.waterplane.i_across, PI * r.powi(4) / 4.0, 4, "I_L");
+        within(im.wetted, PI * r * r.hypot(h), 2, "wetted");
+        // Floated back to that level by its own displacement.
+        let floated = float(&[&body], &upright(), im.volume, &t).unwrap();
+        within(floated.immersion.level, h, 1, "waterline");
+    }
+}

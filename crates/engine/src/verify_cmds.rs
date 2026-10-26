@@ -151,7 +151,7 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| format!("`{key}` must be a finite number or an expression"))
     }
 
-    fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
+    pub(crate) fn point(&self, value: Option<&Value>, key: &str) -> Result<Vec3, String> {
         let Some(Value::Array(items)) = value else {
             return Err(format!("`{key}` must be a point [x, y, z]"));
         };
@@ -222,7 +222,7 @@ pub(crate) fn power_of_a_quantity(source: &str) -> Option<String> {
 }
 
 /// A direction: an axis word or three numbers.
-fn direction(value: Option<&Value>, key: &str) -> Result<Vec3, String> {
+pub(crate) fn direction(value: Option<&Value>, key: &str) -> Result<Vec3, String> {
     let wrong = || format!("`{key}` must be x, y, z, -x, -y, -z or [x, y, z] (not zero)");
     let v = match value {
         Some(Value::String(word)) => match word.as_str() {
@@ -377,7 +377,7 @@ fn bodies_of(ctx: &Ctx<'_>, found: &[Found]) -> Result<Vec<Named>, String> {
         .collect()
 }
 
-fn whole_bodies(
+pub(crate) fn whole_bodies(
     ctx: &Ctx<'_>,
     found: &[Found],
     what: &str,
@@ -394,7 +394,7 @@ fn whole_bodies(
         .collect()
 }
 
-fn all_bodies(ctx: &Ctx<'_>) -> Vec<Found> {
+pub(crate) fn all_bodies(ctx: &Ctx<'_>) -> Vec<Found> {
     ctx.regen
         .bodies()
         .map(|(id, _)| Found {
@@ -412,7 +412,7 @@ fn required<'v>(p: &'v Map<String, Value>, key: &str) -> Result<&'v Value, Strin
         .ok_or_else(|| format!("`{key}` is required: {SUBJECT}"))
 }
 
-fn nonempty(found: Vec<Found>, key: &str) -> Result<Vec<Found>, String> {
+pub(crate) fn nonempty(found: Vec<Found>, key: &str) -> Result<Vec<Found>, String> {
     if found.is_empty() {
         Err(format!(
             "`{key}` names nothing in the document as it is now"
@@ -461,7 +461,7 @@ pub(crate) struct Outcome {
 }
 
 impl Outcome {
-    fn number(dim: Dim, value: f64) -> Self {
+    pub(crate) fn number(dim: Dim, value: f64) -> Self {
         Outcome {
             dim,
             number: Some(value),
@@ -487,7 +487,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 14] = [
+pub(crate) const MEASURES: [&str; 15] = [
     "volume",
     "area",
     "mass",
@@ -502,6 +502,7 @@ pub(crate) const MEASURES: [&str; 14] = [
     "through",
     "overlap",
     "symmetric",
+    "hydrostatic",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -517,6 +518,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "through" => through(ctx, p),
         "overlap" => overlap(ctx, p),
         "symmetric" => symmetric(ctx, p),
+        "hydrostatic" => crate::hydro_cmds::measure(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),

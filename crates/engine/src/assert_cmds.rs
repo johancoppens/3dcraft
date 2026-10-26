@@ -17,8 +17,8 @@ use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
+    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|hydrostatic", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), hydrostatic (quantity: one of the numbers measure.hydrostatics returns, volume, displacement, mass, level, draft, KB, BM, BMl, KM, KMl, KG, GM, GMl, GZ, waterplaneArea, iTransverse, iLongitudinal, wettedArea, buoyancyX, buoyancyY, buoyancyZ or steps, with the parameters of measure.hydrostatics: of, up, along, heel, level, mass, density, centerOfGravity, kg, keel, loads; masses in kg, second moments in the document's unit^4). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
@@ -35,9 +35,40 @@ fn measure_keys(measure: &str) -> &'static [&'static str] {
         "distance" | "clearance" => &["from", "to"],
         "overlap" => &["of", "to"],
         "symmetric" => &["of", "plane", "tol"],
+        "hydrostatic" => &HYDROSTATIC_KEYS,
         _ => &[],
     }
 }
+
+/// The keys of the measure `hydrostatic`: what it asserts and the
+/// parameters of measure.hydrostatics.
+const HYDROSTATIC_KEYS: [&str; 12] = [
+    "quantity",
+    "of",
+    "up",
+    "along",
+    "heel",
+    "level",
+    "mass",
+    "density",
+    "centerOfGravity",
+    "kg",
+    "keel",
+    "loads",
+];
+
+/// The keys of a `hydrostatic` measure whose values are expressions (or
+/// hold them), renamed with a variable.
+const HYDROSTATIC_EXPRS: [&str; 8] = [
+    "heel",
+    "level",
+    "mass",
+    "density",
+    "centerOfGravity",
+    "kg",
+    "keel",
+    "loads",
+];
 
 fn is_flag(measure: &str) -> bool {
     matches!(measure, "through" | "overlap" | "symmetric")
@@ -144,7 +175,7 @@ pub(crate) fn rename_variable_in_assertions(
             }
             Value::Object(map) if depth < 4 => {
                 for (k, item) in map.iter_mut() {
-                    if ["point", "tol"].contains(&k.as_str()) {
+                    if ["point", "tol", "mass", "at"].contains(&k.as_str()) {
                         walk(item, old, new, depth + 1)?;
                     }
                 }
@@ -157,7 +188,13 @@ pub(crate) fn rename_variable_in_assertions(
         let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(&assertion.measure) else {
             continue;
         };
-        for key in ["tol", "plane"] {
+        let hydrostatic = map.get("measure").and_then(Value::as_str) == Some("hydrostatic");
+        let keys: &[&str] = if hydrostatic {
+            &HYDROSTATIC_EXPRS
+        } else {
+            &["tol", "plane"]
+        };
+        for &key in keys {
             if let Some(v) = map.get_mut(key) {
                 match v {
                     Value::String(_) if key == "plane" => {}
@@ -592,8 +629,13 @@ fn unit_of(dim: Dim, length: &str) -> Option<String> {
     }
 }
 
-fn dim_of(measure: &str) -> Dim {
+fn dim_of(measure: &str, params: Option<&Map<String, Value>>) -> Dim {
     match measure {
+        "hydrostatic" => crate::hydro_cmds::dim_of_quantity(
+            params
+                .and_then(|p| p.get("quantity"))
+                .and_then(Value::as_str),
+        ),
         "volume" => Dim::Length(3),
         "area" => Dim::Length(2),
         "mass" => Dim::Mass,
@@ -613,7 +655,7 @@ fn check(doc: &Document, regen: &Regen, assertion: &Assertion) -> Checked {
         .and_then(Value::as_str)
         .unwrap_or("?")
         .to_string();
-    let dim = dim_of(&measure);
+    let dim = dim_of(&measure, parsed.as_ref());
     let unit = unit_of(dim, length);
     let mut checked = Checked {
         state: AssertionState {
