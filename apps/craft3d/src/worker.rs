@@ -49,6 +49,8 @@ pub enum Outcome {
 /// One task: what it is called in the window, and what it does.
 pub struct Task {
     pub label: String,
+    /// What it is about (the file being opened), when known.
+    pub subject: Option<String>,
     pub run: Run,
     /// The quality of the scene the window will show, built before the
     /// session comes back.
@@ -65,6 +67,7 @@ pub struct Finished {
 #[derive(Default)]
 struct Now {
     label: String,
+    subject: Option<String>,
     started: Option<Instant>,
     step: Option<Progress>,
 }
@@ -117,6 +120,7 @@ impl Worker {
                     {
                         let mut now = lock(&for_thread);
                         now.label.clone_from(&task.label);
+                        now.subject.clone_from(&task.subject);
                         now.started = Some(Instant::now());
                         now.step = None;
                     }
@@ -176,6 +180,7 @@ impl Worker {
         Some(match &now.step {
             Some(step) => Work {
                 label: now.label.clone(),
+                subject: now.subject.clone(),
                 phase: step.phase.to_string(),
                 feature: step.feature.clone(),
                 name: step.name.clone(),
@@ -185,6 +190,7 @@ impl Worker {
             },
             None => Work {
                 label: now.label.clone(),
+                subject: now.subject.clone(),
                 phase: "running".to_string(),
                 seconds,
                 ..Work::default()
@@ -218,6 +224,7 @@ mod tests {
     fn task(label: &str, run: Run) -> Task {
         Task {
             label: label.to_string(),
+            subject: None,
             run,
             quality: SceneQuality::display(),
         }

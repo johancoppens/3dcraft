@@ -14,7 +14,7 @@ use crate::selection::SelectionKind;
 use crate::verify::{self, Part};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Document, FeatureId};
-use craft3d_kernel::boolean::{Interference, interference};
+use craft3d_kernel::boolean::{Interference, common_volume, interference};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
@@ -1143,34 +1143,53 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
             "more than {MAX_BODY_PAIRS} pairs of bodies; name fewer"
         ));
     }
+    let pair = |n: usize| {
+        let (i, j, other) = *pairs.get(n)?;
+        let (ida, a) = ba.get(i)?;
+        let (idb, b) = if other {
+            bb.as_ref().and_then(|bb| bb.get(j))?
+        } else {
+            ba.get(j)?
+        };
+        (ida != idb).then_some((*ida, a, *idb, b))
+    };
+    // Only whether a pair has a volume in common, and how much: the
+    // intersection alone (`common_volume`), not the kind of contact that
+    // `document.interference` reports. The pairs on several threads, the
+    // answers in their order: the first pair in that order that cannot be
+    // told is the error, as one after the other.
+    let indices: Vec<usize> = (0..pairs.len()).collect();
+    let answers = crate::interference_cmds::in_order(&indices, |n| {
+        let (_, a, _, b) = pair(n)?;
+        Some(common_volume(a, b, &ctx.tolerance).map(|common| {
+            common.map(|common| {
+                craft3d_topo::mass_properties(&common.body)
+                    .ok()
+                    .map(|m| m.volume)
+            })
+        }))
+    });
     let mut overlaps = Vec::new();
-    for (i, j, other) in pairs {
-        let (Some((ida, a)), Some((idb, b))) = (
-            ba.get(i),
-            if other {
-                bb.as_ref().and_then(|bb| bb.get(j))
-            } else {
-                ba.get(j)
-            },
-        ) else {
+    for (n, answer) in answers.into_iter().enumerate() {
+        let Some((ida, _, idb, _)) = pair(n) else {
             continue;
         };
-        if ida == idb {
-            continue;
-        }
-        match interference(a, b, &ctx.tolerance) {
-            Ok(Interference::Overlap(common)) => {
-                let volume = craft3d_topo::mass_properties(&common.body)
-                    .ok()
-                    .map(|m| m.volume);
-                overlaps.push(json!({"a": ctx.feature_name(*ida), "b": ctx.feature_name(*idb), "volume": volume}));
+        let cannot = |why: String| {
+            format!(
+                "whether `{}` and `{}` overlap cannot be told: {why}",
+                ctx.feature_name(ida),
+                ctx.feature_name(idb)
+            )
+        };
+        match answer {
+            Some(Ok(Some(volume))) => {
+                overlaps.push(json!({"a": ctx.feature_name(ida), "b": ctx.feature_name(idb), "volume": volume}));
             }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(format!(
-                    "whether `{}` and `{}` overlap cannot be told: {e}",
-                    ctx.feature_name(*ida),
-                    ctx.feature_name(*idb)
+            Some(Ok(None)) => {}
+            Some(Err(e)) => return Err(cannot(e.to_string())),
+            None => {
+                return Err(cannot(
+                    "internal error (a bug in 3DCraft, please report it)".into(),
                 ));
             }
         }

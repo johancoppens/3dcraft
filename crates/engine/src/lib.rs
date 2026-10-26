@@ -64,6 +64,7 @@ mod sketch_spline_cmds;
 mod sketch_warnings;
 mod split_cmds;
 mod step_cmds;
+mod stepwise;
 mod sweep_cmds;
 mod sweep_path_cmds;
 mod table_cmds;
@@ -78,6 +79,7 @@ mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
+pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
 pub use pick_cmds::{
@@ -354,6 +356,13 @@ pub struct Session {
     /// While a command that adds features runs with `when`: the condition
     /// every feature it adds gets, in the same edit (`when_cmds`).
     pub(crate) new_when: Option<craft3d_doc::Expr>,
+    /// The host does the long work a piece at a time between its frames
+    /// ([`Session::prepare_some`], `stepwise.rs`): assertions are not
+    /// measured on a thread of their own nor all at once when asked.
+    pub(crate) stepwise: bool,
+    /// How far the last call of [`Session::prepare_some`] that stopped
+    /// while meshing got: the scene revision, the phase and the bodies.
+    pub(crate) reached: Option<(u64, &'static str, usize)>,
 }
 
 /// Most documents open at once.
@@ -374,6 +383,8 @@ impl Session {
             host_details: Vec::new(),
             window_camera: None,
             new_when: None,
+            stepwise: false,
+            reached: None,
         }
     }
 

@@ -377,7 +377,10 @@ fn face_names(regen: &Regen, id: FeatureId, faces: &[FaceId]) -> Vec<Value> {
 /// divided by the threads, so that whether a pair is refused does not
 /// depend on the machine (docs/design/booleans.md › *Patch trees of thin
 /// strips*).
-fn in_order<T: Send>(indices: &[usize], job: impl Fn(usize) -> Option<T> + Sync) -> Vec<Option<T>> {
+pub(crate) fn in_order<T: Send>(
+    indices: &[usize],
+    job: impl Fn(usize) -> Option<T> + Sync,
+) -> Vec<Option<T>> {
     let threads = craft3d_math::available_threads().min(MAX_THREADS);
     let threads = threads.min(indices.len());
     let one = |n: usize| indices.get(n).and_then(|&index| job(index));

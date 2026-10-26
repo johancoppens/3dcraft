@@ -20,7 +20,7 @@ use craft3d_regen::Regen;
 use craft3d_topo::Body;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -50,11 +50,27 @@ struct Key {
     _held: Vec<Arc<Body>>,
 }
 
-/// The assertions being measured on another thread.
+/// How many threads measure the assertions of one job at most. Two: a
+/// Jig's assertions are mostly quick with one or two that take long (the
+/// gear reducer's flank clearances, 10 and 16 s), which then run side by
+/// side (the reducer's 22 took 29 s one after the other, 15 s so). More
+/// would not shorten that, and each measure may use threads of its own
+/// (an overlap's pairs, up to eight), each with the kernel's budget for
+/// its trees.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_THREADS: usize = 2;
+
+/// The assertions being measured on other threads (or a piece at a time
+/// by a host with one thread: [`Session::assertions_some`]), against the
+/// document state and regeneration they were asked for.
 struct Job {
     work: Vec<(Key, Assertion)>,
     results: Mutex<Vec<Option<Checked>>>,
     done: AtomicBool,
+    /// The next assertion to take.
+    next: AtomicUsize,
+    doc: Arc<Document>,
+    regen: Arc<Regen>,
 }
 
 /// What the checking of one open document keeps between calls.
@@ -190,39 +206,98 @@ fn pending(assertion: &Assertion) -> Checked {
     }
 }
 
-/// Measures `work` against `doc` and `regen` into `job`.
-fn run(job: &Job, doc: &Document, regen: &Regen) {
-    for (n, (_, assertion)) in job.work.iter().enumerate() {
-        let checked = check_one(doc, regen, assertion);
+/// Measures the assertions of `job` that nobody took yet, one after the
+/// other, until `stop` says so after one or none are left. Several
+/// threads may run this on one job: each assertion is taken by one of
+/// them and its answer goes to its own place, so the answers do not
+/// depend on who measured them. The job is done once every answer is in.
+fn measure(job: &Job, mut stop: impl FnMut() -> bool) {
+    loop {
+        let n = job.next.fetch_add(1, Ordering::Relaxed);
+        let Some((_, assertion)) = job.work.get(n) else {
+            return;
+        };
+        let checked = check_one(&job.doc, &job.regen, assertion);
         let mut results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = results.get_mut(n) {
             *slot = Some(checked);
         }
+        if results.iter().all(Option::is_some) {
+            job.done.store(true, Ordering::Release);
+            return;
+        }
+        drop(results);
+        if stop() {
+            return;
+        }
     }
+}
+
+/// Measures every assertion of `job`, several at once where there are
+/// threads ([`MAX_THREADS`] at most), and then says it is done. One that
+/// no thread answered (a thread that could not start takes none; one that
+/// stopped leaves its own) is an error, never pending for ever.
+fn run(job: &Job) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let threads = craft3d_math::available_threads()
+            .min(MAX_THREADS)
+            .min(job.work.len());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (1..threads)
+                .filter_map(|_| {
+                    std::thread::Builder::new()
+                        .name("craft3d-assertions".into())
+                        .spawn_scoped(scope, || measure(job, || false))
+                        .ok()
+                })
+                .collect();
+            measure(job, || false);
+            for worker in workers {
+                let _ = worker.join();
+            }
+        });
+    }
+    measure(job, || false);
+    let mut results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
+    for (slot, (_, assertion)) in results.iter_mut().zip(&job.work) {
+        if slot.is_none() {
+            let mut failed = pending(assertion);
+            failed.state.status = AssertionStatus::Error;
+            failed.state.message =
+                "internal error (a bug in 3DCraft, please report it): not measured".into();
+            *slot = Some(failed);
+        }
+    }
+    drop(results);
     job.done.store(true, Ordering::Release);
 }
 
 /// Starts `job` on a thread of its own (inline where there are none, or
-/// when a thread cannot be had).
-fn start(job: Arc<Job>, doc: Arc<Document>, regen: Arc<Regen>) {
+/// when a thread cannot be had); not at all for a host that measures a
+/// piece at a time ([`Session::assertions_some`]).
+fn start(job: Arc<Job>, stepwise: bool) {
+    if stepwise {
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let for_thread = Arc::clone(&job);
-        let (d, r) = (Arc::clone(&doc), Arc::clone(&regen));
         let spawned = std::thread::Builder::new()
             .name("craft3d-assertions".into())
-            .spawn(move || run(&for_thread, &d, &r));
+            .spawn(move || run(&for_thread));
         if spawned.is_ok() {
             return;
         }
     }
-    run(&job, &doc, &regen);
+    run(&job);
 }
 
 impl Session {
     /// The assertions of the active document checked against it as it is
     /// now, waiting as `wait` says; those not measured yet are pending.
     pub(crate) fn assertion_checks(&mut self, wait: Wait) -> Result<Vec<Checked>, CommandError> {
+        let stepwise = self.stepwise;
         let open = self.document_mut()?;
         let doc = Arc::clone(open.history.current());
         if doc.assertions.is_empty() {
@@ -244,9 +319,19 @@ impl Session {
         #[cfg(not(target_arch = "wasm32"))]
         let mut deadline: Option<std::time::Instant> = None;
         loop {
-            // What a finished job measured.
+            // What a finished job measured. A host that measures a piece
+            // at a time stops a job of another state of the document (an
+            // edit came since) at once, keeping what it measured: on one
+            // thread, finishing it would hold up the answers wanted now.
             if let Some(job) = checks.job.take() {
-                if job.done.load(Ordering::Acquire) {
+                let current = |key: &Key| {
+                    checks
+                        .keys
+                        .as_ref()
+                        .is_some_and(|(_, keys)| keys.iter().any(|k| k.text == key.text))
+                };
+                let stale = stepwise && job.work.iter().any(|(key, _)| !current(key));
+                if job.done.load(Ordering::Acquire) || stale {
                     let results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
                     for ((key, _), result) in job.work.iter().zip(results.iter()) {
                         if let Some(checked) = result {
@@ -267,6 +352,20 @@ impl Session {
                 .unwrap_or(&[]);
             let mut out = Vec::with_capacity(keys.len());
             let mut missing = Vec::new();
+            // What the job in progress has measured so far, by key: shown,
+            // though kept only once the job is done.
+            let partial: BTreeMap<String, Checked> = checks
+                .job
+                .as_ref()
+                .map(|job| {
+                    let results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
+                    job.work
+                        .iter()
+                        .zip(results.iter())
+                        .filter_map(|((key, _), r)| Some((key.text.clone(), r.clone()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
             for (assertion, key) in doc.assertions.iter().zip(keys) {
                 match checks.memo.get(&key.text) {
                     // The answer is the assertion's, whatever its name was
@@ -277,7 +376,12 @@ impl Session {
                         out.push(c);
                     }
                     None => {
-                        out.push(pending(assertion));
+                        let mut c = partial
+                            .get(&key.text)
+                            .cloned()
+                            .unwrap_or_else(|| pending(assertion));
+                        c.state.name.clone_from(&assertion.name);
+                        out.push(c);
                         missing.push((key.clone(), assertion.clone()));
                     }
                 }
@@ -297,10 +401,26 @@ impl Session {
                     results: Mutex::new(vec![None; missing.len()]),
                     work: missing,
                     done: AtomicBool::new(false),
+                    next: AtomicUsize::new(0),
+                    doc: Arc::clone(&doc),
+                    regen: Arc::clone(&regen),
                 });
                 checks.job = Some(Arc::clone(&job));
-                start(job, Arc::clone(&doc), Arc::clone(&regen));
+                start(job, stepwise);
                 continue;
+            }
+            // A host that measures a piece at a time: what a caller waits
+            // for to the end is measured here and now; one that waits a
+            // while (an edit's result) gets what is measured, the rest
+            // pending, as one that does not wait.
+            if stepwise {
+                match (&checks.job, wait) {
+                    (Some(job), Wait::All) => {
+                        run(job);
+                        continue;
+                    }
+                    _ => return Ok(out),
+                }
             }
             let more = match wait {
                 Wait::No => false,
@@ -335,6 +455,32 @@ impl Session {
     /// not measure it again (for tests).
     pub fn assertions_measured(&self) -> Option<usize> {
         Some(self.documents.get(self.active)?.assertions.measured)
+    }
+
+    /// For a host that measures a piece at a time ([`Session::prepare_some`]):
+    /// measures assertions of the active document that are not measured
+    /// yet, one after the other until `stop` says so after one. `None`
+    /// when every one is measured (or there are none); otherwise how many
+    /// are measured of how many.
+    pub(crate) fn assertions_some(&mut self, stop: impl FnMut() -> bool) -> Option<(usize, usize)> {
+        let checked = self.assertion_checks(Wait::No).ok()?;
+        let job = self.document_mut().ok()?.assertions.job.clone();
+        if let Some(job) = &job
+            && !job.done.load(Ordering::Acquire)
+        {
+            measure(job, stop);
+        }
+        let checked = if job.is_some() {
+            self.assertion_checks(Wait::No).ok()?
+        } else {
+            checked
+        };
+        let total = checked.len();
+        let pending = checked
+            .iter()
+            .filter(|c| c.state.status == AssertionStatus::Pending)
+            .count();
+        (pending > 0).then(|| (total.saturating_sub(pending), total))
     }
 
     /// Whether some assertion of the active document is still being

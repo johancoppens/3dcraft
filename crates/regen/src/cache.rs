@@ -706,7 +706,24 @@ pub(crate) fn features(
     // of every feature so far.
     let mut before: BTreeMap<FeatureId, bool> = BTreeMap::new();
     let mut all_before = true;
+    // A host with one thread may stop this regeneration part way
+    // (`crate::progress::with_stop`): asked before each feature once one
+    // was built.
+    let mut stop = crate::progress::take_stop();
     for (index, stated) in doc.features.iter().enumerate() {
+        if !rolled_back && cache.rebuilt > 0 && stop.as_mut().is_some_and(|stop| stop()) {
+            // The rest is not built and nothing is kept of it: its old
+            // entries stay for the next regeneration to reuse where they
+            // still fit. What was built is remembered as far as it went,
+            // its steps too, as a regeneration rolled back here would.
+            for rest in doc.features.get(index..).unwrap_or_default() {
+                results.push(build(rest, true, &results, cache).0);
+            }
+            cache.trail = trail;
+            cache.work = lookup.work;
+            crate::progress::note_stopped();
+            return results;
+        }
         // Names of an earlier body are followed to the newest one before
         // this feature; it is then built, depends and takes as followed.
         let made_before = |f: &Feature| {

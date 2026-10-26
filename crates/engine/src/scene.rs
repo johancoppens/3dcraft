@@ -632,7 +632,7 @@ pub(crate) struct SceneCache {
     /// document's scenes are kept whatever they hold.
     budget: usize,
     /// See [`Session::set_refine_elsewhere`].
-    refine_elsewhere: bool,
+    pub(crate) refine_elsewhere: bool,
     /// The active document as it is, while its view is scrubbed to an
     /// earlier state (`view.scrub`): its scenes are kept like the shown
     /// state's, so going back to the end shows them at once.
@@ -2043,6 +2043,58 @@ impl Session {
         let regen = open.shown_regen();
         let tolerance = picture_tolerance(&regen, &doc, pixel);
         self.scene_with(SceneQuality::Picture(tolerance))
+    }
+
+    /// For a host with one thread ([`Session::prepare_some`]): builds the
+    /// quick first picture of the active document ([`SceneQuality::Preview`])
+    /// a body at a time, until `stop` says so after a body. True when it
+    /// is there (built now or before); false when it stopped first, with
+    /// the bodies meshed so far kept in the store of meshes, so the next
+    /// call goes on from there. The picture is the one
+    /// [`Self::scene_with`] builds in one go.
+    pub(crate) fn preview_some(&mut self, stop: impl Fn() -> bool + 'static) -> bool {
+        let revision = self.scene_revision();
+        if self.scene.has(SceneKey::Preview) {
+            return true;
+        }
+        let meshes = self.scene.meshes.clone();
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return true;
+        };
+        let doc = open.shown();
+        let regen = open.shown_regen();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let for_sink = Arc::clone(&cancel);
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            craft3d_regen::progress::with_sink(
+                // Asked as each body is about to be meshed: that one is
+                // meshed, the build stops before the next.
+                move |_| {
+                    if stop() {
+                        for_sink.store(true, Ordering::Relaxed);
+                    }
+                },
+                || {
+                    let sampling = Sampling {
+                        tolerance: on_rung(preview_size(&regen, &doc) * PREVIEW_RELATIVE_TOLERANCE),
+                        angle: None,
+                        budget: None,
+                        per_body: Some(DISPLAY_MAX_TRIANGLES),
+                    };
+                    build(&doc, &regen, revision, sampling, Some(&cancel), &meshes)
+                },
+            )
+        }));
+        let scene = match built {
+            Ok((_, Some(Stop::Cancelled))) => return false,
+            Ok((scene, _)) => Ok(Arc::new(Scene {
+                preview: true,
+                ..scene
+            })),
+            Err(payload) => Err(internal_error(payload.as_ref())),
+        };
+        self.scene.store(&doc, SceneKey::Preview, scene);
+        true
     }
 
     /// [`Self::scene`] for any [`SceneQuality`]: what a viewport asks for

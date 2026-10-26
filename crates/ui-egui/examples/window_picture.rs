@@ -30,7 +30,8 @@
 //! that number field and types TEXT into it, without Enter; `--click X,Y`
 //! clicks the window at that point (in points), and leaves the pointer
 //! there: `--click 20,10` opens the File menu. `--recent FILE` starts
-//! with the recent files kept in FILE (`{"recent": [path, ...]}`).
+//! with the recent files kept in FILE (`{"recent": [path, ...]}`); `--subject
+//! NAME` names the file the work opens (`Opening NAME…`).
 //! `--dialog export:NAME` opens the export dialog for a file of that name
 //! (with what is selected, after `--set {"selectedFeature": …}`), `--dialog
 //! error:TEXT` the error dialog. Then,
@@ -46,7 +47,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -63,6 +64,7 @@ fn main() -> Result<(), String> {
     let mut click: Option<Pos2> = None;
     let mut dialog: Option<String> = None;
     let mut recent = None;
+    let mut subject: Option<String> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -132,6 +134,12 @@ fn main() -> Result<(), String> {
                 let x: f32 = x.trim().parse().map_err(|_| format!("--click: {x}"))?;
                 let y: f32 = y.trim().parse().map_err(|_| format!("--click: {y}"))?;
                 click = Some(Pos2::new(x, y));
+            }
+            "--subject" => {
+                subject = Some(
+                    args.next()
+                        .ok_or(format!("--subject takes a name; {USAGE}"))?,
+                );
             }
             "--recent" => {
                 let file = args
@@ -268,6 +276,7 @@ fn main() -> Result<(), String> {
         if frame == frames - 2 && !idle {
             shell.set_work(Some(Work {
                 label: "file.open".to_string(),
+                subject: subject.clone(),
                 phase: "regenerating".to_string(),
                 feature: Some("F17".to_string()),
                 name: Some("J2".to_string()),

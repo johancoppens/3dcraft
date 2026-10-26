@@ -74,10 +74,88 @@ pub fn report(progress: &Progress) {
     });
 }
 
+type Stop = Box<dyn FnMut() -> bool>;
+
+thread_local! {
+    static STOP: RefCell<Option<Stop>> = const { RefCell::new(None) };
+    static STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `work` with the regeneration in it allowed to stop part way, for
+/// a host with one thread that has to draw between pieces of the work
+/// (the page in a browser): once a feature was built, `stop` is asked
+/// before each next one, and when it says so the features from there on
+/// are not built (rolled back in the result, as behind the rollback
+/// marker) and nothing is remembered of them, so the next regeneration
+/// goes on where this one stopped and reuses what it built. The second
+/// value is true when it stopped: such a result is not the document's,
+/// only a measure of how far the work got.
+///
+/// Only the outermost regeneration in `work` may stop (one it starts
+/// within, for a part of a feature, runs to its end), and only one: the
+/// stop is used once. What is built is the same, stopped or not.
+pub fn with_stop<R>(stop: impl FnMut() -> bool + 'static, work: impl FnOnce() -> R) -> (R, bool) {
+    struct Restore(Option<Stop>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let earlier = self.0.take();
+            let _ = STOP.try_with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = earlier;
+                }
+            });
+        }
+    }
+    let earlier = STOP
+        .try_with(|slot| {
+            slot.try_borrow_mut()
+                .ok()
+                .and_then(|mut slot| slot.replace(Box::new(stop)))
+        })
+        .ok()
+        .flatten();
+    let _ = STOPPED.try_with(|s| s.set(false));
+    let restore = Restore(earlier);
+    let out = work();
+    drop(restore);
+    let stopped = STOPPED.try_with(|s| s.replace(false)).unwrap_or(false);
+    (out, stopped)
+}
+
+/// The stop of [`with_stop`], taken by the regeneration that may use it
+/// (none for one started within it).
+pub(crate) fn take_stop() -> Option<Stop> {
+    STOP.try_with(|slot| slot.try_borrow_mut().ok().and_then(|mut s| s.take()))
+        .ok()
+        .flatten()
+}
+
+/// Says that a regeneration stopped (`with_stop`'s answer).
+pub(crate) fn note_stopped() {
+    let _ = STOPPED.try_with(|s| s.set(true));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::rc::Rc;
+
+    #[test]
+    fn a_stop_is_taken_once_and_reports_whether_it_was_used() {
+        let ((), stopped) = with_stop(
+            || true,
+            || {
+                assert!(take_stop().is_some());
+                assert!(take_stop().is_none(), "used once");
+            },
+        );
+        assert!(!stopped);
+        let ((), stopped) = with_stop(|| true, note_stopped);
+        assert!(stopped);
+        assert!(take_stop().is_none(), "gone after the work");
+        let ((), stopped) = with_stop(|| true, || {});
+        assert!(!stopped, "not carried over");
+    }
 
     fn step(n: usize) -> Progress {
         Progress {

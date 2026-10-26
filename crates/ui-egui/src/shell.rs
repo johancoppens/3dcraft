@@ -705,6 +705,10 @@ pub enum StatusSlot {
     /// The last command's name, and what it answered.
     Command,
     Answer,
+    /// What is being done while work runs (`Opening welding-table…
+    /// 41/82`, `Checking 13 assertions… 5/13`), on the right before the
+    /// renderer's numbers, always as wide (`Tokens::status_work_width`).
+    Work,
     /// The renderer's numbers, on the right.
     Render,
 }
@@ -712,12 +716,13 @@ pub enum StatusSlot {
 /// The order in which the items give way: each is first elided to its
 /// least width in this order, then left out in this order. The units go
 /// last, the answer to the last command first.
-pub const STATUS_YIELD: [StatusSlot; 7] = [
+pub const STATUS_YIELD: [StatusSlot; 8] = [
     StatusSlot::Answer,
     StatusSlot::Command,
     StatusSlot::Autosave,
     StatusSlot::Selection,
     StatusSlot::Path,
+    StatusSlot::Work,
     StatusSlot::Render,
     StatusSlot::Units,
 ];
@@ -738,6 +743,8 @@ struct StatusItem {
     text: String,
     tint: egui::Color32,
     elide: bool,
+    /// As wide as this whatever the text (elided within), when set.
+    width: Option<f32>,
 }
 
 impl StatusItem {
@@ -747,6 +754,7 @@ impl StatusItem {
             text,
             tint,
             elide: false,
+            width: None,
         }
     }
 
@@ -756,7 +764,13 @@ impl StatusItem {
             text,
             tint,
             elide: true,
+            width: None,
         }
+    }
+
+    /// The items at the right end of the bar.
+    fn on_the_right(&self) -> bool {
+        matches!(self.slot, StatusSlot::Work | StatusSlot::Render)
     }
 }
 
@@ -2120,6 +2134,12 @@ impl Shell {
                 dim,
             ));
         }
+        if let Some((text, _)) = self.busy() {
+            items.push(StatusItem {
+                width: Some(tokens.status_work_width),
+                ..StatusItem::elided(StatusSlot::Work, text, color(tokens.chrome_text))
+            });
+        }
         if let Some(stats) = self.stats {
             let time = stats
                 .milliseconds
@@ -2151,7 +2171,7 @@ impl Shell {
         let fits: Vec<StatusFit> = items
             .iter()
             .map(|item| {
-                let natural = measure(&item.text).ceil();
+                let natural = item.width.unwrap_or_else(|| measure(&item.text).ceil());
                 StatusFit {
                     slot: item.slot,
                     natural,
@@ -2175,6 +2195,16 @@ impl Shell {
             measure(label) + 2.0 * ui.spacing().button_padding.x + tokens.status_gap
         });
         let widths = fit_status((available - copy_width).max(0.0), tokens.status_gap, &fits);
+        // The items on the right, with the gaps between them: the room
+        // left goes before the first of them.
+        let right: Vec<f32> = items
+            .iter()
+            .zip(&widths)
+            .filter(|(item, _)| item.on_the_right())
+            .filter_map(|(_, w)| *w)
+            .collect();
+        let right_total =
+            right.iter().sum::<f32>() + tokens.status_gap * right.len().saturating_sub(1) as f32;
         let height = ui.spacing().interact_size.y;
         let mut hits = Vec::new();
         let mut copy_clicked = false;
@@ -2195,15 +2225,17 @@ impl Shell {
                 }
             };
             let mut copy_shown = false;
+            let mut right_started = false;
             for (item, width) in items.iter().zip(&widths) {
                 let Some(width) = *width else { continue };
-                if item.slot == StatusSlot::Render && !copy_shown {
+                if item.on_the_right() && !copy_shown {
                     copy_button(ui, &mut used);
                     copy_shown = true;
                 }
-                if item.slot == StatusSlot::Render {
-                    // Right-aligned: the room left goes before it.
-                    let room = (available - used - width).max(0.0);
+                if item.on_the_right() && !right_started {
+                    // Right-aligned: the room left goes before them.
+                    right_started = true;
+                    let room = (available - used - right_total).max(0.0);
                     ui.add_space(room);
                     used += room;
                 } else if !first {
@@ -2550,66 +2582,109 @@ impl Shell {
         }
     }
 
-    /// The work in progress, over the middle of the viewport: a spinner,
-    /// what is being done, and how far along the steps are.
-    fn work_plate(&self, ui: &egui::Ui, painter: &egui::Painter, inner: egui::Rect, work: &Work) {
+    /// What is being done, for the status bar and the bar over the
+    /// viewport: the words, and how far along it is (0 to 1) when that is
+    /// known. The host's work (opening, regenerating, meshing), else the
+    /// assertions still being measured. `None` when nothing is.
+    pub fn busy(&self) -> Option<(String, Option<f32>)> {
+        if let Some(work) = &self.work {
+            return Some((work.status_text(), work.fraction()));
+        }
+        let of = self.assertion_rows.len();
+        let pending = self
+            .assertion_rows
+            .iter()
+            .filter(|a| a.status == craft3d_engine::AssertionStatus::Pending)
+            .count();
+        if pending == 0 {
+            return None;
+        }
+        let done = of.saturating_sub(pending);
+        let noun = if of == 1 { "assertion" } else { "assertions" };
+        let text = if done == 0 {
+            format!("Checking {of} {noun}\u{2026}")
+        } else {
+            format!("Checking {of} {noun}\u{2026} {done}/{of}")
+        };
+        let fraction = (done > 0).then(|| (done as f32 / of.max(1) as f32).clamp(0.0, 1.0));
+        Some((text, fraction))
+    }
+
+    /// The work in progress over the viewport `rect`: a thin bar across
+    /// its top, the part done when that is known, otherwise a piece that
+    /// sweeps slowly across. It covers nothing and never changes size.
+    fn work_bar(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect) {
+        let Some((_, fraction)) = self.busy() else {
+            return;
+        };
         let tokens = self.tokens;
-        let text = work.describe();
-        let galley = painter.layout_no_wrap(
-            text,
-            egui::FontId::proportional(15.0),
-            color(tokens.notice_text),
-        );
-        let text_size = galley.size();
-        let spinner = text_size.y * 1.2;
-        let gap = tokens.inset * 0.6;
-        let bar = tokens.work_bar;
-        let width = (spinner + gap + text_size.x).max(tokens.slider_width);
-        let height = spinner.max(text_size.y) + gap + bar;
-        let plate = egui::Rect::from_center_size(inner.center(), egui::vec2(width, height))
-            .expand(tokens.inset * 0.8);
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), tokens.work_bar));
+        let accent = color(tokens.work_accent);
+        match fraction {
+            Some(fraction) => {
+                let done = egui::Rect::from_min_size(
+                    bar.min,
+                    egui::vec2(bar.width() * fraction, bar.height()),
+                );
+                painter.rect_filled(done, egui::CornerRadius::ZERO, accent);
+                // Its steps wake the window; the assertions are asked
+                // after again soon.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            None => {
+                let period = f64::from(tokens.work_sweep_seconds.max(0.1));
+                let time = ui.input(|i| i.time);
+                // Out of the bar on the left to out of it on the right.
+                let phase = (time / period).rem_euclid(1.0) as f32;
+                let piece = bar.width() * tokens.work_sweep.clamp(0.05, 1.0);
+                let left = bar.left() - piece + phase * (bar.width() + piece);
+                let shown = egui::Rect::from_min_max(
+                    egui::pos2(left.max(bar.left()), bar.top()),
+                    egui::pos2((left + piece).min(bar.right()), bar.bottom()),
+                );
+                if shown.width() > 0.0 {
+                    painter.rect_filled(shown, egui::CornerRadius::ZERO, accent);
+                }
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    /// While the viewport has nothing to show yet (a first file opening,
+    /// the page before its first picture): a small note in its middle,
+    /// as wide whatever it says, with what is opening.
+    fn work_note(&self, painter: &egui::Painter, rect: egui::Rect, work: &Work) {
+        let tokens = self.tokens;
+        let text = match (work.label.as_str(), work.subject.as_deref()) {
+            ("file.open", Some(name)) => format!("Opening {name}\u{2026}"),
+            ("file.open", None) => "Opening\u{2026}".to_string(),
+            _ => "Working\u{2026}".to_string(),
+        };
+        let width = tokens
+            .work_note_width
+            .min(rect.width() - 2.0 * tokens.inset);
+        if width <= 0.0 {
+            return;
+        }
+        let font = egui::FontId::proportional(15.0);
+        let job = egui::text::LayoutJob {
+            wrap: egui::text::TextWrapping::truncate_at_width(width - 2.0 * tokens.inset),
+            ..egui::text::LayoutJob::simple_singleline(text, font, color(tokens.notice_text))
+        };
+        let galley = painter.layout_job(job);
+        let height = galley.size().y + tokens.inset;
+        let plate = egui::Rect::from_center_size(rect.center(), egui::vec2(width, height));
         painter.rect_filled(
             plate,
             egui::CornerRadius::same(tokens.notice_radius),
             color_alpha(tokens.notice_fill, tokens.notice_opacity),
         );
-        let top = plate.shrink(tokens.inset * 0.8);
-        // The spinner: an arc that turns with the clock, so a frozen
-        // window would show as a spinner that stopped.
-        let centre = egui::pos2(top.left() + spinner * 0.5, top.top() + spinner * 0.5);
-        let radius = spinner * 0.38;
-        let time = ui.input(|i| i.time);
-        let start = (time * 4.0).rem_euclid(std::f64::consts::TAU) as f32;
-        let points: Vec<egui::Pos2> = (0..=24)
-            .map(|k| {
-                let angle = start + k as f32 / 24.0 * std::f32::consts::PI * 1.5;
-                centre + radius * egui::vec2(angle.cos(), angle.sin())
-            })
-            .collect();
-        painter.add(egui::Shape::line(
-            points,
-            egui::Stroke::new(tokens.work_spinner_width, color(tokens.work_accent)),
-        ));
         painter.galley(
-            egui::pos2(top.left() + spinner + gap, centre.y - text_size.y * 0.5),
+            plate.center() - galley.size() * 0.5,
             galley,
             color(tokens.notice_text),
         );
-        let track = egui::Rect::from_min_size(
-            egui::pos2(top.left(), top.bottom() - bar),
-            egui::vec2(top.width(), bar),
-        );
-        let round = egui::CornerRadius::same(tokens.radius);
-        painter.rect_filled(track, round, color(tokens.work_track));
-        if let Some(fraction) = work.fraction() {
-            let done = egui::Rect::from_min_size(
-                track.min,
-                egui::vec2(track.width() * fraction, track.height()),
-            );
-            painter.rect_filled(done, round, color(tokens.work_accent));
-        }
-        // The spinner turns: have the next frame come.
-        ui.ctx().request_repaint();
     }
 
     fn viewport(&mut self, ui: &mut egui::Ui, shared: Option<&Arc<Scene>>) {
@@ -2790,9 +2865,12 @@ impl Shell {
             );
         };
         let start = self.welcome();
-        match (scene, self.problem()) {
-            (None, None) if self.work.is_some() => hint("No document."),
-            (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
+        // Nothing drawn yet while a file opens: what is opening, in the
+        // middle, gone with the first body.
+        let nothing_yet = scene.is_none_or(|scene| scene.bodies.is_empty());
+        match (&self.work, scene, self.problem()) {
+            (Some(work), _, None) if nothing_yet => self.work_note(&painter, rect, work),
+            (None, Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
         // The caption of a narrated demo, then the history player's step
@@ -2824,9 +2902,7 @@ impl Shell {
             top = plate.bottom() + inset * 0.5;
         }
 
-        if let Some(work) = &self.work {
-            self.work_plate(ui, &painter, inner, work);
-        }
+        self.work_bar(ui, &painter, rect);
 
         // The box being dragged, and the "select other" list.
         self.paint_selecting(ui);

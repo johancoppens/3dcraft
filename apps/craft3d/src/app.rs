@@ -413,9 +413,18 @@ impl Desk {
             // never by a frame or a request on this one.
             if scenes == 0 && !self.scene_ready() {
                 scenes += 1;
-                self.start(
+                // The document's name: a file named on the command line is
+                // opened here, its scene being its first.
+                let subject = self
+                    .host
+                    .session
+                    .document_status()
+                    .and_then(|status| status.path)
+                    .and_then(|path| file_stem(&path));
+                self.start_about(
                     Waiting::Scene,
                     "meshing".to_string(),
+                    subject,
                     Box::new(|_| Outcome::Built),
                 );
                 continue;
@@ -452,10 +461,12 @@ impl Desk {
                 match route(&request.line) {
                     Route::Engine => {
                         let label = request_label(&request.line);
+                        let subject = request_subject(&request.line);
                         let line = request.line.clone();
-                        self.start(
+                        self.start_about(
                             Waiting::Request(request),
                             label,
+                            subject,
                             Box::new(move |session| {
                                 Outcome::Reply(answer_on_engine(session, &line))
                             }),
@@ -579,8 +590,15 @@ impl Desk {
     /// Hands the session to the engine thread with a task, and waits a
     /// moment for it ([`Self::with_patience`]).
     fn start(&mut self, waiting: Waiting, label: String, run: Run) {
+        self.start_about(waiting, label, None, run);
+    }
+
+    /// [`Self::start`] for work about `subject` (the name of the file
+    /// being opened), which the status bar names.
+    fn start_about(&mut self, waiting: Waiting, label: String, subject: Option<String>, run: Run) {
         let task = Task {
             label,
+            subject,
             run,
             quality: self.host.shell.scene_quality(),
         };
@@ -734,9 +752,10 @@ impl Desk {
     fn pump_files(&mut self) -> bool {
         if let Some(choice) = self.picker.poll() {
             match choice {
-                Ok(Choice::Open(path)) => self.start(
+                Ok(Choice::Open(path)) => self.start_about(
                     Waiting::File("file.open"),
                     "file.open".to_string(),
+                    file_stem(&path.to_string_lossy()),
                     Box::new(move |session| {
                         Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
                     }),
@@ -823,9 +842,10 @@ impl Desk {
         }
         if let Some(path) = self.host.shell.take_open_recent() {
             let path = std::path::PathBuf::from(path);
-            self.start(
+            self.start_about(
                 Waiting::File("file.open"),
                 "file.open".to_string(),
+                file_stem(&path.to_string_lossy()),
                 Box::new(move |session| {
                     Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
                 }),
@@ -1138,6 +1158,30 @@ fn is_screenshot(line: &str) -> bool {
                 .map(|m| m == "ui.screenshot")
         })
         .unwrap_or(false)
+}
+
+/// The name of a file without its folder and extension, as the status
+/// bar names a file being opened (`welding-table`).
+fn file_stem(path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next()?;
+    let stem = name
+        .strip_suffix(".3dcraftjig")
+        .or_else(|| name.strip_suffix(".3dcraft"))
+        .unwrap_or(name);
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+/// What a request is about, for the status bar: the file `file.open`
+/// opens.
+fn request_subject(line: &str) -> Option<String> {
+    let request: Value = serde_json::from_str(line).ok()?;
+    let params = request.get("params")?;
+    if request.get("method")?.as_str()? != "engine.execute"
+        || params.get("command")?.as_str()? != "file.open"
+    {
+        return None;
+    }
+    file_stem(params.get("params")?.get("path")?.as_str()?)
 }
 
 /// What the window says it is doing for a request: the command it runs,
@@ -1571,6 +1615,31 @@ mod tests {
         let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
         let host = Host::new(Session::new(Workspace::none()));
         (Desk::new(host, incoming, picker), requests)
+    }
+
+    /// The status bar names the file a request opens, without its folder
+    /// and extension; other requests are about nothing in particular.
+    #[test]
+    fn a_file_opened_is_named_by_its_stem() {
+        let open = |path: &str| {
+            json!({"id": 1, "method": "engine.execute",
+                   "params": {"command": "file.open", "params": {"path": path}}})
+            .to_string()
+        };
+        assert_eq!(
+            request_subject(&open("/jigs/welding-table.3dcraftjig")).as_deref(),
+            Some("welding-table")
+        );
+        assert_eq!(
+            request_subject(&open("C:\\models\\bracket.3dcraft")).as_deref(),
+            Some("bracket")
+        );
+        assert_eq!(request_subject(&open("")), None);
+        assert_eq!(request_subject("not json"), None);
+        let other = json!({"id": 1, "method": "engine.execute",
+                           "params": {"command": "file.new", "params": {}}});
+        assert_eq!(request_subject(&other.to_string()), None);
+        assert_eq!(file_stem("plate.step").as_deref(), Some("plate.step"));
     }
 
     fn ask(requests: &mpsc::Sender<Request>, line: &str) -> Receiver<Option<String>> {

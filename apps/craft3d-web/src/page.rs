@@ -48,6 +48,12 @@ struct Arrived {
 
 type Inbox = Rc<RefCell<Vec<Arrived>>>;
 
+/// How long a frame works on the long work (regenerating, meshing, the
+/// assertions) before the page draws, in milliseconds: some 20 frames a
+/// second while it lasts, each piece (a feature, a body, an assertion)
+/// whole.
+const FRAME_WORK_MS: f64 = 40.0;
+
 /// What a file dialog or a write in the background left for the next
 /// frame.
 enum Mail {
@@ -478,6 +484,12 @@ impl Page {
         }
         log::info!("viewport renderer: {}", shell.renderer_report().describe());
         let mut host = WebHost::new(shell);
+        // The long work a piece per frame: the page's one thread draws
+        // between the pieces (`WebHost::prepare`).
+        host.set_stepwise(true);
+        if let Some(url) = &flags.open {
+            host.fetching(&flags::file_name(url));
+        }
         let prefs = load_prefs(Prefs::of(&host.shell.state, None));
         prefs.apply(&mut host.shell.state);
         host.export_extension.clone_from(&prefs.export_extension);
@@ -919,7 +931,12 @@ impl eframe::App for Page {
                         self.host.writable.insert(status.id);
                     }
                 }
-                Err(why) => self.host.note("file.open", false, why),
+                Err(why) => {
+                    if self.host.fetching_name() == Some(file.name.as_str()) {
+                        self.host.fetch_failed();
+                    }
+                    self.host.note("file.open", false, why);
+                }
             }
         }
         self.read_mail();
@@ -945,6 +962,15 @@ impl eframe::App for Page {
         }
         self.deliver(outcome.downloads);
         self.forget_closed();
+        // A piece of the long work, for as long as a frame allows: the
+        // rest in the next frames, drawn in between.
+        let started = js_sys::Date::now();
+        let busy = self
+            .host
+            .prepare(move || js_sys::Date::now() - started > FRAME_WORK_MS);
+        if busy {
+            ctx.request_repaint();
+        }
         let title = window_title(self.host.session.document_status().as_ref());
         if title != self.title {
             if let Some(document) = document() {
@@ -965,8 +991,16 @@ impl eframe::App for Page {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // While the scene to show is not there yet, the window is drawn as
+        // it was, with the work over it: drawing it from the session would
+        // build the scene here, all at once.
+        let away = self.host.away();
         let WebHost { session, shell, .. } = &mut self.host;
-        shell.ui(ui, session);
+        if away {
+            shell.ui_away(ui);
+        } else {
+            shell.ui(ui, session);
+        }
         // The answers of the dialogs over the page, in the frame of their
         // click: a system's save dialog is shown only so shortly after.
         let outcome = self.host.dialog_ui(ui.ctx());

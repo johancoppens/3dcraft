@@ -36,6 +36,7 @@ fn items() -> Vec<StatusFit> {
         item(StatusSlot::Selection, 180.0, 48.0),
         item(StatusSlot::Command, 60.0, 60.0),
         item(StatusSlot::Answer, 500.0, 48.0),
+        item(StatusSlot::Work, 250.0, 48.0),
         item(StatusSlot::Render, 250.0, 250.0),
     ]
 }
@@ -49,7 +50,8 @@ fn total(widths: &[Option<f32>], gap: f32) -> f32 {
 /// Wide enough, every item is as wide as it wants. Narrower, never more
 /// than the room there is: the answer is elided first, then the autosave
 /// and then the path; then the answer and the command go, then the
-/// autosave, the path, the renderer's numbers, and the units last. An item
+/// autosave, the path, the work in progress, the renderer's numbers, and
+/// the units last. An item
 /// that has gone never comes back in a narrower bar, and none is narrower
 /// than its least width.
 #[test]
@@ -167,5 +169,138 @@ fn the_items_never_overlap_in_the_window() {
                 );
             }
         }
+    }
+}
+
+/// Work in progress has its own item at the right of the bar, before the
+/// renderer's numbers, always as wide (`Tokens::status_work_width`)
+/// whatever it says, so nothing moves while the steps count up; a long
+/// name is elided within it. Without work, it is not there.
+#[test]
+fn work_in_progress_has_a_place_of_its_own_that_never_changes_size() {
+    use craft3d_ui_egui::{Tokens, Work};
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [10, 10, 10]}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let mut frame = |shell: &mut Shell, k: u32| {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(k) / 60.0),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
+    };
+    for k in 0..3 {
+        frame(&mut shell, k);
+    }
+    let slots = |shell: &Shell| {
+        shell
+            .status_hits()
+            .iter()
+            .map(|(s, _)| *s)
+            .collect::<Vec<_>>()
+    };
+    assert!(!slots(&shell).contains(&StatusSlot::Work));
+    let width = Tokens::default().status_work_width;
+    let long = "a-very-long-name-of-a-welding-table-with-ribs-and-slots-and-more";
+    let mut rects = Vec::new();
+    let mut renders = Vec::new();
+    for (subject, step) in [("welding-table", 1), ("welding-table", 41), (long, 412)] {
+        shell.set_work(Some(Work {
+            label: "file.open".to_string(),
+            subject: Some(subject.to_string()),
+            phase: "regenerating".to_string(),
+            step,
+            steps: 412,
+            ..Work::default()
+        }));
+        for k in 3..6 {
+            frame(&mut shell, k);
+        }
+        let hits = shell.status_hits().to_vec();
+        let (_, rect) = hits
+            .iter()
+            .find(|(s, _)| *s == StatusSlot::Work)
+            .copied()
+            .unwrap_or_else(|| panic!("no work item in {hits:?}"));
+        // The words within the item's room (the hit is the words'); the
+        // room itself shows in where the item starts, which does not move
+        // below.
+        assert!(rect.width() <= width + 0.5, "{rect:?}");
+        // Before the renderer's numbers, which stay at the right end.
+        let (_, render) = hits
+            .iter()
+            .find(|(s, _)| *s == StatusSlot::Render)
+            .copied()
+            .unwrap_or_else(|| panic!("no renderer's numbers in {hits:?}"));
+        assert!(rect.right() <= render.left() + 0.5, "{rect:?} {render:?}");
+        // The item is as wide as its room: the next starts that far on.
+        assert!(
+            render.left() - rect.left() >= width - 0.5,
+            "{rect:?} {render:?}"
+        );
+        rects.push(rect);
+        renders.push(render);
+    }
+    assert!(
+        rects
+            .windows(2)
+            .all(|w| (w[0].left() - w[1].left()).abs() < 0.5),
+        "{rects:?}"
+    );
+    assert!(
+        renders
+            .windows(2)
+            .all(|w| (w[0].left() - w[1].left()).abs() < 0.5),
+        "{renders:?}"
+    );
+    assert_eq!(
+        shell.busy().map(|(text, _)| text),
+        Some(format!("Opening {long}\u{2026} 412/412"))
+    );
+    shell.set_work(None);
+    for k in 6..9 {
+        frame(&mut shell, k);
+    }
+    assert!(!slots(&shell).contains(&StatusSlot::Work));
+}
+
+/// What the status bar says for the kinds of work.
+#[test]
+fn the_words_for_work_in_progress() {
+    use craft3d_ui_egui::Work;
+    let work = |label: &str, subject: Option<&str>, phase: &str, step, steps| Work {
+        label: label.to_string(),
+        subject: subject.map(str::to_string),
+        phase: phase.to_string(),
+        step,
+        steps,
+        ..Work::default()
+    };
+    let table = Some("welding-table");
+    for (w, said) in [
+        (
+            work("file.open", table, "regenerating", 120, 412),
+            "Opening welding-table\u{2026} 120/412",
+        ),
+        (
+            work("file.open", table, "meshing", 3, 82),
+            "Opening welding-table\u{2026} meshing",
+        ),
+        (work("file.open", None, "running", 0, 0), "Opening\u{2026}"),
+        (
+            work("param.set", None, "regenerating", 3, 12),
+            "Regenerating\u{2026} 3/12",
+        ),
+        (work("meshing", None, "meshing", 3, 12), "Meshing\u{2026}"),
+        (
+            work("feature.extrude", None, "running", 0, 0),
+            "feature.extrude\u{2026}",
+        ),
+    ] {
+        assert_eq!(w.status_text(), said);
     }
 }

@@ -30,7 +30,7 @@ use craft3d_ui_egui::files::{
     suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::export_verb;
-use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell};
+use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -285,6 +285,17 @@ pub fn memory_name(name: &str) -> Option<String> {
     (!clean.is_empty() && !clean.chars().all(|c| c == '.')).then_some(clean)
 }
 
+/// A file's name without its folder and its 3DCraft extension, as the
+/// status bar names a file being opened (`welding-table`).
+pub fn file_stem(name: &str) -> Option<String> {
+    let name = name.rsplit(['/', '\\']).next()?;
+    let stem = name
+        .strip_suffix(".3dcraftjig")
+        .or_else(|| name.strip_suffix(".3dcraft"))
+        .unwrap_or(name);
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
 /// `name` ending in `.extension`: as it is when it has that extension
 /// (in any case), else with it appended, so a document saved as `x.stl`
 /// is `x.stl.3dcraft` and never a `.3dcraft` file under another format's
@@ -336,6 +347,17 @@ pub struct WebHost {
     /// ([`export_check`]), made again only when the name changes and
     /// dropped when the dialog closes: it lists the document's sets.
     export_check: Option<(String, ExportCheck)>,
+    /// The long work is done a piece per frame ([`WebHost::prepare`]), as
+    /// the page does: its one thread draws between the pieces.
+    stepwise: bool,
+    /// What the work in progress is about, for the status bar: the command
+    /// or `file.open`, and the file's name.
+    about: Option<(String, Option<String>)>,
+    /// A file named in the page's address is being fetched.
+    fetching: Option<String>,
+    /// The scene to show is not there yet: the window is drawn as it was
+    /// (`Shell::ui_away`), with the work over it.
+    away: bool,
 }
 
 /// The budget of scenes the page keeps (`Session::set_scene_budget`),
@@ -368,7 +390,122 @@ impl WebHost {
             writable: BTreeSet::new(),
             companion: None,
             export_check: None,
+            stepwise: false,
+            about: None,
+            fetching: None,
+            away: false,
         }
+    }
+
+    /// Does the long work (regenerating, meshing, the assertions) a piece
+    /// per frame with [`WebHost::prepare`], as the page does: a browser
+    /// draws nothing while its one thread works, and a frame that takes
+    /// seconds looks frozen. Off by default (the work is done where it is
+    /// asked for, all at once).
+    pub fn set_stepwise(&mut self, stepwise: bool) {
+        self.stepwise = stepwise;
+        self.session.set_stepwise(stepwise);
+    }
+
+    /// The file `name` named in the page's address is being fetched: shown
+    /// as opening until it is there ([`WebHost::receive`]) or failed
+    /// ([`WebHost::fetch_failed`]).
+    pub fn fetching(&mut self, name: &str) {
+        let stem = file_stem(name);
+        self.fetching = Some(name.to_string());
+        self.about = Some(("file.open".to_string(), stem));
+        self.show_work(None);
+        self.away = true;
+    }
+
+    /// The name of the file being fetched, while it is.
+    pub fn fetching_name(&self) -> Option<&str> {
+        self.fetching.as_deref()
+    }
+
+    /// The file being fetched could not be had: no longer opening.
+    pub fn fetch_failed(&mut self) {
+        if self.fetching.take().is_some() {
+            self.about = None;
+            self.shell.set_work(None);
+            self.away = false;
+        }
+    }
+
+    /// True while the window is drawn as it was, the scene to show not
+    /// being there yet (`Shell::ui_away` instead of `Shell::ui`).
+    pub fn away(&self) -> bool {
+        self.away
+    }
+
+    /// Does a piece of the long work the active document still needs
+    /// (`Session::prepare_some`), until `stop` says the frame is used up,
+    /// and tells the shell what is being done. Called once per frame
+    /// before it is drawn. Returns true while work is left (the page asks
+    /// for the next frame).
+    pub fn prepare(&mut self, stop: impl Fn() -> bool + Clone + 'static) -> bool {
+        if self.fetching.is_some() {
+            self.show_work(None);
+            self.away = true;
+            return true;
+        }
+        // A commit of the parameter form waits a frame for its command
+        // (`WebHost::pump`): that frame says so.
+        if self.shell.parameters_busy() && self.about.is_none() {
+            self.about = Some(("param.set".to_string(), None));
+        }
+        if !self.stepwise {
+            return false;
+        }
+        let quality = self.shell.scene_quality();
+        let step = self.session.prepare_some(quality, stop);
+        self.away = !self.session.scene_ready(quality);
+        match step {
+            None => {
+                self.about = None;
+                self.shell.set_work(None);
+                false
+            }
+            // The assertions say themselves how far they are (the shell's
+            // own status), with the picture shown.
+            Some(step) if step.phase == "checking" => {
+                self.about = None;
+                self.shell.set_work(None);
+                true
+            }
+            Some(step) => {
+                self.show_work(Some(step));
+                true
+            }
+        }
+    }
+
+    /// Tells the shell what is being done: the step, or only what the
+    /// work is about.
+    fn show_work(&mut self, step: Option<craft3d_engine::Progress>) {
+        let (label, subject) = self
+            .about
+            .clone()
+            .unwrap_or_else(|| ("meshing".to_string(), None));
+        let work = match step {
+            Some(step) => Work {
+                label,
+                subject,
+                phase: step.phase.to_string(),
+                feature: step.feature,
+                name: step.name,
+                step: step.step,
+                steps: step.steps,
+                seconds: 0.0,
+            },
+            None => Work {
+                label,
+                subject,
+                phase: "running".to_string(),
+                ..Work::default()
+            },
+        };
+        self.shell.set_work(Some(work));
     }
 
     /// The index of the open document `id`, as `file.activate` takes it.
@@ -519,6 +656,11 @@ impl WebHost {
     fn finish(&mut self, label: &str, outcome: &Result<Value, String>) {
         self.report(label, outcome);
         self.forget_files();
+        // Done a piece per frame: shown once the scene is there.
+        if self.stepwise && !self.session.scene_ready(self.shell.scene_quality()) {
+            self.away = true;
+            return;
+        }
         self.shell.sync(&mut self.session);
     }
 
@@ -555,11 +697,21 @@ impl WebHost {
         bytes: Vec<u8>,
         wanted: Option<Ask>,
     ) -> Result<Value, String> {
-        let outcome = self.receive_inner(name, bytes, wanted);
+        // The file being fetched is here (named as the page names it, or
+        // by its path in the address).
+        if self
+            .fetching
+            .as_deref()
+            .is_some_and(|f| memory_name(f) == memory_name(name))
+        {
+            self.fetching = None;
+        }
         let label = match received_kind(name) {
             Some(Received::Step) => "file.import",
             _ => "file.open",
         };
+        self.about = Some((label.to_string(), file_stem(name)));
+        let outcome = self.receive_inner(name, bytes, wanted);
         self.finish(label, &outcome);
         outcome
     }
@@ -653,6 +805,7 @@ impl WebHost {
         // showed that it is regenerating, now the page's one thread does
         // it.
         if let Some(asked) = self.shell.take_command() {
+            self.about = Some((asked.command.to_string(), None));
             let done = self.run(asked.command, &asked.params);
             self.shell.command_done(done.clone());
             self.finish(asked.command, &done);
@@ -1189,6 +1342,123 @@ mod tests {
             )
             .unwrap();
         host
+    }
+
+    /// What the page shows, frame by frame, while a file it was handed
+    /// opens a piece per frame (`WebHost::set_stepwise`): at once that it
+    /// is opening (the status bar's words, the bar, nothing drawn from
+    /// the session), the features counted as they are built, then the
+    /// picture with the assertions being checked, then nothing left. Each
+    /// frame does one piece (the stop says so as soon as it may).
+    #[test]
+    fn a_file_opens_a_piece_per_frame_and_says_so() {
+        let mut maker = modelled();
+        for (id, params) in [
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "position": [60, 0, 0], "name": "B"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "position": [80, 0, 0], "name": "C"}),
+            ),
+            (
+                "assert.add",
+                json!({"name": "apart", "measure": "overlap", "is": false}),
+            ),
+            (
+                "assert.add",
+                json!({"name": "plate", "measure": "volume", "of": "Plate", "eq": "8000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"}),
+            ),
+        ] {
+            maker.session.execute(id, &params).unwrap();
+        }
+        let bytes = maker.save_as("table.3dcraft", None).remove(0).bytes;
+
+        let mut host = host();
+        host.set_stepwise(true);
+        host.fetching("/jigs/table.3dcraft");
+        assert!(host.away());
+        assert_eq!(
+            host.shell.busy().map(|(text, _)| text).as_deref(),
+            Some("Opening table\u{2026}")
+        );
+        // Still fetching: nothing to do but say so.
+        assert!(host.prepare(|| true));
+        host.receive("table.3dcraft", bytes, None).unwrap();
+        // A frame as the page draws it (`page.rs`): as it was while the
+        // scene is not there, from the session once it is.
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut draw = |host: &mut WebHost| {
+            time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                time: Some(time),
+                ..Default::default()
+            };
+            let away = host.away();
+            let mut output = ctx.run_ui(input, |ui| {
+                let WebHost { session, shell, .. } = host;
+                if away {
+                    shell.ui_away(ui);
+                } else {
+                    shell.ui(ui, session);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        let mut said = Vec::new();
+        let mut frames = 0;
+        while host.prepare(|| true) {
+            frames += 1;
+            assert!(frames < 50, "{said:?}");
+            draw(&mut host);
+            said.push(host.shell.busy().map(|(text, _)| text).unwrap_or_default());
+        }
+        draw(&mut host);
+        assert_eq!(host.shell.busy(), None, "{said:?}");
+        assert!(!host.away());
+        // The features one by one, then the picture's meshes, then the
+        // assertions.
+        assert_eq!(
+            said.first().map(String::as_str),
+            Some("Opening table\u{2026} 1/3")
+        );
+        assert!(
+            said.iter().any(|s| s == "Opening table\u{2026} 2/3"),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|s| s == "Opening table\u{2026} meshing"),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s == "Checking 2 assertions\u{2026} 1/2"),
+            "{said:?}"
+        );
+        let states = host.session.assertion_states();
+        assert!(
+            states
+                .iter()
+                .all(|a| a.status == craft3d_engine::AssertionStatus::Passed)
+        );
+    }
+
+    /// The name a file is opened under, for the status bar.
+    #[test]
+    fn a_file_is_named_by_its_stem() {
+        assert_eq!(
+            file_stem("/jigs/welding-table.3dcraftjig").as_deref(),
+            Some("welding-table")
+        );
+        assert_eq!(file_stem("plate.3dcraft").as_deref(), Some("plate"));
+        assert_eq!(file_stem("part.step").as_deref(), Some("part.step"));
+        assert_eq!(file_stem("/"), None);
     }
 
     /// Export as Jig downloads a `.3dcraftjig`; handed back to the page it

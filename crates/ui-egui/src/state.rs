@@ -191,6 +191,9 @@ pub struct Work {
     pub steps: usize,
     /// How long the work has run, in seconds.
     pub seconds: f64,
+    /// What the work is about, when the host knows: the name of the file
+    /// being opened (`welding-table`), for the status bar.
+    pub subject: Option<String>,
 }
 
 impl Work {
@@ -206,6 +209,30 @@ impl Work {
         }
         if self.seconds.is_finite() && self.seconds >= 1.0 {
             text.push_str(&format!(", {:.0} s", self.seconds.floor()));
+        }
+        text
+    }
+
+    /// What the status bar says while the work runs, short and calm:
+    /// `Opening welding-table… 41/82`, `Opening welding-table… meshing`,
+    /// `Regenerating… 3/12`, `feature.extrude…`.
+    pub fn status_text(&self) -> String {
+        let doing = match (self.label.as_str(), self.subject.as_deref()) {
+            ("file.open", Some(name)) => format!("Opening {name}"),
+            ("file.open", None) => "Opening".to_string(),
+            ("param.set" | "variable.set" | "edit.undo" | "edit.redo", _) => {
+                "Regenerating".to_string()
+            }
+            ("meshing", _) => "Meshing".to_string(),
+            (label, _) => label.to_string(),
+        };
+        let mut text = format!("{doing}\u{2026}");
+        match self.phase.as_str() {
+            "regenerating" if self.steps > 0 => {
+                text.push_str(&format!(" {}/{}", self.step, self.steps));
+            }
+            "meshing" | "refining" if self.label != "meshing" => text.push_str(" meshing"),
+            _ => {}
         }
         text
     }

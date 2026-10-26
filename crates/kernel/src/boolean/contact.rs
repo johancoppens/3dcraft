@@ -84,13 +84,30 @@ pub fn interference(
     super::freeform::holding(|| interference_held(a, b, tolerance))
 }
 
-/// [`interference`], its trees held to a budget
-/// ([`super::freeform::holding`]).
-fn interference_held(
+/// The common volume of `a` and `b`, if they have one: the first step of
+/// [`interference`] alone, for a question that needs no more than that
+/// (whether bodies overlap, and by how much). `None` when they have no
+/// volume in common, whether they touch or are apart: the intersection is
+/// empty (parts of it that touch are allowed). Solids whose boxes, grown
+/// by twice the tolerance, do not meet cost only the two boxes. What the
+/// boolean refuses is an error, as in [`interference`]; the contact that
+/// [`interference`] would go on to classify (and the union it may build
+/// for that) is not looked at, so a touch that only that union refuses
+/// is no error here.
+pub fn common_volume(
     a: &Body,
     b: &Body,
     tolerance: &Tolerance,
-) -> Result<Interference, KernelError> {
+) -> Result<Option<BooleanResult>, KernelError> {
+    super::freeform::holding(|| common_volume_held(a, b, tolerance))
+}
+
+/// [`common_volume`], its trees held to a budget (by the caller).
+fn common_volume_held(
+    a: &Body,
+    b: &Body,
+    tolerance: &Tolerance,
+) -> Result<Option<BooleanResult>, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -106,17 +123,40 @@ fn interference_held(
         });
     }
     if !boxes_meet(a, b, 2.0 * tol) {
-        return Ok(Interference::Clear);
+        return Ok(None);
     }
-    let options = BooleanOptions {
+    match boolean_with(a, b, BooleanOp::Intersect, tolerance, &touching()) {
+        Ok(common) => Ok(Some(common)),
+        Err(KernelError::EmptyResult { .. }) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
+/// The boolean's options for these queries: parts that touch are allowed.
+fn touching() -> BooleanOptions {
+    BooleanOptions {
         refuse_zero_thickness: false,
         ..BooleanOptions::default()
-    };
-    match boolean_with(a, b, BooleanOp::Intersect, tolerance, &options) {
-        Ok(common) => return Ok(Interference::Overlap(Box::new(common))),
-        Err(KernelError::EmptyResult { .. }) => {}
-        Err(other) => return Err(other),
     }
+}
+
+/// [`interference`], its trees held to a budget
+/// ([`super::freeform::holding`]).
+fn interference_held(
+    a: &Body,
+    b: &Body,
+    tolerance: &Tolerance,
+) -> Result<Interference, KernelError> {
+    // The checks of the tolerance and of the kinds, the box test and the
+    // intersection: a common volume is the overlap.
+    if let Some(common) = common_volume_held(a, b, tolerance)? {
+        return Ok(Interference::Overlap(Box::new(common)));
+    }
+    let tol = tolerance.linear;
+    if !boxes_meet(a, b, 2.0 * tol) {
+        return Ok(Interference::Clear);
+    }
+    let options = touching();
     let unsupported = |stop| match stop {
         Stop::Error(error) => error,
         Stop::Unsupported { reason, mut faces } => {
@@ -373,6 +413,71 @@ mod tests {
                 interference(&a, &apart, &tolerance).unwrap(),
                 Interference::Clear
             );
+        }
+    }
+
+    /// `common_volume` answers what `interference` answers about volume:
+    /// the same common volume for an overlap (closed form), none for a
+    /// face, an edge or a corner in common, a pin lying on a plate, a ball
+    /// on it, boxes that meet around solids that do not, and apart; at
+    /// three scales. Its refusals are the boolean's (a sheet is not a
+    /// solid, a tolerance that is not positive).
+    #[test]
+    fn the_common_volume_alone_agrees_with_interference() {
+        for s in [1e-3, 1.0, 1e4] {
+            let tolerance = Tolerance {
+                linear: 1e-7 * s,
+                ..Tolerance::default()
+            };
+            let v = |x: f64, y: f64, z: f64| Vec3::new(x * s, y * s, z * s);
+            let a = block(Vec3::ZERO, 2.0 * s, 2.0 * s, 2.0 * s);
+            let b = block(v(1.0, 0.5, 0.0), 2.0 * s, 2.0 * s, 2.0 * s);
+            let common = common_volume(&a, &b, &tolerance).unwrap().unwrap();
+            let want = 3.0 * s * s * s;
+            assert!((volume(&common) - want).abs() <= 1e-9 * want, "scale {s}");
+            let plate = block(Vec3::ZERO, 4.0 * s, 4.0 * s, 0.5 * s);
+            let up = Frame::WORLD.at(v(2.0, 2.0, -1.0)).unwrap();
+            let pin = primitives::cylinder(&up, 0.5 * s, 3.0 * s).unwrap();
+            let common = common_volume(&plate, &pin, &tolerance).unwrap().unwrap();
+            let want = std::f64::consts::PI * 0.25 * 0.5 * s * s * s;
+            assert!((volume(&common) - want).abs() <= 1e-7 * want, "scale {s}");
+            let lying = Frame::new(v(0.5, 2.0, 1.0), Vec3::X, Vec3::Y).unwrap();
+            let none = [
+                (a.clone(), block(v(2.0, 0.5, 0.5), s, s, s)),
+                (a.clone(), block(v(2.0, 2.0, 0.0), s, s, 2.0 * s)),
+                (a.clone(), block(v(2.0, 2.0, 2.0), s, s, s)),
+                (a.clone(), block(v(3.0, 0.0, 0.0), s, s, s)),
+                (
+                    plate.clone(),
+                    primitives::cylinder(&lying, 0.5 * s, 3.0 * s).unwrap(),
+                ),
+                (
+                    plate.clone(),
+                    primitives::sphere(&Frame::WORLD.at(v(2.0, 2.0, 1.5)).unwrap(), s).unwrap(),
+                ),
+                (
+                    plate.clone(),
+                    primitives::sphere(&Frame::WORLD.at(v(-0.7, -0.7, 1.2)).unwrap(), s).unwrap(),
+                ),
+            ];
+            for (n, (x, y)) in none.iter().enumerate() {
+                assert!(
+                    common_volume(x, y, &tolerance).unwrap().is_none(),
+                    "case {n} at scale {s}"
+                );
+                assert!(
+                    !matches!(
+                        interference(x, y, &tolerance).unwrap(),
+                        Interference::Overlap(_)
+                    ),
+                    "case {n} at scale {s}"
+                );
+            }
+            let bad = Tolerance {
+                linear: 0.0,
+                ..tolerance
+            };
+            assert!(common_volume(&a, &b, &bad).is_err());
         }
     }
 

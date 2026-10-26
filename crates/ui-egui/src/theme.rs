@@ -260,20 +260,27 @@ pub struct Tokens {
     pub field_bar_inset: f32,
     pub field_bar_height: f32,
     pub field_bar_radius: u8,
-    /// The least width of the progress bar over the viewport, in points.
-    pub slider_width: f32,
     /// Space between the viewport's edge and what floats over it.
     pub inset: f32,
     /// The widest a dialog over the window (an error, the export's
     /// options) lays its text out, in points.
     pub dialog_width: f32,
-    /// Work in progress over the viewport: the spinner and the part of
-    /// the progress bar that is done, the rest of the bar, the spinner's
-    /// width and the bar's height, in points.
+    /// Work in progress (2026-10-26, the developer's design): a thin bar
+    /// across the top of the viewport in the info accent (progress is
+    /// information), `work_bar` points high, that covers nothing and never
+    /// changes size: the part done when that is known, otherwise a piece
+    /// `work_sweep` of the width wide sweeping across once every
+    /// `work_sweep_seconds` (slow and calm). The words go in the status
+    /// bar, in an item `status_work_width` points wide whatever they say.
+    /// While the viewport has nothing to show yet (a first file opening),
+    /// a small note in its middle, `work_note_width` points wide, says
+    /// what is opening.
     pub work_accent: Rgb,
-    pub work_track: Rgb,
-    pub work_spinner_width: f32,
     pub work_bar: f32,
+    pub work_sweep: f32,
+    pub work_sweep_seconds: f32,
+    pub work_note_width: f32,
+    pub status_work_width: f32,
     /// The row of document tabs above the viewport: the fill of a tab, of
     /// the active one and of one under the pointer, and the active one's
     /// underline.
@@ -471,13 +478,14 @@ impl Tokens {
             field_bar_inset: 4.0,
             field_bar_height: 2.0,
             field_bar_radius: 1,
-            slider_width: 90.0,
             inset: 10.0,
             dialog_width: 420.0,
-            work_accent: [201, 138, 30],
-            work_track: [220, 215, 207],
-            work_spinner_width: 2.5,
-            work_bar: 4.0,
+            work_accent: [76, 90, 166],
+            work_bar: 3.0,
+            work_sweep: 0.25,
+            work_sweep_seconds: 2.4,
+            work_note_width: 240.0,
+            status_work_width: 250.0,
             tab_fill: [30, 29, 28],
             tab_active_fill: [44, 43, 41],
             tab_hover_fill: [38, 37, 36],

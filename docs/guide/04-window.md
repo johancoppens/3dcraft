@@ -23,7 +23,11 @@ open, save, import and export files, and let you look, play, click and select.
 | 9 | **Display bar** | **Sketches**, **Datums**, **See-through** and **Section** |
 
 At the bottom is the **status bar**: the document's units, its file, when it was autosaved, the last
-command and its answer, and which renderer drew the picture.
+command and its answer, and which renderer drew the picture. While 3DCraft is working, a thin bar runs
+across the top of the viewport and the status bar says what it is doing, on the right: *Opening
+welding-table… 41/82* while a file's features are built, then *Checking 14 assertions… 5/14* while its
+assertions are measured (the model is already there to look at). Until a newly opened file has
+something to show, the middle of the viewport says *Opening welding-table…*.
 
 ## The start screen
 
