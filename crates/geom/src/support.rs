@@ -40,9 +40,12 @@
 //! freeform curve's derivative is a positive combination of the
 //! differences of its net (adjacent ones for a polynomial; for a rational
 //! piece `C' = Σ_{i<j} w_i w_j (P_j − P_i) |K_ij| / w²`), so it lies in the
-//! cone of those differences, which also proves the curve regular there.
-//! No cone (`None`) where none is known: a freeform surface, a cone whose
-//! piece reaches the apex, a piece wider than half a turn.
+//! cone of those differences, which also proves the curve regular there;
+//! a polynomial surface's `∂u` and `∂v` lie in the cones of the u- and
+//! v-differences of its net (axes `a`, `b`, half-angles `α`, `β`), so its
+//! normal is within `asin((2 sin(α/2) + 2 sin(β/2)) / |a × b|)` of `a × b`.
+//! No cone (`None`) where none is known: a rational freeform surface, a
+//! cone whose piece reaches the apex, a piece wider than half a turn.
 
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
@@ -204,6 +207,8 @@ pub enum Piece {
     SurfaceHull {
         points: Vec<Vec3>,
         reach: f64,
+        /// Around the normals, for a polynomial piece (see [`Piece::cone`]).
+        cone: Option<Cone>,
     },
     Segment {
         a: Vec3,
@@ -396,6 +401,9 @@ pub fn surface_piece(
         Surface::Bezier(_) | Surface::Nurbs(_) => {
             let mut all = Vec::new();
             let mut cut = 0_usize;
+            // The differences of the cut nets along u and along v.
+            let (mut along_u, mut along_v) = (Vec::new(), Vec::new());
+            let mut polynomial = true;
             for span in &nets.spans {
                 let (a, b) = (u.0.max(span.u.0), u.1.min(span.u.1));
                 let (c, d) = (v.0.max(span.v.0), v.1.min(span.v.1));
@@ -408,13 +416,37 @@ pub fn surface_piece(
                 }
                 let lu = local(span.u, (a, b))?;
                 let lv = local(span.v, (c, d))?;
-                all.extend(points(&cut_net(span, lu, lv))?);
+                let net = cut_net(span, lu, lv);
+                polynomial &= net.iter().all(|h| (h[3] - 1.0).abs() <= 1e-12);
+                let pts = points(&net)?;
+                let width = span.n + 1;
+                let at = |i: usize, j: usize| pts.get(i * width + j).copied();
+                for i in 0..=span.m {
+                    for j in 0..=span.n {
+                        if let (Some(p), Some(q)) = (at(i, j), at(i + 1, j)) {
+                            along_u.extend((q - p).normalized());
+                        }
+                        if let (Some(p), Some(q)) = (at(i, j), at(i, j + 1)) {
+                            along_v.extend((q - p).normalized());
+                        }
+                    }
+                }
+                all.extend(pts);
             }
             if all.is_empty() {
                 return None;
             }
             let reach = all.iter().map(|p| p.length()).fold(0.0, f64::max);
-            Piece::SurfaceHull { points: all, reach }
+            let cone = if polynomial {
+                normal_cone(&along_u, &along_v)
+            } else {
+                None
+            };
+            Piece::SurfaceHull {
+                points: all,
+                reach,
+                cone,
+            }
         }
     })
 }
@@ -445,6 +477,44 @@ fn cut_net(span: &SpanNet, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Vec<Ho
         }
     }
     c
+}
+
+/// The narrowest cone found around unit directions: their mean and the
+/// largest angle from it; `None` when they do not lie within a right
+/// angle of it (or there are none).
+fn cone_of(directions: &[Vec3]) -> Option<(Vec3, f64)> {
+    let sum = directions.iter().fold(Vec3::ZERO, |s, d| s + *d);
+    let axis = sum.normalized()?;
+    let half = directions
+        .iter()
+        .map(|d| d.dot(axis).clamp(-1.0, 1.0).acos())
+        .fold(0.0, f64::max)
+        + 1e-12;
+    (half < FRAC_PI_2).then_some((axis, half))
+}
+
+/// A cone around the normals of a polynomial patch from the differences
+/// of its net along u and v: `∂u` is a positive combination of the
+/// u-differences and `∂v` of the v-differences, so each lies in the cone
+/// of those (axis `a`, half-angle `α`; `b`, `β`). Unit vectors within `α`
+/// of `a` and `β` of `b` have `|t_u × t_v − a × b| ≤ c_α + c_β` (the
+/// chords `2 sin(α/2)`, `2 sin(β/2)`), so the normal is within
+/// `asin((c_α + c_β) / |a × b|)` of `a × b` when that is below 1.
+fn normal_cone(along_u: &[Vec3], along_v: &[Vec3]) -> Option<Cone> {
+    let (a, alpha) = cone_of(along_u)?;
+    let (b, beta) = cone_of(along_v)?;
+    let n = a.cross(b);
+    let s = n.length();
+    let e = 2.0 * (0.5 * alpha).sin() + 2.0 * (0.5 * beta).sin();
+    if !(e < s) {
+        return None;
+    }
+    let half = (e / s).asin() + 1e-12;
+    let axis = n.normalized()?;
+    (half < FRAC_PI_2 - 1e-9).then_some(Cone {
+        axis,
+        half_angle: half,
+    })
 }
 
 /// The piece of `curve` over `[t0, t1]`. `nets` must be
@@ -553,7 +623,7 @@ impl Piece {
                 let value = d.dot(*o) + major * g + minor * least_cos(g, d.dot(*z), *v);
                 (value, o.length() + major + minor)
             }
-            Piece::SurfaceHull { points, reach } => (
+            Piece::SurfaceHull { points, reach, .. } => (
                 points
                     .iter()
                     .map(|p| d.dot(*p))
@@ -643,7 +713,8 @@ impl Piece {
                 let n = (*x * cu + *y * su) * cv + *z * sv;
                 within(n.normalized(), 0.5 * (width(*u) + width(*v)))
             }
-            Piece::SurfaceHull { .. } | Piece::Point(_) => None,
+            Piece::SurfaceHull { cone, .. } => *cone,
+            Piece::Point(_) => None,
             Piece::Segment { a, b } => within((*b - *a).normalized(), 0.0),
             Piece::Arc { x, y, a, b, t, .. } => {
                 let (s, c) = mid(*t).sin_cos();
