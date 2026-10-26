@@ -1018,6 +1018,71 @@ fn panels_ending_on_one_plane_meet_in_one_corner() {
 }
 
 #[test]
+fn panels_ending_on_a_curved_stem_past_its_patch_meet_on_it() {
+    // A stem x = 2 + 0.05 z² (times k), given as a small spline patch
+    // (y and z up to 0.1): the panels' bow ends run past it, onto its
+    // continuation, which for a polynomial patch is the stem itself.
+    for k in SCALES {
+        let hull = hull_sheet(k);
+        let (bottom, side) = (panel(&hull, 0.14, 0.05, k), panel(&hull, 0.3, 0.2, k));
+        let t = 0.006 * k;
+        let tol = tolerance(k);
+        let c = 0.05 / k;
+        let (y, z) = (0.1 * k, 0.1 * k);
+        let mut ctrl = Vec::new();
+        for yy in [0.0, y] {
+            for (zz, x) in [(0.0, 2.0 * k), (0.5 * z, 2.0 * k), (z, 2.0 * k + c * z * z)] {
+                ctrl.push(Vec3::new(x, yy, zz));
+            }
+        }
+        let stem = Surface::Nurbs(
+            craft3d_geom::NurbsSurface::new(
+                1,
+                2,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                2,
+                3,
+                ctrl,
+                vec![1.0; 6],
+            )
+            .unwrap(),
+        );
+        let chine = between_faces(&hull, bottom, side);
+        let edge_id = |face: FaceId, x: f64| {
+            let e = section_edge(&hull, face, x);
+            EdgeId(hull.edges.iter().position(|o| *o == e).unwrap() as u32)
+        };
+        let neighbour = |face| Neighbour {
+            body: &hull,
+            face,
+            thickness: t,
+            side: Side::In,
+        };
+        let made = |face: FaceId, other: FaceId| {
+            let joints = BTreeMap::from([
+                (chine, Joint::Touch(neighbour(other))),
+                (edge_id(face, 2.0 * k), Joint::Onto(&stem)),
+            ]);
+            let p = plate(&hull, &[face], t, Side::In, &joints, &tol)
+                .unwrap_or_else(|e| panic!("panel {} at scale {k}: {e:?}", face.0));
+            assert_eq!(check(&p.body, &tol), [], "a valid panel");
+            p
+        };
+        for p in [made(bottom, side), made(side, bottom)] {
+            // Every corner at the bow lies on the stem.
+            for v in p.body.vertices.iter().filter(|v| v.point.x > k) {
+                let off = v.point.x - (2.0 * k + c * v.point.z * v.point.z);
+                assert!(
+                    off.abs() <= tol.linear,
+                    "a bow corner {off} off the stem at scale {k}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn the_same_plate_twice_is_the_same_body() {
     let body = cylinder_sheet(2.0, 1.0, 1.0, 1.0);
     let a = plated(&body, 0.1, Side::Out, &BTreeMap::new(), 1.0);

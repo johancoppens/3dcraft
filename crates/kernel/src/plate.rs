@@ -380,6 +380,21 @@ struct Boundary<'a, 'j> {
     along: f64,
     joint: Joint<'j>,
     near: Option<Near<'j>>,
+    /// The surface an `onto` end lies on, continued past its borders as
+    /// the skins are (`None` until the reach is known, and for the other
+    /// joints).
+    end: Option<Surface>,
+}
+
+impl Boundary<'_, '_> {
+    /// The surface an `onto` end lies on: continued once the reach is
+    /// known, the given one before.
+    fn end_surface(&self) -> Option<&Surface> {
+        match self.joint {
+            Joint::Onto(given) => Some(self.end.as_ref().unwrap_or(given)),
+            _ => None,
+        }
+    }
 }
 
 /// The traced corners of a boundary edge: per parameter, the points on
@@ -864,10 +879,26 @@ fn build(
             along: if *along { 1.0 } else { -1.0 },
             joint,
             near,
+            end: None,
         });
     }
     // How far each boundary edge is traced past its ends: to where the
     // plate's corners lie by the tangent planes, and a margin beyond.
+    // Surfaces ends lie on, continued for the estimate as far as the
+    // margin of the reach goes (and further below, once it is known).
+    let first_reach = SURFACE_REACH
+        * 2.0
+        * (thickness
+            + boundaries
+                .iter()
+                .filter_map(|b| b.joint.neighbour().map(|n| n.thickness))
+                .fold(0.0_f64, f64::max));
+    for boundary in &mut boundaries {
+        if let Joint::Onto(given) = boundary.joint {
+            let reach = first_reach + span(boundary.edge);
+            boundary.end = Some(continued(given, reach, [true; 4], tolerance));
+        }
+    }
     let reaches = reaches(&boundaries, &layered, thickness, tolerance)?;
     let furthest = reaches
         .values()
@@ -879,6 +910,12 @@ fn build(
             .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
     for boundary in &mut boundaries {
+        // A surface an end lies on is continued as the skins are: the
+        // plate's end may run past the face it was given as (a stem).
+        if let Joint::Onto(given) = boundary.joint {
+            let reach = surface_reach + span(boundary.edge);
+            boundary.end = Some(continued(given, reach, [true; 4], tolerance));
+        }
         if let (Some(near), Some(n)) = (boundary.near.as_mut(), boundary.joint.neighbour()) {
             near.layered = Layered::new(
                 near.layered.face,
@@ -1446,7 +1483,10 @@ fn trace_boundary(
             .get(s.near_toward)
             .cloned()
             .ok_or_else(|| refuse(Some(edge_id), "a skin is missing"))?,
-        (Joint::Onto(end), _, _) => (*end).clone(),
+        (Joint::Onto(_), _, _) => boundary
+            .end_surface()
+            .cloned()
+            .ok_or_else(|| refuse(Some(edge_id), "an onto end lost its surface"))?,
         _ => ruled(&hi_fit, &lo_fit, tol)?,
     };
     // Outward: away from the material, against the inward direction.
@@ -1494,8 +1534,8 @@ fn flat_corners(
             let d = st.normal * c - st.inward * s;
             Some([st.point + d * (level(0) / c), st.point + d * (level(1) / c)])
         }
-        (Joint::Onto(end), _, _) => {
-            let (q, m) = foot_on(end, st.point)?;
+        (Joint::Onto(_), _, _) => {
+            let (q, m) = foot_on(boundary.end_surface()?, st.point)?;
             Some([
                 onto_start(st, q, m, level(0), angular)?,
                 onto_start(st, q, m, level(1), angular)?,
@@ -1541,6 +1581,15 @@ fn flat_corners(
         }
         _ => None,
     }
+}
+
+/// How far an edge spans: the diagonal of the box of points along it. A
+/// surface an end lies on is continued by this and the reach, so that the
+/// whole end lies on it however small the face it was given as.
+fn span(edge: &Edge) -> f64 {
+    let (a, z) = edge.range;
+    let points = (0..=16).map(|k| edge.curve.eval(a + (z - a) * f64::from(k) / 16.0));
+    craft3d_math::Bbox3::from_points(points).diagonal()
 }
 
 /// The nearest point of `surface` to `p` and its normal there.
@@ -1603,6 +1652,27 @@ fn reaches(
                 .iter()
                 .filter_map(|b| b.joint.neighbour().map(|n| n.thickness))
                 .fold(0.0_f64, f64::max));
+    // An end on a surface starts on it: the edge must lie within the
+    // margin of it (a wrong datum is said, not traced into).
+    for b in boundaries {
+        let Some(end) = b.end_surface() else { continue };
+        let (a, z) = b.edge.range;
+        for t in [a, 0.5 * (a + z), z] {
+            let p = b.edge.curve.eval(t);
+            let away = foot_on(end, p).map_or(f64::INFINITY, |(q, _)| q.distance(p));
+            if !(away <= margin) {
+                return Err(refuse(
+                    Some(b.edge_id),
+                    format!(
+                        "the surface this edge ends on is {} away from the edge at {}: an onto end lies on a surface through (or within {} of) the edge",
+                        short(away),
+                        at(p),
+                        short(margin)
+                    ),
+                ));
+            }
+        }
+    }
     // Per boundary edge and end (false: start, true: end): the station
     // there, its corners by the tangent planes and the way out past it.
     let mut ends: BTreeMap<(EdgeId, bool), End> = BTreeMap::new();
@@ -1790,7 +1860,8 @@ fn corners(
             }
             Ok(out)
         }
-        (Joint::Onto(end), _, _) => {
+        (Joint::Onto(_), _, _) => {
+            let end = boundary.end_surface().ok_or_else(|| lost(st.point))?;
             let (q, m) = foot_on(end, st.point).ok_or_else(|| lost(st.point))?;
             let mut out = [Vec3::ZERO; 2];
             for (level, slot) in out.iter_mut().enumerate() {

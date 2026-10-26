@@ -3457,10 +3457,46 @@ fn thicken_is_written_like_this_and_round_trips() {
 /// A plate with its joints, and a rim's name, as they are written.
 #[test]
 fn a_plate_is_written_like_this_and_round_trips() {
-    use craft3d_doc::{JointKind, NameRole, PersistentName, Plate, PlateJoint, PlateSide};
+    use craft3d_doc::{
+        DatumPlane, JointKind, NameRole, PersistentName, PlaneBy, PlaneRef, Plate, PlateJoint,
+        PlateSide,
+    };
     let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
     let edge = |n: u64| PersistentName::new(FeatureId(1), NameRole::Edge, vec![n]);
     let mut doc = small();
+    let datum = doc
+        .add_feature(
+            Some("Stem"),
+            FeatureKind::DatumPlane(DatumPlane {
+                by: PlaneBy::Offset {
+                    from: PlaneRef::World {
+                        plane: WorldPlane::Yz,
+                    },
+                    distance: Expr::new("width"),
+                },
+            }),
+        )
+        .unwrap();
+    // An end on each of the three forms of a plane.
+    let onto = |n: u64, plane: PlaneRef| PlateJoint {
+        edge: edge(n),
+        kind: JointKind::Onto,
+        with: None,
+        thickness: None,
+        side: None,
+        angle: None,
+        onto: Some(plane),
+    };
+    let ends = vec![
+        onto(
+            6,
+            PlaneRef::World {
+                plane: WorldPlane::Xy,
+            },
+        ),
+        onto(7, PlaneRef::Datum { feature: datum }),
+        onto(8, PlaneRef::Face { face: face(3) }),
+    ];
     doc.add_feature(
         Some("Panel"),
         FeatureKind::Plate(Plate {
@@ -3486,15 +3522,22 @@ fn a_plate_is_written_like_this_and_round_trips() {
                     angle: Some(Expr::new("10 deg")),
                     onto: None,
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(ends)
+            .collect(),
         }),
     )
     .unwrap();
     assert_eq!(doc.validate(), Ok(()));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let kind = &value["document"]["features"][1]["kind"];
+    let kind = &value["document"]["features"][2]["kind"];
     assert_eq!(kind["type"], "plate", "{kind}");
+    assert_eq!(kind["joints"][2]["kind"], "onto");
+    assert_eq!(kind["joints"][2]["onto"]["type"], "world", "{kind}");
+    assert_eq!(kind["joints"][3]["onto"]["type"], "datum", "{kind}");
+    assert_eq!(kind["joints"][4]["onto"]["type"], "face", "{kind}");
     assert_eq!(kind["side"], "mid");
     assert_eq!(kind["joints"][0]["kind"], "mitre");
     assert_eq!(kind["joints"][0]["side"], "out");

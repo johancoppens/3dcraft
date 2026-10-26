@@ -203,6 +203,99 @@ fn a_plate_follows_its_sheets_through_the_features_that_take_them() {
     }
 }
 
+/// The joints of `name` as built (`followed`), when it has them.
+fn built_joints(s: &mut Session, name: &str) -> Option<usize> {
+    let found = feature(s, name);
+    let followed = &found["followed"];
+    let joints = if followed["joints"].is_array() {
+        &followed["joints"]
+    } else {
+        &followed["plate"]["joints"]
+    };
+    joints.as_array().map(Vec::len)
+}
+
+#[test]
+fn an_end_lies_on_a_datum_plane_or_on_a_face() {
+    let (a, b, l) = (3.0, 2.0, 1.5);
+    let t = 0.25;
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let edges = l_shape(&mut s, a, b, l, 1.0);
+    // The floor's edge along x = a: its rectangle's second line (the
+    // first four entities are the corners).
+    let far = "FloorSheet:startEdge(e6)".to_string();
+    assert_eq!(edges.0, "FloorSheet:startEdge(e8)", "the rectangle's ids");
+    // A datum plane through that edge, leaning out by 0.1 per unit up.
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"through": [[a, 0, 0], [a, l, 0], [a + 0.1, 0, 1]], "name": "Lean"}),
+    );
+    // The wall's sheet moved (by nothing) before the plate: the face the
+    // other end lies on is followed to the moved body.
+    built(
+        &mut s,
+        "feature.transform",
+        json!({"source": "WallSheet", "translate": [0, 0, 0], "name": "Placed"}),
+    );
+    built(
+        &mut s,
+        "feature.plate",
+        json!({"faces": ["FloorSheet:startCap()"], "thickness": "t", "side": "out", "name": "Floor",
+               "joints": [{"edge": far, "kind": "onto", "onto": "Lean"},
+                          {"edge": edges.0, "kind": "onto", "onto": "WallSheet:startCap()"}]}),
+    );
+    // The lean adds l ∫0^t 0.1 z dz; the end on the wall's face is square.
+    near(
+        volume(&mut s, "Floor"),
+        l * (a * t + 0.05 * t * t),
+        "ends on a datum plane and a face",
+    );
+    assert_eq!(built_joints(&mut s, "Floor"), Some(2));
+    let followed = feature(&mut s, "Floor")["followed"].to_string();
+    assert!(
+        followed.contains("copy"),
+        "the face is followed to the moved sheet: {followed}"
+    );
+    // The wall's sheet switched off: its face is absent, the joint is left
+    // out, and that edge ends square (the same volume here).
+    run(&mut s, "feature.suppress", json!({"feature": "WallSheet"}));
+    assert_eq!(feature(&mut s, "Floor")["status"], "ok");
+    near(
+        volume(&mut s, "Floor"),
+        l * (a * t + 0.05 * t * t),
+        "the joint left out",
+    );
+    assert_eq!(built_joints(&mut s, "Floor"), Some(1));
+    run(
+        &mut s,
+        "feature.suppress",
+        json!({"feature": "WallSheet", "suppressed": false}),
+    );
+    // Refused with the reason: a surface that runs along the plate, one
+    // far from the edge, and onto without its surface (or the other way).
+    let reason = failed(
+        &mut s,
+        "feature.plate",
+        json!({"faces": ["FloorSheet:startCap()"], "thickness": "t", "joints": [{"edge": far, "kind": "onto", "onto": "xy"}]}),
+    );
+    assert!(reason.contains("cuts no end"), "{reason}");
+    let reason = failed(
+        &mut s,
+        "feature.plate",
+        json!({"faces": ["FloorSheet:startCap()"], "thickness": "t", "joints": [{"edge": far, "kind": "onto", "onto": "yz"}]}),
+    );
+    assert!(reason.contains("away from the edge"), "{reason}");
+    for params in [
+        json!({"faces": ["FloorSheet:startCap()"], "thickness": "t", "joints": [{"edge": far, "kind": "onto"}]}),
+        json!({"faces": ["FloorSheet:startCap()"], "thickness": "t", "joints": [{"edge": far, "kind": "square", "onto": "xy"}]}),
+    ] {
+        let message = refused(&mut s, "feature.plate", params.clone());
+        assert!(message.contains("onto"), "{params}: {message}");
+    }
+}
+
 #[test]
 fn a_plate_follows_its_variables_edits_and_reopens() {
     let (a, b, l) = (3.0, 2.0, 1.5);

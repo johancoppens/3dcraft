@@ -6,9 +6,13 @@
   ["sketch.create", {"plane": "yz", "name": "WallSketch"}],
   ["sketch.rect", {"sketch": "WallSketch", "from": [0, 0], "to": [150, 200]}],
   ["feature.fill", {"sketch": "WallSketch", "name": "WallSheet"}],
+  ["datum.plane", {"from": "zx", "distance": "150 mm", "name": "End"}],
   ["feature.plate", {"faces": ["FloorSheet:startCap()"], "thickness": "t", "side": "out", "name": "Floor",
     "joints": [{"edge": "FloorSheet:startEdge(e8)", "kind": "over", "with": "WallSheet:startCap()"},
-               {"edge": "FloorSheet:startEdge(e6)", "kind": "bevel", "angle": "15 deg"}]}],
+               {"edge": "FloorSheet:startEdge(e6)", "kind": "bevel", "angle": "15 deg"},
+               {"edge": "FloorSheet:startEdge(e7)", "kind": "onto", "onto": "End"}]}],
   ["feature.plate", {"faces": ["WallSheet:startCap()"], "thickness": "t", "side": "out", "name": "Wall",
-    "joints": [{"edge": "WallSheet:startEdge(e5)", "kind": "under", "with": "FloorSheet:startCap()"}]}]
+    "joints": [{"edge": "WallSheet:startEdge(e5)", "kind": "under", "with": "FloorSheet:startCap()"},
+               {"edge": "WallSheet:startEdge(e6)", "kind": "onto", "onto": "End"},
+               {"edge": "WallSheet:startEdge(e8)", "kind": "onto", "onto": "zx"}]}]
 ]
