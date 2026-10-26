@@ -37,11 +37,47 @@ impl Session {
     /// all and the next one's name, `meshing` (the first picture, which
     /// is not there yet), `refining` (it is there, the display mesh is
     /// not), `checking` with the assertions measured so far of all.
+    ///
+    /// Never panics: a panic in the work (a bug) is caught, kept as the
+    /// error of the active document's scenes (which a viewer then shows)
+    /// and nothing more is done for that state of the document, so the
+    /// host does not ask again every frame.
     pub fn prepare_some(
         &mut self,
         quality: SceneQuality,
         stop: impl Fn() -> bool + Clone + 'static,
     ) -> Option<Progress> {
+        let state = self
+            .documents
+            .get(self.active)
+            .map(|open| (open.id, open.history.revision()));
+        if state.is_some() && self.prepare_broken == state {
+            return None;
+        }
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.prepare_unguarded(quality, stop)
+        }));
+        match done {
+            Ok(progress) => progress,
+            Err(payload) => {
+                self.prepare_broken = state;
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.fail_scenes(quality, payload.as_ref());
+                }));
+                None
+            }
+        }
+    }
+
+    fn prepare_unguarded(
+        &mut self,
+        quality: SceneQuality,
+        stop: impl Fn() -> bool + Clone + 'static,
+    ) -> Option<Progress> {
+        #[cfg(test)]
+        if tests::PANIC.with(std::cell::Cell::take) {
+            panic!("a bug in the work, for the test");
+        }
         if let Some(progress) = self.regenerate_some(stop.clone()) {
             return Some(progress);
         }
@@ -162,5 +198,60 @@ fn phase(phase: &'static str) -> Progress {
         name: None,
         step: 0,
         steps: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use crate::Workspace;
+    use serde_json::json;
+
+    thread_local! {
+        /// The next piece of work panics (once).
+        pub(super) static PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// A panic in the work is caught: the host is told nothing is left
+    /// (it stops asking), the scenes say what went wrong, and an edit
+    /// makes the work go on again.
+    #[test]
+    fn a_panic_in_the_work_stops_it_for_that_state_and_shows_the_error() {
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("feature.block", json!({"size": [10, 10, 10]})),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        PANIC.with(|p| p.set(true));
+        let quality = SceneQuality::display();
+        assert_eq!(session.prepare_some(quality, || true), None);
+        // Not again for this state, and not looping.
+        assert_eq!(session.prepare_some(quality, || true), None);
+        assert!(session.scene_ready(quality));
+        let shown = session.scene_with(quality);
+        let error = shown
+            .err()
+            .map(|e| e.message().to_string())
+            .unwrap_or_default();
+        assert!(error.contains("internal error"), "{error}");
+        // An edit is another state: the work goes on, and ends.
+        session
+            .execute(
+                "feature.block",
+                &json!({"size": [5, 5, 5], "position": [20, 0, 0]}),
+            )
+            .unwrap();
+        let mut calls = 0;
+        while session.prepare_some(quality, || false).is_some() {
+            calls += 1;
+            assert!(calls < 10);
+        }
+        let scene = session.scene_with(quality).unwrap().unwrap();
+        assert_eq!(scene.bodies.len(), 2);
     }
 }

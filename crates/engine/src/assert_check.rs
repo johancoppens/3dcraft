@@ -50,7 +50,8 @@ struct Key {
     _held: Vec<Arc<Body>>,
 }
 
-/// How many threads measure the assertions of one job at most. Two: a
+/// How many threads measure the assertions of one job at most (the extra
+/// ones from the process's pool, `crate::pool`). Two: a
 /// Jig's assertions are mostly quick with one or two that take long (the
 /// gear reducer's flank clearances, 10 and 16 s), which then run side by
 /// side (the reducer's 22 took 29 s one after the other, 15 s so). More
@@ -258,8 +259,11 @@ fn run(job: &Job) {
         let threads = craft3d_math::available_threads()
             .min(MAX_THREADS)
             .min(job.work.len());
+        // From the process's one pool of threads for heavy work: what the
+        // measures start of their own comes from it too.
+        let lease = crate::pool::lease(threads.saturating_sub(1));
         std::thread::scope(|scope| {
-            let workers: Vec<_> = (1..threads)
+            let workers: Vec<_> = (0..lease.threads())
                 .filter_map(|_| {
                     std::thread::Builder::new()
                         .name("craft3d-assertions".into())

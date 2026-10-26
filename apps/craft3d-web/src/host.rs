@@ -26,7 +26,7 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
     EXPORT_FORMATS, EXTENSION, ExportCheck, ExportPlan, JIG_EXTENSION, export_check, export_kind,
-    export_options_ui, export_params, extension_of, guarded, suggested_export_name,
+    export_options_ui, export_params, extension_of, file_stem, guarded, suggested_export_name,
     suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::export_verb;
@@ -283,17 +283,6 @@ pub fn memory_name(name: &str) -> Option<String> {
         clean.pop();
     }
     (!clean.is_empty() && !clean.chars().all(|c| c == '.')).then_some(clean)
-}
-
-/// A file's name without its folder and its 3DCraft extension, as the
-/// status bar names a file being opened (`welding-table`).
-pub fn file_stem(name: &str) -> Option<String> {
-    let name = name.rsplit(['/', '\\']).next()?;
-    let stem = name
-        .strip_suffix(".3dcraftjig")
-        .or_else(|| name.strip_suffix(".3dcraft"))
-        .unwrap_or(name);
-    (!stem.is_empty()).then(|| stem.to_string())
 }
 
 /// `name` ending in `.extension`: as it is when it has that extension
@@ -1447,18 +1436,6 @@ mod tests {
                 .iter()
                 .all(|a| a.status == craft3d_engine::AssertionStatus::Passed)
         );
-    }
-
-    /// The name a file is opened under, for the status bar.
-    #[test]
-    fn a_file_is_named_by_its_stem() {
-        assert_eq!(
-            file_stem("/jigs/welding-table.3dcraftjig").as_deref(),
-            Some("welding-table")
-        );
-        assert_eq!(file_stem("plate.3dcraft").as_deref(), Some("plate"));
-        assert_eq!(file_stem("part.step").as_deref(), Some("part.step"));
-        assert_eq!(file_stem("/"), None);
     }
 
     /// Export as Jig downloads a `.3dcraftjig`; handed back to the page it

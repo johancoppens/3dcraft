@@ -38,6 +38,7 @@ mod offset_cmds;
 mod param_cmds;
 mod params;
 mod pick_cmds;
+mod pool;
 mod query_cmds;
 mod recovery;
 mod recovery_cmds;
@@ -366,6 +367,9 @@ pub struct Session {
     /// How far the last call of [`Session::prepare_some`] that stopped
     /// while meshing got: the scene revision, the phase and the bodies.
     pub(crate) reached: Option<(u64, &'static str, usize)>,
+    /// The document (its id) and the state in which the last call of
+    /// [`Session::prepare_some`] panicked: nothing more is done for it.
+    pub(crate) prepare_broken: Option<(u64, u64)>,
 }
 
 /// Most documents open at once.
@@ -389,6 +393,7 @@ impl Session {
             new_when: None,
             stepwise: false,
             reached: None,
+            prepare_broken: None,
         }
     }
 

@@ -12,6 +12,7 @@ use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
+use craft3d_ui_egui::files::file_stem;
 use craft3d_ui_egui::{DocAction, FileAction, ParamAsk, Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
@@ -1158,17 +1159,6 @@ fn is_screenshot(line: &str) -> bool {
                 .map(|m| m == "ui.screenshot")
         })
         .unwrap_or(false)
-}
-
-/// The name of a file without its folder and extension, as the status
-/// bar names a file being opened (`welding-table`).
-fn file_stem(path: &str) -> Option<String> {
-    let name = path.rsplit(['/', '\\']).next()?;
-    let stem = name
-        .strip_suffix(".3dcraftjig")
-        .or_else(|| name.strip_suffix(".3dcraft"))
-        .unwrap_or(name);
-    (!stem.is_empty()).then(|| stem.to_string())
 }
 
 /// What a request is about, for the status bar: the file `file.open`

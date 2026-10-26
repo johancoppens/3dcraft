@@ -2051,6 +2051,28 @@ impl Session {
         self.scene_with(SceneQuality::Picture(tolerance))
     }
 
+    /// Keeps the error of a panic in [`Session::prepare_some`] as the
+    /// active document's first picture and its scene at `quality`: a
+    /// viewer then shows the error and asks for nothing again until the
+    /// document changes (a panic in the work would come back every frame).
+    pub(crate) fn fail_scenes(
+        &mut self,
+        quality: SceneQuality,
+        payload: &(dyn std::any::Any + Send),
+    ) {
+        self.scene_revision();
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return;
+        };
+        let doc = open.shown();
+        let error = internal_error(payload);
+        self.scene
+            .store(&doc, SceneKey::Preview, Err(error.clone()));
+        if quality.validate().is_ok() {
+            self.scene.store(&doc, quality.key(), Err(error));
+        }
+    }
+
     /// For a host with one thread ([`Session::prepare_some`]): builds the
     /// quick first picture of the active document ([`SceneQuality::Preview`])
     /// a body at a time, until `stop` says so after a body. True when it

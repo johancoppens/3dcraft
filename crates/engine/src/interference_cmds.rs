@@ -376,7 +376,9 @@ fn face_names(regen: &Regen, id: FeatureId, faces: &[FaceId]) -> Vec<Value> {
 /// the trees held at once can reach that many budgets. The budget is not
 /// divided by the threads, so that whether a pair is refused does not
 /// depend on the machine (docs/design/booleans.md › *Patch trees of thin
-/// strips*).
+/// strips*). The extra threads come from the process's one pool
+/// (`crate::pool`): an overlap measured by an assertion job beside
+/// another gets what is left, at least the thread it runs on.
 pub(crate) fn in_order<T: Send>(
     indices: &[usize],
     job: impl Fn(usize) -> Option<T> + Sync,
@@ -384,7 +386,8 @@ pub(crate) fn in_order<T: Send>(
     let threads = craft3d_math::available_threads().min(MAX_THREADS);
     let threads = threads.min(indices.len());
     let one = |n: usize| indices.get(n).and_then(|&index| job(index));
-    if threads <= 1 {
+    let lease = crate::pool::lease(threads.saturating_sub(1));
+    if lease.threads() == 0 {
         return (0..indices.len()).map(one).collect();
     }
     let next = AtomicUsize::new(0);
@@ -401,7 +404,7 @@ pub(crate) fn in_order<T: Send>(
     let mut slots: Vec<Option<T>> = (0..indices.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         let mut workers = Vec::new();
-        for _ in 1..threads {
+        for _ in 0..lease.threads() {
             if let Ok(worker) = std::thread::Builder::new().spawn_scoped(scope, work) {
                 workers.push(worker);
             }

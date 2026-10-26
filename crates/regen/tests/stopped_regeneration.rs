@@ -127,3 +127,64 @@ fn a_stop_that_is_not_used_changes_nothing_and_a_stopped_pass_keeps_later_entrie
     assert_eq!(cache.last_run().0, 1);
     assert_eq!(regen.features, fresh.features);
 }
+
+/// Edits between stopped passes (a parameter changed, then undone, as
+/// `param.set` and `edit.undo` do; a whole regeneration of another state
+/// in between, as `file.save` and `file.export` make), with and without a
+/// rollback marker, at three scales: what finishes is what a fresh
+/// regeneration of each state builds, names, statuses and bodies bit for
+/// bit.
+#[test]
+fn edits_between_stopped_passes_end_as_fresh_regenerations() {
+    for s in [1e-3, 1.0, 1e4] {
+        for marker in [None, Some(6)] {
+            let mut doc = chain(6, s);
+            doc.rollback = marker.and_then(|k| doc.features.get(k)).map(|f| f.id);
+            let mut edited = doc.clone();
+            // Move the third block (feature 3): it and what follows rebuild.
+            if let FeatureKind::Block(b) = &mut edited.features[3].kind {
+                b.position[1] = Expr::new(format!("{}", 2.0 * s));
+            } else {
+                panic!("not a block");
+            }
+            let mut cache = RegenCache::default();
+            let stopped = |doc: &Document, cache: &mut RegenCache| {
+                with_stop(|| true, || regenerate_cached(doc, cache)).1
+            };
+            assert!(stopped(&doc, &mut cache));
+            assert!(stopped(&doc, &mut cache));
+            // The parameter changes: a pass of the edited state.
+            assert!(stopped(&edited, &mut cache));
+            // Undone: a pass of the first state again.
+            assert!(stopped(&doc, &mut cache));
+            // Saved or exported meanwhile: a whole regeneration of the
+            // edited state.
+            assert_eq!(
+                regenerate_cached(&edited, &mut cache).features,
+                regenerate(&edited).features,
+                "scale {s}, marker {marker:?}"
+            );
+            assert!(stopped(&doc, &mut cache));
+            // The rest a piece at a time, to the end.
+            let mut passes = 0;
+            let last = loop {
+                passes += 1;
+                assert!(passes <= doc.features.len() + 1, "no progress");
+                let (regen, stopped) = with_stop(|| true, || regenerate_cached(&doc, &mut cache));
+                if !stopped {
+                    break regen;
+                }
+            };
+            let fresh = regenerate(&doc);
+            assert_eq!(
+                last.features, fresh.features,
+                "scale {s}, marker {marker:?}"
+            );
+            assert_eq!(
+                last.features.iter().any(|f| f.status == Status::RolledBack),
+                marker.is_some(),
+                "the marker holds, scale {s}"
+            );
+        }
+    }
+}

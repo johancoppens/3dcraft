@@ -275,7 +275,6 @@ pub struct Tokens {
     /// While the viewport has nothing to show yet (a first file opening),
     /// a small note in its middle, `work_note_width` points wide, says
     /// what is opening.
-    pub work_accent: Rgb,
     pub work_bar: f32,
     pub work_sweep: f32,
     pub work_sweep_seconds: f32,
@@ -480,7 +479,6 @@ impl Tokens {
             field_bar_radius: 1,
             inset: 10.0,
             dialog_width: 420.0,
-            work_accent: [76, 90, 166],
             work_bar: 3.0,
             work_sweep: 0.25,
             work_sweep_seconds: 2.4,

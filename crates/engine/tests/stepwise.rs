@@ -218,3 +218,89 @@ fn a_stop_that_never_stops_does_it_all_in_one_call() {
             .all(|a| format!("{:?}", a.status) == "Passed")
     );
 }
+
+/// Commands between the pieces of a regeneration: a parameter set and
+/// undone, the document saved and exported, then the rest a piece at a
+/// time. The features (names, statuses, bodies) and the picture are what
+/// a session that opens the same file and does it all at once has; also
+/// with the rollback marker on a feature in the middle.
+#[test]
+fn commands_between_the_pieces_change_nothing_that_is_built() {
+    let dir = std::env::temp_dir().join(format!("craft3d-stepwise-cmds-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (variant, marker) in [("plain", None), ("rolled", Some("Pin"))] {
+        let path = dir
+            .join(format!("{variant}.3dcraft"))
+            .to_string_lossy()
+            .to_string();
+        let again = dir
+            .join(format!("{variant}-again.3dcraft"))
+            .to_string_lossy()
+            .to_string();
+        let stl = dir
+            .join(format!("{variant}.stl"))
+            .to_string_lossy()
+            .to_string();
+        let mut maker = Session::new(Workspace::unrestricted());
+        build(&mut maker, 1.0);
+        maker
+            .execute(
+                "variable.publish",
+                &json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            )
+            .unwrap();
+        if let Some(feature) = marker {
+            maker
+                .execute("history.rollback", &json!({ "feature": feature }))
+                .unwrap();
+        }
+        maker
+            .execute("file.save", &json!({ "path": path }))
+            .unwrap();
+
+        let mut session = Session::new(Workspace::unrestricted());
+        session.set_stepwise(true);
+        session
+            .execute("file.open", &json!({ "path": path }))
+            .unwrap();
+        let piece = |session: &mut Session| {
+            session
+                .prepare_some(SceneQuality::display(), || true)
+                .map(|p| p.phase)
+        };
+        assert_eq!(piece(&mut session), Some("regenerating"), "{variant}");
+        session
+            .execute("param.set", &json!({"values": {"w": 60}}))
+            .unwrap();
+        let _ = piece(&mut session);
+        session.execute("edit.undo", &json!({})).unwrap();
+        let _ = piece(&mut session);
+        session
+            .execute("file.save", &json!({ "path": again }))
+            .unwrap();
+        let _ = piece(&mut session);
+        session
+            .execute("file.export", &json!({ "path": stl }))
+            .unwrap();
+        let mut calls = 0;
+        while piece(&mut session).is_some() {
+            calls += 1;
+            assert!(calls < 100, "{variant}: no progress");
+        }
+
+        let mut fresh = Session::new(Workspace::unrestricted());
+        fresh
+            .execute("file.open", &json!({ "path": path }))
+            .unwrap();
+        let features = |s: &mut Session| {
+            s.execute("document.inspect", &json!({})).unwrap()["features"].clone()
+        };
+        let got = features(&mut session);
+        assert_eq!(got, features(&mut fresh), "{variant}");
+        if marker.is_some() {
+            assert!(got.to_string().contains("rolledBack"), "{variant}: {got}");
+        }
+        assert_eq!(picture(&mut session), picture(&mut fresh), "{variant}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

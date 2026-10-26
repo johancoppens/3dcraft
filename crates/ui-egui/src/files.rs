@@ -84,6 +84,17 @@ pub enum ExportKind {
     Outline,
 }
 
+/// A file's name without its folder and its 3DCraft extension, as the
+/// status bar names a file being opened (`welding-table`).
+pub fn file_stem(name: &str) -> Option<String> {
+    let name = name.rsplit(['/', '\\']).next()?;
+    let stem = name
+        .strip_suffix(".3dcraftjig")
+        .or_else(|| name.strip_suffix(".3dcraft"))
+        .unwrap_or(name);
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
 /// The lower-case extension of a file name, if it has one.
 pub fn extension_of(name: &str) -> Option<String> {
     Path::new(name)
@@ -650,6 +661,22 @@ fn drawing_options_ui(ui: &mut egui::Ui, drawing: &mut DrawingPlan) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The name a file is opened under, for the status bar.
+    #[test]
+    fn a_file_is_named_by_its_stem() {
+        assert_eq!(
+            file_stem("/jigs/welding-table.3dcraftjig").as_deref(),
+            Some("welding-table")
+        );
+        assert_eq!(
+            file_stem("C:\\models\\plate.3dcraft").as_deref(),
+            Some("plate")
+        );
+        assert_eq!(file_stem("part.step").as_deref(), Some("part.step"));
+        assert_eq!(file_stem("/"), None);
+    }
+
     use super::*;
 
     #[test]

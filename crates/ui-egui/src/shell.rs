@@ -2619,7 +2619,7 @@ impl Shell {
         };
         let tokens = self.tokens;
         let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), tokens.work_bar));
-        let accent = color(tokens.work_accent);
+        let accent = color(tokens.info_accent);
         match fraction {
             Some(fraction) => {
                 let done = egui::Rect::from_min_size(
@@ -2664,12 +2664,15 @@ impl Shell {
         let width = tokens
             .work_note_width
             .min(rect.width() - 2.0 * tokens.inset);
-        if width <= 0.0 {
+        // Room for words inside the plate's padding; none in a viewport
+        // too small for that (or with sizes that are not numbers).
+        let room = width - 2.0 * tokens.inset;
+        if !(room.is_finite() && room > 0.0) {
             return;
         }
         let font = egui::FontId::proportional(15.0);
         let job = egui::text::LayoutJob {
-            wrap: egui::text::TextWrapping::truncate_at_width(width - 2.0 * tokens.inset),
+            wrap: egui::text::TextWrapping::truncate_at_width(room),
             ..egui::text::LayoutJob::simple_singleline(text, font, color(tokens.notice_text))
         };
         let galley = painter.layout_job(job);
