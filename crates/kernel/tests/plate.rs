@@ -664,6 +664,64 @@ fn panel(body: &Body, y: f64, z: f64, k: f64) -> FaceId {
 /// Points looked at along an edge where two plates must meet.
 const DENSE: usize = 64;
 
+/// Every point of each of two edges lies on the other's curve within the
+/// tolerance (each within its own stretch but past where the other ends).
+fn coincide(
+    a: &craft3d_topo::Edge,
+    b: &craft3d_topo::Edge,
+    tol: &craft3d_math::Tolerance,
+    k: f64,
+    what: &str,
+) {
+    for (from, onto) in [(a, b), (b, a)] {
+        for i in 0..=DENSE {
+            let f = i as f64 / DENSE as f64;
+            let x = from
+                .curve
+                .eval(from.range.0 + (from.range.1 - from.range.0) * f);
+            let t = onto.curve.project(x).unwrap();
+            let off = onto.curve.eval(t).distance(x);
+            assert!(
+                off <= tol.linear,
+                "{what} at scale {k}: an inner edge {off} off the other's at {x:?}"
+            );
+        }
+    }
+}
+
+/// The edge of `face` of `body` that lies in the section x = `x`.
+fn section_edge(body: &Body, face: FaceId, x: f64) -> craft3d_topo::Edge {
+    let f = &body.faces[face.0 as usize];
+    for l in &f.loops {
+        for c in &body.loops[l.0 as usize].coedges {
+            let e = &body.edges[c.edge.0 as usize];
+            let (a, z) = (
+                body.vertices[e.start.0 as usize].point,
+                body.vertices[e.end.0 as usize].point,
+            );
+            let near = |p: Vec3| (p.x - x).abs() <= 1e-9 * (1.0 + x.abs());
+            if near(a) && near(z) && a.distance(z) > 0.0 {
+                return e.clone();
+            }
+        }
+    }
+    panic!("no edge of face {} in x = {x}", face.0)
+}
+
+/// The end of the edge `edge` of `body` at the section x = `x`.
+fn chine_point(body: &Body, edge: EdgeId, x: f64) -> Vec3 {
+    let e = &body.edges[edge.0 as usize];
+    let (a, z) = (
+        body.vertices[e.start.0 as usize].point,
+        body.vertices[e.end.0 as usize].point,
+    );
+    if (a.x - x).abs() < (z.x - x).abs() {
+        a
+    } else {
+        z
+    }
+}
+
 /// No common volume, by sampling: points throughout the layers of the
 /// two sheet faces the plates are made of (a grid over each face, at two
 /// levels across the thickness, `levels` along the outward normal),
@@ -795,27 +853,49 @@ fn the_panels_of_a_hard_chine_hull_close_up_without_overlap() {
             p.body.edges[e].clone()
         };
         let (eb, es) = (inner(&b, bottom), inner(&s, side));
-        let t_k = t;
-        for (from, onto, what) in [(&eb, &es, "the bottom's"), (&es, &eb, "the side's")] {
-            for i in 0..=DENSE {
-                let f = i as f64 / DENSE as f64;
-                let x = from
-                    .curve
-                    .eval(from.range.0 + (from.range.1 - from.range.0) * f);
-                // On the other's line, and within its stretch but for the
-                // ends, where each panel is cut square to its own normal
-                // (they end apart by about the thickness times the angle
-                // between the panels).
-                let t = onto.curve.project(x).unwrap();
-                let off = onto.curve.eval(t).distance(x);
-                let end = |u: f64| onto.curve.eval(u).distance(x);
-                let within = (t >= onto.range.0 && t <= onto.range.1)
-                    || end(onto.range.0).min(end(onto.range.1)) <= 2.0 * t_k;
-                assert!(
-                    off <= tol.linear && within,
-                    "{what} inner chine edge at scale {k}: {off} off the other's, at {x:?}"
-                );
-            }
+        coincide(&eb, &es, &tol, k, "square ends");
+        // At each end section the two inner edges stop where each panel's
+        // square end (the plane through its section edge and its normal
+        // there) cuts their common line: apart by about the thickness
+        // times the angle between the panels, which the tangent planes
+        // give in closed form. Held to that within 5 %.
+        for x_end in [0.0, 2.0 * k] {
+            let ends = |e: &craft3d_topo::Edge| {
+                let (a, z) = (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+                if (a.x - x_end).abs() < (z.x - x_end).abs() {
+                    a
+                } else {
+                    z
+                }
+            };
+            let actual = ends(&eb).distance(ends(&es));
+            let line = |e: &craft3d_topo::Edge| (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+            let (p0, p1) = line(&es);
+            let cut = |face: FaceId| {
+                let section = section_edge(&hull, face, x_end);
+                let v = hull.vertices[section.start.0 as usize].point;
+                let w = hull.vertices[section.end.0 as usize].point;
+                let f = &hull.faces[face.0 as usize];
+                let corner = if v.distance(chine_point(&hull, chine, x_end))
+                    < w.distance(chine_point(&hull, chine, x_end))
+                {
+                    v
+                } else {
+                    w
+                };
+                let (u, vv) = f.surface.project(corner).unwrap();
+                let n = f.surface.normal(u, vv).unwrap();
+                let normal = (w - v).cross(n);
+                let along = p1 - p0;
+                let s = (corner - p0).dot(normal) / along.dot(normal);
+                p0 + along * s
+            };
+            let predicted = cut(bottom).distance(cut(side));
+            assert!(
+                (actual - predicted).abs() <= 0.05 * predicted + 4.0 * tol.linear,
+                "square ends at x = {x_end}, scale {k}: the inner edges end {actual} apart, the tangent planes say {predicted}"
+            );
+            assert!(predicted > 10.0 * tol.linear, "the ends are apart at all");
         }
         // The deck rests on the side panel: the side panel's rim along
         // the sheer lies on the deck's back skin, and the deck's rim on the
@@ -851,6 +931,88 @@ fn the_panels_of_a_hard_chine_hull_close_up_without_overlap() {
             Made::Rim(sheer),
             &skin_of(&s, Made::Front(side)),
             "the deck's edge flush with the side panel",
+        );
+    }
+}
+
+#[test]
+fn panels_ending_on_one_plane_meet_in_one_corner() {
+    for k in SCALES {
+        let hull = hull_sheet(k);
+        let (bottom, side) = (panel(&hull, 0.14, 0.05, k), panel(&hull, 0.3, 0.2, k));
+        let t = 0.006 * k;
+        let tol = tolerance(k);
+        let chine = between_faces(&hull, bottom, side);
+        let stern = Surface::Plane(craft3d_geom::Plane::new(
+            Frame::new(Vec3::ZERO, Vec3::X, Vec3::Y).unwrap(),
+        ));
+        let bow = Surface::Plane(craft3d_geom::Plane::new(
+            Frame::new(Vec3::new(2.0 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
+        ));
+        let edge_id = |face: FaceId, x: f64| {
+            let e = section_edge(&hull, face, x);
+            EdgeId(hull.edges.iter().position(|o| *o == e).unwrap() as u32)
+        };
+        let neighbour = |face| Neighbour {
+            body: &hull,
+            face,
+            thickness: t,
+            side: Side::In,
+        };
+        let made = |face: FaceId, other: FaceId| {
+            let joints = BTreeMap::from([
+                (chine, Joint::Touch(neighbour(other))),
+                (edge_id(face, 0.0), Joint::Onto(&stern)),
+                (edge_id(face, 2.0 * k), Joint::Onto(&bow)),
+            ]);
+            let p = plate(&hull, &[face], t, Side::In, &joints, &tol)
+                .unwrap_or_else(|e| panic!("panel {} at scale {k}: {e:?}", face.0));
+            assert_eq!(check(&p.body, &tol), [], "a valid panel");
+            p
+        };
+        let (b, s) = (made(bottom, side), made(side, bottom));
+        // Both ends of each panel lie in the planes.
+        for p in [&b, &s] {
+            for v in &p.body.vertices {
+                let x = v.point.x;
+                assert!(
+                    x > -tol.linear && x < 2.0 * k + tol.linear,
+                    "a corner past the end planes at {x}"
+                );
+            }
+        }
+        let inner = |p: &Plate, face: FaceId| {
+            let faces = |made: Made| p.faces.iter().position(|m| *m == made).unwrap();
+            let (back, rim) = (faces(Made::Back(face)), faces(Made::Rim(chine)));
+            let uses = craft3d_topo::edge_faces(&p.body);
+            let e = uses
+                .iter()
+                .position(|f| f.contains(&FaceId(back as u32)) && f.contains(&FaceId(rim as u32)))
+                .unwrap();
+            p.body.edges[e].clone()
+        };
+        let (eb, es) = (inner(&b, bottom), inner(&s, side));
+        coincide(&eb, &es, &tol, k, "ends on one plane");
+        // And their end corners are one point at each end: the corner of
+        // the two inner skins and the plane.
+        let ends = |e: &craft3d_topo::Edge| {
+            let (a, z) = (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+            if a.x < z.x { (a, z) } else { (z, a) }
+        };
+        let ((b0, b1), (s0, s1)) = (ends(&eb), ends(&es));
+        assert!(
+            b0.distance(s0) <= tol.linear,
+            "stern corners {} apart at scale {k}",
+            b0.distance(s0)
+        );
+        assert!(
+            b1.distance(s1) <= tol.linear,
+            "bow corners {} apart at scale {k}",
+            b1.distance(s1)
+        );
+        assert!(
+            b0.x.abs() <= tol.linear && (b1.x - 2.0 * k).abs() <= tol.linear,
+            "on the planes"
         );
     }
 }
