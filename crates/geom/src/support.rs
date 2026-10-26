@@ -871,6 +871,11 @@ mod tests {
         let s = Surface::Bezier(patch);
         check_surface(&s, (0.0, 1.0), (0.0, 1.0), false);
         check_surface(&s, (0.2, 0.3), (0.6, 0.62), false);
+        // A small piece of a polynomial patch has a normal cone.
+        let nets = SurfaceNets::of(&s).unwrap();
+        let small = surface_piece(&s, &nets, (0.2, 0.3), (0.6, 0.62)).unwrap();
+        let cone = small.cone().expect("a small polynomial piece has a cone");
+        assert!(cone.half_angle < 0.5, "{cone:?}");
         // The gap to the true least falls with the square of the piece.
         let nets = SurfaceNets::of(&s).unwrap();
         let d = Vec3::new(0.1, 0.2, -1.0).normalized().unwrap();
