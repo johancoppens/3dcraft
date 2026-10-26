@@ -614,7 +614,7 @@ impl Piece {
         let mid = |r: (f64, f64)| 0.5 * (r.0 + r.1);
         let within = |axis: Option<Vec3>, half: f64| {
             let axis = axis?;
-            (half.is_finite() && half >= 0.0 && half < FRAC_PI_2 - 1e-9).then_some(Cone {
+            (0.0..FRAC_PI_2 - 1e-9).contains(&half).then_some(Cone {
                 axis,
                 half_angle: half,
             })

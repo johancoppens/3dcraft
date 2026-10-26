@@ -999,7 +999,7 @@ fn edge_meets(edge: &Bound<'_>, t: (f64, f64), b: &Bbox3, depth: u32) -> bool {
         return false;
     }
     let m = 0.5 * (t.0 + t.1);
-    if depth == 0 || b.contains(edge.curve.eval(m), 0.0) || !(t.0 < m && m < t.1) {
+    if depth == 0 || b.contains(edge.curve.eval(m), 0.0) || m <= t.0 || m >= t.1 {
         return true;
     }
     edge_meets(edge, (t.0, m), b, depth - 1) || edge_meets(edge, (m, t.1), b, depth - 1)
