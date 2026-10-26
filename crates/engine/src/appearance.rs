@@ -35,10 +35,18 @@
 //!   feature on the way wins, a face over its body at the same feature.
 //!
 //! - **A feature that is off** (suppressed, or inactive by its condition)
-//!   gives nothing: its appearance, material and face colours do not
-//!   apply to the body it passes on, which has the colours it had before
-//!   it, as if the feature were not in the history
-//!   (docs/design/regeneration.md › *Switched off*).
+//!   and passes a body on gives that body its appearance, material and
+//!   face colours only where the body has none of its own (decided by the
+//!   developer, 2026-10-26; docs/design/regeneration.md › *Switched
+//!   off*). Each is found twice: first with the entries of the features
+//!   that are on alone, as if those that are off were not in the
+//!   history, so a red part moved by an inactive transform given blue
+//!   stays red (R1 item 23); only when that finds nothing are the entries
+//!   of the features that are off read too, the nearest on the same way
+//!   first, so a material given to a pattern that is switched off still
+//!   weighs the body the pattern passes on (the CubeSat's spacers). The
+//!   colour and the material are found apart: a body can have the colour
+//!   of its source and the material of the feature that is off.
 //!
 //! Neither changes regeneration: a colour is not part of the history.
 
@@ -58,6 +66,9 @@ use std::collections::BTreeMap;
 /// by a search through the features.
 #[derive(Default)]
 struct Memo {
+    /// Whether the entries of features that are off are read (the second
+    /// look, see the module documentation).
+    with_off: bool,
     /// [`sources`] of a feature.
     sources: BTreeMap<FeatureId, Vec<FeatureId>>,
     /// Whether a feature's definition is a subtraction, for
@@ -161,13 +172,44 @@ fn along_instance_zero<T>(
     None
 }
 
-/// True when `feature` is switched off: what it was given does not apply.
+/// True when `feature` is switched off: what it was given applies only
+/// where nothing that is on gives one.
 fn off(regen: &Regen, feature: FeatureId) -> bool {
     regen.feature(feature).is_some_and(|r| r.is_off())
 }
 
-fn own_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
-    if off(regen, feature) {
+impl Memo {
+    /// The memo of the second look, which reads the entries of features
+    /// that are off too.
+    fn with_off() -> Self {
+        Memo {
+            with_off: true,
+            ..Memo::default()
+        }
+    }
+
+    /// True when the entries of `feature` are not read in this look.
+    fn skips(&self, regen: &Regen, feature: FeatureId) -> bool {
+        !self.with_off && off(regen, feature)
+    }
+}
+
+/// True when some feature that is off has an entry (a colour, a material
+/// or a face colour): only then can the second look find anything.
+fn any_off_entry(doc: &Document, regen: &Regen) -> bool {
+    doc.bodies.iter().any(|e| off(regen, e.feature))
+        || doc.faces.iter().any(|e| off(regen, e.feature))
+}
+
+/// The appearance given to `feature` itself, when it is read in this
+/// look (`with_off`: also when the feature is off).
+fn own_appearance(
+    doc: &Document,
+    regen: &Regen,
+    with_off: bool,
+    feature: FeatureId,
+) -> Option<Appearance> {
+    if !with_off && off(regen, feature) {
         return None;
     }
     doc.body_properties(feature)?.appearance
@@ -180,12 +222,13 @@ fn own_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<A
 fn own_face_appearance(
     doc: &Document,
     regen: &Regen,
+    memo: &Memo,
     at: FeatureId,
     way: Option<(&[u64], &PersistentName)>,
     name: &PersistentName,
 ) -> Option<Appearance> {
     let entries = doc.face_properties(at);
-    if entries.is_empty() || off(regen, at) {
+    if entries.is_empty() || memo.skips(regen, at) {
         return None;
     }
     let direct = match way {
@@ -240,7 +283,13 @@ fn colour_by_names(
 /// The appearance of the body `feature` makes (see the module
 /// documentation); `None` for the default look.
 pub fn body_appearance(doc: &Document, regen: &Regen, feature: FeatureId) -> Option<Appearance> {
-    body_appearance_with(doc, regen, &mut Memo::default(), feature)
+    body_appearance_with(doc, regen, &mut Memo::default(), feature).or_else(|| {
+        if any_off_entry(doc, regen) {
+            body_appearance_with(doc, regen, &mut Memo::with_off(), feature)
+        } else {
+            None
+        }
+    })
 }
 
 fn body_appearance_with(
@@ -252,8 +301,9 @@ fn body_appearance_with(
     if let Some(&found) = memo.bodies.get(&feature) {
         return found;
     }
+    let with_off = memo.with_off;
     let found = along_instance_zero(doc, regen, memo, feature, |at| {
-        own_appearance(doc, regen, at)
+        own_appearance(doc, regen, with_off, at)
     });
     memo.bodies.insert(feature, found);
     found
@@ -266,11 +316,25 @@ pub fn body_material(
     regen: &Regen,
     feature: FeatureId,
 ) -> Option<(FeatureId, Material)> {
-    along_instance_zero(doc, regen, &mut Memo::default(), feature, |at| {
-        if off(regen, at) {
-            return None;
+    let look = |with_off: bool| {
+        let mut memo = if with_off {
+            Memo::with_off()
+        } else {
+            Memo::default()
+        };
+        along_instance_zero(doc, regen, &mut memo, feature, |at| {
+            if !with_off && off(regen, at) {
+                return None;
+            }
+            Some((at, doc.body_properties(at)?.material.clone()?))
+        })
+    };
+    look(false).or_else(|| {
+        if any_off_entry(doc, regen) {
+            look(true)
+        } else {
+            None
         }
-        Some((at, doc.body_properties(at)?.material.clone()?))
     })
 }
 
@@ -294,10 +358,10 @@ fn face_appearance(
     let mut current = name;
     for _ in 0..=doc.features.len().saturating_mul(2) {
         let here = way.as_ref().map(|(path, of)| (path.as_slice(), *of));
-        if let Some(own) = own_face_appearance(doc, regen, at, here, current) {
+        if let Some(own) = own_face_appearance(doc, regen, memo, at, here, current) {
             return Some(own);
         }
-        if let Some(own) = own_appearance(doc, regen, at) {
+        if let Some(own) = own_appearance(doc, regen, memo.with_off, at) {
             return Some(own);
         }
         if way.is_none() {
@@ -354,18 +418,37 @@ pub fn face_appearances(
     if doc.bodies.is_empty() && doc.faces.is_empty() {
         return vec![None; faces];
     }
-    let mut memo = Memo::default();
-    let body = body_appearance_with(doc, regen, &mut memo, feature);
+    let mut found = face_appearances_with(doc, regen, &mut Memo::default(), feature, faces);
+    // The faces nothing that is on gives a colour: the second look.
+    if found.iter().any(Option::is_none) && any_off_entry(doc, regen) {
+        let again = face_appearances_with(doc, regen, &mut Memo::with_off(), feature, faces);
+        for (face, second) in found.iter_mut().zip(again) {
+            if face.is_none() {
+                *face = second;
+            }
+        }
+    }
+    found
+}
+
+fn face_appearances_with(
+    doc: &Document,
+    regen: &Regen,
+    memo: &mut Memo,
+    feature: FeatureId,
+    faces: usize,
+) -> Vec<Option<Appearance>> {
+    let body = body_appearance_with(doc, regen, memo, feature);
     let all = regen
         .feature(feature)
         .and_then(|result| result.names.as_deref());
     let names = all.map(|names| names.faces.as_slice()).unwrap_or_default();
-    let has_entries = !doc.face_properties(feature).is_empty() && !off(regen, feature);
+    let has_entries = !doc.face_properties(feature).is_empty() && !memo.skips(regen, feature);
     // A face whose name does not say it came in through an instance of
     // this feature has the body's colour, as the walk would find at its
     // first step (and when the feature has an appearance of its own,
     // every face has that: the body's).
-    let walks = own_appearance(doc, regen, feature).is_none();
+    let walks = own_appearance(doc, regen, memo.with_off, feature).is_none();
     (0..faces)
         .map(|face| match names.get(face) {
             Some(name) => {
@@ -377,7 +460,7 @@ pub fn face_appearances(
                 if own.is_some() {
                     own
                 } else if walks && name.role == NameRole::Copy && name.feature == feature {
-                    face_appearance(doc, regen, &mut memo, feature, name).or(body)
+                    face_appearance(doc, regen, memo, feature, name).or(body)
                 } else {
                     body
                 }
@@ -426,7 +509,12 @@ pub struct LostFace {
 
 /// The face colours of the document whose faces are gone (see
 /// [`LostFace`]). One of a feature that did not build (failed,
-/// suppressed, rolled back) is not lost: it waits for the body.
+/// suppressed, rolled back) is not lost: it waits for the body. Nor is
+/// one whose face is absent because a feature that is off would make it
+/// (`craft3d_regen::absent_name`: the tool's face of a subtraction that
+/// is inactive, an instance of a pattern that is suppressed): it waits
+/// for that feature to be switched on, as the rule for what is off says
+/// (docs/design/regeneration.md › *Switched off*).
 pub fn lost_faces(doc: &Document, regen: &Regen) -> Vec<LostFace> {
     let mut lost = Vec::new();
     let mut at = 0;
@@ -442,7 +530,9 @@ pub fn lost_faces(doc: &Document, regen: &Regen) -> Vec<LostFace> {
             continue;
         };
         for entry in entries {
-            if craft3d_regen::faces_named(names, &entry.face).is_empty() {
+            if craft3d_regen::faces_named(names, &entry.face).is_empty()
+                && craft3d_regen::absent_name(doc, &regen.features, &entry.face).is_none()
+            {
                 lost.push(LostFace {
                     feature,
                     face: entry.face.clone(),

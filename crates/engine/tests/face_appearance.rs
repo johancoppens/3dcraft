@@ -151,7 +151,8 @@ fn a_face_colour_follows_the_pieces_of_a_cut_face_and_upstream_edits() {
 
 #[test]
 fn a_face_that_is_gone_colours_nothing_and_is_said() {
-    let mut s = session();
+    let dir = workdir("face-appearance", "gone");
+    let mut s = session_in(&dir);
     slotted_plate(&mut s);
     let floor = "F3:copy(1)/F2:face(0)";
     run(
@@ -176,12 +177,27 @@ fn a_face_that_is_gone_colours_nothing_and_is_said() {
             .unwrap()
             .contains("no longer has a face")
     );
+    // Said in the window, as a notice: no problem of the picture
+    // (expectation changed on 2026-10-26, R1 item 57: it was a problem,
+    // and view.render failed on it, so no picture and no Jig thumbnail).
     let scene = s.scene(None).unwrap().unwrap();
+    assert!(scene.problems.is_empty(), "{:?}", scene.problems);
     assert!(
-        scene.problems.iter().any(|p| p.contains(floor)),
+        scene.notices.iter().any(|p| p.contains(floor)),
         "{:?}",
-        scene.problems
+        scene.notices
     );
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["warnings"][0]["kind"], "lostFace", "{check}");
+    assert_eq!(check["warnings"][0]["face"], floor, "{check}");
+    // A picture is drawn all the same (it was refused).
+    run(
+        &mut s,
+        "view.render",
+        json!({"path": "gone.png", "width": 64, "height": 48}),
+    );
+    assert!(dir.join("gone.png").exists());
     // Undo brings the floor back, and its colour with it.
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(coloured(&mut s, "F3", GREEN), [floor]);

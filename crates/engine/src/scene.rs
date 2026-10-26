@@ -494,6 +494,10 @@ pub struct Scene {
     pub features: Vec<SceneFeature>,
     /// Bodies that could not be tessellated, as sentences.
     pub problems: Vec<String>,
+    /// What the window says without the picture being wrong, as
+    /// sentences: a face colour whose face is gone (it colours nothing).
+    /// A picture is drawn all the same (`view.render`).
+    pub notices: Vec<String>,
     /// The box around the meshes and the sketch geometry.
     pub bbox: Bbox3,
     /// The box around the bodies from their B-rep, whatever the tolerance:
@@ -1389,6 +1393,7 @@ fn build(
         datums: Vec::new(),
         features: Vec::new(),
         problems: Vec::new(),
+        notices: Vec::new(),
         bbox: Bbox3::EMPTY,
         bodies_box: bodies_box(doc, regen),
     };
@@ -1625,12 +1630,13 @@ fn build(
     scene.bbox = bbox;
     scene.datums = scene_datums(doc, regen, &bbox);
     // A face colour whose face an edit took away colours nothing (never
-    // another face); said here so the window shows it.
+    // another face); said here so the window shows it. It is no problem
+    // of the picture, which is drawn without it.
     for lost in crate::appearance::lost_faces(doc, regen) {
         let made = doc
             .feature(lost.feature)
             .map_or_else(|| lost.feature.to_string(), |f| f.name.clone());
-        scene.problems.push(format!(
+        scene.notices.push(format!(
             "the colour of face {} of `{made}` colours nothing: the face is gone (undo brings it back; face.appearance with clear takes the colour away)",
             lost.face
         ));

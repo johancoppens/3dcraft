@@ -338,7 +338,7 @@ pub(crate) fn lost(
 /// ([`lost`]: a face only that feature makes). `None` when it is there,
 /// and when what is wrong with it is something else (a feature that
 /// failed, comes after, or was deleted), which reading it says.
-pub(crate) fn absent_name(
+pub fn absent_name(
     doc: &Document,
     earlier: &[FeatureResult],
     name: &PersistentName,
