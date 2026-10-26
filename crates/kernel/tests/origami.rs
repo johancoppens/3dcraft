@@ -825,6 +825,31 @@ fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
 }
 
 #[test]
+fn two_branches_the_kinds_do_not_tell_apart_are_refused_as_ambiguous() {
+    use CreaseKind::Valley as V;
+    // A degree-4 vertex whose three solved creases have no kind (either
+    // way): both its modes keep every kind, so the fold is ambiguous, and
+    // the creases that differ between them are named (all three: mode A
+    // and mode B differ in every solved crease). With kinds it is not.
+    let t = tol(1.0);
+    let (a, b) = (70f64.to_radians(), 50f64.to_radians());
+    let arr = single_vertex(1.0, &[0.0, a, a + b, PI + b], &[V, V, V, V]);
+    let open: Vec<Angle> = arr
+        .hinges
+        .iter()
+        .map(|h| match arr.creases[h.crease].id {
+            10 => Angle::Given(0.4),
+            _ => Angle::Free { sign: 0.0 },
+        })
+        .collect();
+    let e = fold(&arr, &open, 0, t, ANGULAR);
+    assert!(
+        matches!(e, Err(FoldError::Ambiguous { ref ids }) if ids == &[11, 12, 13]),
+        "{e:?}"
+    );
+}
+
+#[test]
 fn a_small_sheet_far_from_the_origin_folds_as_one_at_the_origin() {
     use CreaseKind::{Mountain as M, Valley as V};
     let (a, b) = (70f64.to_radians(), 50f64.to_radians());

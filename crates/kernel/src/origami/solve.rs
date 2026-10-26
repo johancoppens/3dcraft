@@ -41,7 +41,8 @@ use std::f64::consts::PI;
 pub enum Angle {
     /// Given, in radians.
     Given(f64),
-    /// Solved for; `sign` is +1 for a valley and −1 for a mountain.
+    /// Solved for; `sign` is +1 for a valley, −1 for a mountain, 0 for a
+    /// joint that may turn either way.
     Free { sign: f64 },
 }
 
@@ -116,6 +117,9 @@ const FIRST_STEP: f64 = PI / 180.0;
 /// taken is decided by the half-step test, not by the guess.
 const FIRST_GUESSES: [f64; 5] = [1.0, 3.0, 10.0, 30.0, 100.0];
 const FIRST_CAP: f64 = PI * 17.0 / 18.0;
+/// Unknowns without a kind whose sign patterns are all tried at the first
+/// step, at most (2^6 patterns); beyond, all one way and all the other.
+const OPEN_PATTERN_BITS: usize = 6;
 /// A step is halved at most this many times in a row.
 const MAX_HALVINGS: usize = 24;
 /// The first step is halved at most this many times.
@@ -505,27 +509,95 @@ pub fn fold_linkage(
                 // quarter), as every smooth branch through the flat sheet
                 // is near it, whatever its slope.
                 let step = (target - done) * largest;
+                // Every guess is tried: each turns the unknowns their kinds'
+                // way (an unknown without a kind, sign 0, both ways, every
+                // pattern of them up to `MAX_OPEN_PATTERNS`), by 1 to 100
+                // times the step. Two different solutions that both pass
+                // are two branches the kinds do not tell apart: refused.
+                let open: Vec<usize> = (0..signs.len())
+                    .filter(|&i| signs.get(i).is_some_and(|s| *s == 0.0))
+                    .collect();
+                let patterns: Vec<Vec<f64>> = if open.is_empty() {
+                    vec![Vec::new()]
+                } else if open.len() <= OPEN_PATTERN_BITS {
+                    (0..1usize << open.len())
+                        .map(|m| {
+                            (0..open.len())
+                                .map(|b| if m >> b & 1 == 1 { -1.0 } else { 1.0 })
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    vec![vec![1.0; open.len()], vec![-1.0; open.len()]]
+                };
+                let same = 10.0 * (angular + tol / size);
+                let mut passed: Vec<(Vec<f64>, bool)> = Vec::new();
                 for f in FIRST_GUESSES {
-                    let guess: Vec<f64> = signs
-                        .iter()
-                        .map(|s| s * (step * f).min(FIRST_CAP))
-                        .collect();
-                    let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
-                        continue;
-                    };
-                    let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
-                    let Some((half, _)) =
-                        attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
-                    else {
-                        continue;
-                    };
-                    let off = half
-                        .iter()
-                        .zip(&half_guess)
-                        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
-                    if off <= 0.25 * size_of(&half_guess) + angular {
-                        found = Some((solved, ran_out));
-                        break;
+                    for pattern in &patterns {
+                        let mut way = pattern.iter();
+                        let guess: Vec<f64> = signs
+                            .iter()
+                            .map(|s| {
+                                let sign = if *s == 0.0 {
+                                    way.next().copied().unwrap_or(1.0)
+                                } else {
+                                    *s
+                                };
+                                sign * (step * f).min(FIRST_CAP)
+                            })
+                            .collect();
+                        let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
+                            continue;
+                        };
+                        if passed.iter().any(|(p, _)| max_diff(p, &solved) <= same) {
+                            continue;
+                        }
+                        let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
+                        let Some((half, _)) =
+                            attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
+                        else {
+                            continue;
+                        };
+                        if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
+                            passed.push((solved, ran_out));
+                        }
+                    }
+                }
+                match passed.as_slice() {
+                    [] => {}
+                    [one] => found = Some(one.clone()),
+                    [a, b, ..] => {
+                        // A continuum of solutions (the given angles leave
+                        // freedom) is undetermined, not two branches.
+                        let at = rows(
+                            link,
+                            &forest,
+                            &loops,
+                            &solver.with(&base, &a.0),
+                            Some(&column),
+                            &mut budget,
+                        )?;
+                        let loose = undetermined(&at, free.len(), &mut budget)?;
+                        if !loose.is_empty() {
+                            let mut ids: Vec<u64> = loose
+                                .iter()
+                                .filter_map(|&c| free.get(c))
+                                .map(|&k| source(k))
+                                .collect();
+                            ids.sort_unstable();
+                            ids.dedup();
+                            return Err(FoldError::Undetermined { ids });
+                        }
+                        let mut ids: Vec<u64> =
+                            a.0.iter()
+                                .zip(&b.0)
+                                .zip(&free)
+                                .filter(|((x, y), _)| (*x - *y).abs() > same)
+                                .map(|(_, &k)| source(k))
+                                .collect();
+                        ids.sort_unstable();
+                        ids.dedup();
+                        return Err(FoldError::Ambiguous { ids });
                     }
                 }
             } else {
@@ -940,4 +1012,10 @@ fn undetermined(rows: &[Row], n: usize, budget: &mut Budget) -> Result<Vec<usize
     }
     loose.sort_unstable();
     Ok(loose)
+}
+
+fn max_diff(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
 }

@@ -160,6 +160,9 @@ pub enum FoldError {
     NotFollowed { at: f64 },
     /// The fold needs more work than [`MAX_WORK`].
     TooMuchWork,
+    /// From the flat sheet two different branches keep every kind: the
+    /// solved creases `ids` go one way on one and another way on the other.
+    Ambiguous { ids: Vec<u64> },
     /// Two facets of the folded sheet pass through each other or touch
     /// (other than along the creases and at the vertices they share).
     Meets(Meeting),
@@ -230,6 +233,10 @@ impl fmt::Display for FoldError {
                 "the fold could not be followed from the flat sheet past {at} rad"
             ),
             FoldError::TooMuchWork => write!(f, "the fold needs more work than {MAX_WORK} steps"),
+            FoldError::Ambiguous { ids } => write!(
+                f,
+                "two branches from the flat sheet keep every kind; creases {ids:?} differ"
+            ),
             FoldError::Build(reason) => write!(f, "{reason}"),
         }
     }

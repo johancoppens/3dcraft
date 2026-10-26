@@ -220,6 +220,19 @@ fn the_guide_names_only_commands_and_params_that_exist() {
         "only {steps_checked} steps found in the guide"
     );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // The reference says how many commands there are: the registry's.
+    let reference = read_text(&docs().join("guide/15-reference.md"));
+    let said = reference
+        .split("has ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse::<usize>().ok());
+    assert_eq!(
+        said,
+        Some(commands.len()),
+        "15-reference.md must say \"has {} commands\"",
+        commands.len()
+    );
 }
 
 /// The origami chapter's scripts run as written, one after the other, and

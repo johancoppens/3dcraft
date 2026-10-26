@@ -114,6 +114,10 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             "the fold could not be followed from the flat sheet past {:.6} degrees of its largest angle: no step, however small, found a fold that follows on from the last along its tangent (or the first step found no branch through the flat sheet that keeps the kinds)",
             at.to_degrees()
         ),
+        FoldError::Ambiguous { ids } => format!(
+            "the fold is ambiguous: from the flat sheet it can go two ways that both keep every crease's kind, and {} fold differently on them; give one of them an angle",
+            list(ids)
+        ),
         FoldError::TooMuchWork => format!(
             "the fold needs more work than its budget ({} steps): give more creases an angle",
             origami::MAX_WORK
