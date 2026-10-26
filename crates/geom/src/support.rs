@@ -423,10 +423,14 @@ pub fn surface_piece(
                 let at = |i: usize, j: usize| pts.get(i * width + j).copied();
                 for i in 0..=span.m {
                     for j in 0..=span.n {
-                        if let (Some(p), Some(q)) = (at(i, j), at(i + 1, j)) {
+                        if i < span.m
+                            && let (Some(p), Some(q)) = (at(i, j), at(i + 1, j))
+                        {
                             along_u.extend((q - p).normalized());
                         }
-                        if let (Some(p), Some(q)) = (at(i, j), at(i, j + 1)) {
+                        if j < span.n
+                            && let (Some(p), Some(q)) = (at(i, j), at(i, j + 1))
+                        {
                             along_v.extend((q - p).normalized());
                         }
                     }
