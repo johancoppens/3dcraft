@@ -19,7 +19,7 @@
 //! it checked.
 
 use crate::commands::{Run, fail, spec};
-use crate::param_cmds::{Range, prepare_set, ranges, value_text};
+use crate::param_cmds::{Range, nearest_in_range, outside, prepare_set, ranges, value_text};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, Workspace};
 use craft3d_doc::{Document, FeatureId, ParamKind};
@@ -30,8 +30,8 @@ use std::collections::BTreeSet;
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "document.sample",
     "Check Over the Range",
-    r#"{"samples": integer = 32, "seed": integer = 1, "corners": boolean = true, "maxCorners": integer = 64, "choices": boolean = true, "deep": boolean = false, "budgetMs": number = none, "timeLimitMs": number or null = 60000, "maxFailures": integer = 100, "values": boolean = false}"#,
-    "Proves a Jig over its parameter range: on a copy of the active document (the document and its undo history do not change), sets the public parameters (param.list) to a series of points and checks each one: the defaults; the corners of the box of the ranges (every parameter at its min or max, a boolean off or on, a choice its first or last; all 2^n of them while that is at most maxCorners (at most 4096), else maxCorners of them chosen by the seed, the two all-low and all-high corners always among them); with choices every other choice of each choice parameter, the rest at the defaults; then samples (at most 10000) random points chosen by the seed (a number uniform over its range and on its step, an integer, a choice or a boolean uniform over its values; the same points whatever corners are asked for). A range that uses other parameters is evaluated at each point after them; ranges that keep moving each other fail the point (did not settle). A side of a range that is not given is the default. Each point is set as param.set sets it (a point it refuses, such as a range that is empty there, fails with the reason), regenerated without the open document's cache (timed: ms; the kernel's trees of freeform surfaces are shared within the process, so a surface the open document has met may be quicker), and checked as document.check (deep with deep) checks: no failed variables or features, valid bodies, no invalid parameter, no broken assertion (the bodies measured, mass properties from the exact faces, at the defaults and the corners, and with deep at every point: measuring costs several times a regeneration); and every feature whose body is a solid at the defaults has a solid there too. With budgetMs a point whose regeneration takes longer fails as well; without it times are reported and never part of the verdict. timeLimitMs bounds the whole run (checked between points; null: no limit, as craft3d-cli check-range runs it); in a browser, which has no clock, a run stops after 128 points instead. A run that stops early has complete false, stoppedBy (timeLimit or pointCap) and ok false when a point failed, else null: never true. The same seed gives the same points and the same verdict. Returns ok, complete, the number of points by kind, failed (how many failed), failures (the first maxFailures: index, kind default|corner|choice|random, values: every parameter as param.set takes it, to reproduce the point, problems, ms), points ({index, kind, ok, ms} each; with values also its values), the parameters, unbounded (numbers without min and max: only their default is tried) and timing (medianMs, maxMs, totalMs, slowest point; null where there is no clock, as in a browser).",
+    r#"{"samples": integer = 32, "seed": integer = 1, "corners": boolean = true, "maxCorners": integer = 64, "choices": boolean = true, "deep": boolean = false, "strict": boolean = false, "budgetMs": number = none, "timeLimitMs": number or null = 60000, "maxFailures": integer = 100, "values": boolean = false}"#,
+    "Proves a Jig over its parameter range: on a copy of the active document (the document and its undo history do not change), sets the public parameters (param.list) to a series of points and checks each one: the defaults; the corners of the box of the ranges (every parameter at its min or max, a boolean off or on, a choice its first or last; all 2^n of them while that is at most maxCorners (at most 4096), else maxCorners of them chosen by the seed, the two all-low and all-high corners always among them; samples does not cut the corners: maxCorners or corners: false does); with choices every other choice of each choice parameter, the rest at the defaults; then samples (at most 10000) random points chosen by the seed (a number uniform over its range and on its step, an integer, a choice or a boolean uniform over its values within its min and max, so a boolean whose max is another parameter is off while that is; the same points whatever corners are asked for). A range that uses other parameters is evaluated at each point after them; ranges that keep moving each other fail the point (did not settle). Away from the defaults, a parameter the point leaves at its default that is outside its range there (a choice that narrows another range) is moved to the nearest value in it, as a form and param.set with clamp move it. A side of a range that is not given is the default. Each point is set as param.set sets it (a point it refuses, such as a range that is empty there, fails with the reason), regenerated without the open document's cache (timed: ms; the kernel's trees of freeform surfaces are shared within the process, so a surface the open document has met may be quicker), and checked as document.check (deep with deep) checks: no failed variables or features, valid bodies, no invalid parameter, no broken assertion (an assertion neither passed nor failed, notProven, does not fail the point but does not pass it either: the point counts under unproven; with strict it fails the point) (the bodies measured, mass properties from the exact faces, at the defaults and the corners, and with deep at every point: measuring costs several times a regeneration); and every feature whose body is a solid at the defaults has a solid there too. With budgetMs a point whose regeneration takes longer fails as well; without it times are reported and never part of the verdict. timeLimitMs bounds the whole run (checked between points; null: no limit, as craft3d-cli check-range runs it); in a browser, which has no clock, a run stops after 128 points instead. A run that stops early has complete false, stoppedBy (timeLimit or pointCap) and ok false when a point failed, else null: never true. The same seed gives the same points and the same verdict. After each point what the kernel kept for it (intersections, projections, meshes) is let go of, so a long run holds the memory of one point. Returns ok (true when no point failed: unproven points do not make it false unless strict), strict, complete, the number of points by kind (cornersInBox: 2^n, of which corner were tried), passed (no problem and every assertion proven), unproven (no problem, some assertion not proven), failed (how many failed), failures (the first maxFailures: index, kind default|corner|choice|random, values: every parameter as param.set takes it, to reproduce the point, problems, ms), unprovenPoints (the first maxFailures: index, kind, values, assertions [{assertion, message}], ms), points ({index, kind, ok, ms, unproven: how many assertions, when any} each; with values also its values), the parameters, unbounded (numbers without min and max: only their default is tried) and timing (medianMs, maxMs, totalMs, slowest point; null where there is no clock, as in a browser).",
     doc: true,
     document_sample
 )];
@@ -144,16 +144,29 @@ fn pick(lo: f64, hi: f64, step: f64, u: f64) -> Option<f64> {
     Some((lo + k * step).clamp(lo, hi))
 }
 
+/// The whole numbers from `lo` to `hi` (a boolean's 0 and 1, a choice's 1
+/// to n) that also lie in `range`'s min and max: a boolean whose max is
+/// another parameter (`opt` only when `big`) is off while that is 0, as
+/// the form offers it.
+fn whole_values(range: &Range, lo: f64, hi: f64) -> (f64, f64) {
+    let lo = range.min.map_or(lo, |min| (min - 1e-9).ceil().max(lo));
+    let hi = range.max.map_or(hi, |max| (max + 1e-9).floor().min(hi));
+    (lo, hi)
+}
+
 /// The value of `range` at fraction `u`, in its unit; none when its range
 /// is empty or does not evaluate (the point then keeps the default, and
 /// `param.set` says what is wrong).
 fn value_at(range: &Range, u: f64) -> Option<f64> {
     let u = u.clamp(0.0, 1.0);
     match range.kind {
-        ParamKind::Boolean => Some(if u < 0.5 { 0.0 } else { 1.0 }),
+        ParamKind::Boolean => {
+            let (lo, hi) = whole_values(range, 0.0, 1.0);
+            pick(lo, hi, 1.0, u)
+        }
         ParamKind::Choice => {
-            let n = range.choices as f64;
-            (n >= 1.0).then(|| ((u * n).floor() + 1.0).min(n))
+            let (lo, hi) = whole_values(range, 1.0, range.choices as f64);
+            pick(lo, hi, 1.0, u)
         }
         ParamKind::Integer => {
             let lo = range.min.or(range.default)?.ceil();
@@ -179,10 +192,14 @@ fn value_at(range: &Range, u: f64) -> Option<f64> {
 /// The values of `point`, each as `param.set` takes it, in the order of
 /// the parameters: worked out against the ranges at the point itself,
 /// again until no value moves (a range that uses another parameter after
-/// that one), at most once per parameter and once more. With the values
-/// as far as they got comes why they cannot be set, if they cannot: a
-/// value the document refuses, or ranges that do not settle (two ranges
-/// that push each other on).
+/// that one), at most once per parameter and once more. A parameter the
+/// point leaves at its default (a choice point's other parameters) that
+/// is outside its range there is moved to the nearest value of it, as a
+/// form and `param.set {clamp: true}` move it (a choice that narrows
+/// another range); not at the defaults themselves, which are checked as
+/// they are. With the values as far as they got comes why they cannot be
+/// set, if they cannot: a value the document refuses, or ranges that do
+/// not settle (two ranges that push each other on).
 fn resolve(base: &Document, point: &Point) -> (Map<String, Value>, Option<String>) {
     let mut doc = base.clone();
     let first = ranges(&doc);
@@ -205,16 +222,27 @@ fn resolve(base: &Document, point: &Point) -> (Map<String, Value>, Option<String
             return (values_of(&doc), Some(why));
         }
     }
+    let clamp = point.kind != Kind::Default;
+    // Into the range, as a form clamps.
+    let clamped = |range: &Range, value: f64| -> Option<f64> {
+        (clamp && outside(range, value))
+            .then(|| nearest_in_range(range, value))
+            .flatten()
+    };
     let rounds = first.len().saturating_add(1);
     for _ in 0..rounds {
         let now = ranges(&doc);
         let mut moved = false;
         for (range, pos) in now.iter().zip(&point.pos) {
-            let text = match pos {
-                Pos::Default => None,
-                Pos::At(u) => value_at(range, *u).map(|v| value_text(range, v)),
-                Pos::Choice(k) => Some(value_text(range, *k as f64)),
+            let number = match pos {
+                Pos::Default => range.value.and_then(|v| clamped(range, v)),
+                Pos::At(u) => value_at(range, *u),
+                Pos::Choice(k) => {
+                    let k = *k as f64;
+                    Some(clamped(range, k).unwrap_or(k))
+                }
             };
+            let text = number.map(|v| value_text(range, v));
             let Some(text) = text else { continue };
             let same = doc
                 .variable(&range.name)
@@ -478,7 +506,21 @@ impl Clock {
 /// What one point gave.
 struct Checked {
     problems: Vec<Value>,
+    /// The assertions neither passed nor failed there (`notProven`), each
+    /// `{assertion, message}`: not a problem of the design, and not passed
+    /// either (docs/design/verification.md › *Proven, not found*).
+    unproven: Vec<Value>,
     ms: Option<f64>,
+}
+
+impl Checked {
+    fn refused(problems: Vec<Value>) -> Self {
+        Checked {
+            problems,
+            unproven: Vec::new(),
+            ms: None,
+        }
+    }
 }
 
 /// The kinds of the bodies of the features that have one of their own.
@@ -514,14 +556,14 @@ fn check_point(
             problems.push(json!({
                 "problem": format!("param.set refuses this point: {}", error.message()),
             }));
-            return Ok(Checked { problems, ms: None });
+            return Ok(Checked::refused(problems));
         }
     };
     let mut doc = base.clone();
     for (name, source) in &sources {
         if let Err(error) = doc.set_variable(name, source) {
             problems.push(json!({ "parameter": name, "problem": error.to_string() }));
-            return Ok(Checked { problems, ms: None });
+            return Ok(Checked::refused(problems));
         }
     }
     // A session of its own, with a regeneration cache of its own (and the
@@ -568,7 +610,21 @@ fn check_point(
     if let Some(found) = result.get("problems").and_then(Value::as_array) {
         problems.extend(found.iter().cloned());
     }
-    Ok(Checked { problems, ms })
+    let unproven = result
+        .get("assertions")
+        .and_then(|a| a.get("unproven"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|a| json!({"assertion": a.get("name"), "message": a.get("message")}))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Checked {
+        problems,
+        unproven,
+        ms,
+    })
 }
 
 fn median(sorted: &[f64]) -> Option<f64> {
@@ -584,6 +640,80 @@ fn median(sorted: &[f64]) -> Option<f64> {
     }
 }
 
+/// What receives each point of a run as it is checked ([`with_point_sink`]).
+type PointSink = Box<dyn FnMut(&Value)>;
+
+thread_local! {
+    static POINT_SINK: std::cell::RefCell<Option<PointSink>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `work` with `sink` receiving every point a `document.sample` run on
+/// this thread checks, as soon as it is checked: `{index, kind, ok, ms,
+/// values, problems, unproven}`, so that a run cut short (a timeout, a
+/// kill) has said what it found: `craft3d-cli check-range` prints a line
+/// per point. Puts back whatever sink was there before, also when `work`
+/// panics. The sink only hears: nothing it does changes the run.
+pub fn with_point_sink<R>(sink: impl FnMut(&Value) + 'static, work: impl FnOnce() -> R) -> R {
+    struct Restore(Option<PointSink>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let earlier = self.0.take();
+            let _ = POINT_SINK.try_with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = earlier;
+                }
+            });
+        }
+    }
+    let earlier = POINT_SINK
+        .try_with(|slot| {
+            slot.try_borrow_mut()
+                .ok()
+                .and_then(|mut slot| slot.replace(Box::new(sink)))
+        })
+        .ok()
+        .flatten();
+    let _restore = Restore(earlier);
+    work()
+}
+
+/// Gives `point` to the sink of this thread, if there is one.
+fn tell(point: &Value) {
+    let _ = POINT_SINK.try_with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut()
+            && let Some(sink) = slot.as_mut()
+        {
+            sink(point);
+        }
+    });
+}
+
+/// Lets go of what the kernel keeps per process between operations: the
+/// intersections of surfaces, the projections onto them, the meshes of
+/// faces, the bodies that passed their check, and what is remembered of
+/// bodies that are gone. Each is worked out again, the same, when asked
+/// for: only the time differs. A point's surfaces are mostly its own, so
+/// what one point kept is of little use to the next, and kept it filled
+/// the caches to their bounds and the memory with them (a gear pair's
+/// check over 13 points: 1.2 GB, 2026-10-24).
+fn forget_kept() {
+    craft3d_geom::intersect::forget_kept();
+    craft3d_geom::forget_projections();
+    craft3d_tess::forget_kept_meshes();
+    craft3d_topo::forget_passed();
+    crate::mass::forget_gone();
+}
+
+/// How many corners the box of `movers` parameters has (2^n), while that
+/// fits in a u64.
+fn corners_in_box(movers: usize) -> Option<u64> {
+    u32::try_from(movers)
+        .ok()
+        .filter(|n| *n < 64)
+        .map(|n| 1_u64 << n)
+}
+
 fn document_sample(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "document.sample";
     let p = Params::new(
@@ -596,6 +726,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
             "maxCorners",
             "choices",
             "deep",
+            "strict",
             "budgetMs",
             "timeLimitMs",
             "maxFailures",
@@ -608,6 +739,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
     let max_corners = p.integer("maxCorners", 0, MAX_CORNERS)?.unwrap_or(64) as usize;
     let with_choices = p.bool("choices")?.unwrap_or(true);
     let deep = p.bool("deep")?.unwrap_or(false);
+    let strict = p.bool("strict")?.unwrap_or(false);
     let positive = |key: &str| -> Result<Option<f64>, CommandError> {
         match p.number(key)? {
             None => Ok(None),
@@ -652,6 +784,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
         samples,
     );
     let all_corners = points.all_corners();
+    let in_box = corners_in_box(points.movers);
 
     // Each point made and checked in turn; the defaults first, whose
     // bodies' kinds the others are held to.
@@ -659,6 +792,8 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
     let mut solids: Option<Vec<(FeatureId, BodyKind)>> = None;
     let mut failures = Vec::new();
     let mut failed = 0_usize;
+    let mut unproven_points = Vec::new();
+    let mut unproven = 0_usize;
     let mut listed = Vec::new();
     let mut times: Vec<(f64, usize)> = Vec::new();
     let mut by_kind = [0_usize; 4];
@@ -693,18 +828,20 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
                     body_budget,
                     solids.as_deref(),
                     &mut kinds,
-                )?;
+                );
+                // What the point's bodies alone held in the kernel goes,
+                // and what the kernel kept while it worked on them.
+                session.release_trees_now();
+                forget_kept();
+                let checked = checked?;
                 if point.kind == Kind::Default {
                     solids = Some(kinds);
                 }
-                // What the point's bodies alone held in the kernel goes.
-                session.release_trees_now();
                 checked
             }
-            Some(error) => Checked {
-                problems: vec![json!({ "problem": format!("the point cannot be set: {error}") })],
-                ms: None,
-            },
+            Some(error) => Checked::refused(vec![
+                json!({ "problem": format!("the point cannot be set: {error}") }),
+            ]),
         };
         let mut problems = checked.problems;
         if let (Some(ms), Some(budget)) = (checked.ms, budget)
@@ -713,6 +850,19 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
             problems.push(json!({
                 "problem": format!("regeneration took {ms:.1} ms, over the budget of {budget} ms"),
             }));
+        }
+        let mut not_proven = checked.unproven;
+        if strict {
+            // An assertion not proven fails the point.
+            for a in not_proven.drain(..) {
+                problems.push(json!({
+                    "assertion": a.get("assertion"),
+                    "problem": format!(
+                        "not proven (strict): {}",
+                        a.get("message").and_then(Value::as_str).unwrap_or("")
+                    ),
+                }));
+            }
         }
         if let Some(ms) = checked.ms {
             times.push((ms, index));
@@ -724,10 +874,24 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
             "ok": ok,
             "ms": checked.ms,
         });
-        if let (true, Some(map)) = (with_values, entry.as_object_mut()) {
-            map.insert("values".into(), Value::Object(values.clone()));
+        if let Some(map) = entry.as_object_mut() {
+            if !not_proven.is_empty() {
+                map.insert("unproven".into(), not_proven.len().into());
+            }
+            if with_values {
+                map.insert("values".into(), Value::Object(values.clone()));
+            }
         }
         listed.push(entry);
+        tell(&json!({
+            "index": index,
+            "kind": point.kind.name(),
+            "ok": ok,
+            "ms": checked.ms,
+            "values": values,
+            "problems": problems,
+            "unproven": not_proven,
+        }));
         if !ok {
             failed += 1;
             if failures.len() < max_failures {
@@ -736,6 +900,17 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
                     "kind": point.kind.name(),
                     "values": values,
                     "problems": problems,
+                    "ms": checked.ms,
+                }));
+            }
+        } else if !not_proven.is_empty() {
+            unproven += 1;
+            if unproven_points.len() < max_failures {
+                unproven_points.push(json!({
+                    "index": index,
+                    "kind": point.kind.name(),
+                    "values": values,
+                    "assertions": not_proven,
                     "ms": checked.ms,
                 }));
             }
@@ -777,6 +952,7 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
         "stoppedBy": stopped,
         "seed": seed,
         "deep": deep,
+        "strict": strict,
         "budgetMs": budget,
         "timeLimitMs": time_limit,
         "parameters": list.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -785,13 +961,17 @@ fn document_sample(session: &mut Session, params: &Value) -> Run {
             "points": index,
             "default": defaults,
             "corner": corner_count,
+            "cornersInBox": in_box,
             "allCorners": all_corners,
             "choice": choice_count,
             "random": random,
         },
-        "passed": index - failed,
+        "passed": index.saturating_sub(failed).saturating_sub(unproven),
+        "unproven": unproven,
         "failed": failed,
         "failures": failures,
+        "unprovenPoints": unproven_points,
+        "unprovenTruncated": unproven > unproven_points.len(),
         "truncated": failed > failures.len(),
         "points": listed,
         "timing": timing,

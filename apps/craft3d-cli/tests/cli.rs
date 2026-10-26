@@ -1595,6 +1595,61 @@ fn build_jig(dir: &Path, name: &str, t_max: &str) -> String {
     file
 }
 
+/// `check-range` counts a point whose assertion is not proven apart from
+/// the passed and the failed ones, lists it, and fails it with --strict:
+/// a fat torus whose thickness (8) is proven only to be at least 2, with
+/// an assertion that it is at least `lim`, from 1 mm (passed) to 5 mm
+/// (not proven); 3 mm by default.
+#[test]
+fn check_range_counts_unproven_points_apart_and_fails_them_when_strict() {
+    let dir = workdir("check-range-unproven");
+    let file = path(&dir, "ring.3dcraft");
+    let script = path(&dir, "ring.json");
+    let steps = json!([
+        ["variable.set", {"name": "lim", "expr": "3 mm"}],
+        ["feature.torus", {"name": "Ring", "major": 5, "minor": 4}],
+        ["assert.add", {"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim"}],
+        ["variable.publish", {"name": "lim", "min": "1 mm", "max": "5 mm"}],
+    ]);
+    std::fs::write(&script, steps.to_string()).unwrap();
+    cli(&["run", "--script", &script, "--out", &file]).ok();
+    let ran = cli(&["check-range", &file, "--samples", "0"]).ok();
+    println!("{}", ran.stdout);
+    assert!(
+        ran.stdout.contains(
+            "3 points (1 default, all 2 corners, 0 choices, 0 random): 1 passed, 2 with unproven assertions, 0 failed"
+        ),
+        "{}",
+        ran.stdout
+    );
+    assert!(ran.stdout.contains("point 0 (default, "), "{}", ran.stdout);
+    assert!(
+        ran.stdout.contains("not proven: wall: lim=3 mm"),
+        "{}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout
+            .contains("NOT PROVEN point 0 (default): lim=3 mm"),
+        "{}",
+        ran.stdout
+    );
+    assert!(ran.stdout.contains("--strict"), "{}", ran.stdout);
+    let ran = cli(&["check-range", &file, "--samples", "0", "--strict"]).failed(1);
+    assert!(
+        ran.stdout
+            .contains("1 passed, 0 with unproven assertions, 2 failed"),
+        "{}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("wall: not proven (strict)"),
+        "{}",
+        ran.stdout
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
     let dir = workdir("check-range");
@@ -1603,11 +1658,17 @@ fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
     println!("{}", ran.stdout);
     assert!(
         ran.stdout.contains(
-            "3 parameters, 14 points (1 default, 8 corners, all, 0 choices, 5 random): 14 passed, 0 failed"
+            "3 parameters, 14 points (1 default, all 8 corners, 0 choices, 5 random): 14 passed, 0 with unproven assertions, 0 failed"
         ),
         "{}",
         ran.stdout
     );
+    // A line per point as it is checked, before the report.
+    let first = ran.stdout.find("point 0 (default, ").unwrap();
+    let last = ran.stdout.find("point 13 (random, ").unwrap();
+    let report = ran.stdout.find("3 parameters, 14 points").unwrap();
+    assert!(first < last && last < report, "{}", ran.stdout);
+    assert!(ran.stdout.contains("ms): passed"), "{}", ran.stdout);
     assert!(
         ran.stdout.contains("regeneration: median"),
         "{}",
@@ -1629,6 +1690,24 @@ fn check_range_passes_a_sound_jig_and_fails_a_broken_one() {
     let result = json(&good);
     assert_eq!(result["ok"], true);
     assert_eq!(result["counts"]["points"], 14);
+    // With --json the lines per point go to standard error.
+    let ran = cli(&["check-range", &good, "--samples", "1", "--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(
+        ran.stderr.starts_with("point 0 (default, "),
+        "{}",
+        ran.stderr
+    );
+    assert!(ran.stderr.contains("point 9 (random, "), "{}", ran.stderr);
+    assert!(!ran.stdout.contains("point 0"), "{}", ran.stdout);
+    // Fewer corners than the box has: the report says how many.
+    let ran = cli(&["check-range", &good, "--samples", "0", "--max-corners", "4"]).ok();
+    assert!(ran.stdout.contains("4 of 8 corners"), "{}", ran.stdout);
+    assert!(
+        ran.stdout.contains("corners: 4 of the 8 tried"),
+        "{}",
+        ran.stdout
+    );
 
     let bad = build_jig(&dir, "bad.3dcraft", "10 mm");
     let ran = cli(&[

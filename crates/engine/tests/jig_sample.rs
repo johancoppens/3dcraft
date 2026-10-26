@@ -544,3 +544,190 @@ fn a_choice_from_a_table_is_varied_like_a_list_of_choices() {
     assert_eq!(profile("choice"), ["1", "3", "4"]);
     assert_eq!(profile("random"), ["1", "2", "3", "4"]);
 }
+
+/// The plan's repro (r1-cleanup 19/40): a choice `size` (small, large) at
+/// large and a count `n` up to `3 * size`, at 5 by default.
+fn narrowing_choice(s: &mut Session) {
+    run(s, "file.new", json!({"units": "mm"}));
+    run(s, "variable.set", json!({"name": "size", "expr": "2"}));
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "size", "kind": "choice", "choices": ["small", "large"]}),
+    );
+    run(s, "variable.set", json!({"name": "n", "expr": "5"}));
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "n", "kind": "integer", "min": "1", "max": "3 * size"}),
+    );
+    run(
+        s,
+        "feature.block",
+        json!({"size": ["10 mm", "10 mm", "10 mm"]}),
+    );
+}
+
+#[test]
+fn a_choice_that_narrows_another_range_moves_that_parameter_into_it() {
+    // At the choice point size = small, n's range is 1 to 3 and its
+    // default 5 lies outside: the form moves it to 3, and so does the
+    // check (it used to keep 5 and fail the point: param.set refuses it).
+    let mut s = session();
+    narrowing_choice(&mut s);
+    let result = sample(&mut s, json!({"samples": 4, "seed": 1, "values": true}));
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["failed"], 0, "{result}");
+    let choices = values_of(&result, "choice");
+    assert_eq!(choices.len(), 1, "{result}");
+    assert_eq!(choices[0]["size"], "1", "{result}");
+    assert_eq!(choices[0]["n"], "3", "{result}");
+    // The values listed reproduce the point through param.set.
+    run(&mut s, "param.set", json!({"values": choices[0].clone()}));
+    // The defaults are checked as they are: no clamping there.
+    let defaults = values_of(&result, "default");
+    assert_eq!(defaults[0]["n"], "5", "{result}");
+}
+
+#[test]
+fn a_boolean_whose_max_is_another_parameter_stays_off_while_that_is_off() {
+    // The plan's repro (r1-cleanup 39): `opt` may only be on when `big`
+    // is; its max is `big`. The corners used to set opt = 1 with big = 0,
+    // a point param.set refuses.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (name, max) in [("big", None), ("opt", Some("big"))] {
+        run(&mut s, "variable.set", json!({"name": name, "expr": "0"}));
+        let mut publish = json!({"name": name, "kind": "boolean"});
+        if let Some(max) = max {
+            publish["max"] = json!(max);
+        }
+        run(&mut s, "variable.publish", publish);
+    }
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["10 mm", "10 mm", "10 mm"]}),
+    );
+    let result = sample(&mut s, json!({"samples": 16, "seed": 1, "values": true}));
+    assert_eq!(result["ok"], true, "{result}");
+    let mut seen: Vec<(String, String)> = ["corner", "random"]
+        .iter()
+        .flat_map(|kind| values_of(&result, kind))
+        .map(|v| {
+            (
+                v["big"].as_str().unwrap().to_string(),
+                v["opt"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    seen.sort();
+    seen.dedup();
+    // Every combination the form allows, and only those.
+    let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+    assert_eq!(
+        seen,
+        [pair("0", "0"), pair("1", "0"), pair("1", "1")],
+        "{result}"
+    );
+}
+
+/// A fat torus (R = 5, r = 4) whose thickness is 8 but proven only to be
+/// at least 2 (verification.rs: a line could meet the tube across the
+/// axis), and an assertion that it is at least `lim`, published from 1 to
+/// 5 mm: passed at 1 mm, not proven at 3 (the default) and 5 mm.
+fn unproven_jig(s: &mut Session) {
+    run(s, "file.new", json!({"units": "mm"}));
+    run(s, "variable.set", json!({"name": "lim", "expr": "3 mm"}));
+    run(
+        s,
+        "feature.torus",
+        json!({"name": "Ring", "major": 5, "minor": 4}),
+    );
+    run(
+        s,
+        "assert.add",
+        json!({"name": "wall", "measure": "thickness", "of": "Ring", "min": "lim"}),
+    );
+    run(
+        s,
+        "variable.publish",
+        json!({"name": "lim", "min": "1 mm", "max": "5 mm"}),
+    );
+}
+
+#[test]
+fn an_assertion_not_proven_is_counted_apart_and_fails_the_point_when_strict() {
+    let mut s = session();
+    unproven_jig(&mut s);
+    let result = sample(&mut s, json!({"samples": 0, "values": true}));
+    // The defaults (3 mm) and the corners 1 mm and 5 mm.
+    assert_eq!(result["counts"]["points"], 3, "{result}");
+    assert_eq!(result["passed"], 1, "{result}");
+    assert_eq!(result["unproven"], 2, "{result}");
+    assert_eq!(result["failed"], 0, "{result}");
+    // Not a failure: ok, but not passed either.
+    assert_eq!(result["ok"], true, "{result}");
+    let points = result["points"].as_array().unwrap();
+    assert_eq!(points[0]["unproven"], 1, "{result}");
+    let listed = result["unprovenPoints"].as_array().unwrap();
+    assert_eq!(listed.len(), 2, "{result}");
+    assert_eq!(listed[0]["assertions"][0]["assertion"], "wall", "{result}");
+    assert_eq!(listed[0]["values"]["lim"], "3 mm", "{result}");
+
+    let strict = sample(&mut s, json!({"samples": 0, "strict": true}));
+    assert_eq!(strict["ok"], false, "{strict}");
+    assert_eq!(strict["passed"], 1, "{strict}");
+    assert_eq!(strict["unproven"], 0, "{strict}");
+    assert_eq!(strict["failed"], 2, "{strict}");
+    let problem = &strict["failures"][0]["problems"][0];
+    assert_eq!(problem["assertion"], "wall", "{strict}");
+    assert!(
+        problem["problem"]
+            .as_str()
+            .unwrap()
+            .starts_with("not proven (strict)"),
+        "{strict}"
+    );
+}
+
+#[test]
+fn each_point_is_told_as_soon_as_it_is_checked() {
+    let mut s = session();
+    unproven_jig(&mut s);
+    let told = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let into = std::rc::Rc::clone(&told);
+    let result = craft3d_engine::with_point_sink(
+        move |point| into.borrow_mut().push(point.clone()),
+        || sample(&mut s, json!({"samples": 2, "seed": 4})),
+    );
+    assert_eq!(told.borrow().len(), 5, "{told:?}");
+    for (n, point) in told.borrow().iter().enumerate() {
+        assert_eq!(point["index"], n);
+        assert_eq!(point["kind"], result["points"][n]["kind"]);
+        assert_eq!(point["ok"], result["points"][n]["ok"]);
+        assert!(point["values"]["lim"].is_string(), "{point}");
+    }
+    assert_eq!(told.borrow()[0]["unproven"][0]["assertion"], "wall");
+    // Outside it, nobody is told.
+    let mut other = session();
+    unproven_jig(&mut other);
+    sample(&mut other, json!({"samples": 0}));
+    assert_eq!(told.borrow().len(), 5);
+}
+
+#[test]
+fn the_summary_says_how_many_corners_of_the_box_were_tried() {
+    let mut s = session();
+    jig(&mut s, "6 mm");
+    // Six parameters that move: 64 corners in the box, whatever the
+    // number of random points.
+    let all = sample(&mut s, json!({"samples": 0}));
+    assert_eq!(all["counts"]["cornersInBox"], 64, "{all}");
+    assert_eq!(all["counts"]["corner"], 64, "{all}");
+    let some = sample(&mut s, json!({"samples": 0, "maxCorners": 8}));
+    assert_eq!(some["counts"]["cornersInBox"], 64, "{some}");
+    assert_eq!(some["counts"]["corner"], 8, "{some}");
+    let none = sample(&mut s, json!({"samples": 0, "corners": false}));
+    assert_eq!(none["counts"]["corner"], 0, "{none}");
+}

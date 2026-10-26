@@ -31,6 +31,9 @@ pub(crate) enum CliError {
     Failed(String),
     /// A failure with an exit code of its own (`check-range`: 3, 4).
     Code(u8, String),
+    /// The exit code of a run of this program that said why itself
+    /// (`check-range` in a process of its own): nothing more to print.
+    Quiet(u8),
 }
 
 impl fmt::Display for CliError {
@@ -39,6 +42,7 @@ impl fmt::Display for CliError {
             CliError::Usage(message) | CliError::Failed(message) | CliError::Code(_, message) => {
                 f.write_str(message)
             }
+            CliError::Quiet(code) => write!(f, "exit code {code}"),
         }
     }
 }
@@ -248,7 +252,8 @@ Example:
 const HELP_CHECK_RANGE: &str = "\
 Usage: craft3d-cli check-range FILE [--samples N] [--seed S] [--deep]
                                [--budget-ms M] [--time-limit-ms M]
-                               [--max-corners N] [--no-corners] [--json]
+                               [--max-corners N] [--no-corners] [--strict]
+                               [--json]
 
 Proves the Jig FILE (a .3dcraft file with public parameters) over its
 parameter range (the command document.sample): on a copy, its parameters
@@ -256,12 +261,23 @@ are set to their defaults, to the corners of the box of their ranges, to
 every other choice of a choice, and to N random points chosen by the seed;
 each point is regenerated from nothing and checked as document.check
 checks (no failed feature, valid bodies, no broken assertion, no invalid
-parameter). Prints a report, one block per failing point with the values
-that reproduce it (param.set). The same seed gives the same points and
-the same verdict; times are reported and only --budget-ms makes them part
-of the verdict. There is no time limit unless --time-limit-ms is given.
+parameter). Away from the defaults, a parameter whose range the point
+narrows is moved into it, as the parameter form moves it. Prints a line
+per point as it is checked (on standard error with --json), then a
+report: the totals (passed, with unproven assertions, failed), one block
+per failing point with the values that reproduce it (param.set), and one
+per point with an assertion that is not proven (neither passed nor
+failed). The same seed gives the same points and the same verdict; times
+are reported and only --budget-ms makes them part of the verdict. There
+is no time limit unless --time-limit-ms is given.
 
-Exit codes: 0 every point passed; 1 a point failed; 2 a usage error (also
+The corners are all 2^n of the n parameters that move while that is at
+most --max-corners (default 64), whatever --samples is: for a quick run
+of a Jig with many parameters, lower --max-corners or give --no-corners.
+The report says how many of the box's corners were tried.
+
+Exit codes: 0 no point failed (points with unproven assertions are
+counted apart; --strict fails them); 1 a point failed; 2 a usage error (also
 --samples above 10000 or --max-corners above 4096); 3 the file could not
 be opened or checked (no public parameters, say); 4 the run stopped at
 --time-limit-ms before every point was checked, none failing so far.
@@ -279,8 +295,10 @@ Options:
   --time-limit-ms M Stop the whole run after M milliseconds (exit 4 when
                     no point failed). Default: no limit
   --max-corners N   Corners tried: all 2^n while that is at most N, else N
-                    of them chosen by the seed (at most 4096). Default 64
+                    of them chosen by the seed (at most 4096). Default 64;
+                    not changed by --samples
   --no-corners      Only the defaults, the choices and the random points
+  --strict          A point with an assertion that is not proven fails
   --json            Print the result of document.sample as one line of
                     JSON instead of the report
 
@@ -476,13 +494,14 @@ fn main() -> ExitCode {
     let outcome = Args::from_os(std::env::args_os().skip(1)).and_then(run);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::Quiet(code)) => ExitCode::from(code),
         Err(error) => {
             // If stderr is gone too there is nobody left to tell.
             let _ = writeln!(std::io::stderr(), "craft3d-cli: {error}");
             match error {
                 CliError::Usage(_) => ExitCode::from(2),
                 CliError::Failed(_) => ExitCode::FAILURE,
-                CliError::Code(code, _) => ExitCode::from(code),
+                CliError::Code(code, _) | CliError::Quiet(code) => ExitCode::from(code),
             }
         }
     }

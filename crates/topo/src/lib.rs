@@ -33,7 +33,9 @@ mod tolerant;
 mod touch;
 mod transform;
 
-pub use check::{Defect, check, check_capped, check_remembered, check_remembered_capped, genus};
+pub use check::{
+    Defect, check, check_capped, check_remembered, check_remembered_capped, forget_passed, genus,
+};
 pub use inside::{stranded, stranded_loops};
 pub use mass::{
     Inertia, MassBound, MassError, MassProperties, ShellVolume, face_areas, gap_bound, inertia,

@@ -184,6 +184,25 @@ pub(crate) fn mesh_box_within(body: &Arc<Body>, params: &TessParams) -> Option<(
     corners
 }
 
+/// Forgets in `store` the bodies that are gone.
+fn sweep<T>(store: &Mutex<Store<T>>) {
+    store
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .by_body
+        .retain(|_, (seen, _, _)| seen.strong_count() > 0);
+}
+
+/// Forgets what is remembered of bodies that are gone (each entry's
+/// `Weak` keeps its body's allocation): after a run of points of
+/// `document.sample`, whose bodies are dropped with each point.
+pub(crate) fn forget_gone() {
+    sweep(&REMEMBERED);
+    sweep(&REMEMBERED_INERTIA);
+    sweep(&REMEMBERED_SHELLS);
+    sweep(&REMEMBERED_BOXES);
+}
+
 /// Forgets what `store` remembers of `body`.
 fn forget<T>(store: &Mutex<Store<T>>, body: &Arc<Body>) {
     let mut remembered = store.lock().unwrap_or_else(PoisonError::into_inner);

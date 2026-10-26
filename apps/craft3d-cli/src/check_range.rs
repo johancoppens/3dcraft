@@ -2,7 +2,8 @@
 //! (the command `document.sample`) for a Jig repository's CI. The work is
 //! the engine's; this file reads the flags and writes the report.
 //!
-//! Exit codes: 0 every point passed; 1 a point failed; 2 a usage error
+//! Exit codes: 0 no point failed (a point with an assertion not proven is
+//! counted and listed apart, and fails with `--strict`); 1 a point failed; 2 a usage error
 //! (the caps included); 3 the file could not be opened or checked; 4 the
 //! run stopped at `--time-limit-ms` before every point was checked, with
 //! none failing so far.
@@ -11,6 +12,7 @@ use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed, print};
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Map, Value, json};
+use std::io::Write;
 
 /// The options, as `document.sample` params plus how to print.
 struct Options {
@@ -64,11 +66,12 @@ fn parse(mut args: Args) -> Result<Parsed<Options>, CliError> {
                         args::no_value(&name, inline.as_ref())?;
                         return Ok(Parsed::Help);
                     }
-                    "--deep" | "--json" | "--no-corners" => {
+                    "--deep" | "--json" | "--no-corners" | "--strict" => {
                         args::no_value(&name, inline.as_ref())?;
                         match name.as_str() {
                             "--deep" => params.insert("deep".into(), true.into()),
                             "--no-corners" => params.insert("corners".into(), false.into()),
+                            "--strict" => params.insert("strict".into(), true.into()),
                             _ => {
                                 json = true;
                                 None
@@ -118,27 +121,101 @@ fn ms(value: &Value) -> String {
         .map_or_else(|| "-".to_string(), |ms| format!("{ms:.1} ms"))
 }
 
+/// A point's values as `name=value, ...`.
+fn values_text(point: &Value) -> String {
+    let values: Vec<String> = field(point, "values")
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or("?")))
+        .collect();
+    values.join(", ")
+}
+
+/// One problem of a point as `what: problem`.
+fn problem_text(problem: &Value) -> String {
+    let what = ["name", "parameter", "assertion", "variable"]
+        .iter()
+        .find_map(|key| field(problem, key).as_str())
+        .map(|w| format!("{w}: "))
+        .unwrap_or_default();
+    format!(
+        "{what}{}",
+        field(problem, "problem")
+            .as_str()
+            .map_or_else(|| field(problem, "problem").to_string(), str::to_string)
+    )
+}
+
+/// The line a point gets as soon as it is checked (`document.sample`'s
+/// point sink), so that a run cut short has said what it found: passed,
+/// not proven with its assertions, or FAIL with the first problem; with
+/// the values of a point that did not pass, to reproduce it.
+fn point_line(point: &Value) -> String {
+    let head = format!(
+        "point {} ({}, {})",
+        field(point, "index"),
+        field(point, "kind").as_str().unwrap_or("?"),
+        ms(field(point, "ms"))
+    );
+    let problems = field(point, "problems").as_array().map_or(0, Vec::len);
+    let unproven: Vec<&str> = field(point, "unproven")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| field(a, "assertion").as_str())
+        .collect();
+    if field(point, "ok") != true {
+        let first = field(point, "problems")
+            .get(0)
+            .map(problem_text)
+            .unwrap_or_default();
+        format!(
+            "{head}: FAIL, {problems} problem{} ({first}): {}",
+            if problems == 1 { "" } else { "s" },
+            values_text(point)
+        )
+    } else if !unproven.is_empty() {
+        format!(
+            "{head}: not proven: {}: {}",
+            unproven.join(", "),
+            values_text(point)
+        )
+    } else {
+        format!("{head}: passed")
+    }
+}
+
 /// The report for a person: one line of totals, the times, then one
-/// block per failing point.
+/// block per failing point and per point with an assertion not proven.
 fn report(file: &str, result: &Value) -> String {
     let counts = field(result, "counts");
     let n = |v: &Value| v.as_u64().unwrap_or(0);
+    let tried = n(field(counts, "corner"));
+    let in_box = field(counts, "cornersInBox").as_u64();
+    let corners = match in_box {
+        Some(all) if field(counts, "allCorners") == true => format!("all {all} corners"),
+        Some(all) => format!("{tried} of {all} corners"),
+        None => format!("{tried} corners"),
+    };
     let mut lines = vec![format!(
-        "{file}: {} parameters, {} points ({} default, {} corners{}, {} choices, {} random): {} passed, {} failed",
+        "{file}: {} parameters, {} points ({} default, {corners}, {} choices, {} random): {} passed, {} with unproven assertions, {} failed",
         field(result, "parameters").as_array().map_or(0, Vec::len),
         n(field(counts, "points")),
         n(field(counts, "default")),
-        n(field(counts, "corner")),
-        if field(counts, "allCorners") == true {
-            ", all"
-        } else {
-            ""
-        },
         n(field(counts, "choice")),
         n(field(counts, "random")),
         n(field(result, "passed")),
+        n(field(result, "unproven")),
         n(field(result, "failed")),
     )];
+    if let Some(all) = in_box
+        && tried < all
+    {
+        lines.push(format!(
+            "corners: {tried} of the {all} tried; --samples does not change them: --max-corners N tries more (all 2^n while that is at most N, at most 4096), --no-corners none"
+        ));
+    }
     if field(result, "complete") == false {
         lines.push(format!(
             "INCOMPLETE: stopped by {} before every point was checked",
@@ -166,30 +243,14 @@ fn report(file: &str, result: &Value) -> String {
         ));
     }
     for failure in field(result, "failures").as_array().into_iter().flatten() {
-        let values: Vec<String> = field(failure, "values")
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or("?")))
-            .collect();
         lines.push(format!(
             "FAIL point {} ({}): {}",
             field(failure, "index"),
             field(failure, "kind").as_str().unwrap_or("?"),
-            values.join(", ")
+            values_text(failure)
         ));
         for problem in field(failure, "problems").as_array().into_iter().flatten() {
-            let what = ["name", "parameter", "assertion", "variable"]
-                .iter()
-                .find_map(|key| field(problem, key).as_str())
-                .map(|w| format!("{w}: "))
-                .unwrap_or_default();
-            lines.push(format!(
-                "  {what}{}",
-                field(problem, "problem")
-                    .as_str()
-                    .map_or_else(|| field(problem, "problem").to_string(), str::to_string)
-            ));
+            lines.push(format!("  {}", problem_text(problem)));
         }
     }
     if field(result, "truncated") == true {
@@ -199,7 +260,87 @@ fn report(file: &str, result: &Value) -> String {
                 .saturating_sub(field(result, "failures").as_array().map_or(0, Vec::len) as u64)
         ));
     }
+    for point in field(result, "unprovenPoints")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        lines.push(format!(
+            "NOT PROVEN point {} ({}): {}",
+            field(point, "index"),
+            field(point, "kind").as_str().unwrap_or("?"),
+            values_text(point)
+        ));
+        for assertion in field(point, "assertions").as_array().into_iter().flatten() {
+            lines.push(format!(
+                "  {}: {}",
+                field(assertion, "assertion").as_str().unwrap_or("?"),
+                field(assertion, "message").as_str().unwrap_or("")
+            ));
+        }
+    }
+    if field(result, "unprovenTruncated") == true {
+        lines.push(format!(
+            "... and {} more points with unproven assertions (--json lists the first 100)",
+            n(field(result, "unproven")).saturating_sub(
+                field(result, "unprovenPoints")
+                    .as_array()
+                    .map_or(0, Vec::len) as u64
+            )
+        ));
+    }
+    if n(field(result, "unproven")) > 0 {
+        lines.push(
+            "an assertion that is not proven is neither passed nor failed: --strict fails its point"
+                .to_string(),
+        );
+    }
     lines.join("\n")
+}
+
+/// How many arenas the C library's allocator keeps for a check in a
+/// process of its own ([`in_few_arenas`]).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const ARENAS: &str = "2";
+
+/// Runs this same check again in a process of its own whose allocator
+/// keeps [`ARENAS`] arenas, and gives its outcome; `None` where that
+/// cannot be done (the program cannot be found or started), or need not
+/// be: the environment names a number of arenas already (the user's, or
+/// this is that process).
+///
+/// Why: the C library's allocator (glibc) gives threads arenas of their
+/// own, as many as eight per core, and keeps what each arena held at its
+/// peak. A check runs many points one after the other, each of them on as
+/// many threads as the machine has (meshing, measuring, booleans), and the
+/// memory grew with every point although each point lets go of everything
+/// it made: a spur gear with a meshing copy over 40 points, on a machine
+/// of 32 threads, from 150 MB to 1.1 GB; with two arenas it levels off
+/// below 500 MB, the peak of a point, in the same time (2026-10-26,
+/// docs/design/verification.md). The number of arenas is read once, when
+/// the program starts, from its environment: only a process started with
+/// it set has them. Nothing else changes: the same arguments, standard
+/// input and output, and exit code.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn in_few_arenas() -> Option<Result<Parsed<()>, CliError>> {
+    const SETTING: &str = "MALLOC_ARENA_MAX";
+    if std::env::var_os(SETTING).is_some() {
+        return None;
+    }
+    let program = std::env::current_exe().ok()?;
+    let status = std::process::Command::new(program)
+        .args(std::env::args_os().skip(1))
+        .env(SETTING, ARENAS)
+        .status()
+        .ok()?;
+    Some(match status.code() {
+        Some(0) => Ok(Parsed::Run(())),
+        // It said why itself.
+        Some(code) => Err(CliError::Quiet(u8::try_from(code).unwrap_or(1))),
+        None => Err(CliError::Failed(
+            "the check was stopped by a signal before it finished".to_string(),
+        )),
+    })
 }
 
 pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
@@ -207,15 +348,36 @@ pub(crate) fn check_range(args: Args) -> Result<Parsed<()>, CliError> {
         Parsed::Run(options) => options,
         Parsed::Help => return Ok(Parsed::Help),
     };
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if let Some(outcome) = in_few_arenas() {
+        return outcome;
+    }
     let error =
         |e: craft3d_engine::CommandError| CliError::Code(EXIT_ERROR, e.message().to_string());
     let mut session = Session::new(Workspace::unrestricted());
     session
         .execute("file.open", &json!({ "path": options.file }))
         .map_err(error)?;
-    let result = session
-        .execute("document.sample", &Value::Object(options.params))
-        .map_err(error)?;
+    // A line per point as it is checked, so a run stopped from outside (a
+    // timeout, a kill) has said what it found: on standard output before
+    // the report, or on standard error with --json, whose standard output
+    // is the result alone.
+    let to_stderr = options.json;
+    let params = Value::Object(options.params);
+    let result = craft3d_engine::with_point_sink(
+        move |point| {
+            let line = point_line(point);
+            // A line that cannot be written is not the run's failure.
+            let _ = if to_stderr {
+                writeln!(std::io::stderr().lock(), "{line}")
+            } else {
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "{line}").and_then(|()| out.flush())
+            };
+        },
+        || session.execute("document.sample", &params),
+    )
+    .map_err(error)?;
     let text = if options.json {
         serde_json::to_string(&result)
             .map_err(|e| CliError::Failed(format!("cannot write the result as JSON: {e}")))?

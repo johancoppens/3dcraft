@@ -1137,7 +1137,7 @@ fn clamped_into_range(
 
 /// The value of `range` nearest `value` (both in the parameter's unit),
 /// or none when the range is empty or does not evaluate.
-fn nearest_in_range(range: &Range, value: f64) -> Option<f64> {
+pub(crate) fn nearest_in_range(range: &Range, value: f64) -> Option<f64> {
     let lo = range.min.unwrap_or(f64::NEG_INFINITY);
     let hi = range.max.unwrap_or(f64::INFINITY);
     if !value.is_finite() || below(hi, lo) {
@@ -1205,6 +1205,9 @@ pub(crate) struct Range {
     pub(crate) max: Option<f64>,
     /// Only a positive one.
     pub(crate) step: Option<f64>,
+    /// The parameter's value in `doc` (none when it does not evaluate to a
+    /// number of its dimension).
+    pub(crate) value: Option<f64>,
     /// The parameter's unit and dimension, for [`value_text`].
     unit: Option<Unit>,
     dimension: Dimension,
@@ -1243,12 +1246,25 @@ pub(crate) fn ranges(doc: &Document) -> Vec<Range> {
                 min: number("min"),
                 max: number("max"),
                 step: number("step").filter(|s| *s > 0.0),
+                value: e
+                    .value
+                    .as_ref()
+                    .ok()
+                    .filter(|q| q.dimension == dimension)
+                    .map(|q| shown(doc, *q, e.unit))
+                    .filter(|x| x.is_finite()),
                 unit: e.unit,
                 dimension,
                 length_symbol: doc.units.length.symbol(),
             }
         })
         .collect()
+}
+
+/// Whether `value` (in the parameter's unit) lies outside `range`, beyond
+/// rounding: what `param.set` refuses, and a form moves into the range.
+pub(crate) fn outside(range: &Range, value: f64) -> bool {
+    range.min.is_some_and(|lo| below(value, lo)) || range.max.is_some_and(|hi| below(hi, value))
 }
 
 /// `number` (in the parameter's unit) written as `param.set` takes it:
@@ -1416,6 +1432,7 @@ mod tests {
             min: Some(min),
             max: Some(max),
             step,
+            value: None,
             unit: None,
             dimension: Dimension::NONE,
             length_symbol: "mm",

@@ -230,6 +230,19 @@ pub fn kept_projections() -> (usize, usize) {
         })
 }
 
+/// Lets go of every projection remembered (each is found again, the same,
+/// when asked for): what a long run of unrelated work (`document.sample`'s
+/// points) left behind does not stay until it is pushed out.
+pub fn forget_projections() {
+    for shard in &PROJECTIONS_KEPT {
+        let mut shard = shard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let room = shard.room;
+        *shard = Shard::new(room);
+    }
+}
+
 /// The next grid's number: every grid has its own, never used again, so
 /// that what is remembered of a grid let go is never taken for another's.
 static GRIDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

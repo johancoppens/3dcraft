@@ -59,6 +59,24 @@ static SHELF: Mutex<Vec<(String, Arc<Projector>)>> = Mutex::new(Vec::new());
 /// How many projectors are kept.
 const SHELF_SIZE: usize = 32;
 
+/// Lets go of the projectors and the pieces of surfaces kept (each is made
+/// again, the same, when asked for), and says how many there were.
+pub(super) fn forget_shelves() -> usize {
+    let projectors = std::mem::take(&mut *SHELF.lock().unwrap_or_else(PoisonError::into_inner));
+    let pieces = std::mem::take(&mut *PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner));
+    projectors.len().saturating_add(pieces.len())
+}
+
+/// How many projectors and pieces of surfaces are kept.
+pub(super) fn shelves_len() -> usize {
+    let projectors = SHELF.lock().unwrap_or_else(PoisonError::into_inner).len();
+    let pieces = PIECE_SHELF
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len();
+    projectors.saturating_add(pieces)
+}
+
 impl Projector {
     /// The projector of `surface`, shared with every intersection before
     /// that asked for the same surface: a projector is a function of its

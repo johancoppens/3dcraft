@@ -91,9 +91,23 @@ craft3d-cli check-range box.3dcraft --samples 100 --seed 7
 
 `check-range` proves a Jig (a document with parameters) over its parameter range: it builds the design
 at the defaults, at the corners of the ranges, at every choice and at random points chosen by the seed,
-and checks each as `document.check` does. It lists every failing point with the values that reproduce
-it, and exits with 1 when there is one (2 a usage mistake, 3 the file cannot be checked, 4 stopped by
-`--time-limit-ms` before the end). `--deep` checks each point more thoroughly and takes longer.
+and checks each as `document.check` does. Where a point narrows the range of a parameter it leaves at its
+default (a choice that allows fewer holes), that parameter is moved into its new range, as the parameter
+form moves it; a switch whose maximum is another switch stays off while that one is off.
+
+It prints a line per point as soon as that point is checked (so a run you stop still shows what it
+found), then the totals: how many points passed, how many have an assertion that is **not proven**
+(neither passed nor failed, for instance a clearance between curved faces whose least value could not be
+pinned down), and how many failed. It lists every failing point, and every point with an unproven
+assertion, with the values that reproduce it. It exits with 1 when a point failed (2 a usage mistake, 3
+the file cannot be checked, 4 stopped by `--time-limit-ms` before the end); `--strict` also fails the
+points whose assertions are not proven. `--deep` checks each point more thoroughly and takes longer.
+
+The corners of the ranges (every parameter at its low or high end) are all tried while there are at most
+64 of them, whatever `--samples` says: a Jig with six parameters has 64 corners, with eight 256, of
+which 64 are tried. For a quick run lower `--max-corners` (`--max-corners 8`) or leave the corners out
+with `--no-corners`; the totals say how many of the corners were tried. With `--json` the result is
+printed as JSON and the lines per point go to standard error.
 
 ## A video of the history: `replay`
 
