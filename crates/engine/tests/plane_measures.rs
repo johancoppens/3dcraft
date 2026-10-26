@@ -82,7 +82,9 @@ fn a_block_below_a_level_matches_its_closed_forms() {
     close(&section["area"], l * b, "section area");
     close(&section["ix"], l * b.powi(3) / 12.0, "ix = l b³/12");
     close(&section["iy"], b * l.powi(3) / 12.0, "iy = b l³/12");
-    close(&section["ixy"], 0.0, "ixy");
+    // Zero to the rounding of sums of the size of iy (1e14 mm^4).
+    let ixy = section["ixy"].as_f64().unwrap();
+    assert!(ixy.abs() <= 1e-12 * b * l.powi(3) / 12.0, "ixy {ixy}");
     close(&section["major"], b * l.powi(3) / 12.0, "major");
     close(&section["minor"], l * b.powi(3) / 12.0, "minor");
     assert_eq!(below["lengthUnit"], "mm");
