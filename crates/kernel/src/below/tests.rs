@@ -2,12 +2,12 @@
 //! horizontal cylinder (the circular segment), a V-shaped prism and a
 //! spline cone cut by a plane; the section's principal moments of a turned
 //! rectangle; the offset for a volume; invariance under a rigid motion; at
-//! three scales with the tolerance scaled along. A few tests derive from
-//! these the quantities a floating-body Jig computes (BM = I/V, GM, the
-//! wall-sided righting arm of Tupper, *Introduction to Naval
-//! Architecture*), as a check that the general measures carry them.
+//! three scales with the tolerance scaled along; a section with a hole,
+//! a body with two section faces, a thin tilted rod cut far from the
+//! middle of its box, and a level search that lands on a flat face.
 
 use super::*;
+use crate::boolean::{BooleanOp, boolean};
 use crate::primitives::{block, cylinder, sphere};
 use craft3d_math::Transform;
 
@@ -41,8 +41,8 @@ fn upright() -> CutPlane {
     CutPlane::new(Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 0.0)).unwrap()
 }
 
-/// A box barge L × B × D, centred on the z axis, its bottom at z = 0.
-fn barge(k: f64, (l, b, d): (f64, f64, f64)) -> Body {
+/// A box L × B × D, centred on the z axis, its bottom at z = 0.
+fn boxed(k: f64, (l, b, d): (f64, f64, f64)) -> Body {
     let frame = Frame::new(
         Vec3::new(-0.5 * l * k, -0.5 * b * k, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
@@ -53,14 +53,14 @@ fn barge(k: f64, (l, b, d): (f64, f64, f64)) -> Body {
 }
 
 #[test]
-fn box_barge_matches_its_closed_forms() {
+fn a_box_matches_its_closed_forms() {
     for k in SCALES {
         let (l, b, t) = (4.0 * k, 1.0 * k, 0.3 * k);
-        let body = barge(k, (4.0, 1.0, 1.0));
+        let body = boxed(k, (4.0, 1.0, 1.0));
         let im = below(&[&body], &upright(), t, &tol(k)).unwrap();
         close(im.volume, l * b * t, k * k * k, "volume");
         let at = im.centroid.unwrap();
-        close(at.z, t / 2.0, k, "KB = T/2");
+        close(at.z, t / 2.0, k, "centroid T/2");
         close(at.x, 0.0, k, "LCB");
         close(at.y, 0.0, k, "TCB");
         let wp = im.section;
@@ -75,7 +75,12 @@ fn box_barge_matches_its_closed_forms() {
             k * k,
             "surface below",
         );
-        close(wp.i_x / im.volume, b * b / (12.0 * t), k, "BM = B²/(12 T)");
+        close(
+            wp.i_x / im.volume,
+            b * b / (12.0 * t),
+            k,
+            "ix / V = B²/(12 T)",
+        );
         // Found again from its volume: the offset T = V / (L B).
         let found = level_for(&[&body], &upright(), l * b * t, &tol(k)).unwrap();
         close(found.below.offset, t, k, "offset");
@@ -104,9 +109,9 @@ fn a_sphere_matches_the_spherical_cap() {
             close(im.section.i_x, PI * a2 * a2 / 4.0, k.powi(4), "I");
             close(im.section.i_y, PI * a2 * a2 / 4.0, k.powi(4), "I");
             close(im.surface, 2.0 * PI * r * s, k * k, "cap area");
-            // The metacentre of a sphere is its centre at every draft.
+            // For a sphere the centroid height plus ix / V is its centre at every level.
             let km = im.centroid.unwrap().z + im.section.i_x / im.volume;
-            close(km, 0.0, k, "KM of a sphere is R");
+            close(km, 0.0, k, "centroid height + ix / V is the centre");
         }
     }
 }
@@ -135,9 +140,9 @@ fn a_horizontal_cylinder_matches_the_circular_segment() {
                 im.section.i_x,
                 l * (2.0 * c).powi(3) / 12.0,
                 k.powi(4),
-                "I_T",
+                "ix",
             );
-            close(im.section.i_y, 2.0 * c * l.powi(3) / 12.0, k.powi(4), "I_L");
+            close(im.section.i_y, 2.0 * c * l.powi(3) / 12.0, k.powi(4), "iy");
             close(
                 im.surface,
                 2.0 * segment + l * r * theta,
@@ -149,7 +154,7 @@ fn a_horizontal_cylinder_matches_the_circular_segment() {
 }
 
 /// A square prism standing on an edge: below its half-diagonal a V of
-/// 90°, so ∇ = L T², KB = 2T/3, BM = 2T/3 (tan 45° = 1).
+/// 90°, so V = L T², centroid 2T/3, ix / V = 2T/3 (tan 45° = 1).
 #[test]
 fn a_v_prism_matches_the_triangle() {
     for k in SCALES {
@@ -164,18 +169,18 @@ fn a_v_prism_matches_the_triangle() {
         let body = block(&frame, l, side, side).unwrap();
         let im = below(&[&body], &upright(), t, &tol(k)).unwrap();
         close(im.volume, l * t * t, k.powi(3), "V");
-        close(im.centroid.unwrap().z, 2.0 * t / 3.0, k, "KB");
+        close(im.centroid.unwrap().z, 2.0 * t / 3.0, k, "centroid");
         close(im.section.area, 2.0 * t * l, k * k, "A");
-        close(im.section.i_x / im.volume, 2.0 * t / 3.0, k, "BM");
+        close(im.section.i_x / im.volume, 2.0 * t / 3.0, k, "ix / V");
     }
 }
 
-/// The same barge moved and turned in space, measured in a plane turned
+/// The same box moved and turned in space, measured in a plane turned
 /// with it, gives the same numbers.
 #[test]
 fn results_do_not_depend_on_where_the_body_lies() {
     for k in SCALES {
-        let body = barge(k, (4.0, 1.0, 1.0));
+        let body = boxed(k, (4.0, 1.0, 1.0));
         let plane = upright();
         let t = 0.3 * k;
         let reference = below(&[&body], &plane, t, &tol(k)).unwrap();
@@ -201,57 +206,44 @@ fn results_do_not_depend_on_where_the_body_lies() {
             k,
             "centroid height",
         );
-        close(im.section.i_x, reference.section.i_x, k.powi(4), "I_T");
-        close(im.section.i_y, reference.section.i_y, k.powi(4), "I_L");
+        close(im.section.i_x, reference.section.i_x, k.powi(4), "ix");
+        close(im.section.i_y, reference.section.i_y, k.powi(4), "iy");
         close(im.surface, reference.surface, k * k, "surface below");
     }
 }
 
-/// A wall-sided box heeled while its deck edge stays dry and its bilge
-/// under: GZ = sin φ (GM + BM tan²φ / 2) (Tupper).
+/// A box under a plane turned by φ about its x axis, with the same
+/// volume below as upright (depth T) while the plane stays on its side
+/// walls: the centroid below moves sideways, and its lever about a point
+/// q on the box's axis at height c, (centroid − q) · (normal × x), is the
+/// closed form sin φ (T/2 + r − c + r tan²φ / 2) with r = ix / V upright
+/// = B²/(12 T) (the wall-sided formula; Tupper, *Introduction to Naval
+/// Architecture*).
 #[test]
-fn a_heeled_box_follows_the_wall_sided_formula() {
+fn a_turned_plane_moves_the_centroid_below_by_the_wall_sided_form() {
     for k in SCALES {
-        let (b, t, kg) = (k, 0.4 * k, 0.45 * k);
-        let body = barge(k, (4.0, 1.0, 1.0));
+        let (b, t, c) = (k, 0.4 * k, 0.45 * k);
+        let body = boxed(k, (4.0, 1.0, 1.0));
         let volume = 4.0 * k * b * t;
-        let up = level_for(&[&body], &upright(), volume, &tol(k)).unwrap();
-        let bm = up.below.section.i_x / up.below.volume;
-        let gm = t / 2.0 + bm - kg;
-        close(bm, b * b / (12.0 * t), k, "BM");
-        let g = Vec3::new(0.0, 0.0, kg);
+        let upright_level = level_for(&[&body], &upright(), volume, &tol(k)).unwrap();
+        let r = upright_level.below.section.i_x / upright_level.below.volume;
+        close(r, b * b / (12.0 * t), k, "ix / V = B²/(12 T)");
+        let q = Vec3::new(0.0, 0.0, c);
         for degrees in [5.0_f64, 10.0, -10.0] {
             let phi = degrees.to_radians();
             let plane = turned(&upright(), phi);
-            let heeled = level_for(&[&body], &plane, volume, &tol(k)).unwrap();
-            let at = heeled.below.centroid.unwrap();
-            let gz = (at - g).dot(plane.normal.cross(plane.x_axis));
-            let want = phi.sin() * (gm + 0.5 * bm * phi.tan().powi(2));
-            close(gz, want, k, "GZ");
+            let found = level_for(&[&body], &plane, volume, &tol(k)).unwrap();
+            let at = found.below.centroid.unwrap();
+            let lever = (at - q).dot(plane.normal.cross(plane.x_axis));
+            let want = phi.sin() * (t / 2.0 + r - c + 0.5 * r * phi.tan().powi(2));
+            close(lever, want, k, "the centroid's lever");
         }
-    }
-}
-
-/// GM changes sign at B/D = √(6 s (1 − s)) for a box of uniform relative
-/// density s floating upright with G at its middle.
-#[test]
-fn gm_of_a_box_changes_sign_at_its_stability_limit() {
-    let s = 0.5_f64;
-    let limit = (6.0 * s * (1.0 - s)).sqrt();
-    for (ratio, stable) in [(limit * 1.02, true), (limit * 0.98, false)] {
-        let body = barge(1.0, (4.0, ratio, 1.0));
-        let volume = 4.0 * ratio * s;
-        let found = level_for(&[&body], &upright(), volume, &tol(1.0)).unwrap();
-        close(found.below.offset, s, 1.0, "draft");
-        let im = found.below;
-        let gm = im.centroid.unwrap().z + im.section.i_x / im.volume - 0.5;
-        assert_eq!(gm > 0.0, stable, "B/D {ratio}: GM {gm}");
     }
 }
 
 #[test]
 fn what_cannot_be_cut_is_said() {
-    let body = barge(1.0, (4.0, 1.0, 1.0));
+    let body = boxed(1.0, (4.0, 1.0, 1.0));
     let plane = upright();
     let t = &tol(1.0);
     assert!(matches!(
@@ -291,11 +283,11 @@ fn what_cannot_be_cut_is_said() {
     assert_eq!(all.section.area, 0.0);
 }
 
-/// Two bodies  are summed: twice one hull, the section's
+/// Two bodies  are summed: twice one, the section's
 /// second moment about the middle by the parallel-axis rule.
 #[test]
-fn two_hulls_sum_and_move_their_moments() {
-    let hull = |y: f64| {
+fn two_bodies_sum_and_move_their_moments() {
+    let part = |y: f64| {
         let frame = Frame::new(
             Vec3::new(-2.0, y - 0.25, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
@@ -304,11 +296,11 @@ fn two_hulls_sum_and_move_their_moments() {
         .unwrap();
         block(&frame, 4.0, 0.5, 1.0).unwrap()
     };
-    let (a, b) = (hull(-1.0), hull(1.0));
+    let (a, b) = (part(-1.0), part(1.0));
     let im = below(&[&a, &b], &upright(), 0.2, &tol(1.0)).unwrap();
     close(im.volume, 2.0 * 4.0 * 0.5 * 0.2, 1.0, "V");
     let one = 4.0 * 0.5_f64.powi(3) / 12.0;
-    close(im.section.i_x, 2.0 * (one + 4.0 * 0.5 * 1.0), 1.0, "I_T");
+    close(im.section.i_x, 2.0 * (one + 4.0 * 0.5 * 1.0), 1.0, "ix");
     close(im.section.centroid.unwrap().y, 0.0, 1.0, "centre");
 }
 
@@ -341,10 +333,10 @@ fn a_spline_cone_apex_down_matches_the_cone() {
             );
         };
         within(im.volume, PI * r * r * h / 3.0, 3, "volume");
-        within(im.centroid.unwrap().z, 0.75 * h, 1, "KB = 3h/4");
+        within(im.centroid.unwrap().z, 0.75 * h, 1, "centroid 3h/4");
         within(im.section.area, PI * r * r, 2, "section");
-        within(im.section.i_x, PI * r.powi(4) / 4.0, 4, "I_T");
-        within(im.section.i_y, PI * r.powi(4) / 4.0, 4, "I_L");
+        within(im.section.i_x, PI * r.powi(4) / 4.0, 4, "ix");
+        within(im.section.i_y, PI * r.powi(4) / 4.0, 4, "iy");
         within(im.surface, PI * r * r.hypot(h), 2, "surface below");
         // Found again from its own volume.
         let found = level_for(&[&body], &upright(), im.volume, &t).unwrap();
@@ -380,5 +372,142 @@ fn a_turned_rectangle_gives_its_principal_moments_back() {
             "major axis square to the long side",
         );
         close(im.section.area, w * h, k * k, "area");
+    }
+}
+
+/// A thin rod (radius r, length 1000 r) tilted by α from the plane's
+/// normal and cut near its lower end, far from the middle of its box: the
+/// section is an ellipse with semi-axes r / cos α (along x) and r, and its
+/// moments are π a b³/4 and π a³ b/4, to 1e-9 of themselves although they
+/// are a ten-billionth of the rod's size to the fourth power.
+#[test]
+fn a_thin_tilted_rod_cut_far_from_its_middle_keeps_its_section_moments() {
+    for k in SCALES {
+        let (r, l, alpha) = (k, 1000.0 * k, 0.5_f64);
+        let axis = Vec3::new(alpha.sin(), 0.0, alpha.cos());
+        let frame = Frame::new(Vec3::ZERO, axis, Vec3::new(0.0, 1.0, 0.0)).unwrap();
+        let body = cylinder(&frame, r, l).unwrap();
+        let im = below(&[&body], &upright(), 5.0 * k, &tol(k)).unwrap();
+        let (a, b) = (r / alpha.cos(), r);
+        let s = im.section;
+        close(s.area, PI * a * b, k * k, "ellipse area");
+        let rel = |got: f64, want: f64, what: &str| {
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "{what} at scale {k}: got {got}, want {want}"
+            );
+        };
+        rel(s.i_x, PI * a * b.powi(3) / 4.0, "ix");
+        rel(s.i_y, PI * a.powi(3) * b / 4.0, "iy");
+        assert!(s.product.abs() <= 1e-9 * s.i_y, "ixy {}", s.product);
+    }
+}
+
+/// A tube (a cylinder less a coaxial one) standing on the plane's normal:
+/// its section is an annulus, the inner loop a hole, A = π (R² − r²) and
+/// ix = iy = π (R⁴ − r⁴) / 4.
+#[test]
+fn a_section_with_a_hole_takes_its_inner_loop_off() {
+    for k in SCALES {
+        let (big, small, h) = (2.0 * k, k, 3.0 * k);
+        let outer = cylinder(&Frame::WORLD, big, h).unwrap();
+        let low = Frame::new(
+            Vec3::new(0.0, 0.0, -k),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let inner = cylinder(&low, small, h + 2.0 * k).unwrap();
+        let tube = boolean(&outer, &inner, BooleanOp::Subtract, &tol(k))
+            .unwrap()
+            .body;
+        let im = below(&[&tube], &upright(), 1.5 * k, &tol(k)).unwrap();
+        close(
+            im.section.area,
+            PI * (big * big - small * small),
+            k * k,
+            "annulus",
+        );
+        let i = PI * (big.powi(4) - small.powi(4)) / 4.0;
+        close(im.section.i_x, i, k.powi(4), "ix");
+        close(im.section.i_y, i, k.powi(4), "iy");
+        close(
+            im.volume,
+            PI * (big * big - small * small) * 1.5 * k,
+            k.powi(3),
+            "volume",
+        );
+    }
+}
+
+/// A U (a block with a slot cut from its top) cut above the slot's
+/// floor: one body, two section faces, each w × d at ±(gap + w)/2.
+#[test]
+fn one_body_with_two_section_faces_sums_them() {
+    for k in SCALES {
+        let (w, gap, d) = (k, 2.0 * k, 3.0 * k);
+        let width = 2.0 * w + gap;
+        let at = |x: f64, y: f64, z: f64| {
+            Frame::new(
+                Vec3::new(x, y, z),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let solid = block(&at(-width / 2.0, -d / 2.0, 0.0), width, d, 3.0 * k).unwrap();
+        let slot = block(&at(-gap / 2.0, -d, k), gap, 2.0 * d, 3.0 * k).unwrap();
+        let u = boolean(&solid, &slot, BooleanOp::Subtract, &tol(k))
+            .unwrap()
+            .body;
+        let im = below(&[&u], &upright(), 2.0 * k, &tol(k)).unwrap();
+        close(im.section.area, 2.0 * w * d, k * k, "two rectangles");
+        let off = 0.5 * (gap + w);
+        close(
+            im.section.i_y,
+            2.0 * (d * w.powi(3) / 12.0 + w * d * off * off),
+            k.powi(4),
+            "iy by the parallel-axis rule",
+        );
+        close(im.section.i_x, 2.0 * w * d.powi(3) / 12.0, k.powi(4), "ix");
+        close(im.section.centroid.unwrap().x, 0.0, k, "centred");
+    }
+}
+
+/// A stepped block (2 × 1 × 1 with 1 × 1 × 1 on top): the level for a
+/// volume of 2 is the shoulder, where Newton's first step lands exactly
+/// and the plane lies on the step's flat face (coincident faces, which the
+/// boolean handles); and the measure at exactly that offset.
+#[test]
+fn a_level_on_a_flat_face_of_the_body_is_found() {
+    for k in SCALES {
+        let at = |x: f64, z: f64| {
+            Frame::new(
+                Vec3::new(x, 0.0, z),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let base = block(&at(0.0, 0.0), 2.0 * k, k, k).unwrap();
+        let top = block(&at(0.0, k), k, k, k).unwrap();
+        let stepped = boolean(&base, &top, BooleanOp::Union, &tol(k))
+            .unwrap()
+            .body;
+        let found = level_for(&[&stepped], &upright(), 2.0 * k.powi(3), &tol(k)).unwrap();
+        close(found.below.offset, k, k, "the shoulder");
+        let at_shoulder = below(&[&stepped], &upright(), k, &tol(k)).unwrap();
+        close(
+            at_shoulder.volume,
+            2.0 * k.powi(3),
+            k.powi(3),
+            "volume at the shoulder",
+        );
+        close(
+            at_shoulder.section.area,
+            2.0 * k * k,
+            k * k,
+            "the section at the shoulder",
+        );
     }
 }

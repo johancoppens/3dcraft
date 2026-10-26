@@ -34,8 +34,9 @@ use crate::boolean::{BooleanOp, FaceSource, Operand, boolean};
 use crate::primitives::block;
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::quadrature::Rule;
-use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
+use craft3d_math::{Bbox3, Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, FaceId, MassError, TransformError, mass_properties};
+use std::cell::OnceCell;
 use std::f64::consts::PI;
 use std::fmt;
 
@@ -51,6 +52,12 @@ pub const MAX_STEPS: usize = 64;
 /// integrals can tell apart; the offset is then within the residual over
 /// the section's area.
 pub const SETTLED: f64 = 1e-10;
+
+/// Where the bracket can no longer be narrowed, the offset found is
+/// still the answer when the volume is within this much (relative) of
+/// the one asked for: a thousand times [`SETTLED`], the rounding of an
+/// offset next to a steep section. Further off it is "did not converge".
+pub const UNSETTLED: f64 = 1e-7;
 
 /// Two Gauss–Legendre sums of a section's panel agree when they differ by
 /// at most this much of the bodies' size to the integral's power, in
@@ -202,6 +209,14 @@ pub enum CutError {
         body: usize,
         what: &'static str,
     },
+    /// The boolean found nothing below the plane, but a vertex of `body`
+    /// lies `depth` below it (more than the tolerance): an answer of
+    /// nothing would be wrong, so it is an error.
+    LostBelow {
+        body: usize,
+        offset: f64,
+        depth: f64,
+    },
     /// The volume asked for is not strictly between 0 and the bodies'
     /// whole volume `total`, so no plane leaves it below.
     OutOfRange {
@@ -247,6 +262,14 @@ impl fmt::Display for CutError {
             CutError::Section { body, what } => {
                 write!(f, "the section of body {body}: {what}")
             }
+            CutError::LostBelow {
+                body,
+                offset,
+                depth,
+            } => write!(
+                f,
+                "nothing of body {body} was found below the plane at offset {offset}, yet a vertex of it lies {depth} below: not measured"
+            ),
             CutError::OutOfRange { volume, total } => write!(
                 f,
                 "a volume of {volume} is outside (0, {total}), the bodies' whole volume: no plane leaves it below"
@@ -266,68 +289,109 @@ impl fmt::Display for CutError {
 
 impl std::error::Error for CutError {}
 
-/// The extent of `bodies` along `direction`: a range that certainly holds
-/// every point of them (from their boxes, `Body::bbox`), and their box.
+/// The extent of `bodies` along `direction` (unit): a range that
+/// certainly holds every point of them, and their box.
 pub fn extent(bodies: &[&Body], direction: Vec3) -> Result<(f64, f64, Bbox3), CutError> {
+    let prepared = prepare(bodies, direction)?;
     let mut all = Bbox3::EMPTY;
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (index, body) in bodies.iter().enumerate() {
-        let (l, h, b) = body_extent(index, body, direction)?;
-        lo = lo.min(l);
-        hi = hi.max(h);
-        if let Some((a, c)) = b.corners() {
+    for one in &prepared {
+        lo = lo.min(one.lo);
+        hi = hi.max(one.hi);
+        if let Some((a, c)) = one.bbox.corners() {
             all.add(a);
             all.add(c);
         }
     }
-    if bodies.is_empty() {
-        return Err(CutError::NoBodies);
-    }
     Ok((lo, hi, all))
 }
 
+/// A body with what is measured of it once for every plane of one
+/// direction: its extent along the direction, its box, and (when asked
+/// for) its whole volume, first moment and area.
+struct Prepared<'b> {
+    index: usize,
+    body: &'b Body,
+    lo: f64,
+    hi: f64,
+    bbox: Bbox3,
+    whole: OnceCell<Result<(f64, Vec3, f64), CutError>>,
+}
+
+impl Prepared<'_> {
+    fn whole(&self) -> Result<(f64, Vec3, f64), CutError> {
+        self.whole
+            .get_or_init(|| whole(self.index, self.body))
+            .clone()
+    }
+}
+
+fn prepare<'b>(bodies: &[&'b Body], direction: Vec3) -> Result<Vec<Prepared<'b>>, CutError> {
+    if bodies.is_empty() {
+        return Err(CutError::NoBodies);
+    }
+    bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| {
+            if body.kind != BodyKind::Solid {
+                return Err(CutError::NotSolid { body: index });
+            }
+            let (lo, hi, bbox) = body_extent(index, body, direction)?;
+            Ok(Prepared {
+                index,
+                body,
+                lo,
+                hi,
+                bbox,
+                whole: OnceCell::new(),
+            })
+        })
+        .collect()
+}
+
+/// The extent of a body along `direction`: the z range of the held box
+/// (`Body::held_bbox`, tight for planes, cylinders, cones, spheres and
+/// tori with lines, circles and ellipses) of the body turned so that
+/// `direction` is z, and the body's own box.
 fn body_extent(index: usize, body: &Body, direction: Vec3) -> Result<(f64, f64, Bbox3), CutError> {
-    let bbox = body
-        .bbox()
-        .map_err(|error| CutError::Boxing { body: index, error })?;
-    let Some((a, b)) = bbox.corners() else {
+    let boxing = |error| CutError::Boxing { body: index, error };
+    let bbox = body.bbox().map_err(boxing)?;
+    if bbox.corners().is_none() {
+        return Err(CutError::NoVolume {
+            body: index,
+            volume: 0.0,
+        });
+    }
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let cos = direction.dot(z).clamp(-1.0, 1.0);
+    let axis = direction.cross(z);
+    let turn = match axis.normalized() {
+        // Turning `direction` onto z about their common normal.
+        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.acos()),
+        // Along z already, or against it.
+        _ if cos > 0.0 => Some(Transform::IDENTITY),
+        _ => Transform::rotation(Vec3::new(1.0, 0.0, 0.0), PI),
+    }
+    .ok_or(CutError::InvalidPlane("the normal gives no rotation"))?;
+    let turned = body.transformed(&turn).map_err(boxing)?;
+    let held = turned.held_bbox().map_err(boxing)?;
+    let Some((a, b)) = held.corners() else {
         return Err(CutError::NoVolume {
             body: index,
             volume: 0.0,
         });
     };
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for k in 0..8_u32 {
-        let corner = Vec3::new(
-            if k & 1 == 0 { a.x } else { b.x },
-            if k & 2 == 0 { a.y } else { b.y },
-            if k & 4 == 0 { a.z } else { b.z },
-        );
-        let h = corner.dot(direction);
-        lo = lo.min(h);
-        hi = hi.max(h);
-    }
+    let (lo, hi) = (a.z, b.z);
     if !(lo.is_finite() && hi.is_finite()) {
         return Err(CutError::NotFinite("the bodies' box"));
     }
     Ok((lo, hi, bbox))
 }
 
-/// What one body has below the plane: its volume, the first moment of the
-/// volume about the origin, its surface area below, and the six plane
-/// integrals of its section about the common point `o` (area, ∫a, ∫b,
-/// ∫a², ∫ab, ∫b²).
-#[derive(Clone, Copy, Debug, Default)]
-struct Part {
-    volume: f64,
-    moment: Vec3,
-    surface: f64,
-    plane: [f64; 6],
-}
-
 /// What lies below the plane `{p : p · side.normal = offset}` of each of
-/// `bodies`, summed. Bodies that overlap are counted
-/// once each, as separate bodies are: give bodies that do not.
+/// `bodies`, summed. Bodies that overlap are counted once each, as
+/// separate bodies are: give bodies that do not.
 pub fn below(
     bodies: &[&Body],
     side: &CutPlane,
@@ -337,59 +401,121 @@ pub fn below(
     if !offset.is_finite() {
         return Err(CutError::NotFinite("the offset"));
     }
-    let (_, _, all) = extent(bodies, side.normal)?;
-    below_in(bodies, side, offset, tolerance, &all)
+    let prepared = prepare(bodies, side.normal)?;
+    below_in(&prepared, side, offset, tolerance)
+}
+
+/// One body's part below the plane: its volume, the first moment of that
+/// volume about the origin, its area (the section's faces counted), and
+/// the solid with the faces of it that make the section.
+struct Part {
+    volume: f64,
+    moment: Vec3,
+    area: f64,
+    cut: Option<(Body, Vec<usize>)>,
 }
 
 fn below_in(
-    bodies: &[&Body],
+    bodies: &[Prepared<'_>],
     side: &CutPlane,
     offset: f64,
     tolerance: &Tolerance,
-    all: &Bbox3,
 ) -> Result<BelowPlane, CutError> {
-    let center = all.center().unwrap_or(Vec3::ZERO);
-    let size = (0.5 * all.diagonal()).max(f64::MIN_POSITIVE);
-    // The point the section's moments are taken about: in the plane,
-    // over the middle of the bodies, so a small section far from the
-    // origin loses nothing to cancellation.
-    let o = center + side.normal * (offset - center.dot(side.normal));
-    let mut total = Part::default();
-    for (index, body) in bodies.iter().enumerate() {
-        let below = part_one(index, body, side, offset, tolerance, (o, size))?;
-        total.volume += below.volume;
-        total.moment += below.moment;
-        total.surface += below.surface;
-        for (sum, part) in total.plane.iter_mut().zip(below.plane) {
-            *sum += part;
+    let mut parts = Vec::with_capacity(bodies.len());
+    for one in bodies {
+        parts.push(part_one(one, side, offset, tolerance)?);
+    }
+    let (mut volume, mut moment, mut area) = (0.0, Vec3::ZERO, 0.0);
+    // The section's own extent: the boxes of its faces.
+    let mut extent = Bbox3::EMPTY;
+    for (index, part) in parts.iter().enumerate() {
+        volume += part.volume;
+        moment += part.moment;
+        area += part.area;
+        if let Some((body, caps)) = &part.cut {
+            for &face in caps {
+                let face_id = FaceId(u32::try_from(face).unwrap_or(u32::MAX));
+                let b = body
+                    .face_bbox(face_id)
+                    .map_err(|error| CutError::Boxing { body: index, error })?;
+                if let Some((a, c)) = b.corners() {
+                    extent.add(a);
+                    extent.add(c);
+                }
+            }
         }
     }
-    let centroid = (total.volume > 0.0).then(|| total.moment * (1.0 / total.volume));
-    let [area, sa, sb, iaa, iab, ibb] = total.plane;
-    let section = if area > 0.0 {
-        let (ca, cb) = (sa / area, sb / area);
-        Section {
-            area,
-            centroid: Some(o + side.x_axis * ca + side.y_axis() * cb),
-            i_x: ibb - area * cb * cb,
-            i_y: iaa - area * ca * ca,
-            product: iab - area * ca * cb,
-        }
-    } else {
-        Section {
-            area: 0.0,
-            centroid: None,
-            i_x: 0.0,
-            i_y: 0.0,
-            product: 0.0,
-        }
-    };
+    let centroid = (volume > 0.0).then(|| moment * (1.0 / volume));
+    let section = section_of(&parts, side, offset, &extent)?;
     Ok(BelowPlane {
         offset,
-        volume: total.volume,
+        volume,
         centroid,
-        surface: total.surface,
+        surface: (area - section.area).max(0.0),
         section,
+    })
+}
+
+/// The section's integrals over every part's section faces about `o`,
+/// held to the section's own size.
+fn sums_about(parts: &[Part], side: &CutPlane, o: Vec3, size: f64) -> Result<[f64; 6], CutError> {
+    let rule = (Rule::new(8), Rule::new(16));
+    let mut total = [0.0; 6];
+    for (index, part) in parts.iter().enumerate() {
+        let Some((body, caps)) = &part.cut else {
+            continue;
+        };
+        let mut budget = MAX_PANELS;
+        for &face in caps {
+            let sums = cap_sums(body, face, side, (o, size), &rule, &mut budget)
+                .map_err(|what| CutError::Section { body: index, what })?;
+            for (sum, part) in total.iter_mut().zip(sums) {
+                *sum += part;
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// The section in two passes, each about a point near what it sums so
+/// that nothing is lost to cancellation: the area and the first moments
+/// about the middle of the section's box, which give the centroid; then
+/// the second moments about the centroid itself. Both are held to the
+/// section's own size (its box), not to the bodies'.
+fn section_of(
+    parts: &[Part],
+    side: &CutPlane,
+    offset: f64,
+    extent: &Bbox3,
+) -> Result<Section, CutError> {
+    let empty = Section {
+        area: 0.0,
+        centroid: None,
+        i_x: 0.0,
+        i_y: 0.0,
+        product: 0.0,
+    };
+    let Some(middle) = extent.center() else {
+        return Ok(empty);
+    };
+    let size = (0.5 * extent.diagonal()).max(f64::MIN_POSITIVE);
+    let onto = |p: Vec3| p + side.normal * (offset - p.dot(side.normal));
+    let o = onto(middle);
+    let [area, sa, sb, ..] = sums_about(parts, side, o, size)?;
+    if area.is_nan() || area <= 0.0 {
+        return Ok(empty);
+    }
+    let centroid = o + side.x_axis * (sa / area) + side.y_axis() * (sb / area);
+    let [_, sa, sb, iaa, iab, ibb] = sums_about(parts, side, centroid, size)?;
+    // What is left of the first moments about the centroid is rounding;
+    // the parallel-axis rule takes it out of the second.
+    let (ca, cb) = (sa / area, sb / area);
+    Ok(Section {
+        area,
+        centroid: Some(centroid),
+        i_x: ibb - area * cb * cb,
+        i_y: iaa - area * ca * ca,
+        product: iab - area * ca * cb,
     })
 }
 
@@ -409,34 +535,63 @@ fn whole(index: usize, body: &Body) -> Result<(f64, Vec3, f64), CutError> {
     Ok((props.volume, centroid * props.volume, props.area))
 }
 
-fn part_one(
-    index: usize,
-    body: &Body,
+/// Nothing found below the plane, which is right only when no vertex of
+/// the body lies more than the tolerance below it.
+fn nothing_below(
+    one: &Prepared<'_>,
     side: &CutPlane,
     offset: f64,
     tolerance: &Tolerance,
-    (o, size): (Vec3, f64),
 ) -> Result<Part, CutError> {
-    if body.kind != BodyKind::Solid {
-        return Err(CutError::NotSolid { body: index });
+    let deepest = one
+        .body
+        .vertices
+        .iter()
+        .map(|v| v.point.dot(side.normal))
+        .fold(f64::INFINITY, f64::min);
+    if deepest < offset - tolerance.linear {
+        return Err(CutError::LostBelow {
+            body: one.index,
+            offset,
+            depth: offset - deepest,
+        });
     }
-    let (lo, hi, bbox) = body_extent(index, body, side.normal)?;
-    if offset <= lo {
-        return Ok(Part::default());
+    Ok(Part {
+        volume: 0.0,
+        moment: Vec3::ZERO,
+        area: 0.0,
+        cut: None,
+    })
+}
+
+fn part_one(
+    one: &Prepared<'_>,
+    side: &CutPlane,
+    offset: f64,
+    tolerance: &Tolerance,
+) -> Result<Part, CutError> {
+    let index = one.index;
+    if offset <= one.lo {
+        return Ok(Part {
+            volume: 0.0,
+            moment: Vec3::ZERO,
+            area: 0.0,
+            cut: None,
+        });
     }
-    if offset >= hi {
-        let (volume, moment, surface) = whole(index, body)?;
+    if offset >= one.hi {
+        let (volume, moment, area) = one.whole()?;
         return Ok(Part {
             volume,
             moment,
-            surface,
-            plane: [0.0; 6],
+            area,
+            cut: None,
         });
     }
     // A box with its top face in the plane that holds all of the body
     // below it: wider than the body's box on every side, and deeper.
-    let center = bbox.center().unwrap_or(Vec3::ZERO);
-    let r = 0.5 * bbox.diagonal();
+    let center = one.bbox.center().unwrap_or(Vec3::ZERO);
+    let r = 0.5 * one.bbox.diagonal();
     let margin = 0.25 * r + 10.0 * tolerance.linear;
     let half = r + margin;
     let depth = offset - (center.dot(side.normal) - r) + margin;
@@ -449,9 +604,11 @@ fn part_one(
         offset,
         error,
     })?;
-    let cut = match boolean(body, &tool, BooleanOp::Intersect, tolerance) {
+    let cut = match boolean(one.body, &tool, BooleanOp::Intersect, tolerance) {
         Ok(cut) => cut,
-        Err(KernelError::EmptyResult { .. }) => return Ok(Part::default()),
+        Err(KernelError::EmptyResult { .. }) => {
+            return nothing_below(one, side, offset, tolerance);
+        }
         Err(error) => {
             return Err(CutError::Kernel {
                 body: index,
@@ -480,24 +637,13 @@ fn part_one(
     let props =
         mass_properties(&cut.body).map_err(|error| CutError::Mass { body: index, error })?;
     let Some(centroid) = props.centroid.filter(|_| props.volume > 0.0) else {
-        return Ok(Part::default());
+        return nothing_below(one, side, offset, tolerance);
     };
-    let mut plane = [0.0; 6];
-    let mut budget = MAX_PANELS;
-    let rule = (Rule::new(8), Rule::new(16));
-    for face in caps {
-        let sums = cap_sums(&cut.body, face, side, (o, size), &rule, &mut budget)
-            .map_err(|what| CutError::Section { body: index, what })?;
-        for (sum, part) in plane.iter_mut().zip(sums) {
-            *sum += part;
-        }
-    }
-    let [cap_area, ..] = plane;
     Ok(Part {
         volume: props.volume,
         moment: centroid * props.volume,
-        surface: (props.area - cap_area).max(0.0),
-        plane,
+        area: props.area,
+        cut: Some((cut.body, caps)),
     })
 }
 
@@ -677,7 +823,10 @@ fn edge_sums(
 
 /// The offset of a plane square to `side.normal` at which the volume of
 /// `bodies` below it is `volume`, found as the module documentation says,
-/// and what lies below the plane there.
+/// and what lies below the plane there. An offset the boolean refuses
+/// (a face of a body lying in the plane where a Newton step landed) is
+/// stepped around by halving the bracket instead; one refused where the
+/// halving lands is the error.
 pub fn level_for(
     bodies: &[&Body],
     side: &CutPlane,
@@ -687,11 +836,13 @@ pub fn level_for(
     if !volume.is_finite() {
         return Err(CutError::NotFinite("the volume"));
     }
-
-    let (mut lo, mut hi, all) = extent(bodies, side.normal)?;
+    let prepared = prepare(bodies, side.normal)?;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut most = 0.0;
-    for (index, body) in bodies.iter().enumerate() {
-        most += whole(index, body)?.0;
+    for one in &prepared {
+        lo = lo.min(one.lo);
+        hi = hi.max(one.hi);
+        most += one.whole()?.0;
     }
     if volume <= 0.0 || volume >= most {
         return Err(CutError::OutOfRange {
@@ -701,8 +852,21 @@ pub fn level_for(
     }
     let mut offset = lo + (hi - lo) * (volume / most);
     let mut last_residual = f64::INFINITY;
+    let mut halving_now = false;
     for step in 1..=MAX_STEPS {
-        let found = below_in(bodies, side, offset, tolerance, &all)?;
+        let found = match below_in(&prepared, side, offset, tolerance) {
+            Ok(found) => found,
+            Err(error @ CutError::Kernel { .. }) => {
+                let halving = 0.5 * (lo + hi);
+                if !halving_now && halving > lo && halving < hi && halving != offset {
+                    offset = halving;
+                    halving_now = true;
+                    continue;
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let residual = found.volume - volume;
         if residual.abs() <= SETTLED * volume {
             return Ok(Level {
@@ -719,22 +883,29 @@ pub fn level_for(
         let area = found.section.area;
         let newton = offset - residual / area;
         let halving = 0.5 * (lo + hi);
-        let next = if area > 0.0
+        let use_newton = area > 0.0
             && newton.is_finite()
             && newton > lo
             && newton < hi
-            && residual.abs() <= 0.5 * last_residual
-        {
-            newton
-        } else {
-            halving
-        };
+            && residual.abs() <= 0.5 * last_residual;
+        let next = if use_newton { newton } else { halving };
+        halving_now = !use_newton;
         last_residual = residual.abs();
         if !(next > lo && next < hi) {
-            // The bracket is as narrow as an f64 makes it.
-            return Ok(Level {
-                below: found,
+            // The bracket is as narrow as an f64 makes it: an answer only
+            // when the volume is near what was asked for, else the volume
+            // jumps there (which a closed body's does not).
+            if residual.abs() <= UNSETTLED * volume {
+                return Ok(Level {
+                    below: found,
+                    steps: step,
+                    residual: residual.abs(),
+                });
+            }
+            return Err(CutError::NotConverged {
                 steps: step,
+                low: lo,
+                high: hi,
                 residual: residual.abs(),
             });
         }
