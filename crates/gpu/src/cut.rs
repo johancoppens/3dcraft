@@ -219,28 +219,27 @@ pub(crate) fn cap_layout(
 }
 
 /// The bind group of [`cap_layout`], for a count of several samples per
-/// pixel (`multisampled`) or one.
+/// pixel (`multisampled`) or one; `front` is what `peel::peel_bind` is
+/// given, the front and the nearest sampler.
 pub(crate) fn cap_bind(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     multisampled: bool,
-    front: Option<&wgpu::TextureView>,
+    front: Option<(&wgpu::TextureView, &wgpu::Sampler)>,
     parity: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    let sampler = (front.is_some() && peel::sampled_front(device, multisampled))
-        .then(|| peel::front_sampler(device));
     let mut entries = Vec::new();
-    if let Some(front) = front {
+    if let Some((front, sampler)) = front {
         entries.push(wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::TextureView(front),
         });
-    }
-    if let Some(sampler) = &sampler {
-        entries.push(wgpu::BindGroupEntry {
-            binding: peel::FRONT_SAMPLER_BINDING,
-            resource: wgpu::BindingResource::Sampler(sampler),
-        });
+        if peel::sampled_front(device, multisampled) {
+            entries.push(wgpu::BindGroupEntry {
+                binding: peel::FRONT_SAMPLER_BINDING,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
+        }
     }
     entries.push(wgpu::BindGroupEntry {
         binding: 1,

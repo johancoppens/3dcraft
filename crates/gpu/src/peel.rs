@@ -180,7 +180,9 @@ pub(crate) fn front_sampler_entry() -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// A sampler that takes the nearest texel (wgpu's default filters).
+/// A sampler that takes the nearest texel (wgpu's default filters), for a
+/// renderer that has none yet (`Onscreen` passes its own, the one its
+/// distance pass reads the depth buffer through).
 pub(crate) fn front_sampler(device: &wgpu::Device) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("craft3d front depth"),
@@ -205,19 +207,20 @@ pub(crate) fn peel_layout(device: &wgpu::Device, multisampled: bool) -> wgpu::Bi
 }
 
 /// The bind group of [`peel_layout`] for the front's depth buffer or keys,
-/// `front`.
+/// `front`, with `sampler` (one that takes the nearest texel) where
+/// [`sampled_front`].
 pub(crate) fn peel_bind(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     multisampled: bool,
     front: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
-    let sampler = sampled_front(device, multisampled).then(|| front_sampler(device));
     let mut entries = vec![wgpu::BindGroupEntry {
         binding: 0,
         resource: wgpu::BindingResource::TextureView(front),
     }];
-    if let Some(sampler) = &sampler {
+    if sampled_front(device, multisampled) {
         entries.push(wgpu::BindGroupEntry {
             binding: FRONT_SAMPLER_BINDING,
             resource: wgpu::BindingResource::Sampler(sampler),

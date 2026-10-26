@@ -754,7 +754,8 @@ pub struct Onscreen {
     distance_pipeline: wgpu::RenderPipeline,
     distance_layout: wgpu::BindGroupLayout,
     /// The nearest texel of a single-sampled depth buffer, for the
-    /// distance pass ([`SAMPLED_DEPTH`]).
+    /// distance pass ([`SAMPLED_DEPTH`]) and on OpenGL for the passes
+    /// behind the front (`peel::sampled_front`).
     depth_sampler: wgpu::Sampler,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
@@ -927,7 +928,9 @@ pub(crate) struct OverlaySources {
 /// takes a depth texture whose filter is not the nearest texel for
 /// incomplete and reads 0 from it (`texelFetch` too), and a texture only
 /// loaded from gets no sampler there (wgpu-hal's GL backend), so its
-/// default linear filter stays.
+/// default linear filter stays. The see-through and section passes read
+/// the front's depth the same way on OpenGL (`renderer::SAMPLED_FRONT`,
+/// through this same sampler); keep the two alike.
 const SAMPLED_DEPTH: &str = "textureSampleLevel(depth_texture, depth_sampler, \
      (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(textureDimensions(depth_texture)), 0.0).r";
 
@@ -2213,7 +2216,10 @@ impl Onscreen {
                 device,
                 &peeled.cap_behind_layout,
                 self.samples > 1,
-                Some(peel.key.as_ref().unwrap_or(&targets.depth)),
+                Some((
+                    peel.key.as_ref().unwrap_or(&targets.depth),
+                    &self.depth_sampler,
+                )),
                 &count.parity,
             ));
         }
@@ -2272,6 +2278,7 @@ impl Onscreen {
             &pipelines.peel_layout,
             self.samples > 1,
             key.as_ref().unwrap_or(&targets.depth),
+            &self.depth_sampler,
         );
         let blend_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("craft3d blend"),

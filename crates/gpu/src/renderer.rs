@@ -392,6 +392,9 @@ struct SeeThrough {
     peel_layout: wgpu::BindGroupLayout,
     blend_layout: wgpu::BindGroupLayout,
     table: peel::Table,
+    /// The nearest sampler the pass behind reads the front's depth
+    /// through on OpenGL (`peel::sampled_front`).
+    front_sampler: wgpu::Sampler,
 }
 
 /// A renderer on a device and queue the caller owns. It keeps its
@@ -630,7 +633,10 @@ const LOADED_FRONT: &str = "textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r
 /// The same texel, sampled at its centre through the nearest sampler of
 /// [`FRONT_SAMPLER`]: what OpenGL ES 3.0 (WebGL2) reads a depth texture
 /// with, since it takes one whose filter is not the nearest texel for
-/// incomplete and loads 0 from it (`peel::sampled_front`).
+/// incomplete and loads 0 from it (`peel::sampled_front`). The lines'
+/// distance pass reads the depth buffer the same way, for the same reason
+/// (`onscreen::SAMPLED_DEPTH`, with the texel's coordinates already
+/// integers there); keep the two alike.
 const SAMPLED_FRONT: &str = "textureSampleLevel(front_depth, front_sampler, \
      (floor(in.clip.xy) + vec2<f32>(0.5)) / vec2<f32>(textureDimensions(front_depth)), 0.0).r";
 
@@ -799,6 +805,7 @@ impl SeeThrough {
             peel_layout,
             blend_layout,
             table: peel::Table::new(device),
+            front_sampler: peel::front_sampler(device),
         }
     }
 }
@@ -1277,6 +1284,7 @@ impl Renderer {
             &pipelines.peel_layout,
             false,
             &targets.samples_depth_read,
+            &pipelines.front_sampler,
         );
         let bound = |binding, view| wgpu::BindGroupEntry {
             binding,
@@ -1326,14 +1334,15 @@ impl Renderer {
             });
         }
         if see_through
-            && let (Some(cut), Some(peeled)) = (&mut targets.cut, &pipelines.peeled)
+            && let (Some(cut), Some(peeled), Ok(peel)) =
+                (&mut targets.cut, &pipelines.peeled, &self.see_through)
             && cut.cap_behind_bind.is_none()
         {
             cut.cap_behind_bind = Some(cut::cap_bind(
                 device,
                 &peeled.cap_behind_layout,
                 false,
-                Some(&targets.samples_depth_read),
+                Some((&targets.samples_depth_read, &peel.front_sampler)),
                 &cut.parity,
             ));
         }
