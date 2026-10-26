@@ -4214,13 +4214,11 @@ fn a_fold_is_written_like_this_and_round_trips() {
                     line: EntityId(6),
                     kind: CreaseKind::Mountain,
                     angle: None,
-                    onto: None,
                 },
                 Crease {
                     line: EntityId(9),
                     kind: CreaseKind::Cut,
                     angle: None,
-                    onto: None,
                 },
             ],
             fixed: Some([Expr::new("1 mm"), Expr::new("2 mm")]),
