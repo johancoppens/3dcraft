@@ -1021,12 +1021,12 @@ fn classify(distances: &[f64], tol: f64, band: f64) -> Vec<bool> {
 /// How far from the tolerance a distance between `a` and `b` has to be
 /// to say on which side of it a point lies: a thousandth of the
 /// tolerance, and at least the rounding of coordinates as large as theirs
-/// (16 units in the last place: a distance computed from them is a few
+/// (8 units in the last place: a distance computed from them is a few
 /// off), so that the band is not lost below the rounding far from the
 /// origin; never more than half the tolerance, so that a crossing is
 /// still seen where the tolerance is finer than the rounding. At the
 /// default tolerance of 1e-6 and coordinates of 5e7 (a part of 1e6
-/// scaled) it is 1.8e-7, so a corner at 0.75 tol of a side is still
+/// scaled) it is 8.9e-8, so a corner at 0.75 tol of a side is still
 /// clearly within it (`profile_slanted.rs`); 256 units, first chosen,
 /// were 2.8e-6 there, capped at half the tolerance, and let it pass.
 fn clear_band(a: &Segment, b: &Segment, tol: f64) -> f64 {
@@ -1036,7 +1036,7 @@ fn clear_band(a: &Segment, b: &Segment, tol: f64) -> f64 {
         .chain(b.bbox())
         .fold(0.0_f64, |m, c| m.max(c.abs()));
     (tol / 1024.0)
-        .max(16.0 * f64::EPSILON * size)
+        .max(8.0 * f64::EPSILON * size)
         .min(tol / 2.0)
 }
 
