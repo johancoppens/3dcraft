@@ -98,7 +98,7 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             curve(*id)
         ),
         FoldError::Undetermined { ids } => format!(
-            "nothing determines the fold angles of {}: give {} an angle (a crease on no closed loop of creases, or one the given angles leave free)",
+            "nothing determines the fold angles of {}: give {} an angle (a crease on no closed loop of creases, one the given angles leave free, or a bifurcation partway where the fold could go on more than one way)",
             list(ids),
             if ids.len() == 1 { "it" } else { "one or more of them" }
         ),
@@ -113,10 +113,6 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
         FoldError::NotFollowed { at } => format!(
             "the fold could not be followed from the flat sheet past {:.6} degrees of its largest angle: no step, however small, found a fold that follows on from the last along its tangent (or the first step found no branch through the flat sheet that keeps the kinds)",
             at.to_degrees()
-        ),
-        FoldError::Bifurcation { ids } => format!(
-            "partway the fold reaches a bifurcation at {}: there the solved creases can go on more than one way (or the fold stops), so the given angles do not say how; give one of them an angle",
-            list(ids)
         ),
         FoldError::TooMuchWork => format!(
             "the fold needs more work than its budget ({} steps): give more creases an angle",

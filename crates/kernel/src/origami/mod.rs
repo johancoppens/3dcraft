@@ -160,10 +160,6 @@ pub enum FoldError {
     NotFollowed { at: f64 },
     /// The fold needs more work than [`MAX_WORK`].
     TooMuchWork,
-    /// Partway through the fold the solved joints `ids` have no tangent:
-    /// a bifurcation (or a branch that stops), where the fold does not go
-    /// on one way.
-    Bifurcation { ids: Vec<u64> },
     /// Two facets of the folded sheet pass through each other or touch
     /// (other than along the creases and at the vertices they share).
     Meets(Meeting),
@@ -234,9 +230,6 @@ impl fmt::Display for FoldError {
                 "the fold could not be followed from the flat sheet past {at} rad"
             ),
             FoldError::TooMuchWork => write!(f, "the fold needs more work than {MAX_WORK} steps"),
-            FoldError::Bifurcation { ids } => {
-                write!(f, "the fold reaches a bifurcation at creases {ids:?}")
-            }
             FoldError::Build(reason) => write!(f, "{reason}"),
         }
     }

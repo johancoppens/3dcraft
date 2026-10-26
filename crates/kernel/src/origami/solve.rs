@@ -118,6 +118,8 @@ const FIRST_GUESSES: [f64; 5] = [1.0, 3.0, 10.0, 30.0, 100.0];
 const FIRST_CAP: f64 = PI * 17.0 / 18.0;
 /// A step is halved at most this many times in a row.
 const MAX_HALVINGS: usize = 24;
+/// The first step is halved at most this many times.
+const FIRST_HALVINGS: usize = 4;
 const MAX_ITERATIONS: usize = 60;
 /// The most work one fold may do, counted as the multiplications of the
 /// dense factorisations and of the residual evaluations (about 20 s on
@@ -283,7 +285,9 @@ fn rows(
 ) -> Result<Vec<Row>, FoldError> {
     let state = place(link, forest, rho).ok_or(BROKEN)?;
     let mut out = Vec::with_capacity(loops.len() * 3);
-    let mut work = link.bodies as u64;
+    // About 40 multiplications to place a body, 60 per sample point and
+    // per joint on its paths.
+    let mut work = (link.bodies as u64).saturating_mul(40);
     for (l, path_a, path_b) in loops {
         let joint = link.joints.get(*l).ok_or(BROKEN)?;
         let ta = *state.transforms.get(joint.left).ok_or(BROKEN)?;
@@ -291,11 +295,12 @@ fn rows(
         let motion = joint.motion(*rho.get(*l).ok_or(BROKEN)?).ok_or(BROKEN)?;
         let (p, d, s, r) = (joint.point, joint.direction, joint.side, joint.reach);
         for q in [p, p + d * r, p + s * r] {
+            work = work.saturating_add(60);
             let x1 = ta.point(motion.point(q));
             let x2 = tb.point(q);
             let mut by: BTreeMap<usize, Vec3> = BTreeMap::new();
             if let Some(column) = column {
-                work = work.saturating_add((path_a.len() + path_b.len()) as u64);
+                work = work.saturating_add(60 * (1 + path_a.len() + path_b.len()) as u64);
                 let mut add = |k: usize, v: Vec3| {
                     if let Some(Some(c)) = column.get(k) {
                         *by.entry(*c).or_insert(Vec3::ZERO) += v;
@@ -554,7 +559,10 @@ pub fn fold_linkage(
                 None => {
                     halvings += 1;
                     h /= 2.0;
-                    if halvings > MAX_HALVINGS {
+                    // Near the flat sheet the branches are straight, so a
+                    // first step that finds none does not find one smaller.
+                    let most = if first { FIRST_HALVINGS } else { MAX_HALVINGS };
+                    if halvings > most {
                         return Err(FoldError::NotFollowed { at: done * largest });
                     }
                 }
@@ -656,8 +664,9 @@ impl Solver<'_> {
 
     /// The tangent of the branch: the motion `dx` of the solved angles
     /// for a change `dg` of the given ones (per joint) at the angles `rho`,
-    /// from `J_free dx = −J_given dg` in least squares. Fails, naming the
-    /// joints, where `J_free` is singular: a bifurcation, where the branch
+    /// from `J_free dx = −J_given dg` in least squares. Fails as
+    /// undetermined, naming the joints, where `J_free` is singular: more
+    /// freedom than the given angles fix, or a bifurcation where the branch
     /// does not go on one way.
     fn tangent(&self, rho: &[f64], dg: &[f64], budget: &mut Budget) -> Result<Vec<f64>, FoldError> {
         let n = self.free.len();
@@ -678,7 +687,7 @@ impl Solver<'_> {
                 .collect();
             ids.sort_unstable();
             ids.dedup();
-            return Err(FoldError::Bifurcation { ids });
+            return Err(FoldError::Undetermined { ids });
         }
         // Every joint as a column: the free ones first, then the given.
         let mut all: Vec<Option<usize>> = self.column.to_vec();
@@ -713,7 +722,7 @@ impl Solver<'_> {
                 *slot = sum;
             }
         }
-        solve_dense(&mut a, &mut b, n).ok_or(FoldError::Bifurcation {
+        solve_dense(&mut a, &mut b, n).ok_or(FoldError::Undetermined {
             ids: self
                 .free
                 .iter()
