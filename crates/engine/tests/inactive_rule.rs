@@ -880,7 +880,7 @@ fn a_mass_assertion_follows_a_material_switched_with_no_body_changed() {
         "feature.block",
         json!({"size": [20, 20, 10], "name": "Base"}),
     );
-    built(
+    run(
         &mut s,
         "feature.block",
         json!({"size": [5, 5, 5], "position": [5, 5, 10], "name": "Boss", "when": "boss"}),
