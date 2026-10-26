@@ -1148,6 +1148,22 @@ pub(crate) fn prove(
         let (Some(&ra), Some(&rb)) = (first.get(&pa), first.get(&pb)) else {
             continue;
         };
+        // Strata far apart (most of a face's edges from most of the
+        // other's) by their boxes alone, without counting as work.
+        if let (Some(x), Some(y), Some(px), Some(py)) = (
+            search.recs.get(ra),
+            search.recs.get(rb),
+            search.prims.get(pa),
+            search.prims.get(pb),
+        ) {
+            let apart = boxes_distance(&x.bbox, &y.bbox) - px.slack - py.slack;
+            if apart >= enough(best) {
+                if let Some(slot) = least.get_mut(id) {
+                    *slot = slot.min(apart);
+                }
+                continue;
+            }
+        }
         work += 1;
         consider(
             &search,
