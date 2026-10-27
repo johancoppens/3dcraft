@@ -29,9 +29,15 @@ fn new() -> Session {
     s
 }
 
+/// How far a proof may lie above the closed form where the geometry is
+/// exact (planes, cylinders, spheres and circles): rounding only.
+const EXACT: f64 = 1e-9;
+
 /// Measures `id` and checks that the value found is `want` within
-/// `found_tol` and the proven bound is within `proof_tol` of the value
-/// found (and never above it). Returns (found, proven).
+/// `found_tol`, the proven bound is within `proof_tol` of the value found
+/// and never above it, nor above the closed form by more than `above`
+/// (`EXACT` of it where the geometry is exact, what the geometry is
+/// fitted to where it is not). Returns (found, proven).
 #[allow(clippy::too_many_arguments)]
 fn measured(
     s: &mut Session,
@@ -39,7 +45,7 @@ fn measured(
     params: Value,
     key: &str,
     want: f64,
-    found_tol: f64,
+    (found_tol, above): (f64, f64),
     proof_tol: f64,
     what: &str,
 ) -> (f64, f64) {
@@ -61,10 +67,12 @@ fn measured(
         proven <= found,
         "{what}: proven {proven} above found {found}"
     );
-    // Never above the closed form (to what the geometry is fitted to).
+    // Never above the closed form (to rounding where the geometry is
+    // exact, else to what it is fitted to).
     assert!(
-        proven <= want + found_tol,
-        "{what}: proven {proven} above the true {want}"
+        proven <= want + above,
+        "{what}: proven {proven} above the true {want} (by {})",
+        proven - want
     );
     assert!(
         found - proven <= proof_tol,
@@ -111,7 +119,7 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             json!({"from": "P1", "to": "P3"}),
             "clearance",
             k,
-            1e-9 * k,
+            (1e-9 * k, EXACT * k),
             tol,
             &format!("discs 1 apart at {k}"),
         );
@@ -124,7 +132,7 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             json!({"from": "P1", "to": "P2"}),
             "clearance",
             rims,
-            1e-9 * k,
+            (1e-9 * k, EXACT * rims),
             tol,
             &format!("big disc to small disc at {k}"),
         );
@@ -184,7 +192,7 @@ fn a_pin_in_a_hole_is_proven_to_its_clearance_at_three_scales() {
                 json!({"from": "Pin", "to": "Plate"}),
                 "clearance",
                 want * k,
-                1e-9 * k,
+                (1e-9 * k, EXACT * want * k),
                 tol,
                 &format!("pin {name} at {k}"),
             );
@@ -236,7 +244,7 @@ fn round_faces_are_proven_to_their_distance() {
             json!({"from": "Ball", "to": "Base"}),
             "clearance",
             3.0 * k,
-            1e-9 * k,
+            (1e-9 * k, EXACT * 3.0 * k),
             tol,
             &format!("ball over the base at {k}"),
         );
@@ -247,7 +255,7 @@ fn round_faces_are_proven_to_their_distance() {
             json!({"from": "Across", "to": "Along"}),
             "clearance",
             5.0 * k,
-            1e-8 * k,
+            (1e-8 * k, EXACT * 5.0 * k),
             tol,
             &format!("crossed cylinders at {k}"),
         );
@@ -297,7 +305,7 @@ fn flat_faces_bounded_by_spline_edges_are_proven_to_their_gap() {
                "to": {"kind": "face", "where": [{"in": "Slotted"}, {"normal": {"along": "-y"}}]}}),
         "distance",
         4.15,
-        1e-9,
+        (1e-9, EXACT * 4.15),
         5e-7,
         "slot walls",
     );
@@ -340,7 +348,7 @@ fn spline_faces_are_proven_close_to_their_distance() {
         json!({"from": "LowPart", "to": "HighPart"}),
         "clearance",
         2.0,
-        1e-6,
+        (1e-6, 1e-6),
         1e-4,
         "parabola under parabola",
     );
@@ -385,7 +393,7 @@ fn involute_flanks_are_proven_close_to_their_backlash() {
         json!({"from": "ToothA", "to": "ToothB"}),
         "clearance",
         1.0,
-        1e-5,
+        (1e-5, 1e-5),
         1e-5,
         "involute flanks",
     );
@@ -425,7 +433,7 @@ fn a_ball_over_a_hole_is_measured_to_the_rim() {
         json!({"from": "Ball", "to": "Plate"}),
         "clearance",
         want,
-        1e-9,
+        (1e-9, EXACT * want),
         1e-6,
         "ball over a hole",
     );
@@ -463,7 +471,7 @@ fn a_pin_far_from_the_origin_is_proven_no_higher_than_it_is() {
         json!({"from": "Pin", "to": "Plate"}),
         "clearance",
         4.0,
-        1e-8,
+        (1e-8, EXACT * 4.0),
         1e-6,
         "pin off its axis at 1e6",
     );
@@ -506,15 +514,18 @@ fn a_turned_spline_dome_is_proven_to_its_distance() {
         json!({"from": "Turned", "to": "Lid"}),
         "clearance",
         1.0,
-        1e-6,
+        (1e-6, 1e-6),
         1e-4,
         "turned dome under a lid",
     );
 }
 
-/// A tolerant body (a STEP block with a corner 1e-4 off its edges,
-/// imported loose) under a ball: its faces' outlines may lie that far
-/// from their edges, which telling pieces in from out allows for.
+/// A tolerant body (a STEP block whose corner (10, 20, 30) is moved 1e-4
+/// along x, off the edges and faces that meet there, and imported loose)
+/// under a ball: the ball is right over that corner, so the pieces of the
+/// faces near it are the ones the proof cuts down, and their outlines may
+/// lie that far from the edges' curves, which telling pieces in from out
+/// allows for. The nearest place is the corner, 2 below the ball.
 #[test]
 fn a_loose_import_is_proven_no_higher_than_it_is() {
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("proven-distance-loose");
@@ -530,12 +541,32 @@ fn a_loose_import_is_proven_no_higher_than_it_is() {
         json!({"path": path.to_string_lossy()}),
     );
     let text = std::fs::read_to_string(&path).unwrap();
-    let moved = text.replacen(
-        "CARTESIAN_POINT('',(10.,",
-        "CARTESIAN_POINT('',(10.0001,",
-        1,
-    );
-    assert_ne!(moved, text);
+    // The point of the vertex at the corner, and only that: the same
+    // coordinates may place an axis too.
+    let vertex_points: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.split_once("=VERTEX_POINT('',#")?;
+            Some(format!("#{}=", rest.strip_suffix(");")?))
+        })
+        .collect();
+    let mut moved_lines = 0;
+    let moved: String = text
+        .lines()
+        .map(|line| {
+            let corner = "=CARTESIAN_POINT('',(10.,20.,30.));";
+            if line.ends_with(corner)
+                && vertex_points.iter().any(|id| line.starts_with(id.as_str()))
+            {
+                moved_lines += 1;
+                line.replace(corner, "=CARTESIAN_POINT('',(10.0001,20.,30.));")
+            } else {
+                line.to_string()
+            }
+        })
+        .map(|line| line + "\n")
+        .collect();
+    assert_eq!(moved_lines, 1, "{text}");
     let loose = dir.join("loose.step");
     std::fs::write(&loose, moved).unwrap();
     let mut s = Session::new(Workspace::unrestricted());
@@ -552,11 +583,11 @@ fn a_loose_import_is_proven_no_higher_than_it_is() {
             >= 1,
         "{imported}"
     );
-    // A ball over the middle of the top (z = 30), clear of the corner.
+    // A ball right over the loose corner.
     run(
         &mut s,
         "feature.sphere",
-        json!({"name": "Ball", "radius": "2 mm", "position": ["5 mm", "10 mm", "34 mm"]}),
+        json!({"name": "Ball", "radius": "2 mm", "position": ["10 mm", "20 mm", "34 mm"]}),
     );
     measured(
         &mut s,
@@ -564,8 +595,8 @@ fn a_loose_import_is_proven_no_higher_than_it_is() {
         json!({"from": "Ball", "to": "F1"}),
         "clearance",
         2.0,
-        1e-6,
+        (1e-6, 1e-6),
         1e-3,
-        "ball over a loose block",
+        "ball over the loose corner",
     );
 }

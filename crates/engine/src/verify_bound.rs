@@ -60,6 +60,39 @@ const MAX_STRATA_PAIRS: usize = 1_000_000;
 /// Most pairs of strata of one distance, all pairs of faces together
 /// (beyond, the pairs of faces fall back on the mesh).
 const MAX_TOTAL_STRATA_PAIRS: usize = 1_000_000;
+
+#[cfg(test)]
+thread_local! {
+    /// In tests, caps lower than [`MAX_NODES`] and
+    /// [`MAX_TOTAL_STRATA_PAIRS`] (in that order), to see what a proof
+    /// past them comes to; per thread, so tests running beside it keep
+    /// the real ones.
+    pub(crate) static CAPS: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+    /// In tests, what the last proof on this thread spent: pairs of
+    /// pieces looked at and pairs of strata made.
+    pub(crate) static SPENT: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// [`MAX_NODES`], or a test's lower cap.
+fn max_nodes() -> usize {
+    #[cfg(test)]
+    if let Some((nodes, _)) = CAPS.with(std::cell::Cell::get) {
+        return nodes;
+    }
+    MAX_NODES
+}
+
+/// [`MAX_TOTAL_STRATA_PAIRS`], or a test's lower cap.
+fn max_total_strata_pairs() -> usize {
+    #[cfg(test)]
+    if let Some((_, pairs)) = CAPS.with(std::cell::Cell::get) {
+        return pairs;
+    }
+    MAX_TOTAL_STRATA_PAIRS
+}
+
 /// How deep an edge is halved to tell whether it meets a piece's box.
 const EDGE_DEPTH: u32 = 14;
 /// What counts as one axis, or a direction along a plane, in the
@@ -1227,7 +1260,7 @@ pub(crate) fn prove(
         let (sa, sb) = (strata(part_a, 0, fa.0, fa.1), strata(part_b, 1, fb.0, fb.1));
         let count = sa.len().saturating_mul(sb.len());
         if count > MAX_STRATA_PAIRS
-            || stratum_pairs.len().saturating_add(count) > MAX_TOTAL_STRATA_PAIRS
+            || stratum_pairs.len().saturating_add(count) > max_total_strata_pairs()
         {
             per_face.push(None);
             continue;
@@ -1287,7 +1320,7 @@ pub(crate) fn prove(
             let apart = boxes_distance(&x.bbox, &y.bbox) - px.slack - py.slack;
             // Past the work allowed, the rest are bounded by their boxes
             // alone: nothing more is kept for them.
-            if apart >= enough(best) || work >= MAX_NODES {
+            if apart >= enough(best) || work >= max_nodes() {
                 if let Some(slot) = least.get_mut(id) {
                     *slot = slot.min(apart.max(0.0));
                 }
@@ -1310,7 +1343,7 @@ pub(crate) fn prove(
         );
     }
     while let Some(node) = heap.pop() {
-        if node.bound >= enough(best) || work >= MAX_NODES {
+        if node.bound >= enough(best) || work >= max_nodes() {
             if let Some(slot) = least.get_mut(node.pair) {
                 *slot = slot.min(node.bound);
             }
@@ -1370,6 +1403,8 @@ pub(crate) fn prove(
             );
         }
     }
+    #[cfg(test)]
+    SPENT.with(|spent| spent.set((work, stratum_pairs.len())));
     // A pair of strata with a piece that could not be enclosed proves
     // nothing: its pairs of faces fall back on the mesh.
     let mut unproven = vec![false; pair_faces.len()];

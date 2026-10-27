@@ -411,14 +411,11 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
             compared.push(((ka, kb), pair_best.map(|(d, ..)| d)));
         }
     }
-    // A pair of triangles left out was further apart than `best + slack`
-    // at the time, so than the final `best + slack`: per pair of faces the
-    // mesh proves the lesser of that and its own least, less what each
-    // face can be off by. A pair all of whose triangles were left out
-    // proves `best + slack` less that (not nothing: the pair is counted).
-    for (key, d) in compared {
-        let d = d.map_or(best + slack, |d| d.min(best + slack));
-        meshed.push((key, d - err(a, key.0) - err(b, key.1)));
+    for (key, least) in compared {
+        meshed.push((
+            key,
+            mesh_proves(least, best, slack, err(a, key.0), err(b, key.1)),
+        ));
     }
     found.retain(|(d, ..)| *d <= best + slack || !d.is_finite());
     found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
@@ -493,6 +490,25 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         .fold(beyond, f64::min);
     answer.lower = lower.min(answer.distance).max(0.0);
     Ok(answer)
+}
+
+/// What the mesh proves of a pair of faces compared on their triangles:
+/// `least` the least distance of their pairs of triangles not left out
+/// (`None`: every one was). A pair of triangles left out was further
+/// apart than `best + slack` at the time, so than the final `best +
+/// slack`: the pair of faces is at least the lesser of that and its own
+/// least, less what each face can be off by (`err_a`, `err_b`). A pair all
+/// of whose triangles were left out proves `best + slack` less that, not
+/// nothing: the pair is counted.
+pub(crate) fn mesh_proves(
+    least: Option<f64>,
+    best: f64,
+    slack: f64,
+    err_a: f64,
+    err_b: f64,
+) -> f64 {
+    let d = least.map_or(best + slack, |d| d.min(best + slack));
+    d - err_a - err_b
 }
 
 /// Nearest points of two faces by projecting onto each in turn from the
@@ -1563,6 +1579,9 @@ pub(crate) fn symmetry(parts: &[Part<'_>], point: Vec3, normal: Vec3) -> Answer<
     }
     Ok(worst)
 }
+
+#[cfg(test)]
+mod proof_tests;
 
 #[cfg(test)]
 mod tests {

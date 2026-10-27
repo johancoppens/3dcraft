@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::boolean::{BooleanOp, boolean};
-use crate::primitives::{block, cylinder, sphere};
+use crate::primitives::{block, cylinder, sphere, torus};
 use craft3d_math::Transform;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -535,5 +535,346 @@ fn an_oblique_tangent_plane_to_a_sphere_cuts_nothing() {
             k.powi(3),
             "cap",
         );
+    }
+}
+
+// ------------------------------------------------ nothing below, soundly
+
+/// `nothing_below` for the one body `body` along `plane`.
+fn nothing_at(body: &Body, plane: &CutPlane, offset: f64, k: f64) -> Result<Part, CutError> {
+    let prepared = prepare(&[body], plane.normal).unwrap();
+    nothing_below(&prepared[0], plane, offset, &tol(k))
+}
+
+#[track_caller]
+fn lost_by(result: Result<Part, CutError>, want: f64, scale: f64, what: &str) {
+    match result {
+        Err(CutError::LostBelow { depth, .. }) => close(depth, want, scale, what),
+        Err(other) => panic!("{what}: {other}"),
+        Ok(_) => panic!("{what}: nothing below, yet the body reaches {want} below"),
+    }
+}
+
+/// A sphere has no vertices, so the check that nothing found below the
+/// plane is right cannot look at vertices: it is bounded by the sphere
+/// itself, its lowest point `c · n − r` along the normal, at three scales
+/// and along an oblique normal.
+#[test]
+fn a_sphere_found_empty_above_its_bottom_is_lost_by_its_depth() {
+    for k in SCALES {
+        let (r, t) = (k, tol(k).linear);
+        let centre = Vec3::new(0.3 * k, -0.2 * k, 0.5 * k);
+        let body = sphere(&Frame::new(centre, Vec3::Z, Vec3::X).unwrap(), r).unwrap();
+        assert!(body.vertices.is_empty());
+        for plane in [
+            upright(),
+            CutPlane::new(Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, -1.0, 0.0)).unwrap(),
+        ] {
+            let lowest = centre.dot(plane.normal) - r;
+            lost_by(
+                nothing_at(&body, &plane, lowest + 0.5 * r, k),
+                0.5 * r,
+                k,
+                "half a radius into the sphere",
+            );
+            lost_by(
+                nothing_at(&body, &plane, lowest + 2.0 * t, k),
+                2.0 * t,
+                k,
+                "twice the tolerance into the sphere",
+            );
+            // Within the tolerance of its bottom: nothing below is right.
+            let none = nothing_at(&body, &plane, lowest + 0.5 * t, k).unwrap();
+            assert_eq!(none.volume, 0.0);
+        }
+    }
+}
+
+/// A torus has no vertices either: its lowest along a unit `n` is
+/// `c · n − (R |n − (n · a) a| + r)` for its axis `a`, with the axis
+/// tilted and the plane upright or oblique, at three scales.
+#[test]
+fn a_torus_found_empty_above_its_bottom_is_lost_by_its_depth() {
+    for k in SCALES {
+        let (major, minor, t) = (3.0 * k, k, tol(k).linear);
+        let centre = Vec3::new(-0.4 * k, 0.7 * k, 0.2 * k);
+        let theta: f64 = 0.4;
+        let axis = Vec3::new(theta.sin(), 0.0, theta.cos());
+        let x = Vec3::new(theta.cos(), 0.0, -theta.sin());
+        let body = torus(&Frame::new(centre, axis, x).unwrap(), major, minor).unwrap();
+        assert!(body.vertices.is_empty());
+        for plane in [
+            upright(),
+            CutPlane::new(Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, -1.0, 0.0)).unwrap(),
+        ] {
+            let n = plane.normal;
+            let reach = major * (n - axis * n.dot(axis)).length() + minor;
+            let lowest = centre.dot(n) - reach;
+            lost_by(
+                nothing_at(&body, &plane, lowest + 0.25 * minor, k),
+                0.25 * minor,
+                k,
+                "a quarter of the tube into the torus",
+            );
+            lost_by(
+                nothing_at(&body, &plane, lowest + 2.0 * t, k),
+                2.0 * t,
+                k,
+                "twice the tolerance into the torus",
+            );
+            let none = nothing_at(&body, &plane, lowest + 0.5 * t, k).unwrap();
+            assert_eq!(none.volume, 0.0);
+        }
+    }
+}
+
+/// The volume below a plane just above the bottom of a sphere and of a
+/// torus, through `below`: the spherical cap `π h² (3r − h) / 3`, and for
+/// the torus (axis upright, so its bottom is a circle) the circular
+/// segment of its tube, `r² acos((r − h)/r) − (r − h) √(2rh − h²)`, swept
+/// about the axis at the radius of its centroid, `R` (Pappus), with the
+/// section the annulus `4π R √(2rh − h²)`.
+#[test]
+fn a_sphere_and_a_torus_cut_near_their_bottoms_match_their_closed_forms() {
+    for k in SCALES {
+        let r = k;
+        let ball = sphere(&Frame::WORLD, r).unwrap();
+        for h in [1e-4 * k, 1e-2 * k, 0.5 * k] {
+            let im = below(&[&ball], &upright(), -r + h, &tol(k)).unwrap();
+            close(
+                im.volume,
+                PI * h * h * (3.0 * r - h) / 3.0,
+                k.powi(3),
+                "cap volume",
+            );
+            close(
+                im.section.area,
+                PI * (2.0 * r * h - h * h),
+                k * k,
+                "cap section",
+            );
+        }
+        let (major, minor) = (3.0 * k, k);
+        let ring = torus(&Frame::WORLD, major, minor).unwrap();
+        for h in [1e-2 * k, 0.5 * k, 1.5 * k] {
+            let im = below(&[&ring], &upright(), -minor + h, &tol(k)).unwrap();
+            let half = (2.0 * minor * h - h * h).sqrt();
+            let segment = minor * minor * ((minor - h) / minor).acos() - (minor - h) * half;
+            close(
+                im.volume,
+                2.0 * PI * major * segment,
+                k.powi(3),
+                "torus below",
+            );
+            close(
+                im.section.area,
+                4.0 * PI * major * half,
+                k * k,
+                "torus section",
+            );
+        }
+    }
+}
+
+/// A ring with a rounded bottom (a cubic spline from (2, 0) through the
+/// control points (3, −2) and (4, −2) to (5, 0), closed by lines to the
+/// height 1, swept about the y axis): its bottom is a circle on its spline
+/// face at y = −1.5 (the spline's height is −6 t (1 − t), least at t = ½),
+/// where it has no vertex, and its control net reaches −2. Nothing below
+/// is right only below −1.5 (within the tolerance), and the depth it is
+/// lost by above is that of the face itself, not of its net.
+#[test]
+fn a_revolved_spline_found_empty_above_its_bottom_is_lost_by_its_depth() {
+    use crate::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use crate::revolve::revolve;
+    for k in SCALES {
+        let t = tol(k).linear;
+        let p = |x: f64, y: f64| [x * k, y * k];
+        let mut curves = vec![SketchCurve {
+            id: 1,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: vec![p(2.0, 0.0), p(3.0, -2.0), p(4.0, -2.0), p(5.0, 0.0)],
+            }),
+        }];
+        for (id, (start, end)) in [
+            (p(5.0, 0.0), p(5.0, 1.0)),
+            (p(5.0, 1.0), p(2.0, 1.0)),
+            (p(2.0, 1.0), p(2.0, 0.0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            curves.push(SketchCurve {
+                id: 3 + 2 * id as u64,
+                curve: Curve2::Line { start, end },
+            });
+        }
+        let profiles = detect_profiles(&curves, &tol(k)).unwrap();
+        let ring = revolve(
+            &profiles,
+            &Frame::WORLD,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            2.0 * PI,
+            &tol(k),
+        )
+        .unwrap()
+        .body;
+        assert!(ring.faces.iter().any(|f| f.surface.is_freeform()));
+        let plane = CutPlane::new(Vec3::Y, Vec3::X).unwrap();
+        let (lo, _, _) = extent(&[&ring], plane.normal).unwrap();
+        assert!(lo < -1.9 * k, "the held box is the net's: {lo}");
+        let bottom = -1.5 * k;
+        // The face's least is closed in on to a hundredth of the
+        // tolerance: the depth is a bound, no less than the true one.
+        for (into, what) in [(0.1 * k, "into the ring"), (2.0 * t, "just into the ring")] {
+            match nothing_at(&ring, &plane, bottom + into, k) {
+                Err(CutError::LostBelow { depth, .. }) => assert!(
+                    depth >= into - 1e-12 * k && depth <= into + 0.02 * t,
+                    "{what} at {k}: lost by {depth}, not {into}"
+                ),
+                Err(other) => panic!("{what} at {k}: {other}"),
+                Ok(_) => panic!("{what} at {k}: nothing below"),
+            }
+        }
+        for offset in [bottom - 0.1 * k, bottom - 0.5 * t, bottom + 0.5 * t] {
+            let none = nothing_at(&ring, &plane, offset, k).unwrap();
+            assert_eq!(none.volume, 0.0);
+        }
+        // Through `below`, between the net and the face nothing is below.
+        let none = below(&[&ring], &plane, bottom - 0.2 * k, &tol(k)).unwrap();
+        assert_eq!(none.volume, 0.0);
+    }
+}
+
+// ------------------------------------------------ the search for a level
+
+/// What lies below at `offset` with this volume and section area (the
+/// rest is not looked at by the search).
+fn measured_at(offset: f64, volume: f64, area: f64) -> BelowPlane {
+    BelowPlane {
+        offset,
+        volume,
+        centroid: None,
+        surface: 0.0,
+        section: Section {
+            area,
+            centroid: None,
+            i_x: 0.0,
+            i_y: 0.0,
+            product: 0.0,
+        },
+    }
+}
+
+fn refused(offset: f64) -> CutError {
+    CutError::Kernel {
+        body: 0,
+        offset,
+        error: KernelError::InvalidSize {
+            name: "a face in the plane",
+            value: offset,
+        },
+    }
+}
+
+/// The volume below `x` is `x²` on `[0, 1]` (section `2x`), refused by
+/// the boolean on the calls `refuse` names (counted from 1): the offsets
+/// asked for, and the outcome.
+fn squared(volume: f64, refuse: &[usize]) -> (Vec<f64>, Result<Level, CutError>) {
+    let mut asked = Vec::new();
+    let found = search((0.0, 1.0), 1.0, volume, |x| {
+        asked.push(x);
+        if refuse.contains(&asked.len()) {
+            return Err(refused(x));
+        }
+        Ok(measured_at(x, x * x, 2.0 * x))
+    });
+    (asked, found)
+}
+
+/// An offset the boolean refuses is stepped around by halving the
+/// bracket instead (`level_for`'s documentation): refused at the first
+/// guess (0.3 for a volume of 0.3), the search goes on from the middle of
+/// the bracket (0.5) and finds √0.3; refused again at the Newton step
+/// after that (0.55), it halves again (0.75) and still finds it.
+#[test]
+fn a_level_refused_where_a_step_lands_is_found_by_halving_instead() {
+    let want = 0.3_f64.sqrt();
+    let (asked, found) = squared(0.3, &[1]);
+    let found = found.unwrap();
+    assert_eq!(asked[..3], [0.3, 0.5, 0.55]);
+    assert!((found.below.offset - want).abs() <= 1e-10, "{found:?}");
+    assert!(found.residual <= SETTLED * 0.3);
+    assert_eq!(found.steps, asked.len());
+    let (asked, found) = squared(0.3, &[1, 3]);
+    let found = found.unwrap();
+    assert_eq!(asked[..5], [0.3, 0.5, 0.55, 0.75, 0.625]);
+    assert!((found.below.offset - want).abs() <= 1e-10, "{found:?}");
+}
+
+/// One refused where the halving lands is the error: the halving after a
+/// refused first guess, and a halving the search took because a Newton
+/// step did not halve the residual (0.65, then the middle 0.475).
+#[test]
+fn a_level_refused_where_the_halving_lands_is_the_error() {
+    let (asked, found) = squared(0.3, &[1, 2]);
+    assert_eq!(asked, [0.3, 0.5]);
+    assert!(
+        matches!(found, Err(CutError::Kernel { offset, .. }) if offset == 0.5),
+        "{found:?}"
+    );
+    let (asked, found) = squared(0.3, &[3]);
+    assert_eq!(asked.len(), 3);
+    assert!(
+        (asked[1] - 0.65).abs() < 1e-12 && asked[2] == 0.475,
+        "{asked:?}"
+    );
+    assert!(
+        matches!(found, Err(CutError::Kernel { offset, .. }) if offset == 0.475),
+        "{found:?}"
+    );
+}
+
+/// Where the bracket cannot be narrowed (the volume jumps by `jump` at
+/// 0.3, so no offset leaves half of the jump below), the offset found is
+/// the answer when the volume is within `UNSETTLED` of the one asked for,
+/// and "did not converge" further off.
+#[test]
+fn a_bracket_as_narrow_as_it_gets_is_an_answer_only_near_the_volume() {
+    let jumping = |jump: f64| {
+        let volume = 0.3 + 0.5 * jump;
+        let found = search((0.0, 1.0), 1.0 + jump, volume, |x| {
+            Ok(measured_at(x, if x < 0.3 { x } else { x + jump }, 1.0))
+        });
+        (volume, found)
+    };
+    // Half the jump is 5e-9 of the volume: past SETTLED, within UNSETTLED.
+    let (volume, found) = jumping(3e-9);
+    let found = found.unwrap();
+    assert!(found.residual > SETTLED * volume, "{found:?}");
+    assert!(found.residual <= UNSETTLED * volume, "{found:?}");
+    assert!((found.below.offset - 0.3).abs() <= 1e-15, "{found:?}");
+    assert!(found.steps < MAX_STEPS, "{found:?}");
+    // Half the jump is 1.7e-4 of it: not converged, the bracket at 0.3.
+    let (volume, found) = jumping(1e-4);
+    match found {
+        Err(CutError::NotConverged {
+            steps,
+            low,
+            high,
+            residual,
+        }) => {
+            assert!(steps < MAX_STEPS);
+            assert!(
+                low < 0.3 && high >= 0.3 && high - low <= 1e-15,
+                "{low} {high}"
+            );
+            assert!(residual > UNSETTLED * volume);
+        }
+        other => panic!("{other:?}"),
     }
 }

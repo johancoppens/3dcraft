@@ -32,11 +32,12 @@
 use crate::KernelError;
 use crate::boolean::{BooleanOp, FaceSource, Operand, boolean};
 use crate::primitives::block;
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, FaceId, MassError, TransformError, mass_properties};
 use std::cell::OnceCell;
+use std::collections::BinaryHeap;
 use std::f64::consts::PI;
 use std::fmt;
 
@@ -209,9 +210,10 @@ pub enum CutError {
         body: usize,
         what: &'static str,
     },
-    /// The boolean found nothing below the plane, but a vertex of `body`
-    /// lies `depth` below it (more than the tolerance): an answer of
-    /// nothing would be wrong, so it is an error.
+    /// The boolean found nothing below the plane, but `body` may reach
+    /// `depth` below it (more than the tolerance), by a bound that holds
+    /// every point of it: an answer of nothing could be wrong, so it is an
+    /// error.
     LostBelow {
         body: usize,
         offset: f64,
@@ -268,7 +270,7 @@ impl fmt::Display for CutError {
                 depth,
             } => write!(
                 f,
-                "nothing of body {body} was found below the plane at offset {offset}, yet a vertex of it lies {depth} below: not measured"
+                "nothing of body {body} was found below the plane at offset {offset}, yet it may reach {depth} below it: not measured"
             ),
             CutError::OutOfRange { volume, total } => write!(
                 f,
@@ -363,18 +365,7 @@ fn body_extent(index: usize, body: &Body, direction: Vec3) -> Result<(f64, f64, 
             volume: 0.0,
         });
     }
-    let z = Vec3::new(0.0, 0.0, 1.0);
-    let cos = direction.dot(z).clamp(-1.0, 1.0);
-    let axis = direction.cross(z);
-    let turn = match axis.normalized() {
-        // Turning `direction` onto z about their common normal.
-        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.acos()),
-        // Along z already, or against it.
-        _ if cos > 0.0 => Some(Transform::IDENTITY),
-        _ => Transform::rotation(Vec3::new(1.0, 0.0, 0.0), PI),
-    }
-    .ok_or(CutError::InvalidPlane("the normal gives no rotation"))?;
-    let turned = body.transformed(&turn).map_err(boxing)?;
+    let turned = body.transformed(&onto_z(direction)?).map_err(boxing)?;
     let held = turned.held_bbox().map_err(boxing)?;
     let Some((a, b)) = held.corners() else {
         return Err(CutError::NoVolume {
@@ -387,6 +378,21 @@ fn body_extent(index: usize, body: &Body, direction: Vec3) -> Result<(f64, f64, 
         return Err(CutError::NotFinite("the bodies' box"));
     }
     Ok((lo, hi, bbox))
+}
+
+/// A rotation that turns the unit `direction` onto z.
+fn onto_z(direction: Vec3) -> Result<Transform, CutError> {
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let cos = direction.dot(z).clamp(-1.0, 1.0);
+    let axis = direction.cross(z);
+    match axis.normalized() {
+        // Turning `direction` onto z about their common normal.
+        Some(axis) if axis.is_finite() => Transform::rotation(axis, cos.acos()),
+        // Along z already, or against it.
+        _ if cos > 0.0 => Some(Transform::IDENTITY),
+        _ => Transform::rotation(Vec3::new(1.0, 0.0, 0.0), PI),
+    }
+    .ok_or(CutError::InvalidPlane("the normal gives no rotation"))
 }
 
 /// What lies below the plane `{p : p · side.normal = offset}` of each of
@@ -535,25 +541,26 @@ fn whole(index: usize, body: &Body) -> Result<(f64, Vec3, f64), CutError> {
     Ok((props.volume, centroid * props.volume, props.area))
 }
 
-/// Nothing found below the plane, which is right only when no vertex of
-/// the body lies more than the tolerance below it.
+/// Nothing found below the plane, which is right only when no point of
+/// the body lies more than the tolerance below it. The vertices alone do
+/// not tell (a sphere, a torus or a closed revolved spline has none, or
+/// none where it is lowest), so this is decided from a bound that holds
+/// every point of the body ([`floor`]): nothing below when that bound is
+/// within the tolerance of the plane, else the error, since an answer of
+/// nothing could then be wrong.
 fn nothing_below(
     one: &Prepared<'_>,
     side: &CutPlane,
     offset: f64,
     tolerance: &Tolerance,
 ) -> Result<Part, CutError> {
-    let deepest = one
-        .body
-        .vertices
-        .iter()
-        .map(|v| v.point.dot(side.normal))
-        .fold(f64::INFINITY, f64::min);
-    if deepest < offset - tolerance.linear {
+    let enough = offset - tolerance.linear;
+    let lowest = floor(one, side.normal, enough, tolerance.linear)?;
+    if !(lowest >= enough) {
         return Err(CutError::LostBelow {
             body: one.index,
             offset,
-            depth: offset - deepest,
+            depth: offset - lowest,
         });
     }
     Ok(Part {
@@ -562,6 +569,171 @@ fn nothing_below(
         area: 0.0,
         cut: None,
     })
+}
+
+/// Most times the Bezier patches of one freeform face are split in two
+/// while its least along a direction is closed in on ([`surface_floor`]).
+const MAX_FLOOR_SPLITS: usize = 1 << 14;
+
+/// A number no point of the body lies below along `normal` (unit): the
+/// least, over its faces, of a bound for each. An analytic face is bound
+/// by its held box (`Body::held_face_bbox`) in a frame whose z is the
+/// normal, which is tight where the face reaches its extreme. A freeform
+/// face is bound by its surface ([`surface_floor`]), which holds the face,
+/// closed in on until the bound reaches `enough` or is within a hundredth
+/// of `linear` of a point of the surface. Edges and vertices lie on the
+/// faces (to the tolerance the caller allows for), so a closed solid's
+/// faces hold all of it. A bound that cannot be made is an error, never a
+/// guess.
+fn floor(one: &Prepared<'_>, normal: Vec3, enough: f64, linear: f64) -> Result<f64, CutError> {
+    let boxing = |error| CutError::Boxing {
+        body: one.index,
+        error,
+    };
+    let turned = one.body.transformed(&onto_z(normal)?).map_err(boxing)?;
+    let mut lowest = f64::INFINITY;
+    for (index, face) in one.body.faces.iter().enumerate() {
+        let bound = if face.surface.is_freeform() {
+            surface_floor(&face.surface, normal, enough, 0.01 * linear).ok_or(
+                CutError::Section {
+                    body: one.index,
+                    what: "a freeform face whose least along the normal cannot be bounded",
+                },
+            )?
+        } else {
+            let face_id = FaceId(u32::try_from(index).unwrap_or(u32::MAX));
+            let held = turned.held_face_bbox(face_id).map_err(boxing)?;
+            held.corners().map_or(f64::INFINITY, |(a, _)| a.z)
+        };
+        if bound.is_nan() {
+            return Err(CutError::NotFinite("a bound of a face along the normal"));
+        }
+        lowest = lowest.min(bound);
+    }
+    Ok(lowest)
+}
+
+/// A number no point of a freeform surface lies below along `normal`:
+/// branch and bound over its rational Bezier patches (positive weights,
+/// so each patch lies in the convex hull of its control points, and the
+/// least of `p · normal` over them bounds it), splitting the patch with
+/// the least bound in two until that bound reaches `enough`, or comes
+/// within `resolution` of the least of the surface's points evaluated so
+/// far (patch corners and middles: the least is then known), or the work
+/// is spent ([`MAX_FLOOR_SPLITS`]: the bound left is still a true one,
+/// only further below). A patch is split across the direction of its
+/// parameters along which its net spreads more along the normal (a
+/// surface turned about the normal does not spread along its turn, so
+/// only its other direction is cut). `None` for a surface that is not
+/// freeform or has no finite patches.
+fn surface_floor(surface: &Surface, normal: Vec3, enough: f64, resolution: f64) -> Option<f64> {
+    let patches: Vec<RationalBezierPatch> = match surface {
+        Surface::Bezier(patch) => vec![RationalBezierPatch::from_bezier(patch)],
+        Surface::Nurbs(nurbs) => nurbs
+            .bezier_spans()
+            .ok()?
+            .into_iter()
+            .map(|span| span.patch)
+            .collect(),
+        _ => return None,
+    };
+    let mut open = BinaryHeap::new();
+    let mut least_point = f64::INFINITY;
+    let mut seq = 0_u64;
+    let mut push = |patch: RationalBezierPatch,
+                    open: &mut BinaryHeap<Lowest>,
+                    least_point: &mut f64|
+     -> Option<()> {
+        let bound = patch
+            .points()
+            .map(|p| p.dot(normal))
+            .fold(f64::INFINITY, f64::min);
+        if !bound.is_finite() {
+            return None;
+        }
+        for (s, t) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)] {
+            let reached = patch.eval(s, t).dot(normal);
+            if reached.is_finite() {
+                *least_point = least_point.min(reached);
+            }
+        }
+        seq += 1;
+        open.push(Lowest { bound, seq, patch });
+        Some(())
+    };
+    for patch in patches {
+        push(patch, &mut open, &mut least_point)?;
+    }
+    for _ in 0..MAX_FLOOR_SPLITS {
+        let lowest = open.pop()?;
+        if lowest.bound >= enough || least_point - lowest.bound <= resolution {
+            return Some(lowest.bound);
+        }
+        let (a, b) = if spreads_along_u(&lowest.patch, normal) {
+            lowest.patch.split_u(0.5)
+        } else {
+            lowest.patch.split_v(0.5)
+        };
+        push(a, &mut open, &mut least_point)?;
+        push(b, &mut open, &mut least_point)?;
+    }
+    open.peek().map(|lowest| lowest.bound)
+}
+
+/// Whether the net of `patch` spreads more along `normal` across its
+/// rows (along u) than along them (along v).
+fn spreads_along_u(patch: &RationalBezierPatch, normal: Vec3) -> bool {
+    let (du, dv) = patch.degrees();
+    let at = |i: usize, j: usize| {
+        patch
+            .control_point(i * (dv + 1) + j)
+            .map_or(0.0, |p| p.dot(normal))
+    };
+    let spread = |values: &mut dyn Iterator<Item = f64>| {
+        let (lo, hi) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+            (lo.min(x), hi.max(x))
+        });
+        (hi - lo).max(0.0)
+    };
+    let along_u = (0..=dv)
+        .map(|j| spread(&mut (0..=du).map(|i| at(i, j))))
+        .fold(0.0, f64::max);
+    let along_v = (0..=du)
+        .map(|i| spread(&mut (0..=dv).map(|j| at(i, j))))
+        .fold(0.0, f64::max);
+    along_u > along_v
+}
+
+/// A patch waiting in [`surface_floor`]'s heap: the least bound first,
+/// the first made of equals.
+struct Lowest {
+    bound: f64,
+    seq: u64,
+    patch: RationalBezierPatch,
+}
+
+impl PartialEq for Lowest {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Lowest {}
+
+impl PartialOrd for Lowest {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Lowest {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // The heap pops its greatest: the least bound, then the oldest.
+        other
+            .bound
+            .total_cmp(&self.bound)
+            .then(other.seq.cmp(&self.seq))
+    }
 }
 
 fn part_one(
@@ -844,6 +1016,20 @@ pub fn level_for(
         hi = hi.max(one.hi);
         most += one.whole()?.0;
     }
+    search((lo, hi), most, volume, |offset| {
+        below_in(&prepared, side, offset, tolerance)
+    })
+}
+
+/// The search of [`level_for`] between the offsets `lo` and `hi` that
+/// bracket the bodies, whose whole volume is `most`, with `measure` what
+/// lies below the plane at an offset.
+fn search(
+    (mut lo, mut hi): (f64, f64),
+    most: f64,
+    volume: f64,
+    mut measure: impl FnMut(f64) -> Result<BelowPlane, CutError>,
+) -> Result<Level, CutError> {
     if volume <= 0.0 || volume >= most {
         return Err(CutError::OutOfRange {
             volume,
@@ -854,7 +1040,7 @@ pub fn level_for(
     let mut last_residual = f64::INFINITY;
     let mut halving_now = false;
     for step in 1..=MAX_STEPS {
-        let found = match below_in(&prepared, side, offset, tolerance) {
+        let found = match measure(offset) {
             Ok(found) => found,
             Err(error @ CutError::Kernel { .. }) => {
                 let halving = 0.5 * (lo + hi);
