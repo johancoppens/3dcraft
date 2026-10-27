@@ -241,15 +241,16 @@ pub(crate) fn edge_points(edge: &Edge, n: u32) -> impl Iterator<Item = Vec3> + '
 }
 
 /// The point of an edge nearest to `p`, from the curve's own projection
-/// (closed form for lines and circles), kept within the edge.
-fn nearest_on_edge(edge: &Edge, p: Vec3) -> Option<Vec3> {
+/// (closed form for lines and circles), kept within the edge; and its
+/// parameter on the curve.
+fn nearest_on_edge(edge: &Edge, p: Vec3) -> Option<(Vec3, f64)> {
     let (t0, t1) = edge.range;
-    let mut best: Option<(f64, Vec3)> = None;
+    let mut best: Option<(f64, Vec3, f64)> = None;
     let mut consider = |t: f64| {
         let q = edge.curve.eval(t);
         let d = q.distance(p);
-        if q.is_finite() && best.is_none_or(|(b, _)| d < b) {
-            best = Some((d, q));
+        if q.is_finite() && best.is_none_or(|(b, _, _)| d < b) {
+            best = Some((d, q, t));
         }
     };
     consider(t0);
@@ -269,32 +270,99 @@ fn nearest_on_edge(edge: &Edge, p: Vec3) -> Option<Vec3> {
             }
         }
     }
-    best.map(|(_, q)| q)
+    best.map(|(_, q, t)| (q, t))
+}
+
+/// Most Newton steps of [`nearest_on_edge_from`].
+const EDGE_STEPS: usize = 50;
+
+/// The point of an edge nearest to `p` found by Newton's method on the
+/// curve from the parameter `start` alone (a few evaluations, where the
+/// curve's own projection of a freeform curve samples it whole), with
+/// its parameter: `None` unless it settles strictly inside the edge's
+/// range (at an end the nearest point may be on the next edge), with the
+/// distance to `p` square to the curve there and no further from `p`
+/// than the point at `start`. For a point near one found on the edge
+/// before.
+fn nearest_on_edge_from(edge: &Edge, p: Vec3, start: f64) -> Option<(Vec3, f64)> {
+    let (t0, t1) = edge.range;
+    let span = t1 - t0;
+    if !(span.is_finite() && span > 0.0 && start.is_finite()) {
+        return None;
+    }
+    let h = span * 1e-6;
+    let mut t = start.clamp(t0, t1);
+    let mut settled = false;
+    for _ in 0..EDGE_STEPS {
+        // Minimise |C(t) - p|²: Newton on g(t) = (C - p)·C'.
+        let (c, d1) = edge.curve.derivatives(t);
+        let g = (c - p).dot(d1);
+        let d2 = (edge.curve.derivatives(t + h).1 - edge.curve.derivatives(t - h).1) * (0.5 / h);
+        let slope = d1.length_squared() + (c - p).dot(d2);
+        if !(slope.is_finite() && slope > 0.0) {
+            return None;
+        }
+        let next = (t - g / slope).clamp(t0, t1);
+        let moved = (next - t).abs();
+        t = next;
+        if moved <= 1e-15 * span {
+            settled = true;
+            break;
+        }
+    }
+    let inside = t > t0 + 1e-9 * span && t < t1 - 1e-9 * span;
+    let q = edge.curve.eval(t);
+    let from = edge.curve.eval(start.clamp(t0, t1));
+    (settled && inside && q.is_finite() && q.distance(p) <= from.distance(p)).then_some((q, t))
 }
 
 /// The point of face `face` nearest to `p`: the foot on its surface when
 /// that lies on the face, else the nearest point of its edges.
 pub(crate) fn nearest_on_face(probe: &Probe<'_>, face: usize, p: Vec3) -> Answer<Vec3> {
+    let mut near = Near::default();
+    nearest_on_face_at(probe, face, p, &mut near)
+}
+
+/// Where the last answer of [`nearest_on_face_near`] on a face was: the
+/// parameters of the foot on the face's surface (on the face or not),
+/// and when the answer was on an edge, that edge (its index in the body)
+/// and the parameter on its curve.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Near {
+    foot: Option<(f64, f64)>,
+    edge: Option<(usize, f64)>,
+}
+
+/// [`nearest_on_face`], noting in `near` where the answer is.
+fn nearest_on_face_at(probe: &Probe<'_>, face: usize, p: Vec3, near: &mut Near) -> Answer<Vec3> {
     let body = probe.body();
     let f = body.faces.get(face).ok_or("a face is missing")?;
+    *near = Near::default();
     if let Ok((u, v)) = f.surface.project(p) {
+        near.foot = Some((u, v));
         let foot = f.surface.eval(u, v);
         if foot.is_finite() && probe.on_face(face, foot).map_err(|e| e.to_string())? != OnFace::Out
         {
             return Ok(foot);
         }
     }
-    let mut best: Option<(f64, Vec3)> = None;
-    for edge in face_edges(body, face) {
-        if let Some(q) = nearest_on_edge(edge, p) {
+    let mut best: Option<(f64, Vec3, usize, f64)> = None;
+    for coedge in face_coedges(body, face) {
+        let Some(edge) = body.edges.get(coedge) else {
+            continue;
+        };
+        if let Some((q, t)) = nearest_on_edge(edge, p) {
             let d = q.distance(p);
-            if best.is_none_or(|(b, _)| d < b) {
-                best = Some((d, q));
+            if best.is_none_or(|(b, ..)| d < b) {
+                best = Some((d, q, coedge, t));
             }
         }
     }
     match best {
-        Some((_, q)) => Ok(q),
+        Some((_, q, edge, t)) => {
+            near.edge = Some((edge, t));
+            Ok(q)
+        }
         // A face without edges (a whole sphere): its surface's foot.
         None => f
             .surface
@@ -302,6 +370,62 @@ pub(crate) fn nearest_on_face(probe: &Probe<'_>, face: usize, p: Vec3) -> Answer
             .map(|(u, v)| f.surface.eval(u, v))
             .map_err(|e| e.to_string()),
     }
+}
+
+/// The indices (in the body) of the edges of a face, each as often as
+/// its loops use it: [`face_edges`] by index.
+fn face_coedges(body: &Body, face: usize) -> impl Iterator<Item = usize> + '_ {
+    body.faces
+        .get(face)
+        .into_iter()
+        .flat_map(|f| f.loops.iter())
+        .filter_map(|l| body.loops.get(l.0 as usize))
+        .flat_map(|l| l.coedges.iter())
+        .map(|c| c.edge.0 as usize)
+}
+
+/// [`nearest_on_face`] for a point near the one the last call for this
+/// face answered (`near` says where that was): each step starts from
+/// there instead of searching the whole surface and every edge, which
+/// for freeform faces costs hundreds of evaluations where a descent
+/// costs a few (`Surface::project_from`, [`nearest_on_edge_from`]). The
+/// surface's foot found from the last foot is the answer when it lies on
+/// the face; else, when the last answer was on an edge, that edge's
+/// nearest point found from there, when it lies strictly inside the
+/// edge. Anything else (no last answer, a descent that does not settle,
+/// a point that reaches the end of its edge) is [`nearest_on_face`].
+/// The answer is always a point of the face; it is the face's nearest
+/// to `p` as far as the descents can tell, which for a run of points
+/// that each move a little, as [`settle`] makes, is where the search
+/// lands too.
+fn nearest_on_face_near(probe: &Probe<'_>, face: usize, p: Vec3, near: &mut Near) -> Answer<Vec3> {
+    let body = probe.body();
+    let f = body.faces.get(face).ok_or("a face is missing")?;
+    if let Some(start) = near.foot
+        && let Ok((u, v)) = f.surface.project_from(p, start)
+    {
+        let foot = f.surface.eval(u, v);
+        if foot.is_finite() {
+            if probe.on_face(face, foot).map_err(|e| e.to_string())? != OnFace::Out {
+                *near = Near {
+                    foot: Some((u, v)),
+                    edge: None,
+                };
+                return Ok(foot);
+            }
+            if let Some((index, t)) = near.edge
+                && let Some(edge) = body.edges.get(index)
+                && let Some((q, t)) = nearest_on_edge_from(edge, p, t)
+            {
+                *near = Near {
+                    foot: Some((u, v)),
+                    edge: Some((index, t)),
+                };
+                return Ok(q);
+            }
+        }
+    }
+    nearest_on_face_at(probe, face, p, near)
 }
 
 // ------------------------------------------------------------ distance
@@ -511,8 +635,23 @@ pub(crate) fn mesh_proves(
     d - err_a - err_b
 }
 
+/// Most times one step of [`settle`] doubles its jump ahead.
+const MAX_JUMPS: usize = 30;
+
 /// Nearest points of two faces by projecting onto each in turn from the
 /// mesh's nearest pair.
+///
+/// Projecting in turn closes in on the nearest points at a constant ratio
+/// per step, which is near 1 where the faces run nearly parallel (the
+/// flanks of two gears in mesh, a shaft in its bore): there it took all
+/// [`MAX_STEPS`] and still stopped short. So each step that came nearer
+/// also jumps ahead along the way it moved, twice as far each time while
+/// that comes nearer still (the point moved by the step, carried on and
+/// projected back onto both faces in turn); a jump that does not come
+/// nearer is not taken. Every pair of points kept lies on the two faces
+/// and is no further apart than the one before, so the answer is never
+/// worse than projecting in turn alone. Each projection starts from where
+/// the last one on the same face landed ([`nearest_on_face_near`]).
 fn settle(
     a: &Probe<'_>,
     fa: usize,
@@ -521,14 +660,38 @@ fn settle(
     p0: Vec3,
     _q0: Vec3,
 ) -> Answer<(Vec3, Vec3)> {
-    let mut p = nearest_on_face(a, fa, p0)?;
-    let mut q = nearest_on_face(b, fb, p)?;
+    let (mut near_a, mut near_b) = (Near::default(), Near::default());
+    let mut p = nearest_on_face_near(a, fa, p0, &mut near_a)?;
+    let mut q = nearest_on_face_near(b, fb, p, &mut near_b)?;
     for _ in 0..MAX_STEPS {
-        let p2 = nearest_on_face(a, fa, q)?;
-        let q2 = nearest_on_face(b, fb, p2)?;
+        let mut p2 = nearest_on_face_near(a, fa, q, &mut near_a)?;
+        let mut q2 = nearest_on_face_near(b, fb, p2, &mut near_b)?;
+        let better = p2.distance(q2) <= p.distance(q);
+        if better {
+            let way = p2 - p;
+            let mut ahead = 1.0;
+            for _ in 0..MAX_JUMPS {
+                let target = p2 + way * ahead;
+                if !target.is_finite() {
+                    break;
+                }
+                // A jump that cannot be projected is not taken.
+                let (mut na, mut nb) = (near_a, near_b);
+                let Ok(p3) = nearest_on_face_near(a, fa, target, &mut na) else {
+                    break;
+                };
+                let Ok(q3) = nearest_on_face_near(b, fb, p3, &mut nb) else {
+                    break;
+                };
+                if p3.distance(q3) >= p2.distance(q2) {
+                    break;
+                }
+                (p2, q2, near_a, near_b) = (p3, q3, na, nb);
+                ahead *= 2.0;
+            }
+        }
         let scale = 1.0 + p2.length().max(q2.length());
         let moved = p2.distance(p).max(q2.distance(q));
-        let better = p2.distance(q2) <= p.distance(q);
         if better {
             p = p2;
             q = q2;
@@ -1582,6 +1745,9 @@ pub(crate) fn symmetry(parts: &[Part<'_>], point: Vec3, normal: Vec3) -> Answer<
 
 #[cfg(test)]
 mod proof_tests;
+
+#[cfg(test)]
+mod settle_tests;
 
 #[cfg(test)]
 mod tests {

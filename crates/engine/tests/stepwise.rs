@@ -304,3 +304,74 @@ fn commands_between_the_pieces_change_nothing_that_is_built() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An edit on a host that works a piece at a time leaves the
+/// regeneration to the pieces: `param.set` regenerates nothing itself
+/// (it held the page's one thread for the whole regeneration before), its
+/// result says `deferred` instead of what fails and the assertions'
+/// summary, and the pieces then regenerate a feature at a time and end
+/// as a session that does it all at once (features with their statuses,
+/// the picture, the assertions). At three scales, for values that move
+/// the plate's end past the hole and back.
+#[test]
+fn an_edit_leaves_its_regeneration_to_the_pieces() {
+    for s in [1e-2, 1.0, 1e3] {
+        let mm = |v: f64| format!("{} mm", v * s);
+        let publish = json!({"name": "w", "min": mm(1.0), "max": mm(90.0)});
+        let mut whole = Session::new(Workspace::none());
+        build(&mut whole, s);
+        whole.execute("variable.publish", &publish).unwrap();
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        build(&mut session, s);
+        session.execute("variable.publish", &publish).unwrap();
+        while session
+            .prepare_some(SceneQuality::display(), || false)
+            .is_some()
+        {}
+        for value in [60.0, 30.0, 5.0] {
+            let set = json!({"values": {"w": value * s}, "clamp": true});
+            let all_at_once = whole.execute("param.set", &set).unwrap();
+            assert!(all_at_once.get("deferred").is_none(), "{all_at_once}");
+            let (done, built) = rebuilt(|| session.execute("param.set", &set).unwrap());
+            assert_eq!(built, 0, "scale {s}, w {value}: the command regenerated");
+            assert_eq!(done["deferred"], true, "{done}");
+            assert!(done.get("failed").is_none(), "{done}");
+            assert!(done.get("assertions").is_none(), "{done}");
+            assert_eq!(done["set"], all_at_once["set"], "{done}");
+            assert_eq!(done["changed"], true, "{done}");
+            let mut phases = Vec::new();
+            while let Some(p) = session.prepare_some(SceneQuality::display(), || true) {
+                phases.push(p.phase);
+                assert!(phases.len() < 100, "{phases:?}");
+            }
+            assert_eq!(phases.first(), Some(&"regenerating"), "{phases:?}");
+            let features = |s: &mut Session| {
+                s.execute("document.inspect", &json!({})).unwrap()["features"].clone()
+            };
+            assert_eq!(features(&mut session), features(&mut whole), "scale {s}");
+            assert_eq!(picture(&mut session), picture(&mut whole), "scale {s}");
+            assert_eq!(states(&mut session), states(&mut whole), "scale {s}");
+            // Regenerated now: the same value again regenerates nothing.
+            let (_, built) = rebuilt(|| session.execute("param.set", &set).unwrap());
+            assert_eq!(built, 0, "scale {s}, w {value}: the same value again");
+        }
+    }
+}
+
+/// What `work` returns, and how many features the regenerations on this
+/// thread built afresh meanwhile (each tells the thread's progress sink,
+/// so tests running at once on other threads do not count).
+fn rebuilt<R>(work: impl FnOnce() -> R) -> (R, usize) {
+    let count = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let seen = std::rc::Rc::clone(&count);
+    let out = craft3d_regen::progress::with_sink(
+        move |p| {
+            if p.phase == "regenerating" {
+                seen.set(seen.get() + 1);
+            }
+        },
+        work,
+    );
+    (out, count.get())
+}

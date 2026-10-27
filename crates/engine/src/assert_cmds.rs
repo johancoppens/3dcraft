@@ -936,6 +936,16 @@ pub(crate) const WAIT_CEILING: std::time::Duration = std::time::Duration::from_s
 /// `pending`, and `whenPending` then says how to have their results, so
 /// a script does not read "pending" as an answer.
 pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all: bool) {
+    // Measured against a regeneration a host does a piece at a time,
+    // after the command (`Session::regeneration_deferred`): no summary,
+    // and the result says `deferred` (`add_failed`). `wait: true` still
+    // waits, as `assert.list` does.
+    if !all && session.regeneration_deferred() {
+        if let Some(map) = result.as_object_mut() {
+            map.insert("deferred".into(), Value::Bool(true));
+        }
+        return;
+    }
     let wait = Wait::For(if all { WAIT_CEILING } else { EDIT_WAIT });
     let Some(mut s) = summary(session, wait) else {
         return;

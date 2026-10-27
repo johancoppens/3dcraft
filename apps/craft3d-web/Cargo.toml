@@ -60,6 +60,14 @@ web-sys = { workspace = true, features = [
     "WritableStream",
 ] }
 
+# The work counters of `examples/param_timing.rs`.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+craft3d-kernel.workspace = true
+craft3d-math.workspace = true
+craft3d-regen.workspace = true
+craft3d-tess.workspace = true
+craft3d-topo.workspace = true
+
 # The commit the program is built from, for the bug report (build.rs).
 [build-dependencies]
 craft3d-buildinfo.workspace = true

@@ -1309,6 +1309,71 @@ mod tests {
         }
     }
 
+    /// On the page (a piece per frame) a commit of the Parameters form
+    /// runs `param.set` without its regeneration: the frames after it
+    /// regenerate a feature at a time (the status bar counts them), then
+    /// mesh and show the new state, and the form hears that the commit
+    /// went well. The window drawn meanwhile is the one before (away).
+    #[test]
+    fn a_parameter_set_on_the_page_is_regenerated_between_frames() {
+        let mut host = host();
+        host.set_stepwise(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+            ("feature.block", json!({"size": ["w", "20 mm", "5 mm"]})),
+            (
+                "feature.block",
+                json!({"size": ["w", "10 mm", "10 mm"], "position": [0, 30, 0]}),
+            ),
+            (
+                "feature.block",
+                json!({"size": ["w", "10 mm", "10 mm"], "position": [0, 50, 0]}),
+            ),
+            (
+                "variable.publish",
+                json!({"name": "w", "min": "10 mm", "max": "90 mm"}),
+            ),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        while host.prepare(|| false) {}
+        host.shell.sync(&mut host.session);
+        host.shell
+            .ui_param_queue(&mut host.session, Some(&json!({"name": "w", "value": 70})))
+            .unwrap();
+        host.pump();
+        let report = host.shell.last_command.clone().unwrap();
+        assert_eq!(report.label, "param.set");
+        assert!(
+            report.ok && report.text.contains("\"deferred\":true"),
+            "{}",
+            report.text
+        );
+        assert!(host.away(), "the new state is not there yet");
+        let mut said = Vec::new();
+        let mut frames = 0;
+        while host.prepare(|| true) {
+            frames += 1;
+            assert!(frames < 50, "{said:?}");
+            said.push(
+                host.shell
+                    .work()
+                    .map(|w| (w.phase.clone(), w.step, w.steps)),
+            );
+        }
+        assert_eq!(
+            said.first().cloned().flatten(),
+            Some(("regenerating".to_string(), 1, 3)),
+            "{said:?}"
+        );
+        assert!(!host.away());
+        host.shell.sync(&mut host.session);
+        assert!(!host.shell.parameters_busy());
+        let list = host.session.execute("param.list", &json!({})).unwrap();
+        assert_eq!(list["parameters"][0]["value"], 70.0, "{list}");
+    }
+
     fn host() -> WebHost {
         WebHost::new(Shell::new())
     }

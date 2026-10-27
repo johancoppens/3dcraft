@@ -496,7 +496,15 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
 /// revision before it would blame the next edit for what the undo did);
 /// when the document was not regenerated since, it is now, which the
 /// regeneration cache keeps to what changed.
+///
+/// Empty while the regeneration is left to a host that does it a piece
+/// at a time ([`Session::regeneration_deferred`]): [`add_failed`] then
+/// says nothing either.
 pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandError> {
+    if session.regeneration_deferred() {
+        session.document()?;
+        return Ok(Vec::new());
+    }
     let open = session.document_mut()?;
     if open.history.current().features.is_empty() {
         return Ok(Vec::new());
@@ -517,12 +525,24 @@ pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandEr
 /// `causedBy`. Left out when there are none. A failed feature is not an
 /// error of the command (it did what was asked), so this is how the
 /// caller learns what its change broke.
+///
+/// For a host that regenerates a piece at a time
+/// ([`Session::regeneration_deferred`]) the document is not regenerated
+/// here: the result says `deferred: true` instead, and the host shows
+/// what fails once the regeneration is done.
 pub(crate) fn add_failed(
     session: &mut Session,
     before: &[FeatureId],
     except: Option<FeatureId>,
     result: &mut Value,
 ) -> Result<(), CommandError> {
+    if session.regeneration_deferred() {
+        session.document()?;
+        if let Some(map) = result.as_object_mut() {
+            map.insert("deferred".into(), Value::Bool(true));
+        }
+        return Ok(());
+    }
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();

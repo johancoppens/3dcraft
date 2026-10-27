@@ -25,6 +25,24 @@ impl Session {
         self.set_refine_elsewhere(stepwise);
     }
 
+    /// True when the host does the long work a piece at a time
+    /// ([`Self::set_stepwise`]) and the active document's current state
+    /// is not regenerated yet: an edit then leaves its regeneration to
+    /// [`Self::prepare_some`], which the host does between its frames,
+    /// instead of doing all of it in the command (which held the page's
+    /// one thread for as long as the whole regeneration took). The edit's
+    /// result then says `deferred: true` and leaves out what only the
+    /// regeneration knows (the features that fail now, the assertions'
+    /// summary); the window shows both once they are there.
+    pub(crate) fn regeneration_deferred(&self) -> bool {
+        self.stepwise
+            && self.documents.get(self.active).is_some_and(|open| {
+                open.regen
+                    .as_ref()
+                    .is_none_or(|(at, _)| *at != open.history.revision())
+            })
+    }
+
     /// Does a piece of what showing the active document at `quality`
     /// still needs, in this order: its regeneration, the quick first
     /// picture, the display scene (for [`SceneQuality::Display`]) and its

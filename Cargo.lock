@@ -674,6 +674,11 @@ version = "0.1.0"
 dependencies = [
  "craft3d-buildinfo",
  "craft3d-engine",
+ "craft3d-kernel",
+ "craft3d-math",
+ "craft3d-regen",
+ "craft3d-tess",
+ "craft3d-topo",
  "craft3d-ui-egui",
  "eframe",
  "egui",
