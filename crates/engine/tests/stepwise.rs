@@ -359,6 +359,69 @@ fn an_edit_leaves_its_regeneration_to_the_pieces() {
     }
 }
 
+/// An edit given `wait: true` is final on every host: on one that works
+/// a piece at a time it regenerates all the same and reports what fails
+/// (`failed`, against the state before it, regenerated first when it was
+/// not yet) and the assertions, never `deferred`, exactly as a session
+/// that does it all at once. A block whose width is `w - 35 mm` fails
+/// below 35 mm. At three scales.
+#[test]
+fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time() {
+    for s in [1e-2, 1.0, 1e3] {
+        let mm = |v: f64| format!("{} mm", v * s);
+        let publish = json!({"name": "w", "min": mm(1.0), "max": mm(90.0)});
+        let narrow = json!({
+            "size": [format!("w - {}", mm(35.0)), mm(10.0), mm(10.0)],
+            "position": [mm(200.0), "0 mm", "0 mm"],
+            "name": "D",
+        });
+        let mut whole = Session::new(Workspace::none());
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        for one in [&mut whole, &mut session] {
+            build(one, s);
+            one.execute("feature.block", &narrow).unwrap();
+            one.execute("variable.publish", &publish).unwrap();
+        }
+        while session
+            .prepare_some(SceneQuality::display(), || false)
+            .is_some()
+        {}
+        // Not waited for: deferred, and the state after it not regenerated
+        // when the next edit comes.
+        let first = json!({"values": {"w": 60.0 * s}});
+        whole.execute("param.set", &first).unwrap();
+        assert_eq!(
+            session.execute("param.set", &first).unwrap()["deferred"],
+            true
+        );
+        for (value, fails) in [(30.0, true), (20.0, false), (50.0, false)] {
+            let set = json!({"values": {"w": value * s}, "wait": true});
+            let all_at_once = whole.execute("param.set", &set).unwrap();
+            let done = session.execute("param.set", &set).unwrap();
+            assert!(
+                done.get("deferred").is_none(),
+                "scale {s}, w {value}: {done}"
+            );
+            assert_eq!(done, all_at_once, "scale {s}, w {value}");
+            // D fails from 30 on; at 20 it failed before already.
+            assert_eq!(
+                done.get("failed")
+                    .is_some_and(|f| f.to_string().contains("\"D\"")),
+                fails,
+                "scale {s}, w {value}: {done}"
+            );
+            assert_eq!(done["assertions"]["pending"], 0, "{done}");
+            // The same through variable.set, which takes wait too.
+            let var = json!({"name": "w", "expr": mm(value), "wait": true});
+            let all_at_once = whole.execute("variable.set", &var).unwrap();
+            let done = session.execute("variable.set", &var).unwrap();
+            assert!(done.get("deferred").is_none(), "{done}");
+            assert_eq!(done, all_at_once, "scale {s}, w {value}");
+        }
+    }
+}
+
 /// What `work` returns, and how many features the regenerations on this
 /// thread built afresh meanwhile (each tells the thread's progress sink,
 /// so tests running at once on other threads do not count).
