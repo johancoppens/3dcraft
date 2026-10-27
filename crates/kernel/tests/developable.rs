@@ -16,7 +16,7 @@
 )]
 
 use craft3d_geom::refine::{interpolate, piece, reparametrized};
-use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Surface};
+use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Sphere, Surface};
 use craft3d_kernel::developable::{Connected, Piece, Rail, RailPiece, connect};
 use craft3d_kernel::unfold::develop;
 use craft3d_kernel::{KernelError, primitives};
@@ -397,6 +397,69 @@ fn a_sphere_is_refused_with_its_curvature() {
     let ball = primitives::sphere(&Frame::WORLD, 2.0).unwrap();
     let error = develop(&ball, &[FaceId(0)], &tol(1.0)).unwrap_err();
     assert!(error.to_string().contains("not developable"), "{error}");
+}
+
+/// A thin band of a sphere of radius `r` about its equator, between the
+/// latitudes `±half` (radians), as one sheet face.
+fn sphere_band(r: f64, half: f64) -> Body {
+    let mut body = Body::new(BodyKind::Sheet);
+    let mut circles = Vec::new();
+    for lat in [-half, half] {
+        let h = r * lat.sin();
+        let frame = Frame::new(Vec3::new(0.0, 0.0, h), Vec3::Z, Vec3::X).unwrap();
+        let rho = r * lat.cos();
+        let v = body.add_vertex(Vec3::new(rho, 0.0, h));
+        circles.push(body.add_edge(
+            Curve3::Circle(Circle::new(frame, rho).unwrap()),
+            (0.0, TAU),
+            v,
+            v,
+        ));
+    }
+    let lo = body.add_loop(vec![Coedge {
+        edge: circles[0],
+        reversed: false,
+    }]);
+    let hi = body.add_loop(vec![Coedge {
+        edge: circles[1],
+        reversed: true,
+    }]);
+    let surface = Surface::Sphere(Sphere::new(Frame::WORLD, r).unwrap());
+    let face = body.add_face(surface, false, vec![lo, hi]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// The stretch gate is an estimate, not a bound (review of 2026-10-27):
+/// a band of a sphere of radius `R` about its equator, `w = R / 1000`
+/// wide and `2πR` long, gets `|K| w² L / 16 ≈ 0.39` tolerances from it and
+/// passes. It is still not developable: its rims are circles of
+/// geodesic curvature `tan(w / 2R) / R`, which a band of constant width
+/// laid flat round a straight middle line cannot give them, and the
+/// later checks refuse it (the rims developed along themselves against
+/// the map, or the layouts that do not converge). At three scales.
+#[test]
+fn a_thin_sphere_band_that_passes_the_stretch_gate_is_still_refused() {
+    for k in SCALES {
+        let (r, half) = (k, 0.0005);
+        let band = sphere_band(r, half);
+        let measured = craft3d_kernel::unfold::face_curvature(&band, FaceId(0)).unwrap();
+        assert!(
+            measured.stretch <= 0.5 * tol(k).linear,
+            "{k}: the gate itself refuses it ({}), which this test is not about",
+            measured.stretch
+        );
+        let error = develop(&band, &[FaceId(0)], &tol(k))
+            .err()
+            .unwrap_or_else(|| panic!("{k}: a sphere band laid flat"));
+        let why = error.to_string();
+        assert!(
+            why.contains("departs from the pattern's map")
+                || why.contains("does not lie flat")
+                || why.contains("in the pattern and"),
+            "{k}: {why}"
+        );
+    }
 }
 
 /// A generalised cylinder whose cross-section inflects (the sea kayak's
