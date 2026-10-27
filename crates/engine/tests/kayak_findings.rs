@@ -31,12 +31,12 @@
 //!    3000 mm long, was bound by its whole surface. Now a trimmed freeform
 //!    face is bound by what of its surface lies in its trim.
 //! 14. Plates on the developable panels (`onto` the end planes, `touch`
-//!    along the chines): refused, "the offset of the freeform face could
-//!    not be approximated", as the panel's surface was continued across
-//!    its rulings by a box of parameters as wide as the tip's short
-//!    ruling needs, and the offset fitted to the tolerance over all of
-//!    it. Now the offset is held to the tolerance only within the length
-//!    along the surface that the plate uses.
+//!     along the chines): refused, "the offset of the freeform face could
+//!     not be approximated", as the panel's surface was continued across
+//!     its rulings by a box of parameters as wide as the tip's short
+//!     ruling needs, and the offset fitted to the tolerance over all of
+//!     it. Now the offset is held to the tolerance only within the length
+//!     along the surface that the plate uses.
 
 #![allow(
     clippy::unwrap_used,
