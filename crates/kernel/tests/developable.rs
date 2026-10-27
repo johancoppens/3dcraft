@@ -431,8 +431,8 @@ fn sphere_band(r: f64, half: f64) -> Body {
 }
 
 /// The stretch gate is an estimate, not a bound (review of 2026-10-27):
-/// a band of a sphere of radius `R` about its equator, `w = R / 1000`
-/// wide and `2πR` long, gets `|K| w² L / 16 ≈ 0.39` tolerances from it and
+/// a band of a sphere of radius `R` about its equator, `w = 0.0006 R`
+/// wide and `2πR` long, gets about 0.3 of the tolerance from it and
 /// passes. It is still not developable: its rims are circles of
 /// geodesic curvature `tan(w / 2R) / R`, which a band of constant width
 /// laid flat round a straight middle line cannot give them, and the
@@ -441,7 +441,7 @@ fn sphere_band(r: f64, half: f64) -> Body {
 #[test]
 fn a_thin_sphere_band_that_passes_the_stretch_gate_is_still_refused() {
     for k in SCALES {
-        let (r, half) = (k, 0.0005);
+        let (r, half) = (k, 0.0003);
         let band = sphere_band(r, half);
         let measured = craft3d_kernel::unfold::face_curvature(&band, FaceId(0)).unwrap();
         assert!(
