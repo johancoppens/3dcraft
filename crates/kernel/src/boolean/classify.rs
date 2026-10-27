@@ -722,42 +722,6 @@ pub(super) fn face_regions<'o>(
             .get(&face)
             .is_some_and(|must| !must.is_disjoint(&dropped))
         {
-            if let Some(must) = crossing.get(&face) {
-                for &i in must.intersection(&dropped) {
-                    if let Some(arc) = arcs.arcs.get(i) {
-                        let (p, q) = (arc.curve.eval(arc.range.0), arc.curve.eval(arc.range.1));
-                        eprintln!(
-                            "BOOLDBG imprint lost face {face} arc {i} from {p:?} to {q:?} range {:?} vertices {} {} at {:?} {:?} across {} dropped {}",
-                            arc.range,
-                            arc.start,
-                            arc.end,
-                            vertices.points.get(arc.start),
-                            vertices.points.get(arc.end),
-                            across.len(),
-                            dropped.len()
-                        );
-                    }
-                }
-                for edge in own.edges_of(face) {
-                    if let Some(e) = own.body.edge(edge) {
-                        let (a0, a1) = e.range;
-                        let pts: Vec<_> = (0..=4)
-                            .map(|k| e.curve.eval(a0 + (a1 - a0) * f64::from(k) / 4.0))
-                            .collect();
-                        eprintln!("BOOLDBG   boundary edge {} {:?}", edge.0, pts);
-                    }
-                }
-                for &i in across {
-                    if let Some(arc) = arcs.arcs.get(i) {
-                        eprintln!(
-                            "BOOLDBG   across arc {i} {:?} -> {:?} dropped {}",
-                            arc.curve.eval(arc.range.0),
-                            arc.curve.eval(arc.range.1),
-                            dropped.contains(&i)
-                        );
-                    }
-                }
-            }
             return Err(Stop::of(IMPRINT_LOST).at(&named));
         }
         regions

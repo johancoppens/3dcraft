@@ -77,7 +77,8 @@
 
 use crate::KernelError;
 use crate::offset_face::{
-    FOLDS, NO_FIT, NO_NORMAL, NoOffset, TURN_TOO_FAR, continued, offset_surface,
+    FOLDS, NO_FIT, NO_NORMAL, NoOffset, Reaches, TURN_TOO_FAR, continued, continued_each,
+    offset_surface_each,
 };
 use crate::offset_normal::TURN_SHARE;
 use crate::tweak::meet;
@@ -251,15 +252,15 @@ impl<'a> Layered<'a> {
     fn new(
         face: &'a Face,
         levels: (f64, f64),
-        reach: f64,
+        reaches: Reaches,
         tolerance: &Tolerance,
     ) -> Result<Self, &'static str> {
-        let reference = continued(&face.surface, reach, [true; 4], tolerance);
+        let reference = continued_each(&face.surface, reaches, tolerance);
         let skin = |level: f64| -> Result<Surface, &'static str> {
             if level == 0.0 {
                 Ok(reference.clone())
             } else {
-                offset_surface(face, level, (reach, [true; 4]), None, tolerance).map_err(no_offset)
+                offset_surface_each(face, level, reaches, None, tolerance).map_err(no_offset)
             }
         };
         Ok(Self {
@@ -673,14 +674,14 @@ const PAST_REACH: &str =
 /// reach is raised by the most any of them needs: the border's fastest
 /// speed over the speed at the vertex. A vertex where the surface does not
 /// move across the border (a collapsed corner) needs nothing there.
-fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> f64 {
+fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> Reaches {
     let nurbs = match &face.surface {
         Surface::Nurbs(n) => std::borrow::Cow::Borrowed(n),
         Surface::Bezier(b) => match NurbsSurface::from_bezier(b) {
             Ok(n) => std::borrow::Cow::Owned(n),
-            Err(_) => return reach,
+            Err(_) => return [reach; 4],
         },
-        _ => return reach,
+        _ => return [reach; 4],
     };
     let ((u0, u1), (v0, v1)) = nurbs.domain();
     // The fastest speed across a border, as `offset_face::reached` finds it.
@@ -697,7 +698,7 @@ fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> f64 {
             })
             .fold(0.0_f64, f64::max)
     };
-    let mut factor: f64 = 1.0;
+    let mut factor: [f64; 4] = [1.0; 4];
     for &lp in &face.loops {
         let Some(l) = body.loop_(lp) else {
             continue;
@@ -717,23 +718,28 @@ fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> f64 {
                 // A vertex within the reach of a border (on it, or as near
                 // as the face's fit leaves it) needs that border continued.
                 let (speed_u, speed_v) = (su.length(), sv.length());
-                for (on, along_u, at, speed) in [
+                for (border, (on, along_u, at, speed)) in [
                     ((u - u0) * speed_u <= reach, true, u0, speed_u),
                     ((u1 - u) * speed_u <= reach, true, u1, speed_u),
                     ((v - v0) * speed_v <= reach, false, v0, speed_v),
                     ((v1 - v) * speed_v <= reach, false, v1, speed_v),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     if on && speed > 0.0 && speed.is_finite() {
                         let ratio = fastest(along_u, at) / speed;
-                        if ratio.is_finite() {
-                            factor = factor.max(ratio);
+                        if let Some(f) = factor.get_mut(border)
+                            && ratio.is_finite()
+                        {
+                            *f = f.max(ratio);
                         }
                     }
                 }
             }
         }
     }
-    reach * factor
+    factor.map(|f| reach * f)
 }
 
 /// True when the nearest point of the freeform `surface` to `p` is on the

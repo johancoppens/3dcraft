@@ -141,6 +141,26 @@ pub(crate) fn offset_surface(
     turn: Option<&Turn>,
     tolerance: &Tolerance,
 ) -> Result<Surface, NoOffset> {
+    let by = |grow: bool| if grow { reach } else { 0.0 };
+    let [g0, g1, g2, g3] = growth;
+    offset_surface_each(
+        face,
+        distance,
+        [by(g0), by(g1), by(g2), by(g3)],
+        turn,
+        tolerance,
+    )
+}
+
+/// [`offset_surface`] with a reach of its own per border
+/// ([`reached_each`]).
+pub(crate) fn offset_surface_each(
+    face: &Face,
+    distance: f64,
+    reaches: Reaches,
+    turn: Option<&Turn>,
+    tolerance: &Tolerance,
+) -> Result<Surface, NoOffset> {
     // Along the surface's own normal.
     let along = if face.reversed { -distance } else { distance };
     match &face.surface {
@@ -188,7 +208,7 @@ pub(crate) fn offset_surface(
                 .map_err(|_| NoOffset::Gone)
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
-            let over = reached(&face.surface, reach, growth, tolerance)
+            let over = reached_each(&face.surface, reaches, tolerance)
                 .map(|(_, over)| over)
                 .ok_or(NoOffset::NoFit)?;
             let turned = |u: f64, v: f64| turn.map_or(craft3d_math::Vec3::ZERO, |t| t.at(u, v));
@@ -217,17 +237,21 @@ pub(crate) fn offset_surface(
 /// and the end in u, the start and the end in v.
 pub(crate) type Growth = [bool; 4];
 
+/// How far to go on past each border of a surface's parameter range (the
+/// start and the end in u, the start and the end in v).
+pub(crate) type Reaches = [f64; 4];
+
 /// Every border.
 const ALL_BORDERS: Growth = [true; 4];
 
 /// A freeform surface as a NURBS surface, and the box of parameters that
-/// reaches about `reach` past each of its borders in `growth` along it,
-/// in a direction in which it does not close on itself. `None` for
-/// another kind of surface.
-fn reached(
+/// reaches about the reach of each of its borders past it (the start and
+/// the end in u, the start and the end in v; nothing for one of 0), in a
+/// direction in which it does not close on itself. `None` for another
+/// kind of surface.
+pub(crate) fn reached_each(
     surface: &Surface,
-    reach: f64,
-    growth: Growth,
+    reaches: Reaches,
     tolerance: &Tolerance,
 ) -> Option<(NurbsSurface, craft3d_geom::offset::Domain)> {
     let nurbs = match surface {
@@ -236,12 +260,12 @@ fn reached(
         _ => return None,
     };
     let ((u0, u1), (v0, v1)) = nurbs.domain();
-    if !(reach > 0.0 && reach.is_finite()) {
+    if !reaches.iter().any(|r| *r > 0.0 && r.is_finite()) {
         return Some((nurbs, ((u0, u1), (v0, v1))));
     }
     // How far the parameter has to go past a border for the surface to
     // reach that far: by the fastest speed across it along that border.
-    let past = |along_u: bool, at: f64| {
+    let past = |reach: f64, along_u: bool, at: f64| {
         let speed = (0..=8)
             .map(|k| {
                 let f = f64::from(k) / 8.0;
@@ -260,30 +284,30 @@ fn reached(
         }
     };
     let tol = tolerance.linear;
-    let [grow_u0, grow_u1, grow_v0, grow_v1] = growth;
+    let [r_u0, r_u1, r_v0, r_v1] = reaches;
     let (closes_u, closes_v) = (nurbs.closes(true, tol), nurbs.closes(false, tol));
-    let by = |grow: bool, closes: bool, along_u: bool, at: f64| {
-        if grow && !closes {
-            past(along_u, at)
+    let by = |reach: f64, closes: bool, along_u: bool, at: f64| {
+        if reach > 0.0 && reach.is_finite() && !closes {
+            past(reach, along_u, at)
         } else {
             0.0
         }
     };
     let over = (
         (
-            u0 - by(grow_u0, closes_u, true, u0),
-            u1 + by(grow_u1, closes_u, true, u1),
+            u0 - by(r_u0, closes_u, true, u0),
+            u1 + by(r_u1, closes_u, true, u1),
         ),
         (
-            v0 - by(grow_v0, closes_v, false, v0),
-            v1 + by(grow_v1, closes_v, false, v1),
+            v0 - by(r_v0, closes_v, false, v0),
+            v1 + by(r_v1, closes_v, false, v1),
         ),
     );
     Some((nurbs, over))
 }
 
 /// A freeform surface continued past its borders by about `reach` along
-/// it ([`reached`]) as the functions its end spans are, so every point of
+/// it ([`reached_each`]) as the functions its end spans are, so every point of
 /// it keeps its parameters: exactly where the weights allow, else within
 /// a share of the tolerance; another surface, or one that cannot be
 /// continued, as it is.
@@ -293,7 +317,18 @@ pub(crate) fn continued(
     growth: Growth,
     tolerance: &Tolerance,
 ) -> Surface {
-    let Some((nurbs, (u, v))) = reached(surface, reach, growth, tolerance) else {
+    let by = |grow: bool| if grow { reach } else { 0.0 };
+    let [g0, g1, g2, g3] = growth;
+    continued_each(surface, [by(g0), by(g1), by(g2), by(g3)], tolerance)
+}
+
+/// [`continued`] with a reach of its own per border ([`reached_each`]).
+pub(crate) fn continued_each(
+    surface: &Surface,
+    reaches: Reaches,
+    tolerance: &Tolerance,
+) -> Surface {
+    let Some((nurbs, (u, v))) = reached_each(surface, reaches, tolerance) else {
         return surface.clone();
     };
     if (u, v) == nurbs.domain() {
