@@ -14,11 +14,13 @@
 //! point of a rail to a stretch of the other are a cone, developable too,
 //! and meet the rulings beside them with the same tangent plane.
 //!
-//! Where the zero set turns back (later rulings would cross earlier ones:
-//! an inflection, a rail that winds about the other), branches or
-//! vanishes over a stretch (both rails in one plane there), or a ruling
-//! shrinks to nothing between the ends, the connection is refused with the
-//! place; it is not split by a guess. Rails that lie in one plane are
+//! Where the zero set turns back in one parameter (later rulings would
+//! cross earlier ones: one rail inflects where the other does not), the
+//! gap is closed by a fan whose end rulings both satisfy the condition
+//! (see [`trace`]). Where it turns back in both (a rail that winds about
+//! the other), vanishes over a stretch (both rails in one plane there), or
+//! a ruling shrinks to nothing between the ends, the connection is
+//! refused with the place. Rails that lie in one plane are
 //! connected by the planar region between them. The method, its sources
 //! and its oracles: docs/design/developable.md.
 
