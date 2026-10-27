@@ -146,6 +146,8 @@ pub fn guarded(session: &mut Session, command: &str, params: &Value) -> Result<V
 /// - Faces only, to DXF or SVG: those faces on one sheet (`faces`; a face
 ///   that is not flat is refused by `file.export`, naming it).
 /// - One sketch only, to DXF or SVG: its outline (`sketch`).
+/// - The body of one sheet-metal part or fold only, to DXF or SVG: its
+///   flat pattern (`sheetMetal`) or crease pattern (`fold`).
 /// - Anything else is refused: `file.export` writes bodies to STEP and
 ///   the mesh formats, and faces or one sketch to DXF and SVG.
 pub fn export_selection(
@@ -215,6 +217,18 @@ pub fn export_selection(
                     .collect();
                 return Ok(Some(("faces", Value::Array(list))));
             }
+            if bodies == 1 && items.len() == 1 {
+                let item = items.first().unwrap_or(&Value::Null);
+                let pattern = flat_patterns(session)
+                    .into_iter()
+                    .find(|p| field(item, "feature").as_str() == Some(p.id.as_str()));
+                if let Some(pattern) = pattern {
+                    return Ok(Some((
+                        pattern.kind.param(),
+                        Value::String(pattern.feature),
+                    )));
+                }
+            }
             if sketches == 1 && items.len() == 1 {
                 let item = items.first().unwrap_or(&Value::Null);
                 let id = match field(item, "feature").as_str() {
@@ -224,7 +238,7 @@ pub fn export_selection(
                 return Ok(Some(("sketch", Value::String(id.to_string()))));
             }
             Err(format!(
-                "{ID}: a .{extension} file is the outline of flat faces or of one sketch, and the selection is {summary}; select only flat faces, or one sketch"
+                "{ID}: a .{extension} file is the outline of flat faces or of one sketch, or the flat pattern of one sheet-metal part or fold, and the selection is {summary}; select only flat faces, one sketch, or the body of one sheet-metal part or fold"
             ))
         }
     }
@@ -356,6 +370,90 @@ pub struct SheetPlan {
     pub width: String,
     /// The gap between two outlines as typed; empty for 5 mm.
     pub gap: String,
+    /// The flat pattern of a sheet-metal part or the crease pattern of a
+    /// fold instead of the selection, the view or a set (`file.export
+    /// {sheetMetal}` or `{fold}`); a set and a pattern are not both chosen.
+    pub pattern: Option<FlatPattern>,
+}
+
+/// What a pattern of a DXF or SVG export is drawn from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternKind {
+    /// A sheet-metal part: its flat pattern, with its bend lines.
+    SheetMetal,
+    /// A fold: its crease pattern.
+    Fold,
+}
+
+impl PatternKind {
+    /// Both, in the order the dialog offers them.
+    pub const ALL: [PatternKind; 2] = [Self::SheetMetal, Self::Fold];
+
+    /// The parameter of `file.export` that draws it, which is also the
+    /// feature's type (`select.query`'s `type`).
+    pub fn param(self) -> &'static str {
+        match self {
+            Self::SheetMetal => "sheetMetal",
+            Self::Fold => "fold",
+        }
+    }
+
+    /// What the dialog calls it, before the feature's name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SheetMetal => "Flat pattern of",
+            Self::Fold => "Crease pattern of",
+        }
+    }
+}
+
+/// The flat pattern of one sheet-metal part, or the crease pattern of one
+/// fold, as the export dialog offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlatPattern {
+    pub kind: PatternKind,
+    /// The feature's name, as `file.export` is given it.
+    pub feature: String,
+    /// The feature's id (`F3`), as the selection names its body.
+    pub id: String,
+}
+
+impl FlatPattern {
+    /// What the dialog shows: "Flat pattern of Part".
+    pub fn label(&self) -> String {
+        format!("{} {}", self.kind.label(), self.feature)
+    }
+}
+
+/// The sheet-metal parts and folds of the active document, in history
+/// order (the parts first): each a pattern a DXF or SVG export can draw.
+/// None when there is no document or the query fails.
+pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
+    let mut out = Vec::new();
+    for kind in PatternKind::ALL {
+        let Ok(found) = guarded(
+            session,
+            "select.query",
+            &json!({"kind": "feature", "where": {"type": kind.param()}, "limit": 256}),
+        ) else {
+            continue;
+        };
+        let items = field(&found, "items")
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        for item in items {
+            if let (Some(feature), Some(id)) =
+                (field(item, "name").as_str(), field(item, "feature").as_str())
+            {
+                out.push(FlatPattern {
+                    kind,
+                    feature: feature.to_string(),
+                    id: id.to_string(),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Longest width or gap the export dialog keeps, in characters.
@@ -395,6 +493,9 @@ pub struct ExportCheck {
     /// The document's named sets that may hold faces (DXF or SVG), in
     /// their order: each can be laid out as a sheet instead.
     pub sets: Vec<String>,
+    /// The document's sheet-metal parts and folds (DXF or SVG): the flat
+    /// or crease pattern of each can be drawn instead.
+    pub patterns: Vec<FlatPattern>,
 }
 
 impl ExportCheck {
@@ -410,11 +511,14 @@ impl ExportCheck {
     /// Named sets are offered in the dialog when it is shown for an
     /// outline that fits (a selection that does not is said at once), or
     /// when the sheet chosen last is one of them ([`Self::offers_sheet`]).
+    /// An outline of a document with a sheet-metal part or a fold always
+    /// asks, so its pattern can be chosen whatever is selected.
     pub fn asks(&self) -> bool {
         self.mesh
             || self.offers_all_bodies()
             || self.drawing
             || (!self.sets.is_empty() && self.problem.is_none())
+            || !self.patterns.is_empty()
     }
 
     /// The sheet `sheet` names one of this export's sets: the dialog is
@@ -424,6 +528,18 @@ impl ExportCheck {
             .set
             .as_deref()
             .is_some_and(|set| self.sets.iter().any(|s| s == set))
+            || sheet
+                .pattern
+                .as_ref()
+                .is_some_and(|p| self.patterns.contains(p))
+    }
+
+    /// The pattern `plan` draws, when it is one of this export's.
+    pub fn sheet_pattern<'a>(&self, plan: &'a ExportPlan) -> Option<&'a FlatPattern> {
+        plan.sheet
+            .pattern
+            .as_ref()
+            .filter(|p| self.patterns.contains(p))
     }
 
     /// The set `plan` lays out as a sheet, when it is one of this
@@ -489,10 +605,10 @@ pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
     let selection = export_selection(session, name);
     let drawing = matches!(selection, Ok(Some(("view", _))));
     let problem = selection.err().map(|why| plain_message(&why));
-    let sets = if kind == Some(ExportKind::Outline) {
-        face_sets(session)
+    let (sets, patterns) = if kind == Some(ExportKind::Outline) {
+        (face_sets(session), flat_patterns(session))
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     ExportCheck {
         kind,
@@ -500,6 +616,7 @@ pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
         drawing,
         problem,
         sets,
+        patterns,
     }
 }
 
@@ -513,6 +630,17 @@ pub fn export_params(
     plan: &ExportPlan,
 ) -> Result<Vec<(&'static str, Value)>, String> {
     let mut params = Vec::new();
+    if export_kind(name) == Some(ExportKind::Outline)
+        && let Some(pattern) = &plan.sheet.pattern
+    {
+        // The part's flat pattern or the fold's crease pattern, whatever
+        // is selected.
+        params.push((
+            pattern.kind.param(),
+            Value::String(pattern.feature.clone()),
+        ));
+        return Ok(params);
+    }
     if export_kind(name) == Some(ExportKind::Outline)
         && let Some(set) = plan.sheet.set.as_deref()
     {
@@ -563,9 +691,12 @@ pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut Expo
     if check.sheet_set(plan).is_none() {
         plan.sheet.set = None;
     }
-    if !check.sets.is_empty() {
+    if check.sheet_pattern(plan).is_none() {
+        plan.sheet.pattern = None;
+    }
+    if !check.sets.is_empty() || !check.patterns.is_empty() {
         sheet_choice_ui(ui, check, plan);
-        if plan.sheet.set.is_some() {
+        if plan.sheet.set.is_some() || plan.sheet.pattern.is_some() {
             return;
         }
     }
@@ -586,9 +717,10 @@ pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut Expo
     }
 }
 
-/// What goes into a DXF or SVG file when the document has named sets:
-/// the selection (or with nothing selected the view), or a sheet of a
-/// set's flat faces with its width and gap.
+/// What goes into a DXF or SVG file when the document has named sets,
+/// sheet-metal parts or folds: the selection (or with nothing selected
+/// the view), a sheet of a set's flat faces with its width and gap, or a
+/// part's flat pattern or a fold's crease pattern.
 fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
     let own = if check.drawing {
         "The view"
@@ -597,14 +729,40 @@ fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan
     };
     ui.horizontal_wrapped(|ui| {
         ui.label("What:");
-        ui.radio_value(&mut plan.sheet.set, None, own);
+        let neither = plan.sheet.set.is_none() && plan.sheet.pattern.is_none();
+        if ui.radio(neither, own).clicked() {
+            plan.sheet.set = None;
+            plan.sheet.pattern = None;
+        }
         for set in &check.sets {
-            ui.radio_value(
-                &mut plan.sheet.set,
-                Some(set.clone()),
-                format!("Sheet of set: {set}"),
-            )
-            .on_hover_text("The set's flat faces laid out side by side on one sheet, at true size");
+            let chosen = plan.sheet.set.as_deref() == Some(set.as_str());
+            if ui
+                .radio(chosen, format!("Sheet of set: {set}"))
+                .on_hover_text(
+                    "The set's flat faces laid out side by side on one sheet, at true size",
+                )
+                .clicked()
+            {
+                plan.sheet.set = Some(set.clone());
+                plan.sheet.pattern = None;
+            }
+        }
+        for pattern in &check.patterns {
+            let chosen = plan.sheet.pattern.as_ref() == Some(pattern);
+            let hint = match pattern.kind {
+                PatternKind::SheetMetal => {
+                    "The part's flat pattern at true size: the outline to cut and the bend lines"
+                }
+                PatternKind::Fold => "The fold's crease pattern at true size",
+            };
+            if ui
+                .radio(chosen, pattern.label())
+                .on_hover_text(hint)
+                .clicked()
+            {
+                plan.sheet.pattern = Some(pattern.clone());
+                plan.sheet.set = None;
+            }
         }
     });
     if plan.sheet.set.is_none() {
@@ -862,6 +1020,7 @@ mod tests {
                 set: Some("Cut sheet".into()),
                 width: " 40 mm ".into(),
                 gap: String::new(),
+                pattern: None,
             },
             ..ExportPlan::default()
         };
@@ -889,6 +1048,132 @@ mod tests {
                 .iter()
                 .any(|(k, _)| *k == "set")
         );
+    }
+
+    /// A DXF or SVG export offers the flat pattern of every sheet-metal
+    /// part and the crease pattern of every fold, whatever is selected,
+    /// and a part's or fold's body selected is its pattern
+    /// (plan/repro/repro-sheet-metal-enclosure-1: the dialog never reached
+    /// `file.export {sheetMetal}`).
+    #[test]
+    fn a_flat_pattern_is_offered_for_an_outline() {
+        let mut session = Session::new(craft3d_engine::Workspace::memory());
+        guarded(&mut session, "file.new", &json!({"units": "mm"})).unwrap();
+        // Without a part or a fold nothing is offered.
+        assert!(export_check(&mut session, "a.svg").patterns.is_empty());
+        guarded(
+            &mut session,
+            "sketch.create",
+            &json!({"plane": "xy", "name": "S"}),
+        )
+        .unwrap();
+        guarded(
+            &mut session,
+            "sketch.rect",
+            &json!({"sketch": "S", "from": [0, 0], "to": [50, 40]}),
+        )
+        .unwrap();
+        guarded(
+            &mut session,
+            "feature.sheetMetal",
+            &json!({"sketch": "S", "name": "Part", "thickness": "1 mm", "radius": "1 mm",
+                "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "15 mm", "angle": "90 deg"}]}),
+        )
+        .unwrap();
+        // A fold of a square with one crease.
+        guarded(&mut session, "sketch.create", &json!({"name": "Paper"})).unwrap();
+        guarded(
+            &mut session,
+            "sketch.polyline",
+            &json!({"sketch": "Paper", "points": [[100, 0], [140, 0], [140, 40], [100, 40]], "closed": true}),
+        )
+        .unwrap();
+        let crease = guarded(
+            &mut session,
+            "sketch.line",
+            &json!({"sketch": "Paper", "from": [100, 20], "to": [140, 20]}),
+        )
+        .unwrap();
+        guarded(
+            &mut session,
+            "feature.fold",
+            &json!({"sketch": "Paper", "name": "Crane", "creases": [
+                {"line": crease["entity"], "kind": "valley", "angle": "90 deg"}]}),
+        )
+        .unwrap();
+        let svg = export_check(&mut session, "a.svg");
+        let labels: Vec<String> = svg.patterns.iter().map(FlatPattern::label).collect();
+        assert_eq!(labels, vec!["Flat pattern of Part", "Crease pattern of Crane"]);
+        assert!(svg.asks(), "{svg:?}");
+        assert!(export_check(&mut session, "a.step").patterns.is_empty());
+        // The part's body selected: its flat pattern, as the command.
+        guarded(
+            &mut session,
+            "select.set",
+            &json!({"items": [{"kind": "body", "name": "Part"}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            export_selection(&mut session, "a.svg").unwrap(),
+            Some(("sheetMetal", json!("Part")))
+        );
+        let none = ExportPlan::default();
+        assert_eq!(
+            export_params(&mut session, "a.dxf", &none).unwrap(),
+            vec![("sheetMetal", json!("Part"))]
+        );
+        // An edge selected: refused as the selection, but each pattern is
+        // offered and written whatever is selected.
+        guarded(
+            &mut session,
+            "select.query",
+            &json!({"kind": "edge", "limit": 1, "then": "replace"}),
+        )
+        .unwrap();
+        let svg = export_check(&mut session, "a.svg");
+        assert!(svg.problem.is_some() && svg.asks(), "{svg:?}");
+        for (pattern, key) in svg.patterns.iter().zip(["sheetMetal", "fold"]) {
+            let plan = ExportPlan {
+                sheet: SheetPlan {
+                    pattern: Some(pattern.clone()),
+                    ..SheetPlan::default()
+                },
+                ..ExportPlan::default()
+            };
+            assert!(svg.offers_sheet(&plan.sheet));
+            assert_eq!(svg.sheet_pattern(&plan), Some(pattern));
+            for file in ["a.svg", "a.dxf"] {
+                let params = export_params(&mut session, file, &plan).unwrap();
+                assert_eq!(params, vec![(key, json!(pattern.feature))]);
+                let mut call = json!({"path": file});
+                for (key, value) in params {
+                    call[key] = value;
+                }
+                let written = guarded(&mut session, "file.export", &call).unwrap();
+                let bytes = session.take_file(file).unwrap();
+                let text = String::from_utf8_lossy(&bytes);
+                if key == "sheetMetal" {
+                    assert!(text.contains("bendUp"), "{written} {text}");
+                }
+            }
+            // A mesh ignores the pattern.
+            assert!(
+                !export_params(&mut session, "a.stl", &plan)
+                    .unwrap()
+                    .iter()
+                    .any(|(k, _)| *k == key)
+            );
+        }
+        // A pattern of a part the document does not have is not offered.
+        let gone = SheetPlan {
+            pattern: Some(FlatPattern {
+                kind: PatternKind::SheetMetal,
+                feature: "Gone".into(),
+                id: "F99".into(),
+            }),
+            ..SheetPlan::default()
+        };
+        assert!(!svg.offers_sheet(&gone));
     }
 
     #[test]

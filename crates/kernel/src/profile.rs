@@ -448,7 +448,7 @@ impl Loop2 {
     }
 
     /// The loop run the other way, starting at the same segment.
-    fn flipped(&self) -> Loop2 {
+    pub(crate) fn flipped(&self) -> Loop2 {
         let mut segments = Vec::with_capacity(self.segments.len());
         if let Some(first) = self.segments.first() {
             segments.push(first.opposite());
@@ -458,7 +458,7 @@ impl Loop2 {
     }
 
     /// The curve ids, ascending, at most `limit` of them.
-    fn sources(&self, limit: usize) -> Vec<u64> {
+    pub(crate) fn sources(&self, limit: usize) -> Vec<u64> {
         let mut ids: Vec<u64> = self.segments.iter().map(|s| s.source).collect();
         ids.sort_unstable();
         // A curve cut into pieces is one curve.

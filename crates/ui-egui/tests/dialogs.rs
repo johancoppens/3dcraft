@@ -327,6 +327,7 @@ fn a_named_set_is_offered_as_a_sheet_and_remembered() {
         set: Some("Cut sheet".to_string()),
         width: "300 mm".to_string(),
         gap: "2 mm".to_string(),
+        pattern: None,
     };
     shell.answer_export(Some(plan.clone()));
     let (_, answered) = shell.take_export_answer().unwrap();
@@ -367,4 +368,64 @@ fn a_named_set_is_offered_as_a_sheet_and_remembered() {
         .unwrap();
     frame(&ctx, &mut shell, &mut session, Vec::new());
     assert_eq!(shell.export_sheet(), plan.sheet);
+}
+
+/// The export dialog offers a sheet-metal part's flat pattern: drawn with
+/// the choice, answered with it, remembered for the document, and the
+/// parameters `file.export {sheetMetal}` (repro-sheet-metal-enclosure-1).
+#[test]
+fn the_export_dialog_offers_a_flat_pattern() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute("sketch.create", &json!({"plane": "xy", "name": "S"}))
+        .unwrap();
+    session
+        .execute(
+            "sketch.rect",
+            &json!({"sketch": "S", "from": [0, 0], "to": [50, 40]}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "feature.sheetMetal",
+            &json!({"sketch": "S", "name": "Part", "thickness": "1 mm", "radius": "1 mm",
+                "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "15 mm", "angle": "90 deg"}]}),
+        )
+        .unwrap();
+    let mut shell = Shell::new();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    let check = craft3d_ui_egui::files::export_check(&mut session, "part.svg");
+    assert_eq!(check.patterns.len(), 1);
+    assert!(check.asks());
+    assert!(shell.ask_export("part.svg".to_string(), check.clone()));
+    for _ in 0..2 {
+        frame(&ctx, &mut shell, &mut session, Vec::new());
+    }
+    let mut plan = shell.export_dialog().unwrap().plan.clone();
+    assert_eq!(plan.sheet.pattern, None, "the view until a pattern is chosen");
+    plan.sheet.pattern = check.patterns.first().cloned();
+    shell.answer_export(Some(plan.clone()));
+    let (_, answered) = shell.take_export_answer().unwrap();
+    assert_eq!(answered.sheet.pattern, plan.sheet.pattern);
+    assert_eq!(
+        craft3d_ui_egui::files::export_params(&mut session, "part.svg", &answered).unwrap(),
+        vec![("sheetMetal", json!("Part"))]
+    );
+    // Offered again with it chosen, and Enter exports it.
+    assert!(check.offers_sheet(&shell.export_sheet()));
+    assert!(shell.ask_export("again.dxf".to_string(), check));
+    for _ in 0..2 {
+        frame(&ctx, &mut shell, &mut session, Vec::new());
+    }
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
+    let (path, answered) = shell.take_export_answer().unwrap();
+    assert_eq!(path, "again.dxf");
+    assert_eq!(
+        answered.sheet.pattern.map(|p| p.label()).as_deref(),
+        Some("Flat pattern of Part")
+    );
 }

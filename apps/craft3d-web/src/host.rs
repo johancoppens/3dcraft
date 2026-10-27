@@ -1186,7 +1186,7 @@ impl WebHost {
                     });
                     if matches!(extension_of(&dialog.name).as_deref(), Some("dxf" | "svg")) {
                         ui.label(
-                            "DXF and SVG hold the outline of the selected flat faces or sketch, with nothing selected a drawing of the model as seen, or a sheet of a named set's flat faces.",
+                            "DXF and SVG hold the outline of the selected flat faces or sketch, with nothing selected a drawing of the model as seen, a sheet of a named set's flat faces, or the flat pattern of a sheet-metal part or a fold.",
                         );
                     }
                     if let Some(check) = &check {
@@ -1734,6 +1734,44 @@ mod tests {
             "{}",
             report.text
         );
+    }
+
+    /// The browser's export dialog offers a sheet-metal part's flat
+    /// pattern; chosen, the download is the pattern with its bend lines
+    /// (repro-sheet-metal-enclosure-1).
+    #[test]
+    fn the_dialog_exports_a_flat_pattern() {
+        let mut host = host();
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("sketch.create", json!({"plane": "xy", "name": "S"})),
+            (
+                "sketch.rect",
+                json!({"sketch": "S", "from": [0, 0], "to": [50, 40]}),
+            ),
+            (
+                "feature.sheetMetal",
+                json!({"sketch": "S", "name": "Part", "thickness": "1 mm", "radius": "1 mm",
+                    "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "15 mm", "angle": "90 deg"}]}),
+            ),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        let check = export_check(&mut host.session, "part.svg");
+        let pattern = check.patterns.first().cloned().unwrap();
+        assert_eq!(pattern.label(), "Flat pattern of Part");
+        let mut sheet = host.shell.export_sheet();
+        sheet.pattern = Some(pattern);
+        host.shell.set_export_sheet(sheet);
+        let dialog = NameDialog {
+            purpose: Purpose::Export,
+            name: "part.svg".to_string(),
+        };
+        let outcome = host.answer(dialog, true);
+        assert_eq!(outcome.downloads.len(), 1);
+        let svg = String::from_utf8_lossy(&outcome.downloads[0].bytes).to_string();
+        assert!(svg.contains("bendUp"), "{svg}");
+        assert!(host.shell.error_dialog().is_none());
     }
 
     #[test]

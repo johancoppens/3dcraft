@@ -97,6 +97,7 @@ fn spec(base: Profile, t: f64, flanges: Vec<FlangeSpec>, relief: Option<Relief>)
         thickness: t,
         flanges,
         relief,
+        cutouts: Vec::new(),
     }
 }
 

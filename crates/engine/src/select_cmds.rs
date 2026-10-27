@@ -253,6 +253,44 @@ impl Range {
 #[derive(Clone, Debug)]
 struct Glob(Vec<char>);
 
+/// A name glob with the features it writes by their names written by
+/// their ids, as the persistent names it is matched against have them:
+/// `Plate:face(*)` becomes `F1:face(*)`, `F7:copy(*)/Pin:side(*)`
+/// `F7:copy(*)/F2:side(*)`. A feature is the text before a `:` from the
+/// start or after `/`, `(`, `[` or `,`; one with a wildcard (`*:face(0)`,
+/// matching every feature's) or that no feature is called stays as it is.
+/// A glob without `:` (a feature's or a sketch's own name) is unchanged.
+fn glob_with_ids(doc: &Document, text: &str) -> String {
+    if !text.contains(':') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut head = String::new();
+    for c in text.chars() {
+        match c {
+            ':' => {
+                let named = (!head.is_empty() && !head.contains(['*', '?']))
+                    .then(|| doc.feature_by_name(&head))
+                    .flatten();
+                match named {
+                    Some(feature) => out.push_str(&feature.id.to_string()),
+                    None => out.push_str(&head),
+                }
+                head.clear();
+                out.push(c);
+            }
+            '/' | '(' | '[' | ',' | ')' | ']' => {
+                out.push_str(&head);
+                head.clear();
+                out.push(c);
+            }
+            _ => head.push(c),
+        }
+    }
+    out.push_str(&head);
+    out
+}
+
 impl Glob {
     fn new(text: &str, key: &str) -> Result<Self, String> {
         let chars: Vec<char> = text.chars().collect();
@@ -454,7 +492,7 @@ impl<'a> Parser<'a> {
             "any" => Filter::Any(list(self, value)?),
             "not" => Filter::Not(Box::new(self.parse(value, depth + 1)?)),
             "kind" => Filter::Kind(kinds(value)?),
-            "name" => Filter::Name(Glob::new(text(value, key)?, key)?),
+            "name" => Filter::Name(Glob::new(&glob_with_ids(self.doc, text(value, key)?), key)?),
             "type" => Filter::Type(Glob::new(text(value, key)?, key)?),
             "set" => self.set(text(value, key)?, depth)?,
             "in" => Filter::In(self.feature(value, key)?),

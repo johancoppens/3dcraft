@@ -35,11 +35,11 @@ const FLANGE_KEYS: [&str; 8] = [
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base, or tip: index of an earlier flange, length: expr, angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent}, ...] = [], "relief": {shape: rect|round|tear, size: expr} or null = none, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a sheet-metal part: the one closed profile of the sketch (lines, arcs, circles, splines; holes allowed) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend and relief check it in assertions.", doc: true, feature_sheet_metal),
+        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one across a bend's strip, past or touching the pattern's edge, or with a profile inside it is refused. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend and relief check it in assertions.", doc: true, feature_sheet_metal),
     spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list), "relief": {shape, size} or null}"#,
         "Changes a sheet-metal part: what is given replaces what it had (flanges as a whole list; relief null removes it). One undo step.", doc: true, sheet_metal_edit),
     spec!("sheetMetal.bends", "Bend Table", r#"{"feature": id or name}"#,
-        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, relief, size), holes (per hole of the base, its curves, the nearest bend on the base and the distance from the hole to that bend's tangent line). Read-only.", doc: true, sheet_metal_bends),
+        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, relief, size), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side). Read-only.", doc: true, sheet_metal_bends),
 ];
 
 fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, CommandError> {
@@ -388,14 +388,8 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
     let holes: Vec<Value> = holes_to_bends(part, &tol)
         .iter()
         .map(|h| {
-            let curves: Vec<String> = built
-                .holes
-                .get(h.hole)
-                .into_iter()
-                .flatten()
-                .map(|c| format!("e{c}"))
-                .collect();
-            json!({"curves": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact})
+            let curves = hole_curves(part, h);
+            json!({"curves": curves, "flange": h.flat.checked_sub(1), "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact})
         })
         .collect();
     Ok(json!({
@@ -407,6 +401,21 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
         "holes": holes,
         "lengthUnit": length_unit(doc),
     }))
+}
+
+/// The sketch curves bounding a hole the measure lists, as `e7`.
+fn hole_curves(part: &sheetmetal::Part, h: &sheetmetal::HoleToBend) -> Vec<String> {
+    let mut ids: Vec<u64> = part
+        .flats
+        .get(h.flat)
+        .and_then(|f| f.holes.get(h.hole))
+        .into_iter()
+        .flatten()
+        .map(|s| s.source)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter().map(|c| format!("e{c}")).collect()
 }
 
 /// The drawing segment of a pattern segment.
@@ -540,17 +549,130 @@ pub(crate) fn flat_pattern(
     })
 }
 
-/// The sheet-metal parts an assertion's `of` names (all of them when it
-/// names none).
+/// Most parts one `of` list names.
+const MAX_PARTS: usize = 1024;
+
+/// Whether feature `id` is in the model as it stands: not switched off
+/// (suppressed, or its `when` false) and not after the rollback marker.
+fn switched_off(ctx: &Ctx<'_>, id: FeatureId) -> bool {
+    ctx.regen.feature(id).is_some_and(|r| {
+        matches!(
+            r.status,
+            craft3d_regen::Status::Suppressed
+                | craft3d_regen::Status::Inactive
+                | craft3d_regen::Status::RolledBack
+        )
+    })
+}
+
+fn is_part(doc: &Document, id: FeatureId) -> bool {
+    matches!(
+        doc.feature(id).map(|f| &f.kind),
+        Some(FeatureKind::SheetMetal(_))
+    )
+}
+
+/// Why `id` is no sheet-metal part, naming the parts whose bodies went
+/// into it (a boolean that drilled one): those are what the measures read.
+fn not_a_part(ctx: &Ctx<'_>, id: FeatureId) -> String {
+    let kind = ctx
+        .doc
+        .feature(id)
+        .map_or("feature", |f| f.kind.type_name());
+    let mut from = Vec::new();
+    for part in ctx.doc.features.iter().filter(|f| is_part(ctx.doc, f.id)) {
+        // Down the chain of the features that took the part's body.
+        let mut at = part.id;
+        for _ in 0..=ctx.doc.features.len() {
+            let Some(taker) = ctx.regen.feature(at).and_then(|r| r.consumed_by) else {
+                break;
+            };
+            if taker == id {
+                from.push(format!("`{}`", part.name));
+                break;
+            }
+            at = taker;
+        }
+    }
+    let name = ctx.feature_name(id);
+    if from.is_empty() {
+        format!("`{name}` is a {kind}, not a sheet-metal part")
+    } else {
+        format!(
+            "`{name}` is a {kind}, not a sheet-metal part; it is made from the sheet-metal part {}: name that, the measures read the part as it was built",
+            from.join(", ")
+        )
+    }
+}
+
+/// The sheet-metal part a name or id in `of` names: by the feature,
+/// whatever took its body later (a boolean that drilled it), so the
+/// measures read the part as it was built.
+fn part_named(ctx: &Ctx<'_>, text: &str) -> Result<FeatureId, String> {
+    let shown: String = text.chars().take(80).collect();
+    let id = ctx
+        .doc
+        .feature_by_name(text)
+        .map(|f| f.id)
+        .or_else(|| {
+            text.strip_prefix('F')
+                .and_then(|d| d.parse::<u64>().ok())
+                .and_then(|n| ctx.doc.feature(FeatureId(n)))
+                .map(|f| f.id)
+        })
+        .ok_or_else(|| format!("there is no feature named `{shown}`"))?;
+    if is_part(ctx.doc, id) {
+        Ok(id)
+    } else {
+        Err(not_a_part(ctx, id))
+    }
+}
+
+/// The sheet-metal parts an assertion's `of` names: by feature name or id
+/// (one, or a list), or a query of bodies. When it names none, every part
+/// in the model as it stands: a part switched off (`when`, suppressed) or
+/// rolled back is left out; one named is refused with that reason.
 fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, String> {
     let ids: Vec<FeatureId> = match p.get("of") {
-        None | Some(Value::Null) => ctx
-            .doc
-            .features
-            .iter()
-            .filter(|f| matches!(f.kind, FeatureKind::SheetMetal(_)))
-            .map(|f| f.id)
-            .collect(),
+        None | Some(Value::Null) => {
+            let all: Vec<FeatureId> = ctx
+                .doc
+                .features
+                .iter()
+                .filter(|f| is_part(ctx.doc, f.id))
+                .map(|f| f.id)
+                .collect();
+            if all.is_empty() {
+                return Err("the document has no sheet-metal part".to_string());
+            }
+            let on: Vec<FeatureId> = all
+                .iter()
+                .copied()
+                .filter(|&id| !switched_off(ctx, id))
+                .collect();
+            if on.is_empty() {
+                let names: Vec<String> = all
+                    .iter()
+                    .map(|&id| format!("`{}`", ctx.feature_name(id)))
+                    .collect();
+                return Err(format!(
+                    "every sheet-metal part is switched off or rolled back: {}",
+                    names.join(", ")
+                ));
+            }
+            return Ok(on);
+        }
+        Some(Value::String(text)) => vec![part_named(ctx, text)?],
+        Some(Value::Array(items)) if items.iter().all(Value::is_string) => {
+            if items.len() > MAX_PARTS {
+                return Err(format!("`of` names at most {MAX_PARTS} parts"));
+            }
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|text| part_named(ctx, text))
+                .collect::<Result<_, _>>()?
+        }
         Some(v) => {
             crate::verify_cmds::nonempty(crate::verify_cmds::subject(ctx, v, &["body"])?, "of")?
                 .iter()
@@ -559,18 +681,10 @@ fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, Str
         }
     };
     if ids.is_empty() {
-        return Err("the document has no sheet-metal part".to_string());
+        return Err("`of` names no sheet-metal part".to_string());
     }
-    for id in &ids {
-        if !matches!(
-            ctx.doc.feature(*id).map(|f| &f.kind),
-            Some(FeatureKind::SheetMetal(_))
-        ) {
-            return Err(format!(
-                "`{}` is not a sheet-metal part",
-                ctx.feature_name(*id)
-            ));
-        }
+    if let Some(&other) = ids.iter().find(|&&id| !is_part(ctx.doc, id)) {
+        return Err(not_a_part(ctx, other));
     }
     Ok(ids)
 }
@@ -636,14 +750,8 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
                     // either way, unbounded when the search ran out.
                     lower = lower.min(h.lower);
                     upper = upper.min(h.upper);
-                    let curves: Vec<String> = built
-                        .holes
-                        .get(h.hole)
-                        .into_iter()
-                        .flatten()
-                        .map(|c| format!("e{c}"))
-                        .collect();
-                    listed.push(json!({"part": fname, "hole": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact}));
+                    let curves = hole_curves(part, &h);
+                    listed.push(json!({"part": fname, "hole": curves, "flange": h.flat.checked_sub(1), "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact}));
                 }
             }
             _ => {
@@ -664,7 +772,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     } else {
         if !least.is_finite() {
             return Err(match name {
-                "holeToBend" => "no hole of the base lies beside a bend".to_string(),
+                "holeToBend" => "no hole of the part lies beside a bend".to_string(),
                 _ => "the part has no bends".to_string(),
             });
         }

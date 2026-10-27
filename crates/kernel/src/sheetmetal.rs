@@ -64,6 +64,9 @@ use std::f64::consts::{PI, TAU};
 /// The most flanges one part may have.
 pub const MAX_FLANGES: usize = 1024;
 
+/// The most cut-outs (closed profiles beside the base) one part may have.
+pub const MAX_CUTOUTS: usize = 4096;
+
 /// Which way a bend turns the flange: towards the side the base's normal
 /// points to, or away from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +147,10 @@ pub struct Spec {
     pub flanges: Vec<FlangeSpec>,
     /// The relief at every corner where two flanged edges of the base meet.
     pub relief: Option<Relief>,
+    /// Holes and cut-outs drawn in the pattern's axes outside the base:
+    /// each closed profile becomes a hole of the one flat (a flange's; the
+    /// base's holes are its own) it lies wholly inside in the flat pattern.
+    pub cutouts: Vec<Profile>,
 }
 
 /// A bend of the part, in the pattern's axes (the plane's x, y).
@@ -578,6 +585,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         bends.push(bend);
     }
 
+    place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
     pattern_clear(&flats, &bends, tolerance)?;
     let folded = fold(&flats, &bends, tolerance)?;
     for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
@@ -716,6 +724,116 @@ fn pattern_clear(flats: &[Flat], bends: &[Bend], tolerance: &Tolerance) -> Resul
                 profiles.len()
             ),
         )),
+    }
+}
+
+/// `ids` as a message names the curves of a profile.
+fn curves_named(ids: &[u64]) -> String {
+    let list: Vec<String> = ids.iter().map(u64::to_string).collect();
+    match list.as_slice() {
+        [one] => format!("the closed profile of curve {one}"),
+        _ => format!("the closed profile of curves {}", list.join(", ")),
+    }
+}
+
+/// Every cut-out becomes a hole of the one flat it lies wholly inside in
+/// the pattern: the flat's outline, its holes so far and the cut-out, run
+/// through the profile detection of the sketch, are one profile with one
+/// hole more and the flat's outer area (the test `reliefs_fit` makes).
+/// Tried on every flat whose box meets the cut-out's, in the pattern's
+/// order; one that fits none (across a bend's strip, past or touching the
+/// pattern's edge, in a relief's notch or a hole of the base) is refused,
+/// as is a cut-out with a profile inside it (a loose piece). The holes
+/// then go through [`pattern_clear`] with the whole pattern.
+fn place_cutouts(
+    flats: &mut [Flat],
+    cutouts: &[Profile],
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    if cutouts.len() > MAX_CUTOUTS {
+        return Err(refuse(
+            None,
+            format!("a part takes at most {MAX_CUTOUTS} holes and cut-outs beside its base"),
+        ));
+    }
+    let tol = tolerance.linear;
+    for cut in cutouts {
+        let named = curves_named(&cut.outer.sources(8));
+        if !cut.holes.is_empty() {
+            return Err(refuse(
+                None,
+                format!(
+                    "{named} has a closed profile inside it, which would be a loose piece of the sheet; a hole or cut-out is one closed profile"
+                ),
+            ));
+        }
+        // A hole runs clockwise, as the base's do.
+        let hole = cut.outer.flipped().segments;
+        let cb = cut.outer.bbox();
+        let mut placed = false;
+        for flat in flats.iter_mut() {
+            let fb = crate::profile::Loop2 {
+                segments: flat.outer.clone(),
+            }
+            .bbox();
+            let apart = cb[0] > fb[2] + tol
+                || cb[2] < fb[0] - tol
+                || cb[1] > fb[3] + tol
+                || cb[3] < fb[1] - tol;
+            if apart {
+                continue;
+            }
+            if hole_fits(&flat.outer, &flat.holes, &hole, tolerance) {
+                flat.holes.push(hole.clone());
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            return Err(refuse(
+                None,
+                format!(
+                    "{named} lies wholly inside no one flat of the flat pattern (the base or a flange's flat): a hole or cut-out across a bend's strip, or past or touching the pattern's edge, is not supported (owed: a cut-out across a bend)"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `hole` lies wholly inside the flat of outline `outer` with the
+/// holes `holes`, touching none of them (see [`place_cutouts`]).
+fn hole_fits(
+    outer: &[Segment],
+    holes: &[Vec<Segment>],
+    hole: &[Segment],
+    tolerance: &Tolerance,
+) -> bool {
+    use crate::profile::{SketchCurve, detect_profiles};
+    let curves: Vec<SketchCurve> = outer
+        .iter()
+        .chain(holes.iter().flatten())
+        .chain(hole)
+        .enumerate()
+        .map(|(i, seg)| SketchCurve {
+            id: i as u64 + 1,
+            curve: sketch_curve(seg),
+        })
+        .collect();
+    let Ok(profiles) = detect_profiles(&curves, tolerance) else {
+        return false;
+    };
+    let area = crate::profile::Loop2 {
+        segments: outer.to_vec(),
+    }
+    .signed_area();
+    match profiles.as_slice() {
+        [one] => {
+            one.holes.len() == holes.len() + 1
+                && (one.outer.signed_area() - area).abs()
+                    <= tolerance.linear * area.abs().sqrt() * 8.0
+        }
+        _ => false,
     }
 }
 
@@ -1156,15 +1274,31 @@ fn folded_sheet(
         rings.push(ring);
     }
 
+    // The holes of the flanges' flats (after everything a part without
+    // them has, so its edges keep their places).
+    let mut flange_holes: Vec<Vec<Vec<(EdgeId, bool)>>> = vec![Vec::new(); flats.len()];
+    for (f, flat) in flats.iter().enumerate().skip(1) {
+        let w = w_of(f)?;
+        for hole in &flat.holes {
+            let ring = b.ring(hole, &w)?.1;
+            if let Some(list) = flange_holes.get_mut(f) {
+                list.push(ring);
+            }
+        }
+    }
+
     // Faces: the flats, then the bends.
     let mut faces: Vec<FaceId> = Vec::with_capacity(flats.len() + bends.len());
     let mut roles = Vec::with_capacity(flats.len() + bends.len());
     for (i, ((_, edges), w)) in rings.iter().zip(&worlds).enumerate() {
         let mut loops = vec![b.body.add_loop(coedges(edges))];
-        if i == 0 {
-            for hole in &hole_rings {
-                loops.push(b.body.add_loop(coedges(hole)));
-            }
+        let holes = if i == 0 {
+            hole_rings.as_slice()
+        } else {
+            flange_holes.get(i).map_or(&[][..], Vec::as_slice)
+        };
+        for hole in holes {
+            loops.push(b.body.add_loop(coedges(hole)));
         }
         let frame = w
             .frame(&Frame::WORLD)
@@ -1331,11 +1465,14 @@ pub fn measured_angle(part: &Part, bend: usize) -> Option<f64> {
     Some(np.dot(nc).clamp(-1.0, 1.0).acos())
 }
 
-/// How a hole of the base lies to a bend of the base: the least distance
-/// in the pattern from the hole's boundary to the bend's tangent line.
+/// How a hole of a flat lies to a bend beside that flat: the least
+/// distance in the pattern from the hole's boundary to the bend's tangent
+/// line on the flat's side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HoleToBend {
-    /// The hole (its index among the base's holes) and the bend.
+    /// The flat (0 the base, `i + 1` flange `i`'s), the hole (its index
+    /// among the flat's holes) and the bend.
+    pub flat: usize,
     pub hole: usize,
     pub bend: usize,
     /// The least distance: in closed form for lines, arcs and circles; for
@@ -1356,20 +1493,39 @@ pub struct HoleToBend {
     pub exact: bool,
 }
 
-/// For every hole of the base, the distance to the nearest bend on the
-/// base (holes beside no bend on the base are not listed).
+/// For every hole of every flat (the base, then the flanges in order),
+/// the distance to the nearest bend beside that flat: to the tangent line
+/// on the flat's side of every bend that starts from it (its parent's
+/// edge) or ends on it (a flange's own bend, its far tangent line). A flat
+/// is rigid, so the distance in the pattern is the distance on the part.
+/// Holes beside no bend are not listed.
 pub fn holes_to_bends(part: &Part, tolerance: &Tolerance) -> Vec<HoleToBend> {
-    let Some(base) = part.flats.first() else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (h, hole) in base.holes.iter().enumerate() {
+    for (f, flat) in part.flats.iter().enumerate() {
+        holes_of_flat(part, f, flat, tolerance, &mut out);
+    }
+    out
+}
+
+fn holes_of_flat(
+    part: &Part,
+    f: usize,
+    flat: &Flat,
+    tolerance: &Tolerance,
+    out: &mut Vec<HoleToBend>,
+) {
+    for (h, hole) in flat.holes.iter().enumerate() {
         let mut best: Option<HoleToBend> = None;
         for (i, bend) in part.bends.iter().enumerate() {
-            if bend.parent != 0 {
+            let (a, b) = if bend.parent == f {
+                (bend.start, bend.end)
+            } else if bend.child == f {
+                bend.far_line()
+            } else {
                 continue;
-            }
+            };
             let mut found = HoleToBend {
+                flat: f,
                 hole: h,
                 bend: i,
                 distance: f64::INFINITY,
@@ -1378,8 +1534,7 @@ pub fn holes_to_bends(part: &Part, tolerance: &Tolerance) -> Vec<HoleToBend> {
                 exact: true,
             };
             for seg in hole {
-                let (d, lower, upper, exact) =
-                    segment_to_line(seg, bend.start, bend.end, tolerance.linear);
+                let (d, lower, upper, exact) = segment_to_line(seg, a, b, tolerance.linear);
                 found.distance = found.distance.min(d);
                 found.lower = found.lower.min(lower);
                 found.upper = found.upper.min(upper);
@@ -1391,7 +1546,6 @@ pub fn holes_to_bends(part: &Part, tolerance: &Tolerance) -> Vec<HoleToBend> {
         }
         out.extend(best);
     }
-    out
 }
 
 fn point_to_segment(p: P2, a: P2, b: P2) -> (f64, P2) {
@@ -1627,6 +1781,7 @@ mod tests {
                     from: LengthFrom::Tangent,
                 }],
                 relief: None,
+                cutouts: Vec::new(),
             },
             tol,
         )

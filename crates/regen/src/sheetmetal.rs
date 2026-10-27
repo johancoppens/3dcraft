@@ -1,5 +1,6 @@
-//! Sheet metal in regeneration: the base flat (the one closed profile of
-//! a sketch), its flanges and reliefs, folded and plated by the kernel
+//! Sheet metal in regeneration: the base flat (the closed profile of a
+//! sketch its flanges sit on; the sketch's other closed profiles are holes
+//! and cut-outs of the flats they fall inside), its flanges and reliefs, folded and plated by the kernel
 //! (`craft3d_kernel::sheetmetal`, docs/design/sheetmetal.md).
 //!
 //! **Names.** The folded bottom skin's faces are `F9:face(0)` (the base),
@@ -30,8 +31,6 @@ use std::sync::Arc;
 pub struct SheetMetalPart {
     pub part: Part,
     pub tolerance: Tolerance,
-    /// The curve ids of each hole of the base, in the kernel's order.
-    pub holes: Vec<Vec<u64>>,
     /// The base's sketch, for messages.
     pub sketch: String,
 }
@@ -82,18 +81,44 @@ pub(crate) fn analyse(
             profile_error(&e, &drawn.solved.curve_ids)
         )
     })?;
-    if profiles.len() != 1 {
-        return Err(format!(
-            "sketch `{name}` has {} closed profiles; the base of a sheet-metal part is one (holes inside it allowed)",
-            profiles.len()
-        ));
-    }
-    let base = profiles.remove(0);
-    let holes = base
-        .holes
+    // The base is the profile the flanges on the base's edges sit on; the
+    // sketch's other closed profiles are holes and cut-outs of the flats
+    // they fall inside in the flat pattern (the kernel places them).
+    let holds = |p: &craft3d_kernel::profile::Profile, id: u64| {
+        std::iter::once(&p.outer)
+            .chain(&p.holes)
+            .any(|l| l.segments.iter().any(|s| s.source == id))
+    };
+    let mut on: Vec<usize> = made
+        .flanges
         .iter()
-        .map(|h| h.segments.iter().map(|s| s.source).collect())
+        .filter_map(|f| match f.on {
+            FlangeOn::Base(line) => profiles.iter().position(|p| holds(p, line.0)),
+            FlangeOn::Tip(_) => None,
+        })
         .collect();
+    on.sort_unstable();
+    on.dedup();
+    let at = match (on.as_slice(), profiles.len()) {
+        ([one], _) => *one,
+        ([], 1) => 0,
+        ([], n) => {
+            return Err(format!(
+                "sketch `{name}` has {n} closed profiles and no flange on an edge of one: put a flange on the base's edge to say which is the base (the others are holes and cut-outs of the flats they fall inside)"
+            ));
+        }
+        (_, _) => {
+            return Err(format!(
+                "sketch `{name}`: the flanges sit on edges of {} different closed profiles; a sheet-metal part has one base (the others are holes and cut-outs of the flats they fall inside)",
+                on.len()
+            ));
+        }
+    };
+    if at >= profiles.len() {
+        return Err(format!("sketch `{name}` lost its base profile"));
+    }
+    let base = profiles.remove(at);
+    let cutouts = profiles;
     let thickness = length(doc, variables, "thickness", &made.thickness)?;
     let radius = length(doc, variables, "radius", &made.radius)?;
     let k = number(variables, "kFactor", &made.k_factor)?;
@@ -148,12 +173,12 @@ pub(crate) fn analyse(
         thickness,
         flanges,
         relief,
+        cutouts,
     };
     let part = sheetmetal::build(&spec, &tol).map_err(explain)?;
     Ok(SheetMetalPart {
         part,
         tolerance: tol,
-        holes,
         sketch: name,
     })
 }

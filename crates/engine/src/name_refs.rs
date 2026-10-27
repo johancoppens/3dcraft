@@ -159,13 +159,21 @@ fn rewrite(doc: &Document, text: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let missing = std::cell::RefCell::new(None::<String>);
+    let glob = std::cell::Cell::new(false);
     let lookup = |name: &str| {
         feature_called(doc, name).inspect_err(|reason| {
+            // A feature written with a wildcard that no feature is called
+            // (`*:face(0)`, `Pl?te:face(1)`) is a glob, as `select.query`
+            // and the named sets take on names: not one feature's name.
+            if name.contains(['*', '?']) {
+                glob.set(true);
+            }
             missing.borrow_mut().get_or_insert_with(|| reason.clone());
         })
     };
     match PersistentName::parse_with_features(text, &lookup) {
         Ok(name) => Ok(Some(name.to_string())),
+        Err(_) if glob.get() => Ok(None),
         Err(_) => match missing.into_inner() {
             // Every feature found, but no name all the same: the command
             // says why.
