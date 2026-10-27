@@ -64,12 +64,14 @@ fn a_pair_of_faces_whose_triangles_were_all_left_out_still_counts() {
 }
 
 /// Two discs of radius 100, 1 apart (flat faces bounded by circles, which
-/// the mesh alone proves only to its chord), and a ball over a block:
-/// with the work cut to a few pairs of pieces, or to no pairs of strata,
-/// the proof is short but never above the closed form, and it stays
-/// within the caps.
+/// the mesh alone proves only to its chord), a ball over a block and the
+/// rational band (whose proof takes the most work): with the work cut to
+/// a few pairs of pieces, to half of what the whole proof took, or to no
+/// pairs of strata, the proof is short but never above the closed form,
+/// and the work stays within the caps.
 #[test]
 fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
+    let mut cut = 0;
     for k in SCALES {
         let y = Vec3::Y;
         let disc_a = cylinder(&at(Vec3::ZERO, y), 100.0 * k, 6.0 * k).unwrap();
@@ -80,12 +82,16 @@ fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
             5.0 * k,
         )
         .unwrap();
+        let (band, near_band, _) = rational_band(k);
         for (what, a, b, want) in [
             ("discs", &disc_a, &disc_b, k),
             ("ball over a block", &ball, &base, 3.0 * k),
+            ("rational band", &band, &near_band, k),
         ] {
             CAPS.with(|caps| caps.set(None));
             let (found, full) = measure(a, b, k);
+            let (full_work, _) = SPENT.with(std::cell::Cell::get);
+            eprintln!("{what} at {k}: proven {full} of {want} in {full_work} pairs of pieces");
             assert!(
                 (found - want).abs() <= 1e-9 * want,
                 "{what} at {k}: {found}"
@@ -96,6 +102,7 @@ fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
                 (0, usize::MAX),
                 (1, usize::MAX),
                 (40, usize::MAX),
+                (full_work / 2, usize::MAX),
                 (usize::MAX, 0),
                 (usize::MAX, 1),
             ] {
@@ -107,6 +114,9 @@ fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
                 eprintln!(
                     "{label}: proven {proven} of {want}, {work} pairs of pieces, {made} of strata"
                 );
+                if nodes < full_work {
+                    cut += 1;
+                }
                 assert!(
                     (found - want).abs() <= 1e-9 * want,
                     "{label}: found {found}"
@@ -126,6 +136,8 @@ fn a_proof_cut_short_by_its_caps_is_still_no_higher_than_the_closed_form() {
             }
         }
     }
+    // The caps did cut proofs short (else this tested nothing).
+    assert!(cut >= 3, "only {cut} proofs were cut short");
 }
 
 /// The arc of the circle of `radius` from the angle `from` to `to` (less
@@ -161,62 +173,76 @@ fn rational_sphere(frame: &Frame, radius: f64, lon: (f64, f64), lat: (f64, f64))
     NurbsSurface::new(2, 2, knots.clone(), knots, 3, 3, ctrl, weights).unwrap()
 }
 
-/// A band of a sphere of radius 10 (a quarter turn around, 30° either side
-/// of its equator: a sphere cut by a block) with its round face put on the
-/// exact rational patch that is that piece of the sphere, a little wider
-/// than the face, and a ball of radius 2 out along the diagonal of the
-/// quarter, 1 from the band. The rational face has no normal cone, and the
-/// distance is still found and proven to 1, no higher, at three scales.
+/// A band of a sphere of radius `10 k` (a quarter turn around, 30° either
+/// side of its equator: a sphere cut by a block) with its round face put on
+/// the exact rational patch that is that piece of the sphere, a little
+/// wider than the face, and a ball of radius `2 k` out along the diagonal
+/// of the quarter, `k` from the band: (band, ball, the band's round face).
+fn rational_band(k: f64) -> (Body, Body, usize) {
+    let r = 10.0 * k;
+    let ball = sphere(&Frame::WORLD, r).unwrap();
+    let cutter = block(
+        &Frame::new(Vec3::new(0.0, 0.0, -0.5 * r), Vec3::Z, Vec3::X).unwrap(),
+        2.0 * r,
+        2.0 * r,
+        r,
+    )
+    .unwrap();
+    let mut band = boolean(&ball, &cutter, BooleanOp::Intersect, &tol(k))
+        .unwrap()
+        .body;
+    let index = band
+        .faces
+        .iter()
+        .position(|f| matches!(f.surface, Surface::Sphere(_)))
+        .unwrap();
+    let Surface::Sphere(round) = band.faces[index].surface.clone() else {
+        panic!("no round face")
+    };
+    let pad = 0.05;
+    let patch = Surface::Nurbs(rational_sphere(
+        round.frame(),
+        round.radius(),
+        (-pad, FRAC_PI_2 + pad),
+        (-FRAC_PI_6 - pad, FRAC_PI_6 + pad),
+    ));
+    // The patch is that piece of the sphere, and the face keeps its
+    // outside (the patch's normal may run the other way).
+    let ((u0, u1), (v0, v1)) = patch.domain();
+    let (u, v) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    let middle = patch.eval(u, v);
+    assert!((middle.length() - r).abs() <= 1e-12 * r, "{middle:?}");
+    let (su, sv) = band.faces[index].surface.project(middle).unwrap();
+    let same = patch
+        .normal(u, v)
+        .unwrap()
+        .dot(band.faces[index].surface.normal(su, sv).unwrap())
+        > 0.0;
+    let reversed = band.faces[index].reversed;
+    band.faces[index].surface = patch;
+    band.faces[index].reversed = reversed == same;
+    let (gap, rho) = (k, 2.0 * k);
+    let d = Vec3::new(1.0, 1.0, 0.0).normalized().unwrap();
+    let other = sphere(&at(d * (r + gap + rho), Vec3::Z), rho).unwrap();
+    (band, other, index)
+}
+
+/// The rational band: its round face has no normal cone (an analytic
+/// sphere's piece has one), and the distance is still found and proven
+/// to `k`, no higher than it, at three scales.
 #[test]
 fn a_rational_sphere_face_is_proven_to_its_distance_without_a_normal_cone() {
     for k in SCALES {
-        let r = 10.0 * k;
-        let ball = sphere(&Frame::WORLD, r).unwrap();
-        let cutter = block(
-            &Frame::new(Vec3::new(0.0, 0.0, -0.5 * r), Vec3::Z, Vec3::X).unwrap(),
-            2.0 * r,
-            2.0 * r,
-            r,
-        )
-        .unwrap();
-        let mut band = boolean(&ball, &cutter, BooleanOp::Intersect, &tol(k))
-            .unwrap()
-            .body;
-        let index = band
-            .faces
-            .iter()
-            .position(|f| matches!(f.surface, Surface::Sphere(_)))
-            .unwrap();
-        let Surface::Sphere(round) = band.faces[index].surface.clone() else {
-            panic!("no round face")
+        let (band, other, index) = rational_band(k);
+        let patch = &band.faces[index].surface;
+        let Surface::Nurbs(nurbs) = patch else {
+            panic!("not rational")
         };
-        let pad = 0.05;
-        let patch = Surface::Nurbs(rational_sphere(
-            round.frame(),
-            round.radius(),
-            (-pad, FRAC_PI_2 + pad),
-            (-FRAC_PI_6 - pad, FRAC_PI_6 + pad),
-        ));
-        // The patch is that piece of the sphere, and the face keeps its
-        // outside (the patch's normal may run the other way).
-        let ((u0, u1), (v0, v1)) = patch.domain();
-        let (u, v) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
-        let middle = patch.eval(u, v);
-        assert!((middle.length() - r).abs() <= 1e-12 * r, "{middle:?}");
-        let (su, sv) = band.faces[index].surface.project(middle).unwrap();
-        let same = patch
-            .normal(u, v)
-            .unwrap()
-            .dot(band.faces[index].surface.normal(su, sv).unwrap())
-            > 0.0;
-        let reversed = band.faces[index].reversed;
-        band.faces[index].surface = patch.clone();
-        band.faces[index].reversed = reversed == same;
-        // A rational piece has no normal cone (the analytic sphere's has).
-        let nets = SurfaceNets::of(&patch).unwrap();
-        let piece = surface_piece(&patch, &nets, (0.4, 0.6), (0.4, 0.6)).unwrap();
+        assert!(nurbs.weights().iter().any(|w| (w - 1.0).abs() > 0.1));
+        let nets = SurfaceNets::of(patch).unwrap();
+        let piece = surface_piece(patch, &nets, (0.4, 0.6), (0.4, 0.6)).unwrap();
         assert!(piece.cone().is_none(), "a rational piece with a cone");
-        let analytic = Surface::Sphere(round);
+        let analytic = Surface::Sphere(craft3d_geom::Sphere::new(Frame::WORLD, 10.0 * k).unwrap());
         let piece = surface_piece(
             &analytic,
             &SurfaceNets::of(&analytic).unwrap(),
@@ -225,10 +251,7 @@ fn a_rational_sphere_face_is_proven_to_its_distance_without_a_normal_cone() {
         )
         .unwrap();
         assert!(piece.cone().is_some(), "an analytic piece without a cone");
-        // The ball 1 from the band along the diagonal of the quarter.
-        let (gap, rho) = (k, 2.0 * k);
-        let d = Vec3::new(1.0, 1.0, 0.0).normalized().unwrap();
-        let other = sphere(&at(d * (r + gap + rho), Vec3::Z), rho).unwrap();
+        let gap = k;
         let (found, proven) = measure(&band, &other, k);
         eprintln!("rational band at {k}: found {found}, proven {proven} of {gap}");
         assert!((found - gap).abs() <= 1e-9 * gap, "at {k}: found {found}");
@@ -236,6 +259,6 @@ fn a_rational_sphere_face_is_proven_to_its_distance_without_a_normal_cone() {
             proven <= gap * (1.0 + 1e-9),
             "at {k}: proven {proven} above {gap}"
         );
-        assert!(gap - proven <= 1e-4 * gap, "at {k}: proven only {proven}");
+        assert!(gap - proven <= 1e-6 * gap, "at {k}: proven only {proven}");
     }
 }
