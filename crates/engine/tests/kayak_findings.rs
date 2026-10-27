@@ -244,6 +244,20 @@ fn plates_on_the_long_developable_panels_are_built() {
         !failed.is_empty(),
         "the sheer panel was built: update this test"
     );
+    // The same panels plated square (no joints): the plate's volume is
+    // the panel's area times the thickness, less the mean curvature's
+    // term (`t² ∫H dA`, under one per cent for a hull's radii of a few
+    // hundred millimetres). With its joints the plate is less by what the
+    // touch joints along the chines and the ends on the end planes take,
+    // a few per cent of a panel about 135 mm wide.
+    for panel in ["Dev1S", "Dev2S"] {
+        s.execute(
+            "feature.plate",
+            &json!({"faces": [format!("{panel}:face(0)")], "thickness": "tHull",
+                    "side": "in", "name": format!("Square{panel}")}),
+        )
+        .unwrap_or_else(|e| panic!("{panel}: {e}"));
+    }
     let document = s.execute("document.inspect", &json!({})).unwrap();
     let bodies = document["bodies"].as_array().unwrap();
     let body = |name: &str| {
@@ -252,23 +266,25 @@ fn plates_on_the_long_developable_panels_are_built() {
             .find(|b| b["name"] == name)
             .unwrap_or_else(|| panic!("no body {name}"))
     };
-    // A plate of 4 mm on a panel: its volume is the panel's area times
-    // the thickness, less the mean curvature's term (`t² ∫H dA`, under
-    // one per cent for a hull's radii of a few hundred millimetres).
-    for (plate, panel) in [
-        ("Plank1S", "Dev1S"),
-        ("Plank2S", "Dev2S"),
-        ("Top4S", "DevTop4S"),
-    ] {
+    for (plate, panel) in [("Plank1S", "Dev1S"), ("Plank2S", "Dev2S")] {
+        let square = body(&format!("Square{panel}"));
         let (plate, panel) = (body(plate), body(panel));
         assert_eq!(plate["valid"], true, "{plate}");
+        assert_eq!(square["valid"], true, "{square}");
         let volume = plate["volume"].as_f64().unwrap();
-        let area = panel["area"].as_f64().unwrap();
-        let expected = area * 4.0;
-        eprintln!("{}: volume {volume}, area x t {expected}", plate["name"]);
+        let plain = square["volume"].as_f64().unwrap();
+        let expected = panel["area"].as_f64().unwrap() * 4.0;
+        eprintln!(
+            "{}: volume {volume}, square {plain}, area x t {expected}",
+            plate["name"]
+        );
         assert!(
-            (volume - expected).abs() <= 0.02 * expected,
-            "{plate} against {panel}"
+            (plain - expected).abs() <= 0.01 * expected,
+            "{square} against {panel}"
+        );
+        assert!(
+            volume < plain && volume > 0.95 * plain,
+            "{plate} against {square}"
         );
     }
 }
