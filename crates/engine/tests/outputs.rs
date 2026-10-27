@@ -154,7 +154,7 @@ fn the_same_document_gives_the_same_outputs() {
 /// m / (ρ L B): here half its height, at 1e-3, 1 and 1e6 mm.
 #[test]
 fn a_floating_box_has_its_draft_at_three_scales() {
-    for scale in [1e-3, 1.0, 1e6] {
+    for scale in [1e-3_f64, 1.0, 1e6] {
         let mut s = Session::new(Workspace::unrestricted());
         run(
             &mut s,
@@ -442,4 +442,98 @@ fn bad_params_are_errors() {
     );
     let typo = assertion(&mut s, "typo");
     assert_eq!(typo["status"], "error", "{typo}");
+}
+
+/// The curvature of a sphere of radius r is 1 / r²: a max of 0.5 / r²
+/// fails and one of 2 / r² passes, at three scales. Before 2026-10-27 a
+/// bound on a negative power of a length had the tolerance to that power
+/// as slack (1e12 / r² here), so the first passed too.
+#[test]
+fn a_spheres_curvature_fails_a_max_below_it_at_three_scales() {
+    for scale in [1e-3_f64, 1.0, 1e6] {
+        let mut s = Session::new(Workspace::unrestricted());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 1e-6 * scale}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": format!("{scale:e} mm")}),
+        );
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"radius": "r", "name": "Ball"}),
+        );
+        for (name, max) in [("flat enough", "0.5 / r^2"), ("round", "2 / r^2")] {
+            run(
+                &mut s,
+                "assert.add",
+                json!({"name": name, "measure": "curvature", "of": "Ball", "max": max}),
+            );
+        }
+        let flat = assertion(&mut s, "flat enough");
+        assert_eq!(flat["status"], "failed", "scale {scale}: {flat}");
+        close(flat["measured"].as_f64().unwrap(), scale.powi(-2), 1e-6);
+        let round = assertion(&mut s, "round");
+        assert_eq!(round["status"], "passed", "scale {scale}: {round}");
+    }
+}
+
+/// A value of one over a length (1 / GM = 1 / 65 mm) and a plain number
+/// (KB / KG = 125 / 180) held to bounds they miss: they fail, with no
+/// slack of the tolerance to the power -1 (1e6) or 0 (1).
+#[test]
+fn a_value_of_a_power_that_is_not_positive_fails_a_bound_it_misses() {
+    let mut s = kayak();
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "inverse", "measure": "value", "expr": "1 / GM", "max": "0.01 / (1 mm)"}),
+    );
+    let inverse = assertion(&mut s, "inverse");
+    assert_eq!(inverse["status"], "failed", "{inverse}");
+    close(inverse["measured"].as_f64().unwrap(), 1.0 / 65.0, 1e-9);
+    assert_eq!(inverse["unit"], "mm^-1");
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "ratio", "measure": "value", "expr": "KB / KG", "min": "1.2"}),
+    );
+    let ratio = assertion(&mut s, "ratio");
+    assert_eq!(ratio["status"], "failed", "{ratio}");
+    close(ratio["measured"].as_f64().unwrap(), 125.0 / 180.0, 1e-9);
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "ratio eq", "measure": "value", "expr": "KB / KG", "eq": "0.5"}),
+    );
+    assert_eq!(assertion(&mut s, "ratio eq")["status"], "failed");
+}
+
+/// A measured output follows a table its measure looks a value up in: a
+/// table edit changes no variable, and the output is measured again.
+#[test]
+fn a_measured_output_follows_a_table_it_looks_up() {
+    let mut s = kayak();
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "loads", "columns": ["case", "litres"], "rows": [["light", 240], ["full", 360]]}),
+    );
+    run(
+        &mut s,
+        "variable.measure",
+        json!({"name": "Tload", "measure": "levelFor", "of": "Hull", "volume": "loads[1].litres * 1000 * (1 cm)^3"}),
+    );
+    // 240 litres over 2000 x 600 mm: 200 mm.
+    close(value_of(&mut s, "Tload"), 200.0, 1e-9);
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "loads", "columns": ["case", "litres"], "rows": [["light", 300], ["full", 360]]}),
+    );
+    close(value_of(&mut s, "Tload"), 250.0, 1e-9);
 }

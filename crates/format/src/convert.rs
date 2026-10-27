@@ -134,8 +134,8 @@ fn output_to_doc(output: manifest::Output) -> doc::Output {
         measure,
         expr,
     } = output;
-    // An output with neither (a file edited by hand) gets an empty
-    // expression, which fails when it is computed: shown, not dropped.
+    // One with both or neither is refused before this, by
+    // `from_manifest_json_noted`.
     let def = match (measure, expr) {
         (Some(serde_json::Value::String(text)), _) => doc::OutputDef::Measure(text),
         (Some(value), _) => {

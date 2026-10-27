@@ -1065,3 +1065,42 @@ pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all
 pub(crate) fn wait_param(p: &crate::params::Params) -> Result<bool, CommandError> {
     Ok(p.bool("wait")?.unwrap_or(false))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::verify_cmds::Outcome;
+
+    /// A bound on a length to a power that is not positive is met within
+    /// rounding only: the document's tolerance to that power (1e12 for a
+    /// curvature at 1e-6, 1 for a power 0) would pass any bound.
+    #[test]
+    fn a_bound_on_a_power_that_is_not_positive_has_no_tolerance_slack() {
+        let linear = 1e-6;
+        for k in [-2, -1, 0] {
+            let dim = Dim::Length(k);
+            let over = Outcome::number(dim, 1.0);
+            assert_eq!(
+                decide(&over, None, (None, Some(0.5)), dim, linear),
+                Some(false),
+                "power {k}: 1 is not at most 0.5"
+            );
+            assert_eq!(
+                decide(&over, None, (Some(2.0), None), dim, linear),
+                Some(false),
+                "power {k}: 1 is not at least 2"
+            );
+            assert_eq!(
+                decide(&over, None, (None, Some(1.0)), dim, linear),
+                Some(true),
+                "power {k}: 1 is at most 1"
+            );
+        }
+        // A positive power keeps the tolerance to it.
+        let length = Outcome::number(Dim::Length(1), 1.0 + 0.5 * linear);
+        assert_eq!(
+            decide(&length, None, (None, Some(1.0)), Dim::Length(1), linear),
+            Some(true)
+        );
+    }
+}

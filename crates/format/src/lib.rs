@@ -630,6 +630,22 @@ fn read_manifest(
         }
     }
     let blobs = &blobs;
+    // An output is computed from a measure or from an expression, one of
+    // the two: a file with both or neither (edited by hand) is refused by
+    // the output's name rather than read as one of them.
+    for output in &document.outputs {
+        if output.measure.is_some() == output.expr.is_some() {
+            return Err(FormatError::InvalidDocument(DocError::Invalid(format!(
+                "output `{}` must have either a measure or an expression, {}",
+                output.name,
+                if output.measure.is_some() {
+                    "not both"
+                } else {
+                    "and has neither"
+                }
+            ))));
+        }
+    }
     let mut document = convert::to_doc(document, blobs);
     let mut warnings = Vec::new();
     let read = document.tolerance.in_range();

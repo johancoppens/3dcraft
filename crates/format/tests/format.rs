@@ -4956,3 +4956,22 @@ fn outputs_round_trip() {
     let plain = to_manifest_json(&Document::new(Units::default())).unwrap();
     assert!(!plain.contains("outputs"), "{plain}");
 }
+
+/// An output with both a measure and an expression, or with neither (a
+/// file edited by hand), is refused by its name, not read as one of them.
+#[test]
+fn an_output_with_both_or_neither_is_refused_by_name() {
+    let json = to_manifest_json(&small()).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    for (output, says) in [
+        (
+            serde_json::json!({"name": "T", "measure": {"measure": "volume"}, "expr": "1 mm"}),
+            "not both",
+        ),
+        (serde_json::json!({"name": "T"}), "has neither"),
+    ] {
+        value["document"]["outputs"] = serde_json::json!([output]);
+        let text = load_error(&value.to_string()).to_string();
+        assert!(text.contains("output `T`") && text.contains(says), "{text}");
+    }
+}

@@ -167,6 +167,11 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolv
     for v in regen.variables.iter().filter(|v| names.contains(&v.name)) {
         text.push_str(&format!("{}={:?};", v.name, v.value));
     }
+    // A table its expressions look up in directly (`belt[2].pitch`): a
+    // table edit changes no variable it names.
+    for table in doc.tables.iter().filter(|t| names.contains(&t.name)) {
+        text.push_str(&format!("{}[]={table:?};", table.name));
+    }
     text.push_str(&outputs.key_text(&names));
     let mut held = Vec::new();
     let Ok(ctx) = Ctx::new(doc, regen) else {
