@@ -678,36 +678,31 @@ fn a_plate_on_a_developable_with_short_and_long_rulings_has_its_closed_form_volu
     }
 }
 
-/// A plate on a sheet with fans whose apexes are vertices (rails on one
-/// cone: fans at both ends, their apexes on the spline rail): the surface
-/// does not move across the border at an apex, which needs no reach past
-/// it (raised by the speed there, about 1e-9, the reach blew up). The
-/// plate is built and valid, its volume near `T·Area`; at three scales.
+/// A plate on a fan alone (rails on one cone: the fan at the start has
+/// its apex at a vertex): the face has no normal at the apex, so the
+/// plate is refused there by name, at once, whatever the reach past the
+/// vertices (bounded: `plate.rs` › `the_reach_past_vertices_is_bounded_beside_an_apex`).
 #[test]
-fn a_plate_on_a_sheet_with_a_fan_apex_at_a_vertex_is_built() {
+fn a_plate_on_a_fan_to_its_apex_is_refused_by_name() {
     use craft3d_kernel::plate::{Side, plate};
     use std::collections::BTreeMap;
     for k in SCALES {
         let (a, b, _) = cone_rails(k);
         let made = connect(&a, &b, &tol(k)).unwrap();
-        // The fan at the start alone: its apex is a vertex on its border.
         assert_eq!(made.faces[0], Piece::StartFan);
-        let faces = [FaceId(0)];
-        let t = 0.02 * k;
-        let plated = plate(&made.body, &faces, t, Side::In, &BTreeMap::new(), &tol(k))
-            .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
-        assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
-        let area = craft3d_topo::face_areas(&made.body)[0].clone().unwrap();
-        let volume = craft3d_topo::mass_properties(&plated.body)
-            .unwrap()
-            .volume
-            .abs();
-        // The bend changes it by about T/2 over the radius (0.8 k at the
-        // least) of the area times T: a few percent at most here.
+        let error = plate(
+            &made.body,
+            &[FaceId(0)],
+            0.02 * k,
+            Side::In,
+            &BTreeMap::new(),
+            &tol(k),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{k}: a plate to an apex"));
         assert!(
-            (volume - t * area).abs() <= 0.05 * t * area,
-            "{k}: volume {volume} against T·Area {}",
-            t * area
+            error.to_string().contains("drawn into a point"),
+            "{k}: {error}"
         );
     }
 }

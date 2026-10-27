@@ -2126,4 +2126,73 @@ mod tests {
         assert!(ta < tm && tm < tb, "{ta} {tm} {tb}");
         assert!((c.radius() - 1.0).abs() < 1e-12);
     }
+
+    /// A bilinear patch whose row at v = 0 is `gap` long (a fan's apex
+    /// when it is 0 or next to it) and whose row at v = 1 is 100 long, as
+    /// a face of four lines: the reach past its vertices stays finite and
+    /// at most [`MOST_REACH_FACTOR`] times the reach, at three scales and
+    /// for an apex, a near-apex and a short row (the review of 2026-10-27:
+    /// a speed of 1e-9 at a vertex beside an apex raised it by 1e9).
+    #[test]
+    fn the_reach_past_vertices_is_bounded_beside_an_apex() {
+        for k in [1e-3, 1.0, 1e6] {
+            for gap in [0.0, 1e-10, 1e-3, 1.0] {
+                let corners = [
+                    Vec3::new(0.0, 0.0, 0.0) * k,
+                    Vec3::new(gap, 0.0, 0.0) * k,
+                    Vec3::new(-50.0, 30.0, 5.0) * k,
+                    Vec3::new(50.0, 30.0, 5.0) * k,
+                ];
+                let surface = Surface::Nurbs(
+                    NurbsSurface::new(
+                        1,
+                        1,
+                        vec![0.0, 0.0, 1.0, 1.0],
+                        vec![0.0, 0.0, 1.0, 1.0],
+                        2,
+                        2,
+                        vec![corners[0], corners[2], corners[1], corners[3]],
+                        vec![1.0; 4],
+                    )
+                    .unwrap(),
+                );
+                let mut body = Body::new(BodyKind::Sheet);
+                let ring = [0usize, 1, 3, 2];
+                let mut vertices = Vec::new();
+                for &i in &ring {
+                    vertices.push(body.add_vertex(corners[i]));
+                }
+                let mut coedges = Vec::new();
+                for j in 0..4 {
+                    let (i0, i1) = (ring[j], ring[(j + 1) % 4]);
+                    let (p, q) = (corners[i0], corners[i1]);
+                    if p.distance(q) == 0.0 {
+                        continue;
+                    }
+                    let line = Line::through(p, q).unwrap();
+                    let edge = body.add_edge(
+                        Curve3::Line(line),
+                        (0.0, p.distance(q)),
+                        vertices[j],
+                        vertices[(j + 1) % 4],
+                    );
+                    coedges.push(Coedge {
+                        edge,
+                        reversed: false,
+                    });
+                }
+                let lp = body.add_loop(coedges);
+                let id = body.add_face(surface, false, vec![lp]);
+                let face = body.face(id).unwrap().clone();
+                let reach = 3.0 * k;
+                let reaches = reach_past_vertices(&body, &face, reach, 1e-6 * k);
+                for r in reaches {
+                    assert!(
+                        r.is_finite() && r >= reach && r <= MOST_REACH_FACTOR * reach,
+                        "{k} {gap}: {reaches:?}"
+                    );
+                }
+            }
+        }
+    }
 }
