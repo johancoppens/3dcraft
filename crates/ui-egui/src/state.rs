@@ -647,7 +647,9 @@ pub struct UiState {
 /// names the file. `ui.set {"export": {"open": true}}` opens it as the
 /// menu does; `what` and `format` are refused when the document does not
 /// offer them. Exporting itself (the *Export…* button) is the person's.
-/// While it is closed, the fields are what was chosen last.
+/// While it is closed, the fields are what the last export that was
+/// written chose (a cancel or a failure keeps nothing), or what `ui.set`
+/// gave for the next opening (`what` when the document offers it).
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct ExportState {

@@ -61,6 +61,11 @@ pub struct ExportAsk {
     pub choices: ExportChoices,
     /// The document shown when it was opened (`DocumentStatus::id`).
     pub document: Option<u64>,
+    /// `UiState::export` as it was before the dialog opened: what it is
+    /// again when the dialog is answered, until the file is written
+    /// ([`Shell::export_written`]). So a cancel, here or in the save
+    /// dialog, or a failed export changes nothing.
+    pub committed: crate::state::ExportState,
 }
 
 /// What the export dialog was answered with: the file to name and how to
@@ -75,6 +80,9 @@ pub struct ExportRequest {
     /// The document it is for (`DocumentStatus::id`): the host refuses it
     /// when another one is shown by the time the file is named.
     pub document: Option<u64>,
+    /// What the dialog had chosen, kept for the next export once the file
+    /// is written ([`Shell::export_written`]).
+    pub chosen: crate::state::ExportState,
 }
 
 /// A sheet or a pattern chosen last for a document, with its sheet's
@@ -97,6 +105,18 @@ pub(super) struct Dialogs {
     sheets: std::collections::BTreeMap<Option<u64>, Remembered>,
     /// The host has no save dialog: the export dialog asks the name.
     names_file: bool,
+    /// `ui.set {"export": …}` gave these while the dialog was closed: the
+    /// next opening honours them (what, when the document offers it; the
+    /// sheet's width and gap; the name).
+    preset: Preset,
+}
+
+/// What `ui.set` chose for the next opening of the export dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Preset {
+    what: bool,
+    sheet: bool,
+    name: bool,
 }
 
 /// The export dialog's button: "Export…" when the system's save dialog
@@ -171,7 +191,9 @@ impl Shell {
     /// pattern chosen last for this document when it still has it, else
     /// the selection when a format holds it, else the model; the format
     /// chosen last when it holds that, else the first that does; and
-    /// proposes the document's name with the format's extension. Nothing
+    /// proposes the document's name with the format's extension. What
+    /// `ui.set` chose while it was closed (what, the sheet's width and
+    /// gap, the name) goes first, what when the document offers it. Nothing
     /// changes while it is open already. An error without a document.
     pub fn open_export(&mut self, session: &mut Session) -> Result<(), String> {
         if self.dialogs.export.is_some() {
@@ -183,22 +205,64 @@ impl Shell {
         self.follow_active_tab(session);
         let choices = export_choices(session);
         let document = self.viewing();
+        let preset = std::mem::take(&mut self.dialogs.preset);
+        let mut committed = self.state.export.clone();
+        committed.open = false;
         let remembered = self.dialogs.sheets.get(&document).cloned();
-        let what = choices.first_choice(remembered.as_ref().map(|r| &r.what));
+        let what = if preset.what && choices.offers(&self.state.export.what) {
+            self.state.export.what.clone()
+        } else {
+            choices.first_choice(remembered.as_ref().map(|r| &r.what))
+        };
         let formats = choices.formats(&what);
         let export = &mut self.state.export;
-        let (width, gap) = remembered.map(|r| (r.width, r.gap)).unwrap_or_default();
-        export.width = width;
-        export.gap = gap;
+        if !preset.sheet {
+            let (width, gap) = remembered.map(|r| (r.width, r.gap)).unwrap_or_default();
+            export.width = width;
+            export.gap = gap;
+        }
         export.what = what;
         if !formats.contains(&export.format) {
             export.format = formats.first().copied().unwrap_or_default();
         }
-        export.name =
-            suggested_export_name(status.path.as_deref(), Some(export.format.extension()));
+        export.name = if preset.name {
+            export_file_name(&export.name, export.format)
+        } else {
+            suggested_export_name(status.path.as_deref(), Some(export.format.extension()))
+        };
         export.open = true;
-        self.dialogs.export = Some(ExportAsk { choices, document });
+        self.dialogs.export = Some(ExportAsk {
+            choices,
+            document,
+            committed,
+        });
         Ok(())
+    }
+
+    /// The export of `request` was written: what its dialog chose is
+    /// offered next time (the format, the options, and for its document
+    /// the sheet or pattern). Before that, a cancel or a failure changes
+    /// nothing.
+    pub fn export_written(&mut self, request: &ExportRequest) {
+        let mut chosen = request.chosen.clone();
+        chosen.open = false;
+        // A dialog opened again meanwhile keeps what it shows, and falls
+        // back to this when it is answered.
+        match &mut self.dialogs.export {
+            Some(ask) => ask.committed = chosen,
+            None => self.state.export = chosen,
+        }
+        let ExportRequest {
+            document, chosen, ..
+        } = request;
+        self.remember_sheet(*document, &chosen.what, &chosen.width, &chosen.gap);
+    }
+
+    /// Drops an export dialog `ui.set` opened when the rest of the request
+    /// is refused: nothing has changed.
+    pub(crate) fn discard_export_dialog(&mut self) {
+        self.dialogs.export = None;
+        self.state.export.open = false;
     }
 
     /// The export dialog, while it is open.
@@ -280,12 +344,15 @@ impl Shell {
     /// Answers the export dialog as its buttons do: `true` exports
     /// (*Export…*), `false` cancels. When another document is shown than
     /// the one it was opened for, or the format no longer holds what was
-    /// chosen, nothing is exported and the error dialog says so.
+    /// chosen, nothing is exported and the error dialog says so. Either
+    /// way `UiState::export` is as before the dialog opened until the
+    /// file is written ([`Self::export_written`]).
     pub fn answer_export(&mut self, export: bool) {
         let Some(ask) = self.dialogs.export.take() else {
             return;
         };
-        self.state.export.open = false;
+        let mut state = std::mem::replace(&mut self.state.export, ask.committed.clone());
+        state.open = false;
         if !export {
             self.last_command = Some(crate::CommandReport {
                 label: "file.export".to_string(),
@@ -301,7 +368,6 @@ impl Shell {
             );
             return;
         }
-        let state = self.state.export.clone();
         if !ask.choices.formats(&state.what).contains(&state.format) {
             self.show_error(
                 "file.export",
@@ -313,14 +379,14 @@ impl Shell {
             );
             return;
         }
-        self.remember_sheet(ask.document, &state.what, &state.width, &state.gap);
         let name = export_file_name(&state.name, state.format);
-        self.state.export.name.clone_from(&name);
+        state.name.clone_from(&name);
         self.dialogs.answer = Some(ExportRequest {
             name,
             format: state.format,
             plan: state.plan(),
             document: ask.document,
+            chosen: state,
         });
     }
 
@@ -410,11 +476,27 @@ impl Shell {
             self.state.export = before.clone();
             return Err(e);
         }
+        // Closed by the request: cancelled first, so what it also gives is
+        // for next time, as for a dialog that was closed already.
+        if !wanted.open && self.dialogs.export.is_some() {
+            self.answer_export(false);
+        }
+        let closed = self.dialogs.export.is_none();
+        if closed {
+            // What the next opening honours (`open_export`).
+            let preset = &mut self.dialogs.preset;
+            preset.what |= given("what");
+            preset.sheet |= given("width") || given("gap");
+            preset.name |= given("name");
+        }
         let export = &mut self.state.export;
-        if self.dialogs.export.is_none() {
-            // Closed: what is chosen next time.
-            export.what = wanted.what.clone();
-            export.format = wanted.format;
+        if closed {
+            if given("what") {
+                export.what = wanted.what.clone();
+            }
+            if given("format") {
+                export.format = wanted.format;
+            }
         }
         if given("quality") {
             export.quality = wanted.quality;
@@ -430,9 +512,6 @@ impl Shell {
         }
         if given("name") {
             export.name = wanted.name;
-        }
-        if !wanted.open && self.dialogs.export.is_some() {
-            self.answer_export(false);
         }
         Ok(())
     }

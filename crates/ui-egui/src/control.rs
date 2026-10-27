@@ -28,7 +28,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.set",
         params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null (selects that feature, as ui.select does; null takes the features out of the selection), "notice": string, "quality": {"chordal": fraction of the model's size = 2e-4, "maxTriangles": integer = 1000000, "angle": degrees = 12}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null, "transparency": number from 0 to 0.9 = 0, "section": {"on": boolean, "plane": "xy|yz|zx" or a datum plane or a face name, "feature": id or name, "point": [x, y, z], "normal": [x, y, z], "offset": number, "flip": boolean}, "show": {"datums": boolean = true, "sketches": boolean = true}, "dialogs": {"about": boolean = false, "shortcuts": boolean = false}, "timeline": {"playing": boolean, "speed": 0.5|1|2 = 1, "loop": boolean, "orbit": boolean}, "parameters": {"open": boolean, "collapsed": [group, ...]}, "export": {"open": boolean, "what": "model|selection|everyPart" or {"set": name} or {"sheetMetal": part} or {"fold": fold}, "format": "step|stl|3mf|obj|dxf|svg", "quality": "coarse|normal|fine", "drawing": {"view": "current|iso|front|back|left|right|top|bottom", "perspective": boolean, "dashed": boolean}, "width": string, "gap": string, "name": string}}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size and an angle criterion of angle degrees (no chord of an edge turns its tangent, no side of a triangle the surface's normal, by more than that unless it is shorter than the tolerance, so small holes stay round; 0 for none), coarsened until the scene has at most maxTriangles triangles but never beyond the quick first picture's tolerance (1e-3 of the diagonal of the model's box), which the window shows while the mesh is refined. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); transparency is how see-through the bodies are drawn (0: opaque; up to 0.9): the front surface is blended over the one behind it, so that inner faces, holes and cavities show, and the hidden parts of edges are drawn dimmed; ui.screenshot shows it too, and a pick still gives the front-most face. section cuts the viewport's picture open with a plane, to look inside a shell, a pocket or a cavity; it is a view, the document does not change. The plane is plane (xy, yz or zx, a datum plane by its feature's id or name, or a flat face by its persistent name, with feature to say which body) or point and normal, moved by offset along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body, so a negative offset cuts into it) and flip keeps the other half. Where the plane passes through a body the cut is closed with a flat cap in a colour of its own, edges end at the plane and the outline of the cut is drawn as edges. Setting plane replaces point and normal and the other way round; on with no plane at all is xy. A plane that means nothing (an unknown name, a face that is not flat, a normal without direction) is an error and changes nothing; ui.get says under section where the plane lies and between which offsets it passes through the model. ui.screenshot and ui.pick follow the section: a pick gives what is seen, never a face that is cut away, and on the cap kind is section. show says what the viewport draws besides the bodies and their edges: datums false hides the datum planes, axes and points, sketches false the sketches (their lines and points); the toggles over the viewport set the same fields, and ui.screenshot follows them. timeline is the history player under the feature list: playing true plays the history step by step for the person watching (from the first step when the view is at the end), each step shown once its model is built and then for at least 0.8 s divided by speed (0.5, 1 or 2); loop starts again after the last step, orbit turns the camera slowly meanwhile; it stops by itself at the end, on an edit of the document or another tab; playing true without a document or without features is refused. dialogs opens or closes the windows of the Help menu: about (About 3DCraft) and shortcuts (the keyboard shortcuts, also F1). parameters: open true shows the Parameters tab of the side panel instead of the feature list, collapsed the groups of parameters folded shut. export is the export dialog of File, Export…: open true opens it as the menu does (what the document offers is read then: the selection, its named sets, its sheet-metal parts and folds), false closes it as Cancel does; what and format choose as its buttons do and are refused when the document does not offer them or the format cannot hold what is chosen (a sheet or a pattern goes only to dxf or svg), and the name follows the format's extension; quality, drawing, width and gap are its options. Exporting (its Export… button, then the system's save dialog) is the person's: no method presses it. picked, the last click, cannot be set (ui.pick with select makes one).",
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size and an angle criterion of angle degrees (no chord of an edge turns its tangent, no side of a triangle the surface's normal, by more than that unless it is shorter than the tolerance, so small holes stay round; 0 for none), coarsened until the scene has at most maxTriangles triangles but never beyond the quick first picture's tolerance (1e-3 of the diagonal of the model's box), which the window shows while the mesh is refined. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); transparency is how see-through the bodies are drawn (0: opaque; up to 0.9): the front surface is blended over the one behind it, so that inner faces, holes and cavities show, and the hidden parts of edges are drawn dimmed; ui.screenshot shows it too, and a pick still gives the front-most face. section cuts the viewport's picture open with a plane, to look inside a shell, a pocket or a cavity; it is a view, the document does not change. The plane is plane (xy, yz or zx, a datum plane by its feature's id or name, or a flat face by its persistent name, with feature to say which body) or point and normal, moved by offset along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body, so a negative offset cuts into it) and flip keeps the other half. Where the plane passes through a body the cut is closed with a flat cap in a colour of its own, edges end at the plane and the outline of the cut is drawn as edges. Setting plane replaces point and normal and the other way round; on with no plane at all is xy. A plane that means nothing (an unknown name, a face that is not flat, a normal without direction) is an error and changes nothing; ui.get says under section where the plane lies and between which offsets it passes through the model. ui.screenshot and ui.pick follow the section: a pick gives what is seen, never a face that is cut away, and on the cap kind is section. show says what the viewport draws besides the bodies and their edges: datums false hides the datum planes, axes and points, sketches false the sketches (their lines and points); the toggles over the viewport set the same fields, and ui.screenshot follows them. timeline is the history player under the feature list: playing true plays the history step by step for the person watching (from the first step when the view is at the end), each step shown once its model is built and then for at least 0.8 s divided by speed (0.5, 1 or 2); loop starts again after the last step, orbit turns the camera slowly meanwhile; it stops by itself at the end, on an edit of the document or another tab; playing true without a document or without features is refused. dialogs opens or closes the windows of the Help menu: about (About 3DCraft) and shortcuts (the keyboard shortcuts, also F1). parameters: open true shows the Parameters tab of the side panel instead of the feature list, collapsed the groups of parameters folded shut. export is the export dialog of File, Export…: open true opens it as the menu does (what the document offers is read then: the selection, its named sets, its sheet-metal parts and folds), false closes it as Cancel does; what and format choose as its buttons do and are refused when the document does not offer them or the format cannot hold what is chosen (a sheet or a pattern goes only to dxf or svg), and the name follows the format's extension; quality, drawing, width and gap are its options. Set while it is closed, what, width, gap and name are what the next opening chooses (what when the document offers it); what the dialog chose is kept for the next export only once a file was written. Exporting (its Export… button, then the system's save dialog) is the person's: no method presses it. picked, the last click, cannot be set (ui.pick with select makes one).",
     },
     UiMethod {
         name: "ui.pick",
@@ -381,6 +381,17 @@ impl Shell {
         self.state
             .apply_patch(patch)
             .map_err(|e| format!("ui.set: {e}"))?;
+        // The export dialog first, before anything with an effect beyond
+        // the state (selecting a feature): what it refuses leaves nothing
+        // changed. One it opened goes again when the rest is refused.
+        let had_export = self.export_dialog().is_some();
+        if let Some(export) = patch.get("export")
+            && let Err(why) = self.ui_set_export(session, &before.export, export)
+        {
+            self.state = before;
+            return Err(format!("ui.set: export: {why}"));
+        }
+        let opened_export = !had_export && self.export_dialog().is_some();
         let sets_section = patch.get("section").is_some();
         if sets_section {
             self.clear_section_lost();
@@ -410,6 +421,9 @@ impl Shell {
         let scene = self.sync(session);
         // Nothing to play: refused, and nothing has changed.
         if self.state.timeline.playing && !before.timeline.playing && !self.has_steps() {
+            if opened_export {
+                self.discard_export_dialog();
+            }
             self.state = before;
             self.sync(session);
             return Err(if scene.is_some() {
@@ -425,21 +439,15 @@ impl Shell {
             && scene.is_some()
             && let Some(why) = self.section_lost().map(str::to_string)
         {
+            if opened_export {
+                self.discard_export_dialog();
+            }
             self.state = before;
             self.sync(session);
             if lost_before.is_none() {
                 self.clear_section_lost();
             }
             return Err(format!("ui.set: {why}"));
-        }
-        // The export dialog last: it is opened, closed or changed only
-        // when everything else was set.
-        if let Some(export) = patch.get("export")
-            && let Err(why) = self.ui_set_export(session, &before.export, export)
-        {
-            self.state = before;
-            self.sync(session);
-            return Err(format!("ui.set: export: {why}"));
         }
         Ok(json!({ "state": self.state_json()? }))
     }

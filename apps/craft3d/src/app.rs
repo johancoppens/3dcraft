@@ -250,6 +250,9 @@ enum Waiting {
     Request(Request),
     /// A file chosen in a dialog: the outcome goes to the status bar.
     File(&'static str),
+    /// An export the save dialog named: the outcome goes to the status
+    /// bar, and once it is written what its dialog chose is kept.
+    Export(Box<files::ExportDone>),
     /// A command the shell asked for (the Parameters tab's `param.set`):
     /// the outcome goes back to the shell and to the status bar.
     Command(&'static str),
@@ -670,6 +673,19 @@ impl Desk {
                 host.report(label, &outcome);
                 (None, None)
             }
+            Waiting::Export(done) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report("file.export", &outcome);
+                if outcome.is_ok() {
+                    host.export_written(&done);
+                }
+                (None, None)
+            }
             Waiting::Command(label) => {
                 let outcome = match outcome {
                     Outcome::Ran(outcome) => outcome,
@@ -791,8 +807,8 @@ impl Desk {
                 ),
                 // Written at once: the save dialog named the file.
                 Ok(Choice::Export(job)) => {
-                    if let Some((path, plan)) = self.host.export_target(job) {
-                        self.start_export(path, plan);
+                    if let Some((path, params, done)) = self.host.export_target(job) {
+                        self.start_export(path, params, done);
                     }
                 }
                 other => self.host.file_choice(other),
@@ -882,13 +898,26 @@ impl Desk {
         self.host.pump_places()
     }
 
-    /// Exports to the file the person chose, as the export dialog was
-    /// answered, on the engine thread.
-    fn start_export(&mut self, path: std::path::PathBuf, plan: files::ExportPlan) {
+    /// Exports to the file the person chose, with the parameters made when
+    /// the export dialog was answered, on the engine thread.
+    fn start_export(
+        &mut self,
+        path: std::path::PathBuf,
+        params: Vec<(&'static str, Value)>,
+        done: files::ExportDone,
+    ) {
         self.start(
-            Waiting::File("file.export"),
+            Waiting::Export(Box::new(done)),
             "file.export".to_string(),
-            Box::new(move |session| Outcome::Ran(files::export_planned(session, &path, plan))),
+            Box::new(move |session| {
+                Outcome::Ran(files::run_as_user_with(
+                    session,
+                    "file.export",
+                    &path,
+                    true,
+                    params,
+                ))
+            }),
         );
     }
 

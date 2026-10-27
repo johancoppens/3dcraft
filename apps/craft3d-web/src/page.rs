@@ -769,6 +769,7 @@ impl Page {
                 }
                 Pick::Export { file } => {
                     self.write(handle.clone(), Download { name, ..file });
+                    self.host.export_picked();
                     true
                 }
             }

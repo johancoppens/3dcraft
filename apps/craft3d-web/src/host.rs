@@ -25,8 +25,8 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportPlan, ExportWhat, JIG_EXTENSION, export_params, extension_of,
-    file_stem, guarded, suggested_jig_name, suggested_name,
+    EXPORT_FORMATS, EXTENSION, ExportPlan, JIG_EXTENSION, export_params, extension_of, file_stem,
+    guarded, suggested_jig_name, suggested_name,
 };
 use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
@@ -327,6 +327,10 @@ pub struct WebHost {
     /// dialog ([`WebHost::companion_ui`]): a browser shows one file dialog
     /// per click.
     pub companion: Option<Download>,
+    /// The export waiting for the system's save dialog: what its export
+    /// dialog chose is kept once that names the file
+    /// ([`WebHost::export_picked`]).
+    pending_export: Option<ExportRequest>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -368,6 +372,7 @@ impl WebHost {
             pickers: false,
             writable: BTreeSet::new(),
             companion: None,
+            pending_export: None,
             stepwise: false,
             about: None,
             fetching: None,
@@ -559,6 +564,8 @@ impl WebHost {
             Pick::Export { file } => {
                 outcome.downloads.push(file);
                 outcome.downloads.extend(self.companion.take());
+                // Downloaded: the person has it.
+                self.export_picked();
                 self.note("file.export", true, text);
             }
             Pick::Save {
@@ -991,8 +998,15 @@ impl WebHost {
     /// library) are the downloads.
     pub fn export_as(&mut self, name: &str) -> Vec<Download> {
         let mut plan = self.shell.state.export.plan();
-        plan.what = ExportWhat::Selection;
-        self.export_with(name, plan)
+        plan.what = craft3d_ui_egui::files::following_selection(&mut self.session);
+        let files = self.export_with(name, plan);
+        // Exported: the format the next export dialog chooses first.
+        if !files.is_empty()
+            && let Some(format) = craft3d_ui_egui::files::ExportFormat::of_name(name)
+        {
+            self.shell.state.export.format = format;
+        }
+        files
     }
 
     /// [`Self::export_as`] as the export dialog was answered: what goes
@@ -1013,10 +1027,6 @@ impl WebHost {
         });
         let mut downloads = Vec::new();
         if let Ok(result) = &exported {
-            // The format the next export dialog chooses first.
-            if let Some(format) = craft3d_ui_egui::files::ExportFormat::of_name(&name) {
-                self.shell.state.export.format = format;
-            }
             if let Some(bytes) = self.session.take_file(&name) {
                 downloads.push(Download::export(name.clone(), bytes));
             }
@@ -1115,17 +1125,36 @@ impl WebHost {
             );
             return outcome;
         }
-        let files = self.export_with(&request.name, request.plan);
+        let files = self.export_with(&request.name, request.plan.clone());
+        // What the dialog chose is kept once the file is the person's: a
+        // download now, a file named in the system's save dialog when the
+        // page writes it ([`Self::export_picked`]); a cancel or a failure
+        // changes nothing.
+        self.pending_export = None;
+        if files.is_empty() {
+            return outcome;
+        }
         if self.pickers {
             let mut files = files.into_iter();
             if let Some(file) = files.next() {
                 outcome.pick = Some(Pick::Export { file });
             }
             self.companion = files.next();
+            self.pending_export = Some(request);
         } else {
             outcome.downloads = files;
+            self.shell.export_written(&request);
         }
         outcome
+    }
+
+    /// The system's save dialog named the file of the export made last
+    /// ([`Self::export_request`]): what its export dialog chose is kept
+    /// for the next export.
+    pub fn export_picked(&mut self) {
+        if let Some(request) = self.pending_export.take() {
+            self.shell.export_written(&request);
+        }
     }
 
     /// Draws the dialog in which the person names a file, while it is open;
@@ -1186,6 +1215,7 @@ impl WebHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_ui_egui::files::ExportWhat;
 
     #[test]
     fn the_edit_menu_undoes_and_redoes_in_the_page() {

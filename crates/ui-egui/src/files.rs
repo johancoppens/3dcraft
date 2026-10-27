@@ -864,6 +864,24 @@ pub fn plain_message(text: &str) -> String {
     }
 }
 
+/// Nothing is selected in the active document (or it cannot be read).
+fn selection_is_empty(session: &mut Session) -> bool {
+    guarded(session, "select.get", &json!({ "context": false }))
+        .ok()
+        .and_then(|s| s.get("items").and_then(Value::as_array).map(Vec::is_empty))
+        .unwrap_or(true)
+}
+
+/// What an export straight to a file of a name (no dialog) holds: the
+/// selection, or the model when nothing is selected.
+pub fn following_selection(session: &mut Session) -> ExportWhat {
+    if selection_is_empty(session) {
+        ExportWhat::Model
+    } else {
+        ExportWhat::Selection
+    }
+}
+
 /// The sheet's width and gap as `file.export` takes them, those typed.
 fn sheet_params(plan: &ExportPlan, params: &mut Vec<(&'static str, Value)>) {
     for (key, text) in [("width", &plan.width), ("gap", &plan.gap)] {
@@ -935,12 +953,23 @@ pub fn export_params(
                 drawing_params(plan.drawing, &mut params);
             }
         }
-        ExportWhat::Selection => match export_selection(session, name)? {
-            // Nothing selected (any more), to DXF or SVG: the drawing.
-            Some(("view", _)) => drawing_params(plan.drawing, &mut params),
-            Some((key, value)) => params.push((key, value)),
-            None => {}
-        },
+        ExportWhat::Selection => {
+            // Nothing selected (any more): refused, never the model in its
+            // place. The hosts make the parameters when Export… is
+            // clicked, so a selection changed while the save dialog is
+            // open does not change the file.
+            if selection_is_empty(session) {
+                return Err(
+                    "file.export: nothing is selected: select what to export, or export the model"
+                        .to_string(),
+                );
+            }
+            match export_selection(session, name)? {
+                Some(("view", _)) => drawing_params(plan.drawing, &mut params),
+                Some((key, value)) => params.push((key, value)),
+                None => {}
+            }
+        }
     }
     if format.is_mesh() {
         params.push(("quality", Value::String(plan.quality.name().to_string())));
@@ -1087,15 +1116,18 @@ mod tests {
                 ("hidden", json!("dashed")),
             ]
         );
-        // The selection emptied while the dialog was open: as the model.
+        // The selection chosen, but nothing selected (any more): refused,
+        // never the model in its place (review of r1-exportflow: before,
+        // an emptied selection exported the model).
         let drawn_selection = ExportPlan {
             what: ExportWhat::Selection,
             ..drawn.clone()
         };
-        assert_eq!(
-            export_params(&mut session, "a.svg", &drawn_selection).unwrap(),
-            export_params(&mut session, "a.svg", &drawn).unwrap()
-        );
+        for name in ["a.svg", "a.step"] {
+            let refused = export_params(&mut session, name, &drawn_selection).unwrap_err();
+            assert!(refused.contains("nothing is selected"), "{refused}");
+        }
+        assert_eq!(following_selection(&mut session), ExportWhat::Model);
         // An edge selected: no format holds it; said, and the model is
         // still offered.
         guarded(
@@ -1219,7 +1251,10 @@ mod tests {
         assert!(session.take_file("a.svg").is_some(), "{written}");
         // A sheet is no file of bodies: refused, never every body instead
         // (before 2026-10-27 a mesh ignored the sheet; the dialog no
-        // longer offers that pair at all).
+        // longer offers that pair at all). A regression test of a changed
+        // expectation: it has no oracle independent of the code (the rule
+        // "never something else in its place" is the reason; testing.md,
+        // *Changing an expectation*, condition 3; logged in the dev log).
         let refused = export_params(&mut session, "a.stl", &plan).unwrap_err();
         assert!(refused.contains("a .stl file holds bodies"), "{refused}");
     }
@@ -1347,7 +1382,9 @@ mod tests {
                 }
             }
             // A pattern is no file of bodies (before 2026-10-27 a mesh
-            // ignored it).
+            // ignored it). A regression test of a changed expectation with
+            // no independent oracle (testing.md, *Changing an expectation*,
+            // condition 3; logged in the dev log).
             assert!(export_params(&mut session, "a.stl", &plan).is_err());
         }
         // A second part: every part's flat pattern on one sheet.

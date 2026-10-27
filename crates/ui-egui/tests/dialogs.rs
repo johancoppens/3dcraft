@@ -121,6 +121,11 @@ fn the_export_dialog_remembers_the_format_and_quality_and_escape_cancels() {
     shell.answer_export(true);
     assert!(!shell.state.export.open && shell.export_dialog().is_none());
     let request = shell.take_export_answer().unwrap();
+    let mut chosen = shell.state.export.clone();
+    assert_eq!(chosen.format, ExportFormat::Step, "as before until written");
+    chosen.format = ExportFormat::Stl;
+    chosen.quality = ExportQuality::Fine;
+    chosen.name = "untitled.stl".to_string();
     assert_eq!(
         request,
         ExportRequest {
@@ -131,12 +136,20 @@ fn the_export_dialog_remembers_the_format_and_quality_and_escape_cancels() {
                 ..ExportPlan::default()
             },
             document: shell.viewing(),
+            chosen,
         }
     );
     assert_eq!(shell.take_export_answer(), None, "once");
+    // Not written (the save dialog cancelled, the export failed): the
+    // next dialog is as before.
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.format, ExportFormat::Step);
+    assert_eq!(shell.state.export.quality, ExportQuality::Normal);
+    shell.answer_export(false);
     // A binary STL: a header of 80 bytes, the count, the triangles.
     assert!(write(&mut session, &request).len() > 84);
-    // Offered next time.
+    shell.export_written(&request);
+    // Written: offered next time.
     shell.open_export(&mut session).unwrap();
     assert_eq!(shell.state.export.format, ExportFormat::Stl);
     assert_eq!(shell.state.export.quality, ExportQuality::Fine);
@@ -226,7 +239,10 @@ fn a_drawing_of_the_model_asks_its_view_and_remembers_it() {
             ("hidden", json!("dashed")),
         ]
     );
+    assert!(!write(&mut session, &request).is_empty());
+    shell.export_written(&request);
     shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.format, ExportFormat::Dxf);
     shell.set_export_format(ExportFormat::Svg).unwrap();
     assert_eq!(shell.state.export.drawing, drawing);
     // Enter exports with what is shown.
@@ -374,10 +390,7 @@ fn a_named_set_is_offered_as_a_sheet_and_remembered() {
     shell.answer_export(true);
     let request = shell.take_export_answer().unwrap();
     assert_eq!(request.plan.what, sheet);
-    assert_eq!(
-        shell.export_sheet(),
-        Some((sheet.clone(), "300 mm".to_string(), "2 mm".to_string()))
-    );
+    assert_eq!(shell.export_sheet(), None, "remembered once written");
     assert_eq!(
         export_params(&mut session, &request.name, &request.plan).unwrap(),
         vec![
@@ -387,6 +400,11 @@ fn a_named_set_is_offered_as_a_sheet_and_remembered() {
         ]
     );
     assert!(!write(&mut session, &request).is_empty());
+    shell.export_written(&request);
+    assert_eq!(
+        shell.export_sheet(),
+        Some((sheet.clone(), "300 mm".to_string(), "2 mm".to_string()))
+    );
     // Offered again, drawn with its fields, and Enter exports it.
     shell.open_export(&mut session).unwrap();
     shell.set_export_format(ExportFormat::Svg).unwrap();
@@ -456,6 +474,7 @@ fn the_export_dialog_offers_a_flat_pattern() {
     );
     let svg = write(&mut session, &request);
     assert!(String::from_utf8_lossy(&svg).contains("bendUp"));
+    shell.export_written(&request);
     // Offered again with it chosen, and Enter exports it.
     assert_eq!(shell.export_sheet().map(|s| s.0), Some(flat.clone()));
     shell.open_export(&mut session).unwrap();
@@ -601,9 +620,6 @@ fn every_export_kind_is_named_for_its_format_and_exports() {
     // The selection first: something is selected and a format holds it.
     assert_eq!(shell.state.export.what, ExportWhat::Selection);
     assert_eq!(shell.state.export.name, "enclosure.dxf");
-    // The model's drawing from a named view (the window's camera is the
-    // iso view anyway until a viewport gave one).
-    shell.state.export.drawing.view = DrawingView::Iso;
     shell.answer_export(false);
     let mut exported = 0;
     for what in whats {
@@ -618,6 +634,8 @@ fn every_export_kind_is_named_for_its_format_and_exports() {
             shell.open_export(&mut session).unwrap();
             shell.set_export_what(what.clone()).unwrap();
             shell.set_export_format(format).unwrap();
+            // The model's drawing from a named view.
+            shell.state.export.drawing.view = DrawingView::Iso;
             let file = format!("enclosure.{}", format.extension());
             assert_eq!(shell.state.export.name, file, "{what:?}");
             assert_eq!(shell.export_report()["file"], json!(file));
@@ -771,13 +789,58 @@ fn the_export_dialog_is_driven_by_ui_set_and_read_by_ui_get() {
     assert!(shell.export_dialog().is_none() && !shell.state.export.open);
     assert_eq!(shell.take_export_answer(), None);
     assert_eq!(shell.last_command.clone().unwrap().text, "cancelled");
+    // Cancelled: what it had chosen is not kept.
+    assert_eq!(shell.state.export.quality, ExportQuality::Normal);
+    assert_eq!(shell.state.export.width, "");
+    // Chosen while it is closed: the next opening honours it.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"export": {"what": {"sheetMetal": "Part"}, "width": "500 mm", "name": "lid"}}),
+    )
+    .unwrap();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"export": {"open": true}}),
+    )
+    .unwrap();
+    assert_eq!(
+        shell.state.export.what,
+        ExportWhat::SheetMetal("Part".to_string())
+    );
+    assert_eq!(shell.state.export.width, "500 mm");
+    assert_eq!(shell.state.export.format, ExportFormat::Dxf);
+    assert_eq!(shell.state.export.name, "lid.dxf");
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"export": {"open": false}}),
+    )
+    .unwrap();
+    // A request whose export part is refused changes nothing else: the
+    // feature it names is not selected.
+    let error = call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"selectedFeature": "F2", "export": {"open": true, "what": {"set": "Nope"}}}),
+    )
+    .unwrap_err();
+    assert!(error.contains("not offered"), "{error}");
+    assert!(shell.export_dialog().is_none() && !shell.state.export.open);
+    let selection = session.execute("select.get", &json!({})).unwrap();
+    assert_eq!(selection["items"], json!([]), "{selection}");
     // Opened with its choices in one request; the open dialog takes the
     // keyboard as before.
     call(
         &mut shell,
         &mut session,
         "ui.set",
-        json!({"export": {"open": true, "what": "model", "format": "3mf"}}),
+        json!({"export": {"open": true, "what": "model", "format": "3mf", "quality": "coarse"}}),
     )
     .unwrap();
     assert_eq!(shell.state.export.format, ExportFormat::ThreeMf);
