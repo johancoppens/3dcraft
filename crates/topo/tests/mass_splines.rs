@@ -855,3 +855,165 @@ fn an_hourglass_over_a_seam_drawn_at_other_parameters_is_measured_right_or_refus
     let (body, area) = hourglass(s, (0.53, 0.33 / 0.62), 1e-6);
     right_or_refused(&body, area, "a seam at other parameters");
 }
+
+/// The unit square `k` wide drawn as a spline surface whose row v = 1
+/// moves at `ε` of its speed at v = 0 at the corner (1, 1): `x = u + v
+/// ((1 − ε) u − (1 − ε) u²)`, `y = v`, quadratic in u and linear in v, so
+/// the row v = 1 runs `x = (2 − ε) u − (1 − ε) u²` with speed `ε` at u = 1
+/// (for `ε` = 0 it stands still there: the corner of the strip beside a
+/// developable's fan at a fold, docs/design/developable.md). Its straight
+/// sides are its borders and its area is `k²` for every `ε`.
+fn standing_square(k: f64, eps: f64) -> Body {
+    let rows = [[0.0, 0.5, 1.0], [0.0, 0.5 * (2.0 - eps), 1.0]];
+    let mut ctrl = Vec::new();
+    for i in 0..3 {
+        for (j, row) in rows.iter().enumerate() {
+            ctrl.push(Vec3::new(row[i], j as f64, 0.0) * k);
+        }
+    }
+    let surface = craft3d_geom::NurbsSurface::new(
+        2,
+        1,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        3,
+        2,
+        ctrl,
+        vec![1.0; 6],
+    )
+    .unwrap();
+    let mut body = Body::new(BodyKind::Sheet);
+    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        .map(|(x, y)| body.add_vertex(Vec3::new(x, y, 0.0) * k));
+    let edges: Vec<EdgeId> = (0..4)
+        .map(|i| line(&mut body, (corners[i], corners[(i + 1) % 4])))
+        .collect();
+    let face = curved(
+        &mut body,
+        Surface::Nurbs(surface),
+        vec![edges.iter().map(|&e| fwd(e)).collect()],
+    );
+    body.add_shell(vec![face]);
+    body
+}
+
+/// The plane square whose parametrisation stands still at a corner, or
+/// all but (2026-10-27, owed from r1-kayakgaps2): refused before ("does
+/// not settle"), as the boundary integral weighed the rates of u, which
+/// along the side u = 1 through that corner are the rounding of the feet
+/// over the small speed. Measured since, against the rates of v; to
+/// 1e-9 at three scales, the speed at the corner from nothing to a tenth.
+#[test]
+fn a_square_whose_parametrisation_stands_still_at_a_corner_is_measured() {
+    for k in [1e-3, 1.0, 1e6] {
+        for eps in [0.0, 1e-6, 1e-3, 1e-1, 1.0] {
+            let body = standing_square(k, eps);
+            assert_eq!(check(&body, &Tolerance::default()), [], "{k} {eps}");
+            let area = mass_properties(&body)
+                .unwrap_or_else(|e| panic!("{k} {eps}: {e}"))
+                .area;
+            assert!(
+                (area - k * k).abs() <= 1e-9 * k * k,
+                "{k} {eps}: area {area} (off by {:e})",
+                (area - k * k) / (k * k)
+            );
+        }
+    }
+}
+
+/// A long panel as a ruled spline surface (the sea kayak's, 2026-10-27:
+/// hundreds of spans along it): a profile in the xz-plane through 782
+/// points, extruded along y. Its area is the profile's length times the
+/// height, the length by Gauss–Legendre span by span. What the measure
+/// costs is printed (review of r1-kayakgaps2: the test for corners where
+/// the parametrisation stands still ran global projections at every end
+/// of every piece).
+#[test]
+fn a_long_spline_panel_is_measured() {
+    let count = 782;
+    for k in [1e-3, 1.0, 1e6] {
+        let (length, height) = (5000.0 * k, 190.0 * k);
+        let profile: Vec<Vec3> = (0..count)
+            .map(|i| {
+                let s = i as f64 / (count - 1) as f64;
+                // Unevenly spaced along x, a gentle curve in z.
+                let x = length * (s + 0.01 * (7.0 * s).sin());
+                Vec3::new(x, 0.0, 120.0 * k * (std::f64::consts::PI * s).sin())
+            })
+            .collect();
+        let spans = count - 3;
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+        knots.extend([1.0; 4]);
+        let mut ctrl = Vec::new();
+        for p in &profile {
+            ctrl.push(*p);
+            ctrl.push(*p + Vec3::Y * height);
+        }
+        let surface = craft3d_geom::NurbsSurface::new(
+            3,
+            1,
+            knots.clone(),
+            vec![0.0, 0.0, 1.0, 1.0],
+            count,
+            2,
+            ctrl,
+            vec![1.0; 2 * count],
+        )
+        .unwrap();
+        let row = |lift: f64| {
+            NurbsCurve::new(
+                3,
+                knots.clone(),
+                profile.iter().map(|p| *p + Vec3::Y * lift).collect(),
+                vec![1.0; count],
+            )
+            .unwrap()
+        };
+        let (bottom, top) = (row(0.0), row(height));
+        let mut body = Body::new(BodyKind::Sheet);
+        let ends = |c: &NurbsCurve| (c.eval(0.0), c.eval(1.0));
+        let ((a, b), (d, c)) = (ends(&bottom), ends(&top));
+        let [va, vb, vc, vd] = [a, b, c, d].map(|p| body.add_vertex(p));
+        let e0 = body.add_edge(Curve3::Nurbs(bottom.clone()), (0.0, 1.0), va, vb);
+        let e1 = line(&mut body, (vb, vc));
+        let e2 = body.add_edge(Curve3::Nurbs(top), (0.0, 1.0), vd, vc);
+        let e3 = line(&mut body, (vd, va));
+        let face = curved(
+            &mut body,
+            Surface::Nurbs(surface.clone()),
+            vec![vec![fwd(e0), fwd(e1), back(e2), fwd(e3)]],
+        );
+        body.add_shell(vec![face]);
+        assert_eq!(check(&body, &Tolerance::default()), [], "{k}");
+        let rule = Rule::new(16);
+        let along: f64 = (0..spans)
+            .map(|i| {
+                let (s0, s1) = (i as f64 / spans as f64, (i + 1) as f64 / spans as f64);
+                rule.points(s0, s1)
+                    .map(|(s, w)| w * bottom.derivatives(s).1.length())
+                    .sum::<f64>()
+            })
+            .sum();
+        let expected = along * height;
+        let started = std::time::Instant::now();
+        let measured = mass_properties(&body).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let took = started.elapsed();
+        // What 32 searches over the whole surface cost here (four pieces,
+        // eight feet each: what the corners' test took before).
+        let searched = Surface::Nurbs(surface.clone());
+        let started = std::time::Instant::now();
+        for i in 0..32 {
+            let p = surface.eval(f64::from(i) / 31.0, 0.37) + Vec3::Z * (1e-9 * k);
+            searched.project(p).unwrap();
+        }
+        let searches = started.elapsed();
+        eprintln!("scale {k}: measured in {took:?}; 32 projections {searches:?}");
+        assert!(
+            (measured.area - expected).abs() <= 1e-9 * expected,
+            "{k}: area {} for {expected} (off by {:e})",
+            measured.area,
+            (measured.area - expected) / expected
+        );
+    }
+}
