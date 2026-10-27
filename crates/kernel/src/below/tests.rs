@@ -813,12 +813,18 @@ fn a_trimmed_spline_face_reaching_far_below_its_trim_gives_the_level() {
             let none = nothing_at(&prism, &plane, offset, k).unwrap();
             assert_eq!(none.volume, 0.0);
         }
-        lost_by(
-            nothing_at(&prism, &plane, 0.1 * k, k),
-            0.1 * k,
-            k,
-            "a tenth into the prism",
-        );
+        // A tenth into it, lost by a tenth: the spline face is least on
+        // its bottom edge, where its floor is tight to the slack of the
+        // test that a piece is out of the face.
+        let slack = t.linear + prism.tolerances.largest().unwrap_or(0.0);
+        match nothing_at(&prism, &plane, 0.1 * k, k) {
+            Err(CutError::LostBelow { depth, .. }) => assert!(
+                depth >= 0.1 * k - 1e-12 * k && depth <= 0.1 * k + slack * (1.0 + 1e-6),
+                "a tenth into the prism at {k}: lost by {depth}"
+            ),
+            Err(other) => panic!("a tenth into the prism at {k}: {other}"),
+            Ok(_) => panic!("a tenth into the prism at {k}: nothing below"),
+        }
         let total = mass_properties(&prism).unwrap().volume;
         for share in [0.3, 0.7] {
             let found = level_for(&[&prism], &plane, share * total, &t).unwrap();
