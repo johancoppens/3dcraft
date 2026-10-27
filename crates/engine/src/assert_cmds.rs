@@ -1042,7 +1042,15 @@ pub(crate) fn add_summary_waiting(session: &mut Session, result: &mut Value, all
         }
         return;
     }
-    let wait = Wait::For(if all { WAIT_CEILING } else { EDIT_WAIT });
+    // A host that works a piece at a time measures no assertion beside
+    // the command, so `wait: true` measures them all here and now, as
+    // `assert.list` does there (without the ceiling: a page has no clock
+    // to stop by); an edit that does not wait gets what is measured.
+    let wait = match (all, session.stepwise) {
+        (true, true) => Wait::All,
+        (true, false) => Wait::For(WAIT_CEILING),
+        (false, _) => Wait::For(EDIT_WAIT),
+    };
     let Some(mut s) = summary(session, wait) else {
         return;
     };
