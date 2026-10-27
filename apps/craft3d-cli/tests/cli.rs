@@ -430,6 +430,8 @@ fn commands_prints_the_registry_and_filters_it() {
             "variable.set",
             "variable.delete",
             "variable.rename",
+            "variable.measure",
+            "variable.output",
             "variable.publish",
             "variable.unpublish"
         ]
