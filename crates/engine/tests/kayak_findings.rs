@@ -17,6 +17,11 @@
 //!    lost"); built since 2026-10-27, the ring cut from the hull owed.
 //! 7. The hull's panels with a deep check: all built and passing (the
 //!    check's finding on TipHalfD was its ray casting, fixed 2026-10-27).
+//! 9. The level for the hull's displacement: a step of the search far
+//!    below the keel found nothing, and that was refused ("it may reach
+//!    878 below it"), as each trimmed face of the hull, cut from faces
+//!    3000 mm long, was bound by its whole surface. Now a trimmed freeform
+//!    face is bound by what of its surface lies in its trim.
 
 #![allow(
     clippy::unwrap_used,
@@ -122,4 +127,26 @@ fn the_hull_panels_pass_the_deep_check() {
     // 2026-10-27; boolean_findings.rs › the_sea_kayak_tips_against_the_deck).
     let (_, failed) = steps("sea_kayak_7.steps.json");
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+#[test]
+fn the_level_for_the_hull_displacement_is_found() {
+    // A regression of 2026-10-27 (r1-consolidate): the waterline was
+    // found at 111.7 mm in 10 steps before nothing found below was
+    // checked against each freeform face's whole surface.
+    let (mut s, failed) = steps("sea_kayak_9.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let level = s
+        .execute(
+            "measure.levelFor",
+            &json!({"of": "Hull", "volume": "98865474"}),
+        )
+        .unwrap();
+    let offset = level["offset"].as_f64().unwrap();
+    assert!((offset - 111.7).abs() < 0.1, "{level}");
+    let volume = level["volume"].as_f64().unwrap();
+    assert!(
+        (volume - 98_865_474.0).abs() <= 1e-9 * 98_865_474.0,
+        "{level}"
+    );
 }
