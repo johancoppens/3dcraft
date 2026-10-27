@@ -242,7 +242,8 @@ fn carried(
     let off = || {
         "is not in the base sketch's plane: its holes cannot be cut in the flat pattern".to_string()
     };
-    if !(from.z().cross(to.z()).length() <= tol.angular) {
+    let tilt = from.z().cross(to.z()).length();
+    if tilt.is_nan() || tilt > tol.angular {
         return Err(off());
     }
     let mirrored = from.z().dot(to.z()) < 0.0;
