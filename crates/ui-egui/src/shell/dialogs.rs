@@ -388,13 +388,16 @@ impl Shell {
         if wanted.open && !was_open {
             self.open_export(session)?;
         }
-        let checked = if given("what") {
+        // Checked against what the document offers only while it is open;
+        // closed, they are what it offers first next time it does.
+        let open = self.dialogs.export.is_some();
+        let checked = if open && given("what") {
             self.set_export_what(wanted.what.clone())
         } else {
             Ok(())
         }
         .and_then(|()| {
-            if given("format") {
+            if open && given("format") {
                 self.set_export_format(wanted.format)
             } else {
                 Ok(())
