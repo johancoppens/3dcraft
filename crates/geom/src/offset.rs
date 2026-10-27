@@ -147,7 +147,8 @@ pub fn offset_along(
 }
 
 /// Where the fit of an offset is held to its limit: the points of the
-/// surface that lie within `reach`, a length measured along the surface,
+/// surface that lie within `reach`, a length measured along the surface
+/// (along the straight path in parameters from the box's nearest point),
 /// of the box of parameters `around` (the points of the box itself
 /// included).
 ///
@@ -1596,48 +1597,78 @@ fn outward(
 }
 
 /// Which points of the lattice `us × vs` (each sorted) lie within the
-/// region `held` says: the length from the box `around` to the point
-/// along the surface, first along u at the box's nearest v, then along
-/// v (two parameter lines, so no shorter than the surface's own distance
-/// from the box), no more than the reach.
+/// region `held` says: the length along the surface of the straight path
+/// in parameters from the nearest point of the box `around` (each
+/// parameter clamped to the box) to the point, no more than the reach.
+/// A path is no shorter than the surface's own distance between its
+/// ends, so a point within the reach of the box on the surface may be
+/// left out only where the parameters run far from straight across the
+/// surface; the caller's reach carries the margin for that.
 fn held_lattice(nurbs: &NurbsSurface, held: &Held, us: &[f64], vs: &[f64]) -> Vec<Vec<bool>> {
     let ((a0, a1), (b0, b1)) = held.around;
     let reach = held.reach;
-    let speed_u = |v: f64| move |u: f64| nurbs.derivatives(u, v).1.length();
-    // The u legs: at the box's two v ends, and at every v inside it.
-    let leg_u_at = |v: f64| outward(us, (a0, a1), reach, &speed_u(v));
-    let (at_b0, at_b1) = (leg_u_at(b0), leg_u_at(b1));
     let inside_u = |u: f64| u >= a0 && u <= a1;
+    let inside_v = |v: f64| v >= b0 && v <= b1;
+    // Lines of u past the box at each v inside it, of v at each u inside
+    // it: lengths step by step outward.
     let any_outside_u = us.iter().any(|u| !inside_u(*u));
-    let legs_inside: Vec<Option<Vec<f64>>> = vs
+    let along_u: Vec<Option<Vec<f64>>> = vs
         .iter()
-        .map(|&v| (v >= b0 && v <= b1 && any_outside_u).then(|| leg_u_at(v)))
+        .map(|&v| {
+            (inside_v(v) && any_outside_u).then(|| {
+                outward(us, (a0, a1), reach, &|u: f64| {
+                    nurbs.derivatives(u, v).1.length()
+                })
+            })
+        })
         .collect();
+    // Past a corner of the box: the straight path from that corner.
+    let diagonal = |u: f64, v: f64| -> f64 {
+        let (cu, cv) = (u.clamp(a0, a1), v.clamp(b0, b1));
+        let (du, dv) = (u - cu, v - cv);
+        const STEPS: usize = 4;
+        let mut length = 0.0;
+        for k in 0..STEPS {
+            for (x, w) in GAUSS3 {
+                let t = (k as f64 + x) / STEPS as f64;
+                let (_, su, sv) = nurbs.derivatives(cu + du * t, cv + dv * t);
+                length += w * (su * du + sv * dv).length() / STEPS as f64;
+            }
+            if length > reach {
+                break;
+            }
+        }
+        if length.is_nan() {
+            f64::INFINITY
+        } else {
+            length
+        }
+    };
     us.iter()
         .enumerate()
         .map(|(i, &u)| {
-            // Along v from the box at this u: started from the corner's
-            // leg along u.
-            let leg_v = outward(vs, (b0, b1), reach, &|v: f64| {
-                nurbs.derivatives(u, v).2.length()
+            let along_v = inside_u(u).then(|| {
+                outward(vs, (b0, b1), reach, &|v: f64| {
+                    nurbs.derivatives(u, v).2.length()
+                })
             });
             vs.iter()
                 .enumerate()
                 .map(|(j, &v)| {
-                    let base = if v < b0 {
-                        at_b0.get(i).copied()
-                    } else if v > b1 {
-                        at_b1.get(i).copied()
-                    } else if inside_u(u) {
-                        Some(0.0)
-                    } else {
-                        legs_inside
+                    let length = match (inside_u(u), inside_v(v)) {
+                        (true, true) => 0.0,
+                        (true, false) => along_v
+                            .as_ref()
+                            .and_then(|l| l.get(j).copied())
+                            .unwrap_or(f64::INFINITY),
+                        (false, true) => along_u
                             .get(j)
                             .and_then(|l| l.as_ref())
                             .and_then(|l| l.get(i).copied())
+                            .unwrap_or(f64::INFINITY),
+                        (false, false) => diagonal(u, v),
                     };
-                    let along = leg_v.get(j).copied().unwrap_or(f64::INFINITY);
-                    base.is_some_and(|b| b + along <= reach)
+                    length <= reach
                 })
                 .collect()
         })

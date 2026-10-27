@@ -116,6 +116,16 @@ pub const MAX_PLATE_FACES: usize = 4096;
 /// it is slower it reaches less far; the curves must not run off it.
 const SURFACE_REACH: f64 = 3.0;
 
+/// How far from its face, as a length along the surface, a skin is held
+/// to the tolerance ([`Layered::new`]), in multiples of the furthest the
+/// plate's corners lie past the ends of its edges, with twice the
+/// thicknesses beyond: everything the plate is made of lies within the
+/// furthest reach of its faces (a corner further out is refused), and a
+/// length along a straight path in parameters may be longer than the
+/// distance on the surface; the twofold margin is for that, and for the
+/// steps of the solvers on the way to a corner.
+const HELD_REACH: f64 = 2.0;
+
 /// Where the material of a plate lies against its faces, along their
 /// outward normal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1108,9 +1118,10 @@ fn build(
         .flat_map(|(a, b)| [*a, *b])
         .fold(0.0_f64, f64::max);
     let surface_reach = SURFACE_REACH * furthest + thickness;
+    let held = HELD_REACH * furthest + 2.0 * thickness;
     for (made, id) in layered.iter_mut().zip(chosen) {
         let reach = reach_past_vertices(body, made.face, surface_reach, tolerance.linear);
-        *made = Layered::new(made.face, levels, reach, surface_reach, tolerance)
+        *made = Layered::new(made.face, levels, reach, held, tolerance)
             .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
     for boundary in &mut boundaries {
@@ -1130,7 +1141,7 @@ fn build(
                     surface_reach + n.thickness,
                     tolerance.linear,
                 ),
-                surface_reach + n.thickness,
+                held + 2.0 * n.thickness,
                 tolerance,
             )
             .map_err(|why| {
