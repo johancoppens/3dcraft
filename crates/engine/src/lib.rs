@@ -585,7 +585,9 @@ impl Session {
     /// document changed since it was last regenerated.
     pub fn failed_features(&mut self) -> Vec<Value> {
         let mut out = Value::Object(serde_json::Map::new());
-        if !self.has_document() || commands::add_failed(self, &[], None, &mut out).is_err() {
+        if !self.has_document()
+            || commands::add_failed_waiting(self, &[], None, &mut out, true).is_err()
+        {
             return Vec::new();
         }
         out.get("failed")

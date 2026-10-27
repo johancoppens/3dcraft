@@ -73,7 +73,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression, "wait": boolean = false}"#,
         "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}. An expression has numbers with units (um mm cm m in ft, deg rad), variables, pi, + - * / ^, the comparisons < <= > >= == != (1 or 0; == within a relative 1e-12), && || ! (0 is false, anything else true) and the functions sin, cos, tan, asin, acos, atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc, mod, exp, ln, log10, pow, sinh, cosh, tanh, if, clamp and choose. Conditions: if(length > 200 mm, 4, 2) takes only the branch chosen, so the other may fail (if(n > 0, total / n, 0 mm)); both branches have one dimension. clamp(wall, 1.2 mm, 5 mm) keeps a value between two bounds; choose(i, a, b, ...) is the i-th value, counted from 1. floor, ceil, round and trunc take a plain number (floor(span / fingerW)) or a value and a positive step of its dimension (round(width, 0.5 mm)); a length alone is refused, as its whole number would depend on the unit. round takes ties to the even whole number (2.5 to 2, 3.5 to 4); mod(a, b) is a - b * floor(a / b), with the sign of b, and b = 0 is an error. A name is ASCII letters, digits and _, not starting with a digit, and not a word the expressions use themselves (pi, a unit such as m or in, a function such as mod or min): such a name is refused with what it clashes with and a name to use instead (module for a gear's m). Returns the variable, failed (the features that fail now and did not before) and, when the document has assertions, their summary (assertions): it waits up to two seconds for those the change touched and counts the rest as pending, with whenPending saying how to have them; wait: true waits until every assertion is measured, for 60 s at most (what is not measured by then stays pending, with whenPending).", doc: true, variable_set),
     spec!("variable.delete", "Delete Variable", r#"{"name": string, "force": boolean = false}"#,
-        "Deletes a variable. A variable still in use is refused, with every user named (variables, features and sketches with the parameter, assertions, named sets); with force it is deleted anyway, and what used it fails until the variable is defined again (edit.undo brings it back).", doc: true, variable_delete),
+        "Deletes a variable. A variable still in use is refused, with every user named (variables, features and sketches with the parameter, assertions, named sets); with force it is deleted anyway, and what used it fails until the variable is defined again (edit.undo brings it back); the result lists what fails now under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, variable_delete),
     spec!("variable.rename", "Rename Variable", r#"{"name": string, "to": string}"#,
         "Renames a variable and every reference to it in variables and features.", doc: true, variable_rename),
     spec!("feature.block", "Block", r#"{"size": [expr, expr, expr], "position": [expr, expr, expr] = [0, 0, 0], "axis": [expr, expr, expr] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic, "when": expr = always on}"#,
@@ -97,9 +97,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.move", "Reorder Feature", r#"{"feature": id or name, "position": integer}"#,
         "Moves a feature to a position in the history: its index in the features of document.inspect, sketches and datums included; 0 is first. A feature moved before what it is made from fails and says so.", doc: true, feature_move),
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
-        "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed.", doc: true, feature_delete),
+        "Deletes a feature (edit.undo brings it back). A feature that named it (as its target, tool, source or sketch) fails. The result lists the features that fail under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
-        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a boolean) takes it from the features after the marker that were made from that body by naming it (a boolean's target or tool, the source of a transform, mirror, pattern or shell): those fail with \"already went into\" until they are pointed at the new feature (feature.edit with that target, tool or source). A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself.", doc: true, history_rollback),
+        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature. A feature added there that takes a body (a fillet, a chamfer, a boolean) takes it from the features after the marker that were made from that body by naming it (a boolean's target or tool, the source of a transform, mirror, pattern or shell): those fail with \"already went into\" until they are pointed at the new feature (feature.edit with that target, tool or source). A fillet, a chamfer or a face operation names faces, not a body, and follows them into the new feature's body by itself. The result lists the features that fail now and did not before under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", r#"{"measures": boolean = true, "named": boolean = false}"#,
         "Returns the whole document state (with named: true each feature's parameters also under named, in the commands' words: keys as the commands spell them, keepTool, and features by name, where they differ from params): units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts (shells: one per lump and one per cavity; a body a cut fell apart in, or one with a void, has several), mass properties (volume, area, centroid; with a material: mass and inertia) and bbox, appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), faceAppearances (the colours face.appearance gave single faces) and lostFaces (those whose face an edit took away, which colour nothing), assertions (when there are any: each with status passed, failed, notProven, error or pending (still being measured after two seconds), what was measured and what was expected, as assert.list), undo history. With measures: false the bodies are listed without what takes measuring them (volume, area, centroid, mass, inertia, bbox and bboxTolerance; a body with a spline face can take seconds the first time), the rest as always: the quick way to read the features, their status and the face names of a large model.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false, "feature": id or name = every feature}"#,
@@ -505,7 +505,16 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
 /// at a time ([`Session::regeneration_deferred`]): [`add_failed`] then
 /// says nothing either.
 pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandError> {
-    if session.regeneration_deferred() {
+    failing_waiting(session, false)
+}
+
+/// [`failing`], regenerating the document all the same when `wait` (an
+/// edit's `wait: true`, whose result is final: [`add_failed_waiting`]).
+pub(crate) fn failing_waiting(
+    session: &mut Session,
+    wait: bool,
+) -> Result<Vec<FeatureId>, CommandError> {
+    if !wait && session.regeneration_deferred() {
         session.document()?;
         return Ok(Vec::new());
     }
@@ -540,7 +549,20 @@ pub(crate) fn add_failed(
     except: Option<FeatureId>,
     result: &mut Value,
 ) -> Result<(), CommandError> {
-    if session.regeneration_deferred() {
+    add_failed_waiting(session, before, except, result, false)
+}
+
+/// [`add_failed`], regenerating the document all the same when `wait`:
+/// an edit given `wait: true` reports what fails, never `deferred`, on
+/// every host (its result is final, as its assertions' summary is).
+pub(crate) fn add_failed_waiting(
+    session: &mut Session,
+    before: &[FeatureId],
+    except: Option<FeatureId>,
+    result: &mut Value,
+    wait: bool,
+) -> Result<(), CommandError> {
+    if !wait && session.regeneration_deferred() {
         session.document()?;
         if let Some(map) = result.as_object_mut() {
             map.insert("deferred".into(), Value::Bool(true));
@@ -1515,7 +1537,7 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
             "variable.set: `{name}` is a public parameter, so its expression must be a value (a number with its unit), not the formula `{expr}`; variable.unpublish it first to give it a formula"
         ));
     }
-    let before = failing(session)?;
+    let before = failing_waiting(session, wait)?;
     let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)
@@ -1524,7 +1546,7 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
     let regen = open.regen();
     let mut result = variable_json(&regen, name, length_unit(open.history.current()));
     add_parameter_warnings(&doc_before, open.history.current(), &mut result);
-    add_failed(session, &before, None, &mut result)?;
+    add_failed_waiting(session, &before, None, &mut result, wait)?;
     crate::assert_cmds::add_summary_waiting(session, &mut result, wait);
     Ok(result)
 }
