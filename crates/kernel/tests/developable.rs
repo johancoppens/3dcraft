@@ -899,3 +899,67 @@ fn a_plate_on_a_fan_to_its_apex_is_refused_by_name() {
         );
     }
 }
+
+/// The sea kayak's repro 14 (2026-10-27): a plate on a long developable
+/// panel (782 control points along it) whose rulings shrink towards a
+/// tip was refused, "the offset of the freeform face could not be
+/// approximated": the panel's surface is continued across its rulings by
+/// a box of parameters large enough for the short ruling at the tip, so
+/// in the middle it reached ten rulings' lengths past the chines, and
+/// the offset's fit over all of that box ran out of samples. A cone strip
+/// 3000 long (at scale 1) between the generators' points at the distance
+/// `r0` from the apex and `r0 + w(θ)`, `w` tapering from 190 to 3 along
+/// it, as splines through 800 points: plated in the middle by `t`, its
+/// volume is `A t` (Steiner's formula with `K = 0`: the mean curvature's
+/// term cancels between the two sides), with the area of the developed
+/// sector `A = sin α ∫ (2 r0 w + w²)/2 dθ` in closed form.
+#[test]
+fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume() {
+    use craft3d_kernel::plate::{Side, plate};
+    use std::collections::BTreeMap;
+    let alpha: f64 = 30f64.to_radians();
+    let (s, c) = (alpha.sin(), alpha.cos());
+    let sweep = 2.0;
+    let count = 800;
+    for k in SCALES {
+        let (r0, w0, w1) = (3000.0 * k, 190.0 * k, 3.0 * k);
+        let g = |th: f64| Vec3::new(s * th.cos(), s * th.sin(), c);
+        let w = |th: f64| w0 + (w1 - w0) * th / sweep;
+        let at = |i: usize| sweep * i as f64 / (count - 1) as f64;
+        let a: Vec<Vec3> = (0..count).map(|i| g(at(i)) * r0).collect();
+        let b: Vec<Vec3> = (0..count).map(|i| g(at(i)) * (r0 + w(at(i)))).collect();
+        let made =
+            connect(&spline(&a), &spline(&b), &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert_eq!(made.faces, vec![Piece::Rulings], "{k}");
+        let t = 4.0 * k;
+        let started = std::time::Instant::now();
+        let plated = plate(
+            &made.body,
+            &[FaceId(0)],
+            t,
+            Side::Mid,
+            &BTreeMap::new(),
+            &tol(k),
+        )
+        .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
+        let took = started.elapsed();
+        assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
+        let area = 0.5
+            * s
+            * (2.0 * r0 * sweep * (w0 + w1) / 2.0 + sweep * (w0 * w0 + w0 * w1 + w1 * w1) / 3.0);
+        let expected = area * t;
+        let volume = craft3d_topo::mass_properties(&plated.body)
+            .unwrap()
+            .volume
+            .abs();
+        assert!(
+            (volume - expected).abs() <= 1e-6 * expected,
+            "{k}: volume {volume}, expected {expected} (off by {:e})",
+            (volume - expected) / expected
+        );
+        eprintln!(
+            "scale {k}: plated in {took:?}, volume off by {:e}",
+            (volume - expected) / expected
+        );
+    }
+}

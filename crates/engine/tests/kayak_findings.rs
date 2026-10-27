@@ -30,6 +30,13 @@
 //!    878 below it"), as each trimmed face of the hull, cut from faces
 //!    3000 mm long, was bound by its whole surface. Now a trimmed freeform
 //!    face is bound by what of its surface lies in its trim.
+//! 14. Plates on the developable panels (`onto` the end planes, `touch`
+//!    along the chines): refused, "the offset of the freeform face could
+//!    not be approximated", as the panel's surface was continued across
+//!    its rulings by a box of parameters as wide as the tip's short
+//!    ruling needs, and the offset fitted to the tolerance over all of
+//!    it. Now the offset is held to the tolerance only within the length
+//!    along the surface that the plate uses.
 
 #![allow(
     clippy::unwrap_used,
@@ -218,5 +225,40 @@ fn the_hull_panels_have_no_fans_where_their_ends_line_up_with_a_ruling() {
                 "{panel}: {e}"
             );
         }
+    }
+}
+
+#[test]
+fn plates_on_the_long_developable_panels_are_built() {
+    let started = std::time::Instant::now();
+    let (mut s, failed) = steps("sea_kayak_14.steps.json");
+    eprintln!("repro 14 (starboard plates) in {:?}", started.elapsed());
+    assert!(failed.is_empty(), "{failed:#?}");
+    let document = s.execute("document.inspect", &json!({})).unwrap();
+    let bodies = document["bodies"].as_array().unwrap();
+    let body = |name: &str| {
+        bodies
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no body {name}"))
+    };
+    // A plate of 4 mm on a panel: its volume is the panel's area times
+    // the thickness, less the mean curvature's term (`t² ∫H dA`, under
+    // one per cent for a hull's radii of a few hundred millimetres).
+    for (plate, panel) in [
+        ("Plank1S", "Dev1S"),
+        ("Plank2S", "Dev2S"),
+        ("Top4S", "DevTop4S"),
+    ] {
+        let (plate, panel) = (body(plate), body(panel));
+        assert_eq!(plate["valid"], true, "{plate}");
+        let volume = plate["volume"].as_f64().unwrap();
+        let area = panel["area"].as_f64().unwrap();
+        let expected = area * 4.0;
+        eprintln!("{}: volume {volume}, area x t {expected}", plate["name"]);
+        assert!(
+            (volume - expected).abs() <= 0.02 * expected,
+            "{plate} against {panel}"
+        );
     }
 }
