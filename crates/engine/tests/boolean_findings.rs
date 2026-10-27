@@ -532,27 +532,44 @@ fn winding(mesh: &craft3d_tess::Mesh, p: Vec3) -> f64 {
 #[test]
 fn the_sea_kayak_tips_against_the_deck() {
     use craft3d_kernel::boolean::{Place, VerifyOptions, classify_points, verify};
-    let mut s = steps("sea_kayak_tips.steps.json");
-    for name in ["TipHalf1", "TipHalf2", "TipHalf3"] {
-        assert_eq!(status(&mut s, name)["status"], "ok", "{name}");
-    }
-    assert_ok(&mut s, "TipHalfD");
-    let (bodies, tol) = bodies(&mut s, "sea_kayak_tips.3dcraft");
-    let (target, tool) = (body(&bodies, "TipHalf3"), body(&bodies, "CylD"));
-    let found = Vec3::new(
-        -1864.4193771268945,
-        -1469.5401187305245,
-        -1233.8242606133363,
-    );
-    assert_eq!(
-        classify_points(tool, &[found], &tol).unwrap(),
-        vec![Place::Outside]
-    );
-    // (At a million times the size the 5 m hull is 5000 km against a
-    // tolerance of 1e-6: no geometry is held to 1e-15 of its size.)
-    for scale in [1e-3, 1.0, 10.0] {
-        let place = |b: &Body| b.transformed(&Transform::scaling(scale)).unwrap();
-        let (a, b) = (place(target), place(tool));
+    let text = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/boolean_findings/sea_kayak_tips.steps.json"),
+    )
+    .unwrap();
+    // Every length of the steps is in millimetres: the same model in
+    // micrometres and in centimetres is the hull at a thousandth and at
+    // ten times its size. (At a million times the 5 m hull is 5000 km
+    // against a tolerance of 1e-6: no geometry is held to 1e-15 of its
+    // size.)
+    for (scale, unit) in [(1e-3, "um"), (1.0, "mm"), (10.0, "cm")] {
+        let steps: Vec<(String, Value)> =
+            serde_json::from_str(&text.replace(" mm\"", &format!(" {unit}\""))).unwrap();
+        let mut s = Session::new(Workspace::unrestricted());
+        run(&mut s, "file.new", &json!({"units": "mm"}));
+        for (id, params) in &steps {
+            run(&mut s, id, params);
+        }
+        for name in ["TipHalf1", "TipHalf2", "TipHalf3"] {
+            assert_eq!(status(&mut s, name)["status"], "ok", "{scale}: {name}");
+        }
+        assert_ok(&mut s, "TipHalfD");
+        let (bodies, tol) = bodies(&mut s, "sea_kayak_tips.3dcraft");
+        let (a, b) = (
+            body(&bodies, "TipHalf3").clone(),
+            body(&bodies, "CylD").clone(),
+        );
+        if unit == "mm" {
+            let found = Vec3::new(
+                -1864.4193771268945,
+                -1469.5401187305245,
+                -1233.8242606133363,
+            );
+            assert_eq!(
+                classify_points(&b, &[found], &tol).unwrap(),
+                vec![Place::Outside]
+            );
+        }
         let common = boolean(&a, &b, BooleanOp::Intersect, &tol).unwrap().body;
         let rest = boolean(&a, &b, BooleanOp::Subtract, &tol).unwrap().body;
         let slack = slack(&tol, &[&a, &b]);
