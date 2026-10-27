@@ -176,6 +176,7 @@ fn piece_number(piece: Piece) -> u64 {
         Piece::Rulings => 0,
         Piece::StartFan => 1,
         Piece::EndFan => 2,
+        Piece::Inner(n) => 3 + u64::from(n),
     }
 }
 

@@ -70,6 +70,11 @@ pub enum Piece {
     StartFan,
     /// The cone from the last end of one rail to the end of the other.
     EndFan,
+    /// A face after the first run of rulings, in order along the rails
+    /// (from 0): a fan where the condition turns back (a cone at one
+    /// point of a rail, across a stretch of the other), or a run of
+    /// rulings after such a fan.
+    Inner(u32),
 }
 
 /// What [`connect`] made.
@@ -367,8 +372,6 @@ enum Start {
     FromB(f64),
 }
 
-/// The walk along the zero set of `f` from `start` until it reaches the
-/// side `x = 1` or `y = 1`.
 /// The tangent of the zero set at `(x, y)`, oriented to increase `x + y`.
 fn tangent_at(pair: &Pair, x: f64, y: f64) -> Option<(f64, f64)> {
     let (gx, gy) = pair.gradient(x, y)?;
@@ -385,17 +388,88 @@ fn tangent_at(pair: &Pair, x: f64, y: f64) -> Option<(f64, f64)> {
 /// zero set is walked into, not jumped over.
 const MAX_TURN: f64 = 0.2;
 
+/// The path of the rulings through the square: its points, and per point
+/// whether the stretch to the next one is a fan (at one `t`, its apex on
+/// B, or at one `s`, its apex on A) rather than rulings on the zero set.
+#[derive(Clone, Debug, Default)]
+struct Path {
+    points: Vec<(f64, f64)>,
+    fan_after: Vec<bool>,
+}
+
+impl Path {
+    fn push(&mut self, p: (f64, f64)) {
+        self.points.push(p);
+        self.fan_after.push(false);
+    }
+    /// The stretch from the last point to `p` is a fan.
+    fn push_fan(&mut self, p: (f64, f64)) {
+        if let Some(last) = self.fan_after.last_mut() {
+            *last = true;
+        }
+        self.push(p);
+    }
+    /// Whether point `k` ends or starts a fan (it is kept as it is).
+    fn fixed(&self, k: usize) -> bool {
+        self.fan_after.get(k).copied().unwrap_or(false)
+            || k.checked_sub(1)
+                .is_some_and(|j| self.fan_after.get(j).copied().unwrap_or(false))
+    }
+}
+
+/// Which way the zero set turns back while the walk goes round the fold.
+#[derive(Clone, Copy, Debug)]
+enum Fold {
+    /// `t` falls: the fan is at `t = level` (apex on B) until the zero
+    /// set comes back up to it.
+    T { level: f64 },
+    /// `s` falls: the fan is at `s = level` (apex on A).
+    S { level: f64 },
+}
+
+const WINDS: &str =
+    "the condition turns back in both curves there (a curve that winds about the other)";
+
+/// The walk along the zero set of `f` from `start` until it reaches the
+/// side `x = 1` or `y = 1`.
+///
+/// Where the zero set turns back in one parameter (a fold: the rulings
+/// beyond it would cross those before it, as where one rail inflects and
+/// the other does not), the rulings that would cross are replaced by a
+/// fan: at the parameter where it turns (its apex on that rail), across
+/// the other rail until the zero set comes back to that parameter going
+/// forward. The walk goes on round the fold without keeping its points.
+/// The fan's two end rulings satisfy the condition, so the fan and the
+/// rulings on either side share their tangent planes there (a cone is
+/// developable: Pottmann & Wallner §6.1; Frey & Bindschadler 1993 join
+/// developable pieces through cones the same way). A crossing of two
+/// branches within the tolerance is stepped over instead ([`cross`]).
+/// Where both parameters turn back at once the curves wind about each
+/// other: refused, as is a fold the zero set does not come back from
+/// before it leaves the square on a side other than `x = 1` or `y = 1`.
 fn trace(
     pair: &Pair,
     start: (f64, f64),
     tolerance: f64,
     tips: [bool; 2],
     reach: f64,
-) -> Result<Vec<(f64, f64)>, KernelError> {
-    let mut path = vec![start];
+) -> Result<Path, KernelError> {
+    let mut path = Path::default();
+    path.push(start);
     let (mut x, mut y) = start;
     let mut h = STEP_MAX / 4.0;
     let mut steps = 0;
+    let mut fold: Option<Fold> = None;
+    // The tangent of the last step, to orient the next one by.
+    let mut before = (
+        std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    );
+    // A tangent along a side of the square (the zero set leaves a corner
+    // vertically, as where one rail's parameter runs as the other's
+    // square) has a component lost in the gradient's rounding: clamped to
+    // zero. A turn back is a component clearly below it.
+    const BACK: f64 = -1e-6;
     while x < 1.0 && y < 1.0 {
         steps += 1;
         if steps > MAX_STEPS {
@@ -412,7 +486,15 @@ fn trace(
         };
         let norm = gx.hypot(gy);
         if norm.is_nan() || norm <= 1e-9 {
-            if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+            if fold.is_none()
+                && let Some(q) = cross(
+                    pair,
+                    (x, y),
+                    heading(&path.points),
+                    STEP_MAX / 4.0,
+                    tolerance,
+                )
+            {
                 (x, y) = q;
                 path.push(q);
                 h = STEP_MAX / 4.0;
@@ -423,30 +505,52 @@ fn trace(
                 pair.where_(x, y)
             )));
         }
+        // Oriented as the walk was going.
         let (mut tx, mut ty) = (gy / norm, -gx / norm);
-        if tx + ty < 0.0 {
+        if tx * before.0 + ty * before.1 < 0.0 {
             tx = -tx;
             ty = -ty;
         }
-        // A tangent along a side of the square (the zero set leaves a
-        // corner vertically, as where one rail's parameter runs as the
-        // other's square) has a component lost in the gradient's
-        // rounding: clamped to zero. A turn back is a component clearly
-        // below it (the final rulings are checked to be monotone anyway).
-        if tx < -1e-6 || ty < -1e-6 {
-            if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+        let winds = match fold {
+            None => tx < BACK && ty < BACK,
+            Some(Fold::T { .. }) => tx < BACK,
+            Some(Fold::S { .. }) => ty < BACK,
+        };
+        if winds {
+            return Err(refused(format!(
+                "the rulings would cross {}: {WINDS}",
+                pair.where_(x, y)
+            )));
+        }
+        if fold.is_none() && (tx < BACK || ty < BACK) {
+            if let Some(q) = cross(
+                pair,
+                (x, y),
+                heading(&path.points),
+                STEP_MAX / 4.0,
+                tolerance,
+            ) {
                 (x, y) = q;
                 path.push(q);
                 h = STEP_MAX / 4.0;
                 continue;
             }
-            return Err(refused(format!(
-                "the rulings would cross {}: the condition turns back there (an inflection of a curve, or a curve that winds about the other); split the curves there",
-                pair.where_(x, y)
-            )));
+            // Round the fold, with a fan at where it turns.
+            fold = Some(if ty < BACK {
+                Fold::T { level: y }
+            } else {
+                Fold::S { level: x }
+            });
         }
+        // The direction to step in: forward in what must go forward (both
+        // parameters on the zero set, the one that does not turn back
+        // round a fold).
         let (tx, ty) = {
-            let (cx, cy) = (tx.max(0.0), ty.max(0.0));
+            let (cx, cy) = match fold {
+                None => (tx.max(0.0), ty.max(0.0)),
+                Some(Fold::T { .. }) => (tx.max(0.0), ty),
+                Some(Fold::S { .. }) => (tx, ty.max(0.0)),
+            };
             let n = cx.hypot(cy).max(f64::MIN_POSITIVE);
             (cx / n, cy / n)
         };
@@ -458,14 +562,33 @@ fn trace(
         if ty > 0.0 {
             step = step.min((1.0 - y) / ty);
         }
-        let (px, py) = ((x + step * tx).min(1.0), (y + step * ty).min(1.0));
+        if tx < 0.0 {
+            step = step.min(x / -tx);
+        }
+        if ty < 0.0 {
+            step = step.min(y / -ty);
+        }
+        let (px, py) = (
+            (x + step * tx).clamp(0.0, 1.0),
+            (y + step * ty).clamp(0.0, 1.0),
+        );
         let at_side = px >= 1.0 || py >= 1.0;
         // Corrector: back onto the zero set; on a side, along that side.
         let corrected = if at_side {
             if px >= 1.0 {
-                root_between(&|v| pair.f(1.0, v), y, (py + 2.0 * step).min(1.0)).map(|v| (1.0, v))
+                root_between(
+                    &|v| pair.f(1.0, v),
+                    y.min(py),
+                    (y.max(py) + 2.0 * step).min(1.0),
+                )
+                .map(|v| (1.0, v))
             } else {
-                root_between(&|u| pair.f(u, 1.0), x, (px + 2.0 * step).min(1.0)).map(|u| (u, 1.0))
+                root_between(
+                    &|u| pair.f(u, 1.0),
+                    x.min(px),
+                    (x.max(px) + 2.0 * step).min(1.0),
+                )
+                .map(|u| (u, 1.0))
             }
             .or_else(|| onto_zero(pair, px, py))
         } else {
@@ -477,17 +600,26 @@ fn trace(
         let accepted = corrected.filter(|&(qx, qy)| {
             let moved = (qx - x).hypot(qy - y);
             let turned = tangent_at(pair, qx, qy)
-                .is_some_and(|(ux, uy)| (ux * tx + uy * ty) >= MAX_TURN.cos());
-            qx >= x - 1e-12
-                && qy >= y - 1e-12
-                && moved <= 1.5 * step + 1e-12
-                && moved > 0.0
-                && (turned || at_side)
+                .is_some_and(|(ux, uy)| (ux * tx + uy * ty).abs() >= MAX_TURN.cos());
+            let forward = match fold {
+                None => qx >= x - 1e-12 && qy >= y - 1e-12,
+                Some(Fold::T { .. }) => qx >= x - 1e-12,
+                Some(Fold::S { .. }) => qy >= y - 1e-12,
+            };
+            forward && moved <= 1.5 * step + 1e-12 && moved > 0.0 && (turned || at_side)
         });
         let Some((qx, qy)) = accepted else {
             h *= 0.5;
             if h < 1e-10 {
-                if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+                if fold.is_none()
+                    && let Some(q) = cross(
+                        pair,
+                        (x, y),
+                        heading(&path.points),
+                        STEP_MAX / 4.0,
+                        tolerance,
+                    )
+                {
                     (x, y) = q;
                     path.push(q);
                     h = STEP_MAX / 4.0;
@@ -500,6 +632,56 @@ fn trace(
             }
             continue;
         };
+        let moved = (qx - x).hypot(qy - y);
+        if moved > 0.0 {
+            before = ((qx - x) / moved, (qy - y) / moved);
+        }
+        h = (h * 1.5).min(STEP_MAX);
+        match fold {
+            Some(Fold::T { level }) => {
+                if qy >= level || qx >= 1.0 {
+                    // Back at the fan's `t` (or at the end of A): the fan
+                    // ends where the zero set crosses it.
+                    let end = if qy >= level {
+                        root_between(&|u| pair.f(u, level), x, qx).unwrap_or(qx)
+                    } else {
+                        1.0
+                    };
+                    path.push_fan((end, level));
+                    (x, y) = (end, level);
+                    fold = None;
+                } else if qy <= 0.0 {
+                    return Err(refused(format!(
+                        "the rulings would cross {}: the condition turns back and does not come back before the start of the second curve",
+                        pair.where_(qx, qy)
+                    )));
+                } else {
+                    (x, y) = (qx, qy);
+                }
+                continue;
+            }
+            Some(Fold::S { level }) => {
+                if qx >= level || qy >= 1.0 {
+                    let end = if qx >= level {
+                        root_between(&|v| pair.f(level, v), y, qy).unwrap_or(qy)
+                    } else {
+                        1.0
+                    };
+                    path.push_fan((level, end));
+                    (x, y) = (level, end);
+                    fold = None;
+                } else if qx <= 0.0 {
+                    return Err(refused(format!(
+                        "the rulings would cross {}: the condition turns back and does not come back before the start of the first curve",
+                        pair.where_(qx, qy)
+                    )));
+                } else {
+                    (x, y) = (qx, qy);
+                }
+                continue;
+            }
+            None => {}
+        }
         // A ruling that shrinks to nothing away from ends that meet.
         if let Some((pa, pb)) = pair.points(qx, qy) {
             // Near ends that meet the rulings shrink to nothing: within
@@ -517,7 +699,6 @@ fn trace(
         x = qx;
         y = qy;
         path.push((x, y));
-        h = (h * 1.5).min(STEP_MAX);
     }
     Ok(path)
 }
@@ -574,42 +755,37 @@ const HESSIAN_STEP: f64 = 1e-4;
 
 /// A crossing of two branches of the zero set of `f` (a simple
 /// bifurcation point; Allgower & Georg, *Numerical Continuation Methods*,
-/// ch. 8), exact or split by rounding into two arcs that pass each other,
-/// within one step of the walk at `(x, y)`: the branch that goes on
-/// forward and nearest the direction the walk came from, `heading`, is
-/// taken past it. This is where the rails of an exact developable inflect
-/// (do Carmo §3-5: where a rail's curvature vanishes the condition
-/// vanishes to first order on the ruling there, and the developable's own
-/// rulings cross the zero set of another family of rulings). It is found
-/// from the quadratic model of `f` at `(x, y)`: a saddle (the Hessian
-/// indefinite) at `d* = −H⁻¹∇f`, its asymptotic directions the null
-/// directions of `H`. The walk steps to the saddle and on along the
-/// chosen direction by the larger of `step` and four times the distance
-/// at which the model's arcs pass each other, then back onto the zero set
-/// on the line square to that direction (the root nearest the line's
-/// middle). `None` when there is no such crossing (a fold of the zero
-/// set, where it truly turns back; a saddle more than a step away; no
-/// branch that goes on forward): the caller refuses as before. The
-/// rulings across are held to the tolerance by the fit like all others.
-fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Option<(f64, f64)> {
+/// ch. 8), exact or split into two arcs that pass each other by less than
+/// the tolerance resolves, within one step of the walk at `(x, y)`: the
+/// branch that goes on forward and nearest the direction the walk came
+/// from, `heading`, is taken past it. This is where an exact developable's
+/// rail inflects (a generalised cylinder whose section inflects): the
+/// condition vanishes to first order on the ruling there and another
+/// family of rulings crosses the developable's own. It is found from the
+/// quadratic model of `f` at `(x, y)`: a saddle (the Hessian indefinite)
+/// at `d* = −H⁻¹∇f`, its asymptotic directions the null directions of
+/// `H`. Split arcs are taken as one crossing only when the model's value
+/// at the saddle, a sine of the angle by which the tangent plane turns
+/// along the ruling there, times the ruling's length, is within half the
+/// tolerance: the rulings across are then developable within it (and the
+/// fit holds them to it like every other). The walk steps to the saddle
+/// and on along the chosen direction by `step` (or twice the saddle's
+/// distance, if more), then back onto the zero set on the line square to
+/// that direction (the root nearest the line's middle). `None` when there
+/// is no such crossing (a fold of the zero set, where it truly turns
+/// back; a saddle more than a step away or split by more than the
+/// tolerance; no branch that goes on forward).
+fn cross(
+    pair: &Pair,
+    (x, y): (f64, f64),
+    heading: (f64, f64),
+    step: f64,
+    tolerance: f64,
+) -> Option<(f64, f64)> {
     let value = pair.f(x, y)?;
     let (gx, gy) = pair.gradient(x, y)?;
     let [hxx, hxy, hyy] = hessian(pair, x, y)?;
     let det = hxx * hyy - hxy * hxy;
-    eprintln!(
-        "DEVDBG cross at ({x}, {y}) f {value:e} g ({gx:e}, {gy:e}) H ({hxx:e}, {hxy:e}, {hyy:e}) heading {heading:?}"
-    );
-    for k in -4i32..=4 {
-        for j in -4i32..=4 {
-            let (px, py) = (x + f64::from(k) * 2e-3, y + f64::from(j) * 2e-3);
-            eprint!(
-                "{} ",
-                pair.f(px, py)
-                    .map_or("    x    ".to_string(), |v| format!("{v:+.2e}"))
-            );
-        }
-        eprintln!();
-    }
     if !(det < 0.0) {
         return None;
     }
@@ -617,6 +793,14 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     let (dx, dy) = (-(hyy * gx - hxy * gy) / det, -(hxx * gy - hxy * gx) / det);
     let saddle_value = value + 0.5 * (gx * dx + gy * dy);
     let far = dx.hypot(dy);
+    let (cx, cy) = (x + dx, y + dy);
+    if !(far <= STEP_MAX && (0.0..=1.0).contains(&cx) && (0.0..=1.0).contains(&cy)) {
+        return None;
+    }
+    let (pa, pb) = pair.points(cx, cy)?;
+    if !(saddle_value.abs() * pa.distance(pb) <= 0.5 * tolerance) {
+        return None;
+    }
     // The eigenvalues and eigenvectors of H (symmetric, one of each sign).
     let mean = 0.5 * (hxx + hyy);
     let radius = (0.5 * (hxx - hyy)).hypot(hxy);
@@ -626,14 +810,6 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     let (a, b) = (l2.abs().sqrt(), l1.abs().sqrt());
     let norm = a.hypot(b);
     if !(norm > 0.0 && norm.is_finite() && l1 > 0.0 && l2 < 0.0) {
-        return None;
-    }
-    // Where the model's arcs pass each other: |H| r² ~ |f at the saddle|.
-    let gap = (2.0 * saddle_value.abs() / l1.min(-l2)).sqrt();
-    eprintln!(
-        "DEVDBG cross saddle ({dx:e}, {dy:e}) value {saddle_value:e} gap {gap:e} l {l1:e} {l2:e}"
-    );
-    if !(far <= STEP_MAX && gap <= STEP_MAX) {
         return None;
     }
     let forward = |e: (f64, f64)| -> (f64, f64) { if e.0 + e.1 < 0.0 { (-e.0, -e.1) } else { e } };
@@ -649,8 +825,7 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
         .max_by(|p, q| {
             (p.0 * heading.0 + p.1 * heading.1).total_cmp(&(q.0 * heading.0 + q.1 * heading.1))
         })?;
-    let reach = step.max(4.0 * gap).max(2.0 * far).min(STEP_MAX * 4.0);
-    let (cx, cy) = (x + dx, y + dy);
+    let reach = step.max(2.0 * far);
     // Stopped at the sides x = 1 or y = 1.
     let mut r = reach;
     if ex > 0.0 {
@@ -662,7 +837,6 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     let (qx, qy) = (cx + r * ex, cy + r * ey);
     // Back onto the zero set across the direction, the root nearest.
     let (nx, ny) = (-ey, ex);
-    let half = 0.5 * reach;
     let along = |l: f64| {
         let (px, py) = (qx + l * nx, qy + l * ny);
         if (0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py) {
@@ -671,20 +845,7 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
             None
         }
     };
-    let up = root_between(&along, 0.0, half);
-    let down = root_between(&|l| along(-l), 0.0, half).map(|l| -l);
-    let l = match (up, down) {
-        (Some(u), Some(d)) => {
-            if u <= -d {
-                u
-            } else {
-                d
-            }
-        }
-        (Some(u), None) => u,
-        (None, Some(d)) => d,
-        (None, None) => return None,
-    };
+    let l = nearest_root(&along, 0.5 * reach)?;
     let (px, py) = ((qx + l * nx).clamp(0.0, 1.0), (qy + l * ny).clamp(0.0, 1.0));
     // Forward of where the walk was, and on the branch it chose.
     if !(px >= x && py >= y && (px - x).hypot(py - y) > 0.0) {
@@ -692,8 +853,20 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     }
     let on =
         tangent_at(pair, px, py).is_none_or(|(ux, uy)| (ux * ex + uy * ey).abs() >= MAX_TURN.cos());
-    eprintln!("DEVDBG cross landed ({px}, {py}) on {on} dir ({ex}, {ey})");
     on.then_some((px, py))
+}
+
+/// The root of `g` on `[−half, half]` nearest 0, by sampling and
+/// bisection each way.
+fn nearest_root(g: &dyn Fn(f64) -> Option<f64>, half: f64) -> Option<f64> {
+    let up = root_between(g, 0.0, half);
+    let down = root_between(&|l| g(-l), 0.0, half).map(|l| -l);
+    match (up, down) {
+        (Some(u), Some(d)) => Some(if u <= -d { u } else { d }),
+        (Some(u), None) => Some(u),
+        (None, Some(d)) => Some(d),
+        (None, None) => None,
+    }
 }
 
 /// The ruling between two found ones at `p` and `q` (unit square): the
@@ -717,21 +890,7 @@ fn across_chord(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> Option<(f64, f64)>
             None
         }
     };
-    let half = 0.5 * length;
-    let up = root_between(&along, 0.0, half);
-    let down = root_between(&|l| along(-l), 0.0, half).map(|l| -l);
-    let l = match (up, down) {
-        (Some(u), Some(d)) => {
-            if u <= -d {
-                u
-            } else {
-                d
-            }
-        }
-        (Some(u), None) => u,
-        (None, Some(d)) => d,
-        (None, None) => return None,
-    };
+    let l = nearest_root(&along, 0.5 * length)?;
     Some((mx + l * nx, my + l * ny))
 }
 
@@ -863,16 +1022,30 @@ impl Rail {
 
 /// The sheet between the rails `a` and `b`. `a` is run as given; `b` as
 /// given, or the other way when only that gives a developable (rails
-/// drawn in opposite directions; with both ways possible, as given).
+/// drawn in opposite directions). When both ways give one, the one of
+/// fewer faces (fewer fans), and as given when they tie: a sheet of one
+/// face of rulings is taken at once. Since fans close the folds of the
+/// condition (rulings that would cross), the way the rails were not meant
+/// to be run may give a sheet too, of fans the other way does not need.
 pub fn connect(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError> {
-    match connect_as_given(a, b, tolerance) {
-        Err(first @ KernelError::Refused { .. }) => connect_as_given(a, &b.reversed(), tolerance)
-            .map(|made| Connected {
-                reversed_b: true,
-                ..made
-            })
-            .map_err(|_| first),
-        other => other,
+    let given = connect_as_given(a, b, tolerance);
+    if let Ok(made) = &given
+        && made.faces.len() == 1
+    {
+        return given;
+    }
+    if matches!(given, Err(ref e) if !matches!(e, KernelError::Refused { .. })) {
+        return given;
+    }
+    let turned = connect_as_given(a, &b.reversed(), tolerance).map(|made| Connected {
+        reversed_b: true,
+        ..made
+    });
+    match (given, turned) {
+        (Ok(g), Ok(t)) => Ok(if t.faces.len() < g.faces.len() { t } else { g }),
+        (Ok(g), Err(_)) => Ok(g),
+        (Err(_), Ok(t)) => Ok(t),
+        (Err(first), Err(_)) => Err(first),
     }
 }
 
@@ -932,16 +1105,6 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
             a.pieces.len(),
             b.pieces.len()
         );
-        for k in 0..=20 {
-            let s = 1.0 - 0.5f64.powi(k);
-            eprintln!(
-                "DEVDBG near end s {s} a {:?} speed {:e} b {:?} speed {:e}",
-                a.point(s * a.len()),
-                speed(a, s * a.len()),
-                b.point(s * b.len()),
-                speed(b, s * b.len())
-            );
-        }
     }
 
     // The start: a fan from an end to the first ruling that satisfies the
@@ -983,19 +1146,20 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     };
     let mut path = trace(&pair, origin, tol, tips, REACH * tol)?;
     if snapped {
-        if let Some(head) = path.first_mut() {
+        if let Some(head) = path.points.first_mut() {
             *head = (0.0, 0.0);
         }
     } else if first.is_some() {
-        path.insert(0, (0.0, 0.0));
+        path.points.insert(0, (0.0, 0.0));
+        path.fan_after.insert(0, false);
     }
-    let &(ex, ey) = path.last().ok_or_else(no_point)?;
+    let &(ex, ey) = path.points.last().ok_or_else(no_point)?;
     // The end: the rest of a rail as a fan from the other's last end,
     // unless what is left is within the tolerance.
     let rest_a = a.length_between(pair.sa(ex), a.len());
     let rest_b = b.length_between(pair.tb(ey), b.len());
     let end = if rest_a <= tol && rest_b <= tol {
-        if let Some(last) = path.last_mut() {
+        if let Some(last) = path.points.last_mut() {
             *last = (1.0, 1.0);
         }
         None
@@ -1004,34 +1168,22 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     } else {
         Some(Start::FromB(ex))
     };
-    // Rulings within the tolerance of the one before (or of the last)
-    // are one ruling: a snapped end leaves no sliver or backward step
-    // smaller than the tolerance beside it.
-    let moved = |p: (f64, f64), q: (f64, f64)| -> f64 {
-        match (pair.points(p.0, p.1), pair.points(q.0, q.1)) {
-            (Some((a0, b0)), Some((a1, b1))) => a0.distance(a1) + b0.distance(b1),
-            _ => f64::INFINITY,
-        }
-    };
-    if let (Some(&head), Some(&tail)) = (path.first(), path.last()) {
-        let mut kept = vec![head];
-        let inner = path.len().saturating_sub(1);
-        for &q in path.iter().take(inner).skip(1) {
-            let last = kept.last().copied().unwrap_or(head);
-            if moved(last, q) > tol && moved(q, tail) > tol {
-                kept.push(q);
-            }
-        }
-        kept.push(tail);
-        path = kept;
-    }
-    if path.len() < 2 {
+    let before_thin = path.points.len();
+    let path = thinned(&pair, path, tol);
+    eprintln!(
+        "DEVDBG path {before_thin} -> {} fans {} end ({ex}, {ey}) last {:?}",
+        path.points.len(),
+        path.fan_after.iter().filter(|f| **f).count(),
+        path.points.iter().rev().take(4).collect::<Vec<_>>()
+    );
+    if path.points.len() < 2 {
         return Err(refused(format!(
             "no rulings satisfy the condition between the curves {}",
             pair.where_(origin.0, origin.1)
         )));
     }
     let rulings: Vec<(f64, f64)> = path
+        .points
         .iter()
         .map(|&(x, y)| (pair.sa(x), pair.tb(y)))
         .collect();
@@ -1071,20 +1223,7 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         }),
         Start::Corner => {}
     }
-    strips.push(Strip {
-        piece: Piece::Rulings,
-        lower: Row {
-            side: 0,
-            from: sa,
-            to: sb,
-        },
-        upper: Row {
-            side: 1,
-            from: ta,
-            to: tb,
-        },
-        rulings: rulings.clone(),
-    });
+    strips.extend(middle_strips(&rulings, &path.fan_after));
     match end {
         Some(Start::FromA(_)) => strips.push(Strip {
             piece: Piece::EndFan,
@@ -1117,6 +1256,166 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         _ => {}
     }
     build(&pair, strips, tolerance, tips)
+}
+
+/// The path's points as the faces are fitted through them:
+///
+/// - Points within the tolerance of the one before (or of the last) are
+///   one point: a snapped end leaves no sliver or backward step smaller
+///   than the tolerance beside it.
+/// - A point that leaves a stretch shorter than half the one before it is
+///   dropped, and so is the point before the last while the last stretch
+///   is shorter than half the one before it. Where the walk crept (steps
+///   halved by a turn, or short at a side where it stopped), its points
+///   lie far closer together than those beside them, and an interpolation
+///   through spacings that unequal overshoots between them by more than
+///   any refinement takes back (the sea kayak's panels, 2026-10-27:
+///   rulings 2e-6 apart beside rulings 3e-3 apart). The fit puts rulings
+///   back where they are needed, at the middles of the stretches, which
+///   keeps neighbouring stretches within a factor of two.
+///
+/// The ends of a fan are kept as they are. Lengths are the moves of the
+/// rulings' ends along both rails, as in the fit.
+fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
+    let moved = |p: (f64, f64), q: (f64, f64)| -> f64 {
+        match (pair.points(p.0, p.1), pair.points(q.0, q.1)) {
+            (Some((a0, b0)), Some((a1, b1))) => a0.distance(a1) + b0.distance(b1),
+            _ => f64::INFINITY,
+        }
+    };
+    let count = path.points.len();
+    if count < 2 {
+        return path;
+    }
+    let (Some(&head), Some(&tail)) = (path.points.first(), path.points.last()) else {
+        return path;
+    };
+    let mut out = Path::default();
+    out.push(head);
+    let mut fixed_out = vec![path.fixed(0)];
+    // The length of the last stretch kept that is not a fan.
+    let mut last_stretch: Option<f64> = None;
+    for k in 1..count.saturating_sub(1) {
+        let Some(&q) = path.points.get(k) else {
+            continue;
+        };
+        let last = out.points.last().copied().unwrap_or(head);
+        let fixed = path.fixed(k);
+        let after_fan = out.fan_after.last().copied().unwrap_or(false);
+        let length = moved(last, q);
+        let keep = fixed
+            || after_fan
+            || (length > tol
+                && moved(q, tail) > tol
+                && last_stretch.is_none_or(|before| length >= 0.5 * before));
+        if keep {
+            last_stretch = (!after_fan).then_some(length);
+            out.push(q);
+            fixed_out.push(fixed);
+            if path.fan_after.get(k).copied().unwrap_or(false)
+                && let Some(f) = out.fan_after.last_mut()
+            {
+                *f = true;
+            }
+        }
+    }
+    out.push(tail);
+    fixed_out.push(path.fixed(count - 1));
+    // The last stretch against the one before it.
+    loop {
+        let n = out.points.len();
+        if n < 3 {
+            break;
+        }
+        let (Some(&p0), Some(&p1), Some(&p2)) = (
+            out.points.get(n - 3),
+            out.points.get(n - 2),
+            out.points.get(n - 1),
+        ) else {
+            break;
+        };
+        let fixed = fixed_out.get(n - 2).copied().unwrap_or(true)
+            || out.fan_after.get(n - 3).copied().unwrap_or(true)
+            || out.fan_after.get(n - 2).copied().unwrap_or(true);
+        if fixed || moved(p1, p2) >= 0.5 * moved(p0, p1) {
+            break;
+        }
+        out.points.remove(n - 2);
+        out.fan_after.remove(n - 2);
+        fixed_out.remove(n - 2);
+    }
+    out
+}
+
+/// The faces between the start and the end: the path split at its fans,
+/// each run of rulings a face and each fan a face. The first run of
+/// rulings is [`Piece::Rulings`]; every other face, in order along the
+/// rails, is [`Piece::Inner`] with its number.
+fn middle_strips(rulings: &[(f64, f64)], fan_after: &[bool]) -> Vec<Strip> {
+    let mut strips: Vec<Strip> = Vec::new();
+    let mut run: Vec<(f64, f64)> = Vec::new();
+    let close = |run: &mut Vec<(f64, f64)>, strips: &mut Vec<Strip>| {
+        if let (Some(&(s0, t0)), Some(&(s1, t1)), true) = (run.first(), run.last(), run.len() >= 2)
+        {
+            strips.push(Strip {
+                piece: Piece::Rulings,
+                lower: Row {
+                    side: 0,
+                    from: s0,
+                    to: s1,
+                },
+                upper: Row {
+                    side: 1,
+                    from: t0,
+                    to: t1,
+                },
+                rulings: std::mem::take(run),
+            });
+        }
+        run.clear();
+    };
+    for (k, &p) in rulings.iter().enumerate() {
+        run.push(p);
+        if fan_after.get(k).copied().unwrap_or(false)
+            && let Some(&q) = rulings.get(k + 1)
+        {
+            close(&mut run, &mut strips);
+            // At one `t` (apex on B) or at one `s` (apex on A).
+            let (lower, upper) = if p.1 == q.1 {
+                ((p.0, q.0), (p.1, p.1))
+            } else {
+                ((p.0, p.0), (p.1, q.1))
+            };
+            strips.push(Strip {
+                piece: Piece::Inner(0),
+                lower: Row {
+                    side: 0,
+                    from: lower.0,
+                    to: lower.1,
+                },
+                upper: Row {
+                    side: 1,
+                    from: upper.0,
+                    to: upper.1,
+                },
+                rulings: Vec::new(),
+            });
+        }
+    }
+    close(&mut run, &mut strips);
+    // Numbered in order, the first run of rulings apart.
+    let mut first = true;
+    let mut number = 0;
+    for strip in &mut strips {
+        if first && !strip.rulings.is_empty() {
+            strip.piece = Piece::Rulings;
+            first = false;
+        } else {
+            strip.piece = Piece::Inner(number);
+            number += 1;
+        }
+    }
+    strips
 }
 
 fn no_point() -> KernelError {
@@ -1513,8 +1812,8 @@ fn build(
                 pair.where_(*s0 / pair.a.len(), *t0 / pair.b.len())
             )));
         }
-        if strip.piece == Piece::Rulings {
-            all_rulings = rulings;
+        if !strip.rulings.is_empty() {
+            all_rulings.extend(rulings);
         }
         surfaces.push(Surface::Nurbs(surface));
     }
