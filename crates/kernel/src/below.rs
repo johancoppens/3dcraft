@@ -556,7 +556,8 @@ fn nothing_below(
 ) -> Result<Part, CutError> {
     let enough = offset - tolerance.linear;
     let lowest = floor(one, side.normal, enough, tolerance.linear)?;
-    if !(lowest >= enough) {
+    // `floor` refuses a bound that is not a number.
+    if lowest < enough {
         return Err(CutError::LostBelow {
             body: one.index,
             offset,
