@@ -5,7 +5,7 @@
 //! with `choicesFrom`). Tables are part of the design like variables: a
 //! changed table rebuilds what its values reach.
 
-use crate::commands::{Run, add_failed, edit, fail, failing, spec};
+use crate::commands::{Run, add_failed, edit, fail, failing_unless_deferred, spec};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Document, Table, TableCell, TableColumn};
@@ -139,7 +139,7 @@ fn table_set(session: &mut Session, params: &Value) -> Run {
         return fail(format!("{SET}: table `{name}`: {reason}"));
     }
     let existed = session.document()?.history.current().table(name).is_some();
-    let before = failing(session)?;
+    let before = failing_unless_deferred(session)?;
     let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     let mut warnings = edit(session, SET, &format!("Set table {name}"), |doc| {
         doc.set_table(table)
@@ -198,7 +198,7 @@ fn table_delete(session: &mut Session, params: &Value) -> Run {
             users.join(", ")
         ));
     }
-    let before = failing(session)?;
+    let before = failing_unless_deferred(session)?;
     edit(session, ID, &format!("Delete table {name}"), |doc| {
         doc.remove_table(name).map(|_| ())
     })?;

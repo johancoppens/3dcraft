@@ -501,15 +501,29 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
 /// when the document was not regenerated since, it is now, which the
 /// regeneration cache keeps to what changed.
 ///
-/// Empty while the regeneration is left to a host that does it a piece
-/// at a time ([`Session::regeneration_deferred`]): [`add_failed`] then
-/// says nothing either.
+/// Also on a host that regenerates a piece at a time: an edit that
+/// regenerates in the command (a feature or sketch command,
+/// `variable.set`) compares with this, so the state before it must be
+/// regenerated too, or every feature that failed already would be
+/// reported as made to fail. An edit that leaves its regeneration to the
+/// host takes [`failing_unless_deferred`].
 pub(crate) fn failing(session: &mut Session) -> Result<Vec<FeatureId>, CommandError> {
+    failing_waiting(session, true)
+}
+
+/// [`failing`] for an edit that leaves its regeneration to a host that
+/// does it a piece at a time ([`Session::regeneration_deferred`]):
+/// empty there without regenerating, as [`add_failed`] then says
+/// nothing either but `deferred`.
+pub(crate) fn failing_unless_deferred(
+    session: &mut Session,
+) -> Result<Vec<FeatureId>, CommandError> {
     failing_waiting(session, false)
 }
 
-/// [`failing`], regenerating the document all the same when `wait` (an
-/// edit's `wait: true`, whose result is final: [`add_failed_waiting`]).
+/// [`failing`] when `wait` (an edit's `wait: true`, whose result is
+/// final: [`add_failed_waiting`]) and [`failing_unless_deferred`]
+/// otherwise.
 pub(crate) fn failing_waiting(
     session: &mut Session,
     wait: bool,
@@ -1537,7 +1551,9 @@ fn variable_set(session: &mut Session, params: &Value) -> Run {
             "variable.set: `{name}` is a public parameter, so its expression must be a value (a number with its unit), not the formula `{expr}`; variable.unpublish it first to give it a formula"
         ));
     }
-    let before = failing_waiting(session, wait)?;
+    // Regenerated before the edit too: variable.set regenerates in the
+    // command, so its `failed` must not count what failed already.
+    let before = failing(session)?;
     let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     edit(session, "variable.set", &format!("Set {name}"), |doc| {
         doc.set_variable(name, &expr)
@@ -1586,7 +1602,7 @@ fn variable_delete(session: &mut Session, params: &Value) -> Run {
     let before = if users.is_empty() {
         Vec::new()
     } else {
-        failing(session)?
+        failing_unless_deferred(session)?
     };
     let doc_before = std::sync::Arc::clone(session.document()?.history.current());
     edit(
@@ -2901,7 +2917,7 @@ fn feature_delete(session: &mut Session, params: &Value) -> Run {
         "feature.delete",
         "feature",
     )?;
-    let before = failing(session)?;
+    let before = failing_unless_deferred(session)?;
     let removed = edit(session, "feature.delete", "Delete feature", |doc| {
         doc.remove_feature(id)
     })?;
@@ -2924,7 +2940,7 @@ fn history_rollback(session: &mut Session, params: &Value) -> Run {
             "feature",
         )?),
     };
-    let before = failing(session)?;
+    let before = failing_unless_deferred(session)?;
     edit(session, "history.rollback", "Roll back", |doc| {
         doc.set_rollback(target)
     })?;

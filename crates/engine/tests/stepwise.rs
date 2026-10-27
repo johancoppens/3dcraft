@@ -424,6 +424,57 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
     }
 }
 
+/// Four blocks and three cylinders at scale `s`, a clearance between
+/// them (12 pairs) and an overlap of all (21 pairs), in a session that
+/// does it all at once and one that works a piece at a time; the
+/// cylinders moved once more, so that both assertions are to be measured.
+fn pairs_sessions(s: f64) -> (Session, Session) {
+    let mm = |v: f64| format!("{} mm", v * s);
+    let mut steps = vec![
+        ("file.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "y", "expr": mm(30.0)})),
+    ];
+    let (mut from, mut to) = (Vec::new(), Vec::new());
+    for i in 0..4 {
+        let name = format!("A{i}");
+        steps.push((
+            "feature.block",
+            json!({"size": [mm(10.0), mm(10.0), mm(10.0)], "position": [mm(20.0 * f64::from(i)), "0 mm", "0 mm"], "name": name}),
+        ));
+        from.push(name);
+    }
+    for j in 0..3 {
+        let name = format!("B{j}");
+        steps.push((
+            "feature.cylinder",
+            json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), "y", "0 mm"], "name": name}),
+        ));
+        to.push(name);
+    }
+    steps.push((
+        "assert.add",
+        json!({"name": "gap", "measure": "clearance", "from": from, "to": to, "min": mm(1.0)}),
+    ));
+    steps.push((
+        "assert.add",
+        json!({"name": "apart", "measure": "overlap", "is": false}),
+    ));
+    let mut whole = Session::new(Workspace::none());
+    let mut session = Session::new(Workspace::none());
+    session.set_stepwise(true);
+    for one in [&mut whole, &mut session] {
+        for (id, params) in &steps {
+            one.execute(id, params)
+                .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+        }
+        // assert.add measures its own: an edit that moves the
+        // cylinders leaves both to be measured again.
+        one.execute("variable.set", &json!({"name": "y", "expr": mm(32.0)}))
+            .unwrap();
+    }
+    (whole, session)
+}
+
 /// A clearance over many pairs of bodies and an overlap over all of
 /// them, on a host that works a piece at a time: taken a pair at a time
 /// (with a stop that always says stop, a pair per piece, not an
@@ -433,49 +484,7 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
 #[test]
 fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
     for s in [1e-2, 1.0, 1e3] {
-        let mm = |v: f64| format!("{} mm", v * s);
-        let mut steps = vec![
-            ("file.new", json!({"units": "mm"})),
-            ("variable.set", json!({"name": "y", "expr": mm(30.0)})),
-        ];
-        let (mut from, mut to) = (Vec::new(), Vec::new());
-        for i in 0..4 {
-            let name = format!("A{i}");
-            steps.push((
-                "feature.block",
-                json!({"size": [mm(10.0), mm(10.0), mm(10.0)], "position": [mm(20.0 * f64::from(i)), "0 mm", "0 mm"], "name": name}),
-            ));
-            from.push(name);
-        }
-        for j in 0..3 {
-            let name = format!("B{j}");
-            steps.push((
-                "feature.cylinder",
-                json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), "y", "0 mm"], "name": name}),
-            ));
-            to.push(name);
-        }
-        steps.push((
-            "assert.add",
-            json!({"name": "gap", "measure": "clearance", "from": from, "to": to, "min": mm(1.0)}),
-        ));
-        steps.push((
-            "assert.add",
-            json!({"name": "apart", "measure": "overlap", "is": false}),
-        ));
-        let mut whole = Session::new(Workspace::none());
-        let mut session = Session::new(Workspace::none());
-        session.set_stepwise(true);
-        for one in [&mut whole, &mut session] {
-            for (id, params) in &steps {
-                one.execute(id, params)
-                    .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
-            }
-            // assert.add measures its own: an edit that moves the
-            // cylinders leaves both to be measured again.
-            one.execute("variable.set", &json!({"name": "y", "expr": mm(32.0)}))
-                .unwrap();
-        }
+        let (mut whole, mut session) = pairs_sessions(s);
         let mut checking = 0;
         let mut calls = 0;
         while let Some(p) = session.prepare_some(SceneQuality::display(), || true) {
@@ -488,15 +497,137 @@ fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
         // 12 pairs, then 21: a piece each (the last piece of all says
         // nothing is left).
         assert!(checking >= 12 + 21 - 1, "scale {s}: {checking} pieces");
-        let listed = |one: &mut Session| {
-            one.execute("assert.list", &json!({"wait": true, "details": true}))
-                .unwrap()
-        };
         let (got, want) = (listed(&mut session), listed(&mut whole));
         assert_eq!(got, want, "scale {s}");
         assert_eq!(want["ok"], true, "scale {s}: {want}");
         let pairs = &want["assertions"][0]["detail"]["pairs"];
         assert_eq!(pairs.as_array().map(Vec::len), Some(12), "{want}");
+    }
+}
+
+/// The assertions with their details, once every one is measured.
+fn listed(one: &mut Session) -> Value {
+    one.execute("assert.list", &json!({"wait": true, "details": true}))
+        .unwrap()
+}
+
+/// Pieces with a stop that always says stop, until `checking` pieces of
+/// the assertions are done: half-way through the clearance's 12 pairs.
+fn some_pieces(session: &mut Session, checking: usize) {
+    let mut seen = 0;
+    let mut calls = 0;
+    while seen < checking {
+        let Some(p) = session.prepare_some(SceneQuality::display(), || true) else {
+            panic!("done before {checking} pieces of checking");
+        };
+        calls += 1;
+        assert!(calls < 1000);
+        if p.phase == "checking" {
+            seen += 1;
+        }
+    }
+}
+
+/// An edit that moves the cylinders while the clearance is half-way
+/// through its pairs: the pairs measured before it are of the state
+/// before and are not taken into the new one; once done, the answers are
+/// those of a session that measures in one go. At three scales.
+#[test]
+fn an_edit_half_way_through_the_pairs_ends_as_all_at_once() {
+    for s in [1e-2, 1.0, 1e3] {
+        let (mut whole, mut session) = pairs_sessions(s);
+        some_pieces(&mut session, 5);
+        let edit = json!({"name": "y", "expr": format!("{} mm", 34.0 * s)});
+        whole.execute("variable.set", &edit).unwrap();
+        session.execute("variable.set", &edit).unwrap();
+        let mut calls = 0;
+        while session
+            .prepare_some(SceneQuality::display(), || true)
+            .is_some()
+        {
+            calls += 1;
+            assert!(calls < 1000, "scale {s}");
+        }
+        assert_eq!(listed(&mut session), listed(&mut whole), "scale {s}");
+    }
+}
+
+/// `assert.list` (which waits) asked while the clearance is half-way
+/// through its pairs: it measures the rest there and then, with the
+/// answers of a session that measures in one go, and the pieces have
+/// nothing left to do afterwards. At three scales.
+#[test]
+fn a_wait_half_way_through_the_pairs_answers_as_all_at_once() {
+    for s in [1e-2, 1.0, 1e3] {
+        let (mut whole, mut session) = pairs_sessions(s);
+        some_pieces(&mut session, 5);
+        let want = listed(&mut whole);
+        assert_eq!(listed(&mut session), want, "scale {s}");
+        let mut calls = 0;
+        while let Some(p) = session.prepare_some(SceneQuality::display(), || true) {
+            assert_ne!(p.phase, "checking", "scale {s}: measured again");
+            calls += 1;
+            assert!(calls < 1000, "scale {s}");
+        }
+        assert_eq!(listed(&mut session), want, "scale {s}");
+    }
+}
+
+/// An edit that regenerates in the command (`variable.set`,
+/// `feature.edit`) after one that left its regeneration to the pieces,
+/// on a host that works a piece at a time: what failed before it (here
+/// the block D, narrower than nothing) is not reported as made to fail
+/// by it, as in a session that does it all at once. At three scales.
+#[test]
+fn an_edit_after_a_deferred_one_reports_only_what_it_made_fail() {
+    for s in [1e-2, 1.0, 1e3] {
+        let mm = |v: f64| format!("{} mm", v * s);
+        let publish = json!({"name": "w", "min": mm(1.0), "max": mm(90.0)});
+        let narrow = json!({
+            "size": [format!("w - {}", mm(35.0)), mm(10.0), mm(10.0)],
+            "position": [mm(200.0), "0 mm", "0 mm"],
+            "name": "D",
+        });
+        let mut whole = Session::new(Workspace::none());
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        for one in [&mut whole, &mut session] {
+            build(one, s);
+            one.execute("feature.block", &narrow).unwrap();
+            one.execute("variable.publish", &publish).unwrap();
+            // D fails from here on.
+            one.execute("param.set", &json!({"values": {"w": 30.0 * s}}))
+                .unwrap();
+        }
+        while session
+            .prepare_some(SceneQuality::display(), || false)
+            .is_some()
+        {}
+        let edits = [
+            ("variable.set", json!({"name": "z", "expr": mm(5.0)})),
+            (
+                "feature.edit",
+                json!({"feature": "A", "size": ["w", mm(20.0), mm(6.0)]}),
+            ),
+            ("variable.set", json!({"name": "z", "expr": mm(6.0)})),
+        ];
+        for (n, (id, params)) in edits.iter().enumerate() {
+            // Left to the pieces, which do not come before the next edit.
+            let set = json!({"values": {"w": (31.0 + n as f64) * s}});
+            whole.execute("param.set", &set).unwrap();
+            assert_eq!(
+                session.execute("param.set", &set).unwrap()["deferred"],
+                true
+            );
+            let want = whole.execute(id, params).unwrap();
+            let got = session.execute(id, params).unwrap();
+            assert!(want.get("failed").is_none(), "scale {s}, {id}: {want}");
+            assert_eq!(
+                got.get("failed"),
+                want.get("failed"),
+                "scale {s}, {id}: {got}"
+            );
+        }
     }
 }
 
