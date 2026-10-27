@@ -1562,28 +1562,66 @@ struct Piece<'a> {
 /// at an apex or a pole, which are handled as such). Getting it wrong
 /// costs only how fast the sums settle, never what they settle to: the
 /// graded parameter is a change of variable.
-fn stands_still(surface: &Surface, curve: &Curve3, end: f64, toward: f64) -> bool {
+///
+/// What it costs (2026-10-27, review of r1-kayakgaps2): the feet are found
+/// as the boundary's own nodes are ([`Follow`]: the search over the whole
+/// surface for the end's foot, each probe from the one before it), and an
+/// end where the surface's two tangents are far from parallel and neither
+/// is small beside the other (the smaller singular value of `[Sᵤ Sᵥ]` at
+/// least [`MOVING`] of the larger) is regular without probing: there the
+/// feet leave in proportion to the way along the curve down to a share of
+/// the piece far below the probes' (a square-root term needs a speed that
+/// falls to below about `√(2⁻⁹)` of the larger, a twentieth, within the
+/// probes' reach).
+///
+/// What it gives is the parameter that stands still there (the one whose
+/// tangent is the shorter), `None` at a regular end.
+fn stands_still(
+    surface: &Surface,
+    curve: &Curve3,
+    end: f64,
+    toward: f64,
+    touch: f64,
+) -> Option<Along> {
     if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-        return false;
+        return None;
     }
-    let foot = |t: f64| -> Option<(f64, f64)> { surface.project(curve.eval(t)).ok() };
-    let Some((u0, v0)) = foot(end) else {
-        return false;
-    };
-    let mut far = Vec::with_capacity(3);
-    for k in [8, 10, 12] {
+    let mut follow = Follow::new(surface, touch);
+    let ((u0, v0), (_, su, sv)) = follow.project(curve.eval(end)).ok()?;
+    // The squares of the singular values of [Sᵤ Sᵥ]: the eigenvalues of
+    // its first fundamental form.
+    let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let trace = a + c;
+    let root = (trace * trace - 4.0 * (a * c - b * b)).max(0.0).sqrt();
+    let (small, large) = (0.5 * (trace - root), 0.5 * (trace + root));
+    if large > 0.0 && large.is_finite() && small >= MOVING * MOVING * large {
+        return None;
+    }
+    let mut far = [0.0; 3];
+    // Nearest the end first, each from the foot before it.
+    for (slot, k) in far.iter_mut().zip([12, 10, 8]) {
         let t = end + (toward - end) * 0.5_f64.powi(k);
-        let Some((u, v)) = foot(t) else {
-            return false;
-        };
-        far.push((u - u0).hypot(v - v0));
+        let ((u, v), _) = follow.project(curve.eval(t)).ok()?;
+        *slot = (u - u0).hypot(v - v0);
     }
     let limit = 2.0 * std::f64::consts::SQRT_2;
-    match far.as_slice() {
-        &[a, b, c] => b > 0.0 && c > 0.0 && a / b < limit && b / c < limit,
-        _ => false,
-    }
+    let [c, b, a] = far;
+    (b > 0.0 && c > 0.0 && a / b < limit && b / c < limit).then_some(if a_shorter(su, sv) {
+        Along::U
+    } else {
+        Along::V
+    })
 }
+
+/// Whether the tangent along u is the shorter of the two.
+fn a_shorter(su: Vec3, sv: Vec3) -> bool {
+    su.length_squared() <= sv.length_squared()
+}
+
+/// The least ratio of the smaller to the larger singular value of the
+/// surface's tangents at an end of a piece for which [`stands_still`]
+/// takes the end as regular without probing it.
+const MOVING: f64 = 1.0 / 16.0;
 
 /// The nodes and weights of `rule` over `panel`, a panel of a piece
 /// whose curve runs over `(low, high)`, in a parameter graded towards an
@@ -1644,6 +1682,11 @@ struct Outline<'a> {
     /// as on it, for the warm start of the projections ([`ON_SURFACE`] of
     /// the body's size).
     touch: f64,
+    /// Whether the surface's parametrisation stands still in u, and in v,
+    /// at an end of some piece ([`stands_still`]): the boundary integral
+    /// is then taken against the rate of the other parameter where it can
+    /// be ([`plan`]).
+    stills: (bool, bool),
 }
 
 fn outline<'a>(
@@ -1758,6 +1801,7 @@ fn outline<'a>(
     let split = poled.and_then(|p| p.far.map(|(split, _)| (p.along, split)));
 
     let mut pieces = Vec::with_capacity(loops.len());
+    let mut stills = (false, false);
     let mut through = through.into_iter();
     for coedges in loops {
         let mut run = Vec::with_capacity(coedges.len());
@@ -1792,10 +1836,17 @@ fn outline<'a>(
             }
             for (start, end) in stretches {
                 let crossings = crossings.clone();
-                let graded = [
-                    stands_still(surface, curve, start, end),
-                    stands_still(surface, curve, end, start),
+                let still = [
+                    stands_still(surface, curve, start, end, touch),
+                    stands_still(surface, curve, end, start, touch),
                 ];
+                for along in still.iter().flatten() {
+                    match along {
+                        Along::U => stills.0 = true,
+                        Along::V => stills.1 = true,
+                    }
+                }
+                let graded = still.map(|s| s.is_some());
                 run.push(if reversed {
                     Piece {
                         curve,
@@ -1832,6 +1883,7 @@ fn outline<'a>(
         rounding: 4.0 * f64::EPSILON * furthest,
         across,
         touch,
+        stills,
     })
 }
 
@@ -2378,7 +2430,7 @@ fn plan(
     surface: &Surface,
     index: usize,
     samples: &mut [Sample],
-    (sense, touch): (f64, f64),
+    (sense, touch, stills): (f64, f64, (bool, bool)),
 ) -> Result<Plan, MassError> {
     if let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v()) {
         return unrolled(face, index, samples, (period_u, period_v));
@@ -2448,6 +2500,34 @@ fn plan(
                 });
             }
             if turns == 0.0 {
+                // Where the parametrisation stands still in u at a corner
+                // of the boundary (and nowhere in v), the rate of u along
+                // the boundary there is the rounding of the feet over the
+                // small speed (a line of constant u through the corner
+                // gets rates of u that are not nothing), and `∮ G du`
+                // weighs a sum of the whole width by them. The other way
+                // round, `∮ H dv` with `H` integrated along u, the rates
+                // of v are well determined, and a foot that is off in u
+                // moves `H` only by the area element there times how far
+                // off, which is the surface's own small speed times it:
+                // the rounding of the point. The same Green's theorem,
+                // the parameters' roles exchanged.
+                if stills == (true, false)
+                    && closes_u.is_none()
+                    && closes_v.is_none()
+                    && !unseen(
+                        surface,
+                        samples,
+                        |s| s.u,
+                        closes_u,
+                        (u_max - u_min, true, touch),
+                    )
+                {
+                    return Ok(Plan::From {
+                        along: Along::U,
+                        at: samples.first().map_or(0.0, |s| s.u),
+                    });
+                }
                 first_v
             } else if turns.abs() == 1.0 {
                 let end = if turns > 0.0 { v_max } else { v_min };
@@ -3234,7 +3314,13 @@ fn together(
                         }
                         Plan::Poles(poled)
                     }
-                    None => plan(face, surface, index, &mut samples, (sense, outline.touch))?,
+                    None => plan(
+                        face,
+                        surface,
+                        index,
+                        &mut samples,
+                        (sense, outline.touch, outline.stills),
+                    )?,
                 };
                 (plan, true)
             }
@@ -3341,7 +3427,13 @@ fn part_by_part(
     let (mut first, panels_at) = sampled(outline, surface, index, (rule, coarse), &coarsest, work)?;
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
-        None => plan(face, surface, index, &mut first, (sense, outline.touch))?,
+        None => plan(
+            face,
+            surface,
+            index,
+            &mut first,
+            (sense, outline.touch, outline.stills),
+        )?,
     };
     let by_loop = plan.up_to_whole_surfaces();
     if !by_loop {
