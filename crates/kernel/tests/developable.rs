@@ -556,9 +556,126 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
             );
         }
         assert!(shared >= 2, "{k}: {shared} shared edges");
+        eprintln!(
+            "DBG {k} faces {:?} areas {:?} rulings {:?}",
+            made.faces,
+            craft3d_topo::face_areas(body),
+            made.rulings.len()
+        );
+        for (i, f) in body.faces.iter().enumerate() {
+            let l = body.loop_(f.loops[0]).unwrap();
+            for c in &l.coedges {
+                let e = &body.edges[c.edge.0 as usize];
+                eprintln!(
+                    "DBG face {i} edge {} rev {} {:?} -> {:?} range {:?}",
+                    c.edge.0,
+                    c.reversed,
+                    body.vertices[e.start.0 as usize].point,
+                    body.vertices[e.end.0 as usize].point,
+                    e.range
+                );
+            }
+            eprintln!("DBG face {i} domain {:?}", f.surface.domain());
+        }
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
         let dev = develop(&made.body, &faces, &tol(k)).unwrap();
         let e = dev.error();
         assert!(e.area < 1e-6 && e.length < 1e-6, "{e:?}");
+    }
+}
+
+/// A plate on a developable whose rulings are of very different lengths
+/// at its two ends (the sea kayak's panel, 2026-10-27: the plate was
+/// refused, "the joint reaches past the faces' surfaces continued", as the
+/// surface was continued across its rulings by as far as the longest one
+/// moves, and so reached a corner by a short one by a nineteenth of that).
+/// `A(x) = k (100 x, 0, 20 x²)`, `B = A + w n` with `w = k (10 + 180
+/// ((x + 1)/2)²)`, `n` fixed: a generalised cylinder over the profile `C`
+/// (A seen along `n`). With square rims (swept by the normal) the plate
+/// of thickness `T` behind the face is `T Area ∓ T²/2 ∫ κ dA` exactly,
+/// `Area = ∫ w |C'| dx` and `∫ κ dA = ∫ w |C' × C''| / |C'|² dx`, minus
+/// when the plate lies towards the profile's centres of curvature.
+#[test]
+fn a_plate_on_a_developable_with_short_and_long_rulings_has_its_closed_form_volume() {
+    use craft3d_kernel::plate::{Side, plate};
+    use std::collections::BTreeMap;
+    for k in SCALES {
+        let n = Vec3::new(0.3, 1.0, 0.8).normalized().unwrap();
+        // Bézier control values over u in [0, 1], x = 2u − 1.
+        let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
+        let x2 = [1.0, -1.0 / 3.0, -1.0 / 3.0, 1.0];
+        // ((x + 1)/2)² = u²: control values 0, 0, 1/3, 1.
+        let u2 = [0.0, 0.0, 1.0 / 3.0, 1.0];
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let a_ctrl: Vec<Vec3> = (0..4)
+            .map(|i| Vec3::new(100.0 * x[i], 0.0, 20.0 * x2[i]) * k)
+            .collect();
+        let b_ctrl: Vec<Vec3> = (0..4)
+            .map(|i| a_ctrl[i] + n * ((10.0 + 180.0 * u2[i]) * k))
+            .collect();
+        let a = NurbsCurve::polynomial(3, knots.clone(), a_ctrl).unwrap();
+        let b = NurbsCurve::polynomial(3, knots, b_ctrl).unwrap();
+        let (ra, rb) = (a.domain(), b.domain());
+        let (a, b) = (rail(Curve3::Nurbs(a), ra), rail(Curve3::Nurbs(b), rb));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert_eq!(made.faces, vec![Piece::Rulings]);
+        let t = 4.0 * k;
+        let plated = plate(
+            &made.body,
+            &[FaceId(0)],
+            t,
+            Side::In,
+            &BTreeMap::new(),
+            &tol(k),
+        )
+        .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
+        assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
+        // The closed form, by Simpson's rule over x in [−1, 1].
+        let flat = |v: Vec3| v - n * v.dot(n);
+        let parts = |x: f64| {
+            let w = (10.0 + 180.0 * ((x + 1.0) / 2.0).powi(2)) * k;
+            let c1 = flat(Vec3::new(100.0, 0.0, 40.0 * x) * k);
+            let c2 = flat(Vec3::new(0.0, 0.0, 40.0) * k);
+            (
+                w * c1.length(),
+                w * c1.cross(c2).length() / c1.length_squared(),
+            )
+        };
+        let steps = 4000;
+        let h = 2.0 / steps as f64;
+        let (mut area, mut bend) = (0.0, 0.0);
+        for j in 0..=steps {
+            let weight = if j == 0 || j == steps {
+                1.0
+            } else if j % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            let (da, db) = parts(-1.0 + j as f64 * h);
+            area += weight * da;
+            bend += weight * db;
+        }
+        area *= h / 3.0;
+        bend *= h / 3.0;
+        // Which way the plate lies: behind the outward normal at x = 0,
+        // where the profile's centre of curvature is towards +z seen
+        // across n.
+        let face = made.body.face(FaceId(0)).unwrap();
+        let p0 = Vec3::ZERO + n * (0.5 * 10.0 * k);
+        let (u, v) = face.surface.project(p0).unwrap();
+        let outward = face.surface.normal(u, v).unwrap() * if face.reversed { -1.0 } else { 1.0 };
+        let centre = flat(Vec3::Z).normalized().unwrap();
+        let towards = -outward.dot(centre) > 0.0;
+        let expected = t * area + if towards { -1.0 } else { 1.0 } * 0.5 * t * t * bend;
+        let volume = craft3d_topo::mass_properties(&plated.body)
+            .unwrap()
+            .volume
+            .abs();
+        assert!(
+            (volume - expected).abs() <= 1e-6 * expected,
+            "{k}: volume {volume}, expected {expected} (off by {:e})",
+            (volume - expected) / expected
+        );
     }
 }

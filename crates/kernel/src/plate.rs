@@ -661,6 +661,81 @@ fn flat(points: &[Vec3], tol: f64) -> Option<Surface> {
 const PAST_REACH: &str =
     "the joint reaches past the faces' surfaces continued beyond their borders";
 
+/// How far to continue a face's freeform surface for it to reach `reach`
+/// past every vertex of the face that lies on a border of its parameters.
+/// A surface is continued past a border by the parameter that takes its
+/// fastest point there `reach` far (`offset_face::continued`), so a point
+/// of the border where it is slower reaches less: on a developable's face
+/// across its rulings, as far as each ruling is long, so a corner by a
+/// short ruling beside long ones fell short (the sea kayak's panel,
+/// 2026-10-27: a ruling of 14.5 mm, the longest 190 mm). The corners of a
+/// plate lie past the ends of its edges, at the face's vertices, so the
+/// reach is raised by the most any of them needs: the border's fastest
+/// speed over the speed at the vertex. A vertex where the surface does not
+/// move across the border (a collapsed corner) needs nothing there.
+fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> f64 {
+    let nurbs = match &face.surface {
+        Surface::Nurbs(n) => std::borrow::Cow::Borrowed(n),
+        Surface::Bezier(b) => match NurbsSurface::from_bezier(b) {
+            Ok(n) => std::borrow::Cow::Owned(n),
+            Err(_) => return reach,
+        },
+        _ => return reach,
+    };
+    let ((u0, u1), (v0, v1)) = nurbs.domain();
+    // The fastest speed across a border, as `offset_face::reached` finds it.
+    let fastest = |along_u: bool, at: f64| {
+        (0..=8)
+            .map(|k| {
+                let f = f64::from(k) / 8.0;
+                let (_, du, dv) = if along_u {
+                    nurbs.derivatives(at, v0 + (v1 - v0) * f)
+                } else {
+                    nurbs.derivatives(u0 + (u1 - u0) * f, at)
+                };
+                if along_u { du.length() } else { dv.length() }
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    let mut factor: f64 = 1.0;
+    for &lp in &face.loops {
+        let Some(l) = body.loop_(lp) else {
+            continue;
+        };
+        for coedge in &l.coedges {
+            let Some(edge) = body.edge(coedge.edge) else {
+                continue;
+            };
+            for vertex in [edge.start, edge.end] {
+                let Some(point) = body.vertex(vertex).map(|v| v.point) else {
+                    continue;
+                };
+                let Ok((u, v)) = face.surface.project(point) else {
+                    continue;
+                };
+                let (_, su, sv) = nurbs.derivatives(u, v);
+                // A vertex within the reach of a border (on it, or as near
+                // as the face's fit leaves it) needs that border continued.
+                let (speed_u, speed_v) = (su.length(), sv.length());
+                for (on, along_u, at, speed) in [
+                    ((u - u0) * speed_u <= reach, true, u0, speed_u),
+                    ((u1 - u) * speed_u <= reach, true, u1, speed_u),
+                    ((v - v0) * speed_v <= reach, false, v0, speed_v),
+                    ((v1 - v) * speed_v <= reach, false, v1, speed_v),
+                ] {
+                    if on && speed > 0.0 && speed.is_finite() {
+                        let ratio = fastest(along_u, at) / speed;
+                        if ratio.is_finite() {
+                            factor = factor.max(ratio);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    reach * factor
+}
+
 /// True when the nearest point of the freeform `surface` to `p` is on the
 /// border of its parameters, in a direction it does not close in.
 fn at_border(surface: &Surface, p: Vec3, tol: f64) -> bool {
@@ -906,7 +981,8 @@ fn build(
         .fold(0.0_f64, f64::max);
     let surface_reach = SURFACE_REACH * furthest + thickness;
     for (made, id) in layered.iter_mut().zip(chosen) {
-        *made = Layered::new(made.face, levels, surface_reach, tolerance)
+        let reach = reach_past_vertices(body, made.face, surface_reach);
+        *made = Layered::new(made.face, levels, reach, tolerance)
             .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
     for boundary in &mut boundaries {
@@ -920,7 +996,7 @@ fn build(
             near.layered = Layered::new(
                 near.layered.face,
                 n.side.levels(n.thickness),
-                surface_reach + n.thickness,
+                reach_past_vertices(near.body, near.layered.face, surface_reach + n.thickness),
                 tolerance,
             )
             .map_err(|why| {
@@ -1503,15 +1579,6 @@ fn trace_boundary(
                     .get(level)
                     .is_some_and(|skin| at_border(skin, p, tol))
             {
-                if let Some(skin) = face.skins.get(level) {
-                    let uv = skin.project(p);
-                    let dom = skin.domain();
-                    let foot = uv.as_ref().ok().map(|&(u, v)| skin.eval(u, v));
-                    eprintln!(
-                        "PLATEDBG past reach edge {} t {t} range ({a}, {b}) before {before} after {after} level {level} p {p:?} uv {uv:?} domain {dom:?} foot {foot:?} reach {reach_before} {reach_after}",
-                        edge_id.0
-                    );
-                }
                 return Err(refuse(Some(edge_id), PAST_REACH));
             }
         }
