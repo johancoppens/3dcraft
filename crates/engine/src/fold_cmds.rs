@@ -681,7 +681,7 @@ fn fold_check(session: &mut Session, params: &Value) -> Run {
             json!({
                 "at": c.at,
                 "degree": c.creases.len(),
-                "creases": c.creases.iter().map(|e| format!("e{e}")).collect::<Vec<_>>(),
+                "creases": c.creases.iter().map(|&e| analysis.names.name(e)).collect::<Vec<_>>(),
                 "sectors": c.sectors.iter().map(|s| degrees(*s)).collect::<Vec<_>>(),
                 "kawasaki": {
                     "holds": c.kawasaki_holds,
@@ -785,8 +785,16 @@ pub(crate) fn take(
             })
             .0;
         let linear = pattern.tolerance.linear;
-        let found = fold_flat(arr, &angles, fixed, linear)
-            .and_then(|folded| layer_order(arr, &folded, linear));
+        // Built flat already: its layers as regeneration found them.
+        let built = ctx.regen.feature(id).and_then(|r| match &r.developed {
+            Some(craft3d_regen::Developed::FlatFold(flat)) => Some(flat.layers.clone()),
+            _ => None,
+        });
+        let found = match built {
+            Some(layers) => Ok(layers),
+            None => fold_flat(arr, &angles, fixed, linear)
+                .and_then(|folded| layer_order(arr, &folded, linear)),
+        };
         let mut out = match found {
             Ok(layers) => {
                 let mut out = Outcome::flag(true);
@@ -821,7 +829,7 @@ pub(crate) fn take(
             }
         })
         .take(200)
-        .map(|c| json!({"at": c.at, "creases": c.creases.iter().map(|e| format!("e{e}")).collect::<Vec<_>>()}))
+        .map(|c| json!({"at": c.at, "creases": c.creases.iter().map(|&e| pattern.names.name(e)).collect::<Vec<_>>()}))
         .collect();
     let count = checks
         .iter()

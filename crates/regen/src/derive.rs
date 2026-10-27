@@ -89,6 +89,15 @@ pub(crate) fn source_body_shared<'a>(
             source.kind.type_name()
         ));
     }
+    // A fold folded flat lies on itself in one plane, in an order of
+    // layers only the fold's result keeps: a body made from it would lie
+    // on itself with nothing to say why that is no crossing
+    // (docs/design/regeneration.md › *Never through itself*).
+    if matches!(outcome.developed, Some(crate::Developed::FlatFold(_))) {
+        return Err(format!(
+            "{role}: `{name}` is folded flat: its facets lie on one another in the sketch's plane, in an order of layers only the fold keeps, so no feature is built from its body (owed); fold it to just under 180 degrees to build on it"
+        ));
+    }
     if let Some(taker) = outcome.consumed_by
         && !shares(taker)
     {

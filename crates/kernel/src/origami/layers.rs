@@ -15,21 +15,22 @@
 //!   *cells*, each covered by a set of facets, and its edges *segments*,
 //!   each with the facets on its two sides.
 //! - **The variables.** One bit per pair of facets that share a cell (they
-//!   overlap) or meet at a segment where a fold lies: which is above.
+//!   overlap): which is above.
 //! - **Adjacency.** The two facets of a crease: seen from the front a
 //!   valley brings their fronts together, so the right one lies on the
 //!   front of the left one (above it when the left one faces up).
 //! - **Taco-tortilla.** A facet that passes over a segment where a crease
 //!   is folded (a *tortilla* through the *taco*'s fold) is not between the
-//!   crease's two facets; nor is a facet on the other side of the segment
-//!   (the fold's bend bulges past the line into it).
+//!   crease's two facets. A facet that only ends at the segment (on either
+//!   side) is not held: in the zero-thickness model a raw edge or another
+//!   fold may touch a fold's bend, and a twist's pleats rely on it.
 //! - **Taco-taco.** Two creases folded at one segment on the same side
 //!   nest or are apart, never interleaved: exactly one of the second
 //!   crease's facets between the first's is forbidden. With "x above y" as
 //!   a bit, both of these are parity conditions (`(x>a) ⊕ (x>b) = 0`, and
 //!   `(x>a) ⊕ (x>b) ⊕ (y>a) ⊕ (y>b) = 0`).
-//! - **Transitivity.** The facets that cover one cell (or meet at one
-//!   segment with a fold) are in one order there: no three in a cycle.
+//! - **Transitivity.** The facets that cover one cell are in one order
+//!   there: no three in a cycle.
 //!   Facets that never share a place need not be: a cyclic order of
 //!   pairs that overlap in different places is physical.
 //! - **Tortilla-tortilla** constrains two flat joins (creases left
@@ -54,7 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_LAYER_WORK: u64 = 200_000_000;
 /// The most constraints (pairs, triples and segments) one layer order may
 /// have.
-pub const MAX_LAYER_CONSTRAINTS: usize = 4_000_000;
+pub const MAX_LAYER_CONSTRAINTS: usize = 1_000_000;
 /// The most folded edge pieces the overlay is made of.
 const MAX_PIECES: usize = 32_768;
 
@@ -78,6 +79,8 @@ pub struct Layers {
     /// facet covers.
     pub cells: usize,
     pub stacked: usize,
+    /// The steps the order took, counted as against [`MAX_LAYER_WORK`].
+    pub work: u64,
 }
 
 type Lit = (usize, bool);
@@ -304,7 +307,8 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
     }
     if pieces.len() > MAX_PIECES {
         return Err(FoldError::LayersUndecided {
-            pairs: pieces.len(),
+            what: "folded edge pieces",
+            count: pieces.len(),
         });
     }
 
@@ -368,6 +372,12 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 break;
             }
             work = work.saturating_add(1);
+            if work > MAX_LAYER_WORK {
+                return Err(FoldError::LayersUndecided {
+                    what: "folded edge pieces",
+                    count: np,
+                });
+            }
             if bj[1] > bi[3] + tol || bi[1] > bj[3] + tol {
                 continue;
             }
@@ -394,9 +404,6 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 *slot = ri.min(rj);
             }
         }
-    }
-    if work > MAX_LAYER_WORK {
-        return Err(FoldError::LayersUndecided { pairs: np });
     }
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for i in 0..np {
@@ -503,7 +510,8 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
         .collect();
     let overlay = arrange(&frame, &creases, tol).map_err(|e| match e {
         FoldError::TooMany { .. } => FoldError::LayersUndecided {
-            pairs: creases.len(),
+            what: "merged folded edges",
+            count: creases.len(),
         },
         other => FoldError::Overlay(other.to_string()),
     })?;
@@ -533,7 +541,10 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
         }
         cover.push(on);
         if work > MAX_LAYER_WORK {
-            return Err(FoldError::LayersUndecided { pairs: nf });
+            return Err(FoldError::LayersUndecided {
+                what: "cells",
+                count: overlay.facets.len(),
+            });
         }
     }
 
@@ -562,7 +573,26 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
     let stacks: BTreeSet<&Vec<usize>> = cover.iter().filter(|c| c.len() >= 2).collect();
     let stacked = cover.iter().filter(|c| c.len() >= 2).count();
     let mut overlapping: BTreeSet<(usize, usize)> = BTreeSet::new();
+    // What a stack adds, counted before it is made (k facets make
+    // k(k-1)/2 pairs and k(k-1)(k-2)/6 triples): a stack that could take
+    // the rules past their cap is refused before it takes the memory.
+    let held = |rules: &BTreeSet<Rule>| u64::try_from(rules.len()).unwrap_or(u64::MAX);
+    let cap = u64::try_from(MAX_LAYER_CONSTRAINTS).unwrap_or(u64::MAX);
     for stack in &stacks {
+        let k = u64::try_from(stack.len()).unwrap_or(u64::MAX);
+        let triples = k
+            .saturating_mul(k.saturating_sub(1))
+            .saturating_mul(k.saturating_sub(2))
+            / 6;
+        let pairs = k.saturating_mul(k.saturating_sub(1)) / 2;
+        work = work.saturating_add(triples).saturating_add(pairs);
+        if held(&rules).saturating_add(triples).saturating_add(pairs) > cap || work > MAX_LAYER_WORK
+        {
+            return Err(FoldError::LayersUndecided {
+                what: "facets on one another in one place",
+                count: stack.len(),
+            });
+        }
         for (i, &x) in stack.iter().enumerate() {
             for &y in stack.iter().skip(i + 1) {
                 vars.var(x, y);
@@ -578,7 +608,8 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
         }
         if too_many(&rules, &vars) {
             return Err(FoldError::LayersUndecided {
-                pairs: vars.pairs.len(),
+                what: "rules",
+                count: rules.len(),
             });
         }
     }
@@ -651,51 +682,24 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 _ => None, // through
             }
         };
-        for (i, &(a, b, side)) in tacos.iter().enumerate() {
-            for &x in &elements {
-                if x == a || x == b {
-                    continue;
-                }
-                if side_of(x) == Some(side) {
-                    // A facet on the same side: an end may lie between,
-                    // another fold is held by taco-taco below.
-                    continue;
-                }
-                let (p, q) = (vars.above(x, a), vars.above(x, b));
-                rules.insert(parity(&[p, q], false));
-            }
-            for &(c, d, other_side) in tacos.iter().skip(i + 1) {
-                if other_side != side {
-                    continue; // held by the rule above
-                }
-                let lits = [
-                    vars.above(c, a),
-                    vars.above(c, b),
-                    vars.above(d, a),
-                    vars.above(d, b),
-                ];
-                rules.insert(parity(&lits, false));
-            }
+        // Counted before they are made, as the cells' rules are.
+        let (k, t) = (
+            u64::try_from(elements.len()).unwrap_or(u64::MAX),
+            u64::try_from(tacos.len()).unwrap_or(u64::MAX),
+        );
+        let here = t.saturating_mul(k).saturating_add(t.saturating_mul(t));
+        work = work.saturating_add(here);
+        if held(&rules).saturating_add(here) > cap || work > MAX_LAYER_WORK {
+            return Err(FoldError::LayersUndecided {
+                what: "facets that meet along one fold",
+                count: elements.len(),
+            });
         }
-        // One order at the segment: three facets that meet there, one on
-        // each side among them, are in no cycle (those of one side are
-        // held by its cell).
-        for (i, &x) in elements.iter().enumerate() {
-            for (j, &y) in elements.iter().enumerate().skip(i + 1) {
-                for &z in elements.iter().skip(j + 1) {
-                    let sides = [side_of(x), side_of(y), side_of(z)];
-                    let crossing = sides.contains(&Some(false)) && sides.contains(&Some(true));
-                    if !crossing {
-                        continue;
-                    }
-                    let (p, q, r) = (vars.above(x, y), vars.above(y, z), vars.above(z, x));
-                    rules.insert(not_cycle(p, q, r));
-                }
-            }
-        }
+        segment_rules(&mut vars, &mut rules, &elements, &tacos, side_of);
         if too_many(&rules, &vars) || work > MAX_LAYER_WORK {
             return Err(FoldError::LayersUndecided {
-                pairs: vars.pairs.len(),
+                what: "rules",
+                count: rules.len(),
             });
         }
     }
@@ -721,7 +725,55 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
         cyclic,
         cells: overlay.facets.len(),
         stacked,
+        work,
     })
+}
+
+/// The rules a segment adds: `tacos` are the folds along it, each its two
+/// facets and the side they are on; `elements` every facet that meets it;
+/// `side_of` the side of a facet that ends at the segment, `None` for one
+/// that passes over it. Taco-tortilla for a facet passing over, taco-taco
+/// for two folds on one side; nothing for a facet that only ends there,
+/// on either side (the zero-thickness model of the literature lets it
+/// touch a fold's bend), nor between folds on opposite sides.
+fn segment_rules(
+    vars: &mut Pairs,
+    rules: &mut BTreeSet<Rule>,
+    elements: &[usize],
+    tacos: &[(usize, usize, bool)],
+    side_of: impl Fn(usize) -> Option<bool>,
+) {
+    for (i, &(a, b, side)) in tacos.iter().enumerate() {
+        for &x in elements {
+            if x == a || x == b {
+                continue;
+            }
+            if side_of(x).is_some() {
+                // A facet that ends at the segment, on either side:
+                // an end may lie between (inside the fold, or against
+                // its bend from outside, which the zero-thickness
+                // model allows), another fold on the same side is
+                // held by taco-taco below, one on the other side
+                // meets this one only along the line.
+                continue;
+            }
+            // A tortilla: it passes over the fold.
+            let (p, q) = (vars.above(x, a), vars.above(x, b));
+            rules.insert(parity(&[p, q], false));
+        }
+        for &(c, d, other_side) in tacos.iter().skip(i + 1) {
+            if other_side != side {
+                continue; // apart but for the line
+            }
+            let lits = [
+                vars.above(c, a),
+                vars.above(c, b),
+                vars.above(d, a),
+                vars.above(d, b),
+            ];
+            rules.insert(parity(&lits, false));
+        }
+    }
 }
 
 /// Per facet the longest chain of facets below it, by Kahn's order (the
@@ -898,9 +950,10 @@ impl Search<'_> {
 
     fn propagate(&mut self, mut queue: Vec<usize>) -> Result<(), Outcome> {
         while let Some(v) = queue.pop() {
-            let watching = self.watch.get(v).cloned().unwrap_or_default();
-            for r in watching {
+            let mut i = 0usize;
+            while let Some(&r) = self.watch.get(v).and_then(|w| w.get(i)) {
                 self.check(r, &mut queue)?;
+                i += 1;
             }
         }
         Ok(())
@@ -973,7 +1026,10 @@ fn solve(pairs: &[(usize, usize)], rules: &[Rule], work: &mut u64) -> Result<Vec
     };
     let fail = |outcome: Outcome, facets: Vec<usize>| match outcome {
         Outcome::Conflict(_) => FoldError::NoLayers { facets },
-        Outcome::OverBudget => FoldError::LayersUndecided { pairs: nv },
+        Outcome::OverBudget => FoldError::LayersUndecided {
+            what: "pairs of facets",
+            count: nv,
+        },
     };
     // What every rule forces before any choice: the rules of one bit, and
     // what follows from them.
@@ -1005,15 +1061,22 @@ fn solve(pairs: &[(usize, usize)], rules: &[Rule], work: &mut u64) -> Result<Vec
             out.dedup();
             out
         };
-        let mut decisions: Vec<(usize, bool, usize)> = Vec::new();
+        // (bit, value tried, trail mark, place in `vars`)
+        let mut decisions: Vec<(usize, bool, usize, usize)> = Vec::new();
+        // Every bit before `cursor` is set: a choice is made at the first
+        // open bit, and undoing a choice opens only bits from it on.
+        let mut cursor = 0usize;
         loop {
-            let next = vars
-                .iter()
-                .copied()
-                .find(|&v| search.value.get(v).copied().flatten().is_none());
-            let Some(v) = next else { break };
+            while let Some(&v) = vars.get(cursor) {
+                if search.value.get(v).copied().flatten().is_none() {
+                    break;
+                }
+                cursor += 1;
+                *search.work = search.work.saturating_add(1);
+            }
+            let Some(&v) = vars.get(cursor) else { break };
             let mark = search.trail.len();
-            decisions.push((v, false, mark));
+            decisions.push((v, false, mark, cursor));
             let mut result = search.assign(v, false);
             // On a conflict, back to the last choice not yet tried both
             // ways.
@@ -1021,18 +1084,107 @@ fn solve(pairs: &[(usize, usize)], rules: &[Rule], work: &mut u64) -> Result<Vec
                 if matches!(outcome, Outcome::OverBudget) {
                     return Err(fail(outcome, facets()));
                 }
-                let Some((v, tried, mark)) = decisions.pop() else {
+                let Some((v, tried, mark, at)) = decisions.pop() else {
                     return Err(fail(outcome, facets()));
                 };
                 search.undo(mark);
+                cursor = at;
                 if tried {
                     result = Err(outcome);
                     continue;
                 }
-                decisions.push((v, true, mark));
+                decisions.push((v, true, mark, at));
                 result = search.assign(v, true);
             }
         }
     }
     Ok(search.value.iter().map(|x| x.unwrap_or(false)).collect())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// Two folds at one line from opposite sides, interlocking hooks with
+    /// heights a < c < b < d, are accepted: the zero-thickness model of
+    /// the literature does not forbid it (a rule that did, beyond the
+    /// published ones, refused a square twist; 2026-10-28).
+    #[test]
+    fn interlocking_hooks_on_opposite_sides_are_accepted() {
+        let (a, b, c, d) = (0usize, 1usize, 2usize, 3usize);
+        let mut vars = Pairs::default();
+        let mut rules = BTreeSet::new();
+        let left = [a, b];
+        let side_of = |x: usize| Some(!left.contains(&x));
+        segment_rules(
+            &mut vars,
+            &mut rules,
+            &[a, b, c, d],
+            &[(a, b, false), (c, d, true)],
+            side_of,
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+        // a < c < b < d, as bits of "x above y".
+        let mut rules: Vec<Rule> = rules.into_iter().collect();
+        for (x, y) in [(c, a), (b, c), (d, b), (b, a), (d, c), (d, a)] {
+            let lit = vars.above(x, y);
+            rules.push(parity(&[lit], true));
+        }
+        let mut work = 0;
+        assert!(solve(&vars.pairs, &rules, &mut work).is_ok());
+        // The same two folds on one side may not interleave.
+        let mut vars = Pairs::default();
+        let mut same = BTreeSet::new();
+        segment_rules(
+            &mut vars,
+            &mut same,
+            &[a, b, c, d],
+            &[(a, b, false), (c, d, false)],
+            |_| Some(false),
+        );
+        let mut same: Vec<Rule> = same.into_iter().collect();
+        for (x, y) in [(c, a), (b, c), (d, b), (b, a), (d, c), (d, a)] {
+            let lit = vars.above(x, y);
+            same.push(parity(&[lit], true));
+        }
+        assert!(matches!(
+            solve(&vars.pairs, &same, &mut work),
+            Err(FoldError::NoLayers { .. })
+        ));
+    }
+
+    /// Three facets each above the next by a rule of its own (each
+    /// satisfiable alone, and all three together as parities): only
+    /// transitivity refuses the cycle.
+    #[test]
+    fn only_transitivity_refuses_a_cycle_of_three() {
+        let mut vars = Pairs::default();
+        let (ab, bc, ca) = (vars.above(0, 1), vars.above(1, 2), vars.above(2, 0));
+        let pairs = vars.pairs.clone();
+        let mut rules = vec![
+            parity(&[ab], true),
+            parity(&[bc], true),
+            parity(&[ca], true),
+        ];
+        let mut work = 0;
+        let free = solve(&pairs, &rules, &mut work).unwrap();
+        assert_eq!(free.len(), 3);
+        rules.push(not_cycle(ab, bc, ca));
+        match solve(&pairs, &rules, &mut work) {
+            Err(FoldError::NoLayers { facets }) => {
+                assert!(!facets.is_empty() && facets.iter().all(|f| *f < 3));
+            }
+            other => panic!("expected no layers, got {other:?}"),
+        }
+        // Two of the three fixed: the third is forced the other way.
+        let rules = vec![
+            parity(&[ab], true),
+            parity(&[bc], true),
+            not_cycle(ab, bc, ca),
+        ];
+        let found = solve(&pairs, &rules, &mut work).unwrap();
+        let lit = |(v, neg): Lit| found[v] != neg;
+        assert!(lit(ab) && lit(bc) && !lit(ca));
+    }
 }

@@ -190,9 +190,21 @@ fn a_square_folded_in_half_twice_has_four_layers() {
             assert!(middle.distance(Vec3::new(s, s, 0.0)) <= 1e-12 * s);
         }
         assert_eq!(layers.above.len(), 6);
-        let mut seen = layers.layer.clone();
-        seen.sort_unstable();
-        assert_eq!(seen, vec![0, 1, 2, 3]);
+        // Folded up (the lower half onto the upper), then the left onto
+        // the right: from the top, upper left, lower left, lower right,
+        // upper right.
+        let at = |x: f64, y: f64| arr.facet_at([x * s, y * s]).unwrap();
+        let (ul, ll, lr, ur) = (at(0.5, 1.5), at(0.5, 0.5), at(1.5, 0.5), at(1.5, 1.5));
+        assert_eq!(ur, fixed);
+        assert_eq!(
+            [
+                layers.layer[ul],
+                layers.layer[ll],
+                layers.layer[lr],
+                layers.layer[ur]
+            ],
+            [3, 2, 1, 0]
+        );
         assert!(!layers.cyclic);
         assert!((area_in_plane(&arr, &folded, scale) - 4.0 * s * s).abs() <= 1e-12 * s * s);
         // Three valleys and no mountain: Maekawa fails, and no order of
@@ -238,7 +250,17 @@ fn the_waterbomb_base_folds_flat_into_a_triangle_of_six_layers() {
             }
         }
         assert!(!layers.cyclic);
-        assert!(layers.layer.iter().max().copied().unwrap() >= 2);
+        // The fixed triangle at the bottom, the other one on top, each
+        // side flap in two layers between (the right one on the right
+        // half of the base, the left one on the left: they do not overlap).
+        let at = |x: f64, y: f64| arr.facet_at([x * s, y * s]).unwrap();
+        let (top, bottom) = (fixed, at(0.0, -0.5));
+        let (ru, rl, lu, ll) = (at(0.8, 0.3), at(0.8, -0.3), at(-0.8, 0.3), at(-0.8, -0.3));
+        assert_eq!(layers.layer[top], 0);
+        assert_eq!([layers.layer[ru], layers.layer[lu]], [1, 1]);
+        assert_eq!([layers.layer[rl], layers.layer[ll]], [2, 2]);
+        assert_eq!(layers.layer[bottom], 3);
+        assert!(!layers.above.contains(&[ru, lu]) && !layers.above.contains(&[lu, ru]));
         assert!((area_in_plane(&arr, &folded, scale) - 4.0 * s * s).abs() <= 1e-12 * s * s);
         // Every crease a valley: Maekawa is off by 4, no order exists.
         match fold_all(&waterbomb(s, scale, V), fixed, scale) {
@@ -375,4 +397,152 @@ fn folding_flat_is_deterministic() {
         let again = fold_all(&arr, fixed, 1.0).unwrap();
         assert_eq!(format!("{first:?}"), format!("{again:?}"));
     }
+}
+
+/// The square twist: a central square whose edges are mountains and, at
+/// each corner, a pleat of two creases out to the sheet's boundary, at 45
+/// and 135 degrees from the square's edges (the valley beside the
+/// smallest sector, as big-little-big wants).
+fn square_twist(scale: f64) -> Arrangement {
+    let l = 5.0 * scale;
+    let corners =
+        [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]].map(|[x, y]| [x * scale, y * scale]);
+    let mut creases = Vec::new();
+    for i in 0..4 {
+        let (p, q) = (corners[i], corners[(i + 1) % 4]);
+        creases.push(crease(10 + i as u64, p, q, M));
+    }
+    // Per corner: the direction of the edge to the corner before it, and
+    // the rays at 45 (a valley) and 135 degrees (a mountain) past it.
+    for (i, &p) in corners.iter().enumerate() {
+        let base = (270.0 + 90.0 * i as f64).to_radians();
+        for (k, (turn, kind)) in [(45.0f64, V), (135.0, M)].into_iter().enumerate() {
+            let a = base + turn.to_radians();
+            let (c, sn) = (a.cos(), a.sin());
+            let tx = if c > 0.0 {
+                (l - p[0]) / c
+            } else if c < 0.0 {
+                (-l - p[0]) / c
+            } else {
+                f64::INFINITY
+            };
+            let ty = if sn > 0.0 {
+                (l - p[1]) / sn
+            } else if sn < 0.0 {
+                (-l - p[1]) / sn
+            } else {
+                f64::INFINITY
+            };
+            let t = tx.min(ty);
+            creases.push(crease(
+                20 + 2 * i as u64 + k as u64,
+                p,
+                [p[0] + t * c, p[1] + t * sn],
+                kind,
+            ));
+        }
+    }
+    arrange(
+        &polygon(&[[-l, -l], [l, -l], [l, l], [-l, l]]),
+        &creases,
+        tol(scale),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_square_twist_folds_flat() {
+    for scale in SCALES {
+        let arr = square_twist(scale);
+        let fixed = arr.facet_at([0.0, 0.0]).unwrap();
+        let (folded, layers) = fold_all(&arr, fixed, scale).unwrap();
+        // The four pleats tucked under the square overlap in a pinwheel,
+        // each with the next in a place of its own: a cyclic order of
+        // pairs, which is physical (no three share a place).
+        assert!(layers.cyclic);
+        let l = 5.0 * scale;
+        assert!((area_in_plane(&arr, &folded, scale) - 4.0 * l * l).abs() <= 1e-12 * l * l);
+        // The central square stays, face up, over everything tucked under
+        // it.
+        assert!(!layers.flipped[fixed]);
+        for [upper, lower] in &layers.above {
+            assert_ne!(*lower, fixed, "{upper} over the square");
+        }
+    }
+}
+
+#[test]
+fn a_stack_too_high_is_undecided_at_once_without_the_memory() {
+    // A strip pleated 1200 times: every facet on every other one, 1200
+    // facets in one place, some 2.9e8 triples to hold: refused before any
+    // is made.
+    let n = 1200usize;
+    let s = 1.0;
+    let creases: Vec<Crease> = (1..n)
+        .map(|i| {
+            let x = i as f64 * s;
+            crease(
+                10 + i as u64,
+                [x, 0.0],
+                [x, s],
+                if i % 2 == 0 { V } else { M },
+            )
+        })
+        .collect();
+    let len = n as f64 * s;
+    let arr = arrange(
+        &polygon(&[[0.0, 0.0], [len, 0.0], [len, s], [0.0, s]]),
+        &creases,
+        tol(1.0),
+    )
+    .unwrap();
+    let fixed = arr.facet_at([0.5, 0.5]).unwrap();
+    let started = std::time::Instant::now();
+    let folded = fold_flat(&arr, &flat(&arr), fixed, tol(1.0)).unwrap();
+    match layer_order(&arr, &folded, tol(1.0)) {
+        Err(FoldError::LayersUndecided { count, .. }) => assert!(count >= n, "{count}"),
+        other => panic!("expected undecided, got {other:?}"),
+    }
+    let took = started.elapsed();
+    println!("LAYERS-CAP refused a stack of {n} in {took:?}");
+    assert!(took.as_secs() < 60, "{took:?}");
+}
+
+#[test]
+fn how_fast_the_layer_search_works() {
+    // A pleat of 120 layers, decided: its work against its time gives the
+    // time the work cap (MAX_LAYER_WORK) stands for.
+    let n = 120usize;
+    let creases: Vec<Crease> = (1..n)
+        .map(|i| {
+            let x = i as f64;
+            crease(
+                10 + i as u64,
+                [x, 0.0],
+                [x, 1.0],
+                if i % 2 == 0 { V } else { M },
+            )
+        })
+        .collect();
+    let len = n as f64;
+    let arr = arrange(
+        &polygon(&[[0.0, 0.0], [len, 0.0], [len, 1.0], [0.0, 1.0]]),
+        &creases,
+        tol(1.0),
+    )
+    .unwrap();
+    let fixed = arr.facet_at([0.5, 0.5]).unwrap();
+    let started = std::time::Instant::now();
+    let (_, layers) = fold_all(&arr, fixed, 1.0).unwrap();
+    let took = started.elapsed().as_secs_f64();
+    let max = layers.layer.iter().max().copied().unwrap();
+    assert_eq!(max, n - 1);
+    let per_step = took / layers.work.max(1) as f64;
+    println!(
+        "LAYERS-TIMING {n} layers: {} steps in {took:.3} s, {:.1} ns a step, the cap of {} steps about {:.1} s",
+        layers.work,
+        per_step * 1e9,
+        craft3d_kernel::origami::MAX_LAYER_WORK,
+        per_step * craft3d_kernel::origami::MAX_LAYER_WORK as f64
+    );
 }

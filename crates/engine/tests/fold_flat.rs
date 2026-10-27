@@ -107,6 +107,31 @@ fn a_card_slid_to_180_degrees_folds_flat_in_two_layers() {
         let mut t = session_in(&dir);
         run(&mut t, "file.open", json!({"path": "card.3dcraft"}));
         assert_eq!(body(&mut t, "Card")["bbox"], found["bbox"]);
+        // Exported as a mesh, it lies in the sketch's plane exactly (the
+        // picture's lift is not in it).
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": "card.stl", "format": "stl-ascii"}),
+        );
+        let stl = std::fs::read_to_string(dir.join("card.stl")).unwrap();
+        let mut vertices = 0;
+        for line in stl.lines() {
+            if let Some(rest) = line.trim().strip_prefix("vertex ") {
+                let z: f64 = rest.split_whitespace().nth(2).unwrap().parse().unwrap();
+                assert_eq!(z, 0.0, "{line}");
+                vertices += 1;
+            }
+        }
+        assert!(vertices >= 6, "{stl}");
+        // Nothing is built from a body folded flat (owed): refused with
+        // the reason.
+        let why = failed(
+            &mut s,
+            "feature.transform",
+            json!({"source": "Card", "translate": [0, 0, k], "name": "Moved"}),
+        );
+        assert!(why.contains("is folded flat"), "{why}");
     }
 }
 

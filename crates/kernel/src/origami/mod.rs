@@ -181,8 +181,9 @@ pub enum FoldError {
     /// does not fold flat.
     NoLayers { facets: Vec<usize> },
     /// Whether an order of the layers exists was not decided within
-    /// [`MAX_LAYER_WORK`] (`pairs` pairs of facets to order).
-    LayersUndecided { pairs: usize },
+    /// [`MAX_LAYER_WORK`] or [`MAX_LAYER_CONSTRAINTS`]: `count` of `what`
+    /// were too many (facets on one another in one place, rules, pairs).
+    LayersUndecided { what: &'static str, count: usize },
     /// The folded edges could not be divided into cells: see the reason.
     Overlay(String),
     /// Crease `id` folds by 180 degrees while another folds by less: a
@@ -265,9 +266,9 @@ impl fmt::Display for FoldError {
             FoldError::NoLayers { facets } => {
                 write!(f, "no order of the layers keeps facets {facets:?} apart")
             }
-            FoldError::LayersUndecided { pairs } => write!(
+            FoldError::LayersUndecided { what, count } => write!(
                 f,
-                "the order of the layers ({pairs} pairs) was not decided within {MAX_LAYER_WORK} steps"
+                "the order of the layers was not decided within the work allowed ({count} {what})"
             ),
             FoldError::Overlay(reason) => {
                 write!(

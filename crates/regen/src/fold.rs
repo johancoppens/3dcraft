@@ -433,9 +433,10 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
                 if facets.len() > 8 { " and more" } else { "" }
             )
         }
-        FoldError::LayersUndecided { pairs } => format!(
-            "whether it folds flat was not decided within the work allowed ({} steps, {pairs} pairs of facets to order): the general question is NP-hard (Bern and Hayes 1996); 3DCraft does not guess",
-            origami::MAX_LAYER_WORK
+        FoldError::LayersUndecided { what, count } => format!(
+            "whether it folds flat was not decided within the work allowed (at most {} steps and {} rules; here {count} {what}): the general question is NP-hard (Bern and Hayes 1996); 3DCraft does not guess",
+            origami::MAX_LAYER_WORK,
+            origami::MAX_LAYER_CONSTRAINTS
         ),
         FoldError::Overlay(reason) => format!(
             "the layers of the flat fold could not be told apart: {reason}"

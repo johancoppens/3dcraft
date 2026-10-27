@@ -3576,24 +3576,28 @@ pub(crate) fn check_document(
                 outcome.developed,
                 Some(craft3d_regen::Developed::FlatFold(_))
             );
-            if deep && !layered {
-                let params = craft3d_tess::SelfCheckParams::new(doc.tolerance.linear);
-                match craft3d_tess::body_self_intersections(body, &params) {
-                    Ok(found) => {
-                        marginal = marginal
-                            .saturating_add(found.marginal_crossings)
-                            .saturating_add(found.shells.iter().filter(|s| !s.certain).count());
-                        if !found.is_clean() {
-                            problems.push(json!({
-                                "feature": outcome.id.to_string(), "name": name,
-                                "problem": format!("the body passes through or touches itself: {found}"),
-                            }));
+            if deep {
+                if !layered {
+                    let params = craft3d_tess::SelfCheckParams::new(doc.tolerance.linear);
+                    match craft3d_tess::body_self_intersections(body, &params) {
+                        Ok(found) => {
+                            marginal = marginal
+                                .saturating_add(found.marginal_crossings)
+                                .saturating_add(
+                                    found.shells.iter().filter(|s| !s.certain).count(),
+                                );
+                            if !found.is_clean() {
+                                problems.push(json!({
+                                    "feature": outcome.id.to_string(), "name": name,
+                                    "problem": format!("the body passes through or touches itself: {found}"),
+                                }));
+                            }
                         }
+                        Err(error) => problems.push(json!({
+                            "feature": outcome.id.to_string(), "name": name,
+                            "problem": format!("cannot be searched for self-intersections: {error}"),
+                        })),
                     }
-                    Err(error) => problems.push(json!({
-                        "feature": outcome.id.to_string(), "name": name,
-                        "problem": format!("cannot be searched for self-intersections: {error}"),
-                    })),
                 }
                 // A body with loose entities: its mesh's boundary points
                 // held to the tolerance of the edge or vertex they lie on
