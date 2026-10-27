@@ -150,7 +150,16 @@ pub struct Spec {
     /// Holes and cut-outs drawn in the pattern's axes outside the base:
     /// each closed profile becomes a hole of the one flat (a flange's; the
     /// base's holes are its own) it lies wholly inside in the flat pattern.
-    pub cutouts: Vec<Profile>,
+    pub cutouts: Vec<Cutout>,
+}
+
+/// A hole or cut-out drawn beside the base: a closed profile in the
+/// pattern's axes, and where the caller has it from, for messages
+/// ("sketch `Vents`").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cutout {
+    pub profile: Profile,
+    pub from: String,
 }
 
 /// A bend of the part, in the pattern's axes (the plane's x, y).
@@ -747,7 +756,7 @@ fn curves_named(ids: &[u64]) -> String {
 /// then go through [`pattern_clear`] with the whole pattern.
 fn place_cutouts(
     flats: &mut [Flat],
-    cutouts: &[Profile],
+    cutouts: &[Cutout],
     tolerance: &Tolerance,
 ) -> Result<(), KernelError> {
     if cutouts.len() > MAX_CUTOUTS {
@@ -757,8 +766,8 @@ fn place_cutouts(
         ));
     }
     let tol = tolerance.linear;
-    for cut in cutouts {
-        let named = curves_named(&cut.outer.sources(8));
+    for Cutout { profile: cut, from } in cutouts {
+        let named = format!("{} of {from}", curves_named(&cut.outer.sources(8)));
         if !cut.holes.is_empty() {
             return Err(refuse(
                 None,

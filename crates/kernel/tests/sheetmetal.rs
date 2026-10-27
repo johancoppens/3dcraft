@@ -29,9 +29,9 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::plate::Made;
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::{
-    Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec, build,
-    developed_allowance, flange_length, flat_area, holes_to_bends, measured_angle, measured_radius,
-    outline,
+    Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
+    build, developed_allowance, flange_length, flat_area, holes_to_bends, measured_angle,
+    measured_radius, outline,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{FaceId, check, mass_properties};
@@ -1010,5 +1010,146 @@ fn flanges_on_facing_walls_of_a_concave_base_that_cross_in_the_flat_are_refused(
         build(&spec(base.clone(), k, vec![f(6, 6.0)], None), &tol).unwrap();
         let part = build(&spec(base, k, vec![f(4, 1.0), f(6, 1.0)], None), &tol).unwrap();
         healthy(&part, &tol);
+    }
+}
+
+/// The closed profiles of circles `(centre, radius)` at the scale `k`
+/// (curves 20, 21, ...), as the sketch beside a base gives them.
+fn circles(list: &[([f64; 2], f64)], k: f64) -> Vec<Cutout> {
+    let curves: Vec<SketchCurve> = list
+        .iter()
+        .enumerate()
+        .map(|(i, (c, r))| SketchCurve {
+            id: 20 + i as u64,
+            curve: Curve2::Circle {
+                center: [c[0] * k, c[1] * k],
+                radius: r * k,
+            },
+        })
+        .collect();
+    detect_profiles(&curves, &tolerance(k))
+        .unwrap()
+        .into_iter()
+        .map(|profile| Cutout {
+            profile,
+            from: "the test".to_string(),
+        })
+        .collect()
+}
+
+/// Holes in flanges (plan/repro/repro-sheet-metal-enclosure-2): closed
+/// profiles drawn beside the base in the pattern's axes are holes of the
+/// flange flat each lies in, cut in the pattern and the folded part, and
+/// measured from the bends beside that flat. A 40 × 30 base, flange 0 on
+/// its right edge (its flat from x = 40 + BA to 55 + BA), flange 1 on
+/// flange 0's tip; a hole of radius 2 six from flange 0's tangent line and
+/// one of radius 1.5 five from flange 1's. At K = ½ the volume is the flat
+/// area times the thickness; fold then unfold lands every hole's vertex on
+/// its place in the pattern.
+#[test]
+fn holes_in_flanges_are_cut_flat_and_folded() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, kf) = (1.0 * k, 1.0 * k, 0.5);
+        let ba = FRAC_PI_2 * (r + kf * t);
+        let (l0, l1) = (15.0 * k, 12.0 * k);
+        let x0 = 40.0 + ba / k;
+        let x1 = x0 + 15.0 + ba / k;
+        let mut s = spec(
+            base(40.0, 30.0, None, k),
+            t,
+            vec![
+                flange(On::Base(2), l0, FRAC_PI_2, Direction::Up, r, kf),
+                flange(On::Tip(0), l1, FRAC_PI_2, Direction::Down, r, kf),
+            ],
+            None,
+        );
+        s.cutouts = circles(&[([x0 + 6.0, 15.0], 2.0), ([x1 + 5.0, 10.0], 1.5)], k);
+        assert_eq!(s.cutouts.len(), 2);
+        let part = build(&s, &tol).unwrap();
+        healthy(&part, &tol);
+        assert_eq!(part.flats[0].holes.len(), 0);
+        assert_eq!(part.flats[1].holes.len(), 1);
+        assert_eq!(part.flats[2].holes.len(), 1);
+        let holes = PI * (4.0 + 2.25) * k * k;
+        let area = 40.0 * 30.0 * k * k + 30.0 * k * (2.0 * ba + l0 + l1) - holes;
+        near(
+            flat_area(&part),
+            area,
+            1e-9 * area,
+            "the flat area less the holes",
+        );
+        near(
+            volume(&part),
+            area * t,
+            1e-6 * area * t,
+            "the volume at K = 1/2",
+        );
+        // Each hole from the bends beside its own flat: flange 0's hole is
+        // 6 − 2 from its own bend's far tangent line (and 15 − 6 − 2 from
+        // flange 1's bend), flange 1's 5 − 1.5 from its bend.
+        let found = holes_to_bends(&part, &tol);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!((found[0].flat, found[0].hole, found[0].bend), (1, 0, 0));
+        near(found[0].distance, 4.0 * k, 1e-9 * k, "flange 0's hole");
+        assert!(found[0].exact);
+        assert_eq!((found[1].flat, found[1].hole, found[1].bend), (2, 0, 1));
+        near(found[1].distance, 3.5 * k, 1e-9 * k, "flange 1's hole");
+        // Cut in the outline the export draws: the outer chain and the
+        // two holes.
+        assert_eq!(outline(&part, &tol).len(), 3);
+        round_trip(&part, &tol);
+    }
+}
+
+/// A hole or cut-out that lies in no one flat is refused, naming its
+/// curves: across a bend's strip, crossing a flat's edge, outside the
+/// pattern, touching a flat's edge; one with a profile inside it (an
+/// island, a loose piece of the sheet) too.
+#[test]
+fn a_cutout_that_lies_in_no_flat_is_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, kf) = (1.0 * k, 1.0 * k, 0.4);
+        let ba = FRAC_PI_2 * (r + kf * t) / k;
+        let x0 = 40.0 + ba;
+        let with = |cut: &[([f64; 2], f64)]| {
+            let mut s = spec(
+                base(40.0, 30.0, None, k),
+                t,
+                vec![flange(
+                    On::Base(2),
+                    15.0 * k,
+                    FRAC_PI_2,
+                    Direction::Up,
+                    r,
+                    kf,
+                )],
+                None,
+            );
+            s.cutouts = circles(cut, k);
+            s
+        };
+        for (what, cut) in [
+            ("across the strip", vec![([40.0 + ba / 2.0, 15.0], 0.5)]),
+            ("across the flat's edge", vec![([x0 + 15.0, 15.0], 1.0)]),
+            ("outside the pattern", vec![([200.0, 15.0], 1.0)]),
+            ("touching the tangent line", vec![([x0 + 1.0, 15.0], 1.0)]),
+        ] {
+            let (flange, reason) = refused(&with(&cut), &tol);
+            assert_eq!(flange, None, "{what}");
+            assert!(
+                reason.contains("curve 20") && reason.contains("no one flat"),
+                "{what}: {reason}"
+            );
+        }
+        // An annulus: the ring would be a loose piece.
+        let (_, reason) = refused(
+            &with(&[([x0 + 7.0, 15.0], 3.0), ([x0 + 7.0, 15.0], 1.0)]),
+            &tol,
+        );
+        assert!(reason.contains("loose piece"), "{reason}");
+        // Inside the flat, clear of its edges: built.
+        build(&with(&[([x0 + 7.0, 15.0], 3.0)]), &tol).unwrap();
     }
 }

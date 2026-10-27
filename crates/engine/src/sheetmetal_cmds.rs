@@ -34,9 +34,9 @@ const FLANGE_KEYS: [&str; 8] = [
 ];
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base, or tip: index of an earlier flange, length: expr, angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent}, ...] = [], "relief": {shape: rect|round|tear, size: expr} or null = none, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one across a bend's strip, past or touching the pattern's edge, or with a profile inside it is refused. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend and relief check it in assertions.", doc: true, feature_sheet_metal),
-    spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list), "relief": {shape, size} or null}"#,
+    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base, or tip: index of an earlier flange, length: expr, angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent}, ...] = [], "relief": {shape: rect|round|tear, size: expr} or null = none, "cutouts": [sketch id or name, ...] = [], "name": string = automatic, "when": expr = always on}"#,
+        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one across a bend's strip, past or touching the pattern's edge, or with a profile inside it is refused. cutouts adds the closed profiles of other sketches in the base sketch's plane (any origin and axes in it) the same way, each switched on and off with its sketch (a sketch with when, a conditional vent): a hole cut later by another feature (a boolean) is not part of the flat pattern, so a hole that has to be cut flat is drawn in the part's sketch or in a cutouts sketch. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend and relief check it in assertions.", doc: true, feature_sheet_metal),
+    spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list), "relief": {shape, size} or null, "cutouts": [sketch, ...] (the whole list)}"#,
         "Changes a sheet-metal part: what is given replaces what it had (flanges as a whole list; relief null removes it). One undo step.", doc: true, sheet_metal_edit),
     spec!("sheetMetal.bends", "Bend Table", r#"{"feature": id or name}"#,
         "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, relief, size), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side). Read-only.", doc: true, sheet_metal_bends),
@@ -171,6 +171,65 @@ fn relief_value(p: &Params) -> Result<Option<Option<CornerRelief>>, CommandError
     }
 }
 
+/// The sketches `cutouts` names (a list of sketch ids or names), when it
+/// is given: each a sketch, none twice, at most [`MAX_SHEET_FLANGES`].
+fn cutouts_value(p: &Params, doc: &Document) -> Result<Option<Vec<FeatureId>>, CommandError> {
+    let id = p.command();
+    let Some(value) = p.get("cutouts") else {
+        return Ok(None);
+    };
+    let items: &[Value] = match value {
+        Value::Null => &[],
+        Value::Array(items) => items,
+        _ => {
+            return fail(format!(
+                "{id}: cutouts is a list of sketches (ids or names) in the base sketch's plane"
+            ));
+        }
+    };
+    if items.len() > MAX_SHEET_FLANGES {
+        return fail(format!(
+            "{id}: cutouts names at most {MAX_SHEET_FLANGES} sketches"
+        ));
+    }
+    let mut out: Vec<FeatureId> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let found = match item {
+            Value::String(text) => doc.feature_by_name(text).map(|f| f.id).or_else(|| {
+                text.strip_prefix('F')
+                    .and_then(|d| d.parse::<u64>().ok())
+                    .and_then(|n| doc.feature(FeatureId(n)))
+                    .map(|f| f.id)
+            }),
+            Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| doc.feature(FeatureId(n)))
+                .map(|f| f.id),
+            _ => None,
+        };
+        let Some(sketch) = found else {
+            return fail(format!(
+                "{id}: cutouts.{i} names no feature: give a sketch's id or name"
+            ));
+        };
+        match doc.feature(sketch).map(|f| (&f.kind, &f.name)) {
+            Some((FeatureKind::Sketch(_), _)) => {}
+            Some((other, name)) => {
+                return fail(format!(
+                    "{id}: cutouts.{i}: `{name}` is a {}, not a sketch",
+                    other.type_name()
+                ));
+            }
+            None => return fail(format!("{id}: cutouts.{i} names no feature")),
+        }
+        if out.contains(&sketch) {
+            return fail(format!("{id}: cutouts.{i} names a sketch a second time"));
+        }
+        out.push(sketch);
+    }
+    Ok(Some(out))
+}
+
 /// Refuses flanges whose edge is no line of the sketch.
 fn check_flanges(
     doc: &Document,
@@ -228,11 +287,13 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
             "kFactor",
             "flanges",
             "relief",
+            "cutouts",
             "name",
         ],
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, ID, "sketch")?;
+    let cutouts = cutouts_value(&p, doc)?.unwrap_or_default();
     let thickness = Expr::new(p.expr("thickness")?.ok_or_else(|| p.missing("thickness"))?);
     let radius = Expr::new(p.expr("radius")?.ok_or_else(|| p.missing("radius"))?);
     let k_factor = Expr::new(p.expr("kFactor")?.ok_or_else(|| p.missing("kFactor"))?);
@@ -250,6 +311,7 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
             k_factor,
             flanges,
             relief,
+            cutouts,
         }),
     )
 }
@@ -275,13 +337,14 @@ fn part_ref(
 
 fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "sheetMetal.edit";
-    const KEYS: [&str; 6] = [
+    const KEYS: [&str; 7] = [
         "sketch",
         "thickness",
         "radius",
         "kFactor",
         "flanges",
         "relief",
+        "cutouts",
     ];
     let mut allowed = vec!["feature"];
     allowed.extend(KEYS);
@@ -307,6 +370,9 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
     }
     if let Some(relief) = relief_value(&p)? {
         part.relief = relief;
+    }
+    if let Some(cutouts) = cutouts_value(&p, session.document()?.history.current())? {
+        part.cutouts = cutouts;
     }
     check_flanges(
         session.document()?.history.current(),
@@ -392,8 +458,16 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
             json!({"curves": curves, "flange": h.flat.checked_sub(1), "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact})
         })
         .collect();
+    // A later feature that took the part's body (a boolean that drilled
+    // it) is not in the flat pattern: what it cut is not cut flat.
+    let changed_by = regen
+        .feature(id)
+        .and_then(|r| r.consumed_by)
+        .and_then(|taker| doc.feature(taker))
+        .map(|f| f.name.clone());
     Ok(json!({
         "feature": id.to_string(),
+        "changedBy": changed_by,
         "bends": bends,
         "flatArea": flat_area(part),
         "flatSize": [hi[0] - lo[0], hi[1] - lo[1]],
@@ -441,16 +515,198 @@ fn drawn_segment(s: &Segment) -> Option<craft3d_drawing::Segment> {
     })
 }
 
+/// Most parts one sheet of flat patterns holds.
+const MAX_SHEET_PARTS: usize = 1024;
+
 /// The flat pattern of the part `sheetMetal` names, for `file.export`:
 /// the outline on the layer outline, the bend lines (the middle of each
 /// bend's strip) on bendUp (blue, dashed) and bendDown (red, dash-dot).
+/// With a list of parts, their flat patterns side by side on one sheet
+/// ([`pattern_sheet`]).
 pub(crate) fn flat_pattern(
     session: &mut Session,
     p: &Params,
     command: &str,
 ) -> Result<crate::drawing_cmds::Source, CommandError> {
-    use craft3d_drawing::{Color, Layer, Path};
+    if let Some(Value::Array(items)) = p.get("sheetMetal") {
+        let items = items.clone();
+        return pattern_sheet(session, p, command, &items);
+    }
     let (id, _) = part_ref(session, p, "sheetMetal")?;
+    one_pattern(session, id, command)
+}
+
+/// The flat patterns of the parts `items` names on one sheet, as a sheet
+/// of a set's faces lays them out (`file.export {set}`): left to right in
+/// the order given by their boxes, `gap` apart (5 mm by default), in rows
+/// of at most `width` (a new row above the last). Each part keeps its
+/// sketch's axes, moved; the outlines share the layer outline and the bend
+/// lines bendUp and bendDown, so a cutter reads one style per layer.
+fn pattern_sheet(
+    session: &mut Session,
+    p: &Params,
+    command: &str,
+    items: &[Value],
+) -> Result<crate::drawing_cmds::Source, CommandError> {
+    use craft3d_drawing::{Drawing, Layer, Unit};
+    if items.is_empty() {
+        return fail(format!(
+            "{command}: `sheetMetal` names no part: give a part's id or name, or a list of them"
+        ));
+    }
+    if items.len() > MAX_SHEET_PARTS {
+        return fail(format!(
+            "{command}: a sheet holds at most {MAX_SHEET_PARTS} flat patterns"
+        ));
+    }
+    let length = |session: &Session, key: &str| -> Result<Option<f64>, CommandError> {
+        match p.expr(key)? {
+            None => Ok(None),
+            Some(source) => session
+                .evaluate_typed(&source, crate::typed::TypedKind::Length)
+                .map(Some)
+                .map_err(|e| CommandError::new(format!("{command}: `{key}`: {e}"))),
+        }
+    };
+    let unit = session.document()?.history.current().units.length;
+    let gap = match length(session, "gap")? {
+        Some(gap) if gap >= 0.0 => gap,
+        Some(_) => return fail(format!("{command}: `gap` must not be negative")),
+        None => 5.0 / crate::drawing_cmds::drawing_unit(unit).millimetres(),
+    };
+    let width = match length(session, "width")? {
+        Some(width) if width > 0.0 => Some(width),
+        Some(_) => return fail(format!("{command}: `width` must be positive")),
+        None => None,
+    };
+    let slack = session.document()?.history.current().tolerance.linear;
+    let mut ids = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let doc = session.document()?.history.current();
+        let found = match item {
+            Value::String(text) => doc.feature_by_name(text).map(|f| f.id).or_else(|| {
+                text.strip_prefix('F')
+                    .and_then(|d| d.parse::<u64>().ok())
+                    .and_then(|n| doc.feature(FeatureId(n)))
+                    .map(|f| f.id)
+            }),
+            Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| doc.feature(FeatureId(n)))
+                .map(|f| f.id),
+            _ => None,
+        };
+        let Some(id) = found else {
+            return fail(format!(
+                "{command}: sheetMetal.{i} names no feature: give a sheet-metal part's id or name"
+            ));
+        };
+        if let Some(f) = doc.feature(id)
+            && !matches!(f.kind, FeatureKind::SheetMetal(_))
+        {
+            return fail(format!(
+                "{command}: sheetMetal.{i}: `{}` is a {}, not a sheet-metal part",
+                f.name,
+                f.kind.type_name()
+            ));
+        }
+        if ids.contains(&id) {
+            let name = doc
+                .feature(id)
+                .map_or_else(|| id.to_string(), |f| f.name.clone());
+            return fail(format!(
+                "{command}: sheetMetal.{i}: `{name}` is on the sheet already"
+            ));
+        }
+        ids.push(id);
+    }
+    let mut placed: Vec<Layer> = Vec::new();
+    let mut parts = Vec::with_capacity(ids.len());
+    let (mut x, mut y, mut row_height, mut rows, mut in_row) =
+        (0.0_f64, 0.0_f64, 0.0_f64, 0_usize, 0_usize);
+    let mut area = 0.0;
+    for id in ids {
+        let source = one_pattern(session, id, command)?;
+        let name = source
+            .json
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let [x0, y0, x1, y1] = Drawing {
+            unit: Unit::Millimeter,
+            layers: source.layers.clone(),
+        }
+        .bbox()
+        .ok_or_else(|| CommandError::new(format!("{command}: `{name}` has nothing to draw")))?;
+        let (w, h) = (x1 - x0, y1 - y0);
+        if let Some(width) = width {
+            if w > width + slack {
+                return fail(format!(
+                    "{command}: the flat pattern of `{name}` is {w} wide, more than the sheet's width {width}"
+                ));
+            }
+            if in_row > 0 && x + w > width + slack {
+                y += row_height + gap;
+                (x, row_height, in_row) = (0.0, 0.0, 0);
+            }
+        }
+        if in_row == 0 {
+            rows += 1;
+        }
+        let reach = (x + w).max(y + h);
+        if !(reach.is_finite() && reach * f64::EPSILON <= slack) {
+            return fail(format!(
+                "{command}: the sheet would reach {reach}, where a coordinate cannot be held to the document's tolerance {slack}; use a smaller `gap`"
+            ));
+        }
+        let at = [x - x0, y - y0];
+        for layer in source.layers {
+            let paths: Vec<_> = layer.paths.iter().map(|path| path.translated(at)).collect();
+            match placed.iter_mut().find(|l| l.name == layer.name) {
+                Some(shared) => shared.paths.extend(paths),
+                None => placed.push(Layer { paths, ..layer }),
+            }
+        }
+        let mut json = source.json;
+        area += json.get("flatArea").and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(map) = json.as_object_mut() {
+            map.insert("at".into(), json!(at));
+            map.insert("bbox".into(), json!([x, y, x + w, y + h]));
+        }
+        parts.push(json);
+        x += w + gap;
+        row_height = row_height.max(h);
+        in_row += 1;
+    }
+    let count = |layer: &str| {
+        placed
+            .iter()
+            .find(|l| l.name == layer)
+            .map_or(0, |l| l.paths.len())
+    };
+    Ok(crate::drawing_cmds::Source {
+        json: json!({
+            "sheetMetal": parts,
+            "rows": rows,
+            "gap": gap,
+            "bendsUp": count("bendUp"),
+            "bendsDown": count("bendDown"),
+            "flatArea": area,
+        }),
+        layers: placed,
+        paths: Vec::new(),
+        construction: Vec::new(),
+    })
+}
+
+/// The flat pattern of part `id` (see [`flat_pattern`]).
+fn one_pattern(
+    session: &mut Session,
+    id: FeatureId,
+    command: &str,
+) -> Result<crate::drawing_cmds::Source, CommandError> {
+    use craft3d_drawing::{Color, Layer, Path};
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -460,6 +716,13 @@ pub(crate) fn flat_pattern(
     let built = craft3d_regen::sheet_metal_part(doc, &regen, id)
         .map_err(|e| CommandError::new(format!("{command}: the sheet-metal part `{name}`: {e}")))?;
     let part = &built.part;
+    // What a later feature cut (a boolean that drilled the part) is not in
+    // the flat pattern; the result says which feature took the body.
+    let changed_by = regen
+        .feature(id)
+        .and_then(|r| r.consumed_by)
+        .and_then(|taker| doc.feature(taker))
+        .map(|f| f.name.clone());
     let chains = sheetmetal::outline(part, &built.tolerance);
     let mut outline: Vec<Path> = Vec::with_capacity(chains.len());
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -542,6 +805,7 @@ pub(crate) fn flat_pattern(
             "bendsUp": counts.0,
             "bendsDown": counts.1,
             "flatArea": flat_area(part),
+            "changedBy": changed_by,
         }),
         layers,
         paths: Vec::new(),
@@ -674,10 +938,26 @@ fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, Str
                 .collect::<Result<_, _>>()?
         }
         Some(v) => {
-            crate::verify_cmds::nonempty(crate::verify_cmds::subject(ctx, v, &["body"])?, "of")?
+            // A query names what fits it: a part switched off fits no
+            // design as it stands, so it is left out as with no `of`.
+            let found: Vec<FeatureId> = crate::verify_cmds::nonempty(
+                crate::verify_cmds::subject(ctx, v, &["body"])?,
+                "of",
+            )?
+            .iter()
+            .map(|f| f.feature)
+            .collect();
+            let on: Vec<FeatureId> = found
                 .iter()
-                .map(|f| f.feature)
-                .collect()
+                .copied()
+                .filter(|&id| !switched_off(ctx, id))
+                .collect();
+            if on.is_empty() {
+                return Err(
+                    "every sheet-metal part `of` names is switched off or rolled back".to_string(),
+                );
+            }
+            on
         }
     };
     if ids.is_empty() {

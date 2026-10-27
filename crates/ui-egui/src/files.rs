@@ -223,10 +223,7 @@ pub fn export_selection(
                     .into_iter()
                     .find(|p| field(item, "feature").as_str() == Some(p.id.as_str()));
                 if let Some(pattern) = pattern {
-                    return Ok(Some((
-                        pattern.kind.param(),
-                        Value::String(pattern.feature),
-                    )));
+                    return Ok(Some((pattern.kind.param(), Value::String(pattern.feature))));
                 }
             }
             if sketches == 1 && items.len() == 1 {
@@ -383,6 +380,9 @@ pub enum PatternKind {
     SheetMetal,
     /// A fold: its crease pattern.
     Fold,
+    /// Every sheet-metal part: their flat patterns side by side on one
+    /// sheet, with its width and gap (offered for two parts or more).
+    EveryPart,
 }
 
 impl PatternKind {
@@ -393,7 +393,7 @@ impl PatternKind {
     /// feature's type (`select.query`'s `type`).
     pub fn param(self) -> &'static str {
         match self {
-            Self::SheetMetal => "sheetMetal",
+            Self::SheetMetal | Self::EveryPart => "sheetMetal",
             Self::Fold => "fold",
         }
     }
@@ -403,6 +403,7 @@ impl PatternKind {
         match self {
             Self::SheetMetal => "Flat pattern of",
             Self::Fold => "Crease pattern of",
+            Self::EveryPart => "Flat patterns of",
         }
     }
 }
@@ -412,9 +413,11 @@ impl PatternKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlatPattern {
     pub kind: PatternKind,
-    /// The feature's name, as `file.export` is given it.
+    /// The feature's name, as `file.export` is given it ("every part"
+    /// for [`PatternKind::EveryPart`]).
     pub feature: String,
-    /// The feature's id (`F3`), as the selection names its body.
+    /// The feature's id (`F3`), as the selection names its body (empty
+    /// for [`PatternKind::EveryPart`]).
     pub id: String,
 }
 
@@ -426,8 +429,9 @@ impl FlatPattern {
 }
 
 /// The sheet-metal parts and folds of the active document, in history
-/// order (the parts first): each a pattern a DXF or SVG export can draw.
-/// None when there is no document or the query fails.
+/// order (the parts first), and with two parts or more every part on one
+/// sheet: each a pattern a DXF or SVG export can draw. None when there is
+/// no document or the query fails.
 pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
     let mut out = Vec::new();
     for kind in PatternKind::ALL {
@@ -442,9 +446,10 @@ pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
             .as_array()
             .map_or(&[][..], Vec::as_slice);
         for item in items {
-            if let (Some(feature), Some(id)) =
-                (field(item, "name").as_str(), field(item, "feature").as_str())
-            {
+            if let (Some(feature), Some(id)) = (
+                field(item, "name").as_str(),
+                field(item, "feature").as_str(),
+            ) {
                 out.push(FlatPattern {
                     kind,
                     feature: feature.to_string(),
@@ -452,6 +457,17 @@ pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
                 });
             }
         }
+    }
+    let parts = out
+        .iter()
+        .filter(|p| p.kind == PatternKind::SheetMetal)
+        .count();
+    if parts > 1 {
+        out.push(FlatPattern {
+            kind: PatternKind::EveryPart,
+            feature: "every part".to_string(),
+            id: String::new(),
+        });
     }
     out
 }
@@ -634,11 +650,23 @@ pub fn export_params(
         && let Some(pattern) = &plan.sheet.pattern
     {
         // The part's flat pattern or the fold's crease pattern, whatever
-        // is selected.
-        params.push((
-            pattern.kind.param(),
-            Value::String(pattern.feature.clone()),
-        ));
+        // is selected; every part's on one sheet, with its width and gap.
+        if pattern.kind == PatternKind::EveryPart {
+            let parts: Vec<Value> = flat_patterns(session)
+                .into_iter()
+                .filter(|p| p.kind == PatternKind::SheetMetal)
+                .map(|p| Value::String(p.feature))
+                .collect();
+            params.push(("sheetMetal", Value::Array(parts)));
+            for (key, text) in [("width", &plan.sheet.width), ("gap", &plan.sheet.gap)] {
+                let text = text.trim();
+                if !text.is_empty() {
+                    params.push((key, Value::String(text.to_string())));
+                }
+            }
+        } else {
+            params.push((pattern.kind.param(), Value::String(pattern.feature.clone())));
+        }
         return Ok(params);
     }
     if export_kind(name) == Some(ExportKind::Outline)
@@ -754,6 +782,9 @@ fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan
                     "The part's flat pattern at true size: the outline to cut and the bend lines"
                 }
                 PatternKind::Fold => "The fold's crease pattern at true size",
+                PatternKind::EveryPart => {
+                    "Every sheet-metal part's flat pattern side by side on one sheet, at true size"
+                }
             };
             if ui
                 .radio(chosen, pattern.label())
@@ -765,7 +796,12 @@ fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan
             }
         }
     });
-    if plan.sheet.set.is_none() {
+    let every = plan
+        .sheet
+        .pattern
+        .as_ref()
+        .is_some_and(|p| p.kind == PatternKind::EveryPart);
+    if plan.sheet.set.is_none() && !every {
         return;
     }
     ui.horizontal(|ui| {
@@ -1103,7 +1139,10 @@ mod tests {
         .unwrap();
         let svg = export_check(&mut session, "a.svg");
         let labels: Vec<String> = svg.patterns.iter().map(FlatPattern::label).collect();
-        assert_eq!(labels, vec!["Flat pattern of Part", "Crease pattern of Crane"]);
+        assert_eq!(
+            labels,
+            vec!["Flat pattern of Part", "Crease pattern of Crane"]
+        );
         assert!(svg.asks(), "{svg:?}");
         assert!(export_check(&mut session, "a.step").patterns.is_empty());
         // The part's body selected: its flat pattern, as the command.
@@ -1164,6 +1203,56 @@ mod tests {
                     .any(|(k, _)| *k == key)
             );
         }
+        // A second part: every part's flat pattern on one sheet.
+        guarded(
+            &mut session,
+            "sketch.create",
+            &json!({"plane": "xy", "name": "S2"}),
+        )
+        .unwrap();
+        guarded(
+            &mut session,
+            "sketch.rect",
+            &json!({"sketch": "S2", "from": [0, 100], "to": [30, 130]}),
+        )
+        .unwrap();
+        guarded(
+            &mut session,
+            "feature.sheetMetal",
+            &json!({"sketch": "S2", "name": "Lid", "thickness": "1 mm", "radius": "1 mm",
+                "kFactor": 0.4, "flanges": [{"edge": "e5", "length": "10 mm", "angle": "90 deg"}]}),
+        )
+        .unwrap();
+        let svg = export_check(&mut session, "a.svg");
+        let every = svg.patterns.last().cloned().unwrap();
+        assert_eq!(every.label(), "Flat patterns of every part");
+        let plan = ExportPlan {
+            sheet: SheetPlan {
+                pattern: Some(every),
+                width: "200 mm".into(),
+                ..SheetPlan::default()
+            },
+            ..ExportPlan::default()
+        };
+        let params = export_params(&mut session, "a.dxf", &plan).unwrap();
+        assert_eq!(
+            params,
+            vec![
+                ("sheetMetal", json!(["Part", "Lid"])),
+                ("width", json!("200 mm"))
+            ]
+        );
+        let mut call = json!({"path": "a.dxf"});
+        for (key, value) in params {
+            call[key] = value;
+        }
+        let written = guarded(&mut session, "file.export", &call).unwrap();
+        assert_eq!(
+            written["sheetMetal"].as_array().map(Vec::len),
+            Some(2),
+            "{written}"
+        );
+        assert!(session.take_file("a.dxf").is_some());
         // A pattern of a part the document does not have is not offered.
         let gone = SheetPlan {
             pattern: Some(FlatPattern {

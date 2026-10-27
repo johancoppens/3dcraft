@@ -1319,7 +1319,15 @@ impl FeatureKind {
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
             FeatureKind::Fold(f) => vec![f.sketch],
-            FeatureKind::SheetMetal(m) => vec![m.sketch],
+            FeatureKind::SheetMetal(m) => {
+                let mut out = vec![m.sketch];
+                for id in &m.cutouts {
+                    if !out.contains(id) {
+                        out.push(*id);
+                    }
+                }
+                out
+            }
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1929,6 +1937,15 @@ impl Document {
                     "the sheet-metal part `{}` has {} flanges; the most is {MAX_SHEET_FLANGES}",
                     feature.name,
                     part.flanges.len()
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
+                && part.cutouts.len() > MAX_SHEET_FLANGES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}` has {} cut-out sketches; the most is {MAX_SHEET_FLANGES}",
+                    feature.name,
+                    part.cutouts.len()
                 )));
             }
             if let FeatureKind::Loft(loft) = &feature.kind

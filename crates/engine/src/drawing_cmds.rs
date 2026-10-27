@@ -93,8 +93,16 @@ pub(crate) fn export(
             crate::fold_cmds::crease_pattern(session, p, ID)?
         }
         ["sheetMetal"] => {
+            // A list of parts is a sheet of their flat patterns, `gap`
+            // apart in rows of at most `width`.
+            let sheet = matches!(p.get("sheetMetal"), Some(Value::Array(_)));
+            let own: &[&str] = if sheet {
+                &["feature", "construction", "xAxis", "origin"]
+            } else {
+                &["feature", "construction", "xAxis", "origin", "gap", "width"]
+            };
             refuse(
-                &["feature", "construction", "xAxis", "origin", "gap", "width"],
+                own,
                 "is about the outline of a sketch or of faces; a flat pattern is drawn in its sketch's axes",
             )?;
             crate::sheetmetal_cmds::flat_pattern(session, p, ID)?

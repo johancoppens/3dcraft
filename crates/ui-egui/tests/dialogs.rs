@@ -406,7 +406,10 @@ fn the_export_dialog_offers_a_flat_pattern() {
         frame(&ctx, &mut shell, &mut session, Vec::new());
     }
     let mut plan = shell.export_dialog().unwrap().plan.clone();
-    assert_eq!(plan.sheet.pattern, None, "the view until a pattern is chosen");
+    assert_eq!(
+        plan.sheet.pattern, None,
+        "the view until a pattern is chosen"
+    );
     plan.sheet.pattern = check.patterns.first().cloned();
     shell.answer_export(Some(plan.clone()));
     let (_, answered) = shell.take_export_answer().unwrap();

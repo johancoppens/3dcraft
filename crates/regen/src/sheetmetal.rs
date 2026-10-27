@@ -18,10 +18,11 @@ use craft3d_doc::{
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::profile::detect_profiles;
+use craft3d_kernel::profile::{Curve2, SketchCurve};
 use craft3d_kernel::sheetmetal::{
-    self, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
+    self, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
 };
-use craft3d_math::Tolerance;
+use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, FaceId};
 use std::sync::Arc;
 
@@ -118,7 +119,47 @@ pub(crate) fn analyse(
         return Err(format!("sketch `{name}` lost its base profile"));
     }
     let base = profiles.remove(at);
-    let cutouts = profiles;
+    let from = format!("sketch `{name}`");
+    let mut cutouts: Vec<Cutout> = profiles
+        .into_iter()
+        .map(|profile| Cutout {
+            profile,
+            from: from.clone(),
+        })
+        .collect();
+    for (i, &other) in made.cutouts.iter().enumerate() {
+        // A sketch switched off cuts nothing (a vent with `when`).
+        let off = earlier.iter().find(|r| r.id == other).is_some_and(|r| {
+            matches!(
+                r.status,
+                crate::Status::Suppressed | crate::Status::Inactive | crate::Status::RolledBack
+            )
+        });
+        if off {
+            continue;
+        }
+        let holes =
+            crate::extrude::drawn(doc, earlier, other).map_err(|e| format!("cutouts.{i}: {e}"))?;
+        let hname = holes.name.to_string();
+        let curves = carried(&holes.curves, &holes.plane, &drawn.plane, &tol)
+            .map_err(|e| format!("cutouts.{i}: sketch `{hname}` {e}"))?;
+        let found = detect_profiles(&curves, &tol).map_err(|e| {
+            format!(
+                "cutouts.{i}: sketch `{hname}`: {}",
+                profile_error(&e, &holes.solved.curve_ids)
+            )
+        })?;
+        if found.is_empty() {
+            return Err(format!(
+                "cutouts.{i}: sketch `{hname}` has no closed profile to cut"
+            ));
+        }
+        let from = format!("sketch `{hname}`");
+        cutouts.extend(found.into_iter().map(|profile| Cutout {
+            profile,
+            from: from.clone(),
+        }));
+    }
     let thickness = length(doc, variables, "thickness", &made.thickness)?;
     let radius = length(doc, variables, "radius", &made.radius)?;
     let k = number(variables, "kFactor", &made.k_factor)?;
@@ -181,6 +222,73 @@ pub(crate) fn analyse(
         tolerance: tol,
         sketch: name,
     })
+}
+
+/// The curves of a sketch drawn in the plane `from`, in the axes of the
+/// plane `to` (the base sketch's): the same plane, with any origin, axes
+/// and side. Every point is carried by the rigid motion between the two
+/// frames; a frame whose normal points the other way mirrors the curves
+/// in the base's axes, so an arc, counter-clockwise from its start to its
+/// end, then runs from its carried end to its carried start. Refused when
+/// the plane is not the base's: the normals not parallel within the
+/// angular tolerance, or a point off the base's plane by more than the
+/// tolerance.
+fn carried(
+    curves: &[SketchCurve],
+    from: &Frame,
+    to: &Frame,
+    tol: &Tolerance,
+) -> Result<Vec<SketchCurve>, String> {
+    let off = || {
+        "is not in the base sketch's plane: its holes cannot be cut in the flat pattern".to_string()
+    };
+    if !(from.z().cross(to.z()).length() <= tol.angular) {
+        return Err(off());
+    }
+    let mirrored = from.z().dot(to.z()) < 0.0;
+    let at = |p: [f64; 2]| -> Result<[f64; 2], String> {
+        let (x, y, z) = to.local(from.point(p[0], p[1], 0.0));
+        if z.abs() <= tol.linear && x.is_finite() && y.is_finite() {
+            Ok([x, y])
+        } else {
+            Err(off())
+        }
+    };
+    curves
+        .iter()
+        .map(|c| {
+            let curve = match &c.curve {
+                Curve2::Line { start, end } => Curve2::Line {
+                    start: at(*start)?,
+                    end: at(*end)?,
+                },
+                Curve2::Arc { center, start, end } => {
+                    let (start, end) = if mirrored {
+                        (at(*end)?, at(*start)?)
+                    } else {
+                        (at(*start)?, at(*end)?)
+                    };
+                    Curve2::Arc {
+                        center: at(*center)?,
+                        start,
+                        end,
+                    }
+                }
+                Curve2::Circle { center, radius } => Curve2::Circle {
+                    center: at(*center)?,
+                    radius: *radius,
+                },
+                Curve2::Spline(spline) => {
+                    let mut spline = spline.clone();
+                    for p in &mut spline.control {
+                        *p = at(*p)?;
+                    }
+                    Curve2::Spline(spline)
+                }
+            };
+            Ok(SketchCurve { id: c.id, curve })
+        })
+        .collect()
 }
 
 /// Builds a sheet-metal part: the solid and its names.

@@ -692,7 +692,9 @@ pub enum FeatureKind {
     /// the base flat, `flanges` are bent from its straight edges and from
     /// the tips of earlier flanges, with the part's `thickness`, inner
     /// `radius` and `k_factor` unless a flange gives its own; `relief` is
-    /// cut at every corner where two flanged edges meet (format version 41).
+    /// cut at every corner where two flanged edges meet (format version 41);
+    /// the closed profiles of the sketches `cutouts` (and the base sketch's
+    /// other profiles) are holes of the flats they lie in (version 42).
     SheetMetal {
         sketch: u64,
         thickness: String,
@@ -701,6 +703,8 @@ pub enum FeatureKind {
         flanges: Vec<SheetFlange>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relief: Option<SheetRelief>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cutouts: Vec<u64>,
     },
 }
 

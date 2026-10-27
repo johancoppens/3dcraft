@@ -128,8 +128,9 @@ pub struct CornerRelief {
 /// A sheet-metal part.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SheetMetal {
-    /// The sketch whose one closed profile is the base flat (holes
-    /// allowed); it has to come before this feature in the history.
+    /// The sketch whose closed profile the flanges' edges are on is the
+    /// base flat (holes allowed); its other closed profiles are cut-outs
+    /// (below). It has to come before this feature in the history.
     pub sketch: FeatureId,
     pub thickness: Expr,
     /// The inner radius of the bends that do not give their own.
@@ -139,6 +140,12 @@ pub struct SheetMetal {
     pub k_factor: Expr,
     pub flanges: Vec<Flange>,
     pub relief: Option<CornerRelief>,
+    /// Sketches in the base sketch's plane whose closed profiles are holes
+    /// and cut-outs of the flat (the base or a flange's) each lies wholly
+    /// inside in the flat pattern; a sketch switched off (`when`,
+    /// suppressed) cuts nothing. Each comes before this feature.
+    #[serde(default)]
+    pub cutouts: Vec<FeatureId>,
 }
 
 impl SheetMetal {

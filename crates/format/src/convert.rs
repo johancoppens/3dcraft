@@ -641,7 +641,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 k_factor,
                 flanges,
                 relief,
+                cutouts,
             }) => manifest::FeatureKind::SheetMetal {
+                cutouts: cutouts.iter().map(|c| c.0).collect(),
                 sketch: *sketch,
                 thickness: expr_to_manifest(thickness),
                 radius: expr_to_manifest(radius),
@@ -2115,7 +2117,9 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 k_factor,
                 flanges,
                 relief,
+                cutouts,
             } => doc::FeatureKind::SheetMetal(doc::SheetMetal {
+                cutouts: cutouts.into_iter().map(doc::FeatureId).collect(),
                 sketch: doc::FeatureId(sketch),
                 thickness: doc::Expr(thickness),
                 radius: doc::Expr(radius),
