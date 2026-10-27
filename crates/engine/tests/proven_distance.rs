@@ -520,15 +520,12 @@ fn a_turned_spline_dome_is_proven_to_its_distance() {
     );
 }
 
-/// A tolerant body (a STEP block whose corner (10, 20, 30) is moved 1e-4
-/// along x, off the edges and faces that meet there, and imported loose)
-/// under a ball: the ball is right over that corner, so the pieces of the
-/// faces near it are the ones the proof cuts down, and their outlines may
-/// lie that far from the edges' curves, which telling pieces in from out
-/// allows for. The nearest place is the corner, 2 below the ball.
-#[test]
-fn a_loose_import_is_proven_no_higher_than_it_is() {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("proven-distance-loose");
+/// A session holding a tolerant body `F1`: a STEP block 10 × 20 × 30
+/// whose corner (10, 20, 30) is moved `by` along x, off the edges and
+/// faces that meet there, imported loose. `name` keeps the files of each
+/// test apart.
+fn loose_block(name: &str, by: &str) -> Session {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut s = Session::new(Workspace::unrestricted());
@@ -559,7 +556,7 @@ fn a_loose_import_is_proven_no_higher_than_it_is() {
                 && vertex_points.iter().any(|id| line.starts_with(id.as_str()))
             {
                 moved_lines += 1;
-                line.replace(corner, "=CARTESIAN_POINT('',(10.0001,20.,30.));")
+                line.replace(corner, &format!("=CARTESIAN_POINT('',({by},20.,30.));"))
             } else {
                 line.to_string()
             }
@@ -583,7 +580,22 @@ fn a_loose_import_is_proven_no_higher_than_it_is() {
             >= 1,
         "{imported}"
     );
-    // A ball right over the loose corner.
+    s
+}
+
+/// A tolerant body (the block of [`loose_block`], its corner 1e-4 off)
+/// under a ball right over that corner: the pieces of the faces near it
+/// are the ones the proof cuts down, and their outlines may lie that far
+/// from the edges' curves, which telling pieces in from out allows for.
+/// The nearest place is the corner, 2 below the ball, proven to within the
+/// body's tolerance. (Telling those pieces by their middles alone, without
+/// the tolerance, gives the same numbers here and wherever else the ball
+/// was put around the corner: the edges and the vertex, whose bounds take
+/// the tolerance off, hold the nearest place. The rule itself is pinned
+/// in `verify_bound.rs`'s tests.)
+#[test]
+fn a_loose_import_is_proven_no_higher_than_it_is() {
+    let mut s = loose_block("proven-distance-loose", "10.0001");
     run(
         &mut s,
         "feature.sphere",

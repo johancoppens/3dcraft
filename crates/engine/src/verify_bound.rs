@@ -1522,7 +1522,117 @@ fn consider(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use crate::verify::Part;
+    use crate::{Session, Workspace};
+    use craft3d_geom::Surface;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    /// A STEP block 10 × 20 × 30 whose corner (10, 20, 30) is moved 1e-4
+    /// along x, imported loose (as `proven_distance.rs` makes it).
+    fn loose_block() -> Arc<craft3d_topo::Body> {
+        let dir = std::env::temp_dir().join(format!("craft3d-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |s: &mut Session, id: &str, params: serde_json::Value| {
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+        };
+        let mut s = Session::new(Workspace::unrestricted());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(&mut s, "feature.block", json!({"size": [10, 20, 30]}));
+        let path = dir.join("block.step");
+        run(
+            &mut s,
+            "file.export",
+            json!({"path": path.to_string_lossy()}),
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        let vertex_points: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                let (_, rest) = line.split_once("=VERTEX_POINT('',#")?;
+                Some(format!("#{}=", rest.strip_suffix(");")?))
+            })
+            .collect();
+        let corner = "=CARTESIAN_POINT('',(10.,20.,30.));";
+        let moved: String = text
+            .lines()
+            .map(|line| {
+                if line.ends_with(corner) && vertex_points.iter().any(|id| line.starts_with(id)) {
+                    line.replace(corner, "=CARTESIAN_POINT('',(10.0001,20.,30.));")
+                } else {
+                    line.to_string()
+                }
+            })
+            .map(|line| line + "\n")
+            .collect();
+        assert_ne!(moved, text);
+        let loose = dir.join("loose.step");
+        std::fs::write(&loose, moved).unwrap();
+        let mut s = Session::new(Workspace::unrestricted());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "file.import",
+            json!({"path": loose.to_string_lossy()}),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let regen = s.document_mut().unwrap().regen();
+        let (_, body) = regen.bodies().next().unwrap();
+        Arc::clone(body)
+    }
+
+    /// Telling a face's piece in from out by its middle needs the piece
+    /// clear of the face's edges by the body's tolerance as well as twice
+    /// the linear one: a tolerant body's outline (by which the middle is
+    /// told) may lie that far from the edges' curves. A piece of the loose
+    /// block's top half the tolerance from an edge is not told (before,
+    /// only twice the linear tolerance was kept clear, and it was); one
+    /// further in or out is.
+    #[test]
+    fn a_piece_within_a_bodys_tolerance_of_an_edge_is_not_told_by_its_middle() {
+        let body = loose_block();
+        let tolerance = craft3d_math::Tolerance::new(1e-6, 1e-9).unwrap();
+        let part = Part::new(&body, None, &tolerance).unwrap();
+        let parts = [part];
+        let mut search = Search {
+            parts: [&parts, &parts],
+            prims: Vec::new(),
+            keys: BTreeMap::new(),
+            recs: Vec::new(),
+            tol: tolerance.linear,
+            failed: std::collections::BTreeSet::new(),
+        };
+        let top = body
+            .faces
+            .iter()
+            .position(|f| match &f.surface {
+                Surface::Plane(p) => {
+                    p.frame().z().cross(Vec3::Z).length() < 1e-12
+                        && (p.frame().origin().z - 30.0).abs() < 1e-9
+                }
+                _ => false,
+            })
+            .unwrap();
+        let prim = search.prim((0, 0, Kind::Face, top)).unwrap();
+        let tolerant = search.prims[prim].tolerant;
+        assert!((5e-5..5e-4).contains(&tolerant), "{tolerant}");
+        let told = |search: &Search<'_, '_>, x: f64, y: f64| {
+            let p = Vec3::new(x, y, 30.0);
+            let half = Vec3::new(1e-7, 1e-7, 1e-7);
+            search.membership(prim, &Bbox3::from_points([p - half, p + half]), p)
+        };
+        // Half the tolerance in from the edge along y (x = 10), and from
+        // the one along x (y = 20), away from the corner.
+        assert_eq!(told(&search, 10.0 - 0.5 * tolerant, 10.0), None);
+        assert_eq!(told(&search, 5.0, 20.0 - 0.5 * tolerant), None);
+        // Ten tolerances in, and out.
+        assert_eq!(told(&search, 10.0 - 10.0 * tolerant, 10.0), Some(true));
+        assert_eq!(told(&search, 10.0 + 10.0 * tolerant, 10.0), Some(false));
+    }
 
     #[test]
     fn plane_images_measure_as_drawn() {
