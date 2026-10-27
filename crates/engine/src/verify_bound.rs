@@ -56,7 +56,10 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 /// Most pairs of pieces one distance looks at.
 pub(crate) const MAX_NODES: usize = 100_000;
 /// Most pairs of strata of one pair of faces.
-const MAX_STRATA_PAIRS: usize = 4_000_000;
+const MAX_STRATA_PAIRS: usize = 1_000_000;
+/// Most pairs of strata of one distance, all pairs of faces together
+/// (beyond, the pairs of faces fall back on the mesh).
+const MAX_TOTAL_STRATA_PAIRS: usize = 1_000_000;
 /// How deep an edge is halved to tell whether it meets a piece's box.
 const EDGE_DEPTH: u32 = 14;
 /// What counts as one axis, or a direction along a plane, in the
@@ -137,6 +140,9 @@ struct Prim<'a> {
     cnets: CurveNets,
     /// How far the true boundary can be from an edge's curve or a vertex.
     slack: f64,
+    /// The body's largest entity tolerance: how far a face's outline (by
+    /// which `on_face` tells in from out) can be from its edges' curves.
+    tolerant: f64,
     boundary: Vec<Bound<'a>>,
     sym: Sym,
     root: Param,
@@ -161,6 +167,15 @@ struct Rec {
     cone: Option<Cone>,
     /// The pieces it was cut into, per direction cut (u or t, v).
     children: [Option<Vec<usize>>; 2],
+}
+
+/// What making a piece came to.
+enum Made {
+    Rec(usize),
+    /// Out of its face: nothing of the face is lost by leaving it out.
+    Out,
+    /// It could not be enclosed (or its middle is not finite).
+    Failed,
 }
 
 struct Node {
@@ -469,6 +484,8 @@ struct Search<'p, 'a> {
     keys: BTreeMap<Key, Option<usize>>,
     recs: Vec<Rec>,
     tol: f64,
+    /// Strata a piece of which could not be enclosed.
+    failed: std::collections::BTreeSet<usize>,
 }
 
 impl<'p, 'a> Search<'p, 'a>
@@ -489,7 +506,10 @@ where
             self.prims.push(prim);
             self.prims.len() - 1
         });
-        let id = id.and_then(|p| self.make_rec(p, None).map(|_| p));
+        let id = id.and_then(|p| match self.make_rec(p, None) {
+            Made::Rec(_) => Some(p),
+            Made::Out | Made::Failed => None,
+        });
         self.keys.insert(key, id);
         id
     }
@@ -536,6 +556,7 @@ where
                     snets,
                     cnets: CurveNets::default(),
                     slack: 0.0,
+                    tolerant: slack,
                     boundary,
                     sym: surface_sym(surface),
                     root,
@@ -557,6 +578,7 @@ where
                     snets: SurfaceNets::default(),
                     cnets: CurveNets::of(&edge.curve),
                     slack,
+                    tolerant: slack,
                     boundary: Vec::new(),
                     sym: curve_sym(&edge.curve),
                     root: Param::Edge(edge.range),
@@ -574,6 +596,7 @@ where
                     snets: SurfaceNets::default(),
                     cnets: CurveNets::default(),
                     slack,
+                    tolerant: slack,
                     boundary: Vec::new(),
                     sym: Sym::None,
                     root: Param::Vertex(v.point),
@@ -582,9 +605,16 @@ where
         }
     }
 
-    /// A piece of `prim` over `param` (its root when `None`); `None` when
-    /// it cannot be enclosed, or it lies out of its face.
-    fn make_rec(&mut self, prim_id: usize, param: Option<(Param, bool)>) -> Option<usize> {
+    /// A piece of `prim` over `param` (its root when `None`), or that it
+    /// lies out of its face, or that it cannot be enclosed.
+    fn make_rec(&mut self, prim_id: usize, param: Option<(Param, bool)>) -> Made {
+        match self.try_rec(prim_id, param) {
+            Some(made) => made,
+            None => Made::Failed,
+        }
+    }
+
+    fn try_rec(&mut self, prim_id: usize, param: Option<(Param, bool)>) -> Option<Made> {
         let prim = self.prims.get(prim_id)?;
         let (param, inside) = param.unwrap_or((prim.root, false));
         let (piece, center) = match param {
@@ -610,7 +640,7 @@ where
         if !inside {
             match self.membership(prim_id, &bbox, center) {
                 Some(true) => inside = true,
-                Some(false) => return None,
+                Some(false) => return Some(Made::Out),
                 None => {}
             }
         }
@@ -624,7 +654,7 @@ where
             cone,
             children: [None, None],
         });
-        Some(self.recs.len() - 1)
+        Some(Made::Rec(self.recs.len() - 1))
     }
 
     /// Whether a face's piece (its box, its middle on the surface) is in
@@ -633,7 +663,7 @@ where
     fn membership(&self, prim_id: usize, bbox: &Bbox3, middle: Vec3) -> Option<bool> {
         let prim = self.prims.get(prim_id)?;
         let part = self.part(prim.side, prim.part)?;
-        let reach = grown(bbox, 2.0 * self.tol + prim.slack);
+        let reach = grown(bbox, 2.0 * self.tol + prim.tolerant);
         for edge in &prim.boundary {
             if edge_near(edge, &reach) {
                 return None;
@@ -671,10 +701,19 @@ where
             }
             Param::Vertex(_) => Vec::new(),
         };
-        let made: Vec<usize> = halves
-            .into_iter()
-            .filter_map(|p| self.make_rec(prim, Some((p, inside))))
-            .collect();
+        let mut made = Vec::new();
+        for half in halves {
+            match self.make_rec(prim, Some((half, inside))) {
+                Made::Rec(id) => made.push(id),
+                Made::Out => {}
+                // A half that cannot be enclosed: what it holds is not
+                // bounded, so the pairs of faces of this stratum are not
+                // proven.
+                Made::Failed => {
+                    self.failed.insert(prim);
+                }
+            }
+        }
         if let Some(slot) = self
             .recs
             .get_mut(rec_id)
@@ -854,6 +893,26 @@ where
     }
 }
 
+/// The most distance from `q` of a piece's box (its farthest corner).
+fn reach_from(rec: &Rec, q: Vec3) -> f64 {
+    rec.bbox.corners().map_or(f64::INFINITY, |(l, h)| {
+        let d = |a: f64, b: f64, c: f64| (a - c).abs().max((b - c).abs());
+        Vec3::new(d(l.x, h.x, q.x), d(l.y, h.y, q.y), d(l.z, h.z, q.z)).length()
+    })
+}
+
+/// What an axis or a plane that is one with `(o, z)` only to rounding
+/// (`tilt`, the sine of the angle) can move a piece's image by: a point
+/// `p` of the piece is placed from its own frame's origin `o2`, so its
+/// error is `tilt |p − o2|`, and its place about `(o, z)` errs by
+/// `tilt |p − o|` again; a cone's radius follows its height by `slope`.
+fn tilt_margin(rec: &Rec, tilt: f64, o: Vec3, o2: Vec3, slope: f64) -> f64 {
+    let reach = reach_from(rec, o2) + reach_from(rec, o);
+    // With the rounding of the image's coordinates, a few units in the
+    // last place of what they are made from.
+    2.0 * tilt * reach * (1.0 + slope.abs()) + 2e-15 * (o.length() + o2.length() + reach)
+}
+
 /// How far a point is from the axis through `o` along unit `z`.
 fn from_axis(p: Vec3, o: Vec3, z: Vec3) -> f64 {
     let w = p - o;
@@ -907,7 +966,11 @@ fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3) -> (Img, f64) {
             if !same_axis(tilt, offset, size) {
                 return boxed;
             }
-            let margin = offset + 2.0 * tilt * size;
+            let slope = match shape {
+                Shape::Cone { slope, .. } => slope,
+                _ => 0.0,
+            };
+            let margin = offset * (1.0 + slope.abs()) + tilt_margin(rec, tilt, o, o2, slope);
             let at = (o2 - o).dot(z);
             let image = match shape {
                 Shape::Cylinder { r } => Img::Seg((r, lo), (r, hi)),
@@ -945,7 +1008,10 @@ fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3) -> (Img, f64) {
                 }
                 _ => 0.0,
             };
-            (Img::Seg((near, h), (far, h)), 2.0 * tilt * size)
+            (
+                Img::Seg((near, h), (far, h)),
+                tilt_margin(rec, tilt, o, o2, 0.0),
+            )
         }
         Sym::Line { o: o2, dir } => {
             let (tilt, _) = off_axis(o2, dir, o, z);
@@ -953,7 +1019,10 @@ fn meridian_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3) -> (Img, f64) {
                 return boxed;
             }
             let rho = from_axis(o2, o, z);
-            (Img::Seg((rho, lo), (rho, hi)), 2.0 * tilt * size)
+            (
+                Img::Seg((rho, lo), (rho, hi)),
+                tilt_margin(rec, tilt, o, o2, 0.0),
+            )
         }
         Sym::None => boxed,
     }
@@ -965,7 +1034,6 @@ fn section_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3, e1: Vec3, e2: Vec
     let span = |e: Vec3| (rec.piece.least(e) - o.dot(e), rec.piece.most(e) - o.dot(e));
     let (x, y) = (span(e1), span(e2));
     let boxed = (Img::Rect(x.0, x.1, y.0, y.1), 0.0);
-    let size = rec.bbox.diagonal() + (center(&rec.bbox) - o).length();
     let at = |p: Vec3| ((p - o).dot(e1), (p - o).dot(e2));
     match prim.sym {
         Sym::Axis {
@@ -977,7 +1045,7 @@ fn section_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3, e1: Vec3, e2: Vec
             if tilt > SAME_AXIS {
                 return boxed;
             }
-            (Img::Circle(at(o2), r), 2.0 * tilt * size)
+            (Img::Circle(at(o2), r), tilt_margin(rec, tilt, o, o2, 0.0))
         }
         Sym::Plane { o: o2, n } => {
             let tilt = n.dot(z).abs();
@@ -993,7 +1061,7 @@ fn section_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3, e1: Vec3, e2: Vec
                 rec.piece.most(t) - o2.dot(t),
             );
             let (p0, p1) = (o2 + t * s0, o2 + t * s1);
-            (Img::Seg(at(p0), at(p1)), 2.0 * tilt * size)
+            (Img::Seg(at(p0), at(p1)), tilt_margin(rec, tilt, o, o2, 0.0))
         }
         Sym::Line { o: o2, dir } => {
             let tilt = dir.cross(z).length();
@@ -1001,7 +1069,7 @@ fn section_image(prim: &Prim<'_>, rec: &Rec, o: Vec3, z: Vec3, e1: Vec3, e2: Vec
                 return boxed;
             }
             let p = at(o2);
-            (Img::Seg(p, p), 2.0 * tilt * size)
+            (Img::Seg(p, p), tilt_margin(rec, tilt, o, o2, 0.0))
         }
         _ => boxed,
     }
@@ -1143,6 +1211,7 @@ pub(crate) fn prove(
         keys: BTreeMap::new(),
         recs: Vec::new(),
         tol,
+        failed: std::collections::BTreeSet::new(),
     };
     let mut best = found;
     let mut nearer: Option<Nearer> = None;
@@ -1156,7 +1225,10 @@ pub(crate) fn prove(
             continue;
         };
         let (sa, sb) = (strata(part_a, 0, fa.0, fa.1), strata(part_b, 1, fb.0, fb.1));
-        if sa.len().saturating_mul(sb.len()) > MAX_STRATA_PAIRS {
+        let count = sa.len().saturating_mul(sb.len());
+        if count > MAX_STRATA_PAIRS
+            || stratum_pairs.len().saturating_add(count) > MAX_TOTAL_STRATA_PAIRS
+        {
             per_face.push(None);
             continue;
         }
@@ -1213,9 +1285,11 @@ pub(crate) fn prove(
             search.prims.get(pb),
         ) {
             let apart = boxes_distance(&x.bbox, &y.bbox) - px.slack - py.slack;
-            if apart >= enough(best) {
+            // Past the work allowed, the rest are bounded by their boxes
+            // alone: nothing more is kept for them.
+            if apart >= enough(best) || work >= MAX_NODES {
                 if let Some(slot) = least.get_mut(id) {
-                    *slot = slot.min(apart);
+                    *slot = slot.min(apart.max(0.0));
                 }
                 continue;
             }
@@ -1296,14 +1370,25 @@ pub(crate) fn prove(
             );
         }
     }
+    // A pair of strata with a piece that could not be enclosed proves
+    // nothing: its pairs of faces fall back on the mesh.
+    let mut unproven = vec![false; pair_faces.len()];
+    for (&(pa, pb), &id) in &stratum_pairs {
+        if (search.failed.contains(&pa) || search.failed.contains(&pb))
+            && let Some(slot) = unproven.get_mut(id)
+        {
+            *slot = true;
+        }
+    }
     let lower = per_face
         .into_iter()
         .map(|list| {
-            list.map(|ids| {
-                ids.iter()
-                    .filter_map(|id| least.get(*id).copied())
-                    .fold(f64::INFINITY, f64::min)
-            })
+            list.filter(|ids| !ids.iter().any(|id| unproven.get(*id) == Some(&true)))
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| least.get(*id).copied())
+                        .fold(f64::INFINITY, f64::min)
+                })
         })
         .collect();
     Proof { lower, nearer }

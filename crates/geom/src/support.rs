@@ -49,7 +49,7 @@
 
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use crate::{Curve3, GeomError, Surface};
+use crate::{Curve3, GeomError, MAX_DEGREE, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -71,6 +71,9 @@ struct SpanNet {
     m: usize,
     n: usize,
     c: Vec<Hom>,
+    /// The scale of the rounding of a net cut from this one (see
+    /// [`rounding_reach`]).
+    reach: f64,
 }
 
 /// The Bézier spans of a freeform surface, made once per surface.
@@ -84,6 +87,28 @@ pub struct SurfaceNets {
 struct PieceNet {
     t: (f64, f64),
     c: Vec<Hom>,
+    /// As for [`SpanNet`].
+    reach: f64,
+}
+
+/// What the rounding of a net cut from `net` (degree `degree` in all)
+/// scales with: de Casteljau's steps work on the original net's
+/// homogeneous points, so their size, the spread of the weights (the
+/// division by `w` at the end) and the number of steps (the degree).
+fn rounding_reach(net: &[Hom], degree: usize) -> f64 {
+    let (mut size, mut lightest, mut heaviest) = (0.0_f64, f64::INFINITY, 0.0_f64);
+    for h in net {
+        let w = h[3].abs();
+        size = size.max(Vec3::new(h[0], h[1], h[2]).length() / w.max(f64::MIN_POSITIVE));
+        lightest = lightest.min(w);
+        heaviest = heaviest.max(w);
+    }
+    let spread = if lightest > 0.0 {
+        heaviest / lightest
+    } else {
+        f64::INFINITY
+    };
+    size * spread * (1.0 + degree as f64)
 }
 
 /// The Bézier pieces of a freeform curve, made once per curve.
@@ -108,22 +133,30 @@ impl SurfaceNets {
             .into_iter()
             .map(|span| {
                 let (m, n) = span.patch.degrees();
-                let c = span
+                if m > MAX_DEGREE || n > MAX_DEGREE {
+                    return Err(GeomError::DegreeTooHigh {
+                        degree: m.max(n),
+                        max: MAX_DEGREE,
+                    });
+                }
+                let c: Vec<Hom> = span
                     .patch
                     .control_points()
                     .into_iter()
                     .zip(span.patch.weights())
                     .map(|(p, w)| [p.x * w, p.y * w, p.z * w, w])
                     .collect();
-                SpanNet {
+                let reach = rounding_reach(&c, m + n);
+                Ok(SpanNet {
                     u: span.u,
                     v: span.v,
                     m,
                     n,
                     c,
-                }
+                    reach,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, GeomError>>()?;
         Ok(SurfaceNets { spans })
     }
 }
@@ -137,14 +170,19 @@ impl CurveNets {
         let pieces = c
             .bezier_pieces()
             .into_iter()
-            .map(|(t, points)| PieceNet {
-                t,
-                c: points
+            .map(|(t, points)| {
+                let c: Vec<Hom> = points
                     .into_iter()
                     .map(|(p, w)| [p.x * w, p.y * w, p.z * w, w])
-                    .collect(),
+                    .collect();
+                let reach = rounding_reach(&c, c.len().saturating_sub(1));
+                PieceNet { t, c, reach }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // A degree past the cap: no pieces, so no enclosure (refused).
+        if pieces.iter().any(|p| p.c.len() > MAX_DEGREE + 1) {
+            return CurveNets::default();
+        }
         CurveNets { pieces }
     }
 }
@@ -404,6 +442,7 @@ pub fn surface_piece(
             // The differences of the cut nets along u and along v.
             let (mut along_u, mut along_v) = (Vec::new(), Vec::new());
             let mut polynomial = true;
+            let mut rounding = 0.0_f64;
             for span in &nets.spans {
                 let (a, b) = (u.0.max(span.u.0), u.1.min(span.u.1));
                 let (c, d) = (v.0.max(span.v.0), v.1.min(span.v.1));
@@ -416,6 +455,7 @@ pub fn surface_piece(
                 }
                 let lu = local(span.u, (a, b))?;
                 let lv = local(span.v, (c, d))?;
+                rounding = rounding.max(span.reach);
                 let net = cut_net(span, lu, lv);
                 polynomial &= net.iter().all(|h| (h[3] - 1.0).abs() <= 1e-12);
                 let pts = points(&net)?;
@@ -440,7 +480,7 @@ pub fn surface_piece(
             if all.is_empty() {
                 return None;
             }
-            let reach = all.iter().map(|p| p.length()).fold(0.0, f64::max);
+            let reach = all.iter().map(|p| p.length()).fold(rounding, f64::max);
             let cone = if polynomial {
                 normal_cone(&along_u, &along_v)
             } else {
@@ -561,6 +601,7 @@ pub fn curve_piece(curve: &Curve3, nets: &CurveNets, t: (f64, f64)) -> Option<Pi
                 .weights()
                 .iter()
                 .any(|w| (w - 1.0).abs() > 1e-12 * w.abs().max(1.0));
+            let mut rounding = 0.0_f64;
             for piece in &nets.pieces {
                 let (a, b) = (t.0.max(piece.t.0), t.1.min(piece.t.1));
                 if !(a <= b) {
@@ -570,12 +611,17 @@ pub fn curve_piece(curve: &Curve3, nets: &CurveNets, t: (f64, f64)) -> Option<Pi
                     return None;
                 }
                 let (la, lb) = local(piece.t, (a, b))?;
+                rounding = rounding.max(piece.reach);
                 all.push(points(&reparametrise(&piece.c, la, lb))?);
             }
             if all.is_empty() {
                 return None;
             }
-            let reach = all.iter().flatten().map(|p| p.length()).fold(0.0, f64::max);
+            let reach = all
+                .iter()
+                .flatten()
+                .map(|p| p.length())
+                .fold(rounding, f64::max);
             Piece::CurveHull {
                 nets: all,
                 rational,

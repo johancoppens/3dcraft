@@ -364,6 +364,9 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     let mut found: Vec<(f64, Key, Vec3, Vec3)> = Vec::new();
     // Per pair of faces compared: what the mesh proves.
     let mut meshed: Vec<(Key, f64)> = Vec::new();
+    // Per pair of faces compared on their triangles: the least distance of
+    // the pairs of triangles not left out (none: every one was).
+    let mut compared: Vec<(Key, Option<f64>)> = Vec::new();
     // The pairs not compared are at least this far apart.
     let mut beyond = f64::INFINITY;
     let err = |parts: &[Part<'_>], (i, f): (usize, usize)| parts.get(i).map_or(chord, |p| p.err(f));
@@ -399,15 +402,23 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
         }
         if let Some((d, p, q)) = pair_best {
             found.push((d, (ka, kb), p, q));
-            // Triangle pairs left out were further than `best + slack`.
-            let d = d.min(best + slack);
-            meshed.push(((ka, kb), d - err(a, ka) - err(b, kb)));
         }
         // A face pair without triangles: from points of their edges.
         if ta.is_empty() || tb.is_empty() {
             meshed.push(((ka, kb), box_distance));
             found.push((f64::INFINITY, (ka, kb), Vec3::ZERO, Vec3::ZERO));
+        } else {
+            compared.push(((ka, kb), pair_best.map(|(d, ..)| d)));
         }
+    }
+    // A pair of triangles left out was further apart than `best + slack`
+    // at the time, so than the final `best + slack`: per pair of faces the
+    // mesh proves the lesser of that and its own least, less what each
+    // face can be off by. A pair all of whose triangles were left out
+    // proves `best + slack` less that (not nothing: the pair is counted).
+    for (key, d) in compared {
+        let d = d.map_or(best + slack, |d| d.min(best + slack));
+        meshed.push((key, d - err(a, key.0) - err(b, key.1)));
     }
     found.retain(|(d, ..)| *d <= best + slack || !d.is_finite());
     found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
@@ -460,7 +471,9 @@ pub(crate) fn distance(a: &[Part<'_>], b: &[Part<'_>]) -> Answer<Nearest> {
     if !short.is_empty() && answer.distance > close {
         let proof = crate::verify_bound::prove(a, b, &short, answer.distance, close, linear);
         for (key, lower) in short.iter().zip(proof.lower) {
-            if let Some(lower) = lower {
+            // No pair of strata bounded (all ruled out) is not taken as
+            // a proof of anything.
+            if let Some(lower) = lower.filter(|l| l.is_finite()) {
                 proven.insert(*key, lower);
             }
         }

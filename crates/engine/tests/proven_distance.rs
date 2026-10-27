@@ -61,6 +61,11 @@ fn measured(
         proven <= found,
         "{what}: proven {proven} above found {found}"
     );
+    // Never above the closed form (to what the geometry is fitted to).
+    assert!(
+        proven <= want + found_tol,
+        "{what}: proven {proven} above the true {want}"
+    );
     assert!(
         found - proven <= proof_tol,
         "{what}: proven only {proven} of {found}"
@@ -129,6 +134,13 @@ fn parallel_discs_are_proven_to_their_gap_at_three_scales() {
             json!({"name": "gap", "measure": "clearance", "from": "P1", "to": "P3", "min": mm(1.0)}),
         );
         assert_eq!(status(&mut s, "gap"), AssertionStatus::Passed, "at {k}");
+        // A hair over the gap fails: a real place is nearer.
+        run(
+            &mut s,
+            "assert.add",
+            json!({"name": "over", "measure": "clearance", "from": "P1", "to": "P3", "min": format!("{} mm", k + (1e-4 * k).max(1e-5))}),
+        );
+        assert_eq!(status(&mut s, "over"), AssertionStatus::Failed, "at {k}");
     }
 }
 
@@ -376,5 +388,189 @@ fn involute_flanks_are_proven_close_to_their_backlash() {
         1e-5,
         1e-5,
         "involute flanks",
+    );
+}
+
+/// A ball over a hole: under it the plate's top face has a hole, so only
+/// telling its pieces in from out (by their middles) keeps the plane
+/// under the ball from counting; the nearest place is the rim, at
+/// √(10² + 2²) − 3.
+#[test]
+fn a_ball_over_a_hole_is_measured_to_the_rim() {
+    let mut s = new();
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Stock", "size": ["40 mm", "40 mm", "10 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": "10 mm", "height": "30 mm", "position": ["20 mm", "20 mm", "-10 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Stock", "tool": "Drill", "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": "3 mm", "position": ["20 mm", "20 mm", "12 mm"]}),
+    );
+    let want = 104.0_f64.sqrt() - 3.0;
+    measured(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Ball", "to": "Plate"}),
+        "clearance",
+        want,
+        1e-9,
+        1e-6,
+        "ball over a hole",
+    );
+}
+
+/// A pin in a hole a million from the origin (frames far from where the
+/// pieces are: the margin of an axis that is one only to rounding).
+#[test]
+fn a_pin_far_from_the_origin_is_proven_no_higher_than_it_is() {
+    let mut s = new();
+    let at = |x: f64| format!("{} mm", 1e6 + x);
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Stock", "size": ["40 mm", "40 mm", "10 mm"], "position": [at(0.0), at(0.0), "0 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": "10 mm", "height": "30 mm", "position": [at(20.0), at(20.0), "-10 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Stock", "tool": "Drill", "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Pin", "radius": "4 mm", "height": "30 mm", "position": [at(22.0), at(20.0), "-10 mm"]}),
+    );
+    measured(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Pin", "to": "Plate"}),
+        "clearance",
+        4.0,
+        1e-8,
+        1e-6,
+        "pin off its axis at 1e6",
+    );
+}
+
+/// A dome turned from a spline (a revolved spline: a rational surface)
+/// under a lid, 1 apart at its crest on the axis.
+#[test]
+fn a_turned_spline_dome_is_proven_to_its_distance() {
+    let mut s = new();
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Dome", "plane": "xz"}),
+    );
+    run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "Dome", "x": "20 mm * t", "y": "10 mm - 8 mm * t^2", "t": [0, 1]}),
+    );
+    run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "Dome", "start": "e2", "segments": [{"line": ["20 mm", "0 mm"]}, {"line": ["0 mm", "0 mm"]}, {"line": "e1"}]}),
+    );
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Dome", "axis": "y", "name": "Turned"}),
+    );
+    let top = run(
+        &mut s,
+        "measure.boxMax",
+        json!({"of": "Turned", "axis": "z"}),
+    );
+    eprintln!("dome top {top}");
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Lid", "size": ["10 mm", "10 mm", "2 mm"], "position": ["-5 mm", "-5 mm", "11 mm"]}),
+    );
+    measured(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Turned", "to": "Lid"}),
+        "clearance",
+        1.0,
+        1e-6,
+        1e-4,
+        "turned dome under a lid",
+    );
+}
+
+/// A tolerant body (a STEP block with a corner 1e-4 off its edges,
+/// imported loose) under a ball: its faces' outlines may lie that far
+/// from their edges, which telling pieces in from out allows for.
+#[test]
+fn a_loose_import_is_proven_no_higher_than_it_is() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("proven-distance-loose");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "feature.block", json!({"size": [10, 20, 30]}));
+    let path = dir.join("block.step");
+    run(
+        &mut s,
+        "file.export",
+        json!({"path": path.to_string_lossy()}),
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    let moved = text.replacen(
+        "CARTESIAN_POINT('',(10.,",
+        "CARTESIAN_POINT('',(10.0001,",
+        1,
+    );
+    assert_ne!(moved, text);
+    let loose = dir.join("loose.step");
+    std::fs::write(&loose, moved).unwrap();
+    let mut s = Session::new(Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let imported = run(
+        &mut s,
+        "file.import",
+        json!({"path": loose.to_string_lossy()}),
+    );
+    assert!(
+        imported["bodies"][0]["import"]["looseVertices"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{imported}"
+    );
+    // A ball over the middle of the top (z = 30), clear of the corner.
+    run(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": "2 mm", "position": ["5 mm", "10 mm", "34 mm"]}),
+    );
+    measured(
+        &mut s,
+        "measure.clearance",
+        json!({"from": "Ball", "to": "F1"}),
+        "clearance",
+        2.0,
+        1e-6,
+        1e-3,
+        "ball over a loose block",
     );
 }
