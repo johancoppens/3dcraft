@@ -307,3 +307,90 @@ fn an_offset_under_a_work_bound_too_small_for_it_stops_and_says_so() {
     assert!(!allowance::exhausted());
     offset(&sphere, d, 0.25e-6).unwrap();
 }
+
+/// The offset held only where it is used (2026-10-27, the sea kayak's
+/// repro 14): a long twisted ruled surface (782 control points along u,
+/// `S = a(u) + v (b(u) − a(u))` with `a = (L u, 0, 0)` and `b = (L u, W,
+/// c W u²)`, so the normal turns along each ruling) continued across its
+/// rulings to v in [−30, 31], as a developable panel is past a short
+/// ruling. Fitted to the limit over the whole box, the offset runs out of
+/// samples (the normal turns by more than a right angle out there); held
+/// to the limit only within the length `W / 20` along the surface of its
+/// domain, it is fitted, and within that region it is within the limit
+/// of the exact offset at points between the samples, at three scales.
+#[test]
+fn an_offset_held_where_it_is_used_fits_where_the_whole_box_does_not() {
+    use craft3d_geom::offset::{Held, exact, offset_held, offset_over};
+    for k in SCALES {
+        let (length, width, c) = (100.0 * k, 20.0 * k, 0.3);
+        let count = 782;
+        let spans = count - 3;
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+        knots.extend([1.0; 4]);
+        // Control points of `u` and `u²` for a clamped uniform cubic
+        // spline: the Greville abscissae give `u` exactly; `u²` within the
+        // spline's own quadratic precision (its control values are the
+        // blossom `g_i g_j` summed, here the products of neighbours).
+        let greville: Vec<f64> = (0..count)
+            .map(|i| (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0)
+            .collect();
+        let square: Vec<f64> = (0..count)
+            .map(|i| {
+                let (a, b, d) = (knots[i + 1], knots[i + 2], knots[i + 3]);
+                (a * b + b * d + a * d) / 3.0
+            })
+            .collect();
+        let mut ctrl = Vec::new();
+        for i in 0..count {
+            ctrl.push(Vec3::new(length * greville[i], 0.0, 0.0));
+            ctrl.push(Vec3::new(
+                length * greville[i],
+                width,
+                c * width * square[i],
+            ));
+        }
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                1,
+                knots,
+                vec![0.0, 0.0, 1.0, 1.0],
+                count,
+                2,
+                ctrl,
+                vec![1.0; 2 * count],
+            )
+            .unwrap(),
+        );
+        let (distance, limit) = (0.2 * k, 2.5e-7 * k);
+        let over = ((0.0, 1.0), (-30.0, 31.0));
+        assert_eq!(
+            offset_over(&surface, distance, limit, over),
+            Err(OffsetError::NoFit),
+            "{k}: the whole box was fitted; this test no longer shows the held fit"
+        );
+        let held = Held {
+            around: ((0.0, 1.0), (0.0, 1.0)),
+            reach: width / 20.0,
+        };
+        let fitted = offset_held(
+            &surface,
+            distance,
+            limit,
+            over,
+            &|_, _| Vec3::ZERO,
+            Some(&held),
+        )
+        .unwrap_or_else(|e| panic!("{k}: {e:?}"));
+        let mut worst: f64 = 0.0;
+        for i in 0..=997 {
+            let u = f64::from(i) / 997.0;
+            for v in [-0.04, -0.013, 0.0, 0.31, 0.5, 0.77, 1.0, 1.017, 1.04] {
+                let expected = exact(&surface, distance, u, v).unwrap();
+                worst = worst.max(fitted.eval(u, v).distance(expected) / limit);
+            }
+        }
+        assert!(worst <= 1.5, "{k}: off by {worst} limits where it is held");
+    }
+}
