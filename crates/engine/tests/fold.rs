@@ -178,7 +178,9 @@ fn a_degree_four_vertex_solves_its_other_creases_by_the_closed_form() {
                 {"line": lines[2], "kind": "valley"},
                 {"line": lines[3], "kind": "valley"}]}),
         );
-        for degrees in [10.0f64, 40.0, 120.0] {
+        // From the flat sheet (a driving angle of 0 is valid: the flat
+        // sheet), back to it, and on.
+        for degrees in [0.0f64, 10.0, 40.0, 0.0, 120.0] {
             run(
                 &mut s,
                 "variable.set",

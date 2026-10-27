@@ -794,15 +794,12 @@ fn solved_creases_need_an_angle_that_folds_and_contact_fails_closed() {
     let t = tol(1.0);
     let (a, b) = (70f64.to_radians(), 50f64.to_radians());
     let arr = single_vertex(1.0, &[0.0, a, a + b, PI + b], &[V, M, V, V]);
-    // No angle at all, or only zeros: at the flat sheet the branches of
-    // the vertex meet, and nothing says how the solved creases go.
-    for given in [vec![], vec![(10, 0.0)]] {
-        let e = fold(&arr, &angles(&arr, &given), 0, t, ANGULAR);
-        assert!(
-            matches!(e, Err(FoldError::Undetermined { .. })),
-            "{given:?}: {e:?}"
-        );
-    }
+    // No angle at all: at the flat sheet the branches of the vertex meet,
+    // and nothing says how the solved creases go. (A driving angle of 0
+    // does: both branches leave the flat sheet only as it turns, so the
+    // flat sheet is the fold; `a_driving_angle_of_zero_is_the_flat_sheet`.)
+    let e = fold(&arr, &angles(&arr, &[]), 0, t, ANGULAR);
+    assert!(matches!(e, Err(FoldError::Undetermined { .. })), "{e:?}");
     // Mode B of a vertex whose sectors nearly pair up (61 and 59 degrees):
     // near the flat sheet its solved creases fold 50 times as fast as the
     // driving one. It folds, by the closed form.
@@ -916,4 +913,194 @@ fn folding_is_deterministic() {
     };
     assert_eq!(bits(&a), bits(&b));
     assert_eq!(a.origins, b.origins);
+}
+
+/// A driving angle of exactly 0 is the flat sheet, and a valid fold: a
+/// degree-4 vertex driven by one crease (both modes) and a Miura-ori sheet
+/// driven by one straight piece fold to it, every solved angle 0 and
+/// every facet in place, and fold from it and back to it by the closed
+/// form. At 0 the rank of the loops' derivative drops (every crease turns
+/// about an axis in the sheet's plane), which is not freedom: the waterbomb
+/// with only its midline given, at 0 as at any angle, is still
+/// undetermined (one diagonal can fold alone), and so is a vertex with no
+/// angle given at all.
+#[test]
+fn a_driving_angle_of_zero_is_the_flat_sheet() {
+    use CreaseKind::{Mountain as M, Valley as V};
+    let flat = |folded: &Folded, s: f64, what: &str| {
+        for a in &folded.angles {
+            assert!(a.abs() <= 1e-12, "{what}: an angle {a}");
+        }
+        for t in &folded.transforms {
+            for p in [Vec3::ZERO, Vec3::new(s, -s, 0.0), Vec3::new(0.0, s, s)] {
+                assert!(t.point(p).distance(p) <= 1e-12 * s, "{what}: moved");
+            }
+        }
+    };
+    for scale in SCALES {
+        let (alpha, beta) = (70f64.to_radians(), 50f64.to_radians());
+        let dirs = [0.0, alpha, alpha + beta, PI + beta];
+        // Mode A, ρ3 = ρ1, ρ4 = −ρ2, and mode B, ρ3 = −ρ1, ρ4 = ρ2.
+        let p = ((alpha + beta) / 2.0).cos() / ((alpha - beta) / 2.0).cos();
+        let q = ((alpha + beta) / 2.0).sin() / ((alpha - beta) / 2.0).sin();
+        let mode_a = |r1: f64| {
+            let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+            [r1, r2, r1, -r2]
+        };
+        let mode_b = |r1: f64| {
+            let r2 = 2.0 * (q * (r1 / 2.0).tan()).atan();
+            [r1, r2, -r1, r2]
+        };
+        let kb = if mode_b(0.5)[1] > 0.0 { V } else { M };
+        for (kinds, mode) in [
+            ([V, M, V, V], &mode_a as &dyn Fn(f64) -> [f64; 4]),
+            ([V, kb, M, kb], &mode_b),
+        ] {
+            let arr = single_vertex(scale, &dirs, &kinds);
+            for zero in [0.0, -0.0] {
+                let folded = fold(&arr, &angles(&arr, &[(10, zero)]), 0, tol(scale), ANGULAR)
+                    .unwrap_or_else(|e| panic!("{kinds:?} at {zero}: {e:?}"));
+                flat(&folded, scale, "the vertex at 0");
+                let made = folded_sheet(&arr, &folded, &frame(), &tolerance(scale)).unwrap();
+                let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+                assert!(close(area, 4.0 * scale * scale, 1e-12 * scale * scale));
+                assert!(
+                    first_meeting(&arr, &folded, tol(scale), ANGULAR)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            // From 0 and back to it.
+            for degrees in [0.0f64, 0.5, 10.0, 60.0, 10.0, 0.5, 0.0] {
+                let r1 = degrees.to_radians();
+                let folded = fold(&arr, &angles(&arr, &[(10, r1)]), 0, tol(scale), ANGULAR)
+                    .unwrap_or_else(|e| panic!("{kinds:?} at {degrees}: {e:?}"));
+                let want = mode(r1);
+                for (id, w) in (10..14).zip(want) {
+                    let got = solved(&arr, &folded, id)[0];
+                    assert!(close(got, w, 1e-9), "{degrees}: e{id} {got} vs {w}");
+                }
+            }
+        }
+        // No angle at all: still undetermined.
+        let arr = single_vertex(scale, &dirs, &[V, M, V, V]);
+        let e = fold(&arr, &angles(&arr, &[]), 0, tol(scale), ANGULAR);
+        assert!(matches!(e, Err(FoldError::Undetermined { .. })), "{e:?}");
+
+        // A Miura-ori sheet driven at 0.
+        let (boundary, creases) = miura(scale, 4, 4, 1.0, 0.5, 1.0);
+        let arr = arrange(&boundary, &creases, tol(scale)).unwrap();
+        let driver = creases
+            .iter()
+            .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+            .unwrap()
+            .id;
+        let folded = fold(
+            &arr,
+            &angles(&arr, &[(driver, 0.0)]),
+            0,
+            tol(scale),
+            ANGULAR,
+        )
+        .unwrap_or_else(|e| panic!("the Miura sheet at 0: {e:?}"));
+        flat(&folded, scale, "the Miura sheet at 0");
+
+        // The waterbomb with its midline at 0: a diagonal folds alone.
+        let s = scale;
+        let boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
+        let creases = [
+            crease(10, [-s, 0.0], [s, 0.0], M),
+            crease(11, [-s, -s], [s, s], V),
+            crease(12, [s, -s], [-s, s], V),
+        ];
+        let arr = arrange(&boundary, &creases, tol(s)).unwrap();
+        let loose = fold(&arr, &angles(&arr, &[(10, 0.0)]), 0, tol(s), ANGULAR);
+        assert!(
+            matches!(loose, Err(FoldError::Undetermined { .. })),
+            "{loose:?}"
+        );
+        // All three given at 0: the flat sheet.
+        let all = fold(
+            &arr,
+            &angles(&arr, &[(10, 0.0), (11, 0.0), (12, 0.0)]),
+            0,
+            tol(s),
+            ANGULAR,
+        )
+        .unwrap();
+        flat(&all, s, "the waterbomb given flat");
+    }
+}
+
+/// A joint folds through 0 either way, a crease (radius 0) and a bend
+/// (radius r): two bodies joined by two joints on one axis (a loop), one
+/// given and one solved with no kind. At every angle from −30 to 30
+/// degrees and back, 0 and −0 among them, the solved joint takes the given
+/// angle, and a point of the right body `w` from the axis lands where
+/// rolling the strip `|ρ| r` onto the cylinder of radius `r` and turning by
+/// ρ puts it (for a crease, the turn alone): at ±0 in place, at −ρ the
+/// mirror image of ρ in the sheet's plane.
+#[test]
+fn a_crease_and_a_bend_fold_through_zero_both_ways() {
+    use craft3d_kernel::origami::{Joint, Linkage, fold_linkage};
+    for scale in SCALES {
+        let t = tol(scale);
+        for r in [0.0, 2.4 * scale] {
+            let joint = |id: u64| Joint {
+                left: 0,
+                right: 1,
+                point: Vec3::ZERO,
+                direction: Vec3::X,
+                side: Vec3::Y,
+                reach: 10.0 * scale,
+                id,
+                radius: r,
+                across: -Vec3::Y,
+            };
+            let link = Linkage {
+                bodies: 2,
+                joints: vec![joint(1), joint(2)],
+                size: 20.0 * scale,
+            };
+            let (x, w) = (scale, 7.0 * scale);
+            let expect = |rho: f64| {
+                let sigma = if rho.is_sign_negative() { -1.0 } else { 1.0 };
+                let y0 = -w + rho.abs() * r;
+                Vec3::new(
+                    x,
+                    y0 * rho.cos() - sigma * r * rho.sin(),
+                    sigma * r - y0 * rho.sin() - sigma * r * rho.cos(),
+                )
+            };
+            let sweep = [
+                -30.0f64, -1.0, -1e-4, -0.0, 0.0, 1e-4, 1.0, 30.0, 1.0, 1e-4, 0.0, -0.0, -1e-4,
+                -1.0, -30.0,
+            ];
+            for degrees in sweep {
+                let rho = degrees.to_radians();
+                let folded = fold_linkage(
+                    &link,
+                    &[Angle::Given(rho), Angle::Free { sign: 0.0 }],
+                    0,
+                    t,
+                    ANGULAR,
+                )
+                .unwrap_or_else(|e| panic!("r {r} at {degrees}: {e:?}"));
+                assert!(
+                    close(folded.angles[1], rho, 1e-9),
+                    "r {r} at {degrees}: {:?}",
+                    folded.angles
+                );
+                let got = folded.transforms[1].point(Vec3::new(x, -w, 0.0));
+                let want = expect(rho);
+                assert!(
+                    got.distance(want) <= 1e-9 * scale,
+                    "r {r} at {degrees}: {got:?} against {want:?}"
+                );
+                if degrees == 0.0 {
+                    assert!(got.distance(Vec3::new(x, -w, 0.0)) <= 1e-12 * scale);
+                }
+            }
+        }
+    }
 }

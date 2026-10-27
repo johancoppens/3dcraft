@@ -915,3 +915,99 @@ fn reliefs_at_a_slanted_corner_and_near_a_straight_one() {
         );
     }
 }
+
+/// A closed base through the points, scaled by `k` (curves 1, 2, … from
+/// the first point counter-clockwise).
+fn polygon_base(points: &[[f64; 2]], k: f64) -> Profile {
+    let n = points.len();
+    let curves: Vec<SketchCurve> = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            line(i as u64 + 1, [a[0] * k, a[1] * k], [b[0] * k, b[1] * k])
+        })
+        .collect();
+    detect_profiles(&curves, &tolerance(k)).unwrap().remove(0)
+}
+
+/// The reason and the flange of a refused part.
+fn refused(spec: &Spec, tol: &Tolerance) -> (Option<usize>, String) {
+    match build(spec, tol) {
+        Ok(_) => panic!("the part was built"),
+        Err(KernelError::SheetMetal { flange, reason }) => (flange, reason),
+        Err(other) => panic!("refused for another reason: {other}"),
+    }
+}
+
+/// A flange beside a reflex corner of the base whose other edge has no
+/// flange: its flat lies along that edge (a corner of 270 degrees) or
+/// across it (more), though bent up it stands beside it. The flat pattern
+/// overlaps itself there, and the part is refused naming the base and the
+/// flange; the same flange on an edge with convex ends is built.
+#[test]
+fn a_flange_beside_a_reflex_corner_whose_flat_lies_on_the_base_is_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let f = |on| flange(On::Base(on), 6.0 * k, FRAC_PI_2, Direction::Up, k, 0.4);
+        for arm in [[10.0, 30.0], [20.0, 30.0]] {
+            let l = polygon_base(
+                &[
+                    [0.0, 0.0],
+                    [40.0, 0.0],
+                    [40.0, 10.0],
+                    [10.0, 10.0],
+                    arm,
+                    [0.0, 30.0],
+                ],
+                k,
+            );
+            let (flange, reason) = refused(&spec(l.clone(), k, vec![f(3)], None), &tol);
+            assert_eq!(flange, Some(0), "{reason}");
+            assert!(
+                reason.contains("the flat pattern overlaps itself")
+                    && reason.contains("the base and flange 0"),
+                "{arm:?} at {k}: {reason}"
+            );
+            // On the bottom edge (both ends convex) it is built.
+            build(&spec(l, k, vec![f(1)], None), &tol).unwrap();
+        }
+    }
+}
+
+/// Flanges on the two walls of a notch of the base, which face each other
+/// across it and are not neighbours: bent up they stand apart, but in the
+/// flat they cross each other, and the part is refused naming both;
+/// shorter, they are built.
+#[test]
+fn flanges_on_facing_walls_of_a_concave_base_that_cross_in_the_flat_are_refused() {
+    let notch = [
+        [0.0, 0.0],
+        [50.0, 0.0],
+        [50.0, 30.0],
+        [35.0, 30.0],
+        [30.0, 10.0],
+        [20.0, 10.0],
+        [15.0, 30.0],
+        [0.0, 30.0],
+    ];
+    for k in SCALES {
+        let tol = tolerance(k);
+        let base = polygon_base(&notch, k);
+        let f =
+            |on, length: f64| flange(On::Base(on), length * k, FRAC_PI_2, Direction::Up, k, 0.4);
+        let (flange, reason) = refused(
+            &spec(base.clone(), k, vec![f(4, 6.0), f(6, 6.0)], None),
+            &tol,
+        );
+        assert_eq!(flange, Some(1), "{reason}");
+        assert!(
+            reason.contains("the flat pattern overlaps itself")
+                && reason.contains("flange 0 and flange 1"),
+            "at {k}: {reason}"
+        );
+        // Each alone, and both short enough to stay apart, are built.
+        build(&spec(base.clone(), k, vec![f(4, 6.0)], None), &tol).unwrap();
+        build(&spec(base.clone(), k, vec![f(6, 6.0)], None), &tol).unwrap();
+        let part = build(&spec(base, k, vec![f(4, 1.0), f(6, 1.0)], None), &tol).unwrap();
+        healthy(&part, &tol);
+    }
+}

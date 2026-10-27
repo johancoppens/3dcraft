@@ -578,6 +578,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         bends.push(bend);
     }
 
+    // (before the fix) pattern_clear(&flats, &bends, tolerance)?;
     let folded = fold(&flats, &bends, tolerance)?;
     for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
         flat.transform = *transform;
@@ -605,6 +606,119 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     })
 }
 
+/// A segment of an outline as the sketch curve the profile detection
+/// reads.
+fn sketch_curve(seg: &Segment) -> crate::profile::Curve2 {
+    use crate::profile::Curve2;
+    match &seg.shape {
+        Shape::Line => Curve2::Line {
+            start: seg.start,
+            end: seg.end,
+        },
+        Shape::Arc { center, .. } => {
+            let (start, end) = if seg.reversed {
+                (seg.end, seg.start)
+            } else {
+                (seg.start, seg.end)
+            };
+            Curve2::Arc {
+                center: *center,
+                start,
+                end,
+            }
+        }
+        Shape::Circle { center, radius } => Curve2::Circle {
+            center: *center,
+            radius: *radius,
+        },
+        Shape::Spline(spline) => Curve2::Spline(spline.clone()),
+    }
+}
+
+/// The flat pattern does not overlap itself: its outline (every flat's
+/// and strip's edges that no strip continues, and the holes), run through
+/// the profile detection of the sketch, is one region with all the holes
+/// and the area the pieces add up to. Two pieces that cross, touch or lie
+/// along each other anywhere but where the pattern joins them (a bend's
+/// tangent lines, the corner point two strips share) make two curves of
+/// the outline cross or touch away from a shared end, or more than two
+/// ends meet at a point, which the detection names; a piece that lies
+/// wholly inside another leaves the area short. Either fails the part,
+/// naming the base or the flanges whose pieces meet; anything else the
+/// detection refuses fails it too (fail closed).
+fn pattern_clear(flats: &[Flat], bends: &[Bend], tolerance: &Tolerance) -> Result<(), KernelError> {
+    use crate::profile::{SketchCurve, detect_profiles};
+    let chains = tagged_outline(flats, bends, tolerance.linear);
+    let tagged: Vec<&(Segment, usize)> = chains.iter().flatten().collect();
+    let curves: Vec<SketchCurve> = tagged
+        .iter()
+        .enumerate()
+        .map(|(i, (seg, _))| SketchCurve {
+            id: i as u64 + 1,
+            curve: sketch_curve(seg),
+        })
+        .collect();
+    let owner = |id: u64| {
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| tagged.get(i))
+            .map(|(_, flat)| *flat)
+    };
+    let name = |flat: usize| match flat.checked_sub(1) {
+        None => "the base".to_string(),
+        Some(f) => format!("flange {f}"),
+    };
+    let meeting = |ids: &[u64]| {
+        let mut owners: Vec<usize> = ids.iter().filter_map(|&id| owner(id)).collect();
+        owners.sort_unstable();
+        owners.dedup();
+        let flange = owners.last().and_then(|f| f.checked_sub(1));
+        let names: Vec<String> = owners.iter().map(|&f| name(f)).collect();
+        let who = match names.as_slice() {
+            [one] => format!("{one} runs into itself"),
+            [a, b] => format!("{a} and {b} cross or touch"),
+            _ => format!("{} cross or touch", names.join(", ")),
+        };
+        refuse(
+            flange,
+            format!(
+                "the flat pattern overlaps itself: {who} in the flat, so it cannot be cut from one sheet (shorten or move the flanges, or bend them from other edges)"
+            ),
+        )
+    };
+    let profiles = match detect_profiles(&curves, tolerance) {
+        Ok(profiles) => profiles,
+        Err(KernelError::CrossingCurves { curves }) => return Err(meeting(&curves)),
+        Err(KernelError::BranchingProfile { curves }) => return Err(meeting(&curves)),
+        Err(other) => {
+            return Err(refuse(
+                None,
+                format!(
+                    "the flat pattern's outline could not be checked for overlapping itself: {other}"
+                ),
+            ));
+        }
+    };
+    let holes: usize = flats.iter().map(|f| f.holes.len()).sum();
+    let area = pattern_area(flats, bends);
+    match profiles.as_slice() {
+        [one]
+            if one.holes.len() == holes
+                && (one.area() - area).abs() <= tolerance.linear * area.abs().sqrt() * 8.0 =>
+        {
+            Ok(())
+        }
+        _ => Err(refuse(
+            None,
+            format!(
+                "the flat pattern overlaps itself: its outline bounds {} region(s) where its pieces make one of area {area}, so a piece lies on another in the flat",
+                profiles.len()
+            ),
+        )),
+    }
+}
+
 /// The base's outline with its reliefs is still one region with the same
 /// holes: the profile detection of the sketch, run on its curves, finds one
 /// profile whose outer loop has the outline's area (a notch that crosses
@@ -616,37 +730,16 @@ fn reliefs_fit(
     relief: Relief,
     tolerance: &Tolerance,
 ) -> Result<(), KernelError> {
-    use crate::profile::{Curve2, SketchCurve, detect_profiles};
-    let mut curves = Vec::new();
-    for (i, seg) in outer.iter().chain(holes.iter().flatten()).enumerate() {
-        let curve = match &seg.shape {
-            Shape::Line => Curve2::Line {
-                start: seg.start,
-                end: seg.end,
-            },
-            Shape::Arc { center, .. } => {
-                let (start, end) = if seg.reversed {
-                    (seg.end, seg.start)
-                } else {
-                    (seg.start, seg.end)
-                };
-                Curve2::Arc {
-                    center: *center,
-                    start,
-                    end,
-                }
-            }
-            Shape::Circle { center, radius } => Curve2::Circle {
-                center: *center,
-                radius: *radius,
-            },
-            Shape::Spline(spline) => Curve2::Spline(spline.clone()),
-        };
-        curves.push(SketchCurve {
+    use crate::profile::{SketchCurve, detect_profiles};
+    let curves: Vec<SketchCurve> = outer
+        .iter()
+        .chain(holes.iter().flatten())
+        .enumerate()
+        .map(|(i, seg)| SketchCurve {
             id: i as u64 + 1,
-            curve,
-        });
-    }
+            curve: sketch_curve(seg),
+        })
+        .collect();
     let refused = || {
         refuse(
             None,
@@ -1245,14 +1338,20 @@ pub struct HoleToBend {
     /// The hole (its index among the base's holes) and the bend.
     pub hole: usize,
     pub bend: usize,
-    /// The least distance found at a real place of the hole (an upper
-    /// bound of the true one) ...
+    /// The least distance: in closed form for lines, arcs and circles; for
+    /// a spline the least distance from the chords of its pieces once they
+    /// are flat within an eighth of the tolerance, so within an eighth of
+    /// the tolerance of the true one either way (not a distance at a place
+    /// on the curve) ...
     pub distance: f64,
-    /// ... and what the true one cannot be below: equal to `distance` for
-    /// lines, arcs and circles (closed forms), an eighth of the tolerance
-    /// less for a spline (searched to that), 0 when the search ran out of
-    /// work.
+    /// ... what the true one cannot be below: equal to `distance` in
+    /// closed form, an eighth of the tolerance less for a spline, 0 when
+    /// the search ran out of work ...
     pub lower: f64,
+    /// ... and what it cannot be above: equal to `distance` in closed
+    /// form, an eighth of the tolerance more for a spline, infinite when
+    /// the search ran out of work (a piece left unrefined proves nothing).
+    pub upper: f64,
     /// True when `distance` is in closed form (no spline in the hole).
     pub exact: bool,
 }
@@ -1275,13 +1374,15 @@ pub fn holes_to_bends(part: &Part, tolerance: &Tolerance) -> Vec<HoleToBend> {
                 bend: i,
                 distance: f64::INFINITY,
                 lower: f64::INFINITY,
+                upper: f64::INFINITY,
                 exact: true,
             };
             for seg in hole {
-                let (d, lower, exact) =
+                let (d, lower, upper, exact) =
                     segment_to_line(seg, bend.start, bend.end, tolerance.linear);
                 found.distance = found.distance.min(d);
                 found.lower = found.lower.min(lower);
+                found.upper = found.upper.min(upper);
                 found.exact &= exact;
             }
             if best.is_none_or(|b| found.lower < b.lower) {
@@ -1307,10 +1408,11 @@ fn point_to_segment(p: P2, a: P2, b: P2) -> (f64, P2) {
 
 /// The least distance from a segment of a loop to the straight segment
 /// `a`–`b` they do not cross: the distance found, what the true one cannot
-/// be below, and whether it is in closed form (lines, arcs, circles) or
-/// searched (splines, to an eighth of `tol`).
-fn segment_to_line(seg: &Segment, a: P2, b: P2, tol: f64) -> (f64, f64, bool) {
-    let closed = |d: f64| (d, d, true);
+/// be below and above, and whether it is in closed form (lines, arcs,
+/// circles) or searched (splines, to an eighth of `tol`; without bounds,
+/// 0 and infinity, when the search ran out of work).
+fn segment_to_line(seg: &Segment, a: P2, b: P2, tol: f64) -> (f64, f64, f64, bool) {
+    let closed = |d: f64| (d, d, d, true);
     match &seg.shape {
         Shape::Line => closed(
             point_to_segment(seg.start, a, b)
@@ -1340,9 +1442,9 @@ fn segment_to_line(seg: &Segment, a: P2, b: P2, tol: f64) -> (f64, f64, bool) {
             closed(d)
         }
         Shape::Spline(_) => match seg.spline_to_line(a, b, tol) {
-            Some((d, true)) => (d, (d - tol / 8.0).max(0.0), false),
-            Some((d, false)) => (d, 0.0, false),
-            None => (f64::INFINITY, 0.0, false),
+            Some((d, true)) => (d, (d - tol / 8.0).max(0.0), d + tol / 8.0, false),
+            Some((d, false)) => (d, 0.0, d + tol / 8.0, false),
+            None => (f64::INFINITY, 0.0, f64::INFINITY, false),
         },
     }
 }
@@ -1363,19 +1465,21 @@ pub fn flange_length(part: &Part, bend: usize) -> Option<f64> {
 /// The area of the flat pattern: the flats' (holes taken out) and the
 /// bends' strips.
 pub fn flat_area(part: &Part) -> f64 {
+    pattern_area(&part.flats, &part.bends)
+}
+
+fn pattern_area(flats: &[Flat], bends: &[Bend]) -> f64 {
     let ring = |segs: &[Segment]| {
         crate::profile::Loop2 {
             segments: segs.to_vec(),
         }
         .signed_area()
     };
-    let flats: f64 = part
-        .flats
+    let flats: f64 = flats
         .iter()
         .map(|f| ring(&f.outer) + f.holes.iter().map(|h| ring(h)).sum::<f64>())
         .sum();
-    let strips: f64 = part
-        .bends
+    let strips: f64 = bends
         .iter()
         .map(|b| b.allowance * distance(b.start, b.end))
         .sum();
@@ -1388,14 +1492,22 @@ pub fn flat_area(part: &Part) -> f64 {
 /// edges that a bend's strip continues are left out; the strips' ends
 /// are lines across them.
 pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
-    let tol = tolerance.linear;
+    tagged_outline(&part.flats, &part.bends, tolerance.linear)
+        .into_iter()
+        .map(|chain| chain.into_iter().map(|(s, _)| s).collect())
+        .collect()
+}
+
+/// [`outline`] with, per segment, the flat it belongs to (0 the base,
+/// `i + 1` flange `i`, whose bend's strip is counted with it).
+fn tagged_outline(flats: &[Flat], bends: &[Bend], tol: f64) -> Vec<Vec<(Segment, usize)>> {
     // The edges a strip continues: per flat, the indices of its outer
     // segments.
     let mut inner: BTreeMap<(usize, usize), ()> = BTreeMap::new();
-    for b in &part.bends {
+    for b in bends {
         // The child's tangent edge is its segment 0.
         inner.insert((b.child, 0), ());
-        if let Some(flat) = part.flats.get(b.parent)
+        if let Some(flat) = flats.get(b.parent)
             && let Some(k) = flat.outer.iter().position(|s| {
                 matches!(s.shape, Shape::Line)
                     && distance(s.start, b.start) <= tol
@@ -1405,25 +1517,25 @@ pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
             inner.insert((b.parent, k), ());
         }
     }
-    let mut pieces: Vec<Segment> = Vec::new();
-    let mut loops: Vec<Vec<Segment>> = Vec::new();
-    for (f, flat) in part.flats.iter().enumerate() {
+    let mut pieces: Vec<(Segment, usize)> = Vec::new();
+    let mut loops: Vec<Vec<(Segment, usize)>> = Vec::new();
+    for (f, flat) in flats.iter().enumerate() {
         for (k, s) in flat.outer.iter().enumerate() {
             if !inner.contains_key(&(f, k)) {
-                pieces.push(s.clone());
+                pieces.push((s.clone(), f));
             }
         }
         for hole in &flat.holes {
-            loops.push(hole.clone());
+            loops.push(hole.iter().map(|s| (s.clone(), f)).collect());
         }
     }
-    for b in &part.bends {
+    for b in bends {
         let (a0, a1) = b.far_line();
-        pieces.push(line(b.start, a0));
-        pieces.push(line(a1, b.end));
+        pieces.push((line(b.start, a0), b.child));
+        pieces.push((line(a1, b.end), b.child));
     }
     // Chained head to tail.
-    let mut outer: Vec<Vec<Segment>> = Vec::new();
+    let mut outer: Vec<Vec<(Segment, usize)>> = Vec::new();
     let mut used = vec![false; pieces.len()];
     for first in 0..pieces.len() {
         if used.get(first).copied().unwrap_or(true) {
@@ -1435,12 +1547,12 @@ pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
         if let Some(u) = used.get_mut(first) {
             *u = true;
         }
-        let start = seg.start;
+        let start = seg.0.start;
         let mut chain = vec![seg];
         let mut guard = 0usize;
         while guard <= pieces.len() {
             guard += 1;
-            let Some(end) = chain.last().map(|s| s.end) else {
+            let Some(end) = chain.last().map(|(s, _)| s.end) else {
                 break;
             };
             if chain.len() > 1 && distance(end, start) <= tol {
@@ -1448,7 +1560,9 @@ pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
             }
             let next = (0..pieces.len()).find(|&j| {
                 !used.get(j).copied().unwrap_or(true)
-                    && pieces.get(j).is_some_and(|s| distance(s.start, end) <= tol)
+                    && pieces
+                        .get(j)
+                        .is_some_and(|(s, _)| distance(s.start, end) <= tol)
             });
             let Some(j) = next else { break };
             if let Some(u) = used.get_mut(j) {
@@ -1462,4 +1576,104 @@ pub fn outline(part: &Part, tolerance: &Tolerance) -> Vec<Vec<Segment>> {
     }
     outer.extend(loops);
     outer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use crate::spline2::SEGMENT_WORK_LIMIT;
+
+    /// A 60 × 40 base with a hole bounded by a cubic spline and a line,
+    /// and one flange on its bottom edge, at the scale `k`.
+    fn spline_hole_part(k: f64, tol: &Tolerance) -> Part {
+        let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+        let c = [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]];
+        let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Line {
+                start: s(a),
+                end: s(b),
+            },
+        };
+        let mut curves: Vec<SketchCurve> = (0..4)
+            .map(|i| line(i as u64 + 1, c[i], c[(i + 1) % 4]))
+            .collect();
+        curves.push(line(9, [40.0, 15.0], [20.0, 15.0]));
+        curves.push(SketchCurve {
+            id: 10,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: [[20.0, 15.0], [24.0, 2.0], [33.0, 4.0], [40.0, 15.0]]
+                    .iter()
+                    .map(|p| s(*p))
+                    .collect(),
+            }),
+        });
+        let base = detect_profiles(&curves, tol).unwrap().remove(0);
+        build(
+            &Spec {
+                base,
+                plane: Frame::WORLD,
+                thickness: k,
+                flanges: vec![FlangeSpec {
+                    on: On::Base(1),
+                    length: 10.0 * k,
+                    angle: 0.5 * PI,
+                    direction: Direction::Up,
+                    radius: k,
+                    k: 0.4,
+                    from: LengthFrom::Tangent,
+                }],
+                relief: None,
+            },
+            tol,
+        )
+        .unwrap()
+    }
+
+    /// A spline hole's distance to the bend is bounded both ways while the
+    /// search is proven (an eighth of the tolerance), and not bounded
+    /// above at all when the search runs out of work: the spline's upper
+    /// bound is infinite then, so the hole's is only what its line proves
+    /// (15 from the bend line, in closed form), never the unproven search's
+    /// estimate plus an eighth.
+    #[test]
+    fn a_spline_search_that_runs_out_of_work_bounds_nothing_above() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let part = spline_hole_part(k, &tol);
+            let found = holes_to_bends(&part, &tol);
+            assert_eq!(found.len(), 1);
+            let h = found[0];
+            assert!(!h.exact);
+            let eighth = tol.linear / 8.0;
+            assert!(
+                (h.upper - (h.distance + eighth)).abs() <= 1e-12 * k,
+                "{h:?}"
+            );
+            assert!((h.distance - eighth - h.lower).abs() <= 1e-12 * k, "{h:?}");
+
+            let before = SEGMENT_WORK_LIMIT.with(|c| c.replace(2));
+            let starved = holes_to_bends(&part, &tol);
+            let bend = part.bends[0];
+            let spline = part.flats[0].holes[0]
+                .iter()
+                .find(|s| matches!(s.shape, Shape::Spline(_)))
+                .unwrap()
+                .clone();
+            let (d, lower, upper, exact) =
+                segment_to_line(&spline, bend.start, bend.end, tol.linear);
+            SEGMENT_WORK_LIMIT.with(|c| c.set(before));
+            assert!(!exact && d.is_finite());
+            assert_eq!((lower, upper), (0.0, f64::INFINITY));
+            assert_eq!(starved.len(), 1);
+            let h = starved[0];
+            assert!(!h.exact);
+            assert_eq!(h.lower, 0.0, "{h:?}");
+            assert!(h.distance + eighth < 15.0 * k, "{h:?}");
+            assert!((h.upper - 15.0 * k).abs() <= 1e-12 * k, "{h:?}");
+        }
+    }
 }

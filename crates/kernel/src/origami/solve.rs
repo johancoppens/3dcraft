@@ -550,38 +550,38 @@ pub fn fold_linkage(
         weight: size,
     };
 
+    // A guess solved at `base`: the solution when it closes within the
+    // tolerance with every solved joint its kind's way.
+    let attempt = |base: &[f64],
+                   guess: Vec<f64>,
+                   budget: &mut Budget|
+     -> Result<Option<(Vec<f64>, bool)>, FoldError> {
+        let (solved, ran_out) = match solver.levenberg(base, guess, budget) {
+            Ok(found) => found,
+            Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+            Err(_) => return Ok(None),
+        };
+        let here = match rows(
+            link,
+            &forest,
+            &loops,
+            &solver.with(base, &solved),
+            None,
+            budget,
+        ) {
+            Ok(here) => here,
+            Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+            Err(_) => return Ok(None),
+        };
+        let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
+        Ok((largest_gap(&here) <= tol && kinds).then_some((solved, ran_out)))
+    };
+    let size_of = |v: &[f64]| v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
     // Continuation from the flat sheet: a first step by the kinds, then a
     // tangent predictor and a corrector.
     let mut x = vec![0.0; free.len()];
     let mut exhausted = false;
     if largest > 0.0 && !free.is_empty() {
-        // A guess solved at `base`: the solution when it closes within the
-        // tolerance with every solved joint its kind's way.
-        let attempt = |base: &[f64],
-                       guess: Vec<f64>,
-                       budget: &mut Budget|
-         -> Result<Option<(Vec<f64>, bool)>, FoldError> {
-            let (solved, ran_out) = match solver.levenberg(base, guess, budget) {
-                Ok(found) => found,
-                Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
-                Err(_) => return Ok(None),
-            };
-            let here = match rows(
-                link,
-                &forest,
-                &loops,
-                &solver.with(base, &solved),
-                None,
-                budget,
-            ) {
-                Ok(here) => here,
-                Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
-                Err(_) => return Ok(None),
-            };
-            let kinds = solved.iter().zip(&signs).all(|(v, s)| s * v >= -angular);
-            Ok((largest_gap(&here) <= tol && kinds).then_some((solved, ran_out)))
-        };
-        let size_of = |v: &[f64]| v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
         let mut done = 0.0f64;
         let mut h = (FIRST_STEP / largest).min(1.0);
         let mut halvings = 0usize;
@@ -603,53 +603,23 @@ pub fn fold_linkage(
                 // pattern of them up to `MAX_OPEN_PATTERNS`), by 1 to 100
                 // times the step. Two different solutions that both pass
                 // are two branches the kinds do not tell apart: refused.
-                let open: Vec<usize> = (0..signs.len())
-                    .filter(|&i| signs.get(i).is_some_and(|s| *s == 0.0))
-                    .collect();
-                let patterns: Vec<Vec<f64>> = if open.is_empty() {
-                    vec![Vec::new()]
-                } else if open.len() <= OPEN_PATTERN_BITS {
-                    (0..1usize << open.len())
-                        .map(|m| {
-                            (0..open.len())
-                                .map(|b| if m >> b & 1 == 1 { -1.0 } else { 1.0 })
-                                .collect()
-                        })
-                        .collect()
-                } else {
-                    vec![vec![1.0; open.len()], vec![-1.0; open.len()]]
-                };
                 let same = 10.0 * (angular + tol / size);
                 let mut passed: Vec<(Vec<f64>, bool)> = Vec::new();
-                for f in FIRST_GUESSES {
-                    for pattern in &patterns {
-                        let mut way = pattern.iter();
-                        let guess: Vec<f64> = signs
-                            .iter()
-                            .map(|s| {
-                                let sign = if *s == 0.0 {
-                                    way.next().copied().unwrap_or(1.0)
-                                } else {
-                                    *s
-                                };
-                                sign * (step * f).min(FIRST_CAP)
-                            })
-                            .collect();
-                        let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
-                            continue;
-                        };
-                        if passed.iter().any(|(p, _)| max_diff(p, &solved) <= same) {
-                            continue;
-                        }
-                        let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
-                        let Some((half, _)) =
-                            attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
-                        else {
-                            continue;
-                        };
-                        if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
-                            passed.push((solved, ran_out));
-                        }
+                for guess in first_guesses(&signs, step) {
+                    let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
+                        continue;
+                    };
+                    if passed.iter().any(|(p, _)| max_diff(p, &solved) <= same) {
+                        continue;
+                    }
+                    let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
+                    let Some((half, _)) =
+                        attempt(&given(target / 2.0), half_guess.clone(), &mut budget)?
+                    else {
+                        continue;
+                    };
+                    if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
+                        passed.push((solved, ran_out));
                     }
                 }
                 match passed.as_slice() {
@@ -753,9 +723,42 @@ pub fn fold_linkage(
         });
     }
     // Determined: also at the flat sheet, where the branches meet and the
-    // angles given do not say which way the others go.
+    // angles given do not say which way the others go. There (every given
+    // angle 0, so the solve stayed at the flat sheet) the rank of the
+    // loops' derivative says nothing: every crease through a vertex turns
+    // about an axis in the sheet's plane, so the rank drops whether or not
+    // a fold can leave the flat sheet with the given angles kept at 0.
+    // Whether one can is asked as the first step asks it: a branch through
+    // the flat sheet is a solution with the given angles at 0, turned by
+    // the kinds by 1 to 100 times the first step, at least a quarter of
+    // that step from the flat sheet, that solved again from half of it
+    // stays at half (within a quarter). With none the flat sheet is the
+    // only fold near it, and it is the answer.
     if !free.is_empty() {
-        let loose = undetermined(&final_rows, free.len(), &mut budget)?;
+        let mut loose = undetermined(&final_rows, free.len(), &mut budget)?;
+        if !loose.is_empty() && largest == 0.0 && free.is_empty() {
+            let flat = given(0.0);
+            let mut branch = false;
+            for guess in first_guesses(&signs, FIRST_STEP) {
+                let Some((solved, _)) = attempt(&flat, guess, &mut budget)? else {
+                    continue;
+                };
+                if !(size_of(&solved) >= 0.25 * FIRST_STEP) {
+                    continue;
+                }
+                let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
+                let Some((half, _)) = attempt(&flat, half_guess.clone(), &mut budget)? else {
+                    continue;
+                };
+                if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
+                    branch = true;
+                    break;
+                }
+            }
+            if !branch {
+                loose.clear();
+            }
+        }
         if !loose.is_empty() {
             let mut ids: Vec<u64> = loose
                 .iter()
@@ -1101,6 +1104,47 @@ fn undetermined(rows: &[Row], n: usize, budget: &mut Budget) -> Result<Vec<usize
     }
     loose.sort_unstable();
     Ok(loose)
+}
+
+/// The first step's guesses at `step`: every unknown turned its kind's way
+/// (an unknown without a kind, sign 0, both ways, every pattern of them up
+/// to [`OPEN_PATTERN_BITS`]) by each of [`FIRST_GUESSES`] times the step,
+/// at most [`FIRST_CAP`].
+fn first_guesses(signs: &[f64], step: f64) -> Vec<Vec<f64>> {
+    let open = signs.iter().filter(|s| **s == 0.0).count();
+    let patterns: Vec<Vec<f64>> = if open == 0 {
+        vec![Vec::new()]
+    } else if open <= OPEN_PATTERN_BITS {
+        (0..1usize << open)
+            .map(|m| {
+                (0..open)
+                    .map(|b| if m >> b & 1 == 1 { -1.0 } else { 1.0 })
+                    .collect()
+            })
+            .collect()
+    } else {
+        vec![vec![1.0; open], vec![-1.0; open]]
+    };
+    let mut out = Vec::with_capacity(FIRST_GUESSES.len() * patterns.len());
+    for f in FIRST_GUESSES {
+        for pattern in &patterns {
+            let mut way = pattern.iter();
+            out.push(
+                signs
+                    .iter()
+                    .map(|s| {
+                        let sign = if *s == 0.0 {
+                            way.next().copied().unwrap_or(1.0)
+                        } else {
+                            *s
+                        };
+                        sign * (step * f).min(FIRST_CAP)
+                    })
+                    .collect(),
+            );
+        }
+    }
+    out
 }
 
 fn max_diff(a: &[f64], b: &[f64]) -> f64 {

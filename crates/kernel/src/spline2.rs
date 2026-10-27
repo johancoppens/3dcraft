@@ -30,6 +30,25 @@ pub const MAX_SPLINE_POINTS: usize = 4096;
 /// tolerance over a great length get near it.
 const WORK_LIMIT: usize = 5_000_000;
 
+#[cfg(test)]
+thread_local! {
+    /// The work limit of [`distance_to_segment`], lowered by a test to
+    /// reach the path where the search runs out (this thread only).
+    pub(crate) static SEGMENT_WORK_LIMIT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(WORK_LIMIT) };
+}
+
+/// The work limit of [`distance_to_segment`].
+#[cfg(not(test))]
+fn segment_work_limit() -> usize {
+    WORK_LIMIT
+}
+
+#[cfg(test)]
+fn segment_work_limit() -> usize {
+    SEGMENT_WORK_LIMIT.with(std::cell::Cell::get)
+}
+
 /// How far apart, in the parameter of a curve (0 to 1), two stretches may
 /// be and still count as one.
 pub(crate) const RUN_GAP: f64 = 1e-9;
@@ -999,6 +1018,7 @@ fn box_segment(bx: [f64; 4], a: P2, b: P2) -> f64 {
 /// that), and whether the work limit left it unproven.
 pub(crate) fn distance_to_segment(parts: &[Part], a: P2, b: P2, tol: f64) -> (f64, bool) {
     let eps = tol / 8.0;
+    let cap = segment_work_limit();
     let mut best = f64::INFINITY;
     let mut stack: Vec<Part> = parts.to_vec();
     let mut work = 0_usize;
@@ -1008,7 +1028,7 @@ pub(crate) fn distance_to_segment(parts: &[Part], a: P2, b: P2, tol: f64) -> (f6
         if box_segment(part.bbox(), a, b) >= best {
             continue;
         }
-        let limit = work > WORK_LIMIT;
+        let limit = work > cap;
         if part.is_flat(eps) || limit {
             proven &= !limit;
             let (p, q) = part.ends();

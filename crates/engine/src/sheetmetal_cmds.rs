@@ -395,7 +395,7 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
                 .flatten()
                 .map(|c| format!("e{c}"))
                 .collect();
-            json!({"curves": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "exact": h.exact})
+            json!({"curves": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact})
         })
         .collect();
     Ok(json!({
@@ -631,15 +631,11 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
             "holeToBend" => {
                 for h in holes_to_bends(part, &built.tolerance) {
                     least = least.min(h.distance);
+                    // The kernel's proven bounds: a searched distance is
+                    // within an eighth of the tolerance of the true one
+                    // either way, unbounded when the search ran out.
                     lower = lower.min(h.lower);
-                    // A searched distance is within an eighth of the
-                    // tolerance of the true one, either way.
-                    let slack = if h.exact {
-                        0.0
-                    } else {
-                        built.tolerance.linear / 8.0
-                    };
-                    upper = upper.min(h.distance + slack);
+                    upper = upper.min(h.upper);
                     let curves: Vec<String> = built
                         .holes
                         .get(h.hole)
@@ -647,7 +643,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
                         .flatten()
                         .map(|c| format!("e{c}"))
                         .collect();
-                    listed.push(json!({"part": fname, "hole": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "exact": h.exact}));
+                    listed.push(json!({"part": fname, "hole": curves, "bend": h.bend, "distance": h.distance, "lower": h.lower, "upper": h.upper, "exact": h.exact}));
                 }
             }
             _ => {
