@@ -928,7 +928,7 @@ fn cross(
     let (gx, gy) = pair.gradient(x, y)?;
     let [hxx, hxy, hyy] = hessian(pair, x, y)?;
     let det = hxx * hyy - hxy * hxy;
-    if !(det < 0.0) {
+    if det.is_nan() || det >= 0.0 {
         return None;
     }
     // The saddle of the model and the value there.
@@ -940,7 +940,8 @@ fn cross(
         return None;
     }
     let (pa, pb) = pair.points(cx, cy)?;
-    if !(saddle_value.abs() * pa.distance(pb) <= 0.5 * tolerance) {
+    let split = saddle_value.abs() * pa.distance(pb);
+    if split.is_nan() || split > 0.5 * tolerance {
         return None;
     }
     // The eigenvalues and eigenvectors of H (symmetric, one of each sign).
@@ -1046,7 +1047,7 @@ fn crossed(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> bool {
         return false;
     };
     let det = hxx * hyy - hxy * hxy;
-    if !(det < 0.0) {
+    if det.is_nan() || det >= 0.0 {
         return false;
     }
     let (dx, dy) = (-(hyy * gx - hxy * gy) / det, -(hxx * gy - hxy * gx) / det);
