@@ -578,7 +578,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         bends.push(bend);
     }
 
-    // (before the fix) pattern_clear(&flats, &bends, tolerance)?;
+    pattern_clear(&flats, &bends, tolerance)?;
     let folded = fold(&flats, &bends, tolerance)?;
     for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
         flat.transform = *transform;
@@ -1443,7 +1443,7 @@ fn segment_to_line(seg: &Segment, a: P2, b: P2, tol: f64) -> (f64, f64, f64, boo
         }
         Shape::Spline(_) => match seg.spline_to_line(a, b, tol) {
             Some((d, true)) => (d, (d - tol / 8.0).max(0.0), d + tol / 8.0, false),
-            Some((d, false)) => (d, 0.0, d + tol / 8.0, false),
+            Some((d, false)) => (d, 0.0, f64::INFINITY, false),
             None => (f64::INFINITY, 0.0, f64::INFINITY, false),
         },
     }

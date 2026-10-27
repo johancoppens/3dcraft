@@ -736,7 +736,7 @@ pub fn fold_linkage(
     // only fold near it, and it is the answer.
     if !free.is_empty() {
         let mut loose = undetermined(&final_rows, free.len(), &mut budget)?;
-        if !loose.is_empty() && largest == 0.0 && free.is_empty() {
+        if !loose.is_empty() && largest == 0.0 {
             let flat = given(0.0);
             let mut branch = false;
             for guess in first_guesses(&signs, FIRST_STEP) {
