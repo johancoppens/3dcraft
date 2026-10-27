@@ -30,8 +30,10 @@
 //! converge" is an error like any other.
 
 use crate::KernelError;
+use crate::boolean::probe::{OnFace, Probe};
 use crate::boolean::{BooleanOp, FaceSource, Operand, boolean};
 use crate::primitives::block;
+use craft3d_geom::support::{CurveNets, Piece, SurfaceNets, curve_piece, surface_piece};
 use craft3d_geom::{Curve3, RationalBezierPatch, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Tolerance, Transform, Vec3};
@@ -318,13 +320,22 @@ struct Prepared<'b> {
     hi: f64,
     bbox: Bbox3,
     whole: OnceCell<Result<(f64, Vec3, f64), CutError>>,
+    /// The body made ready to tell whether a point of a face's surface is
+    /// in the face (made when first needed: `None` where it cannot be).
+    probe: OnceCell<Option<Probe<'b>>>,
 }
 
-impl Prepared<'_> {
+impl<'b> Prepared<'b> {
     fn whole(&self) -> Result<(f64, Vec3, f64), CutError> {
         self.whole
             .get_or_init(|| whole(self.index, self.body))
             .clone()
+    }
+
+    fn probe(&self, tolerance: &Tolerance) -> Option<&Probe<'b>> {
+        self.probe
+            .get_or_init(|| Probe::new(self.body, tolerance).ok())
+            .as_ref()
     }
 }
 
@@ -347,6 +358,7 @@ fn prepare<'b>(bodies: &[&'b Body], direction: Vec3) -> Result<Vec<Prepared<'b>>
                 hi,
                 bbox,
                 whole: OnceCell::new(),
+                probe: OnceCell::new(),
             })
         })
         .collect()
@@ -555,7 +567,7 @@ fn nothing_below(
     tolerance: &Tolerance,
 ) -> Result<Part, CutError> {
     let enough = offset - tolerance.linear;
-    let lowest = floor(one, side.normal, enough, tolerance.linear)?;
+    let lowest = floor(one, side.normal, enough, tolerance)?;
     // `floor` refuses a bound that is not a number.
     if lowest < enough {
         return Err(CutError::LostBelow {
@@ -580,13 +592,21 @@ const MAX_FLOOR_SPLITS: usize = 1 << 14;
 /// least, over its faces, of a bound for each. An analytic face is bound
 /// by its held box (`Body::held_face_bbox`) in a frame whose z is the
 /// normal, which is tight where the face reaches its extreme. A freeform
-/// face is bound by its surface ([`surface_floor`]), which holds the face,
-/// closed in on until the bound reaches `enough` or is within a hundredth
-/// of `linear` of a point of the surface. Edges and vertices lie on the
-/// faces (to the tolerance the caller allows for), so a closed solid's
-/// faces hold all of it. A bound that cannot be made is an error, never a
-/// guess.
-fn floor(one: &Prepared<'_>, normal: Vec3, enough: f64, linear: f64) -> Result<f64, CutError> {
+/// face is bound by what of its surface lies in its trim, with its edges
+/// ([`face_floor`]), or where that cannot be made by its whole surface
+/// ([`surface_floor`]), which holds the face; either closed in on until
+/// the bound reaches `enough` or is within a hundredth of the tolerance of
+/// a point of the face (of the surface, for the whole surface). Edges and
+/// vertices lie on the faces (to the tolerance the caller allows for), so
+/// a closed solid's faces hold all of it. A bound that cannot be made is
+/// an error, never a guess.
+fn floor(
+    one: &Prepared<'_>,
+    normal: Vec3,
+    enough: f64,
+    tolerance: &Tolerance,
+) -> Result<f64, CutError> {
+    let linear = tolerance.linear;
     let boxing = |error| CutError::Boxing {
         body: one.index,
         error,
@@ -595,12 +615,19 @@ fn floor(one: &Prepared<'_>, normal: Vec3, enough: f64, linear: f64) -> Result<f
     let mut lowest = f64::INFINITY;
     for (index, face) in one.body.faces.iter().enumerate() {
         let bound = if face.surface.is_freeform() {
-            surface_floor(&face.surface, normal, enough, 0.01 * linear).ok_or(
-                CutError::Section {
+            let trimmed = (!face.loops.is_empty())
+                .then(|| one.probe(tolerance))
+                .flatten()
+                .and_then(|probe| {
+                    let slack = 2.0 * linear + one.body.tolerances.largest().unwrap_or(0.0);
+                    face_floor(probe, index, normal, enough, 0.01 * linear, slack)
+                });
+            trimmed
+                .or_else(|| surface_floor(&face.surface, normal, enough, 0.01 * linear))
+                .ok_or(CutError::Section {
                     body: one.index,
                     what: "a freeform face whose least along the normal cannot be bounded",
-                },
-            )?
+                })?
         } else {
             let face_id = FaceId(u32::try_from(index).unwrap_or(u32::MAX));
             let held = turned.held_face_bbox(face_id).map_err(boxing)?;
@@ -612,6 +639,259 @@ fn floor(one: &Prepared<'_>, normal: Vec3, enough: f64, linear: f64) -> Result<f
         lowest = lowest.min(bound);
     }
     Ok(lowest)
+}
+
+/// How deep an edge is halved to tell whether it may meet a box.
+const EDGE_DEPTH: u32 = 14;
+
+/// An edge of a face in [`face_floor`]: its curve, made ready to be cut.
+struct Bounding<'a> {
+    curve: &'a Curve3,
+    nets: CurveNets,
+    range: (f64, f64),
+    bbox: Bbox3,
+}
+
+/// What [`face_floor`] cuts: a box of the surface's parameters, or a range
+/// of the parameter of one of the face's edges (by its place in the list).
+#[derive(Clone, Copy, Debug)]
+enum Region {
+    Surface((f64, f64), (f64, f64)),
+    Edge(usize, (f64, f64)),
+}
+
+/// A region waiting in [`face_floor`]'s heap: the least bound first, the
+/// first made of equals.
+struct Waiting {
+    bound: f64,
+    seq: u64,
+    region: Region,
+}
+
+impl PartialEq for Waiting {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Waiting {}
+
+impl PartialOrd for Waiting {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Waiting {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .bound
+            .total_cmp(&self.bound)
+            .then(other.seq.cmp(&self.seq))
+    }
+}
+
+/// Whether two boxes certainly do not meet.
+fn apart(a: &Bbox3, b: &Bbox3) -> bool {
+    let (Some((alo, ahi)), Some((blo, bhi))) = (a.corners(), b.corners()) else {
+        return false;
+    };
+    alo.x > bhi.x
+        || blo.x > ahi.x
+        || alo.y > bhi.y
+        || blo.y > ahi.y
+        || alo.z > bhi.z
+        || blo.z > ahi.z
+}
+
+/// Whether the edge's piece over `t` may meet the box `b`: its enclosure's
+/// box halved down to `depth` (true where it cannot be told).
+fn edge_meets(edge: &Bounding<'_>, t: (f64, f64), b: &Bbox3, depth: u32) -> bool {
+    if t == edge.range && apart(&edge.bbox, b) {
+        return false;
+    }
+    let Some(piece) = curve_piece(edge.curve, &edge.nets, t) else {
+        return true;
+    };
+    if apart(&piece.bbox(), b) {
+        return false;
+    }
+    let m = 0.5 * (t.0 + t.1);
+    if depth == 0 || !(m > t.0 && m < t.1) || b.contains(edge.curve.eval(m), 0.0) {
+        return true;
+    }
+    edge_meets(edge, (t.0, m), b, depth - 1) || edge_meets(edge, (m, t.1), b, depth - 1)
+}
+
+/// How far the heights along `normal` of five points of `at` over `[0, 1]`
+/// spread.
+fn spread(at: impl Fn(f64) -> Vec3, normal: Vec3) -> f64 {
+    let (lo, hi) = (0..=4)
+        .map(|k| at(f64::from(k) / 4.0).dot(normal))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), h| {
+            (lo.min(h), hi.max(h))
+        });
+    (hi - lo).max(0.0)
+}
+
+/// A number no point of the trimmed freeform face `face` of the probe's
+/// body lies below along `normal` (unit), from the part of its surface in
+/// its trim and from its edges. Branch and bound over pieces of both
+/// (`craft3d_geom::support`: a piece's least along a direction is proven,
+/// from the convex hull of its Bézier net): a piece of the surface over a
+/// box of its parameters is connected, so one that meets none of the
+/// face's edges (its box grown by `slack`, how far the face's outline may
+/// be from its edges' curves) is all in the face or all out of it, told
+/// by its middle, and dropped when out; every other piece is kept in full
+/// (it holds every point of the face it covers). The region with the
+/// least bound is cut in two (a piece of the surface across the parameter
+/// along which it spreads more along the normal; an edge's range in
+/// half) until that bound reaches `enough`, or comes within `resolution`
+/// of the least of the face's points seen so far (points of its edges,
+/// and middles of pieces that are in the face), or [`MAX_FLOOR_SPLITS`]
+/// are spent, where the bound left is still a true one. So the bound
+/// closes in on the face's least, on its boundary or at a point inside
+/// it, whatever the surface does outside its trim. `None` where a piece
+/// cannot be made (the caller then bounds the whole surface).
+fn face_floor(
+    probe: &Probe<'_>,
+    face: usize,
+    normal: Vec3,
+    enough: f64,
+    resolution: f64,
+    slack: f64,
+) -> Option<f64> {
+    let body = probe.body();
+    let shape = body.faces.get(face)?;
+    let surface = &shape.surface;
+    let nets = SurfaceNets::of(surface).ok()?;
+    let mut edges = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for &loop_id in &shape.loops {
+        for coedge in &body.loop_(loop_id)?.coedges {
+            if !seen.insert(coedge.edge.0) {
+                continue;
+            }
+            let edge = body.edge(coedge.edge)?;
+            let curve_nets = CurveNets::of(&edge.curve);
+            let piece = curve_piece(&edge.curve, &curve_nets, edge.range)?;
+            edges.push(Bounding {
+                curve: &edge.curve,
+                nets: curve_nets,
+                range: edge.range,
+                bbox: piece.bbox(),
+            });
+        }
+    }
+    if edges.is_empty() {
+        return None;
+    }
+    let mut open = BinaryHeap::new();
+    let mut least_point = f64::INFINITY;
+    let mut seq = 0_u64;
+    let mut push =
+        |region: Region, open: &mut BinaryHeap<Waiting>, least_point: &mut f64| -> Option<()> {
+            let mut seen_point = |p: Vec3| {
+                let h = p.dot(normal);
+                if h.is_finite() {
+                    *least_point = least_point.min(h);
+                }
+            };
+            let piece: Piece = match region {
+                Region::Edge(index, t) => {
+                    let edge = edges.get(index)?;
+                    let piece = curve_piece(edge.curve, &edge.nets, t)?;
+                    for s in [t.0, 0.5 * (t.0 + t.1), t.1] {
+                        seen_point(edge.curve.eval(s));
+                    }
+                    piece
+                }
+                Region::Surface(u, v) => {
+                    let piece = surface_piece(surface, &nets, u, v)?;
+                    let middle = surface.eval(0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1));
+                    if !middle.is_finite() {
+                        return None;
+                    }
+                    let side = probe.on_face(face, middle).ok();
+                    if side == Some(OnFace::In) {
+                        seen_point(middle);
+                    }
+                    if side == Some(OnFace::Out) {
+                        let bbox = piece.bbox();
+                        let reach = match bbox.corners() {
+                            Some((lo, hi)) => {
+                                let d = Vec3::new(slack, slack, slack);
+                                Bbox3::from_points([lo - d, hi + d])
+                            }
+                            None => return None,
+                        };
+                        if !edges
+                            .iter()
+                            .any(|edge| edge_meets(edge, edge.range, &reach, EDGE_DEPTH))
+                        {
+                            // Wholly out of the face: nothing of it is lost.
+                            return Some(());
+                        }
+                    }
+                    piece
+                }
+            };
+            let bound = piece.least(normal);
+            if !bound.is_finite() {
+                return None;
+            }
+            seq += 1;
+            open.push(Waiting { bound, seq, region });
+            Some(())
+        };
+    for (index, edge) in edges.iter().enumerate() {
+        push(Region::Edge(index, edge.range), &mut open, &mut least_point)?;
+    }
+    let (u, v) = surface.domain();
+    push(Region::Surface(u, v), &mut open, &mut least_point)?;
+    for _ in 0..MAX_FLOOR_SPLITS {
+        let lowest = open.pop()?;
+        if lowest.bound >= enough || least_point - lowest.bound <= resolution {
+            return Some(lowest.bound);
+        }
+        let halves = match lowest.region {
+            Region::Edge(index, (a, b)) => {
+                let m = 0.5 * (a + b);
+                (m > a && m < b)
+                    .then_some([Region::Edge(index, (a, m)), Region::Edge(index, (m, b))])
+            }
+            Region::Surface((u0, u1), (v0, v1)) => {
+                let (um, vm) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+                let along_u = |s: f64| surface.eval(u0 + (u1 - u0) * s, vm);
+                let along_v = |s: f64| surface.eval(um, v0 + (v1 - v0) * s);
+                let (su, sv) = (spread(along_u, normal), spread(along_v, normal));
+                let cut_u = su > sv
+                    || (su == sv
+                        && (along_u(1.0) - along_u(0.0)).length()
+                            >= (along_v(1.0) - along_v(0.0)).length());
+                if cut_u {
+                    (um > u0 && um < u1).then_some([
+                        Region::Surface((u0, um), (v0, v1)),
+                        Region::Surface((um, u1), (v0, v1)),
+                    ])
+                } else {
+                    (vm > v0 && vm < v1).then_some([
+                        Region::Surface((u0, u1), (v0, vm)),
+                        Region::Surface((u0, u1), (vm, v1)),
+                    ])
+                }
+            }
+        };
+        // A region as small as an f64 makes it: its bound, the least
+        // left, is the answer.
+        let Some(halves) = halves else {
+            return Some(lowest.bound);
+        };
+        for half in halves {
+            push(half, &mut open, &mut least_point)?;
+        }
+    }
+    open.peek().map(|lowest| lowest.bound)
 }
 
 /// A number no point of a freeform surface lies below along `normal`:

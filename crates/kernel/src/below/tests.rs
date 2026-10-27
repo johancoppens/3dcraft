@@ -750,6 +750,89 @@ fn a_revolved_spline_found_empty_above_its_bottom_is_lost_by_its_depth() {
     }
 }
 
+/// A prism whose side is a trimmed spline face whose surface reaches far
+/// below it: a profile with a cubic spline side (from (0, 0) through the
+/// control points (1, −1) and (2, −1) to (3, 0), closed by lines through
+/// (3, 2) and (0, 2)) extruded from z = −100 to 1, then cut to z ∈ [0, 1]
+/// by a block. The spline face keeps its surface, 101 high, trimmed to
+/// the top 1; the held box, and so the level search's bracket, reaches
+/// −100, and the search's first step lands far below the prism, where
+/// nothing is below by the face's trim, not by its surface (it was
+/// refused, "it may reach … below it", while the face was bound by its
+/// whole surface). The level for a share s of the prism's volume is s
+/// (a prism's volume grows linearly with the level), at three scales.
+#[test]
+fn a_trimmed_spline_face_reaching_far_below_its_trim_gives_the_level() {
+    use crate::extrude::extrude;
+    use crate::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    for k in SCALES {
+        let t = tol(k);
+        let p = |x: f64, y: f64| [x * k, y * k];
+        let mut curves = vec![SketchCurve {
+            id: 1,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: vec![p(0.0, 0.0), p(1.0, -1.0), p(2.0, -1.0), p(3.0, 0.0)],
+            }),
+        }];
+        for (id, (start, end)) in [
+            (p(3.0, 0.0), p(3.0, 2.0)),
+            (p(3.0, 2.0), p(0.0, 2.0)),
+            (p(0.0, 2.0), p(0.0, 0.0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            curves.push(SketchCurve {
+                id: 3 + 2 * id as u64,
+                curve: Curve2::Line { start, end },
+            });
+        }
+        let profiles = detect_profiles(&curves, &t).unwrap();
+        let tall = extrude(&profiles, &Frame::WORLD, -100.0 * k, k, &t)
+            .unwrap()
+            .body;
+        let cutter = block(
+            &Frame::new(Vec3::new(-k, -2.0 * k, 0.0), Vec3::Z, Vec3::X).unwrap(),
+            5.0 * k,
+            5.0 * k,
+            k,
+        )
+        .unwrap();
+        let prism = boolean(&tall, &cutter, BooleanOp::Intersect, &t)
+            .unwrap()
+            .body;
+        assert!(prism.faces.iter().any(|f| f.surface.is_freeform()));
+        let plane = upright();
+        let (lo, hi, _) = extent(&[&prism], plane.normal).unwrap();
+        assert!(lo < -99.0 * k, "the held box is the surface's: {lo}");
+        // Far below the prism, and between its bottom and the surface's,
+        // nothing is below, by the face's trim.
+        for offset in [-50.0 * k, -0.1 * k, -0.5 * t.linear] {
+            let none = nothing_at(&prism, &plane, offset, k).unwrap();
+            assert_eq!(none.volume, 0.0);
+        }
+        lost_by(
+            nothing_at(&prism, &plane, 0.1 * k, k),
+            0.1 * k,
+            k,
+            "a tenth into the prism",
+        );
+        let total = mass_properties(&prism).unwrap().volume;
+        for share in [0.3, 0.7] {
+            let found = level_for(&[&prism], &plane, share * total, &t).unwrap();
+            let allowed = 1e-9 * k + 20.0 * t.linear;
+            assert!(
+                (found.below.offset - share * k).abs() <= allowed,
+                "the level for {share} of the prism at {k}: {} (bracket {lo}..{hi}, {} steps)",
+                found.below.offset,
+                found.steps
+            );
+        }
+    }
+}
+
 // ------------------------------------------------ the search for a level
 
 /// What lies below at `offset` with this volume and section area (the
