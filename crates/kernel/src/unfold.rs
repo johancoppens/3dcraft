@@ -44,7 +44,7 @@ const MAX_NODES: usize = 1 << 19;
 const EDGE_SAMPLES: usize = 48;
 /// Grid cells along the shorter side of a face to start with.
 const START_CELLS: usize = 4;
-/// The share of the tolerance a face's stretch (`|K| r³ / 6`) may take
+/// The share of the tolerance a face's stretch ([`FaceCurvature`]) may take
 /// to be unfolded, and the share the layout's convergence must reach: the
 /// same, so that a face the gate lets through converges.
 pub const DEVELOPABLE_SHARE: f64 = 0.5;
@@ -250,13 +250,18 @@ fn normal_near(surface: &Surface, p: P2, q: P2) -> Option<Vec3> {
 /// origin along +x: its end. The image of a curve under an isometry has
 /// the curve's geodesic curvature (do Carmo §4-4), so it is the planar
 /// curve with the same speed and the same turning, `dθ/dt = c''·(n × c')
-/// / |c'|²` (Simpson's rule over eight steps for the end, the trapezoid
-/// rule for the angle).
+/// / |c'|²`: the angle and the end together by Simpson's rule, step by
+/// step from each step's start, middle and end (the angle at the middle
+/// by the rule's own interpolant), so both are of the fourth order.
 fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
-    // Simpson's rule with the steps doubled until two results agree to
-    // the rounding of the segment's length (a curve whose turning varies
-    // quickly, as a fitted face's rows between close rulings, is followed
-    // as finely as it needs).
+    // The steps doubled until two results agree to 1e-12 of the segment's
+    // length (a curve whose turning varies quickly, as a fitted face's
+    // rows between close rulings, is followed as finely as it needs).
+    // Relative to each segment, as each is laid from the ones before it:
+    // the images' errors add up along a face, so a long one (the sea
+    // kayak's 5 m panels, 2026-10-27, laid in rows of 400 cells) needs
+    // them far below the tolerance over its length; at 1e-10 its layouts
+    // stopped converging at 5e-7.
     let mut steps = 8;
     let mut last = planar_image_steps(surface, outward, p, q, steps);
     while steps < MAX_IMAGE_STEPS {
@@ -264,7 +269,7 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
         let next = planar_image_steps(surface, outward, p, q, steps);
         let change = len2(sub2(next, last));
         last = next;
-        if change <= 1e-10 * len2(next) {
+        if change <= 1e-12 * len2(next) {
             break;
         }
     }
@@ -275,14 +280,11 @@ fn planar_image(surface: &Surface, outward: bool, p: P2, q: P2) -> P2 {
 const MAX_IMAGE_STEPS: usize = 256;
 
 fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usize) -> P2 {
-    #[allow(non_snake_case)]
-    let STEPS = steps.max(2);
+    let steps = steps.max(1);
     let d = sub2(q, p);
-    let mut speed = vec![0.0_f64; STEPS + 1];
-    let mut turning = vec![0.0_f64; STEPS + 1];
     let mut last_normal: Option<Vec3> = None;
-    for k in 0..=STEPS {
-        let t = k as f64 / STEPS as f64;
+    // The speed and the turning at `t` along the line.
+    let mut rate = |t: f64| -> (f64, f64) {
         let (u, v) = (p[0] + t * d[0], p[1] + t * d[1]);
         let (_, su, sv) = surface.derivatives(u, v);
         let (suu, suv, svv) = craft3d_geom::curvature::second_derivatives(surface, u, v);
@@ -294,37 +296,34 @@ fn planar_image_steps(surface: &Surface, outward: bool, p: P2, q: P2, steps: usi
             .or(last_normal);
         last_normal = n;
         let s2 = c1.length_squared();
-        if let Some(slot) = speed.get_mut(k) {
-            *slot = s2.sqrt();
-        }
-        if let (Some(n), Some(slot)) = (n, turning.get_mut(k))
-            && s2 > 0.0
-        {
-            *slot = c2.dot(n.cross(c1)) / s2;
-        }
-    }
-    let h = 1.0 / STEPS as f64;
-    let mut theta = 0.0;
-    let mut end = [0.0, 0.0];
-    for k in 0..=STEPS {
-        if k > 0 {
-            let (a, b) = (
-                turning.get(k - 1).copied().unwrap_or(0.0),
-                turning.get(k).copied().unwrap_or(0.0),
-            );
-            theta += 0.5 * h * (a + b);
-        }
-        let w = if k == 0 || k == STEPS {
-            1.0
-        } else if k % 2 == 1 {
-            4.0
-        } else {
-            2.0
-        } * h
-            / 3.0;
-        let sp = speed.get(k).copied().unwrap_or(0.0);
-        end[0] += w * sp * theta.cos();
-        end[1] += w * sp * theta.sin();
+        let turn = match n {
+            Some(n) if s2 > 0.0 => c2.dot(n.cross(c1)) / s2,
+            _ => 0.0,
+        };
+        (s2.sqrt(), turn)
+    };
+    let h = 1.0 / steps as f64;
+    let (mut theta, mut end) = (0.0_f64, [0.0, 0.0]);
+    let mut here = rate(0.0);
+    for k in 0..steps {
+        let t = k as f64 * h;
+        let mid = rate(t + 0.5 * h);
+        let next = rate(if k + 1 == steps { 1.0 } else { t + h });
+        let (w0, wm, w1) = (here.1, mid.1, next.1);
+        let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
+        let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
+        let dir = |th: f64, sp: f64| [sp * th.cos(), sp * th.sin()];
+        let (d0, dm, d1) = (
+            dir(theta, here.0),
+            dir(theta_m, mid.0),
+            dir(theta_1, next.0),
+        );
+        end = [
+            end[0] + h / 6.0 * (d0[0] + 4.0 * dm[0] + d1[0]),
+            end[1] + h / 6.0 * (d0[1] + 4.0 * dm[1] + d1[1]),
+        ];
+        theta = theta_1;
+        here = next;
     }
     end
 }
@@ -714,8 +713,14 @@ fn boundary(
                     a + (b - a) * frac
                 };
                 let p = e.curve.eval(t);
+                // From the sample before; a walk from there that does not
+                // settle (beside a fan's apex, where a row collapses and
+                // the walk is free along it) falls back on the search
+                // over the whole surface, as `project_from` asks.
                 let (u, v) = match previous {
-                    Some(at) => surface.project_from(p, (at[0], at[1])),
+                    Some(at) => surface
+                        .project_from(p, (at[0], at[1]))
+                        .or_else(|_| surface.project(p)),
                     None => surface.project(p),
                 }
                 .map_err(KernelError::Geometry)?;
@@ -1078,8 +1083,15 @@ fn lay_face(
     if checked.stretch > DEVELOPABLE_SHARE * tol {
         let p = checked.at;
         return Err(refused(format!(
-            "face {} is not developable: its Gaussian curvature reaches {:e} at ({}, {}, {}), which over its size ({} from its middle) would stretch a flat sheet by about {:e} (more than {DEVELOPABLE_SHARE} of the tolerance {tol}); an approximate flatten of a doubly curved face is not offered",
-            face.0, checked.largest, p.x, p.y, p.z, checked.radius, checked.stretch
+            "face {} is not developable: its Gaussian curvature reaches {:e} at ({}, {}, {}), which over the face ({} by {}) would stretch a flat sheet by about {:e} (more than {DEVELOPABLE_SHARE} of the tolerance {tol}); an approximate flatten of a doubly curved face is not offered",
+            face.0,
+            checked.largest,
+            p.x,
+            p.y,
+            p.z,
+            checked.lengths.0,
+            checked.lengths.1,
+            checked.stretch
         )));
     }
     let (length_u, length_v) = checked.lengths;
@@ -1168,13 +1180,30 @@ fn lay_face(
 
 /// How far a face is from developable: the largest |K| found on a grid
 /// over its region of its surface, where, and the stretch a flat sheet
-/// would need over the face, `|K| r³ / 6` with `r` half the diagonal
-/// (Bertrand–Diguet–Puiseux: a geodesic circle of radius `r` has the
-/// circumference `2πr (1 − K r² / 6 + …)`).
+/// would need over the face.
+///
+/// The stretch is that of laying the face out from a line through its
+/// middle (Fermi coordinates about it: the geodesics square to the line,
+/// along which distances are kept). There the metric is `dy² + G ds²`
+/// with `∂²(√G)/∂y² = −K √G` (the Jacobi equation, do Carmo §4-6), and
+/// the line developed flat with its own geodesic curvature has the same
+/// `√G` but for `K = 0`; so a curve at the offset `y` changes its length,
+/// to first order in `K`, by `∫∫ (y − η) K dη ds`, at most
+/// `∫ w² max|K| / 8 ds` along the line for a face of width `w` across
+/// it. Laid from the middle, each half adds its own: the stretch is the
+/// larger half's, with the width and the largest |K| across taken at
+/// every sample along (so a face whose curvature is found at one end is
+/// not charged for its whole length), and of the two directions of the
+/// face's parameters the one that gives less (each is an estimate of the
+/// same stretch). A face of constant `K` and sides `w ≤ L` gets
+/// `|K| w² L / 16`: about the `|K| r³ / 6` of a geodesic disc
+/// (Bertrand–Diguet–Puiseux) for a square, far less for a long narrow
+/// strip, whose stretch does not grow with the cube of its length.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceCurvature {
     pub largest: f64,
     pub at: Vec3,
+    /// Half the diagonal of the face's region (along its parameters).
     pub radius: f64,
     pub stretch: f64,
     /// Whether the curvature could be taken at every point of the grid.
@@ -1192,12 +1221,20 @@ fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
     let mut largest: f64 = 0.0;
     let mut at = mid;
     let mut everywhere = true;
+    let sorted = |mut samples: Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples.dedup();
+        samples
+    };
     let (us, vs) = (
-        curvature_samples(surface, true, (u0, u1), N),
-        curvature_samples(surface, false, (v0, v1), N),
+        sorted(curvature_samples(surface, true, (u0, u1), N)),
+        sorted(curvature_samples(surface, false, (v0, v1), N)),
     );
-    for &u in &us {
-        for &v in &vs {
+    // The largest |K| across the face at each sample along it, both ways.
+    let mut across_u = vec![0.0_f64; us.len()];
+    let mut across_v = vec![0.0_f64; vs.len()];
+    for (&u, ku) in us.iter().zip(across_u.iter_mut()) {
+        for (&v, kv) in vs.iter().zip(across_v.iter_mut()) {
             let uv = [u, v];
             // Where the surface collapses (a fan's apex) the curvature is
             // the rounding of 0 / 0: not a curvature of the face.
@@ -1205,23 +1242,90 @@ fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
                 continue;
             }
             match craft3d_geom::curvature::gaussian_curvature(surface, uv[0], uv[1]) {
-                Some(k) if k.abs() > largest => {
-                    largest = k.abs();
-                    at = uv;
+                Some(k) => {
+                    let k = k.abs();
+                    *ku = ku.max(k);
+                    *kv = kv.max(k);
+                    if k > largest {
+                        largest = k;
+                        at = uv;
+                    }
                 }
-                Some(_) => {}
                 None => everywhere = false,
             }
         }
     }
+    let along_u = strip_stretch(surface, &rule, &us, &across_u, true, (v0, v1));
+    let along_v = strip_stretch(surface, &rule, &vs, &across_v, false, (u0, u1));
+    let stretch = along_u.min(along_v);
     FaceCurvature {
         largest,
         at: surface.eval(at[0], at[1]),
         radius,
-        stretch: largest * radius.powi(3) / 6.0,
+        stretch: if stretch.is_nan() {
+            f64::INFINITY
+        } else {
+            stretch
+        },
         everywhere,
         lengths: (length_u, length_v),
     }
+}
+
+/// The stretch of laying a face out from its middle line along one
+/// direction of its parameters ([`FaceCurvature`]): `samples` along that
+/// direction (sorted), `largest` the largest |K| across the face at each,
+/// `across` the face's range in the other parameter. Per interval between
+/// samples, its length along the middle line times the larger of
+/// `w² |K| / 8` at its two ends (`w` the face's width across there); the
+/// larger of the two halves' sums.
+fn strip_stretch(
+    surface: &Surface,
+    rule: &Rule,
+    samples: &[f64],
+    largest: &[f64],
+    along_u: bool,
+    (lo, hi): (f64, f64),
+) -> f64 {
+    let middle_across = 0.5 * (lo + hi);
+    let point = |along: f64, across: f64| -> P2 {
+        if along_u {
+            [along, across]
+        } else {
+            [across, along]
+        }
+    };
+    let rate: Vec<f64> = samples
+        .iter()
+        .zip(largest)
+        .map(|(&t, &k)| {
+            let w = on_surface(surface, rule, point(t, lo), point(t, hi));
+            w * w * k / 8.0
+        })
+        .collect();
+    let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
+        return 0.0;
+    };
+    let middle = 0.5 * (first + last);
+    let (mut before, mut after) = (0.0_f64, 0.0_f64);
+    for (t, r) in samples.windows(2).zip(rate.windows(2)) {
+        let ([t0, t1], [r0, r1]) = (t, r) else {
+            continue;
+        };
+        let ds = on_surface(
+            surface,
+            rule,
+            point(*t0, middle_across),
+            point(*t1, middle_across),
+        );
+        let part = r0.max(*r1) * ds;
+        if 0.5 * (t0 + t1) < middle {
+            before += part;
+        } else {
+            after += part;
+        }
+    }
+    before.max(after)
 }
 
 /// Most samples of the curvature along one direction of a face.
@@ -1471,20 +1575,31 @@ fn outline(
                 });
             let length_3d = edge_length(&e.curve, lo, hi);
             let (r0, r1) = e.range;
-            let along = |t: f64, uv: P2| -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> {
+            let along = |t: f64,
+                         uv: P2,
+                         span: (f64, f64)|
+             -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> {
                 let (q, c1) = e.curve.derivatives(t);
-                // The second derivative by central differences of the
-                // first (one-sided at the ends of the edge's range).
-                let h = 1e-5 * (r1 - r0);
-                let (lo, hi) = ((t - h).max(r0), (t + h).min(r1));
-                let c2 = if hi > lo {
-                    (e.curve.derivatives(hi).1 - e.curve.derivatives(lo).1) * (1.0 / (hi - lo))
-                } else {
+                // The second derivative by differences of the first,
+                // within the span between the knots the parameter is in:
+                // central inside it, one-sided of the second order at its
+                // ends (the curve's second derivative jumps at a knot).
+                let (lo, hi) = (span.0.max(r0), span.1.min(r1));
+                let h = (1e-5 * (r1 - r0)).min(0.25 * (hi - lo));
+                let d1 = |x: f64| e.curve.derivatives(x).1;
+                let c2 = if h.is_nan() || h <= 0.0 {
                     Vec3::ZERO
+                } else if t - h >= lo && t + h <= hi {
+                    (d1(t + h) - d1(t - h)) * (0.5 / h)
+                } else if t + 2.0 * h <= hi {
+                    (d1(t + h) * 4.0 - d1(t + 2.0 * h) - c1 * 3.0) * (0.5 / h)
+                } else {
+                    (c1 * 3.0 - d1(t - h) * 4.0 + d1(t - 2.0 * h)) * (0.5 / h)
                 };
                 let (u, v) = p
                     .surface
                     .project_from(q, (uv[0], uv[1]))
+                    .or_else(|_| p.surface.project(q))
                     .map_err(KernelError::Geometry)?;
                 let n = p
                     .surface
@@ -1492,7 +1607,13 @@ fn outline(
                     .map(|n| if p.outward { n } else { -n });
                 Ok((c1, c2, n))
             };
-            if let Some(curve) = developed(p, samples, &along, Some(*edge), length_3d, tol)? {
+            let breaks: Vec<f64> = match &e.curve {
+                craft3d_geom::Curve3::Nurbs(n) => n.knots().to_vec(),
+                _ => Vec::new(),
+            };
+            if let Some(curve) =
+                developed(p, samples, &along, &breaks, Some(*edge), length_3d, tol)?
+            {
                 out.push(curve);
             }
         }
@@ -1506,22 +1627,24 @@ fn outline(
                 })
                 .collect();
             let d = sub2(b, a);
-            let along = |t: f64, _: P2| -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> {
-                let (u, v) = (a[0] + t * d[0], a[1] + t * d[1]);
-                let (_, su, sv) = p.surface.derivatives(u, v);
-                let (suu, suv, svv) = craft3d_geom::curvature::second_derivatives(&p.surface, u, v);
-                let c1 = su * d[0] + sv * d[1];
-                let c2 = suu * (d[0] * d[0]) + suv * (2.0 * d[0] * d[1]) + svv * (d[1] * d[1]);
-                let n = p
-                    .surface
-                    .normal(u, v)
-                    .map(|n| if p.outward { n } else { -n });
-                Ok((c1, c2, n))
-            };
+            let along =
+                |t: f64, _: P2, _: (f64, f64)| -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> {
+                    let (u, v) = (a[0] + t * d[0], a[1] + t * d[1]);
+                    let (_, su, sv) = p.surface.derivatives(u, v);
+                    let (suu, suv, svv) =
+                        craft3d_geom::curvature::second_derivatives(&p.surface, u, v);
+                    let c1 = su * d[0] + sv * d[1];
+                    let c2 = suu * (d[0] * d[0]) + suv * (2.0 * d[0] * d[1]) + svv * (d[1] * d[1]);
+                    let n = p
+                        .surface
+                        .normal(u, v)
+                        .map(|n| if p.outward { n } else { -n });
+                    Ok((c1, c2, n))
+                };
             let length_3d = rule.integrate(0.0, 1.0, 64, |t| {
-                along(t, a).map_or(0.0, |(c1, _, _)| c1.length())
+                along(t, a, (0.0, 1.0)).map_or(0.0, |(c1, _, _)| c1.length())
             });
-            if let Some(curve) = developed(p, &samples, &along, None, length_3d, tol)? {
+            if let Some(curve) = developed(p, &samples, &along, &[], None, length_3d, tol)? {
                 out.push(curve);
             }
         }
@@ -1558,8 +1681,13 @@ fn edge_length(curve: &craft3d_geom::Curve3, lo: f64, hi: f64) -> f64 {
 
 /// What a curve of the face is at a parameter: its first and second
 /// derivatives in space and the face's outward normal there (`None` at a
-/// pole).
-type CurveAt<'a> = dyn Fn(f64, P2) -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> + 'a;
+/// pole). The second derivative is taken within the span given (the
+/// stretch between two knots the parameter is in), not across it.
+type CurveAt<'a> =
+    dyn Fn(f64, P2, (f64, f64)) -> Result<(Vec3, Vec3, Option<Vec3>), KernelError> + 'a;
+
+/// Most Simpson steps per interval between an edge's samples.
+const MAX_SUB: usize = 256;
 
 /// The image of a curve of the face in the pattern, developed along the
 /// curve itself: the planar curve with the curve's speed and its geodesic
@@ -1570,11 +1698,14 @@ type CurveAt<'a> = dyn Fn(f64, P2) -> Result<(Vec3, Vec3, Option<Vec3>), KernelE
 /// pointwise error does not add up along it; how far it lies from the
 /// map's images, from the spline drawn through it, and how far the
 /// spline's length is from the curve's are measured, and the outline is
-/// refused when any is beyond what the tolerance allows.
+/// refused when any is beyond what the tolerance allows. `sub` starts at
+/// 8 and is doubled, up to [`MAX_SUB`], while the image is farther than
+/// half the tolerance from the map's or from its spline.
 fn developed(
     p: &Placed,
     samples: &[(f64, P2)],
     at: &CurveAt<'_>,
+    breaks: &[f64],
     edge: Option<EdgeId>,
     length_3d: f64,
     tol: f64,
@@ -1593,8 +1724,8 @@ fn developed(
         let mut at_samples: Vec<P2> = Vec::new();
         let (mut pos, mut theta) = ([0.0, 0.0], 0.0);
         let mut last_n: Option<Vec3> = None;
-        let mut rate = |t: f64, uv: P2| -> Result<(f64, f64), KernelError> {
-            let (c1, c2, n) = at(t, uv)?;
+        let mut rate = |t: f64, uv: P2, span: (f64, f64)| -> Result<(f64, f64), KernelError> {
+            let (c1, c2, n) = at(t, uv, span)?;
             let n = n.or(last_n);
             last_n = n;
             let s2 = c1.length_squared();
@@ -1604,35 +1735,62 @@ fn developed(
             };
             Ok((s2.sqrt(), turn))
         };
-        if let Some(&(t0, uv0)) = samples.first() {
+        if !samples.is_empty() {
             points.push(pos);
             at_samples.push(pos);
-            let mut here = rate(t0, uv0)?;
             for w in samples.windows(2) {
                 let [(ta, uva), (tb, _)] = w else { continue };
-                let h = (tb - ta) / sub as f64;
-                for j in 0..sub {
-                    let t = ta + h * j as f64;
-                    let mid = rate(t + 0.5 * h, *uva)?;
-                    let end = rate(t + h, *uva)?;
-                    let (w0, wm, w1) = (here.1, mid.1, end.1);
-                    let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
-                    let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
-                    let dir = |th: f64, sp: f64| [sp * th.cos(), sp * th.sin()];
-                    let (d0, dm, d1) =
-                        (dir(theta, here.0), dir(theta_m, mid.0), dir(theta_1, end.0));
-                    let half = [
-                        pos[0] + h / 24.0 * (5.0 * d0[0] + 8.0 * dm[0] - d1[0]),
-                        pos[1] + h / 24.0 * (5.0 * d0[1] + 8.0 * dm[1] - d1[1]),
-                    ];
-                    pos = [
-                        pos[0] + h / 6.0 * (d0[0] + 4.0 * dm[0] + d1[0]),
-                        pos[1] + h / 6.0 * (d0[1] + 4.0 * dm[1] + d1[1]),
-                    ];
-                    theta = theta_1;
-                    here = end;
-                    mids.push(half);
-                    points.push(pos);
+                // Split at the curve's knots between the two samples, in
+                // the order the samples run: the geodesic curvature jumps
+                // there (a cubic Hermite spline has no second derivative
+                // across its knots), which a rule across them does not
+                // integrate (the sea kayak's chines, 2026-10-27: hundreds
+                // of spans, their images 1e-3 off at 8 steps and still
+                // 6e-6 at 256).
+                let (lo, hi) = (ta.min(*tb), ta.max(*tb));
+                let inner = breaks.iter().copied().filter(|k| *k > lo && *k < hi);
+                let mut cuts: Vec<f64> = vec![*ta];
+                if tb >= ta {
+                    cuts.extend(inner);
+                } else {
+                    cuts.extend(inner.rev());
+                }
+                cuts.push(*tb);
+                let whole = (tb - ta).abs();
+                for c in cuts.windows(2) {
+                    let [c0, c1] = c else { continue };
+                    let span = (c0.min(*c1), c0.max(*c1));
+                    let share = if whole > 0.0 {
+                        (c1 - c0).abs() / whole
+                    } else {
+                        1.0
+                    };
+                    let n = ((sub as f64 * share).ceil() as usize).clamp(1, sub);
+                    let h = (c1 - c0) / n as f64;
+                    let mut here = rate(*c0, *uva, span)?;
+                    for j in 0..n {
+                        let t = c0 + h * j as f64;
+                        let mid = rate(t + 0.5 * h, *uva, span)?;
+                        let end = rate(if j + 1 == n { *c1 } else { t + h }, *uva, span)?;
+                        let (w0, wm, w1) = (here.1, mid.1, end.1);
+                        let theta_m = theta + h / 24.0 * (5.0 * w0 + 8.0 * wm - w1);
+                        let theta_1 = theta + h / 6.0 * (w0 + 4.0 * wm + w1);
+                        let dir = |th: f64, sp: f64| [sp * th.cos(), sp * th.sin()];
+                        let (d0, dm, d1) =
+                            (dir(theta, here.0), dir(theta_m, mid.0), dir(theta_1, end.0));
+                        let half = [
+                            pos[0] + h / 24.0 * (5.0 * d0[0] + 8.0 * dm[0] - d1[0]),
+                            pos[1] + h / 24.0 * (5.0 * d0[1] + 8.0 * dm[1] - d1[1]),
+                        ];
+                        pos = [
+                            pos[0] + h / 6.0 * (d0[0] + 4.0 * dm[0] + d1[0]),
+                            pos[1] + h / 6.0 * (d0[1] + 4.0 * dm[1] + d1[1]),
+                        ];
+                        theta = theta_1;
+                        here = end;
+                        mids.push(half);
+                        points.push(pos);
+                    }
                 }
                 at_samples.push(pos);
             }
@@ -1642,6 +1800,13 @@ fn developed(
         let (motion, residual) = Motion2::fit(&at_samples, &images)
             .ok_or_else(|| refused(format!("an edge of {} has no points", what())))?;
         if residual > 0.5 * tol {
+            // Finer steps first: an edge whose geodesic curvature varies
+            // within a step (a fitted curve's knots closer than its
+            // samples) is integrated finer before it is refused.
+            if sub < MAX_SUB {
+                sub *= 2;
+                continue;
+            }
             return Err(refused(format!(
                 "the flat image of an edge of {} departs from the pattern's map by {residual:e} (more than half the tolerance {tol}): the face is not laid out isometrically there",
                 what()
@@ -1652,7 +1817,7 @@ fn developed(
         let Some(mut curve) = spline_through(&points, &mids, edge, p.face, length_3d, tol)? else {
             return Ok(None);
         };
-        if curve.deviation <= 0.5 * tol || sub >= 64 {
+        if curve.deviation <= 0.5 * tol || sub >= MAX_SUB {
             if curve.deviation > 0.5 * tol {
                 return Err(refused(format!(
                     "the outline of {} could not be drawn within half the tolerance",

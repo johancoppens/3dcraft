@@ -678,6 +678,82 @@ fn a_plate_on_a_developable_with_short_and_long_rulings_has_its_closed_form_volu
     }
 }
 
+/// How far a ruling strays from a developable: the turn of the tangent
+/// plane from its end on A to its end on B, times its length (computed
+/// here from the planes themselves, not from the condition).
+fn twist(a: &Rail, b: &Rail, (s, t): (f64, f64)) -> f64 {
+    let ((pa, ua), (pb, ub)) = (at(a, s), at(b, t));
+    let d = pb - pa;
+    let (na, nb) = (
+        ua.cross(d).normalized().unwrap(),
+        ub.cross(d).normalized().unwrap(),
+    );
+    let turn = na.cross(nb).length().atan2(na.dot(nb).abs());
+    turn * d.length()
+}
+
+/// The sea kayak's panels (2026-10-27): rails whose ends line up with a
+/// ruling within the tolerance (edges of a boolean, fitted within it) got
+/// fans at their ends, faces with edges of 1e-5 mm, which a perturbation
+/// within the tolerance made or took away, and with them the names of the
+/// sheet's faces and edges. Two coaxial arcs of one radius (a cylinder
+/// strip, 72 times longer than wide, as a kayak's panel), the second
+/// longer at both ends by `δ` along its circle, so that the rulings from
+/// the first's ends miss the second's by `δ`: the strip that runs on to
+/// the corners strays from a developable by about `δ h / R` there. A fan
+/// within half the tolerance of that strip is not made; one beyond it is.
+#[test]
+fn a_fan_within_the_tolerance_of_the_strip_beside_it_is_not_made() {
+    for k in SCALES {
+        let t = tol(k).linear;
+        // (δ, h / R, whether the ends are fans)
+        let cases = [
+            (0.0, 1.0 / 40.0, false),
+            (0.1 * t, 1.0 / 40.0, false),
+            (0.1 * t, 1.0, false),
+            (10.0 * t, 1.0 / 40.0, false),
+            // The same δ where the strip would turn by 10 tolerances.
+            (10.0 * t, 1.0, true),
+            // A millimetre at the kayak's tolerance.
+            (1e6 * t, 1.0 / 40.0, true),
+        ];
+        for (delta, ratio, fans) in cases {
+            let r = 2.0 * k;
+            let h = ratio * r;
+            let phi = delta / r;
+            let a = arc(Vec3::ZERO, r, 0.2, 2.0);
+            let b = arc(Vec3::new(0.0, 0.0, h), r, 0.2 - phi, 2.0 + phi);
+            let what = format!("scale {k}, δ {delta}, h/R {ratio}");
+            let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+            if fans {
+                assert_eq!(
+                    made.faces,
+                    vec![Piece::StartFan, Piece::Rulings, Piece::EndFan],
+                    "{what}"
+                );
+            } else {
+                assert_eq!(made.faces, vec![Piece::Rulings], "{what}");
+                assert_eq!(made.body.faces.len(), 1, "{what}");
+                // The strip runs from corner to corner.
+                assert_eq!(made.rulings.first(), Some(&(0.0, 0.0)), "{what}");
+                assert_eq!(made.rulings.last(), Some(&(1.0, 1.0)), "{what}");
+            }
+            // Every ruling of the strip within half the tolerance of a
+            // developable's, the corners' included, and the faces too.
+            for &ruling in &made.rulings {
+                let off = twist(&a, &b, ruling);
+                assert!(off <= 0.5 * t, "{what}: a ruling {ruling:?} off by {off}");
+            }
+            assert!(made.deviation <= 0.5 * t, "{what}: {}", made.deviation);
+            let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+            let dev =
+                develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let e = dev.error();
+            assert!(e.area < 1e-6 && e.length < 1e-6, "{what}: {e:?}");
+        }
+    }
+}
+
 /// A plate on a fan alone (rails on one cone: the fan at the start has
 /// its apex at a vertex): the face has no normal at the apex, so the
 /// plate is refused there by name, at once, whatever the reach past the

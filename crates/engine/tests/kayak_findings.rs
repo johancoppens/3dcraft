@@ -17,6 +17,14 @@
 //!    lost"); built since 2026-10-27, the ring cut from the hull owed.
 //! 7. The hull's panels with a deep check: all built and passing (the
 //!    check's finding on TipHalfD was its ray casting, fixed 2026-10-27).
+//! 8. The hull's panels unfolded: panels 2 and 3 had end fans 1e-5 mm
+//!    long (rail ends that line up with a ruling within the tolerance),
+//!    which changed their faces' and edges' names; now no fan within the
+//!    tolerance of the strip beside it. The unfolds were refused by a
+//!    stretch charged over the cube of the whole 5 m panel, then by the
+//!    long edges' developments, integrated across the chines' knots; now
+//!    the stretch is the strip's and the edges are integrated span by
+//!    span. The deck does not build here (owed).
 //! 9. The level for the hull's displacement: a step of the search far
 //!    below the keel found nothing, and that was refused ("it may reach
 //!    878 below it"), as each trimmed face of the hull, cut from faces
@@ -149,4 +157,39 @@ fn the_level_for_the_hull_displacement_is_found() {
         (volume - 98_865_474.0).abs() <= 1e-9 * 98_865_474.0,
         "{level}"
     );
+}
+
+#[test]
+fn the_hull_panels_have_no_fans_where_their_ends_line_up_with_a_ruling() {
+    let (mut s, failed) = steps("sea_kayak_8.steps.json");
+    // The four hull panels are built and unfold (U0 to U3); only the deck
+    // (Panel4S, sheer to ridge) is refused, its condition turning back
+    // before the end of a rail (owed: docs/design/developable.md), and
+    // its unfold U4 with it.
+    for f in &failed {
+        assert!(f.contains("Panel4S") || f.contains("U4"), "{failed:#?}");
+    }
+    assert!(!failed.is_empty(), "the deck was built: update this test");
+    for panel in ["Panel0S", "Panel1S", "Panel2S", "Panel3S"] {
+        let edges = s
+            .execute("document.edges", &json!({"feature": panel}))
+            .unwrap();
+        let edges = edges["edges"].as_array().unwrap();
+        // One face: two rails and the two rulings at their ends.
+        assert_eq!(edges.len(), 4, "{panel}: {edges:#?}");
+        for e in edges {
+            assert!(
+                e["length"].as_f64().unwrap() > 10.0,
+                "{panel}: a short edge {e}"
+            );
+            assert_eq!(
+                e["faces"],
+                json!([format!(
+                    "{}:face(0)",
+                    e["name"].as_str().unwrap().split(':').next().unwrap()
+                )]),
+                "{panel}: {e}"
+            );
+        }
+    }
 }

@@ -1247,8 +1247,16 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         // lies on the corner itself.
         (Start::Corner, None)
     } else {
+        // A fan within the tolerance of the strip that would run on to
+        // the corner instead is no fan either ([`fan_within_tolerance`]).
         match start_fan(&pair)? {
             (_, covered) if covered <= tol => (Start::Corner, Some((0.0, 0.0))),
+            (Start::FromA(y), _) if fan_within_tolerance(&pair, (0.0, y), (0.0, 0.0), tol) => {
+                (Start::Corner, Some((0.0, 0.0)))
+            }
+            (Start::FromB(x), _) if fan_within_tolerance(&pair, (x, 0.0), (0.0, 0.0), tol) => {
+                (Start::Corner, Some((0.0, 0.0)))
+            }
             (kind, _) => (kind, None),
         }
     };
@@ -1274,7 +1282,23 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     // unless what is left is within the tolerance.
     let rest_a = a.length_between(pair.sa(ex), a.len());
     let rest_b = b.length_between(pair.tb(ey), b.len());
-    let end = if rest_a <= tol && rest_b <= tol {
+    // Or the fan the rest would be lies within the tolerance of the strip
+    // run on to the far corner (as at the start), unless the path ends in
+    // a fan at a fold, whose parameter it would change.
+    let ends_in_fan = path
+        .fan_after
+        .len()
+        .checked_sub(2)
+        .and_then(|k| path.fan_after.get(k))
+        .copied()
+        .unwrap_or(false);
+    let rest_within = !ends_in_fan
+        && if ex >= 1.0 {
+            fan_within_tolerance(&pair, (1.0, ey), (1.0, 1.0), tol)
+        } else {
+            fan_within_tolerance(&pair, (ex, 1.0), (1.0, 1.0), tol)
+        };
+    let end = if (rest_a <= tol && rest_b <= tol) || rest_within {
         // Snapped to the far corner; a fan that ends there would change
         // the parameter it is at (and so its kind): refused.
         let n = path.points.len();
@@ -1538,6 +1562,48 @@ fn middle_strips(rulings: &[(f64, f64)], fan_after: &[bool]) -> Vec<Strip> {
 
 fn no_point() -> KernelError {
     refused("a curve has a point that is not finite".to_string())
+}
+
+/// How far the sheet strays from a developable along the ruling at
+/// `(x, y)`: the angle by which the tangent plane turns from the ruling's
+/// end on A to its end on B, times the ruling's length, the measure the
+/// fit holds every ruling to (half the tolerance). Both planes hold the
+/// ruling `D̂`, the one at `A(s)` also `Â'`, the one at `B(t)` also `B̂'`,
+/// so the sine of the angle between them is
+/// `|det[Â', B̂', D̂]| / (|Â' × D̂| |B̂' × D̂|)`. `None` where a tangent runs
+/// along the ruling (no plane there) or the ruling has no length.
+fn ruling_twist(pair: &Pair, x: f64, y: f64) -> Option<f64> {
+    let (pa, da) = pair.a.at(pair.sa(x))?;
+    let (pb, db) = pair.b.at(pair.tb(y))?;
+    let d = pb - pa;
+    let (ua, ub, ud) = (da.normalized()?, db.normalized()?, d.normalized()?);
+    let (sa, sb) = (ua.cross(ud).length(), ub.cross(ud).length());
+    if !(sa > 1e-9 && sb > 1e-9) {
+        return None;
+    }
+    let sine = ua.dot(ub.cross(ud)).abs() / (sa * sb);
+    let twist = sine.min(1.0).asin() * d.length();
+    twist.is_finite().then_some(twist)
+}
+
+/// Whether the fan at an end, from the first ruling that satisfies the
+/// condition (`from`) to the corner's ruling (`to`), lies within the
+/// tolerance of the strip of rulings that would run on to the corner in
+/// its place: every ruling of the fan (sampled along its stretch, the
+/// corner's included) strays from a developable by no more than half the
+/// tolerance ([`ruling_twist`]). Such a fan is no more than rails whose
+/// ends line up with a ruling within the tolerance (curves fitted to it, a
+/// rounding), and making it a face would give a sheet a face, and its
+/// edges names, that a perturbation within the tolerance makes or takes
+/// away. The fit then holds the strip's last interval to the tolerance
+/// like every other.
+fn fan_within_tolerance(pair: &Pair, from: (f64, f64), to: (f64, f64), tol: f64) -> bool {
+    const SAMPLES: usize = 16;
+    (0..=SAMPLES).all(|k| {
+        let w = k as f64 / SAMPLES as f64;
+        let (x, y) = (from.0 + w * (to.0 - from.0), from.1 + w * (to.1 - from.1));
+        ruling_twist(pair, x, y).is_some_and(|d| d <= 0.5 * tol)
+    })
 }
 
 /// The fan at the start: from `A(0)` to the first ruling along B that
