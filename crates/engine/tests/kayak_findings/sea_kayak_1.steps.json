@@ -1,0 +1,18 @@
+[
+["sketch.create", {"plane": "zx", "name": "A"}],
+["sketch.curve", {"sketch": "A", "x": "20 mm * t^3", "y": "100 mm * t", "t": [-1, 1]}],
+["sketch.create", {"plane": "xy", "offset": "-50 mm", "name": "Plan"}],
+["sketch.curve", {"sketch": "Plan", "x": "100 mm * t", "y": "(40 mm + 20 mm * t^2) * cos(60 deg)", "t": [-1, 1]}],
+["sketch.line", {"sketch": "Plan", "from": "e2", "to": ["100 mm", "-10 mm"]}],
+["sketch.line", {"sketch": "Plan", "from": ["100 mm", "-10 mm"], "to": ["-100 mm", "-10 mm"]}],
+["sketch.line", {"sketch": "Plan", "from": ["-100 mm", "-10 mm"], "to": "e1"}],
+["feature.extrude", {"sketch": "Plan", "distance": "150 mm", "name": "PlanBody"}],
+["sketch.create", {"plane": "zx", "offset": "-20 mm", "name": "Profile"}],
+["sketch.curve", {"sketch": "Profile", "x": "20 mm * t^3 + (40 mm + 20 mm * t^2) * sin(60 deg)", "y": "110 mm * t", "t": [-1, 1]}],
+["sketch.line", {"sketch": "Profile", "from": "e2", "to": ["-40 mm", "110 mm"]}],
+["sketch.line", {"sketch": "Profile", "from": ["-40 mm", "110 mm"], "to": ["-40 mm", "-110 mm"]}],
+["sketch.line", {"sketch": "Profile", "from": ["-40 mm", "-110 mm"], "to": "e1"}],
+["feature.extrude", {"sketch": "Profile", "distance": "100 mm", "name": "ProfileBody"}],
+["feature.boolean", {"op": "intersect", "target": "PlanBody", "tool": "ProfileBody", "name": "Chine"}],
+["feature.developable", {"a": "A", "b": {"edges": ["Chine:between[Chine:copy(0)/PlanBody:side(e3),Chine:copy(1)/ProfileBody:side(e3)]"]}, "name": "Panel"}]
+]
