@@ -4,6 +4,7 @@
 //! selection. Hosts run the commands; nothing here touches a file.
 
 use craft3d_engine::{CommandError, Session};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -31,6 +32,134 @@ pub const EXPORT_FORMATS: [(&str, &[&str]); 6] = [
     ("DXF", &["dxf"]),
     ("SVG", &["svg"]),
 ];
+
+/// A format `file.export` writes, as the export dialog offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub enum ExportFormat {
+    #[default]
+    #[serde(rename = "step")]
+    Step,
+    #[serde(rename = "stl")]
+    Stl,
+    #[serde(rename = "3mf")]
+    ThreeMf,
+    #[serde(rename = "obj")]
+    Obj,
+    #[serde(rename = "dxf")]
+    Dxf,
+    #[serde(rename = "svg")]
+    Svg,
+}
+
+impl ExportFormat {
+    /// Every format, in the order the dialog offers them.
+    pub const ALL: [ExportFormat; 6] = [
+        Self::Step,
+        Self::Stl,
+        Self::ThreeMf,
+        Self::Obj,
+        Self::Dxf,
+        Self::Svg,
+    ];
+
+    /// Its place in [`EXPORT_FORMATS`].
+    fn index(self) -> usize {
+        match self {
+            Self::Step => 0,
+            Self::Stl => 1,
+            Self::ThreeMf => 2,
+            Self::Obj => 3,
+            Self::Dxf => 4,
+            Self::Svg => 5,
+        }
+    }
+
+    /// What the dialog calls it: "STEP".
+    pub fn label(self) -> &'static str {
+        EXPORT_FORMATS
+            .get(self.index())
+            .map_or("", |(name, _)| name)
+    }
+
+    /// The extensions a file of this format may have, the one a new name
+    /// gets first.
+    pub fn extensions(self) -> &'static [&'static str] {
+        EXPORT_FORMATS
+            .get(self.index())
+            .map_or(&[], |(_, extensions)| extensions)
+    }
+
+    /// The extension a new name gets: `stl`.
+    pub fn extension(self) -> &'static str {
+        self.extensions().first().copied().unwrap_or_default()
+    }
+
+    /// The format of a file with this extension (any case).
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        let extension = extension.to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|f| f.extensions().contains(&extension.as_str()))
+    }
+
+    /// The format a file of this name is written in, by its extension.
+    pub fn of_name(name: &str) -> Option<Self> {
+        Self::from_extension(&extension_of(name)?)
+    }
+
+    /// What a file of this format holds.
+    pub fn kind(self) -> ExportKind {
+        match self {
+            Self::Step | Self::Stl | Self::ThreeMf | Self::Obj => ExportKind::Bodies,
+            Self::Dxf | Self::Svg => ExportKind::Outline,
+        }
+    }
+
+    /// A mesh: its quality applies.
+    pub fn is_mesh(self) -> bool {
+        matches!(self, Self::Stl | Self::ThreeMf | Self::Obj)
+    }
+
+    /// The formats of a kind, in the dialog's order.
+    pub fn of_kind(kind: ExportKind) -> Vec<ExportFormat> {
+        Self::ALL.into_iter().filter(|f| f.kind() == kind).collect()
+    }
+}
+
+/// `name` as a file of `format`: as it is when its extension is one of
+/// the format's (in any case); with another export format's extension,
+/// or the native one, replaced; and with the format's extension appended
+/// otherwise (`bracket.v2` → `bracket.v2.stl`). So a file is never named
+/// for another format than the bytes it holds. An empty name is
+/// `untitled`.
+pub fn export_file_name(name: &str, format: ExportFormat) -> String {
+    let trimmed = name.trim().trim_end_matches('.');
+    let name = if trimmed.is_empty() {
+        "untitled"
+    } else {
+        trimmed
+    };
+    let wanted = format.extension();
+    match extension_of(name) {
+        Some(extension) if format.extensions().contains(&extension.as_str()) => name.to_string(),
+        Some(extension)
+            if ExportFormat::from_extension(&extension).is_some()
+                || extension == EXTENSION
+                || extension == JIG_EXTENSION =>
+        {
+            // The extension's bytes are the name's last ones (lower case
+            // keeps their length).
+            let stem = name
+                .len()
+                .checked_sub(extension.len().saturating_add(1))
+                .and_then(|end| name.get(..end))
+                .filter(|stem| !stem.is_empty())
+                .unwrap_or("untitled");
+            format!("{stem}.{wanted}")
+        }
+        _ => format!("{name}.{wanted}"),
+    }
+}
 
 /// The name a dialog proposes for a document saved for the first time or
 /// under another name: a Jig in use (`x.3dcraftjig`) is saved as a model,
@@ -243,7 +372,8 @@ pub fn export_selection(
 
 /// How finely a mesh export follows the model, as the export dialog
 /// offers it (`file.export {quality}`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ExportQuality {
     Coarse,
     #[default]
@@ -285,10 +415,10 @@ impl ExportQuality {
     }
 }
 
-/// The view a drawing of the model as seen is made from (DXF or SVG with
-/// nothing selected; `file.export {view}`), as the export dialog offers
-/// it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// The view a drawing of the model as seen is made from (DXF or SVG of
+/// the model; `file.export {view}`), as the export dialog offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DrawingView {
     /// The viewport's own camera.
     #[default]
@@ -346,7 +476,8 @@ impl DrawingView {
 
 /// How a drawing of the model as seen is made: the view, perspective or
 /// to scale, and the hidden lines dashed or left out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct DrawingPlan {
     pub view: DrawingView,
     /// Perspective (an illustration) instead of orthographic (to scale).
@@ -355,22 +486,42 @@ pub struct DrawingPlan {
     pub dashed: bool,
 }
 
-/// A sheet of a named set's flat faces (DXF or SVG; `file.export {set,
-/// width, gap}`), as the export dialog offers it.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct SheetPlan {
-    /// The named set whose flat faces go on the sheet; none for the
-    /// selection or the view instead.
-    pub set: Option<String>,
-    /// The sheet's width as typed (`600 mm`, `600` in the document's
-    /// unit); empty for no limit.
-    pub width: String,
-    /// The gap between two outlines as typed; empty for 5 mm.
-    pub gap: String,
-    /// The flat pattern of a sheet-metal part or the crease pattern of a
-    /// fold instead of the selection, the view or a set (`file.export
-    /// {sheetMetal}` or `{fold}`); a set and a pattern are not both chosen.
-    pub pattern: Option<FlatPattern>,
+/// What goes into an exported file, as the export dialog's *What* offers
+/// it. In JSON (`ui.set {"export": {"what": …}}`): `"model"`,
+/// `"selection"`, `{"set": name}`, `{"sheetMetal": part}`, `{"fold":
+/// fold}` or `"everyPart"`.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportWhat {
+    /// The whole model: every body (STEP, a mesh), or a drawing of it as
+    /// seen (DXF, SVG; `file.export {view, projection, hidden}`).
+    #[default]
+    Model,
+    /// What is selected (`select.get`), as far as the format holds it
+    /// ([`export_selection`]).
+    Selection,
+    /// A sheet of a named set's flat faces (`file.export {set, width,
+    /// gap}`; DXF, SVG).
+    Set(String),
+    /// A sheet-metal part's flat pattern (`file.export {sheetMetal}`).
+    SheetMetal(String),
+    /// A fold's crease pattern (`file.export {fold}`).
+    Fold(String),
+    /// Every sheet-metal part's flat pattern on one sheet (`file.export
+    /// {sheetMetal: [..], width, gap}`).
+    EveryPart,
+}
+
+impl ExportWhat {
+    /// Only DXF and SVG hold it (a sheet or a pattern).
+    pub fn is_outline_only(&self) -> bool {
+        !matches!(self, Self::Model | Self::Selection)
+    }
+
+    /// It is laid out on a sheet with a width and a gap.
+    pub fn has_sheet(&self) -> bool {
+        matches!(self, Self::Set(_) | Self::EveryPart)
+    }
 }
 
 /// What a pattern of a DXF or SVG export is drawn from.
@@ -426,6 +577,15 @@ impl FlatPattern {
     pub fn label(&self) -> String {
         format!("{} {}", self.kind.label(), self.feature)
     }
+
+    /// The export's *What* that draws it.
+    pub fn what(&self) -> ExportWhat {
+        match self.kind {
+            PatternKind::SheetMetal => ExportWhat::SheetMetal(self.feature.clone()),
+            PatternKind::Fold => ExportWhat::Fold(self.feature.clone()),
+            PatternKind::EveryPart => ExportWhat::EveryPart,
+        }
+    }
 }
 
 /// The sheet-metal parts and folds of the active document, in history
@@ -475,99 +635,185 @@ pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
     out
 }
 
-/// Longest width or gap the export dialog keeps, in characters.
-const MAX_SHEET_TEXT: usize = 200;
+/// Longest width, gap or file name the export dialog keeps, in
+/// characters.
+pub const MAX_EXPORT_TEXT: usize = 200;
 
-/// How the person chose to export, in the export dialog.
+/// How the person chose to export, in the export dialog: what goes into
+/// the file and how (the format is the file's name's).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ExportPlan {
+    pub what: ExportWhat,
     /// How finely a mesh follows the model (STL, 3MF, OBJ).
     pub quality: ExportQuality,
-    /// Every body, whatever is selected: the way out the dialog offers
-    /// when the selection does not fit the format.
-    pub all_bodies: bool,
-    /// A drawing of the model as seen (DXF, SVG with nothing selected).
+    /// A drawing of the model as seen (the model to DXF or SVG).
     pub drawing: DrawingPlan,
-    /// A sheet of a named set's flat faces instead of the selection or
-    /// the view (DXF, SVG).
-    pub sheet: SheetPlan,
+    /// The sheet's width as typed (`600 mm`, `600` in the document's
+    /// unit), for a set's sheet and every part's; empty for no limit.
+    pub width: String,
+    /// The gap between two outlines as typed; empty for 5 mm.
+    pub gap: String,
 }
 
 /// Whether a file of this name is a mesh (`quality` applies).
 pub fn is_mesh(name: &str) -> bool {
-    matches!(extension_of(name).as_deref(), Some("stl" | "3mf" | "obj"))
+    ExportFormat::of_name(name).is_some_and(ExportFormat::is_mesh)
 }
 
-/// What the export dialog knows before an export to `name`, from the
-/// window's selection ([`export_selection`]): whether it is a mesh, and
-/// why the selection cannot go into the file, if it cannot.
+/// What is selected, as the export dialog offers it: in which formats it
+/// can be exported, and why in none when it cannot.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct ExportCheck {
-    pub kind: Option<ExportKind>,
-    pub mesh: bool,
-    /// A drawing of the model as seen: DXF or SVG with nothing selected.
-    pub drawing: bool,
-    /// Why the selection does not fit the format, said for the person.
+pub struct SelectionChoice {
+    /// `select.get`'s summary: "1 body, 2 faces".
+    pub summary: String,
+    /// The formats that hold it ([`export_selection`]).
+    pub formats: Vec<ExportFormat>,
+    /// Why no format holds it, for the person; `None` when one does.
     pub problem: Option<String>,
-    /// The document's named sets that may hold faces (DXF or SVG), in
-    /// their order: each can be laid out as a sheet instead.
+}
+
+/// What the export dialog offers for the active document, read when it
+/// opens: the selection, the named sets that may hold faces, and the
+/// sheet-metal parts' and folds' patterns.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ExportChoices {
+    /// `None` when nothing is selected.
+    pub selection: Option<SelectionChoice>,
     pub sets: Vec<String>,
-    /// The document's sheet-metal parts and folds (DXF or SVG): the flat
-    /// or crease pattern of each can be drawn instead.
     pub patterns: Vec<FlatPattern>,
 }
 
-impl ExportCheck {
-    /// Every body can be exported instead of the selection: a STEP or
-    /// mesh file whose selection does not fit.
-    pub fn offers_all_bodies(&self) -> bool {
-        self.kind == Some(ExportKind::Bodies) && self.problem.is_some()
+impl ExportChoices {
+    /// Every *What* the dialog lists, in its order: the model, the
+    /// selection (when something is selected, even when no format holds
+    /// it: the dialog says why), the sets' sheets, the patterns.
+    pub fn whats(&self) -> Vec<ExportWhat> {
+        let mut out = vec![ExportWhat::Model];
+        if self.selection.is_some() {
+            out.push(ExportWhat::Selection);
+        }
+        out.extend(self.sets.iter().cloned().map(ExportWhat::Set));
+        out.extend(self.patterns.iter().map(FlatPattern::what));
+        out
     }
 
-    /// The export dialog is to be shown before the file is written: a
-    /// mesh (its quality), a selection that does not fit a STEP file, or
-    /// a drawing of the model as seen (its view).
-    /// Named sets are offered in the dialog when it is shown for an
-    /// outline that fits (a selection that does not is said at once), or
-    /// when the sheet chosen last is one of them ([`Self::offers_sheet`]).
-    /// An outline of a document with a sheet-metal part or a fold always
-    /// asks, so its pattern can be chosen whatever is selected.
-    pub fn asks(&self) -> bool {
-        self.mesh
-            || self.offers_all_bodies()
-            || self.drawing
-            || (!self.sets.is_empty() && self.problem.is_none())
-            || !self.patterns.is_empty()
-    }
-
-    /// The sheet `sheet` names one of this export's sets: the dialog is
-    /// shown with it chosen, even for a selection the outline cannot hold.
-    pub fn offers_sheet(&self, sheet: &SheetPlan) -> bool {
-        sheet
-            .set
-            .as_deref()
-            .is_some_and(|set| self.sets.iter().any(|s| s == set))
-            || sheet
-                .pattern
+    /// The formats that hold `what`, in the dialog's order: none for what
+    /// this document does not have.
+    pub fn formats(&self, what: &ExportWhat) -> Vec<ExportFormat> {
+        match what {
+            ExportWhat::Model => ExportFormat::ALL.to_vec(),
+            ExportWhat::Selection => self
+                .selection
                 .as_ref()
-                .is_some_and(|p| self.patterns.contains(p))
+                .map(|s| s.formats.clone())
+                .unwrap_or_default(),
+            ExportWhat::Set(set) if self.sets.contains(set) => {
+                ExportFormat::of_kind(ExportKind::Outline)
+            }
+            ExportWhat::SheetMetal(_) | ExportWhat::Fold(_) | ExportWhat::EveryPart
+                if self.patterns.iter().any(|p| &p.what() == what) =>
+            {
+                ExportFormat::of_kind(ExportKind::Outline)
+            }
+            _ => Vec::new(),
+        }
     }
 
-    /// The pattern `plan` draws, when it is one of this export's.
-    pub fn sheet_pattern<'a>(&self, plan: &'a ExportPlan) -> Option<&'a FlatPattern> {
-        plan.sheet
-            .pattern
-            .as_ref()
-            .filter(|p| self.patterns.contains(p))
+    /// `what` can be exported from this document: some format holds it.
+    pub fn offers(&self, what: &ExportWhat) -> bool {
+        !self.formats(what).is_empty()
     }
 
-    /// The set `plan` lays out as a sheet, when it is one of this
-    /// export's (an outline with named sets).
-    pub fn sheet_set<'a>(&self, plan: &'a ExportPlan) -> Option<&'a str> {
-        plan.sheet
-            .set
-            .as_deref()
-            .filter(|set| self.sets.iter().any(|s| s == set))
+    /// What the dialog chooses when it opens: the sheet or pattern chosen
+    /// last for this document when it still has it, else the selection
+    /// when a format holds it, else the model.
+    pub fn first_choice(&self, remembered: Option<&ExportWhat>) -> ExportWhat {
+        if let Some(what) = remembered.filter(|w| w.is_outline_only() && self.offers(w)) {
+            return what.clone();
+        }
+        if self.offers(&ExportWhat::Selection) {
+            return ExportWhat::Selection;
+        }
+        ExportWhat::Model
+    }
+
+    /// What the dialog calls `what`.
+    pub fn label(&self, what: &ExportWhat) -> String {
+        match what {
+            ExportWhat::Model => "The model".to_string(),
+            ExportWhat::Selection => match &self.selection {
+                Some(selection) if !selection.summary.is_empty() => {
+                    format!("The selection ({})", selection.summary)
+                }
+                _ => "The selection".to_string(),
+            },
+            ExportWhat::Set(set) => format!("Sheet of set: {set}"),
+            ExportWhat::SheetMetal(part) => format!("{} {part}", PatternKind::SheetMetal.label()),
+            ExportWhat::Fold(fold) => format!("{} {fold}", PatternKind::Fold.label()),
+            ExportWhat::EveryPart => format!("{} every part", PatternKind::EveryPart.label()),
+        }
+    }
+}
+
+/// What the dialog says of `what` under the pointer.
+pub fn what_hint(what: &ExportWhat) -> &'static str {
+    match what {
+        ExportWhat::Model => {
+            "Every body as STEP or a mesh; as DXF or SVG a drawing of the model as seen"
+        }
+        ExportWhat::Selection => {
+            "The selected bodies as STEP or a mesh; the selected flat faces, sketch or sheet-metal part as DXF or SVG"
+        }
+        ExportWhat::Set(_) => {
+            "The set's flat faces laid out side by side on one sheet, at true size"
+        }
+        ExportWhat::SheetMetal(_) => {
+            "The part's flat pattern at true size: the outline to cut and the bend lines"
+        }
+        ExportWhat::Fold(_) => "The fold's crease pattern at true size",
+        ExportWhat::EveryPart => {
+            "Every sheet-metal part's flat pattern side by side on one sheet, at true size"
+        }
+    }
+}
+
+/// [`ExportChoices`] for the active document and what is selected now.
+pub fn export_choices(session: &mut Session) -> ExportChoices {
+    let selection = guarded(session, "select.get", &json!({ "context": false }))
+        .ok()
+        .filter(|s| field(s, "items").as_array().is_some_and(|i| !i.is_empty()))
+        .map(|s| {
+            let summary = field(&s, "summary")
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            // One name of each kind asks what the selection fits.
+            let formats: Vec<ExportFormat> = [ExportKind::Bodies, ExportKind::Outline]
+                .into_iter()
+                .filter(|kind| {
+                    let probe = match kind {
+                        ExportKind::Bodies => "x.step",
+                        ExportKind::Outline => "x.dxf",
+                    };
+                    export_selection(session, probe).is_ok()
+                })
+                .flat_map(ExportFormat::of_kind)
+                .collect();
+            let problem = formats.is_empty().then(|| {
+                format!(
+                    "The selection ({summary}) cannot be exported: select only bodies (STEP or a mesh), or flat faces, one sketch or the body of one sheet-metal part or fold (DXF or SVG); or export the model"
+                )
+            });
+            SelectionChoice {
+                summary,
+                formats,
+                problem,
+            }
+        });
+    ExportChoices {
+        selection,
+        sets: face_sets(session),
+        patterns: flat_patterns(session),
     }
 }
 
@@ -618,242 +864,88 @@ pub fn plain_message(text: &str) -> String {
     }
 }
 
-/// [`ExportCheck`] for an export to `name` with what is selected now.
-pub fn export_check(session: &mut Session, name: &str) -> ExportCheck {
-    let kind = export_kind(name);
-    let selection = export_selection(session, name);
-    let drawing = matches!(selection, Ok(Some(("view", _))));
-    let problem = selection.err().map(|why| plain_message(&why));
-    let (sets, patterns) = if kind == Some(ExportKind::Outline) {
-        (face_sets(session), flat_patterns(session))
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    ExportCheck {
-        kind,
-        mesh: is_mesh(name),
-        drawing,
-        problem,
-        sets,
-        patterns,
+/// The sheet's width and gap as `file.export` takes them, those typed.
+fn sheet_params(plan: &ExportPlan, params: &mut Vec<(&'static str, Value)>) {
+    for (key, text) in [("width", &plan.width), ("gap", &plan.gap)] {
+        let text = text.trim();
+        if !text.is_empty() {
+            params.push((key, Value::String(text.to_string())));
+        }
     }
 }
 
+/// The parameters of a drawing of the model as seen.
+fn drawing_params(drawing: DrawingPlan, params: &mut Vec<(&'static str, Value)>) {
+    params.push(("view", Value::String(drawing.view.name().to_string())));
+    let projection = if drawing.perspective {
+        "perspective"
+    } else {
+        "orthographic"
+    };
+    params.push(("projection", Value::String(projection.to_string())));
+    let hidden = if drawing.dashed { "dashed" } else { "omit" };
+    params.push(("hidden", Value::String(hidden.to_string())));
+}
+
 /// The parameters `file.export` is given besides `path` for an export
-/// to `name` as `plan` says: the selection's (unless every body was
-/// chosen) and the quality of a mesh. An error when the selection does
-/// not fit and every body was not chosen.
+/// to `name` (whose extension is the format) as `plan` says: the model,
+/// the selection's, a sheet or a pattern, and the quality of a mesh. An
+/// error when the format cannot hold what was chosen (a selection that
+/// does not fit, a pattern to a STEP file): never something else in its
+/// place. A name of no export format gets nothing: `file.export` refuses
+/// it, naming the formats.
 pub fn export_params(
     session: &mut Session,
     name: &str,
     plan: &ExportPlan,
 ) -> Result<Vec<(&'static str, Value)>, String> {
     let mut params = Vec::new();
-    if export_kind(name) == Some(ExportKind::Outline)
-        && let Some(pattern) = &plan.sheet.pattern
-    {
-        // The part's flat pattern or the fold's crease pattern, whatever
-        // is selected; every part's on one sheet, with its width and gap.
-        if pattern.kind == PatternKind::EveryPart {
+    let Some(format) = ExportFormat::of_name(name) else {
+        return Ok(params);
+    };
+    let outline = format.kind() == ExportKind::Outline;
+    if plan.what.is_outline_only() && !outline {
+        return Err(format!(
+            "file.export: a .{} file holds bodies; a sheet or a flat pattern goes into a .dxf or .svg file",
+            format.extension()
+        ));
+    }
+    match &plan.what {
+        // The set's flat faces on one sheet, whatever is selected.
+        ExportWhat::Set(set) => {
+            params.push(("set", Value::String(set.clone())));
+            sheet_params(plan, &mut params);
+        }
+        ExportWhat::SheetMetal(part) => params.push(("sheetMetal", Value::String(part.clone()))),
+        ExportWhat::Fold(fold) => params.push(("fold", Value::String(fold.clone()))),
+        // Every part built now, on one sheet.
+        ExportWhat::EveryPart => {
             let parts: Vec<Value> = flat_patterns(session)
                 .into_iter()
                 .filter(|p| p.kind == PatternKind::SheetMetal)
                 .map(|p| Value::String(p.feature))
                 .collect();
             params.push(("sheetMetal", Value::Array(parts)));
-            for (key, text) in [("width", &plan.sheet.width), ("gap", &plan.sheet.gap)] {
-                let text = text.trim();
-                if !text.is_empty() {
-                    params.push((key, Value::String(text.to_string())));
-                }
-            }
-        } else {
-            params.push((pattern.kind.param(), Value::String(pattern.feature.clone())));
+            sheet_params(plan, &mut params);
         }
-        return Ok(params);
-    }
-    if export_kind(name) == Some(ExportKind::Outline)
-        && let Some(set) = plan.sheet.set.as_deref()
-    {
-        // A sheet of the set's flat faces, whatever is selected.
-        params.push(("set", Value::String(set.to_string())));
-        for (key, text) in [("width", &plan.sheet.width), ("gap", &plan.sheet.gap)] {
-            let text = text.trim();
-            if !text.is_empty() {
-                params.push((key, Value::String(text.to_string())));
+        // Every body, or the drawing as the dialog says, whatever is
+        // selected.
+        ExportWhat::Model => {
+            if outline {
+                drawing_params(plan.drawing, &mut params);
             }
         }
-        return Ok(params);
+        ExportWhat::Selection => match export_selection(session, name)? {
+            // Nothing selected (any more), to DXF or SVG: the drawing.
+            Some(("view", _)) => drawing_params(plan.drawing, &mut params),
+            Some((key, value)) => params.push((key, value)),
+            None => {}
+        },
     }
-    let all = plan.all_bodies && export_kind(name) == Some(ExportKind::Bodies);
-    let selection = if all {
-        None
-    } else {
-        export_selection(session, name)?
-    };
-    match selection {
-        // Nothing selected, to DXF or SVG: the drawing as the dialog says.
-        Some(("view", _)) => {
-            let drawing = plan.drawing;
-            params.push(("view", Value::String(drawing.view.name().to_string())));
-            let projection = if drawing.perspective {
-                "perspective"
-            } else {
-                "orthographic"
-            };
-            params.push(("projection", Value::String(projection.to_string())));
-            let hidden = if drawing.dashed { "dashed" } else { "omit" };
-            params.push(("hidden", Value::String(hidden.to_string())));
-        }
-        Some((key, value)) => params.push((key, value)),
-        None => {}
-    }
-    if is_mesh(name) {
+    if format.is_mesh() {
         params.push(("quality", Value::String(plan.quality.name().to_string())));
     }
     Ok(params)
-}
-
-/// The quality choice and the selection's warning of the export dialog,
-/// for `check`, changing `plan`; the desktop's dialog and the browser's
-/// draw the same.
-pub fn export_options_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
-    // A set chosen last that this document does not have is not offered.
-    if check.sheet_set(plan).is_none() {
-        plan.sheet.set = None;
-    }
-    if check.sheet_pattern(plan).is_none() {
-        plan.sheet.pattern = None;
-    }
-    if !check.sets.is_empty() || !check.patterns.is_empty() {
-        sheet_choice_ui(ui, check, plan);
-        if plan.sheet.set.is_some() || plan.sheet.pattern.is_some() {
-            return;
-        }
-    }
-    if check.mesh {
-        ui.horizontal(|ui| {
-            ui.label("Quality:");
-            for quality in ExportQuality::ALL {
-                ui.radio_value(&mut plan.quality, quality, quality.label())
-                    .on_hover_text(quality.hint());
-            }
-        });
-    }
-    if check.drawing {
-        drawing_options_ui(ui, &mut plan.drawing);
-    }
-    if let Some(problem) = &check.problem {
-        ui.add(egui::Label::new(problem.as_str()).wrap());
-    }
-}
-
-/// What goes into a DXF or SVG file when the document has named sets,
-/// sheet-metal parts or folds: the selection (or with nothing selected
-/// the view), a sheet of a set's flat faces with its width and gap, or a
-/// part's flat pattern or a fold's crease pattern.
-fn sheet_choice_ui(ui: &mut egui::Ui, check: &ExportCheck, plan: &mut ExportPlan) {
-    let own = if check.drawing {
-        "The view"
-    } else {
-        "The selection"
-    };
-    ui.horizontal_wrapped(|ui| {
-        ui.label("What:");
-        let neither = plan.sheet.set.is_none() && plan.sheet.pattern.is_none();
-        if ui.radio(neither, own).clicked() {
-            plan.sheet.set = None;
-            plan.sheet.pattern = None;
-        }
-        for set in &check.sets {
-            let chosen = plan.sheet.set.as_deref() == Some(set.as_str());
-            if ui
-                .radio(chosen, format!("Sheet of set: {set}"))
-                .on_hover_text(
-                    "The set's flat faces laid out side by side on one sheet, at true size",
-                )
-                .clicked()
-            {
-                plan.sheet.set = Some(set.clone());
-                plan.sheet.pattern = None;
-            }
-        }
-        for pattern in &check.patterns {
-            let chosen = plan.sheet.pattern.as_ref() == Some(pattern);
-            let hint = match pattern.kind {
-                PatternKind::SheetMetal => {
-                    "The part's flat pattern at true size: the outline to cut and the bend lines"
-                }
-                PatternKind::Fold => "The fold's crease pattern at true size",
-                PatternKind::EveryPart => {
-                    "Every sheet-metal part's flat pattern side by side on one sheet, at true size"
-                }
-            };
-            if ui
-                .radio(chosen, pattern.label())
-                .on_hover_text(hint)
-                .clicked()
-            {
-                plan.sheet.pattern = Some(pattern.clone());
-                plan.sheet.set = None;
-            }
-        }
-    });
-    let every = plan
-        .sheet
-        .pattern
-        .as_ref()
-        .is_some_and(|p| p.kind == PatternKind::EveryPart);
-    if plan.sheet.set.is_none() && !every {
-        return;
-    }
-    ui.horizontal(|ui| {
-        ui.label("Sheet width:");
-        ui.add(
-            egui::TextEdit::singleline(&mut plan.sheet.width)
-                .hint_text("no limit")
-                .char_limit(MAX_SHEET_TEXT)
-                .desired_width(90.0),
-        )
-        .on_hover_text("Rows wrap at this width: 600 mm, 24 in; empty for one row");
-        ui.label("Gap:");
-        ui.add(
-            egui::TextEdit::singleline(&mut plan.sheet.gap)
-                .hint_text("5 mm")
-                .char_limit(MAX_SHEET_TEXT)
-                .desired_width(70.0),
-        )
-        .on_hover_text("Space between two outlines");
-    });
-}
-
-/// The choices of a drawing of the model as seen: from which view, to
-/// scale or in perspective, and what becomes of the hidden lines.
-fn drawing_options_ui(ui: &mut egui::Ui, drawing: &mut DrawingPlan) {
-    ui.label("A drawing of the model as seen: its edges and outlines.");
-    ui.horizontal(|ui| {
-        ui.label("View:");
-        egui::ComboBox::from_id_salt("craft3d-export-view")
-            .selected_text(drawing.view.label())
-            .show_ui(ui, |ui| {
-                for view in DrawingView::ALL {
-                    ui.selectable_value(&mut drawing.view, view, view.label());
-                }
-            });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Projection:");
-        ui.radio_value(&mut drawing.perspective, false, "Orthographic")
-            .on_hover_text("To scale: one unit in the file is one unit of the model");
-        ui.radio_value(&mut drawing.perspective, true, "Perspective")
-            .on_hover_text("As the eye sees it, for an illustration: not to scale");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Hidden lines:");
-        ui.radio_value(&mut drawing.dashed, false, "Leave out");
-        ui.radio_value(&mut drawing.dashed, true, "Dashed")
-            .on_hover_text("Lines behind a face drawn dashed, on a layer of their own");
-    });
 }
 
 #[cfg(test)]
@@ -901,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn the_export_check_and_params_follow_the_selection() {
+    fn the_export_choices_and_params_follow_the_selection() {
         let mut session = Session::new(craft3d_engine::Workspace::memory());
         guarded(&mut session, "file.new", &json!({})).unwrap();
         guarded(&mut session, "feature.block", &json!({"size": [1, 2, 3]})).unwrap();
@@ -911,11 +1003,15 @@ mod tests {
             &json!({"size": [1, 1, 1], "position": [5, 0, 0]}),
         )
         .unwrap();
-        // Nothing selected: a mesh asks for its quality, STEP nothing.
-        let stl = export_check(&mut session, "a.stl");
-        assert!(stl.mesh && stl.asks() && stl.problem.is_none());
-        let step = export_check(&mut session, "a.step");
-        assert!(!step.asks());
+        // Nothing selected: the model only, in every format.
+        let choices = export_choices(&mut session);
+        assert_eq!(choices.selection, None);
+        assert_eq!(choices.whats(), vec![ExportWhat::Model]);
+        assert_eq!(
+            choices.formats(&ExportWhat::Model),
+            ExportFormat::ALL.to_vec()
+        );
+        assert_eq!(choices.first_choice(None), ExportWhat::Model);
         let plan = ExportPlan {
             quality: ExportQuality::Fine,
             ..ExportPlan::default()
@@ -929,34 +1025,43 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        // A face selected: STEP cannot hold it; every body instead.
+        // A face selected: offered for DXF and SVG only; STEP cannot hold
+        // it as the selection, and the model is every body.
         guarded(
             &mut session,
             "select.set",
             &json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
         )
         .unwrap();
-        let step = export_check(&mut session, "a.step");
-        assert!(step.asks() && step.offers_all_bodies(), "{step:?}");
-        assert!(
-            step.problem.as_deref().unwrap().starts_with("A .step file"),
-            "{step:?}"
+        let choices = export_choices(&mut session);
+        let selection = choices.selection.clone().unwrap();
+        assert_eq!(
+            selection.formats,
+            vec![ExportFormat::Dxf, ExportFormat::Svg]
         );
-        assert!(export_params(&mut session, "a.step", &plan).is_err());
-        let all = ExportPlan {
-            all_bodies: true,
+        assert_eq!(selection.problem, None);
+        assert_eq!(choices.first_choice(None), ExportWhat::Selection);
+        assert_eq!(
+            choices.label(&ExportWhat::Selection),
+            "The selection (1 face)"
+        );
+        let chosen = ExportPlan {
+            what: ExportWhat::Selection,
             ..plan.clone()
         };
+        let refused = export_params(&mut session, "a.step", &chosen).unwrap_err();
+        assert!(refused.contains("a .step file holds bodies"), "{refused}");
         assert!(
-            export_params(&mut session, "a.step", &all)
+            export_params(&mut session, "a.step", &plan)
                 .unwrap()
                 .is_empty()
         );
-        // Nothing selected, to DXF or SVG: a drawing of the model as seen,
-        // whose view, projection and hidden lines the dialog asks for.
-        guarded(&mut session, "select.set", &json!({"mode": "clear"})).unwrap();
-        let dxf = export_check(&mut session, "a.dxf");
-        assert!(dxf.drawing && dxf.asks() && dxf.problem.is_none() && !dxf.offers_all_bodies());
+        assert_eq!(
+            export_params(&mut session, "a.dxf", &chosen).unwrap(),
+            vec![("faces", json!([{"face": "F1:face(0)", "feature": "F1"}]))]
+        );
+        // The model to DXF or SVG: a drawing of it as seen, whatever is
+        // selected, with the view, projection and hidden lines asked.
         assert_eq!(
             export_params(&mut session, "a.dxf", &plan).unwrap(),
             vec![
@@ -965,7 +1070,8 @@ mod tests {
                 ("hidden", json!("omit")),
             ]
         );
-        let chosen = ExportPlan {
+        guarded(&mut session, "select.set", &json!({"mode": "clear"})).unwrap();
+        let drawn = ExportPlan {
             drawing: DrawingPlan {
                 view: DrawingView::Front,
                 perspective: true,
@@ -974,38 +1080,74 @@ mod tests {
             ..plan.clone()
         };
         assert_eq!(
-            export_params(&mut session, "a.svg", &chosen).unwrap(),
+            export_params(&mut session, "a.svg", &drawn).unwrap(),
             vec![
                 ("view", json!("front")),
                 ("projection", json!("perspective")),
                 ("hidden", json!("dashed")),
             ]
         );
-        assert!(!export_check(&mut session, "a.stl").drawing);
-        // An outline cannot be every body: an edge selected is refused.
+        // The selection emptied while the dialog was open: as the model.
+        let drawn_selection = ExportPlan {
+            what: ExportWhat::Selection,
+            ..drawn.clone()
+        };
+        assert_eq!(
+            export_params(&mut session, "a.svg", &drawn_selection).unwrap(),
+            export_params(&mut session, "a.svg", &drawn).unwrap()
+        );
+        // An edge selected: no format holds it; said, and the model is
+        // still offered.
         guarded(
             &mut session,
             "select.query",
             &json!({"kind": "edge", "limit": 1, "then": "replace"}),
         )
         .unwrap();
-        let dxf = export_check(&mut session, "a.dxf");
-        assert!(dxf.problem.is_some() && !dxf.offers_all_bodies() && !dxf.asks());
-        assert!(export_params(&mut session, "a.dxf", &all).is_err());
-        // One body of two selected: those bodies, and the quality.
+        let choices = export_choices(&mut session);
+        let selection = choices.selection.clone().unwrap();
+        assert!(selection.formats.is_empty());
+        assert!(
+            selection
+                .problem
+                .as_deref()
+                .unwrap()
+                .starts_with("The selection (1 edge) cannot be exported"),
+            "{selection:?}"
+        );
+        assert!(!choices.offers(&ExportWhat::Selection));
+        assert_eq!(
+            choices.whats(),
+            vec![ExportWhat::Model, ExportWhat::Selection]
+        );
+        assert_eq!(choices.first_choice(None), ExportWhat::Model);
+        assert!(export_params(&mut session, "a.dxf", &chosen).is_err());
+        // One body of two selected: those bodies, and the quality; not a
+        // drawing.
         guarded(
             &mut session,
             "select.set",
             &json!({"items": [{"kind": "body", "feature": "F2"}]}),
         )
         .unwrap();
+        let choices = export_choices(&mut session);
         assert_eq!(
-            export_params(&mut session, "a.3mf", &plan).unwrap(),
+            choices.formats(&ExportWhat::Selection),
+            ExportFormat::of_kind(ExportKind::Bodies)
+        );
+        assert_eq!(
+            export_params(&mut session, "a.3mf", &chosen).unwrap(),
             vec![("bodies", json!([2])), ("quality", json!("fine"))]
+        );
+        // A name of no format: nothing; file.export names the formats.
+        assert!(
+            export_params(&mut session, "a.txt", &chosen)
+                .unwrap()
+                .is_empty()
         );
     }
 
-    /// A DXF or SVG export offers the document's named sets that may hold
+    /// The export dialog offers the document's named sets that may hold
     /// faces; a sheet of one is `file.export {set, width, gap}` whatever
     /// is selected, and writes the file (R1 A6).
     #[test]
@@ -1020,8 +1162,7 @@ mod tests {
         )
         .unwrap();
         // Without sets nothing changes.
-        let dxf = export_check(&mut session, "a.dxf");
-        assert!(dxf.sets.is_empty());
+        assert!(export_choices(&mut session).sets.is_empty());
         for (name, kind) in [("Cut sheet", json!("face")), ("Parts", json!("body"))] {
             guarded(
                 &mut session,
@@ -1037,34 +1178,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(face_sets(&mut session), vec!["Cut sheet", "Mixed"]);
-        // An edge selected: no outline of its own, said at once unless a
-        // sheet of a set was chosen last; then the dialog offers it.
+        // An edge selected: the sets are offered all the same, for DXF and
+        // SVG only.
         guarded(
             &mut session,
             "select.query",
             &json!({"kind": "edge", "limit": 1, "then": "replace"}),
         )
         .unwrap();
-        let svg = export_check(&mut session, "a.svg");
-        assert_eq!(svg.sets, vec!["Cut sheet", "Mixed"]);
-        assert!(!svg.asks() && svg.problem.is_some(), "{svg:?}");
-        assert!(!svg.offers_sheet(&SheetPlan::default()));
-        assert!(!svg.offers_sheet(&SheetPlan {
-            set: Some("Parts".into()),
-            ..SheetPlan::default()
-        }));
-        assert!(export_check(&mut session, "a.stl").sets.is_empty());
-        let mut plan = ExportPlan {
-            sheet: SheetPlan {
-                set: Some("Cut sheet".into()),
-                width: " 40 mm ".into(),
-                gap: String::new(),
-                pattern: None,
-            },
+        let choices = export_choices(&mut session);
+        assert_eq!(choices.sets, vec!["Cut sheet", "Mixed"]);
+        let sheet = ExportWhat::Set("Cut sheet".into());
+        assert_eq!(
+            choices.formats(&sheet),
+            vec![ExportFormat::Dxf, ExportFormat::Svg]
+        );
+        assert!(!choices.offers(&ExportWhat::Set("Parts".into())));
+        assert_eq!(choices.label(&sheet), "Sheet of set: Cut sheet");
+        // Chosen last for this document: chosen again.
+        assert_eq!(choices.first_choice(Some(&sheet)), sheet);
+        assert_eq!(
+            choices.first_choice(Some(&ExportWhat::Set("Gone".into()))),
+            ExportWhat::Model
+        );
+        let plan = ExportPlan {
+            what: sheet.clone(),
+            width: " 40 mm ".into(),
             ..ExportPlan::default()
         };
-        assert_eq!(svg.sheet_set(&plan), Some("Cut sheet"));
-        assert!(svg.offers_sheet(&plan.sheet));
         let params = export_params(&mut session, "a.svg", &plan).unwrap();
         assert_eq!(
             params,
@@ -1076,20 +1217,14 @@ mod tests {
         }
         let written = guarded(&mut session, "file.export", &call).unwrap();
         assert!(session.take_file("a.svg").is_some(), "{written}");
-        // A set the document does not have is not offered; a mesh ignores
-        // the sheet.
-        plan.sheet.set = Some("Gone".into());
-        assert_eq!(svg.sheet_set(&plan), None);
-        plan.all_bodies = true;
-        assert!(
-            !export_params(&mut session, "a.stl", &plan)
-                .unwrap()
-                .iter()
-                .any(|(k, _)| *k == "set")
-        );
+        // A sheet is no file of bodies: refused, never every body instead
+        // (before 2026-10-27 a mesh ignored the sheet; the dialog no
+        // longer offers that pair at all).
+        let refused = export_params(&mut session, "a.stl", &plan).unwrap_err();
+        assert!(refused.contains("a .stl file holds bodies"), "{refused}");
     }
 
-    /// A DXF or SVG export offers the flat pattern of every sheet-metal
+    /// The export dialog offers the flat pattern of every sheet-metal
     /// part and the crease pattern of every fold, whatever is selected,
     /// and a part's or fold's body selected is its pattern
     /// (plan/repro/repro-sheet-metal-enclosure-1: the dialog never reached
@@ -1099,7 +1234,7 @@ mod tests {
         let mut session = Session::new(craft3d_engine::Workspace::memory());
         guarded(&mut session, "file.new", &json!({"units": "mm"})).unwrap();
         // Without a part or a fold nothing is offered.
-        assert!(export_check(&mut session, "a.svg").patterns.is_empty());
+        assert!(export_choices(&mut session).patterns.is_empty());
         guarded(
             &mut session,
             "sketch.create",
@@ -1140,14 +1275,21 @@ mod tests {
                 {"line": crease["entity"], "kind": "valley", "angle": "90 deg"}]}),
         )
         .unwrap();
-        let svg = export_check(&mut session, "a.svg");
-        let labels: Vec<String> = svg.patterns.iter().map(FlatPattern::label).collect();
+        let choices = export_choices(&mut session);
+        let labels: Vec<String> = choices.patterns.iter().map(FlatPattern::label).collect();
         assert_eq!(
             labels,
             vec!["Flat pattern of Part", "Crease pattern of Crane"]
         );
-        assert!(svg.asks(), "{svg:?}");
-        assert!(export_check(&mut session, "a.step").patterns.is_empty());
+        let whats: Vec<String> = choices.whats().iter().map(|w| choices.label(w)).collect();
+        assert_eq!(
+            whats,
+            vec![
+                "The model",
+                "Flat pattern of Part",
+                "Crease pattern of Crane"
+            ]
+        );
         // The part's body selected: its flat pattern, as the command.
         guarded(
             &mut session,
@@ -1159,31 +1301,37 @@ mod tests {
             export_selection(&mut session, "a.svg").unwrap(),
             Some(("sheetMetal", json!("Part")))
         );
-        let none = ExportPlan::default();
+        let choices = export_choices(&mut session);
         assert_eq!(
-            export_params(&mut session, "a.dxf", &none).unwrap(),
+            choices.formats(&ExportWhat::Selection),
+            ExportFormat::ALL.to_vec(),
+            "the part as a body, or its flat pattern"
+        );
+        let selection = ExportPlan {
+            what: ExportWhat::Selection,
+            ..ExportPlan::default()
+        };
+        assert_eq!(
+            export_params(&mut session, "a.dxf", &selection).unwrap(),
             vec![("sheetMetal", json!("Part"))]
         );
-        // An edge selected: refused as the selection, but each pattern is
-        // offered and written whatever is selected.
+        // An edge selected: each pattern is offered and written whatever
+        // is selected.
         guarded(
             &mut session,
             "select.query",
             &json!({"kind": "edge", "limit": 1, "then": "replace"}),
         )
         .unwrap();
-        let svg = export_check(&mut session, "a.svg");
-        assert!(svg.problem.is_some() && svg.asks(), "{svg:?}");
-        for (pattern, key) in svg.patterns.iter().zip(["sheetMetal", "fold"]) {
+        let choices = export_choices(&mut session);
+        assert!(!choices.offers(&ExportWhat::Selection));
+        for (pattern, key) in choices.patterns.iter().zip(["sheetMetal", "fold"]) {
             let plan = ExportPlan {
-                sheet: SheetPlan {
-                    pattern: Some(pattern.clone()),
-                    ..SheetPlan::default()
-                },
+                what: pattern.what(),
                 ..ExportPlan::default()
             };
-            assert!(svg.offers_sheet(&plan.sheet));
-            assert_eq!(svg.sheet_pattern(&plan), Some(pattern));
+            assert!(choices.offers(&plan.what));
+            assert_eq!(choices.first_choice(Some(&plan.what)), plan.what);
             for file in ["a.svg", "a.dxf"] {
                 let params = export_params(&mut session, file, &plan).unwrap();
                 assert_eq!(params, vec![(key, json!(pattern.feature))]);
@@ -1198,17 +1346,9 @@ mod tests {
                     assert!(text.contains("bendUp"), "{written} {text}");
                 }
             }
-            // A mesh ignores the pattern.
-            let all = ExportPlan {
-                all_bodies: true,
-                ..plan.clone()
-            };
-            assert!(
-                !export_params(&mut session, "a.stl", &all)
-                    .unwrap()
-                    .iter()
-                    .any(|(k, _)| *k == key)
-            );
+            // A pattern is no file of bodies (before 2026-10-27 a mesh
+            // ignored it).
+            assert!(export_params(&mut session, "a.stl", &plan).is_err());
         }
         // A second part: every part's flat pattern on one sheet.
         guarded(
@@ -1230,15 +1370,17 @@ mod tests {
                 "kFactor": 0.4, "flanges": [{"edge": "e5", "length": "10 mm", "angle": "90 deg"}]}),
         )
         .unwrap();
-        let svg = export_check(&mut session, "a.svg");
-        let every = svg.patterns.last().cloned().unwrap();
+        let choices = export_choices(&mut session);
+        let every = choices.patterns.last().cloned().unwrap();
         assert_eq!(every.label(), "Flat patterns of every part");
+        assert_eq!(every.what(), ExportWhat::EveryPart);
+        assert_eq!(
+            choices.label(&ExportWhat::EveryPart),
+            "Flat patterns of every part"
+        );
         let plan = ExportPlan {
-            sheet: SheetPlan {
-                pattern: Some(every),
-                width: "200 mm".into(),
-                ..SheetPlan::default()
-            },
+            what: ExportWhat::EveryPart,
+            width: "200 mm".into(),
             ..ExportPlan::default()
         };
         let params = export_params(&mut session, "a.dxf", &plan).unwrap();
@@ -1261,15 +1403,60 @@ mod tests {
         );
         assert!(session.take_file("a.dxf").is_some());
         // A pattern of a part the document does not have is not offered.
-        let gone = SheetPlan {
-            pattern: Some(FlatPattern {
-                kind: PatternKind::SheetMetal,
-                feature: "Gone".into(),
-                id: "F99".into(),
-            }),
-            ..SheetPlan::default()
-        };
-        assert!(!svg.offers_sheet(&gone));
+        let gone = ExportWhat::SheetMetal("Gone".into());
+        assert!(!choices.offers(&gone));
+        assert_eq!(choices.first_choice(Some(&gone)), ExportWhat::Model);
+    }
+
+    /// A name typed without the format's extension, or with another
+    /// format's, is named for the format chosen; any other extension is
+    /// kept and the format's appended (the developer, 2026-10-27: STL
+    /// bytes were written under `.dxf`... never again).
+    #[test]
+    fn a_file_name_gets_the_extension_of_its_format() {
+        let cases = [
+            ("part", ExportFormat::Stl, "part.stl"),
+            ("part.stl", ExportFormat::Stl, "part.stl"),
+            ("Part.STL", ExportFormat::Stl, "Part.STL"),
+            ("part.stl", ExportFormat::Dxf, "part.dxf"),
+            ("part.dxf", ExportFormat::Stl, "part.stl"),
+            ("part.stp", ExportFormat::Step, "part.stp"),
+            ("part.step", ExportFormat::ThreeMf, "part.3mf"),
+            ("part.3dcraft", ExportFormat::Svg, "part.svg"),
+            ("box.3dcraftjig", ExportFormat::Obj, "box.obj"),
+            ("bracket.v2", ExportFormat::Step, "bracket.v2.step"),
+            ("part.", ExportFormat::Svg, "part.svg"),
+            ("  ", ExportFormat::Obj, "untitled.obj"),
+            ("", ExportFormat::Step, "untitled.step"),
+            (".stl", ExportFormat::Dxf, ".stl.dxf"),
+            ("a.b.dxf", ExportFormat::Svg, "a.b.svg"),
+            ("ünï.cöde", ExportFormat::Stl, "ünï.cöde.stl"),
+        ];
+        for (name, format, wanted) in cases {
+            let named = export_file_name(name, format);
+            assert_eq!(named, wanted, "{name:?} as {format:?}");
+            assert_eq!(ExportFormat::of_name(&named), Some(format), "{named}");
+            assert_eq!(export_file_name(&named, format), named, "settled");
+        }
+        for format in ExportFormat::ALL {
+            assert_eq!(
+                ExportFormat::from_extension(format.extension()),
+                Some(format)
+            );
+            assert_eq!(
+                serde_json::to_value(format).unwrap(),
+                json!(format.extension())
+            );
+            assert_eq!(
+                suggested_export_name(Some("/m/gear.3dcraft"), Some(format.extension())),
+                format!("gear.{}", format.extension())
+            );
+        }
+        assert_eq!(
+            ExportFormat::from_extension("STP"),
+            Some(ExportFormat::Step)
+        );
+        assert_eq!(ExportFormat::from_extension("txt"), None);
     }
 
     #[test]

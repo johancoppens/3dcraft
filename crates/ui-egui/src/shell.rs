@@ -41,7 +41,7 @@ mod timeline;
 mod views;
 
 pub use controls::ControlsLayout;
-pub use dialogs::{ErrorDialog, ExportAsk, error_title, export_verb};
+pub use dialogs::{ErrorDialog, ExportAsk, ExportRequest, error_title, export_verb};
 pub use edit::{EditAction, EditRequest, MAX_EDIT_QUEUE, run_edit};
 pub use help::{External, Shortcut, ShortcutGroup, ShortcutInput, help_shortcut, shortcuts};
 pub use layout::{ControlWidths, controls_layout, triad_side};

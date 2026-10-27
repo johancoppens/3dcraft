@@ -34,10 +34,18 @@ impl Prefs {
         }
     }
 
-    /// Puts them into the shell's state.
+    /// Puts them into the shell's state: the format of the last export is
+    /// the export dialog's first choice.
     pub fn apply(&self, state: &mut UiState) {
         state.panels = self.panels;
         state.show = self.show;
+        if let Some(format) = self
+            .export_extension
+            .as_deref()
+            .and_then(craft3d_ui_egui::files::ExportFormat::from_extension)
+        {
+            state.export.format = format;
+        }
     }
 
     pub fn to_json(&self) -> String {

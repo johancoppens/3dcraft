@@ -35,9 +35,10 @@ pub struct Host {
     /// before closing a document without a file: the document is closed
     /// once it is saved there.
     pub(crate) close_after_save: bool,
-    /// The extension of the file last exported from the dialog: the next
-    /// export proposes it again.
-    pub(crate) export_extension: Option<String>,
+    /// The folder of the file last exported: the next export's save
+    /// dialog opens there (the format chosen last is the shell's,
+    /// `UiState::export`).
+    pub(crate) export_folder: Option<std::path::PathBuf>,
     /// Where the recent files are kept between runs; `None` keeps them
     /// for this run only (`places.rs`).
     pub(crate) recent_file: Option<std::path::PathBuf>,
@@ -354,7 +355,7 @@ impl Host {
             session,
             shell: Shell::new(),
             close_after_save: false,
-            export_extension: None,
+            export_folder: None,
             recent_file: None,
             recent_baseline: craft3d_ui_egui::shell::RecentFiles::default(),
         }

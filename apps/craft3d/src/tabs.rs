@@ -277,7 +277,12 @@ mod tests {
         fn import(&self) -> Option<PathBuf> {
             None
         }
-        fn export(&self, _: &str) -> Option<PathBuf> {
+        fn export(
+            &self,
+            _: &str,
+            _: crate::files::ExportFormat,
+            _: Option<&std::path::Path>,
+        ) -> Option<PathBuf> {
             None
         }
     }

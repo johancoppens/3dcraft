@@ -487,7 +487,6 @@ impl Page {
         }
         let prefs = load_prefs(Prefs::of(&host.shell.state, None));
         prefs.apply(&mut host.shell.state);
-        host.export_extension.clone_from(&prefs.export_extension);
         let stored = prefs.to_json();
         // The system's file dialogs where the browser has them, unless the
         // address asks for downloads (`?download`).
@@ -976,7 +975,7 @@ impl eframe::App for Page {
         self.unsaved.set(self.host.has_unsaved());
         let prefs = Prefs::of(
             &self.host.shell.state,
-            self.host.export_extension.as_deref(),
+            Some(self.host.shell.state.export.format.extension()),
         );
         let text = prefs.to_json();
         if text != self.stored {

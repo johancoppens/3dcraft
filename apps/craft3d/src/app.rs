@@ -789,18 +789,19 @@ impl Desk {
                         Outcome::Ran(files::run_as_user(session, "jig.export", &path, true, None))
                     }),
                 ),
-                Ok(Choice::Export(path)) => {
-                    self.host.note_export(&path);
-                    if self.host.export_chosen(&path) {
-                        self.start_export(path, files::ExportPlan::default());
+                // Written at once: the save dialog named the file.
+                Ok(Choice::Export(job)) => {
+                    if let Some((path, plan)) = self.host.export_target(job) {
+                        self.start_export(path, plan);
                     }
                 }
                 other => self.host.file_choice(other),
             }
             return true;
         }
-        if let Some((path, plan)) = self.host.shell.take_export_answer() {
-            self.start_export(std::path::PathBuf::from(path), plan);
+        // The export dialog's Export…: the save dialog asks where.
+        if let Some(request) = self.host.shell.take_export_answer() {
+            self.host.ask_where_to_export(request, &mut self.picker);
             return true;
         }
         if let Some(action) = self.host.shell.take_file_action() {

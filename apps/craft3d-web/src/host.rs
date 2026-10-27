@@ -25,11 +25,10 @@
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::files::{
-    EXPORT_FORMATS, EXTENSION, ExportCheck, ExportPlan, JIG_EXTENSION, export_check, export_kind,
-    export_options_ui, export_params, extension_of, file_stem, guarded, suggested_export_name,
-    suggested_jig_name, suggested_name,
+    EXPORT_FORMATS, EXTENSION, ExportPlan, ExportWhat, JIG_EXTENSION, export_params, extension_of,
+    file_stem, guarded, suggested_jig_name, suggested_name,
 };
-use craft3d_ui_egui::shell::export_verb;
+use craft3d_ui_egui::shell::ExportRequest;
 use craft3d_ui_egui::{CommandReport, DocAction, FileAction, Shell, Work};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -255,8 +254,6 @@ pub enum Purpose {
     /// download. With the document to close once it is saved (Save in
     /// the question before closing a tab).
     Save { close: Option<usize> },
-    /// Export: the format follows the extension.
-    Export,
     /// Export as Jig: a `.3dcraftjig` (`jig.export`).
     ExportJig,
 }
@@ -317,8 +314,6 @@ pub fn received_kind(name: &str) -> Option<Received> {
 pub struct WebHost {
     pub session: Session,
     pub shell: Shell,
-    /// The extension of the last export, for the next one's name.
-    pub export_extension: Option<String>,
     pub dialog: Option<NameDialog>,
     /// True when the page names files with the system's file dialogs
     /// (the File System Access API): Save, Save As and Export then ask
@@ -332,10 +327,6 @@ pub struct WebHost {
     /// dialog ([`WebHost::companion_ui`]): a browser shows one file dialog
     /// per click.
     pub companion: Option<Download>,
-    /// What the export dialog knows of the name it shows
-    /// ([`export_check`]), made again only when the name changes and
-    /// dropped when the dialog closes: it lists the document's sets.
-    export_check: Option<(String, ExportCheck)>,
     /// The long work is done a piece per frame ([`WebHost::prepare`]), as
     /// the page does: its one thread draws between the pieces.
     stepwise: bool,
@@ -373,12 +364,10 @@ impl WebHost {
         Self {
             session,
             shell,
-            export_extension: None,
             dialog: None,
             pickers: false,
             writable: BTreeSet::new(),
             companion: None,
-            export_check: None,
             stepwise: false,
             about: None,
             fetching: None,
@@ -850,24 +839,16 @@ impl WebHost {
                     }
                 }
             }
+            // The export dialog first, the desktop's own (what, the format,
+            // the options): its answer is made into the file in the frame
+            // of its click ([`Self::dialog_ui`]), then downloaded or, with
+            // the file dialogs, named in the system's ([`Pick::Export`]).
+            // Without them the dialog asks the name itself.
             FileAction::Export => {
-                let Some(status) = self.session.document_status() else {
-                    self.report(
-                        "file.export",
-                        &Err("there is no document to export".to_string()),
-                    );
-                    return outcome;
-                };
-                // The format is chosen first, in the dialog over the page:
-                // with the file dialogs, the export is made before the
-                // system's dialog is shown ([`Pick::Export`]).
-                self.dialog = Some(NameDialog {
-                    purpose: Purpose::Export,
-                    name: suggested_export_name(
-                        status.path.as_deref(),
-                        self.export_extension.as_deref(),
-                    ),
-                });
+                self.shell.set_export_names_file(!self.pickers);
+                if let Err(e) = self.shell.open_export(&mut self.session) {
+                    self.report("file.export", &Err(e));
+                }
             }
             FileAction::ExportJig => {
                 let Some(status) = self.session.document_status() else {
@@ -1009,26 +990,18 @@ impl WebHost {
     /// `file.export` can take them. The file (and an OBJ's material
     /// library) are the downloads.
     pub fn export_as(&mut self, name: &str) -> Vec<Download> {
-        let plan = ExportPlan {
-            quality: self.shell.export_quality(),
-            all_bodies: false,
-            drawing: self.shell.export_drawing(),
-            sheet: self.shell.export_sheet(),
-        };
+        let mut plan = self.shell.state.export.plan();
+        plan.what = ExportWhat::Selection;
         self.export_with(name, plan)
     }
 
-    /// [`Self::export_as`] as the export dialog was answered: the quality
-    /// of a mesh, and every body instead of a selection the format cannot
-    /// hold ([`craft3d_ui_egui::files::export_params`]).
+    /// [`Self::export_as`] as the export dialog was answered: what goes
+    /// in and the options ([`craft3d_ui_egui::files::export_params`]).
     pub fn export_with(&mut self, name: &str, plan: ExportPlan) -> Vec<Download> {
         let Some(name) = memory_name(name) else {
             self.finish("file.export", &Err(format!("`{name}` is not a file name")));
             return Vec::new();
         };
-        if export_kind(&name).is_some() {
-            self.export_extension = extension_of(&name);
-        }
         let exported = export_params(&mut self.session, &name, &plan).and_then(|extra| {
             let mut params = json!({ "path": name });
             if let Some(map) = params.as_object_mut() {
@@ -1062,7 +1035,6 @@ impl WebHost {
         if !confirmed {
             let label = match dialog.purpose {
                 Purpose::Save { .. } => "file.save",
-                Purpose::Export => "file.export",
                 Purpose::ExportJig => "jig.export",
             };
             self.report(label, &Err("cancelled".to_string()));
@@ -1070,26 +1042,6 @@ impl WebHost {
         }
         match dialog.purpose {
             Purpose::Save { close } => outcome.downloads = self.save_as(&dialog.name, close),
-            Purpose::Export => {
-                // The dialog's button: every body when the selection does
-                // not fit the format ("Export all bodies").
-                let plan = ExportPlan {
-                    quality: self.shell.export_quality(),
-                    all_bodies: export_check(&mut self.session, &dialog.name).offers_all_bodies(),
-                    drawing: self.shell.export_drawing(),
-                    sheet: self.shell.export_sheet(),
-                };
-                let files = self.export_with(&dialog.name, plan);
-                if self.pickers {
-                    let mut files = files.into_iter();
-                    if let Some(file) = files.next() {
-                        outcome.pick = Some(Pick::Export { file });
-                    }
-                    self.companion = files.next();
-                } else {
-                    outcome.downloads = files;
-                }
-            }
             Purpose::ExportJig => {
                 let mut files = self.export_jig_as(&dialog.name).into_iter();
                 match files.next() {
@@ -1144,55 +1096,55 @@ impl WebHost {
         }
     }
 
+    /// The export dialog's answer (`craft3d_ui_egui`'s, the desktop's
+    /// own): the file is made now, for the document it was asked for, and
+    /// downloaded, or with the file dialogs left for the system's save
+    /// dialog ([`Outcome::pick`], that format's type only); a file that
+    /// goes with it waits in [`WebHost::companion`].
+    pub fn export_request(&mut self, request: ExportRequest) -> Outcome {
+        let mut outcome = Outcome::default();
+        let shown = self.session.document_status().map(|s| s.id);
+        if shown != request.document {
+            self.note_error(
+                "file.export",
+                "another document is shown now than the one the export was asked for: nothing was exported; export again".to_string(),
+            );
+            return outcome;
+        }
+        let files = self.export_with(&request.name, request.plan);
+        if self.pickers {
+            let mut files = files.into_iter();
+            if let Some(file) = files.next() {
+                outcome.pick = Some(Pick::Export { file });
+            }
+            self.companion = files.next();
+        } else {
+            outcome.downloads = files;
+        }
+        outcome
+    }
+
     /// Draws the dialog in which the person names a file, while it is open;
-    /// what its answer leaves for the page.
+    /// what its answer, or the export dialog's (drawn by the shell in this
+    /// frame), leaves for the page: in the frame of the click, so that the
+    /// browser shows its save dialog.
     pub fn dialog_ui(&mut self, ctx: &egui::Context) -> Outcome {
+        if let Some(request) = self.shell.take_export_answer() {
+            return self.export_request(request);
+        }
         let Some(mut dialog) = self.dialog.take() else {
             return Outcome::default();
         };
         let mut answer = None;
         let title = match dialog.purpose {
             Purpose::Save { .. } => "Save As",
-            Purpose::Export => "Export",
             Purpose::ExportJig => "Export as Jig",
-        };
-        // What the export dialog says of the format and the selection,
-        // and the quality chosen last (`craft3d_ui_egui::files`).
-        let check =
-            (dialog.purpose == Purpose::Export).then(|| self.cached_export_check(&dialog.name));
-        let mut plan = ExportPlan {
-            quality: self.shell.export_quality(),
-            all_bodies: false,
-            drawing: self.shell.export_drawing(),
-            sheet: self.shell.export_sheet(),
         };
         egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                if dialog.purpose == Purpose::Export {
-                    ui.label("Format (the file's extension):");
-                    ui.horizontal_wrapped(|ui| {
-                        for (format, extensions) in EXPORT_FORMATS {
-                            let extension = extensions.first().copied().unwrap_or_default();
-                            let current = extension_of(&dialog.name);
-                            let chosen =
-                                current.as_deref().is_some_and(|e| extensions.contains(&e));
-                            if ui.selectable_label(chosen, format).clicked() {
-                                dialog.name = renamed(&dialog.name, extension);
-                            }
-                        }
-                    });
-                    if matches!(extension_of(&dialog.name).as_deref(), Some("dxf" | "svg")) {
-                        ui.label(
-                            "DXF and SVG hold the outline of the selected flat faces or sketch, with nothing selected a drawing of the model as seen, a sheet of a named set's flat faces, or the flat pattern of a sheet-metal part or a fold.",
-                        );
-                    }
-                    if let Some(check) = &check {
-                        export_options_ui(ui, check, &mut plan);
-                    }
-                }
                 ui.label("File name:");
                 let field = ui.text_edit_singleline(&mut dialog.name);
                 if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1201,14 +1153,10 @@ impl WebHost {
                 ui.horizontal(|ui| {
                     // With the file dialogs, Export goes on to the
                     // system's save dialog.
-                    let verb = match (&dialog.purpose, &check) {
-                        (Purpose::Save { .. }, _) | (Purpose::Export, None) => "Save".to_string(),
-                        (Purpose::Export, Some(check)) if self.pickers => {
-                            format!("{}…", export_verb(check))
-                        }
-                        (Purpose::Export, Some(check)) => export_verb(check).to_string(),
-                        (Purpose::ExportJig, _) if self.pickers => "Export…".to_string(),
-                        (Purpose::ExportJig, _) => "Export".to_string(),
+                    let verb = match dialog.purpose {
+                        Purpose::Save { .. } => "Save",
+                        Purpose::ExportJig if self.pickers => "Export…",
+                        Purpose::ExportJig => "Export",
                     };
                     if ui.button(verb).clicked() {
                         answer = Some(true);
@@ -1221,46 +1169,14 @@ impl WebHost {
                     answer = Some(false);
                 }
             });
-        self.shell.set_export_quality(plan.quality);
-        self.shell.set_export_drawing(plan.drawing);
-        self.shell.set_export_sheet(plan.sheet);
         match answer {
-            Some(confirmed) => {
-                self.export_check = None;
-                self.answer(dialog, confirmed)
-            }
+            Some(confirmed) => self.answer(dialog, confirmed),
             None => {
                 self.dialog = Some(dialog);
                 Outcome::default()
             }
         }
     }
-}
-
-impl WebHost {
-    /// [`export_check`] for `name`, as made for the dialog's last frame
-    /// when the name is the same.
-    fn cached_export_check(&mut self, name: &str) -> ExportCheck {
-        if let Some((cached, check)) = &self.export_check
-            && cached == name
-        {
-            return check.clone();
-        }
-        let check = export_check(&mut self.session, name);
-        self.export_check = Some((name.to_string(), check.clone()));
-        check
-    }
-}
-
-/// `name` with its extension replaced by `extension` (added when it has
-/// none).
-fn renamed(name: &str, extension: &str) -> String {
-    let stem = std::path::Path::new(name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("untitled");
-    format!("{stem}.{extension}")
 }
 
 #[cfg(test)]
@@ -1584,11 +1500,14 @@ mod tests {
         assert_eq!(received_kind("A.3DCRAFT"), Some(Received::Document));
         assert_eq!(received_kind("a.STP"), Some(Received::Step));
         assert_eq!(received_kind("a.stl"), None);
-        assert_eq!(renamed("a.step", "stl"), "a.stl");
+        // An export's name follows its format (the shared rule,
+        // `craft3d_ui_egui::files::export_file_name`).
+        use craft3d_ui_egui::files::{ExportFormat, export_file_name};
+        assert_eq!(export_file_name("a.step", ExportFormat::Stl), "a.stl");
         assert_eq!(with_extension("a", EXTENSION), "a.3dcraft");
         assert_eq!(with_extension("a.3DCRAFT", EXTENSION), "a.3DCRAFT");
         assert_eq!(with_extension("x.stl", EXTENSION), "x.stl.3dcraft");
-        assert_eq!(renamed("", "obj"), "untitled.obj");
+        assert_eq!(export_file_name("", ExportFormat::Obj), "untitled.obj");
     }
 
     #[test]
@@ -1693,51 +1612,74 @@ mod tests {
         );
     }
 
-    /// The export dialog's quality and its way out of a selection the
-    /// format cannot hold (2026-10-23).
+    /// File › Export opens the shell's export dialog first, as on the
+    /// desktop (2026-10-27): what, the format, the quality; its answer is
+    /// the download, named for the format, of the document it was asked
+    /// for.
     #[test]
-    fn the_dialog_exports_at_its_quality_and_every_body_for_a_misfit_selection() {
+    fn the_export_dialog_comes_first_and_exports_what_it_chose() {
+        use craft3d_ui_egui::files::{ExportFormat, ExportQuality};
         let mut host = modelled();
-        let face = |host: &mut WebHost| {
-            host.session
-                .execute(
-                    "select.set",
-                    &json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
-                )
-                .unwrap();
-        };
-        face(&mut host);
-        let check = export_check(&mut host.session, "plate.step");
-        assert!(check.offers_all_bodies());
-        assert_eq!(export_verb(&check), "Export all bodies");
-        host.shell
-            .set_export_quality(craft3d_ui_egui::files::ExportQuality::Coarse);
-        let dialog = NameDialog {
-            purpose: Purpose::Export,
-            name: "plate.step".to_string(),
-        };
-        let outcome = host.answer(dialog.clone(), true);
-        assert_eq!(outcome.downloads.len(), 1, "every body, despite the face");
-        assert!(host.shell.error_dialog().is_none());
-        // A mesh at the quality chosen: coarse, 20 degrees.
-        let outcome = host.answer(
-            NameDialog {
-                name: "plate.stl".to_string(),
-                ..dialog
-            },
-            true,
+        // A face selected: the dialog (the desktop's own) chooses the
+        // selection, in DXF; the model is every body, despite the face.
+        host.session
+            .execute(
+                "select.set",
+                &json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
+            )
+            .unwrap();
+        let outcome = host.file_action(FileAction::Export);
+        assert_eq!(outcome, Outcome::default(), "nothing before it is answered");
+        assert!(host.dialog.is_none(), "not the page's own name dialog");
+        assert!(
+            host.shell.export_names_file(),
+            "downloads: it asks the name"
         );
+        assert_eq!(host.shell.state.export.what, ExportWhat::Selection);
+        assert_eq!(host.shell.state.export.format, ExportFormat::Dxf);
+        host.shell.set_export_what(ExportWhat::Model).unwrap();
+        host.shell.set_export_format(ExportFormat::Step).unwrap();
+        host.shell.state.export.name = "plate".to_string();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        assert_eq!(request.name, "plate.step");
+        let outcome = host.export_request(request);
+        assert_eq!(outcome.downloads.len(), 1, "every body, despite the face");
+        assert_eq!(outcome.downloads[0].name, "plate.step");
+        assert!(host.shell.error_dialog().is_none());
+        // A mesh at the quality chosen: coarse, 20 degrees; a name typed
+        // with another format's extension is named for the mesh.
+        host.file_action(FileAction::Export);
+        host.shell.set_export_what(ExportWhat::Model).unwrap();
+        host.shell.set_export_format(ExportFormat::Stl).unwrap();
+        host.shell.state.export.quality = ExportQuality::Coarse;
+        host.shell.state.export.name = "plate.dxf".to_string();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        let outcome = host.export_request(request);
         assert_eq!(outcome.downloads.len(), 1);
+        assert_eq!(outcome.downloads[0].name, "plate.stl");
         let report = host.shell.last_command.as_ref().unwrap();
         assert!(
             report.ok && report.text.contains("\"angle\":20.0"),
             "{}",
             report.text
         );
+        // The format chosen last is kept for the page's preferences.
+        assert_eq!(host.shell.state.export.format, ExportFormat::Stl);
+        // Another document shown before the file was made: nothing.
+        host.file_action(FileAction::Export);
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        host.session.execute("file.new", &json!({})).unwrap();
+        let outcome = host.export_request(request);
+        assert!(outcome.downloads.is_empty());
+        let error = host.shell.error_dialog().unwrap();
+        assert!(error.message.starts_with("Another document"), "{error:?}");
     }
 
-    /// The browser's export dialog offers a sheet-metal part's flat
-    /// pattern; chosen, the download is the pattern with its bend lines
+    /// The export dialog offers a sheet-metal part's flat pattern; chosen,
+    /// the download is the pattern with its bend lines
     /// (repro-sheet-metal-enclosure-1).
     #[test]
     fn the_dialog_exports_a_flat_pattern() {
@@ -1757,17 +1699,16 @@ mod tests {
         ] {
             host.session.execute(id, &params).unwrap();
         }
-        let check = export_check(&mut host.session, "part.svg");
-        let pattern = check.patterns.first().cloned().unwrap();
-        assert_eq!(pattern.label(), "Flat pattern of Part");
-        let mut sheet = host.shell.export_sheet();
-        sheet.pattern = Some(pattern);
-        host.shell.set_export_sheet(sheet);
-        let dialog = NameDialog {
-            purpose: Purpose::Export,
-            name: "part.svg".to_string(),
-        };
-        let outcome = host.answer(dialog, true);
+        host.file_action(FileAction::Export);
+        let flat = ExportWhat::SheetMetal("Part".to_string());
+        host.shell.set_export_what(flat).unwrap();
+        host.shell
+            .set_export_format(craft3d_ui_egui::files::ExportFormat::Svg)
+            .unwrap();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        assert_eq!(request.name, "untitled.svg");
+        let outcome = host.export_request(request);
         assert_eq!(outcome.downloads.len(), 1);
         let svg = String::from_utf8_lossy(&outcome.downloads[0].bytes).to_string();
         assert!(svg.contains("bendUp"), "{svg}");
@@ -1975,16 +1916,35 @@ mod tests {
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
     }
 
+    /// File › Export answered in the export dialog as `what` in `format`:
+    /// what the page is left to do.
+    fn exported(
+        host: &mut WebHost,
+        what: ExportWhat,
+        format: craft3d_ui_egui::files::ExportFormat,
+    ) -> Outcome {
+        assert_eq!(host.file_action(FileAction::Export), Outcome::default());
+        host.shell.set_export_what(what).unwrap();
+        host.shell.set_export_format(format).unwrap();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        host.export_request(request)
+    }
+
     #[test]
     fn with_file_dialogs_the_export_is_made_before_the_dialog() {
+        use craft3d_ui_egui::files::ExportFormat;
         let mut host = modelled();
         host.pickers = true;
-        host.export_extension = Some("stl".to_string());
-        // The format is chosen first, in the dialog over the page.
+        host.shell.state.export.format = ExportFormat::Stl;
+        // The format is chosen first, in the export dialog over the page,
+        // which does not ask the name: the system's dialog does.
         assert!(host.file_action(FileAction::Export).pick.is_none());
-        let dialog = host.dialog.take().unwrap();
-        assert_eq!(dialog.name, "untitled.stl");
-        let outcome = host.answer(dialog, true);
+        assert!(host.dialog.is_none() && !host.shell.export_names_file());
+        assert_eq!(host.shell.state.export.name, "untitled.stl");
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        let outcome = host.export_request(request);
         assert!(outcome.downloads.is_empty());
         let pick = outcome.pick.unwrap();
         let Pick::Export { file } = &pick else {
@@ -1999,35 +1959,34 @@ mod tests {
         assert!(types[0].mime.contains('/'));
         assert!(pick.accepts("part.STL") && !pick.accepts("part.step"));
         // An export that fails shows no dialog at all: an edge selected
-        // cannot go to an outline.
+        // cannot go to an outline (the dialog no longer offers it; the
+        // selection changed after it was answered).
+        host.session
+            .execute(
+                "select.set",
+                &serde_json::json!({"items": [{"kind": "face", "name": "F1:face(0)", "feature": "F1"}]}),
+            )
+            .unwrap();
+        assert_eq!(host.file_action(FileAction::Export), Outcome::default());
+        host.shell.set_export_what(ExportWhat::Selection).unwrap();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
         host.session
             .execute(
                 "select.query",
                 &serde_json::json!({"kind": "edge", "limit": 1, "then": "replace"}),
             )
             .unwrap();
-        let failed = host.answer(
-            NameDialog {
-                purpose: Purpose::Export,
-                name: "plate.dxf".to_string(),
-            },
-            true,
-        );
+        let failed = host.export_request(request);
         assert_eq!(failed, Outcome::default());
         assert!(!host.shell.last_command.as_ref().unwrap().ok);
         host.session
             .execute("select.set", &serde_json::json!({"mode": "clear"}))
             .unwrap();
         // An OBJ's material library waits for its own click.
-        let obj = host.answer(
-            NameDialog {
-                purpose: Purpose::Export,
-                name: "plate.obj".to_string(),
-            },
-            true,
-        );
-        assert!(matches!(obj.pick, Some(Pick::Export { ref file }) if file.name == "plate.obj"));
-        assert_eq!(host.companion.as_ref().unwrap().name, "plate.mtl");
+        let obj = exported(&mut host, ExportWhat::Model, ExportFormat::Obj);
+        assert!(matches!(obj.pick, Some(Pick::Export { ref file }) if file.name == "untitled.obj"));
+        assert_eq!(host.companion.as_ref().unwrap().name, "untitled.mtl");
         let step = Pick::Export {
             file: Download::export("a.step".to_string(), vec![1]),
         };
@@ -2058,19 +2017,16 @@ mod tests {
         let mut host = modelled();
         host.pickers = true;
         // An export already made is downloaded, with its companion.
-        let obj = host
-            .answer(
-                NameDialog {
-                    purpose: Purpose::Export,
-                    name: "plate.obj".to_string(),
-                },
-                true,
-            )
-            .pick
-            .unwrap();
+        let obj = exported(
+            &mut host,
+            ExportWhat::Model,
+            craft3d_ui_egui::files::ExportFormat::Obj,
+        )
+        .pick
+        .unwrap();
         let outcome = host.without_picker(obj, "SecurityError: no");
         let names: Vec<&str> = outcome.downloads.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, ["plate.obj", "plate.mtl"]);
+        assert_eq!(names, ["untitled.obj", "untitled.mtl"]);
         assert!(host.companion.is_none());
         // A save is named in the dialog over the page.
         let id = host.session.document_status().unwrap().id;

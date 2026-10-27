@@ -637,6 +637,49 @@ pub struct UiState {
     pub timeline: Playback,
     /// The Parameters tab of the side panel (`shell/params.rs`).
     pub parameters: ParametersView,
+    /// The export dialog: open or not, and what it has chosen (kept
+    /// while it is closed, offered again next time).
+    pub export: ExportState,
+}
+
+/// The export dialog (File › Export…, `shell/dialogs.rs`): what goes into
+/// the file, its format and the options, before the system's save dialog
+/// names the file. `ui.set {"export": {"open": true}}` opens it as the
+/// menu does; `what` and `format` are refused when the document does not
+/// offer them. Exporting itself (the *Export…* button) is the person's.
+/// While it is closed, the fields are what was chosen last.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ExportState {
+    pub open: bool,
+    pub what: crate::files::ExportWhat,
+    pub format: crate::files::ExportFormat,
+    /// A mesh's quality (STL, 3MF, OBJ).
+    pub quality: crate::files::ExportQuality,
+    /// A drawing of the model as seen (the model to DXF or SVG).
+    pub drawing: crate::files::DrawingPlan,
+    /// A sheet's width and the gap between its outlines, as typed (a
+    /// set's sheet, every part's flat patterns); empty for no limit and
+    /// 5 mm.
+    pub width: String,
+    pub gap: String,
+    /// The file's name: the one the system's save dialog proposes, or
+    /// where it has none (the browser without file dialogs) the one the
+    /// person types; its extension follows the format.
+    pub name: String,
+}
+
+impl ExportState {
+    /// How to export, as `file.export`'s parameters are made from it.
+    pub fn plan(&self) -> crate::files::ExportPlan {
+        crate::files::ExportPlan {
+            what: self.what.clone(),
+            quality: self.quality,
+            drawing: self.drawing,
+            width: self.width.clone(),
+            gap: self.gap.clone(),
+        }
+    }
 }
 
 /// The Parameters tab beside the feature list: whether it is the one
@@ -785,6 +828,13 @@ impl UiState {
         self.section = self.section.validated()?;
         self.timeline = self.timeline.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
+        for text in [
+            &mut self.export.width,
+            &mut self.export.gap,
+            &mut self.export.name,
+        ] {
+            *text = one_line(text, crate::files::MAX_EXPORT_TEXT);
+        }
         self.parameters.collapsed.truncate(MAX_COLLAPSED);
         for group in &mut self.parameters.collapsed {
             *group = one_line(group, MAX_SELECTION_CHARS);
@@ -905,6 +955,14 @@ impl UiState {
                 }
             } else {
                 merge(&mut merged, key, value);
+            }
+            // Another choice of what to export, not the one before with a
+            // field added (`{"set": …}` after `{"sheetMetal": …}`).
+            if key == "export"
+                && let (Some(what), Value::Object(map)) = (value.get("what"), &mut merged)
+                && let Some(Value::Object(export)) = map.get_mut("export")
+            {
+                export.insert("what".to_string(), what.clone());
             }
         }
         let mut next: UiState = serde_json::from_value(merged).map_err(|e| e.to_string())?;
@@ -1037,6 +1095,21 @@ mod tests {
                 open: true,
                 collapsed: vec!["Finish".to_string()],
             },
+            // Added with the export dialog first (2026-10-27).
+            export: ExportState {
+                open: true,
+                what: crate::files::ExportWhat::SheetMetal("Lid".to_string()),
+                format: crate::files::ExportFormat::Dxf,
+                quality: crate::files::ExportQuality::Fine,
+                drawing: crate::files::DrawingPlan {
+                    view: crate::files::DrawingView::Top,
+                    perspective: false,
+                    dashed: true,
+                },
+                width: "600 mm".to_string(),
+                gap: String::new(),
+                name: "box.dxf".to_string(),
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -1065,6 +1138,10 @@ mod tests {
                            "vertex": null},
                 "show": {"datums": false, "sketches": false},
                 "parameters": {"open": true, "collapsed": ["Finish"]},
+                "export": {"open": true, "what": {"sheetMetal": "Lid"}, "format": "dxf",
+                           "quality": "fine",
+                           "drawing": {"view": "top", "perspective": false, "dashed": true},
+                           "width": "600 mm", "gap": "", "name": "box.dxf"},
                 "dialogs": {"about": true, "shortcuts": false},
                 "timeline": {"playing": true, "speed": 2.0, "loop": true, "orbit": false},
             })

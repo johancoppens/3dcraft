@@ -32,8 +32,9 @@
 //! there: `--click 20,10` opens the File menu. `--recent FILE` starts
 //! with the recent files kept in FILE (`{"recent": [path, ...]}`); `--subject
 //! NAME` names the file the work opens (`Opening NAME…`).
-//! `--dialog export:NAME` opens the export dialog for a file of that name
-//! (with what is selected, after `--set {"selectedFeature": …}`), `--dialog
+//! `--dialog export:NAME` opens the export dialog as File › Export… does
+//! (with what is selected, after `--set {"selectedFeature": …}`), in the
+//! format of NAME's extension when that holds what it chose, `--dialog
 //! error:TEXT` the error dialog. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
@@ -266,8 +267,12 @@ fn main() -> Result<(), String> {
         {
             match what.split_once(':') {
                 Some(("export", name)) => {
-                    let check = craft3d_ui_egui::files::export_check(&mut session, name);
-                    let _ = shell.ask_export(name.to_string(), check);
+                    // Opened as File › Export… opens it, in the format of
+                    // the name's extension when it holds what is chosen.
+                    shell.open_export(&mut session)?;
+                    if let Some(format) = craft3d_ui_egui::files::ExportFormat::of_name(name) {
+                        let _ = shell.set_export_format(format);
+                    }
                 }
                 Some(("error", text)) => shell.show_error("file.save", text),
                 _ => return Err(format!("--dialog takes export:NAME or error:TEXT; {USAGE}")),
