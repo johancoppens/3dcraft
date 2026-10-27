@@ -167,7 +167,7 @@ fn a_floating_box_has_its_draft_at_three_scales() {
             ("B", format!("{b:e} mm")),
             ("H", format!("{h:e} mm")),
             ("rho", "1000 / (1 m)^3".to_string()),
-            ("m", "rho * L * B * H * 0.4".to_string()),
+            ("mass", "rho * L * B * H * 0.4".to_string()),
         ] {
             run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
         }
@@ -179,12 +179,12 @@ fn a_floating_box_has_its_draft_at_three_scales() {
         run(
             &mut s,
             "variable.measure",
-            json!({"name": "draft", "measure": "levelFor", "of": "Box", "volume": "m / rho"}),
+            json!({"name": "draft", "measure": "levelFor", "of": "Box", "volume": "mass / rho"}),
         );
         run(
             &mut s,
             "assert.add",
-            json!({"name": "draft", "measure": "value", "expr": "draft", "eq": "m / (rho * L * B)"}),
+            json!({"name": "draft", "measure": "value", "expr": "draft", "eq": "mass / (rho * L * B)"}),
         );
         close(value_of(&mut s, "draft"), 0.4 * h, 1e-9);
         let checked = assertion(&mut s, "draft");
