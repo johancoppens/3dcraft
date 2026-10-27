@@ -30,23 +30,31 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([chapter 5
 
 ## Exporting from the window
 
-1. **File › Export…** (Ctrl+E).
-2. Choose where to save and type a name. **The extension picks the format**: `.step`, `.stl`, `.3mf`,
-   `.obj`, `.dxf` or `.svg`.
-3. For some formats 3DCraft then asks a question or two in the **export dialog** (below). Click
-   **Export**.
+1. **File › Export…** (Ctrl+E) opens the **export dialog**.
+2. Choose **What** goes into the file, then the **Format**: only the formats that can hold what you
+   chose are offered. Set the options the format has (below).
+3. Click **Export…**. Your system's save dialog opens with the name already ending in the right
+   extension, in the folder you exported to last. Choose where, and save: the file is written at once.
+   If you type a name without the extension, or with another format's, 3DCraft names the file for the
+   format you chose (`part` becomes `part.stl`), so the file always holds what its name says.
 
-**What is exported** depends on what is selected:
+**What** you can export:
 
-| Selected | STEP, STL, 3MF, OBJ | DXF, SVG |
+| What | Formats | What you get |
 |---|---|---|
-| Nothing | Every body | A drawing of the model as seen |
-| Bodies | Those bodies | (select flat faces or a sketch) |
-| Flat faces | (the dialog offers *Export all bodies*) | The outlines of those faces |
-| One sketch | (the dialog offers *Export all bodies*) | The outline of the sketch |
+| **The model** | STEP, STL, 3MF, OBJ | Every body |
+| | DXF, SVG | A drawing of the model as seen |
+| **The selection** | STEP, STL, 3MF, OBJ | The selected bodies |
+| | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
+| **Sheet of set: …** | DXF, SVG | Every flat face of a named set on one sheet (below) |
+| **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([chapter 9](09-features.md#sheet-metal)) |
+| **Crease pattern of …** | DXF, SVG | A fold's creases on its paper ([chapter 16](16-origami.md)) |
+| **Flat patterns of every part** | DXF, SVG | Every sheet-metal part unfolded on one sheet |
 
-When the selection does not fit the format, the window says so before anything is written. Bodies you
-hid with the eye are left out of a drawing, but not out of STEP or mesh exports of every body.
+*The selection* is chosen first when something is selected (and the sheet or pattern you exported last
+from this document when it still has it). When no format can hold what is selected (an edge, say), the
+dialog says why and offers the model instead. Bodies you hid with the eye are left out of a drawing, but
+not out of STEP or mesh exports of every body.
 
 ## 3D printing: STL, 3MF and OBJ
 
@@ -131,7 +139,7 @@ SVG files give their size in mm, cm or in, so they print and import at true size
 
 ## Drawings of the model as seen
 
-With **nothing selected**, a `.dxf` or `.svg` export is a **drawing of the whole model** from a view: the
+**The model** exported as `.dxf` or `.svg` is a **drawing of the whole model** from a view: the
 edges of the bodies and the outlines (silhouettes) of curved faces, with the lines behind a face left out
 or drawn dashed.
 
@@ -172,13 +180,14 @@ is.
 The web version reads and writes files on your computer; nothing is uploaded.
 
 - **Chrome, Edge and Chromebooks:** Open…, Import…, Save As… and Export… show your system's file
-  dialog. Export… first asks for the format in a small dialog of its own (the last one you used is
-  chosen), makes the file, and then shows the system's dialog to say where it goes. Save writes back to
+  dialog. Export… opens the same export dialog as on the desktop (what, the format, the options; the
+  format you used last is chosen), makes the file, and then shows the system's dialog to say where it
+  goes. Save writes back to
   the file the document was opened from or last saved to; the first time, the browser asks whether the
   page may change that file. If the file cannot be written, the document stays open and unsaved. An OBJ
   with colours then offers its material file (`.mtl`) with a *Save…* button: save it next to the `.obj`.
-- **Firefox and Safari** have no such dialogs for web pages: Save and Export ask for a name in a small
-  dialog of their own and the file is a **download** (in the browser's downloads, often the *Downloads*
+- **Firefox and Safari** have no such dialogs for web pages: Save asks for a name in a small dialog of
+  its own, the export dialog has a **File name** field, and the file is a **download** (in the browser's downloads, often the *Downloads*
   folder); Open and Import use the browser's file chooser. Add `?download` to the address to work this
   way in Chrome too.
 - **Drop a file** on the page to open it (a `.3dcraft` or `.3dcraftjig`) or import it (a STEP file).

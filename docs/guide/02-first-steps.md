@@ -54,11 +54,12 @@ Playing back never changes the document; it only shows it as it was.
 ## 4. Export it for a 3D printer
 
 1. Open the **File** menu and choose **Export…** (or press Ctrl+E; ⌘E on a Mac).
-2. Type a file name ending in **.stl** or **.3mf** (3MF keeps the size unit and colours; most slicers
-   read both) and click Save.
-3. 3DCraft asks for the **quality**: **Normal** is right for printing. Click **Export**.
+2. In the export dialog, keep **The model** and choose the format **STL** or **3MF** (3MF keeps the
+   size unit and colours; most slicers read both). The **quality**: **Normal** is right for printing.
 
    ![The export dialog for a mesh: Coarse, Normal or Fine](images/export-mesh.png)
+
+3. Click **Export…**, choose where in your system's save dialog and click Save.
 
 Open the file in your slicer (Cura, PrusaSlicer, Bambu Studio, …). The bracket is in millimetres, 40 mm
 long, as designed.
@@ -81,8 +82,8 @@ The Jig opens on its **Parameters** tab:
 1. Drag across the **Width** field: the box follows as you drag.
 2. Click the **Height** field's value, press Enter, type `60 mm` and press Enter again.
 3. Click **↺** next to a field to put it back, or **Reset all**.
-4. Export the result (**File › Export…**). For the box, choose a `.svg` or `.dxf` file and pick
-   **Sheet of set: Cut sheet**: all six panels on one sheet, at true size, ready for the laser cutter.
+4. Export the result (**File › Export…**). For the box, pick **Sheet of set: Cut sheet** and the
+   format SVG or DXF: all six panels on one sheet, at true size, ready for the laser cutter.
 
 [Chapter 5](05-jigs.md) tells you everything about Jigs.
 

@@ -388,15 +388,18 @@ impl Shell {
         if wanted.open && !was_open {
             self.open_export(session)?;
         }
-        let checked = (|| {
-            if given("what") {
-                self.set_export_what(wanted.what.clone())?;
-            }
+        let checked = if given("what") {
+            self.set_export_what(wanted.what.clone())
+        } else {
+            Ok(())
+        }
+        .and_then(|()| {
             if given("format") {
-                self.set_export_format(wanted.format)?;
+                self.set_export_format(wanted.format)
+            } else {
+                Ok(())
             }
-            Ok::<(), String>(())
-        })();
+        });
         if let Err(e) = checked {
             if !was_open {
                 self.dialogs.export = None;

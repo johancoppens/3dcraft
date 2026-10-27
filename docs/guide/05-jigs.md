@@ -42,9 +42,9 @@ Each Jig's description, on its Parameters tab, says how to export it. The collec
      without its unit (`60 mm`, `60`, even `width / 2`) and press Enter; Escape gives up.
    - **Yes or no:** a checkbox (*Hub*, *Flanges* on the pulley).
    - **A choice:** a list to pick from.
-4. **Export** the result: **File › Export…** ([chapter 12](12-files.md)). For a laser-cut Jig, choose a
-   `.dxf` or `.svg` file and pick **Sheet of set: …** in the export dialog: every panel on one sheet, at
-   true size.
+4. **Export** the result: **File › Export…** ([chapter 12](12-files.md)). For a laser-cut Jig, pick
+   **Sheet of set: …** in the export dialog and the format DXF or SVG: every panel on one sheet, at true
+   size.
 5. **Save** if you want to keep your settings: it saves the result as an ordinary `.3dcraft` model under
    a name you choose. The `.3dcraftjig` file itself is never changed.
 
