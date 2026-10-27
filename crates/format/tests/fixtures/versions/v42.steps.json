@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "vent", "expr": "1"}],
+ ["sketch.create", {"plane": "xy", "name": "PanelBase"}],
+ ["sketch.rect", {"sketch": "PanelBase", "from": [0, 0], "to": [100, 60]}],
+ ["sketch.circle", {"sketch": "PanelBase", "center": [109, 30], "radius": 3}],
+ ["sketch.create", {"plane": "xy", "name": "Vent"}],
+ ["sketch.circle", {"sketch": "Vent", "center": [50, 30], "radius": 8}],
+ ["feature.when", {"feature": "Vent", "expr": "vent"}],
+ ["feature.sheetMetal", {"sketch": "PanelBase", "name": "Panel", "thickness": "1.5 mm", "radius": "2 mm", "kFactor": 0.42,
+   "cutouts": ["Vent"],
+   "flanges": [{"edge": "e6", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "20 mm", "angle": "90 deg", "direction": "down"}]}]
+]

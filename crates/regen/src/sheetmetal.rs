@@ -390,3 +390,60 @@ pub fn sheet_metal_part(
         _ => Err(format!("`{}` keeps no part; this is a bug", feature.name)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_math::Vec3;
+
+    /// A sketch whose frame is the base's mirrored (normal -z, x along
+    /// -x, origin at (10, 5)): every point lands where the sketch has it in
+    /// the world, and an arc, counter-clockwise from start to end in its
+    /// own axes, runs from its carried end to its carried start, so it is
+    /// counter-clockwise in the base's and covers the same points.
+    #[test]
+    fn a_mirrored_sketch_is_carried_into_the_base_axes() {
+        let tol = Tolerance::new(1e-9, 1e-9).unwrap();
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        let back = Vec3::new(-1.0, 0.0, 0.0);
+        let from = Frame::new(Vec3::new(10.0, 5.0, 0.0), down, back).unwrap();
+        let curves = vec![
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Arc {
+                    center: [0.0, 0.0],
+                    start: [1.0, 0.0],
+                    end: [0.0, 1.0],
+                },
+            },
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Line {
+                    start: [0.0, 0.0],
+                    end: [2.0, 3.0],
+                },
+            },
+        ];
+        let out = carried(&curves, &from, &Frame::WORLD, &tol).unwrap();
+        assert_eq!(
+            out[0].curve,
+            Curve2::Arc {
+                center: [10.0, 5.0],
+                start: [10.0, 6.0],
+                end: [9.0, 5.0],
+            }
+        );
+        assert_eq!(
+            out[1].curve,
+            Curve2::Line {
+                start: [10.0, 5.0],
+                end: [8.0, 8.0],
+            }
+        );
+        // Another plane: refused.
+        let side = Frame::new(Vec3::ZERO, Vec3::X, Vec3::Y).unwrap();
+        assert!(carried(&curves, &side, &Frame::WORLD, &tol).is_err());
+        let above = Frame::new(Vec3::new(0.0, 0.0, 1.0), Vec3::Z, Vec3::X).unwrap();
+        assert!(carried(&curves, &above, &Frame::WORLD, &tol).is_err());
+    }
+}
