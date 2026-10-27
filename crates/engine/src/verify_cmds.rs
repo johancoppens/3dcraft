@@ -8,6 +8,7 @@
 //! "where"}` (or a bare filter, with the measure's own default kind).
 
 use crate::commands::{Run, length_unit, spec, vec3};
+use crate::measure_pieces::PairAnswer;
 use crate::params::Params;
 use crate::select_cmds::{Found, query};
 use crate::selection::SelectionKind;
@@ -1019,6 +1020,80 @@ fn distance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     Ok(out)
 }
 
+/// The parts of `bodies`, every one made and checked now; or, for a
+/// measure taken in pieces that was begun in an earlier one (which did
+/// that), none yet: [`part_in`] makes each as a pair needs it.
+fn made_parts<'b>(ctx: &Ctx<'_>, bodies: &'b [Named]) -> Result<Vec<Option<Part<'b>>>, String> {
+    if crate::measure_pieces::resumed() {
+        Ok(bodies.iter().map(|_| None).collect())
+    } else {
+        Ok(parts(ctx, bodies)?.into_iter().map(Some).collect())
+    }
+}
+
+/// The part of `bodies[i]` in `made`, made now when it is not there yet.
+fn part_in<'p, 'b>(
+    ctx: &Ctx<'_>,
+    bodies: &'b [Named],
+    made: &'p mut [Option<Part<'b>>],
+    i: usize,
+) -> Result<&'p Part<'b>, String> {
+    const NONE: &str = "internal error (a bug in 3DCraft, please report it): no such part";
+    let slot = made.get_mut(i).ok_or(NONE)?;
+    if slot.is_none() {
+        let (id, body, faces) = bodies.get(i).ok_or(NONE)?;
+        let part = Part::new(body, faces.as_deref(), &ctx.tolerance)
+            .map_err(|e| format!("`{}`: {e}", ctx.feature_name(*id)))?;
+        *slot = Some(part);
+    }
+    slot.as_ref().ok_or_else(|| NONE.to_string())
+}
+
+/// One pair of a clearance: the nearest places of `a.0[a.2]` and
+/// `b.0[b.2]` and whether they are clear, touch or overlap.
+fn clearance_pair<'b>(
+    ctx: &Ctx<'_>,
+    (ba, pa, i): (&'b [Named], &mut [Option<Part<'b>>], usize),
+    (bb, pb, j): (&'b [Named], &mut [Option<Part<'b>>], usize),
+    tol: f64,
+) -> Result<(verify::Nearest, &'static str), String> {
+    const NONE: &str = "internal error (a bug in 3DCraft, please report it): no such body";
+    let (ida, body_a, _) = ba.get(i).ok_or(NONE)?;
+    let (idb, body_b, _) = bb.get(j).ok_or(NONE)?;
+    let part_a = part_in(ctx, ba, pa, i)?;
+    let part_b = part_in(ctx, bb, pb, j)?;
+    let near = verify::distance(std::slice::from_ref(part_a), std::slice::from_ref(part_b))?;
+    let mut status = "clear";
+    if near.distance <= 2.0 * tol {
+        match interference(body_a, body_b, &ctx.tolerance) {
+            Ok(Interference::Clear) => {}
+            Ok(Interference::Touch { .. }) => status = "touch",
+            Ok(Interference::Overlap(_)) => status = "overlap",
+            Err(e) => {
+                return Err(format!(
+                    "whether `{}` and `{}` overlap cannot be told: {e}",
+                    ctx.feature_name(*ida),
+                    ctx.feature_name(*idb)
+                ));
+            }
+        }
+    } else {
+        // Apart everywhere: one may still hold the other.
+        let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
+            other.vertices.first().is_some_and(|v| {
+                matches!(
+                    probe.place(v.point),
+                    Ok(craft3d_kernel::boolean::Place::Inside)
+                )
+            })
+        };
+        if inside(&part_b.probe, body_a) || inside(&part_a.probe, body_b) {
+            status = "overlap";
+        }
+    }
+    Ok((near, status))
+}
+
 fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     only(p, &["from", "to"])?;
     let a = nonempty(subject(ctx, required(p, "from")?, &["body"])?, "from")?;
@@ -1036,50 +1111,31 @@ fn clearance(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
             "more than {MAX_BODY_PAIRS} pairs of bodies; name fewer"
         ));
     }
-    let (pa, pb) = (parts(ctx, &ba)?, parts(ctx, &bb)?);
+    // Taken a pair at a time (`measure_pieces`), the parts are made as
+    // the pairs need them: the first piece made and checked every one.
+    let (mut pa, mut pb) = (made_parts(ctx, &ba)?, made_parts(ctx, &bb)?);
     let tol = ctx.tolerance.linear;
     let mut pairs = Vec::new();
     let mut least: Option<(f64, Value)> = None;
     let mut lower = f64::INFINITY;
     let mut overlap = false;
-    for (i, (ida, body_a, _)) in ba.iter().enumerate() {
-        for (j, (idb, body_b, _)) in bb.iter().enumerate() {
+    for (i, (ida, ..)) in ba.iter().enumerate() {
+        for (j, (idb, ..)) in bb.iter().enumerate() {
             if ida == idb {
                 continue;
             }
-            let (Some(part_a), Some(part_b)) = (pa.get(i), pb.get(j)) else {
-                continue;
+            let answer = crate::measure_pieces::pair(|| {
+                PairAnswer::Clearance(clearance_pair(
+                    ctx,
+                    (&ba, &mut pa, i),
+                    (&bb, &mut pb, j),
+                    tol,
+                ))
+            })?;
+            let PairAnswer::Clearance(answer) = answer else {
+                return Err("internal error (a bug in 3DCraft, please report it): a pair of another measure".into());
             };
-            let near =
-                verify::distance(std::slice::from_ref(part_a), std::slice::from_ref(part_b))?;
-            let mut status = "clear";
-            if near.distance <= 2.0 * tol {
-                match interference(body_a, body_b, &ctx.tolerance) {
-                    Ok(Interference::Clear) => {}
-                    Ok(Interference::Touch { .. }) => status = "touch",
-                    Ok(Interference::Overlap(_)) => status = "overlap",
-                    Err(e) => {
-                        return Err(format!(
-                            "whether `{}` and `{}` overlap cannot be told: {e}",
-                            ctx.feature_name(*ida),
-                            ctx.feature_name(*idb)
-                        ));
-                    }
-                }
-            } else {
-                // Apart everywhere: one may still hold the other.
-                let inside = |probe: &craft3d_kernel::boolean::probe::Probe<'_>, other: &Body| {
-                    other.vertices.first().is_some_and(|v| {
-                        matches!(
-                            probe.place(v.point),
-                            Ok(craft3d_kernel::boolean::Place::Inside)
-                        )
-                    })
-                };
-                if inside(&part_b.probe, body_a) || inside(&part_a.probe, body_b) {
-                    status = "overlap";
-                }
-            }
+            let (near, status) = answer?;
             let value = match status {
                 "clear" => Some(near.distance),
                 "touch" => Some(0.0),
@@ -1274,17 +1330,37 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
     // `document.interference` reports. The pairs on several threads, the
     // answers in their order: the first pair in that order that cannot be
     // told is the error, as one after the other.
-    let indices: Vec<usize> = (0..pairs.len()).collect();
-    let answers = crate::interference_cmds::in_order(&indices, |n| {
+    let common = |n: usize| {
         let (_, a, _, b) = pair(n)?;
-        Some(common_volume(a, b, &ctx.tolerance).map(|common| {
-            common.map(|common| {
-                craft3d_topo::mass_properties(&common.body)
-                    .ok()
-                    .map(|m| m.volume)
-            })
-        }))
-    });
+        Some(
+            common_volume(a, b, &ctx.tolerance)
+                .map(|common| {
+                    common.map(|common| {
+                        craft3d_topo::mass_properties(&common.body)
+                            .ok()
+                            .map(|m| m.volume)
+                    })
+                })
+                .map_err(|e| e.to_string()),
+        )
+    };
+    // Taken a pair at a time (`measure_pieces`, a host with one thread):
+    // one after the other, each from the pieces before or measured now.
+    let answers = if crate::measure_pieces::active() {
+        let mut answers = Vec::with_capacity(pairs.len());
+        for n in 0..pairs.len() {
+            match crate::measure_pieces::pair(|| PairAnswer::Overlap(common(n)))? {
+                PairAnswer::Overlap(answer) => answers.push(answer),
+                PairAnswer::Clearance(_) => {
+                    return Err("internal error (a bug in 3DCraft, please report it): a pair of another measure".into());
+                }
+            }
+        }
+        answers
+    } else {
+        let indices: Vec<usize> = (0..pairs.len()).collect();
+        crate::interference_cmds::in_order(&indices, common)
+    };
     let mut overlaps = Vec::new();
     for (n, answer) in answers.into_iter().enumerate() {
         let Some((ida, _, idb, _)) = pair(n) else {
@@ -1302,7 +1378,7 @@ fn overlap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
                 overlaps.push(json!({"a": ctx.feature_name(ida), "b": ctx.feature_name(idb), "volume": volume}));
             }
             Some(Ok(None)) => {}
-            Some(Err(e)) => return Err(cannot(e.to_string())),
+            Some(Err(e)) => return Err(cannot(e)),
             None => {
                 return Err(cannot(
                     "internal error (a bug in 3DCraft, please report it)".into(),

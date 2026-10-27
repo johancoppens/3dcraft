@@ -422,6 +422,75 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
     }
 }
 
+/// A clearance over many pairs of bodies and an overlap over all of
+/// them, on a host that works a piece at a time: taken a pair at a time
+/// (with a stop that always says stop, a pair per piece, not an
+/// assertion per piece: the gear reducer's held a frame for seconds),
+/// and the answers, details included, bit for bit those of a session
+/// that measures them in one go. At three scales.
+#[test]
+fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
+    for s in [1e-2, 1.0, 1e3] {
+        let mm = |v: f64| format!("{} mm", v * s);
+        let mut steps = vec![("file.new", json!({"units": "mm"}))];
+        let (mut from, mut to) = (Vec::new(), Vec::new());
+        for i in 0..4 {
+            let name = format!("A{i}");
+            steps.push((
+                "feature.block",
+                json!({"size": [mm(10.0), mm(10.0), mm(10.0)], "position": [mm(20.0 * f64::from(i)), "0 mm", "0 mm"], "name": name}),
+            ));
+            from.push(name);
+        }
+        for j in 0..3 {
+            let name = format!("B{j}");
+            steps.push((
+                "feature.cylinder",
+                json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), mm(30.0), "0 mm"], "name": name}),
+            ));
+            to.push(name);
+        }
+        steps.push((
+            "assert.add",
+            json!({"name": "gap", "measure": "clearance", "from": from, "to": to, "min": mm(1.0)}),
+        ));
+        steps.push((
+            "assert.add",
+            json!({"name": "apart", "measure": "overlap", "is": false}),
+        ));
+        let mut whole = Session::new(Workspace::none());
+        let mut session = Session::new(Workspace::none());
+        session.set_stepwise(true);
+        for one in [&mut whole, &mut session] {
+            for (id, params) in &steps {
+                one.execute(id, params)
+                    .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+            }
+        }
+        let mut checking = 0;
+        let mut calls = 0;
+        while let Some(p) = session.prepare_some(SceneQuality::display(), || true) {
+            calls += 1;
+            assert!(calls < 1000, "scale {s}");
+            if p.phase == "checking" {
+                checking += 1;
+            }
+        }
+        // 12 pairs, then 21: a piece each (the last piece of all says
+        // nothing is left).
+        assert!(checking >= 12 + 21 - 1, "scale {s}: {checking} pieces");
+        let listed = |one: &mut Session| {
+            one.execute("assert.list", &json!({"wait": true, "details": true}))
+                .unwrap()
+        };
+        let (got, want) = (listed(&mut session), listed(&mut whole));
+        assert_eq!(got, want, "scale {s}");
+        assert_eq!(want["ok"], true, "scale {s}: {want}");
+        let pairs = &want["assertions"][0]["detail"]["pairs"];
+        assert_eq!(pairs.as_array().map(Vec::len), Some(12), "{want}");
+    }
+}
+
 /// What `work` returns, and how many features the regenerations on this
 /// thread built afresh meanwhile (each tells the thread's progress sink,
 /// so tests running at once on other threads do not count).

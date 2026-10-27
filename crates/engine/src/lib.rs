@@ -34,6 +34,7 @@ mod interference_cmds;
 mod jig_cmds;
 mod loft_cmds;
 mod mass;
+mod measure_pieces;
 mod memory_files;
 mod meshes;
 mod name_refs;

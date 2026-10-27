@@ -20,6 +20,7 @@
 //! each measured once per what it depends on (`output_cmds.rs`).
 
 use crate::assert_cmds::{AssertionState, AssertionStatus, Checked, check_one};
+use crate::measure_pieces::PairAnswer;
 use crate::output_cmds::{OutputValue, Plan, Resolved};
 use crate::verify_cmds::{Ctx, subject};
 use crate::{CommandError, Session};
@@ -27,7 +28,9 @@ use craft3d_doc::{Assertion, Document};
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -78,6 +81,9 @@ struct Job {
     done: AtomicBool,
     /// The next assertion to take.
     next: AtomicUsize,
+    /// The pairs of bodies the next assertion measured so far, taken a
+    /// piece at a time ([`measure_some`]): which assertion, and its pairs.
+    pieces: Mutex<Option<(usize, Vec<PairAnswer>)>>,
     doc: Arc<Document>,
     regen: Arc<Regen>,
     /// The outputs as far as they were computed when the job was made:
@@ -295,6 +301,55 @@ fn measure(job: &Job, mut stop: impl FnMut() -> bool) {
         }
         drop(results);
         if stop() {
+            return;
+        }
+    }
+}
+
+/// For a host with one thread ([`Session::assertions_some`]): measures
+/// the assertions of `job` from the next one on, until `stop` says so.
+/// One over many pairs of bodies (a clearance, an overlap) is measured a
+/// pair at a time (`measure_pieces`): `stop` is asked between its pairs
+/// too, and the pairs measured so far wait in the job for the next call,
+/// which goes on from there. At least one pair, or one assertion, is
+/// measured per call. The answers are those [`measure`] gives.
+fn measure_some(job: &Job, stop: impl FnMut() -> bool + 'static) {
+    let stop = Rc::new(RefCell::new(stop));
+    loop {
+        let n = job.next.load(Ordering::Acquire);
+        let Some((_, assertion)) = job.work.get(n) else {
+            return;
+        };
+        let earlier = match job
+            .pieces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            Some((at, answers)) if at == n => answers,
+            _ => Vec::new(),
+        };
+        let asked = Rc::clone(&stop);
+        let taken = crate::measure_pieces::in_pieces(
+            earlier,
+            Box::new(move || (asked.borrow_mut())()),
+            || check_one(&job.doc, &job.regen, assertion, &job.outputs),
+        );
+        if taken.stopped {
+            *job.pieces.lock().unwrap_or_else(PoisonError::into_inner) = Some((n, taken.answers));
+            return;
+        }
+        job.next.store(n.saturating_add(1), Ordering::Release);
+        let mut results = job.results.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = results.get_mut(n) {
+            *slot = Some(taken.out);
+        }
+        if results.iter().all(Option::is_some) {
+            job.done.store(true, Ordering::Release);
+            return;
+        }
+        drop(results);
+        if (stop.borrow_mut())() {
             return;
         }
     }
@@ -551,6 +606,7 @@ impl Session {
                     work: missing,
                     done: AtomicBool::new(false),
                     next: AtomicUsize::new(0),
+                    pieces: Mutex::new(None),
                     doc: Arc::clone(&doc),
                     regen: Arc::clone(&regen),
                     outputs: Arc::clone(&resolved),
@@ -609,16 +665,21 @@ impl Session {
 
     /// For a host that measures a piece at a time ([`Session::prepare_some`]):
     /// measures assertions of the active document that are not measured
-    /// yet, one after the other until `stop` says so after one. `None`
+    /// yet, one after the other until `stop` says so after one, and one
+    /// over many pairs of bodies (a clearance, an overlap) a pair at a
+    /// time, so that no call takes as long as all its pairs. `None`
     /// when every one is measured (or there are none); otherwise how many
     /// are measured of how many.
-    pub(crate) fn assertions_some(&mut self, stop: impl FnMut() -> bool) -> Option<(usize, usize)> {
+    pub(crate) fn assertions_some(
+        &mut self,
+        stop: impl FnMut() -> bool + 'static,
+    ) -> Option<(usize, usize)> {
         let checked = self.checks_and_outputs(Wait::No).ok()?;
         let job = self.document_mut().ok()?.assertions.job.clone();
         if let Some(job) = &job
             && !job.done.load(Ordering::Acquire)
         {
-            measure(job, stop);
+            measure_some(job, stop);
         }
         let (checked, outputs) = if job.is_some() {
             self.checks_and_outputs(Wait::No).ok()?
