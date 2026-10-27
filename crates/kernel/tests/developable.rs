@@ -480,3 +480,85 @@ fn a_generalised_cylinder_whose_section_inflects_is_joined_through_the_inflectio
         }
     }
 }
+
+/// The sea kayak's first finding as it was drawn (2026-10-27): `A(x) = k
+/// (100 x, 0, 20 x³)` inflects at `x = 0`, and `B(x) = k (100 x, 20 + 10
+/// x², 20 (x/1.1)³ + (40 + 20 (x/1.1)²) sin 60°)` (a profile scaled by 1.1
+/// against its plan) does not inflect with it, both exact cubics. The two
+/// branches of the condition that cross at an inflection pass each other
+/// here, so the rulings from the start turn back near `x = 0`: the sheet
+/// is closed there by a fan with its apex on A, from the ruling where they
+/// turn to the next ruling that goes on forward. Held to what makes it a
+/// smooth developable whatever the fan: the condition at every ruling, no
+/// curvature, the faces tangent across every edge they share, laid flat
+/// as one piece with lengths and area kept; at three scales.
+fn passing_branches(k: f64) -> (Rail, Rail) {
+    let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
+    let x2 = [1.0, -1.0 / 3.0, -1.0 / 3.0, 1.0];
+    let x3 = [-1.0, 1.0, -1.0, 1.0];
+    let sin60 = 60f64.to_radians().sin();
+    let (c3, c2, c0) = (20.0 / 1.331, 20.0 * sin60 / 1.21, 40.0 * sin60);
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let a: Vec<Vec3> = (0..4)
+        .map(|i| Vec3::new(100.0 * x[i], 0.0, 20.0 * x3[i]) * k)
+        .collect();
+    let b: Vec<Vec3> = (0..4)
+        .map(|i| {
+            Vec3::new(
+                100.0 * x[i],
+                20.0 + 10.0 * x2[i],
+                c3 * x3[i] + c0 + c2 * x2[i],
+            ) * k
+        })
+        .collect();
+    let a = NurbsCurve::polynomial(3, knots.clone(), a).unwrap();
+    let b = NurbsCurve::polynomial(3, knots, b).unwrap();
+    let (ra, rb) = (a.domain(), b.domain());
+    (rail(Curve3::Nurbs(a), ra), rail(Curve3::Nurbs(b), rb))
+}
+
+#[test]
+fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
+    for k in SCALES {
+        let (a, b) = passing_branches(k);
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert!(
+            made.faces.iter().any(|p| matches!(p, Piece::Inner(_))),
+            "{k}: a fan inside the sheet: {:?}",
+            made.faces
+        );
+        check_rulings(&made, &a, &b);
+        assert!(made.curvature * k * k < 1e-6, "K {}", made.curvature);
+        // Tangent across every edge two faces share, at its middle.
+        let body = &made.body;
+        let uses = craft3d_topo::edge_uses(body);
+        let mut shared = 0;
+        for (edge, faces) in uses.iter().enumerate() {
+            let [first, second] = faces.as_slice() else {
+                continue;
+            };
+            shared += 1;
+            let e = &body.edges[edge];
+            let mid = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+            let normal = |use_: &craft3d_topo::EdgeUse| {
+                let face = body.face(use_.face).unwrap();
+                let (u, v) = face.surface.project(mid).unwrap();
+                let n = face.surface.normal(u, v).unwrap();
+                if face.reversed { -n } else { n }
+            };
+            let (n0, n1) = (normal(first), normal(second));
+            assert!(
+                n0.cross(n1).length() < 1e-6 && n0.dot(n1) > 0.0,
+                "{k}: faces {:?} and {:?} meet at an angle of {} rad",
+                first.face,
+                second.face,
+                n0.cross(n1).length()
+            );
+        }
+        assert!(shared >= 2, "{k}: {shared} shared edges");
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = develop(&made.body, &faces, &tol(k)).unwrap();
+        let e = dev.error();
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{e:?}");
+    }
+}

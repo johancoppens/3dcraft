@@ -1503,6 +1503,15 @@ fn trace_boundary(
                     .get(level)
                     .is_some_and(|skin| at_border(skin, p, tol))
             {
+                if let Some(skin) = face.skins.get(level) {
+                    let uv = skin.project(p);
+                    let dom = skin.domain();
+                    let foot = uv.as_ref().ok().map(|&(u, v)| skin.eval(u, v));
+                    eprintln!(
+                        "PLATEDBG past reach edge {} t {t} range ({a}, {b}) before {before} after {after} level {level} p {p:?} uv {uv:?} domain {dom:?} foot {foot:?} reach {reach_before} {reach_after}",
+                        edge_id.0
+                    );
+                }
                 return Err(refuse(Some(edge_id), PAST_REACH));
             }
         }

@@ -417,14 +417,22 @@ impl Path {
     }
 }
 
-/// Which way the zero set turns back while the walk goes round the fold.
+/// A fold of the zero set the walk is going round: where it turned (the
+/// last point of the path), whether `t` falls there (else `s`), and the
+/// bridge across, if there is one (below).
 #[derive(Clone, Copy, Debug)]
-enum Fold {
-    /// `t` falls: the fan is at `t = level` (apex on B) until the zero
-    /// set comes back up to it.
-    T { level: f64 },
-    /// `s` falls: the fan is at `s = level` (apex on A).
-    S { level: f64 },
+struct Fold {
+    at: (f64, f64),
+    falls_t: bool,
+    bridge: Option<(f64, f64)>,
+}
+
+impl Fold {
+    /// The fan's parameter while the walk goes round: the `t` (or `s`)
+    /// where the zero set turned.
+    fn level(&self) -> f64 {
+        if self.falls_t { self.at.1 } else { self.at.0 }
+    }
 }
 
 const WINDS: &str =
@@ -435,18 +443,29 @@ const WINDS: &str =
 ///
 /// Where the zero set turns back in one parameter (a fold: the rulings
 /// beyond it would cross those before it, as where one rail inflects and
-/// the other does not), the rulings that would cross are replaced by a
-/// fan: at the parameter where it turns (its apex on that rail), across
-/// the other rail until the zero set comes back to that parameter going
-/// forward. The walk goes on round the fold without keeping its points.
-/// The fan's two end rulings satisfy the condition, so the fan and the
-/// rulings on either side share their tangent planes there (a cone is
-/// developable: Pottmann & Wallner §6.1; Frey & Bindschadler 1993 join
-/// developable pieces through cones the same way). A crossing of two
-/// branches within the tolerance is stepped over instead ([`cross`]).
-/// Where both parameters turn back at once the curves wind about each
-/// other: refused, as is a fold the zero set does not come back from
-/// before it leaves the square on a side other than `x = 1` or `y = 1`.
+/// the other does not), the rulings that would cross are left out and the
+/// gap is closed by a fan, a cone with its apex at the point of a rail
+/// where the zero set turned, whose two end rulings both satisfy the
+/// condition, so that it shares its tangent planes with the rulings on
+/// either side (a cone is developable: Pottmann & Wallner §6.1; Frey &
+/// Bindschadler 1993 join developable pieces through cones the same way).
+/// There are two such fans at a fold where `t` would fall at `(s*, t*)`
+/// (and likewise with `s` and `t` swapped):
+///
+/// - *across*, at `s = s*` (apex `A(s*)`), from `t*` up to the next zero
+///   of `f(s*, ·)` from which the zero set goes on forward: where two
+///   branches of the zero set pass each other (the crossing a rail's
+///   inflection makes, split because the other rail does not inflect
+///   with it), the bridge from one to the other;
+/// - *along*, at `t = t*` (apex `B(t*)`), from `s*` to where the zero set,
+///   followed round the fold without keeping its points, comes back to
+///   `t*` going forward: a dip.
+///
+/// Of the two that exist, the one that covers less of its rail. A
+/// crossing of two branches within the tolerance is stepped over instead
+/// ([`cross`]). Where neither fan exists (both parameters turn back at
+/// once, the curves wind about each other; or the zero set leaves the
+/// square before it comes back, with nothing across), refused.
 fn trace(
     pair: &Pair,
     start: (f64, f64),
@@ -470,16 +489,35 @@ fn trace(
     // square) has a component lost in the gradient's rounding: clamped to
     // zero. A turn back is a component clearly below it.
     const BACK: f64 = -1e-6;
+    // Going round a fold that does not come back: the bridge across, or
+    // the reason.
+    macro_rules! give_up {
+        ($error:expr) => {{
+            match fold.take().and_then(|f| f.bridge) {
+                Some(q) => {
+                    path.push_fan(q);
+                    (x, y) = q;
+                    h = STEP_MAX / 4.0;
+                    before = (
+                        std::f64::consts::FRAC_1_SQRT_2,
+                        std::f64::consts::FRAC_1_SQRT_2,
+                    );
+                    continue;
+                }
+                None => return Err($error),
+            }
+        }};
+    }
     while x < 1.0 && y < 1.0 {
         steps += 1;
         if steps > MAX_STEPS {
-            return Err(refused(format!(
+            give_up!(refused(format!(
                 "the rulings could not be followed in {MAX_STEPS} steps {}",
                 pair.where_(x, y)
             )));
         }
         let Some((gx, gy)) = pair.gradient(x, y) else {
-            return Err(refused(format!(
+            give_up!(refused(format!(
                 "a tangent of a curve or a ruling has no direction {}",
                 pair.where_(x, y)
             )));
@@ -500,7 +538,7 @@ fn trace(
                 h = STEP_MAX / 4.0;
                 continue;
             }
-            return Err(refused(format!(
+            give_up!(refused(format!(
                 "the condition for the rulings vanishes over a stretch {}: the curves lie in one plane there (or the rulings branch), so the developable is not unique; split the curves there",
                 pair.where_(x, y)
             )));
@@ -513,11 +551,11 @@ fn trace(
         }
         let winds = match fold {
             None => tx < BACK && ty < BACK,
-            Some(Fold::T { .. }) => tx < BACK,
-            Some(Fold::S { .. }) => ty < BACK,
+            Some(f) if f.falls_t => tx < BACK,
+            Some(_) => ty < BACK,
         };
         if winds {
-            return Err(refused(format!(
+            give_up!(refused(format!(
                 "the rulings would cross {}: {WINDS}",
                 pair.where_(x, y)
             )));
@@ -535,11 +573,25 @@ fn trace(
                 h = STEP_MAX / 4.0;
                 continue;
             }
-            // Round the fold, with a fan at where it turns.
-            fold = Some(if ty < BACK {
-                Fold::T { level: y }
-            } else {
-                Fold::S { level: x }
+            // Round the fold: where it turned is found between the last
+            // point kept and this one (the walk notices the turn a step
+            // after it), and kept in place of this one.
+            let falls_t = ty < BACK;
+            let previous = path
+                .points
+                .len()
+                .checked_sub(2)
+                .and_then(|k| path.points.get(k))
+                .copied()
+                .unwrap_or((x, y));
+            let at = turning_point(pair, previous, (x, y), falls_t).unwrap_or((x, y));
+            if let Some(last) = path.points.last_mut() {
+                *last = at;
+            }
+            fold = Some(Fold {
+                at,
+                falls_t,
+                bridge: bridge(pair, at, falls_t),
             });
         }
         // The direction to step in: forward in what must go forward (both
@@ -548,8 +600,8 @@ fn trace(
         let (tx, ty) = {
             let (cx, cy) = match fold {
                 None => (tx.max(0.0), ty.max(0.0)),
-                Some(Fold::T { .. }) => (tx.max(0.0), ty),
-                Some(Fold::S { .. }) => (tx, ty.max(0.0)),
+                Some(f) if f.falls_t => (tx.max(0.0), ty),
+                Some(_) => (tx, ty.max(0.0)),
             };
             let n = cx.hypot(cy).max(f64::MIN_POSITIVE);
             (cx / n, cy / n)
@@ -603,8 +655,8 @@ fn trace(
                 .is_some_and(|(ux, uy)| (ux * tx + uy * ty).abs() >= MAX_TURN.cos());
             let forward = match fold {
                 None => qx >= x - 1e-12 && qy >= y - 1e-12,
-                Some(Fold::T { .. }) => qx >= x - 1e-12,
-                Some(Fold::S { .. }) => qy >= y - 1e-12,
+                Some(f) if f.falls_t => qx >= x - 1e-12,
+                Some(_) => qy >= y - 1e-12,
             };
             forward && moved <= 1.5 * step + 1e-12 && moved > 0.0 && (turned || at_side)
         });
@@ -625,7 +677,7 @@ fn trace(
                     h = STEP_MAX / 4.0;
                     continue;
                 }
-                return Err(refused(format!(
+                give_up!(refused(format!(
                     "the rulings would cross {}: the condition cannot be followed forward there; split the curves there",
                     pair.where_(x, y)
                 )));
@@ -637,50 +689,46 @@ fn trace(
             before = ((qx - x) / moved, (qy - y) / moved);
         }
         h = (h * 1.5).min(STEP_MAX);
-        match fold {
-            Some(Fold::T { level }) => {
-                if qy >= level || qx >= 1.0 {
-                    // Back at the fan's `t` (or at the end of A): the fan
-                    // ends where the zero set crosses it.
-                    let end = if qy >= level {
-                        root_between(&|u| pair.f(u, level), x, qx).unwrap_or(qx)
-                    } else {
-                        1.0
-                    };
-                    path.push_fan((end, level));
-                    (x, y) = (end, level);
-                    fold = None;
-                } else if qy <= 0.0 {
-                    return Err(refused(format!(
-                        "the rulings would cross {}: the condition turns back and does not come back before the start of the second curve",
-                        pair.where_(qx, qy)
-                    )));
+        if let Some(f) = fold {
+            let level = f.level();
+            let back = if f.falls_t { qy >= level } else { qx >= level };
+            if back {
+                // Back at the fan's parameter: the fan along ends where
+                // the zero set crosses it; the one that covers less of its
+                // rail is taken, this one or the bridge across.
+                let end = if f.falls_t {
+                    (
+                        root_between(&|u| pair.f(u, level), x, qx).unwrap_or(qx),
+                        level,
+                    )
                 } else {
-                    (x, y) = (qx, qy);
-                }
+                    (
+                        level,
+                        root_between(&|v| pair.f(level, v), y, qy).unwrap_or(qy),
+                    )
+                };
+                let along = if f.falls_t {
+                    pair.a.length_between(pair.sa(f.at.0), pair.sa(end.0))
+                } else {
+                    pair.b.length_between(pair.tb(f.at.1), pair.tb(end.1))
+                };
+                let chosen = match f.bridge {
+                    Some(q) if bridge_length(pair, f.at, q, f.falls_t) < along => q,
+                    _ => end,
+                };
+                path.push_fan(chosen);
+                (x, y) = chosen;
+                fold = None;
                 continue;
             }
-            Some(Fold::S { level }) => {
-                if qx >= level || qy >= 1.0 {
-                    let end = if qx >= level {
-                        root_between(&|v| pair.f(level, v), y, qy).unwrap_or(qy)
-                    } else {
-                        1.0
-                    };
-                    path.push_fan((level, end));
-                    (x, y) = (level, end);
-                    fold = None;
-                } else if qx <= 0.0 {
-                    return Err(refused(format!(
-                        "the rulings would cross {}: the condition turns back and does not come back before the start of the first curve",
-                        pair.where_(qx, qy)
-                    )));
-                } else {
-                    (x, y) = (qx, qy);
-                }
-                continue;
+            if qx >= 1.0 || qy >= 1.0 || qx <= 0.0 || qy <= 0.0 {
+                give_up!(refused(format!(
+                    "the rulings would cross {}: the condition turns back there and does not come back before the end of a curve, nor goes on across, so no smooth developable joins the curves past it (a fan from there would crease the sheet); split the curves there",
+                    pair.where_(f.at.0, f.at.1)
+                )));
             }
-            None => {}
+            (x, y) = (qx, qy);
+            continue;
         }
         // A ruling that shrinks to nothing away from ends that meet.
         if let Some((pa, pb)) = pair.points(qx, qy) {
@@ -701,6 +749,98 @@ fn trace(
         path.push((x, y));
     }
     Ok(path)
+}
+
+/// The fan across a fold at `at` where `t` falls (`falls_t`; else `s`):
+/// at the fold's `s` (apex on A), from its `t` up to the next zero of
+/// `f(s, ·)` where the zero set goes on forward (not back in `s`); `None`
+/// when there is none before the end of the rail.
+fn bridge(pair: &Pair, at: (f64, f64), falls_t: bool) -> Option<(f64, f64)> {
+    // A zero next to the fold's own is its own, met again by rounding.
+    let gap = 1e-9;
+    let mut from = if falls_t { at.1 } else { at.0 } + gap;
+    for _ in 0..64 {
+        if from >= 1.0 {
+            return None;
+        }
+        let root = if falls_t {
+            first_root(&|v| pair.f(at.0, v), from)?
+        } else {
+            first_root(&|u| pair.f(u, at.1), from)?
+        };
+        let q = if falls_t { (at.0, root) } else { (root, at.1) };
+        if let Some((tx, ty)) = tangent_at(pair, q.0, q.1) {
+            let going_on = if falls_t { tx >= 0.0 } else { ty >= 0.0 };
+            if going_on {
+                return Some(q);
+            }
+        }
+        from = root + gap;
+    }
+    None
+}
+
+/// How much of its rail the fan across a fold covers.
+fn bridge_length(pair: &Pair, at: (f64, f64), to: (f64, f64), falls_t: bool) -> f64 {
+    if falls_t {
+        pair.b.length_between(pair.tb(at.1), pair.tb(to.1))
+    } else {
+        pair.a.length_between(pair.sa(at.0), pair.sa(to.0))
+    }
+}
+
+/// Where the zero set turns between `from` (going forward in both) and
+/// `to` (one parameter falling): where its tangent is square to the axis
+/// of that parameter (`t` when `falls_t`), by bisection along the chord,
+/// each point put on the zero set; `None` when a point cannot be put on
+/// it between the two.
+fn turning_point(
+    pair: &Pair,
+    from: (f64, f64),
+    to: (f64, f64),
+    falls_t: bool,
+) -> Option<(f64, f64)> {
+    let (lo_x, hi_x) = (from.0.min(to.0), from.0.max(to.0));
+    let (lo_y, hi_y) = (from.1.min(to.1), from.1.max(to.1));
+    let room = 2.0 * (hi_x - lo_x).max(hi_y - lo_y);
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let length = dx.hypot(dy);
+    if !(length > 0.0 && length.is_finite()) {
+        return None;
+    }
+    let (nx, ny) = (-dy / length, dx / length);
+    let at = |l: f64| -> Option<((f64, f64), bool)> {
+        let (cx, cy) = (from.0 + l * (to.0 - from.0), from.1 + l * (to.1 - from.1));
+        let along = |m: f64| {
+            let (px, py) = (cx + m * nx, cy + m * ny);
+            if (0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py) {
+                pair.f(px, py)
+            } else {
+                None
+            }
+        };
+        let m = nearest_root(&along, room)?;
+        let (qx, qy) = (cx + m * nx, cy + m * ny);
+        if !(qx >= lo_x - room && qx <= hi_x + room && qy >= lo_y - room && qy <= hi_y + room) {
+            return None;
+        }
+        let (tx, ty) = tangent_at(pair, qx, qy)?;
+        // Still going forward in the parameter that falls at `to`.
+        Some(((qx, qy), if falls_t { ty >= 0.0 } else { tx >= 0.0 }))
+    };
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    let mut best = at(0.0).map(|(p, _)| p)?;
+    for _ in 0..48 {
+        let mid = 0.5 * (lo + hi);
+        let (p, rising) = at(mid)?;
+        if rising {
+            lo = mid;
+            best = p;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(best)
 }
 
 /// The direction the walk came from: the chord of its path over the last
@@ -1092,20 +1232,6 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         return planar(a, b, frame, tolerance, tips);
     }
     let pair = Pair { a, b };
-    {
-        let speed = |r: &Rail, s: f64| r.at(s).map_or(0.0, |(_, d)| d.length());
-        eprintln!(
-            "DEVDBG connect a {a0:?}..{a1:?} b {b0:?}..{b1:?} gaps {:e} {:e} lengths {length_a} {length_b} speeds a {:e} {:e} b {:e} {:e} pieces {} {}",
-            a0.distance(b0),
-            a1.distance(b1),
-            speed(a, 0.0),
-            speed(a, a.len()),
-            speed(b, 0.0),
-            speed(b, b.len()),
-            a.pieces.len(),
-            b.pieces.len()
-        );
-    }
 
     // The start: a fan from an end to the first ruling that satisfies the
     // condition, unless the corner's ruling does.
@@ -1168,14 +1294,7 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     } else {
         Some(Start::FromB(ex))
     };
-    let before_thin = path.points.len();
     let path = thinned(&pair, path, tol);
-    eprintln!(
-        "DEVDBG path {before_thin} -> {} fans {} end ({ex}, {ey}) last {:?}",
-        path.points.len(),
-        path.fan_after.iter().filter(|f| **f).count(),
-        path.points.iter().rev().take(4).collect::<Vec<_>>()
-    );
     if path.points.len() < 2 {
         return Err(refused(format!(
             "no rulings satisfy the condition between the curves {}",
@@ -1629,8 +1748,7 @@ fn build(
     for strip in &strips {
         let mut rulings = strip_rulings(strip, 16);
         let mut fit = None;
-        for round in 0..MAX_ROUNDS {
-            let mut dbg_count = 0usize;
+        for _round in 0..MAX_ROUNDS {
             let points: Vec<(Vec3, Vec3)> = rulings
                 .iter()
                 .map(|&(s, t)| Some((pair.a.point(s)?, pair.b.point(t)?)))
@@ -1755,14 +1873,6 @@ fn build(
                     .map_or(0.0, |((a0, b0), (a1, b1))| {
                         a0.distance(*a1) + b0.distance(*b1)
                     });
-                if round + 2 >= MAX_ROUNDS && off > 0.5 * tol && span > tol && dbg_count < 12 {
-                    dbg_count += 1;
-                    eprintln!(
-                        "DEVDBG round {round} n {} k {k} s {s0}..{s1} t {t0}..{t1} off {off:e} span {span:e} on_a {on_a:?} on_b {on_b:?} piece {:?}",
-                        rulings.len(),
-                        strip.piece
-                    );
-                }
                 bad.push(off > 0.5 * tol && span > tol);
             }
             // Refined where off and beside it, so that neighbouring
