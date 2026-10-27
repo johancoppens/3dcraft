@@ -751,6 +751,34 @@ impl Evaluation {
         )
     }
 
+    /// Evaluates `source` as [`Evaluation::evaluate`] does, with more names
+    /// beside the variables: `extra(name)` is `None` for a name that is not
+    /// one of them, `Some(Some(value))` for one with a value and
+    /// `Some(None)` for one without (it failed, or is not known yet), which
+    /// is [`ErrorKind::DependencyFailed`] where it is used. A variable of
+    /// the same name comes first. The document's outputs, computed after
+    /// regeneration from measures, are such names
+    /// (docs/design/verification.md › *Outputs*).
+    pub fn evaluate_with(
+        &self,
+        source: &str,
+        extra: impl Fn(&str) -> Option<Option<Quantity>>,
+    ) -> Result<Quantity, ExprError> {
+        let expr = Expr::parse(source)?;
+        evaluate_known(
+            &expr,
+            &self.tables,
+            |name| self.index.contains_key(name) || extra(name).is_some(),
+            |name| {
+                if self.index.contains_key(name) {
+                    self.value(name)
+                } else {
+                    extra(name).flatten()
+                }
+            },
+        )
+    }
+
     /// Evaluates a parsed expression as [`Evaluation::evaluate`] does, with
     /// one more name bound to `value`: the free parameter of a curve
     /// (`t`), which shadows a variable of the same name inside `expr`.
@@ -816,6 +844,35 @@ mod tests {
             table.set(name, source).unwrap();
         }
         table
+    }
+
+    #[test]
+    fn extra_names_are_known_and_a_missing_value_is_a_failed_dependency() {
+        let values = table(&[("KG", "180 mm")]).evaluate();
+        let extra = |name: &str| match name {
+            "KB" => Some(Some(Quantity::new(125.0, Dimension::LENGTH))),
+            "BM" => Some(None),
+            _ => None,
+        };
+        let gm = values.evaluate_with("KB - KG", extra).unwrap();
+        assert_eq!(gm.dimension, Dimension::LENGTH);
+        assert!((gm.value + 55.0).abs() < 1e-12);
+        let failed = values.evaluate_with("KB + BM", extra).unwrap_err();
+        assert!(
+            matches!(&failed.kind, ErrorKind::DependencyFailed { name } if name == "BM"),
+            "{failed:?}"
+        );
+        // A name neither knows is unknown, also in a branch not taken.
+        let unknown = values.evaluate_with("if(1, KB, typo)", extra).unwrap_err();
+        assert!(
+            matches!(&unknown.kind, ErrorKind::UnknownVariable { name } if name == "typo"),
+            "{unknown:?}"
+        );
+        // A variable comes before an extra name of the same name.
+        let both = values
+            .evaluate_with("KG", |_| Some(Some(Quantity::dimensionless(1.0))))
+            .unwrap();
+        assert!((both.value - 180.0).abs() < 1e-12);
     }
 
     #[test]

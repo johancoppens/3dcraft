@@ -95,7 +95,8 @@ As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sec
   (where the box begins and ends along `axis`, so each side is bounded on its own), `centerOfMass`
   (its coordinate along `axis`; every body needs a material), `distance`, `clearance`, `thickness`,
   `through`, `overlap` (whether bodies overlap), `symmetric`, and `volumeBelow`, `centroidBelow`,
-  `sectionArea`, `sectionCentroid`, `sectionInertia`, `levelFor` ([above](#below-a-plane-sections-and-levels)).
+  `sectionArea`, `sectionCentroid`, `sectionInertia`, `levelFor` ([above](#below-a-plane-sections-and-levels)),
+  and `value`, a formula of the variables and outputs (`expr`, [below](#outputs-measures-in-formulas)).
 - Bounds: `eq` (with `tol`, by default a millionth of the value; `0` is allowed), or `min` and/or
   `max`; `is` for the yes-or-no measures (`true` by default, except for `overlap`, which wants it
   said). Bounds are expressions in the document's variables, so they follow the design: the case's
@@ -167,5 +168,52 @@ One trap: in an expression a power binds to the number with its unit, so `50 cm^
 (50 cm)³; it is refused wherever a bound is read. Write `50 * (1 cm)^3`, or a plain number in the
 document's unit (mm³ in a mm document). Only `0` and `1` may be written so (`"tol": "0 mm^3"`): for them
 the two readings are the same.
+
+## Outputs: measures in formulas
+
+Some answers are formulas of measures: a boat's stability, the metacentric height GM = KB + BM − KG,
+comes from where it floats, the centre of what is under water and the waterplane's moment. An **output**
+is a variable 3DCraft works out *after* the model is built, from a measure or from a formula of other
+outputs; you read it and check it, you never set it.
+
+```json
+[
+ ["variable.set", {"name": "KG", "expr": "180 mm"}],
+ ["variable.set", {"name": "V", "expr": "0.3 * (1 m)^3"}],
+ ["feature.block", {"size": ["2000 mm", "600 mm", "400 mm"], "position": ["-1000 mm", "-300 mm", "0 mm"], "name": "Hull"}],
+ ["variable.measure", {"name": "T", "measure": "levelFor", "of": "Hull", "volume": "V"}],
+ ["variable.measure", {"name": "KB", "measure": "centroidBelow", "of": "Hull", "offset": "T", "axis": "z"}],
+ ["variable.measure", {"name": "I", "measure": "sectionInertia", "of": "Hull", "offset": "T", "about": "x", "xAxis": "x"}],
+ ["variable.output", {"name": "BM", "expr": "I / V"}],
+ ["variable.output", {"name": "GM", "expr": "KB + BM - KG"}],
+ ["assert.add", {"name": "stable", "measure": "value", "expr": "GM", "min": "0 mm"}],
+ ["output.list", {}]
+]
+```
+
+The hull floats at `T` = 250 mm (the level below which it holds 0.3 m³), `KB` = 125 mm, `I` = 2000 × 600³/12
+mm⁴, so `BM` = 120 mm and `GM` = 65 mm: the assertion *stable* passes. Set `KG` to 300 mm and GM is −55 mm,
+and *stable* fails; only the assertion is measured again, since the waterline does not depend on `KG`.
+
+- `variable.measure` takes a measure and its parameters as `assert.add` does ([the measures](#assertions));
+  the output is the number with its unit (a length, an area, a volume, mm⁴; a mass in kg and a count as
+  plain numbers, yes-or-no as 1 or 0). Its formulas (`offset`, `volume`) may use other outputs: `KB` is
+  measured at the waterline `T`.
+- `variable.output` is a formula of variables and outputs. `variable.measure` or `variable.output` on an
+  existing output changes it; `variable.rename` and `variable.delete` take outputs as they take variables.
+- **Only outputs and assertions may use an output.** A variable, a feature, a sketch, a condition, a named
+  set or a material that uses one is refused, and the message names it (*the variable `beam` uses `GM`, an
+  output*): the model is built first, then measured, so a measure can never depend on itself. Give such a
+  size a variable of its own.
+- An output that would depend on itself is refused with the loop named: *`B` would depend on itself
+  (B → A → B)*. `variable.set`, `param.set` and `variable.publish` refuse an output: it is read-only.
+- **Unknown, never a guess.** When a measure fails (a volume the hull cannot hold), or what it proves is
+  wider than the document's tolerance (a wall found at 2 mm but proven only above 1.96 mm), the output is
+  *unknown* with the reason, and so is every output that uses it; an assertion that uses one is
+  *notProven*, with that reason.
+- `output.list` gives each output with `status` (*known*, *unknown*, or *pending* while it is measured),
+  its `value` in the document's units, `unit` and `message`; so do `document.inspect` (under `outputs`)
+  and a Jig's Parameters tab, below the parameters. Outputs are saved with the document and are the same
+  every time it is built.
 
 **Next:** [Selection and named sets](11-selection.md).

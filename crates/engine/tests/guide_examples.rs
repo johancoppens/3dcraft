@@ -299,3 +299,54 @@ fn the_origami_chapter_folds_as_it_says() {
     assert!(check["note"].as_str().unwrap().contains("not sufficient"));
     assert!(dir.join("waterbomb.svg").exists());
 }
+
+/// The outputs of the measuring chapter (`10-measure.md` › *Outputs*) run
+/// as written and say what the text says: the box hull's GM is 65 mm, the
+/// assertion on it passes, and with KG at 300 mm GM is -55 mm and it fails.
+#[test]
+fn the_outputs_of_the_measuring_chapter_are_as_it_says() {
+    let text = read_text(&docs().join("guide/10-measure.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("variable.measure"))
+        .expect("the chapter has a block of outputs");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = Session::new(craft3d_engine::Workspace::unrestricted());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut last = Value::Null;
+    for (id, params) in steps {
+        last = run(&mut s, &id, params);
+    }
+    let value = |listed: &Value, name: &str| {
+        let o = listed["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["name"] == name)
+            .unwrap()
+            .clone();
+        assert_eq!(o["status"], "known", "{o}");
+        o["value"].as_f64().unwrap()
+    };
+    for (name, want) in [
+        ("T", 250.0),
+        ("KB", 125.0),
+        ("I", 2000.0 * 600f64.powi(3) / 12.0),
+        ("BM", 120.0),
+        ("GM", 65.0),
+    ] {
+        let got = value(&last, name);
+        assert!((got - want).abs() <= 1e-9 * want, "{name}: {got} {last}");
+    }
+    let stable = run(&mut s, "assert.list", json!({}));
+    assert_eq!(stable["ok"], true, "{stable}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "KG", "expr": "300 mm"}),
+    );
+    let listed = run(&mut s, "output.list", json!({}));
+    assert!((value(&listed, "GM") + 55.0).abs() < 1e-9, "{listed}");
+    let stable = run(&mut s, "assert.list", json!({}));
+    assert_eq!(stable["failed"], 1, "{stable}");
+}

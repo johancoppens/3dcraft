@@ -79,6 +79,24 @@ pub struct Document {
     /// files before version 33).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<Table>,
+    /// Outputs: read-only variables computed after regeneration, from a
+    /// measure or from an expression, in the order they were defined.
+    /// Absent when there are none (and in files before version 43).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<Output>,
+}
+
+/// One output: `{"name": "T", "measure": {"measure": "levelFor", ...}}`,
+/// what is measured as an assertion keeps it, or `{"name": "GM", "expr":
+/// "KB + BM - KG"}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Output {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
 }
 
 /// A table: `{"name": "belt", "key": "profile", "columns": [{"name":

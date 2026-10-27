@@ -46,6 +46,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         hidden,
         info,
         tables,
+        outputs,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -100,7 +101,49 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         hidden: hidden.iter().map(|doc::FeatureId(id)| *id).collect(),
         info: (!info.is_empty()).then(|| info_to_manifest(info)),
         tables: tables.iter().map(table_to_manifest).collect(),
+        outputs: outputs.iter().map(output_to_manifest).collect(),
     }
+}
+
+fn output_to_manifest(output: &doc::Output) -> manifest::Output {
+    let doc::Output { name, def } = output;
+    let (measure, expr) = match def {
+        // Written as a JSON object, as an assertion's measure is; anything
+        // else is kept as the text it is.
+        doc::OutputDef::Measure(text) => (
+            Some(
+                serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .filter(serde_json::Value::is_object)
+                    .unwrap_or_else(|| serde_json::Value::String(text.clone())),
+            ),
+            None,
+        ),
+        doc::OutputDef::Expr(e) => (None, Some(expr_to_manifest(e))),
+    };
+    manifest::Output {
+        name: name.clone(),
+        measure,
+        expr,
+    }
+}
+
+fn output_to_doc(output: manifest::Output) -> doc::Output {
+    let manifest::Output {
+        name,
+        measure,
+        expr,
+    } = output;
+    // An output with neither (a file edited by hand) gets an empty
+    // expression, which fails when it is computed: shown, not dropped.
+    let def = match (measure, expr) {
+        (Some(serde_json::Value::String(text)), _) => doc::OutputDef::Measure(text),
+        (Some(value), _) => {
+            doc::OutputDef::Measure(serde_json::to_string(&value).unwrap_or_default())
+        }
+        (None, expr) => doc::OutputDef::Expr(doc::Expr(expr.unwrap_or_default())),
+    };
+    doc::Output { name, def }
 }
 
 fn table_to_manifest(table: &doc::Table) -> manifest::Table {
@@ -1906,6 +1949,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         hidden,
         info,
         tables,
+        outputs,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1956,6 +2000,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         hidden: hidden.into_iter().map(doc::FeatureId).collect(),
         info: info.map(info_to_doc).unwrap_or_default(),
         tables: tables.into_iter().map(table_to_doc).collect(),
+        outputs: outputs.into_iter().map(output_to_doc).collect(),
     }
 }
 

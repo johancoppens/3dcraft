@@ -38,6 +38,7 @@ mod memory_files;
 mod meshes;
 mod name_refs;
 mod offset_cmds;
+mod output_cmds;
 mod param_cmds;
 mod params;
 mod pick_cmds;
@@ -89,6 +90,7 @@ pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
 pub use meshes::{BodyFacts, EdgePolylines};
+pub use output_cmds::{OutputState, OutputStatus};
 pub use param_cmds::step_grid;
 pub use pick_cmds::{
     DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
@@ -493,6 +495,7 @@ impl Session {
                 verify_cmds::SPECS,
                 below_cmds::SPECS,
                 assert_cmds::SPECS,
+                output_cmds::SPECS,
                 pick_cmds::SPECS,
                 select_cmds::SPECS,
                 set_cmds::SPECS,

@@ -1,10 +1,14 @@
 # Decisions
 
-> **Last updated:** 2026-10-26
+> **Last updated:** 2026-10-27
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-27: Measures in expressions only for outputs and assertions (decided by the developer)
+
+Measure values may be used in expressions, but only in assertions and in read-only **output** variables, never in an input that drives the geometry. That keeps regeneration one way: geometry first, then the measures, then the outputs and the assertions, so a measure can never depend on itself. An output is defined by a measure (`variable.measure`, with the measures and parameters of `assert.add`) or by an expression of the variables and other outputs (`variable.output`); outputs may use each other without a cycle; a measure that fails or is not proven makes its output unknown with the reason, and an assertion that uses it notProven, never a silent number. The sea-kayak Jig's stability, GM = KB + BM − KG from `levelFor`, `centroidBelow` and `sectionInertia`, is then an output with an assertion GM ≥ 0 (`docs/design/verification.md` › *Outputs*).
 
 ### 2026-10-26: Sheets, plates and folds reopen R1; general measures in, domain vocabulary out (decided by the developer)
 

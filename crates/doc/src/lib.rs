@@ -17,6 +17,7 @@ pub mod blob;
 pub mod datum;
 pub mod fold;
 pub mod name;
+pub mod output;
 pub mod public;
 pub mod sets;
 pub mod sheetmetal;
@@ -40,6 +41,7 @@ pub use name::{
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
     OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation, offset_groups,
 };
+pub use output::{MAX_OUTPUTS, Output, OutputDef};
 pub use public::{
     DocInfo, MAX_CHOICES, MAX_DESCRIPTION, MAX_INFO_TEXT, MAX_PARAM_TEXT, MAX_TAGS, ParamKind,
     PublicParam,
@@ -1800,6 +1802,12 @@ pub struct Document {
     /// the variables.
     #[serde(default)]
     pub tables: Vec<Table>,
+    /// Outputs: read-only variables computed after regeneration from
+    /// measures and from expressions of the variables and of other
+    /// outputs ([`output`]), in the order they were defined. Not part of
+    /// the history: regeneration does not read them.
+    #[serde(default)]
+    pub outputs: Vec<Output>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -2081,6 +2089,7 @@ impl Document {
         self.validate_hidden()?;
         self.validate_public()?;
         self.validate_tables()?;
+        self.validate_outputs()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -2110,6 +2119,11 @@ impl Document {
         if self.table(name).is_some() {
             return Err(DocError::Invalid(format!(
                 "`{name}` is a table; a variable needs a name of its own"
+            )));
+        }
+        if self.output(name).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{name}` is an output, computed after regeneration and read-only; change how it is computed with variable.output or variable.measure"
             )));
         }
         // The table validates the name and the caps.
@@ -2146,6 +2160,11 @@ impl Document {
         if self.table(new).is_some() {
             return Err(DocError::Invalid(format!(
                 "`{new}` is a table; a variable needs a name of its own"
+            )));
+        }
+        if self.output(new).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{new}` is an output; a variable needs a name of its own"
             )));
         }
         let mut table = self.variable_table()?;
@@ -2212,9 +2231,17 @@ impl Document {
                 *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
             }
         }
+        // An output computed from an expression uses variables too.
+        let mut renamed_outputs = self.outputs.clone();
+        for output in &mut renamed_outputs {
+            if let OutputDef::Expr(expr) = &mut output.def {
+                *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
+            }
+        }
         self.features = renamed_features;
         self.assertions = renamed_assertions;
         self.bodies = renamed_bodies;
+        self.outputs = renamed_outputs;
         Ok(())
     }
 

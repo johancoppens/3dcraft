@@ -651,12 +651,26 @@ fn param_list(session: &mut Session, params: &Value) -> Run {
             groups.push(e.public.group.as_str());
         }
     }
-    Ok(json!({
+    let mut out = json!({
         "jig": !parameters.is_empty(),
         "groups": groups,
         "parameters": parameters.iter().map(|e| param_json(doc, e)).collect::<Vec<_>>(),
         "info": info_json(&doc.info),
-    }))
+    });
+    // The outputs, as they are computed now (those being measured are
+    // pending): a form shows them read-only.
+    let has_outputs = !doc.outputs.is_empty();
+    if has_outputs {
+        let outputs: Vec<Value> = session
+            .outputs(crate::assert_check::Wait::No)?
+            .iter()
+            .map(crate::output_cmds::state_json)
+            .collect();
+        if let Some(map) = out.as_object_mut() {
+            map.insert("outputs".into(), outputs.into());
+        }
+    }
+    Ok(out)
 }
 
 /// The parameter called `name` as `param.list` gives it.
@@ -725,6 +739,11 @@ fn variable_publish(session: &mut Session, params: &Value) -> Run {
     )?;
     let name = p.required_str("name")?;
     let doc = session.document()?.history.current();
+    if doc.output(name).is_some() {
+        return fail(format!(
+            "{command}: `{name}` is an output, computed after regeneration and read-only: a form shows it as an output, and only an input (a variable) is published as a parameter"
+        ));
+    }
     let Some(variable) = doc.variable(name) else {
         return fail(format!(
             "{command}: there is no variable `{name}` to publish; {}",
@@ -1111,6 +1130,11 @@ pub(crate) fn prepare_set_clamping(
         }
     }
     for (name, value) in given.iter() {
+        if doc.output(name).is_some() {
+            return fail(format!(
+                "{command}: `{name}` is an output, computed after regeneration from the model, and read-only; set the parameters it follows from instead"
+            ));
+        }
         let Some(e) = before.iter().find(|e| e.name == name) else {
             let public: Vec<&str> = before.iter().map(|e| e.name).collect();
             return fail(format!(

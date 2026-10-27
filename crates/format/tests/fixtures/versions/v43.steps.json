@@ -1,0 +1,11 @@
+[
+ ["variable.set", {"name": "KG", "expr": "180 mm"}],
+ ["variable.set", {"name": "V", "expr": "0.3 * (1 m)^3"}],
+ ["feature.block", {"size": ["2000 mm", "600 mm", "400 mm"], "position": ["-1000 mm", "-300 mm", "0 mm"], "name": "Hull"}],
+ ["variable.measure", {"name": "T", "measure": "levelFor", "of": "Hull", "volume": "V"}],
+ ["variable.measure", {"name": "KB", "measure": "centroidBelow", "of": "Hull", "offset": "T", "axis": "z"}],
+ ["variable.measure", {"name": "I", "measure": "sectionInertia", "of": "Hull", "offset": "T", "about": "x", "xAxis": "x"}],
+ ["variable.output", {"name": "BM", "expr": "I / V"}],
+ ["variable.output", {"name": "GM", "expr": "KB + BM - KG"}],
+ ["assert.add", {"name": "stable", "measure": "value", "expr": "GM", "min": "0 mm"}]
+]

@@ -206,6 +206,26 @@ pub struct ParamList {
     pub groups: Vec<String>,
     pub params: Vec<Param>,
     pub info: DocInfo,
+    /// The document's outputs (variable.measure, variable.output): shown
+    /// read-only under the parameters.
+    pub outputs: Vec<OutputRow>,
+}
+
+/// One output as `param.list` gives it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OutputRow {
+    pub name: String,
+    /// known, unknown or pending.
+    pub status: String,
+    /// The value with its unit, or why there is none.
+    pub message: String,
+}
+
+impl ParamList {
+    /// Whether an output is still being measured: the list is read again.
+    pub fn outputs_pending(&self) -> bool {
+        self.outputs.iter().any(|o| o.status == "pending")
+    }
 }
 
 fn text(value: Option<&Value>) -> String {
@@ -280,10 +300,26 @@ impl ParamList {
         }
         let info = value.get("info");
         let field = |key: &str| text(info.and_then(|i| i.get(key)));
+        let outputs = value
+            .get("outputs")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .take(MAX_PARAMS)
+                    .map(|o| OutputRow {
+                        name: text(o.get("name")),
+                        status: text(o.get("status")),
+                        message: text(o.get("message")),
+                    })
+                    .filter(|o| !o.name.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             jig: !params.is_empty(),
             groups,
             params,
+            outputs,
             info: DocInfo {
                 title: field("title"),
                 description: field("description"),
@@ -1018,7 +1054,9 @@ impl Shell {
         };
         let revision = scene.map_or(0, |s| s.revision);
         let changed = form.read_for != Some((doc, revision));
-        if changed || form.list.is_none() {
+        // An output being measured is read again until it is computed.
+        let measuring_outputs = form.list.as_ref().is_some_and(ParamList::outputs_pending);
+        if changed || form.list.is_none() || measuring_outputs {
             let list = session
                 .execute("param.list", &json!({}))
                 .map(|v| ParamList::parse(&v))
@@ -1480,6 +1518,30 @@ impl Shell {
                                 }
                             }
                         }
+                        // The outputs, read-only: computed after
+                        // regeneration from the model.
+                        if !list.outputs.is_empty() {
+                            ui.add_space(tokens.inset * 0.5);
+                            ui.label(egui::RichText::new("Outputs").strong()).on_hover_text(
+                                "Computed from the model after it is built; read-only (output.list)",
+                            );
+                            for o in &list.outputs {
+                                let tint = match o.status.as_str() {
+                                    "known" => color(tokens.text),
+                                    "unknown" => color(tokens.failed),
+                                    _ => dim,
+                                };
+                                let shown = if o.status == "known" {
+                                    o.message.clone()
+                                } else {
+                                    o.status.clone()
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(&o.name);
+                                    ui.colored_label(tint, shown).on_hover_text(&o.message);
+                                });
+                            }
+                        }
                         let footer: Vec<&str> =
                             [list.info.author.as_str(), list.info.licence.as_str()]
                                 .into_iter()
@@ -1897,6 +1959,24 @@ pub fn stand_in_range(p: &Param, value: f64) -> [f64; 2] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_outputs_of_param_list_are_read_and_a_pending_one_is_asked_again() {
+        let list = ParamList::parse(&json!({
+            "jig": true,
+            "parameters": [],
+            "outputs": [
+                {"name": "GM", "status": "known", "value": 65, "unit": "mm", "message": "65 mm"},
+                {"name": "T", "status": "pending", "message": "being measured"},
+                {"status": "known"},
+                "nonsense"
+            ]
+        }));
+        assert_eq!(list.outputs.len(), 2);
+        assert_eq!(list.outputs[0].message, "65 mm");
+        assert!(list.outputs_pending());
+        assert!(ParamList::parse(&json!({"outputs": 3})).outputs.is_empty());
+    }
+
     fn width() -> Param {
         Param {
             name: "width".into(),
@@ -2109,6 +2189,7 @@ mod tests {
                 groups: vec![String::new()],
                 params: vec![width()],
                 info: DocInfo::default(),
+                outputs: Vec::new(),
             }),
             pacer: Some(Pacer {
                 single_thread: false,
@@ -2185,6 +2266,7 @@ mod tests {
                 groups: vec![String::new()],
                 params: vec![width(), depth],
                 info: DocInfo::default(),
+                outputs: Vec::new(),
             }),
             ..ParamForm::default()
         };

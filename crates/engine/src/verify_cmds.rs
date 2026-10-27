@@ -63,6 +63,10 @@ pub(crate) struct Ctx<'a> {
     /// Most triangles of a mesh made to box one body
     /// ([`BOX_TRIANGLE_BUDGET`]).
     pub box_budget: usize,
+    /// The document's outputs as far as they are computed, for the
+    /// expressions of an assertion or of an output's measure (an input's
+    /// expression never reaches them): none for a measure command.
+    pub outputs: Option<&'a crate::output_cmds::Resolved>,
 }
 
 impl<'a> Ctx<'a> {
@@ -75,6 +79,7 @@ impl<'a> Ctx<'a> {
             tolerance,
             refine: 0,
             box_budget: BOX_TRIANGLE_BUDGET,
+            outputs: None,
         })
     }
 
@@ -113,33 +118,54 @@ impl<'a> Ctx<'a> {
     /// A length, area or volume (power 1, 2, 3) or a plain number
     /// (power 0) from a number in the document's unit or an expression.
     pub fn quantity(&self, value: &Value, key: &str, power: i32) -> Result<f64, String> {
+        self.quantity_of(value, key, craft3d_expr::Dimension::new(power, 0))
+    }
+
+    /// The value of the expression `source` in the document's variables
+    /// and, where this context has them, its outputs.
+    pub fn evaluate(&self, source: &str, key: &str) -> Result<craft3d_expr::Quantity, String> {
+        if let Some(why) = power_of_a_quantity(source) {
+            return Err(format!("`{key}`: {why}"));
+        }
+        let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
+        match (&evaluation, self.outputs) {
+            (Some(evaluation), Some(outputs)) => {
+                evaluation.evaluate_with(source, |name| outputs.lookup(name))
+            }
+            (Some(evaluation), None) => evaluation.evaluate(source),
+            (None, _) => craft3d_expr::evaluate(source, |_| None),
+        }
+        .map_err(|e| format!("`{key}`: {e}"))
+    }
+
+    /// A value of dimension `wanted` in the document's units (a length
+    /// unit to its power; an angle in radians), from a number in them or
+    /// an expression; a plain number is taken as in those units.
+    pub fn quantity_of(
+        &self,
+        value: &Value,
+        key: &str,
+        wanted: craft3d_expr::Dimension,
+    ) -> Result<f64, String> {
         let number = match value {
             Value::Number(n) => n.as_f64(),
             Value::String(source) => {
-                if let Some(why) = power_of_a_quantity(source) {
-                    return Err(format!("`{key}`: {why}"));
-                }
-                let evaluation = self.doc.variable_table().ok().map(|t| t.evaluate());
-                let quantity = match &evaluation {
-                    Some(evaluation) => evaluation.evaluate(source),
-                    None => craft3d_expr::evaluate(source, |_| None),
-                }
-                .map_err(|e| format!("`{key}`: {e}"))?;
-                let wanted = craft3d_expr::Dimension::new(power, 0);
+                let quantity = self.evaluate(source, key)?;
                 if quantity.dimension.is_dimensionless() {
                     Some(quantity.value)
                 } else if quantity.dimension == wanted {
                     let factor = self.doc.units.length.as_expr_unit().factor();
-                    Some(quantity.value / factor.powi(power))
+                    Some(quantity.value / factor.powi(wanted.length))
                 } else {
                     return Err(format!(
                         "`{key}` is {}, but {} is needed",
                         quantity.dimension.described(),
-                        match power {
-                            0 => "a number",
-                            1 => "a length",
-                            2 => "an area",
-                            _ => "a volume",
+                        match (wanted.length, wanted.angle) {
+                            (0, 0) => "a number".to_string(),
+                            (1, 0) => "a length".to_string(),
+                            (2, 0) => "an area".to_string(),
+                            (3, 0) => "a volume".to_string(),
+                            _ => wanted.described(),
                         }
                     ));
                 }
@@ -471,6 +497,11 @@ pub(crate) enum Dim {
     Count,
     /// Yes or no.
     Flag,
+    /// A quantity of another dimension than a length's power (a plain
+    /// number, an angle, a length times an angle): what the measure
+    /// `value` gives for an expression of such a dimension. In the
+    /// document's length unit, and radians.
+    Of(craft3d_expr::Dimension),
 }
 
 /// What a measure found.
@@ -523,7 +554,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 26] = [
+pub(crate) const MEASURES: [&str; 27] = [
     "volume",
     "area",
     "mass",
@@ -550,6 +581,7 @@ pub(crate) const MEASURES: [&str; 26] = [
     "flangeLength",
     "holeToBend",
     "relief",
+    "value",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -571,12 +603,40 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "bendRadius" | "flangeLength" | "holeToBend" | "relief" => {
             crate::sheetmetal_cmds::take(ctx, name, p)
         }
+        "value" => value(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",
             name.chars().take(40).collect::<String>(),
             MEASURES.join(", ")
         )),
     }
+}
+
+/// The dimension a value of `dimension` is measured in: a length's power
+/// as the other measures are, anything else as it is.
+pub(crate) fn dim_of_dimension(dimension: craft3d_expr::Dimension) -> Dim {
+    if dimension.angle == 0 && dimension.length != 0 {
+        Dim::Length(dimension.length)
+    } else {
+        Dim::Of(dimension)
+    }
+}
+
+/// The measure `value`: the value of the expression `expr` in the
+/// document's variables and outputs, exactly (docs/design/verification.md
+/// › *Outputs*): what an assertion on an output measures.
+fn value(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+    only(p, &["expr"])?;
+    let Some(Value::String(source)) = p.get("expr") else {
+        return Err("`expr` is required: an expression of the variables and outputs".into());
+    };
+    let quantity = ctx.evaluate(source, "expr")?;
+    let factor = ctx.doc.units.length.as_expr_unit().factor();
+    let value = quantity.value / factor.powi(quantity.dimension.length);
+    if !value.is_finite() {
+        return Err(format!("`expr`: `{source}` is not finite"));
+    }
+    Ok(Outcome::number(dim_of_dimension(quantity.dimension), value))
 }
 
 fn mass_measure(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {

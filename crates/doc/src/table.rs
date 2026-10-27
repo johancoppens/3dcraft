@@ -271,6 +271,12 @@ impl Document {
                 table.name
             )));
         }
+        if self.output(&table.name).is_some() {
+            return Err(DocError::Invalid(format!(
+                "`{}` is an output; a table needs a name of its own",
+                table.name
+            )));
+        }
         let others: usize = self
             .tables
             .iter()
@@ -488,9 +494,9 @@ impl Document {
         if old == new {
             return Ok(());
         }
-        if self.table(new).is_some() || self.variable(new).is_some() {
+        if self.table(new).is_some() || self.variable(new).is_some() || self.output(new).is_some() {
             return Err(DocError::Invalid(format!(
-                "`{new}` is taken by a table or a variable"
+                "`{new}` is taken by a table, a variable or an output"
             )));
         }
         craft3d_expr::check_variable_name(new)
@@ -535,6 +541,11 @@ impl Document {
         }
         for body in &mut doc.bodies {
             for expr in body.exprs_mut() {
+                rename(expr)?;
+            }
+        }
+        for output in &mut doc.outputs {
+            if let crate::OutputDef::Expr(expr) = &mut output.def {
                 rename(expr)?;
             }
         }

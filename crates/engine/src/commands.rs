@@ -182,7 +182,11 @@ pub(crate) fn edit_merging<T>(
             let pending = craft3d_regen::image_places_to_record(doc, cache);
             let before = (!pending.is_empty()).then(|| doc.clone());
             let first_new = doc.next_feature_id;
+            let misused = crate::output_cmds::misuse(doc);
             let out = change(doc)?;
+            // Regeneration stays one way: nothing it reads may use an
+            // output (docs/design/verification.md › *Outputs*).
+            crate::output_cmds::refuse_misuse(&misused, doc)?;
             if let Some(when) = &when {
                 for feature in doc.features.iter_mut().filter(|f| f.id.0 >= first_new) {
                     feature.when.get_or_insert_with(|| when.clone());
@@ -1529,6 +1533,27 @@ fn variable_delete(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("variable.delete", params, &["name", "force"])?;
     let name = p.required_str("name")?;
     let force = p.bool("force")?.unwrap_or(false);
+    // An output goes as a variable does, refused while it is used.
+    if session.document()?.history.current().output(name).is_some() {
+        let users = crate::output_cmds::users(session.document()?.history.current(), name);
+        if !force && !users.is_empty() {
+            return fail(format!(
+                "variable.delete: the output `{name}` is still used by {}; change those first, or give force: true to delete it anyway (they are then unknown or in error)",
+                users.join(", ")
+            ));
+        }
+        edit(
+            session,
+            "variable.delete",
+            &format!("Delete output {name}"),
+            |doc| doc.remove_output(name).map(|_| ()),
+        )?;
+        let mut result = json!({ "deleted": name, "output": true });
+        if let (false, Some(map)) = (users.is_empty(), result.as_object_mut()) {
+            map.insert("usedBy".into(), users.into());
+        }
+        return Ok(result);
+    }
     let users = variable_users(session.document()?.history.current(), name);
     if !force && !users.is_empty() {
         return fail(format!(
@@ -1583,29 +1608,6 @@ fn mentions(source: &str, name: &str) -> bool {
 /// whose strings are names and not expressions. The JSON was read from a
 /// stored text, so its nesting is bounded; `depth` caps it anyway.
 fn json_mentions(value: &Value, name: &str, depth: usize) -> bool {
-    const NAMES: &[&str] = &[
-        "name",
-        "type",
-        "material",
-        "color",
-        "set",
-        "in",
-        "madeBy",
-        "copyOf",
-        "kind",
-        "surface",
-        "along",
-        "perpendicular",
-        "of",
-        "from",
-        "to",
-        "measure",
-        "face",
-        "edge",
-        "feature",
-        "axis",
-        "plane",
-    ];
     if depth > 16 {
         return false;
     }
@@ -1617,26 +1619,100 @@ fn json_mentions(value: &Value, name: &str, depth: usize) -> bool {
         // Under a key that names something, a string or a list of
         // strings is names (bodies, kinds, a plane, an axis); an object
         // there (a subject query) is looked into like the rest.
-        Value::Object(map) => map.iter().any(|(key, inner)| {
-            let names = match inner {
-                Value::String(_) => true,
-                Value::Array(items) => items.iter().all(Value::is_string),
-                _ => false,
-            };
-            !(NAMES.contains(&key.as_str()) && names) && json_mentions(inner, name, depth + 1)
-        }),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, inner)| !names_under(key, inner) && json_mentions(inner, name, depth + 1)),
         _ => false,
     }
 }
+
+/// Whether `inner`, under `key` of a stored query or measure, is names
+/// (bodies, kinds, a plane, an axis), not expressions.
+fn names_under(key: &str, inner: &Value) -> bool {
+    let names = match inner {
+        Value::String(_) => true,
+        Value::Array(items) => items.iter().all(Value::is_string),
+        _ => false,
+    };
+    JSON_NAMES.contains(&key) && names
+}
+
+/// The names the expressions in the JSON `value` (a stored query or
+/// measure) use, into `out`, leaving out the keys whose strings are names
+/// as [`json_mentions`] does.
+pub(crate) fn json_expr_names(
+    value: &Value,
+    out: &mut std::collections::BTreeSet<String>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            out.extend(craft3d_expr::names_in(text).into_iter().map(str::to_string))
+        }
+        Value::Array(items) => {
+            for item in items {
+                json_expr_names(item, out, depth + 1);
+            }
+        }
+        Value::Object(map) => {
+            for (key, inner) in map {
+                if !names_under(key, inner) {
+                    json_expr_names(inner, out, depth + 1);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The keys of a stored query or measure whose strings are names.
+const JSON_NAMES: &[&str] = &[
+    "name",
+    "type",
+    "material",
+    "color",
+    "set",
+    "in",
+    "madeBy",
+    "copyOf",
+    "kind",
+    "surface",
+    "along",
+    "perpendicular",
+    "of",
+    "from",
+    "to",
+    "measure",
+    "face",
+    "edge",
+    "feature",
+    "axis",
+    "plane",
+    "about",
+    "measured",
+];
 
 /// Everything in `doc` that uses the variable `name`, one short phrase
 /// each, in document order: other variables, features and sketches (with
 /// the parameters), assertions and named sets.
 pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
-    let mut users = Vec::new();
+    variable_users_kinds(doc, name)
+        .into_iter()
+        .map(|(_, user)| user)
+        .collect()
+}
+
+/// [`variable_users`], each with whether it may use an output: an output
+/// or an assertion, which are computed after regeneration (true), or an
+/// input of it (false).
+pub(crate) fn variable_users_kinds(doc: &Document, name: &str) -> Vec<(bool, String)> {
+    let mut users: Vec<(bool, String)> = Vec::new();
     for variable in &doc.variables {
         if variable.name != name && mentions(variable.expr.source(), name) {
-            users.push(format!("the variable `{}`", variable.name));
+            users.push((false, format!("the variable `{}`", variable.name)));
         }
     }
     for variable in &doc.variables {
@@ -1650,10 +1726,9 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             .map(|(what, _)| what)
             .collect();
         if !bounds.is_empty() {
-            users.push(format!(
-                "the parameter `{}` ({})",
-                variable.name,
-                bounds.join(", ")
+            users.push((
+                false,
+                format!("the parameter `{}` ({})", variable.name, bounds.join(", ")),
             ));
         }
     }
@@ -1678,11 +1753,14 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             } else {
                 "feature"
             };
-            users.push(format!(
-                "the {what} `{}` ({}: {})",
-                feature.name,
-                feature.id,
-                params.join(", ")
+            users.push((
+                false,
+                format!(
+                    "the {what} `{}` ({}: {})",
+                    feature.name,
+                    feature.id,
+                    params.join(", ")
+                ),
             ));
         }
     }
@@ -1695,14 +1773,14 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
         let in_measure = serde_json::from_str::<Value>(&assertion.measure)
             .is_ok_and(|measure| json_mentions(&measure, name, 0));
         if in_bound || in_measure {
-            users.push(format!("the assertion `{}`", assertion.name));
+            users.push((true, format!("the assertion `{}`", assertion.name)));
         }
     }
     for set in &doc.sets {
         if serde_json::from_str::<Value>(&set.query)
             .is_ok_and(|query| json_mentions(&query, name, 0))
         {
-            users.push(format!("the set `{}`", set.name));
+            users.push((false, format!("the set `{}`", set.name)));
         }
     }
     for body in &doc.bodies {
@@ -1711,7 +1789,17 @@ pub(crate) fn variable_users(doc: &Document, name: &str) -> Vec<String> {
             .iter()
             .any(|expr| mentions(expr.source(), name))
         {
-            users.push(format!("the colour or material of {}", body.feature));
+            users.push((false, format!("the colour or material of {}", body.feature)));
+        }
+    }
+    for output in &doc.outputs {
+        let uses = match &output.def {
+            craft3d_doc::OutputDef::Expr(e) => mentions(e.source(), name),
+            craft3d_doc::OutputDef::Measure(text) => serde_json::from_str::<Value>(text)
+                .is_ok_and(|measure| json_mentions(&measure, name, 0)),
+        };
+        if output.name != name && uses {
+            users.push((true, format!("the output `{}`", output.name)));
         }
     }
     users
@@ -1722,12 +1810,17 @@ fn variable_rename(session: &mut Session, params: &Value) -> Run {
     let (name, to) = (p.required_str("name")?, p.required_str("to")?);
     craft3d_expr::check_variable_name(to)
         .map_err(|e| CommandError::new(format!("variable.rename: `to`: {e}")))?;
+    let output = session.document()?.history.current().output(name).is_some();
     edit(
         session,
         "variable.rename",
         &format!("Rename {name}"),
         |doc| {
-            doc.rename_variable(name, to)?;
+            if output {
+                doc.rename_output(name, to)?;
+            } else {
+                doc.rename_variable(name, to)?;
+            }
             crate::assert_cmds::rename_variable_in_assertions(doc, name, to)
         },
     )?;
@@ -3106,13 +3199,24 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             );
         }
     }
-    // The assertions and how each stands: only when there are any.
-    let states: Vec<crate::AssertionState> = session
-        .assertion_checks(crate::assert_check::Wait::For(
+    // The assertions and how each stands: only when there are any; the
+    // outputs as they are computed, likewise.
+    let (states, outputs): (Vec<crate::AssertionState>, Vec<Value>) = match session
+        .checks_and_outputs(crate::assert_check::Wait::For(
             crate::assert_check::EDIT_WAIT,
-        ))
-        .map(|c| c.into_iter().map(|c| c.state).collect())
-        .unwrap_or_default();
+        )) {
+        Ok((checked, resolved)) => (
+            checked.into_iter().map(|c| c.state).collect(),
+            crate::output_cmds::states(session.document()?.history.current(), &resolved)
+                .iter()
+                .map(crate::output_cmds::state_json)
+                .collect(),
+        ),
+        Err(_) => (Vec::new(), Vec::new()),
+    };
+    if let (false, Some(map)) = (outputs.is_empty(), out.as_object_mut()) {
+        map.insert("outputs".into(), outputs.into());
+    }
     if let (false, Some(map)) = (states.is_empty(), out.as_object_mut()) {
         let listed: Vec<Value> = states
             .iter()
