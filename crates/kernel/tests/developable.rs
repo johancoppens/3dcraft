@@ -690,12 +690,14 @@ fn a_plate_on_a_sheet_with_a_fan_apex_at_a_vertex_is_built() {
     for k in SCALES {
         let (a, b, _) = cone_rails(k);
         let made = connect(&a, &b, &tol(k)).unwrap();
-        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        // The fan at the start alone: its apex is a vertex on its border.
+        assert_eq!(made.faces[0], Piece::StartFan);
+        let faces = [FaceId(0)];
         let t = 0.02 * k;
         let plated = plate(&made.body, &faces, t, Side::In, &BTreeMap::new(), &tol(k))
             .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
         assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
-        let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+        let area = craft3d_topo::face_areas(&made.body)[0].clone().unwrap();
         let volume = craft3d_topo::mass_properties(&plated.body)
             .unwrap()
             .volume
