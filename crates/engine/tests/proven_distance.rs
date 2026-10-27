@@ -477,22 +477,23 @@ fn a_turned_spline_dome_is_proven_to_its_distance() {
     run(
         &mut s,
         "sketch.create",
-        json!({"name": "Dome", "plane": "xz"}),
+        // The sketch's x along z (the axis turned about), its y along x.
+        json!({"name": "Dome", "plane": "zx"}),
     );
     run(
         &mut s,
         "sketch.curve",
-        json!({"sketch": "Dome", "x": "20 mm * t", "y": "10 mm - 8 mm * t^2", "t": [0, 1]}),
+        json!({"sketch": "Dome", "x": "10 mm - 8 mm * t^2", "y": "20 mm * t", "t": [0, 1]}),
     );
     run(
         &mut s,
         "sketch.path",
-        json!({"sketch": "Dome", "start": "e2", "segments": [{"line": ["20 mm", "0 mm"]}, {"line": ["0 mm", "0 mm"]}, {"line": "e1"}]}),
+        json!({"sketch": "Dome", "start": "e2", "segments": [{"line": ["0 mm", "20 mm"]}, {"line": ["0 mm", "0 mm"]}, {"line": "e1"}]}),
     );
     run(
         &mut s,
         "feature.revolve",
-        json!({"sketch": "Dome", "axis": "y", "name": "Turned"}),
+        json!({"sketch": "Dome", "axis": "x", "name": "Turned"}),
     );
     let top = run(
         &mut s,
