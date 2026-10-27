@@ -55,7 +55,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use crate::refine::{interpolate, interpolate_on};
-use crate::{GeomError, MAX_CONTROL_POINTS, NurbsSurface, Surface, pole};
+use crate::{GeomError, NurbsSurface, Surface, pole};
 use craft3d_math::Vec3;
 
 /// Why there is no offset.
@@ -1219,9 +1219,16 @@ fn cross(a: &B3, b: &B3) -> B3 {
 // The approximation.
 
 /// Most samples in one direction (what the banded interpolation takes),
-/// and in all (the control points a surface may have: one per sample).
+/// and in all: the fit has a control point per sample, and a surface may
+/// have [`crate::MAX_CONTROL_POINTS`] in each direction; the bound in all is the
+/// work and memory of the fit (each pass holds the fit against the exact
+/// offset at up to sixteen points per sample). It was
+/// `MAX_CONTROL_POINTS` in all until 2026-10-27: a developable panel of
+/// 782 control points along it (3912 samples) could then be refined
+/// across it to 16 samples only, where the sea kayak's panel near its tip
+/// needs 27 (repro 14).
 const MAX_PER_DIRECTION: usize = crate::refine::MAX_INTERPOLATED_BANDED;
-const MAX_SAMPLES: usize = MAX_CONTROL_POINTS;
+const MAX_SAMPLES: usize = 1 << 18;
 /// Passes of the refinement.
 const PASSES: usize = 24;
 /// Steps each knot span of the surface is cut into to begin with: enough

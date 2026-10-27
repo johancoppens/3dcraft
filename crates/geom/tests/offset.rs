@@ -309,7 +309,7 @@ fn an_offset_under_a_work_bound_too_small_for_it_stops_and_says_so() {
 }
 
 /// The offset held only where it is used (2026-10-27, the sea kayak's
-/// repro 14): a long twisted ruled surface (782 control points along u,
+/// repro 14): a long twisted ruled surface (3279 control points along u,
 /// `S = a(u) + v (b(u) − a(u))` with `a = (L u, 0, 0)` and `b = (L u, W,
 /// c W u²)`, so the normal turns along each ruling) continued across its
 /// rulings to v in [−30, 31], as a developable panel is past a short
@@ -323,7 +323,9 @@ fn an_offset_held_where_it_is_used_fits_where_the_whole_box_does_not() {
     use craft3d_geom::offset::{Held, exact, offset_held, offset_over};
     for k in SCALES {
         let (length, width, c) = (100.0 * k, 20.0 * k, 0.3);
-        let count = 782;
+        // As many spans as leave the fit room for no refinement across:
+        // 5 samples a span, 16 across, within the fit's 2^18.
+        let count = 3279;
         let spans = count - 3;
         let mut knots = vec![0.0; 4];
         knots.extend((1..spans).map(|i| i as f64 / spans as f64));
@@ -384,8 +386,8 @@ fn an_offset_held_where_it_is_used_fits_where_the_whole_box_does_not() {
         )
         .unwrap_or_else(|e| panic!("{k}: {e:?}"));
         let mut worst: f64 = 0.0;
-        for i in 0..=997 {
-            let u = f64::from(i) / 997.0;
+        for i in 0..=1997 {
+            let u = f64::from(i) / 1997.0;
             for v in [-0.04, -0.013, 0.0, 0.31, 0.5, 0.77, 1.0, 1.017, 1.04] {
                 let expected = exact(&surface, distance, u, v).unwrap();
                 worst = worst.max(fitted.eval(u, v).distance(expected) / limit);

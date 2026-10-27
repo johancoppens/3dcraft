@@ -1105,11 +1105,16 @@ fn lay_face(
     let mut before: Option<f64> = None;
     loop {
         if (2 * nu + 1).saturating_mul(2 * nv + 1) > MAX_NODES {
-            return Err(KernelError::Geometry(
-                craft3d_geom::GeomError::NoConvergence(
-                    "the unfold of a face did not reach the tolerance within the largest grid",
-                ),
-            ));
+            // A layout that only halves its difference per doubling (first
+            // order, where a developable's converges fourfold) is a face
+            // whose parametrisation collapses or stands still somewhere
+            // (the fans at the ends of a folded sheet, 2026-10-27): not a
+            // coarse grid, and not a face that is not developable.
+            return Err(refused(format!(
+                "face {} did not reach the tolerance within the largest grid: its layouts still differ by {:e} (tolerance {tol}), falling only about twofold per doubling of the grid, as where the face's parametrisation collapses into a point or stands still; unfolding such a face is not supported (it did not converge)",
+                face.0,
+                before.unwrap_or(f64::NAN)
+            )));
         }
         let fine = lay_grid(&surface, outward, (u0, u1), (v0, v1), 2 * nu, 2 * nv)?;
         // The coarse layout laid onto the fine at the common points, then
@@ -1130,15 +1135,18 @@ fn lay_face(
         let (motion, _) = Motion2::fit(&from, &to)
             .ok_or_else(|| refused(format!("face {} has an empty grid", face.0)))?;
         let mut error: f64 = 0.0;
+        // At the coarse grid's own nodes alone.
+        let mut at_nodes: f64 = 0.0;
         for i in 0..=2 * nu {
             for j in 0..=2 * nv {
                 let u = u0 + (u1 - u0) * i as f64 / (2 * nu) as f64;
                 let v = v0 + (v1 - v0) * j as f64 / (2 * nv) as f64;
                 if let Some(b) = fine.flat.get(i * (2 * nv + 1) + j) {
-                    error = error.max(len2(sub2(
-                        motion.apply(coarse.at(&surface, outward, u, v)),
-                        *b,
-                    )));
+                    let off = len2(sub2(motion.apply(coarse.at(&surface, outward, u, v)), *b));
+                    error = error.max(off);
+                    if i % 2 == 0 && j % 2 == 0 {
+                        at_nodes = at_nodes.max(off);
+                    }
                 }
             }
         }
@@ -1153,8 +1161,15 @@ fn lay_face(
             && error > 0.5 * last
         {
             return Err(refused(format!(
-                "face {} does not lie flat within the tolerance: its layouts at two grids still differ by {error:e} (more than {DEVELOPABLE_SHARE} of the tolerance {tol}) and do not converge",
-                face.0
+                "face {} does not lie flat within the tolerance: its layouts at two grids still differ by {error:e} (more than {DEVELOPABLE_SHARE} of the tolerance {tol}) and do not converge{}",
+                face.0,
+                if at_nodes <= 0.25 * error {
+                    format!(
+                        "; the grids' nodes agree to {at_nodes:e} and the map between them does not, as where the face's parametrisation stands still at a corner (the strip beside a fan at a fold): unfolding such a face is not supported yet"
+                    )
+                } else {
+                    String::new()
+                }
             )));
         }
         before = Some(error);
