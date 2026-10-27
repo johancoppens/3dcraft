@@ -139,6 +139,9 @@ fn rails_on_a_cone_are_joined_through_its_apex_with_a_fan_where_the_rail_starts_
             made.faces,
             vec![Piece::StartFan, Piece::Rulings, Piece::EndFan]
         );
+        // Built the given way, it stays the given way (its shape and its
+        // faces' names), whatever the other way would give.
+        assert!(!made.reversed_b);
         let (first, last) = (made.rulings[0], *made.rulings.last().unwrap());
         assert_eq!(first.0, 0.0);
         assert_eq!(last.0, 1.0);
@@ -671,6 +674,38 @@ fn a_plate_on_a_developable_with_short_and_long_rulings_has_its_closed_form_volu
             (volume - expected).abs() <= 1e-6 * expected,
             "{k}: volume {volume}, expected {expected} (off by {:e})",
             (volume - expected) / expected
+        );
+    }
+}
+
+/// A plate on a sheet with fans whose apexes are vertices (rails on one
+/// cone: fans at both ends, their apexes on the spline rail): the surface
+/// does not move across the border at an apex, which needs no reach past
+/// it (raised by the speed there, about 1e-9, the reach blew up). The
+/// plate is built and valid, its volume near `T·Area`; at three scales.
+#[test]
+fn a_plate_on_a_sheet_with_a_fan_apex_at_a_vertex_is_built() {
+    use craft3d_kernel::plate::{Side, plate};
+    use std::collections::BTreeMap;
+    for k in SCALES {
+        let (a, b, _) = cone_rails(k);
+        let made = connect(&a, &b, &tol(k)).unwrap();
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let t = 0.02 * k;
+        let plated = plate(&made.body, &faces, t, Side::In, &BTreeMap::new(), &tol(k))
+            .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
+        assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
+        let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+        let volume = craft3d_topo::mass_properties(&plated.body)
+            .unwrap()
+            .volume
+            .abs();
+        // The bend changes it by about T/2 over the radius (0.8 k at the
+        // least) of the area times T: a few percent at most here.
+        assert!(
+            (volume - t * area).abs() <= 0.05 * t * area,
+            "{k}: volume {volume} against T·Area {}",
+            t * area
         );
     }
 }

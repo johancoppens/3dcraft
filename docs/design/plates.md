@@ -77,7 +77,7 @@ What this needs from the two mechanisms (said to the coordinator, not built into
 - *An `onto` surface refused where it holds the plate's inward direction within the angular tolerance's sine*: it runs along the plate there and cuts no end.
 - *A rim's name by a 48-bit hash of its edge's name; a collision fails the feature*: a face name never lists faces (names.md), so the edge's name cannot be inside it; the hash is a function of that name only.
 
-- *A freeform face's surface continued, per border, by the most any vertex of the face within the reach of that border needs: the border's fastest speed over the speed at the vertex* (2026-10-27): the corners of a plate lie past the ends of its edges, at the face's vertices; continuing by the fastest speed (`offset_face::reached_each`) leaves a slower point short, as a corner by a short ruling of a developable beside long ones; a vertex where the surface does not move across the border needs nothing there.
+- *A freeform face's surface continued, per border, by the most any vertex of the face within the reach of that border needs: the border's fastest speed over the speed at the vertex, at most 64* (2026-10-27): the corners of a plate lie past the ends of its edges, at the face's vertices; continuing by the fastest speed (`offset_face::reached_each`) leaves a slower point short, as a corner by a short ruling of a developable beside long ones; a vertex where the surface moves across the border by no more than the tolerance over that parameter's range (a fan's apex) needs nothing there; past a factor of 64 the continuation would be extrapolated far beyond what the surface says, and a corner still not reached is refused.
 
 ## Oracles (held to)
 

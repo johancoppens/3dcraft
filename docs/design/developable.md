@@ -14,7 +14,7 @@ This section is the contract; it changes only with a dated note under *Findings 
 **Connection (`craft3d_kernel::developable`, L3).**
 
 - `Rail { pieces: Vec<RailPiece> }`: a chain of 3D curves end to end (`RailPiece { curve: Curve3, range: (f64, f64), reversed: bool, source: u64 }`, each run from its start to its end in the chain's direction; `source` is the caller's id, a sketch curve or an edge, kept on the faces' edges).
-- `connect(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError>`: the developable sheet between the two rails, `a` run as given, `b` as given or, when only that gives a developable (rails drawn in opposite directions), the other way (`Rail::reversed`); since fans close folds both ways may give one (2026-10-27): then the one of fewer faces, as given on a tie, a single face of rulings taken at once.
+- `connect(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError>`: the developable sheet between the two rails, `a` run as given, `b` as given or, when only that gives a developable (rails drawn in opposite directions), the other way (`Rail::reversed`); with both ways possible, as given (so a sheet that builds keeps its shape and its faces' names; review of 2026-10-27, which undid a rule that took the way of fewer faces).
 - `Piece::Inner(n)` (2026-10-27): a face after the first run of rulings, in order along the rails, a fan at a fold or a run of rulings after one; named `F9:face(3 + n)`, so a sheet without folds keeps its names.
 - `Connected { body, faces: Vec<Piece>, rulings: Vec<(f64, f64)>, deviation: f64, curvature: f64 }`: a sheet body (`BodyKind::Sheet`, one shell) of one to three faces in order: `Piece::StartFan`, `Piece::Rulings`, `Piece::EndFan` (fans only where needed, below); the rulings found, as rail parameters (each rail's parameter runs from 0 at its first end to the number of its pieces at its last, piece `i` over `[i, i + 1]`); the largest distance found between the faces and the true developable; and the largest |K| found on the faces.
 
@@ -98,6 +98,8 @@ A ruled surface `X(s, v) = (1 − v) A(s) + v B(t(s))` between the curves `A` an
 
 ## Open
 
+- `Piece::Inner(n)` names are positional: a fold added upstream (an edit that makes the condition fold earlier along the rails) renumbers the faces after it, and a feature on `face(3 + n)` retargets. Owed: stable names for the faces of a folded sheet (by the fold's place, not its number).
+- A folded sheet cannot be measured or unfolded yet (below).
 - The faces beside a fan at a fold have a corner where one rail stands still (the ruling at the fold: `dt/ds = 0`); the area integral (`topo::mass`) does not settle there, so measuring and unfolding such a sheet is refused ("cannot be measured"), never a wrong number. Owed: the boundary integral at a corner where a row's speed vanishes (as at a pole, but at one corner).
 - Of the two fans at a fold, the one that covers less of its rail is taken; any cone between two points of the zero set at one parameter is as developable, so which to take is a choice of shape the caller could make (an option owed).
 

@@ -662,6 +662,12 @@ fn flat(points: &[Vec3], tol: f64) -> Option<Surface> {
 const PAST_REACH: &str =
     "the joint reaches past the faces' surfaces continued beyond their borders";
 
+/// The most a border's reach is raised by (a vertex where the surface
+/// moves across the border at a 64th of its fastest there): beyond it the
+/// continuation would be extrapolated far past anything the surface says,
+/// and a corner it still does not reach is refused (`PAST_REACH`).
+const MOST_REACH_FACTOR: f64 = 64.0;
+
 /// How far to continue a face's freeform surface for it to reach `reach`
 /// past every vertex of the face that lies on a border of its parameters.
 /// A surface is continued past a border by the parameter that takes its
@@ -672,9 +678,11 @@ const PAST_REACH: &str =
 /// 2026-10-27: a ruling of 14.5 mm, the longest 190 mm). The corners of a
 /// plate lie past the ends of its edges, at the face's vertices, so the
 /// reach is raised by the most any of them needs: the border's fastest
-/// speed over the speed at the vertex. A vertex where the surface does not
-/// move across the border (a collapsed corner) needs nothing there.
-fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> Reaches {
+/// speed over the speed at the vertex, at most [`MOST_REACH_FACTOR`]. A
+/// vertex where the surface moves across the border by no more than the
+/// tolerance over that parameter's range (a collapsed corner, a fan's
+/// apex) needs nothing there.
+fn reach_past_vertices(body: &Body, face: &Face, reach: f64, tol: f64) -> Reaches {
     let nurbs = match &face.surface {
         Surface::Nurbs(n) => std::borrow::Cow::Borrowed(n),
         Surface::Bezier(b) => match NurbsSurface::from_bezier(b) {
@@ -727,8 +735,13 @@ fn reach_past_vertices(body: &Body, face: &Face, reach: f64) -> Reaches {
                 .into_iter()
                 .enumerate()
                 {
-                    if on && speed > 0.0 && speed.is_finite() {
-                        let ratio = fastest(along_u, at) / speed;
+                    // A vertex where the surface moves across the border
+                    // by no more than the tolerance over the whole range
+                    // of that parameter is where it collapses (a fan's
+                    // apex): nothing is reached past it.
+                    let range = if along_u { u1 - u0 } else { v1 - v0 };
+                    if on && speed * range.abs() > tol && speed.is_finite() {
+                        let ratio = (fastest(along_u, at) / speed).min(MOST_REACH_FACTOR);
                         if let Some(f) = factor.get_mut(border)
                             && ratio.is_finite()
                         {
@@ -987,7 +1000,7 @@ fn build(
         .fold(0.0_f64, f64::max);
     let surface_reach = SURFACE_REACH * furthest + thickness;
     for (made, id) in layered.iter_mut().zip(chosen) {
-        let reach = reach_past_vertices(body, made.face, surface_reach);
+        let reach = reach_past_vertices(body, made.face, surface_reach, tolerance.linear);
         *made = Layered::new(made.face, levels, reach, tolerance)
             .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
@@ -1002,7 +1015,12 @@ fn build(
             near.layered = Layered::new(
                 near.layered.face,
                 n.side.levels(n.thickness),
-                reach_past_vertices(near.body, near.layered.face, surface_reach + n.thickness),
+                reach_past_vertices(
+                    near.body,
+                    near.layered.face,
+                    surface_reach + n.thickness,
+                    tolerance.linear,
+                ),
                 tolerance,
             )
             .map_err(|why| {

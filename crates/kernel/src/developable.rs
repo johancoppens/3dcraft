@@ -1165,30 +1165,17 @@ impl Rail {
 
 /// The sheet between the rails `a` and `b`. `a` is run as given; `b` as
 /// given, or the other way when only that gives a developable (rails
-/// drawn in opposite directions). When both ways give one, the one of
-/// fewer faces (fewer fans), and as given when they tie: a sheet of one
-/// face of rulings is taken at once. Since fans close the folds of the
-/// condition (rulings that would cross), the way the rails were not meant
-/// to be run may give a sheet too, of fans the other way does not need.
+/// drawn in opposite directions; with both ways possible, as given, so a
+/// sheet that builds keeps its shape and its faces' names).
 pub fn connect(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError> {
-    let given = connect_as_given(a, b, tolerance);
-    if let Ok(made) = &given
-        && made.faces.len() == 1
-    {
-        return given;
-    }
-    if matches!(given, Err(ref e) if !matches!(e, KernelError::Refused { .. })) {
-        return given;
-    }
-    let turned = connect_as_given(a, &b.reversed(), tolerance).map(|made| Connected {
-        reversed_b: true,
-        ..made
-    });
-    match (given, turned) {
-        (Ok(g), Ok(t)) => Ok(if t.faces.len() < g.faces.len() { t } else { g }),
-        (Ok(g), Err(_)) => Ok(g),
-        (Err(_), Ok(t)) => Ok(t),
-        (Err(first), Err(_)) => Err(first),
+    match connect_as_given(a, b, tolerance) {
+        Err(first @ KernelError::Refused { .. }) => connect_as_given(a, &b.reversed(), tolerance)
+            .map(|made| Connected {
+                reversed_b: true,
+                ..made
+            })
+            .map_err(|_| first),
+        other => other,
     }
 }
 
@@ -1288,6 +1275,15 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
     let rest_a = a.length_between(pair.sa(ex), a.len());
     let rest_b = b.length_between(pair.tb(ey), b.len());
     let end = if rest_a <= tol && rest_b <= tol {
+        // Snapped to the far corner; a fan that ends there would change
+        // the parameter it is at (and so its kind): refused.
+        let n = path.points.len();
+        if n >= 2 && path.fan_after.get(n - 2).copied().unwrap_or(false) {
+            return Err(refused(format!(
+                "a fan at a fold of the condition reaches the ends of both curves {}: not built",
+                pair.where_(ex, ey)
+            )));
+        }
         if let Some(last) = path.points.last_mut() {
             *last = (1.0, 1.0);
         }
