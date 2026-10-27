@@ -1,0 +1,96 @@
+{
+  "format_version": 43,
+  "written_by": "c876821f0f07f8c513d57573016517014bacfc0d",
+  "how": "the engine of that commit (on the Strix, Check run 40509454933, by a temporary test, crates/engine/tests/zz_write_fixture_v43.rs, that ran v43.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v43.3dcraft and printed it), then document.inspect of the file opened again",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Hull",
+      "status": "ok"
+    }
+  ],
+  "bodies": [
+    {
+      "feature": "F1",
+      "kind": "solid",
+      "faces": 6,
+      "edges": 12,
+      "vertices": 8,
+      "volume": 480000000.0000002,
+      "area": 4480000.000000002
+    }
+  ],
+  "assertions": [
+    {
+      "expected": "≥ 0 mm",
+      "measure": "value",
+      "measured": "65 mm",
+      "message": "value: 65 mm",
+      "name": "stable",
+      "status": "passed"
+    }
+  ],
+  "outputs": [
+    {
+      "dimension": "length",
+      "measure": {
+        "measure": "levelFor",
+        "of": "F1",
+        "volume": "V"
+      },
+      "message": "250 mm",
+      "name": "T",
+      "status": "known",
+      "unit": "mm",
+      "value": 250.00000000000347
+    },
+    {
+      "dimension": "length",
+      "measure": {
+        "axis": "z",
+        "measure": "centroidBelow",
+        "of": "F1",
+        "offset": "T"
+      },
+      "message": "125 mm",
+      "name": "KB",
+      "status": "known",
+      "unit": "mm",
+      "value": 125.00000000000169
+    },
+    {
+      "dimension": "length^4",
+      "measure": {
+        "about": "x",
+        "measure": "sectionInertia",
+        "of": "F1",
+        "offset": "T",
+        "xAxis": "x"
+      },
+      "message": "36000000000 mm^4",
+      "name": "I",
+      "status": "known",
+      "unit": "mm^4",
+      "value": 36000000000.0
+    },
+    {
+      "dimension": "length",
+      "expr": "I / V",
+      "message": "120 mm",
+      "name": "BM",
+      "status": "known",
+      "unit": "mm",
+      "value": 120.0
+    },
+    {
+      "dimension": "length",
+      "expr": "KB + BM - KG",
+      "message": "65 mm",
+      "name": "GM",
+      "status": "known",
+      "unit": "mm",
+      "value": 65.0000000000017
+    }
+  ]
+}

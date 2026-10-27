@@ -140,6 +140,31 @@ fn differences(version: u32, inspect: &Value, want: &Value) -> Vec<String> {
             found.push(format!("{tag}: assertions {got} (were {assertions})"));
         }
     }
+    // The outputs (format 43), each by name with its status, and its value
+    // where it had one.
+    if let Some(outputs) = want.get("outputs") {
+        let got = inspect.get("outputs").cloned().unwrap_or(Value::Null);
+        let keys = |list: &Value| -> Vec<Value> {
+            list.as_array()
+                .map(|l| {
+                    l.iter()
+                        .map(|o| json!([o["name"], o["status"], o["unit"]]))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let values_close = got
+            .as_array()
+            .zip(outputs.as_array())
+            .is_some_and(|(g, w)| {
+                g.iter()
+                    .zip(w)
+                    .all(|(g, w)| w["value"].is_null() || close(&g["value"], &w["value"]))
+            });
+        if keys(&got) != keys(outputs) || !values_close {
+            found.push(format!("{tag}: outputs {got} (were {outputs})"));
+        }
+    }
     let bodies = inspect["bodies"].as_array().unwrap();
     let wanted = want["bodies"].as_array().unwrap();
     let ids =
