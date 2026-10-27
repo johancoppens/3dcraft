@@ -373,6 +373,13 @@ fn box_distance(bbox: &Bbox3, p: Vec3) -> f64 {
 /// a side of the box, each coordinate stays on one side of it, so the
 /// squared distance is one quadratic there: the least over the segment
 /// is at such a parameter, at an end, or at the vertex of a quadratic.
+/// The quadratic is evaluated as the sum of the squared offsets, each
+/// `alpha + beta t` taken as it is: expanded into `qa t² + qb t + qc`, a
+/// distance that is zero at a cut reads as the rounding of `alpha²`,
+/// which for a box a thousand units from the segment's start is
+/// `√(1e6 ε) ≈ 1.5e-5` units, and a segment through a flat box (a leaf
+/// of a planar piece) was proven clear of it by that much
+/// (docs/design/booleans.md, *The sea kayak's tips*, 2026-10-27).
 fn segment_box_distance(bbox: &Bbox3, a: Vec3, b: Vec3) -> f64 {
     let Some((lo, hi)) = bbox.corners() else {
         return f64::INFINITY;
@@ -403,29 +410,39 @@ fn segment_box_distance(bbox: &Bbox3, a: Vec3, b: Vec3) -> f64 {
         let mid = 0.5 * (t0 + t1);
         // The offset of each coordinate from the box, linear in t on
         // this piece: alpha + beta t, with the side taken in the middle.
-        let (mut qa, mut qb, mut qc) = (0.0_f64, 0.0_f64, 0.0_f64);
-        for ((&start, &step), (&low, &high)) in a3.iter().zip(&d3).zip(lo3.iter().zip(&hi3)) {
+        let mut offsets = [(0.0_f64, 0.0_f64); 3];
+        for (offset, ((&start, &step), (&low, &high))) in offsets
+            .iter_mut()
+            .zip(a3.iter().zip(&d3).zip(lo3.iter().zip(&hi3)))
+        {
             let x = start + step * mid;
-            let (alpha, beta) = if x < low {
+            *offset = if x < low {
                 (low - start, -step)
             } else if x > high {
                 (start - high, step)
             } else {
                 (0.0, 0.0)
             };
-            qa += beta * beta;
-            qb += 2.0 * alpha * beta;
-            qc += alpha * alpha;
         }
+        let (qa, qb) = offsets.iter().fold((0.0, 0.0), |(qa, qb), &(alpha, beta)| {
+            (qa + beta * beta, qb + alpha * beta)
+        });
         let mut candidates = vec![t0, t1];
         if qa > 0.0 {
-            let vertex = -qb / (2.0 * qa);
+            let vertex = -qb / qa;
             if vertex > t0 && vertex < t1 {
                 candidates.push(vertex);
             }
         }
         for t in candidates {
-            best = best.min((qa * t * t + qb * t + qc).max(0.0));
+            let squared: f64 = offsets
+                .iter()
+                .map(|&(alpha, beta)| {
+                    let off = alpha + beta * t;
+                    off * off
+                })
+                .sum();
+            best = best.min(squared);
         }
     }
     best.sqrt()
