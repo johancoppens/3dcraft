@@ -412,6 +412,12 @@ fn trace(
         };
         let norm = gx.hypot(gy);
         if norm.is_nan() || norm <= 1e-9 {
+            if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+                (x, y) = q;
+                path.push(q);
+                h = STEP_MAX / 4.0;
+                continue;
+            }
             return Err(refused(format!(
                 "the condition for the rulings vanishes over a stretch {}: the curves lie in one plane there (or the rulings branch), so the developable is not unique; split the curves there",
                 pair.where_(x, y)
@@ -428,6 +434,12 @@ fn trace(
         // rounding: clamped to zero. A turn back is a component clearly
         // below it (the final rulings are checked to be monotone anyway).
         if tx < -1e-6 || ty < -1e-6 {
+            if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+                (x, y) = q;
+                path.push(q);
+                h = STEP_MAX / 4.0;
+                continue;
+            }
             return Err(refused(format!(
                 "the rulings would cross {}: the condition turns back there (an inflection of a curve, or a curve that winds about the other); split the curves there",
                 pair.where_(x, y)
@@ -475,6 +487,12 @@ fn trace(
         let Some((qx, qy)) = accepted else {
             h *= 0.5;
             if h < 1e-10 {
+                if let Some(q) = cross(pair, (x, y), heading(&path), STEP_MAX / 4.0) {
+                    (x, y) = q;
+                    path.push(q);
+                    h = STEP_MAX / 4.0;
+                    continue;
+                }
                 return Err(refused(format!(
                     "the rulings would cross {}: the condition cannot be followed forward there; split the curves there",
                     pair.where_(x, y)
@@ -502,6 +520,219 @@ fn trace(
         h = (h * 1.5).min(STEP_MAX);
     }
     Ok(path)
+}
+
+/// The direction the walk came from: the chord of its path over the last
+/// two longest steps (or all of it, when shorter), in the unit square.
+fn heading(path: &[(f64, f64)]) -> (f64, f64) {
+    let Some(&(lx, ly)) = path.last() else {
+        return (
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        );
+    };
+    let from = path
+        .iter()
+        .rev()
+        .find(|(px, py)| (lx - px).hypot(ly - py) >= 2.0 * STEP_MAX)
+        .or(path.first())
+        .copied()
+        .unwrap_or((lx, ly));
+    let (dx, dy) = (lx - from.0, ly - from.1);
+    let n = dx.hypot(dy);
+    if n > 0.0 && n.is_finite() {
+        (dx / n, dy / n)
+    } else {
+        (
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        )
+    }
+}
+
+/// The second derivatives of `f` at `(x, y)` by central differences of
+/// `f` itself (a step of [`HESSIAN_STEP`], the centre moved inside the
+/// square where it is nearer a side than that).
+fn hessian(pair: &Pair, x: f64, y: f64) -> Option<[f64; 3]> {
+    let h = HESSIAN_STEP;
+    let (x, y) = (x.clamp(h, 1.0 - h), y.clamp(h, 1.0 - h));
+    let f = |dx: f64, dy: f64| pair.f(x + dx, y + dy);
+    let c = f(0.0, 0.0)?;
+    let fxx = (f(h, 0.0)? - 2.0 * c + f(-h, 0.0)?) / (h * h);
+    let fyy = (f(0.0, h)? - 2.0 * c + f(0.0, -h)?) / (h * h);
+    let fxy = (f(h, h)? - f(h, -h)? - f(-h, h)? + f(-h, -h)?) / (4.0 * h * h);
+    [fxx, fxy, fyy]
+        .iter()
+        .all(|v| v.is_finite())
+        .then_some([fxx, fxy, fyy])
+}
+
+/// The step of the differences [`hessian`] takes, in the unit square:
+/// large enough that the rounding of `f` (about 1e-16) stays below 1e-8
+/// of the second derivatives, small against a step of the walk.
+const HESSIAN_STEP: f64 = 1e-4;
+
+/// A crossing of two branches of the zero set of `f` (a simple
+/// bifurcation point; Allgower & Georg, *Numerical Continuation Methods*,
+/// ch. 8), exact or split by rounding into two arcs that pass each other,
+/// within one step of the walk at `(x, y)`: the branch that goes on
+/// forward and nearest the direction the walk came from, `heading`, is
+/// taken past it. This is where the rails of an exact developable inflect
+/// (do Carmo §3-5: where a rail's curvature vanishes the condition
+/// vanishes to first order on the ruling there, and the developable's own
+/// rulings cross the zero set of another family of rulings). It is found
+/// from the quadratic model of `f` at `(x, y)`: a saddle (the Hessian
+/// indefinite) at `d* = −H⁻¹∇f`, its asymptotic directions the null
+/// directions of `H`. The walk steps to the saddle and on along the
+/// chosen direction by the larger of `step` and four times the distance
+/// at which the model's arcs pass each other, then back onto the zero set
+/// on the line square to that direction (the root nearest the line's
+/// middle). `None` when there is no such crossing (a fold of the zero
+/// set, where it truly turns back; a saddle more than a step away; no
+/// branch that goes on forward): the caller refuses as before. The
+/// rulings across are held to the tolerance by the fit like all others.
+fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Option<(f64, f64)> {
+    let value = pair.f(x, y)?;
+    let (gx, gy) = pair.gradient(x, y)?;
+    let [hxx, hxy, hyy] = hessian(pair, x, y)?;
+    let det = hxx * hyy - hxy * hxy;
+    if !(det < 0.0) {
+        return None;
+    }
+    // The saddle of the model and the value there.
+    let (dx, dy) = (-(hyy * gx - hxy * gy) / det, -(hxx * gy - hxy * gx) / det);
+    let saddle_value = value + 0.5 * (gx * dx + gy * dy);
+    let far = dx.hypot(dy);
+    // The eigenvalues and eigenvectors of H (symmetric, one of each sign).
+    let mean = 0.5 * (hxx + hyy);
+    let radius = (0.5 * (hxx - hyy)).hypot(hxy);
+    let (l1, l2) = (mean + radius, mean - radius);
+    let angle = 0.5 * (2.0 * hxy).atan2(hxx - hyy);
+    let (v1, v2) = ((angle.cos(), angle.sin()), (-angle.sin(), angle.cos()));
+    let (a, b) = (l2.abs().sqrt(), l1.abs().sqrt());
+    let norm = a.hypot(b);
+    if !(norm > 0.0 && norm.is_finite() && l1 > 0.0 && l2 < 0.0) {
+        return None;
+    }
+    // Where the model's arcs pass each other: |H| r² ~ |f at the saddle|.
+    let gap = (2.0 * saddle_value.abs() / l1.min(-l2)).sqrt();
+    if !(far <= STEP_MAX && gap <= STEP_MAX) {
+        return None;
+    }
+    let forward = |e: (f64, f64)| -> (f64, f64) { if e.0 + e.1 < 0.0 { (-e.0, -e.1) } else { e } };
+    let candidates = [1.0_f64, -1.0].map(|sign| {
+        forward((
+            (a * v1.0 + sign * b * v2.0) / norm,
+            (a * v1.1 + sign * b * v2.1) / norm,
+        ))
+    });
+    let (ex, ey) = candidates
+        .into_iter()
+        .filter(|&(ex, ey)| ex >= -1e-9 && ey >= -1e-9)
+        .max_by(|p, q| {
+            (p.0 * heading.0 + p.1 * heading.1).total_cmp(&(q.0 * heading.0 + q.1 * heading.1))
+        })?;
+    let reach = step.max(4.0 * gap).max(2.0 * far).min(STEP_MAX * 4.0);
+    let (cx, cy) = (x + dx, y + dy);
+    // Stopped at the sides x = 1 or y = 1.
+    let mut r = reach;
+    if ex > 0.0 {
+        r = r.min((1.0 - cx) / ex);
+    }
+    if ey > 0.0 {
+        r = r.min((1.0 - cy) / ey);
+    }
+    let (qx, qy) = (cx + r * ex, cy + r * ey);
+    // Back onto the zero set across the direction, the root nearest.
+    let (nx, ny) = (-ey, ex);
+    let half = 0.5 * reach;
+    let along = |l: f64| {
+        let (px, py) = (qx + l * nx, qy + l * ny);
+        if (0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py) {
+            pair.f(px, py)
+        } else {
+            None
+        }
+    };
+    let up = root_between(&along, 0.0, half);
+    let down = root_between(&|l| along(-l), 0.0, half).map(|l| -l);
+    let l = match (up, down) {
+        (Some(u), Some(d)) => {
+            if u <= -d {
+                u
+            } else {
+                d
+            }
+        }
+        (Some(u), None) => u,
+        (None, Some(d)) => d,
+        (None, None) => return None,
+    };
+    let (px, py) = ((qx + l * nx).clamp(0.0, 1.0), (qy + l * ny).clamp(0.0, 1.0));
+    // Forward of where the walk was, and on the branch it chose.
+    if !(px >= x && py >= y && (px - x).hypot(py - y) > 0.0) {
+        return None;
+    }
+    let on =
+        tangent_at(pair, px, py).is_none_or(|(ux, uy)| (ux * ex + uy * ey).abs() >= MAX_TURN.cos());
+    on.then_some((px, py))
+}
+
+/// The ruling between two found ones at `p` and `q` (unit square): the
+/// zero of `f` on the line through their middle square to their chord,
+/// the one nearest the middle, within half the chord's length of it (the
+/// corrector of a pseudo-arclength continuation: it stays on the branch
+/// the two lie on).
+fn across_chord(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> Option<(f64, f64)> {
+    let (mx, my) = (0.5 * (p.0 + q.0), 0.5 * (p.1 + q.1));
+    let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+    let length = dx.hypot(dy);
+    if !(length > 0.0 && length.is_finite()) {
+        return None;
+    }
+    let (nx, ny) = (-dy / length, dx / length);
+    let along = |l: f64| {
+        let (px, py) = (mx + l * nx, my + l * ny);
+        if (0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py) {
+            pair.f(px, py)
+        } else {
+            None
+        }
+    };
+    let half = 0.5 * length;
+    let up = root_between(&along, 0.0, half);
+    let down = root_between(&|l| along(-l), 0.0, half).map(|l| -l);
+    let l = match (up, down) {
+        (Some(u), Some(d)) => {
+            if u <= -d {
+                u
+            } else {
+                d
+            }
+        }
+        (Some(u), None) => u,
+        (None, Some(d)) => d,
+        (None, None) => return None,
+    };
+    Some((mx + l * nx, my + l * ny))
+}
+
+/// Whether the walk crossed between `p` and `q` (unit square): a saddle
+/// of the quadratic model of `f` at their middle lies between them, the
+/// place [`cross`] steps over.
+fn crossed(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> bool {
+    let (mx, my) = (0.5 * (p.0 + q.0), 0.5 * (p.1 + q.1));
+    let (Some((gx, gy)), Some([hxx, hxy, hyy])) = (pair.gradient(mx, my), hessian(pair, mx, my))
+    else {
+        return false;
+    };
+    let det = hxx * hyy - hxy * hxy;
+    if !(det < 0.0) {
+        return false;
+    }
+    let (dx, dy) = (-(hyy * gx - hxy * gy) / det, -(hxx * gy - hxy * gx) / det);
+    let length = (q.0 - p.0).hypot(q.1 - p.1);
+    dx.hypot(dy) <= length
 }
 
 /// A zero of `g` between `a` and `b` (both in `[0, 1]`), by sampling and
@@ -1057,7 +1288,8 @@ fn build(
     for strip in &strips {
         let mut rulings = strip_rulings(strip, 16);
         let mut fit = None;
-        for _round in 0..MAX_ROUNDS {
+        for round in 0..MAX_ROUNDS {
+            let mut dbg_count = 0usize;
             let points: Vec<(Vec3, Vec3)> = rulings
                 .iter()
                 .map(|&(s, t)| Some((pair.a.point(s)?, pair.b.point(t)?)))
@@ -1090,13 +1322,31 @@ fn build(
                     );
                     // Kept between the two rulings it is added between: a
                     // ruling outside them would cross them.
-                    onto_zero(pair, x, y)
+                    let between = |&(sm, tm): &(f64, f64)| {
+                        sm >= s0.min(*s1)
+                            && sm <= s0.max(*s1)
+                            && tm >= t0.min(*t1)
+                            && tm <= t0.max(*t1)
+                    };
+                    let ends = (
+                        (*s0 / pair.a.len(), *t0 / pair.b.len()),
+                        (*s1 / pair.a.len(), *t1 / pair.b.len()),
+                    );
+                    across_chord(pair, ends.0, ends.1)
                         .map(|(x, y)| (pair.sa(x), pair.tb(y)))
-                        .filter(|&(sm, tm)| {
-                            sm >= s0.min(*s1)
-                                && sm <= s0.max(*s1)
-                                && tm >= t0.min(*t1)
-                                && tm <= t0.max(*t1)
+                        .filter(between)
+                        .or_else(|| {
+                            onto_zero(pair, x, y)
+                                .map(|(x, y)| (pair.sa(x), pair.tb(y)))
+                                .filter(between)
+                        })
+                        .or_else(|| {
+                            // Between two rulings found on either side of a
+                            // crossing whose branches rounding has split
+                            // (`cross`), no ruling satisfies the condition
+                            // exactly: the chord's middle, held to the
+                            // tolerance by the fit like every other.
+                            crossed(pair, ends.0, ends.1).then(|| (pair.sa(x), pair.tb(y)))
                         })
                 };
                 let Some((sm, tm)) = true_ruling else {
@@ -1164,6 +1414,14 @@ fn build(
                     .map_or(0.0, |((a0, b0), (a1, b1))| {
                         a0.distance(*a1) + b0.distance(*b1)
                     });
+                if round + 2 >= MAX_ROUNDS && off > 0.5 * tol && span > tol && dbg_count < 12 {
+                    dbg_count += 1;
+                    eprintln!(
+                        "DEVDBG round {round} n {} k {k} s {s0}..{s1} t {t0}..{t1} off {off:e} span {span:e} on_a {on_a:?} on_b {on_b:?} piece {:?}",
+                        rulings.len(),
+                        strip.piece
+                    );
+                }
                 bad.push(off > 0.5 * tol && span > tol);
             }
             // Refined where off and beside it, so that neighbouring

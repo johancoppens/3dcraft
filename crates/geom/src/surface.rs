@@ -1369,8 +1369,14 @@ impl Surface {
             } else {
                 lambda *= 8.0;
             }
-            // A step this small is the rounding of the parameters.
-            if moved <= 4.0 * f64::EPSILON {
+            // A step this small is the rounding of the parameters; one
+            // that moves the point on the surface by no more than the
+            // rounding of the positions is the rounding of the distance
+            // (on a surface far from the origin against its size along a
+            // parameter, that is many steps of the parameter's rounding).
+            let (_, su, sv) = there.5;
+            let shift = (su * du + sv * dv).length();
+            if moved <= 4.0 * f64::EPSILON || shift <= rounding {
                 settled = true;
                 break;
             }

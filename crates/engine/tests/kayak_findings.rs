@@ -28,7 +28,10 @@ fn diagnose(file: &str) {
         let t = std::time::Instant::now();
         match s.execute(id, params) {
             Ok(v) => {
-                if id.starts_with("measure") || id.starts_with("assert") || id.starts_with("document.check") {
+                if id.starts_with("measure")
+                    || id.starts_with("assert")
+                    || id.starts_with("document.check")
+                {
                     println!("{file}: {id} -> {v}");
                 }
             }
