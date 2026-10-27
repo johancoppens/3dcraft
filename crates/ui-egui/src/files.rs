@@ -1196,8 +1196,12 @@ mod tests {
                 }
             }
             // A mesh ignores the pattern.
+            let all = ExportPlan {
+                all_bodies: true,
+                ..plan.clone()
+            };
             assert!(
-                !export_params(&mut session, "a.stl", &plan)
+                !export_params(&mut session, "a.stl", &all)
                     .unwrap()
                     .iter()
                     .any(|(k, _)| *k == key)

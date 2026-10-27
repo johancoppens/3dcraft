@@ -225,6 +225,40 @@ each other or into the base when bent. With a K-factor of ½ the part's volume i
 thickness; with another K-factor the part (whose bends keep the skins at the two radii) differs from that
 by angle × width × thickness² × (½ − K) per bend.
 
+**Holes in flanges.** The base's sketch is drawn in the plane of the flat pattern, so its other closed
+profiles (beside the base) are holes and cut-outs of the flange whose flat each lies in: a flange's flat
+starts the bend allowance beyond its edge. `cutouts` adds the closed profiles of other sketches in the same
+plane (any origin and axes) the same way, and each sketch switches with its own `when`, so a vent or a
+cable hole can be an option. The holes are cut in the flat pattern and in the folded part, and
+`holeToBend` measures each from the bends beside its own flat. A hole across a bend's strip or past the
+pattern's edge is refused. A hole cut later by another feature (a boolean) is not in the flat pattern
+(the bend table and the export say which feature took the part as `changedBy`): draw it in the part's
+sketch or in a `cutouts` sketch instead. A panel with a hole in its flange and an optional vent:
+
+```json
+[
+ ["variable.set", {"name": "vent", "expr": "1"}],
+ ["sketch.create", {"plane": "xy", "name": "PanelBase"}],
+ ["sketch.rect", {"sketch": "PanelBase", "from": [0, 0], "to": [100, 60]}],
+ ["sketch.circle", {"sketch": "PanelBase", "center": [109, 30], "radius": 3}],
+ ["sketch.create", {"plane": "xy", "name": "Vent"}],
+ ["sketch.circle", {"sketch": "Vent", "center": [50, 30], "radius": 8}],
+ ["feature.when", {"feature": "Vent", "expr": "vent"}],
+ ["feature.sheetMetal", {"sketch": "PanelBase", "name": "Panel", "thickness": "1.5 mm", "radius": "2 mm",
+   "kFactor": 0.42, "cutouts": ["Vent"],
+   "flanges": [{"edge": "e6", "length": "20 mm", "angle": "90 deg"}]}],
+ ["assert.add", {"name": "HoleClear", "measure": "holeToBend", "of": "Panel", "min": "1.5 mm"}],
+ ["file.export", {"path": "panel.svg", "sheetMetal": "Panel"}]
+]
+```
+
+The measures read a part as it was built, by its feature's name, also after a boolean took its body; with
+no `of` they measure every part that is switched on, and a part named while it is switched off is an error
+that says so. `file.export` with a list in `sheetMetal` puts several parts' flat patterns side by side on
+one sheet (`gap`, `width`, as a sheet of a set's faces). In the window, File › Export to .dxf or .svg
+offers "Flat pattern of" each part, "Crease pattern of" each fold, and with two parts or more "Flat
+patterns of every part" on one sheet; with a part's body selected the export is its flat pattern.
+
 ## Several bodies
 
 A document may hold any number of bodies; every feature that does not consume another body adds one.

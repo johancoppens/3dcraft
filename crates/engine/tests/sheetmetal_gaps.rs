@@ -396,7 +396,7 @@ fn a_glob_with_a_wildcard_feature_matches_every_feature() {
     let found = run(
         &mut s,
         "select.query",
-        json!({"kind": "face", "where": {"name": "?:face(0)"}}),
+        json!({"kind": "face", "where": {"name": "F?:face(0)"}}),
     );
     assert_eq!(found["count"], 2, "{found}");
     let check = assertion(
