@@ -130,7 +130,9 @@ fn a_piece_at_a_time_ends_as_all_at_once() {
         let phases: Vec<&str> = seen.iter().map(|(p, ..)| p.as_str()).collect();
         assert!(phases.contains(&"checking"), "{seen:?} at scale {s}");
         // The assertions one at a time, of 3 (those whose bodies the edit
-        // left as they were are not measured again).
+        // left as they were are not measured again); one over several
+        // pairs of bodies (`apart`, an overlap) a pair at a time, so its
+        // count stays for a call or more.
         let checking: Vec<(usize, usize)> = seen
             .iter()
             .filter(|(p, ..)| p == "checking")
@@ -139,7 +141,7 @@ fn a_piece_at_a_time_ends_as_all_at_once() {
         assert!(
             checking
                 .windows(2)
-                .all(|w| w[1].0 == w[0].0 + 1 && w[1].1 == 3)
+                .all(|w| (w[1].0 == w[0].0 || w[1].0 == w[0].0 + 1) && w[1].1 == 3)
                 && checking.iter().all(|&(done, of)| of == 3 && done < 3),
             "{seen:?}"
         );
@@ -432,7 +434,10 @@ fn an_edit_that_waits_reports_what_fails_on_a_host_that_works_a_piece_at_a_time(
 fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
     for s in [1e-2, 1.0, 1e3] {
         let mm = |v: f64| format!("{} mm", v * s);
-        let mut steps = vec![("file.new", json!({"units": "mm"}))];
+        let mut steps = vec![
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "y", "expr": mm(30.0)})),
+        ];
         let (mut from, mut to) = (Vec::new(), Vec::new());
         for i in 0..4 {
             let name = format!("A{i}");
@@ -446,7 +451,7 @@ fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
             let name = format!("B{j}");
             steps.push((
                 "feature.cylinder",
-                json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), mm(30.0), "0 mm"], "name": name}),
+                json!({"radius": mm(4.0), "height": mm(10.0), "position": [mm(20.0 * f64::from(j) + 5.0), "y", "0 mm"], "name": name}),
             ));
             to.push(name);
         }
@@ -466,6 +471,10 @@ fn a_measure_over_many_pairs_of_bodies_is_taken_a_pair_at_a_time() {
                 one.execute(id, params)
                     .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
             }
+            // assert.add measures its own: an edit that moves the
+            // cylinders leaves both to be measured again.
+            one.execute("variable.set", &json!({"name": "y", "expr": mm(32.0)}))
+                .unwrap();
         }
         let mut checking = 0;
         let mut calls = 0;
