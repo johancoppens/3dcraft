@@ -4239,6 +4239,43 @@ mod tests {
         );
     }
 
+    /// The sea kayak's tips (2026-10-27): a ray 2600 mm long through a
+    /// flat leaf of a ruled spline face read as 1.5e-5 mm clear of it, so
+    /// the face's crossing was not counted and points outside the deck's
+    /// cylinder classified inside. A segment through a flat (or nearly
+    /// flat) box is at distance zero from it, at every scale.
+    #[test]
+    fn a_segment_through_a_flat_box_far_from_its_start_meets_it() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for scale in [1e-3, 1.0, 1e6] {
+            let mut worst = 0.0_f64;
+            for thick in [0.0, 1e-9] {
+                for _ in 0..500 {
+                    let mut at = |lo: f64, hi: f64| scale * (lo + (hi - lo) * next());
+                    let z = at(-500.0, 500.0);
+                    let bbox = Bbox3::from_points([
+                        Vec3::new(-1000.0 * scale, -1000.0 * scale, z),
+                        Vec3::new(1000.0 * scale, 1000.0 * scale, z + thick * scale),
+                    ]);
+                    let a = Vec3::new(at(-900.0, 900.0), at(-900.0, 900.0), z - at(100.0, 2600.0));
+                    let b = Vec3::new(at(-900.0, 900.0), at(-900.0, 900.0), z + at(100.0, 2600.0));
+                    worst = worst.max(segment_box_distance(&bbox, a, b));
+                    // Either way round.
+                    worst = worst.max(segment_box_distance(&bbox, b, a));
+                }
+            }
+            // Rounding of the coordinates only (before: up to 4e-8 of
+            // the scale, for these sizes).
+            assert!(worst <= 1e-11 * scale, "{worst} at scale {scale}");
+        }
+    }
+
     #[test]
     fn a_segment_grazing_the_dome_is_bounded_below_at_once() {
         let surface = dome();

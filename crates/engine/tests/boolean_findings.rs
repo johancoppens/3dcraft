@@ -497,3 +497,141 @@ fn the_rover_drill_tip_on_a_tilted_drill() {
 fn the_pier_stair_tread_on_its_stringer() {
     united_and_identities("pier_stair_tread.steps.json", "Stringer0", "Tr0_0");
 }
+
+/// The winding number of a closed triangle mesh about `p` (the sum of
+/// the solid angles of its triangles over 4π): an oracle for whether `p`
+/// is inside that shares nothing with the kernel's ray casting.
+fn winding(mesh: &craft3d_tess::Mesh, p: Vec3) -> f64 {
+    let mut sum = 0.0;
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize] - p);
+        let (la, lb, lc) = (a.length(), b.length(), c.length());
+        let num = a.dot(b.cross(c));
+        let den = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
+        sum += 2.0 * num.atan2(den);
+    }
+    sum / (4.0 * std::f64::consts::PI)
+}
+
+/// The sea kayak's tips (2026-10-27): `TipHalfD`, the tips' stock cut by
+/// the deck's cylinder (each operand an extrusion of a formula curve, a
+/// ruled spline face beside flat ends and sides, 3 m thick), passed every
+/// rule of the boolean but the deep check called it wrong: the point
+/// (-1864.42, -1469.54, -1233.82) outside the target, inside the tool and
+/// inside the result. The result was right (a mesh's winding number
+/// agrees with it everywhere); the ray casting was not: the ray from that
+/// point crosses the deck's spline face 2432 mm on, and the whole ray was
+/// proven clear of it at once, because the distance from the ray to a
+/// flat leaf of the face read as 1.5e-5 mm (the rounding of a quadratic
+/// expanded about the ray's start 2600 mm off) instead of zero. Five per
+/// cent of the points in the box of the deck's cylinder were classified
+/// wrongly, so a boolean that classified a region by such a ray would
+/// have been wrong too. Held to the deep check, the identity of
+/// intersection and difference, seeded points against the ray casting
+/// and against the meshes' winding numbers, at three scales.
+#[test]
+fn the_sea_kayak_tips_against_the_deck() {
+    use craft3d_kernel::boolean::{Place, VerifyOptions, classify_points, verify};
+    let mut s = steps("sea_kayak_tips.steps.json");
+    for name in ["TipHalf1", "TipHalf2", "TipHalf3"] {
+        assert_eq!(status(&mut s, name)["status"], "ok", "{name}");
+    }
+    assert_ok(&mut s, "TipHalfD");
+    let (bodies, tol) = bodies(&mut s, "sea_kayak_tips.3dcraft");
+    let (target, tool) = (body(&bodies, "TipHalf3"), body(&bodies, "CylD"));
+    let found = Vec3::new(
+        -1864.4193771268945,
+        -1469.5401187305245,
+        -1233.8242606133363,
+    );
+    assert_eq!(
+        classify_points(tool, &[found], &tol).unwrap(),
+        vec![Place::Outside]
+    );
+    // (At a million times the size the 5 m hull is 5000 km against a
+    // tolerance of 1e-6: no geometry is held to 1e-15 of its size.)
+    for scale in [1e-3, 1.0, 10.0] {
+        let place = |b: &Body| b.transformed(&Transform::scaling(scale)).unwrap();
+        let (a, b) = (place(target), place(tool));
+        let common = boolean(&a, &b, BooleanOp::Intersect, &tol).unwrap().body;
+        let rest = boolean(&a, &b, BooleanOp::Subtract, &tol).unwrap().body;
+        let slack = slack(&tol, &[&a, &b]);
+        let (va, vc, vr) = (volume(&a), volume(&common), volume(&rest));
+        assert!(vc > 0.0 && vr > 0.0, "{scale}: {vc} {vr}");
+        assert!(
+            (vc + vr - va).abs() <= slack,
+            "{scale}: {vc} + {vr} != {va} (slack {slack})"
+        );
+        let options = VerifyOptions {
+            volumes: true,
+            points: 2000,
+        };
+        for (op, result) in [
+            (BooleanOp::Intersect, &common),
+            (BooleanOp::Subtract, &rest),
+        ] {
+            let checked = verify(&a, &b, op, result, &tol, &options).unwrap();
+            assert!(
+                checked.is_ok(),
+                "{scale} {op:?}: {:?}",
+                checked
+                    .violations
+                    .iter()
+                    .take(4)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+            assert!(checked.points >= 1500, "{scale}: {}", checked.points);
+        }
+        // The ray casting against the meshes' winding numbers, at points
+        // seeded in the box of both.
+        let params = craft3d_tess::TessParams {
+            chordal_tolerance: 0.05 * scale,
+            ..craft3d_tess::TessParams::default()
+        };
+        let mesh = |x: &Body| craft3d_tess::tessellate_body(x, &params).unwrap();
+        let (lo, hi) = {
+            let (ba, bb) = (a.bbox().unwrap(), b.bbox().unwrap());
+            let ((a0, a1), (b0, b1)) = (ba.corners().unwrap(), bb.corners().unwrap());
+            (a0.min(b0), a1.max(b1))
+        };
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let points: Vec<Vec3> = (0..400)
+            .map(|_| {
+                Vec3::new(
+                    lo.x + (hi.x - lo.x) * next(),
+                    lo.y + (hi.y - lo.y) * next(),
+                    lo.z + (hi.z - lo.z) * next(),
+                )
+            })
+            .collect();
+        let mut compared = 0;
+        for x in [&a, &b, &common, &rest] {
+            let m = mesh(x);
+            let rays = classify_points(x, &points, &tol).unwrap();
+            for (&p, ray) in points.iter().zip(rays) {
+                let w = winding(&m, p);
+                // (Within the mesh's chord of the surface the mesh and the
+                // body may disagree.)
+                if (w - w.round()).abs() > 0.01 {
+                    continue;
+                }
+                let by_mesh = w > 0.5;
+                match ray {
+                    Place::Inside | Place::Outside => {
+                        compared += 1;
+                        assert_eq!(ray == Place::Inside, by_mesh, "{scale}: {p:?} {w}");
+                    }
+                    Place::OnBoundary | Place::Unknown => {}
+                }
+            }
+        }
+        assert!(compared >= 1500, "{scale}: {compared}");
+    }
+}
