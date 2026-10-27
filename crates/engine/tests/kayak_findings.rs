@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// Runs the steps of `file`, printing every step that fails and the
-/// status of every feature after.
-fn diagnose(file: &str) {
+/// status of every feature after; the session and what failed.
+fn diagnose(file: &str) -> (Session, Vec<String>) {
     let text = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/kayak_findings")
@@ -24,6 +24,7 @@ fn diagnose(file: &str) {
     let steps: Vec<(String, Value)> = serde_json::from_str(&text).unwrap();
     let mut s = Session::new(Workspace::unrestricted());
     s.execute("file.new", &json!({"units": "mm"})).unwrap();
+    let mut failed = Vec::new();
     for (id, params) in &steps {
         let t = std::time::Instant::now();
         match s.execute(id, params) {
@@ -34,8 +35,17 @@ fn diagnose(file: &str) {
                 {
                     println!("{file}: {id} -> {v}");
                 }
+                if id == "document.check" && v["ok"] != true {
+                    failed.push(format!("{id}: {v}"));
+                }
+                if id == "assert.add" && v["status"] == "error" {
+                    failed.push(format!("{id}: {v}"));
+                }
             }
-            Err(e) => println!("{file}: ERR {id} {params}: {e}"),
+            Err(e) => {
+                println!("{file}: ERR {id} {params}: {e}");
+                failed.push(format!("{id}: {e}"));
+            }
         }
         let dt = t.elapsed().as_secs_f64();
         if dt > 2.0 {
@@ -46,8 +56,10 @@ fn diagnose(file: &str) {
     for f in document["features"].as_array().unwrap() {
         if f["status"] != "ok" {
             println!("{file}: feature {} {}", f["name"], f);
+            failed.push(format!("feature {}: {}", f["name"], f["error"]));
         }
     }
+    (s, failed)
 }
 
 #[test]

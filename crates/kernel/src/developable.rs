@@ -596,6 +596,20 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     let (gx, gy) = pair.gradient(x, y)?;
     let [hxx, hxy, hyy] = hessian(pair, x, y)?;
     let det = hxx * hyy - hxy * hxy;
+    eprintln!(
+        "DEVDBG cross at ({x}, {y}) f {value:e} g ({gx:e}, {gy:e}) H ({hxx:e}, {hxy:e}, {hyy:e}) heading {heading:?}"
+    );
+    for k in -4i32..=4 {
+        for j in -4i32..=4 {
+            let (px, py) = (x + f64::from(k) * 2e-3, y + f64::from(j) * 2e-3);
+            eprint!(
+                "{} ",
+                pair.f(px, py)
+                    .map_or("    x    ".to_string(), |v| format!("{v:+.2e}"))
+            );
+        }
+        eprintln!();
+    }
     if !(det < 0.0) {
         return None;
     }
@@ -616,6 +630,9 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     }
     // Where the model's arcs pass each other: |H| r² ~ |f at the saddle|.
     let gap = (2.0 * saddle_value.abs() / l1.min(-l2)).sqrt();
+    eprintln!(
+        "DEVDBG cross saddle ({dx:e}, {dy:e}) value {saddle_value:e} gap {gap:e} l {l1:e} {l2:e}"
+    );
     if !(far <= STEP_MAX && gap <= STEP_MAX) {
         return None;
     }
@@ -675,6 +692,7 @@ fn cross(pair: &Pair, (x, y): (f64, f64), heading: (f64, f64), step: f64) -> Opt
     }
     let on =
         tangent_at(pair, px, py).is_none_or(|(ux, uy)| (ux * ex + uy * ey).abs() >= MAX_TURN.cos());
+    eprintln!("DEVDBG cross landed ({px}, {py}) on {on} dir ({ex}, {ey})");
     on.then_some((px, py))
 }
 
@@ -901,6 +919,30 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         return planar(a, b, frame, tolerance, tips);
     }
     let pair = Pair { a, b };
+    {
+        let speed = |r: &Rail, s: f64| r.at(s).map_or(0.0, |(_, d)| d.length());
+        eprintln!(
+            "DEVDBG connect a {a0:?}..{a1:?} b {b0:?}..{b1:?} gaps {:e} {:e} lengths {length_a} {length_b} speeds a {:e} {:e} b {:e} {:e} pieces {} {}",
+            a0.distance(b0),
+            a1.distance(b1),
+            speed(a, 0.0),
+            speed(a, a.len()),
+            speed(b, 0.0),
+            speed(b, b.len()),
+            a.pieces.len(),
+            b.pieces.len()
+        );
+        for k in 0..=20 {
+            let s = 1.0 - 0.5f64.powi(k);
+            eprintln!(
+                "DEVDBG near end s {s} a {:?} speed {:e} b {:?} speed {:e}",
+                a.point(s * a.len()),
+                speed(a, s * a.len()),
+                b.point(s * b.len()),
+                speed(b, s * b.len())
+            );
+        }
+    }
 
     // The start: a fan from an end to the first ruling that satisfies the
     // condition, unless the corner's ruling does.
