@@ -46,8 +46,8 @@ fn plane_over_round(k: f64) -> (Body, Body, usize, usize) {
         .iter()
         .position(|f| match &f.surface {
             Surface::Plane(p) => {
-                let o = p.frame.origin();
-                p.frame.z().z.abs() > 0.5 && (o.z - 101.0 * k).abs() < 1e-9 * k
+                let o = p.frame().origin();
+                p.frame().z().z.abs() > 0.5 && (o.z - 101.0 * k).abs() < 1e-9 * k
             }
             _ => false,
         })
