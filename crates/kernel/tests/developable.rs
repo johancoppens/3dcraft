@@ -944,6 +944,30 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
         .unwrap_or_else(|e| panic!("plate at scale {k}: {e}"));
         let took = started.elapsed();
         assert_eq!(craft3d_topo::check(&plated.body, &tol(k)), []);
+        // Every vertex of the plate on a skin, at ±t/2 from the exact cone
+        // (signed distance `ρ cos α − z sin α` for a point near it), and
+        // every point of an edge that runs along a skin too: within the
+        // tolerance of the exact offset, not only of the fitted skins.
+        let off = |p: Vec3| p.x.hypot(p.y) * c - p.z * s;
+        let (half, limit) = (0.5 * t, tol(k).linear);
+        let mut worst: f64 = 0.0;
+        for edge in &plated.body.edges {
+            let (t0, t1) = edge.range;
+            let ends = [edge.curve.eval(t0), edge.curve.eval(t1)];
+            for p in ends {
+                worst = worst.max((off(p).abs() - half).abs());
+            }
+            if off(ends[0]) * off(ends[1]) > 0.0 {
+                for i in 1..32 {
+                    let p = edge.curve.eval(t0 + (t1 - t0) * f64::from(i) / 32.0);
+                    worst = worst.max((off(p).abs() - half).abs());
+                }
+            }
+        }
+        assert!(
+            worst <= limit,
+            "{k}: a skin's point {worst:e} off the exact offset"
+        );
         let area = 0.5
             * s
             * (2.0 * r0 * sweep * (w0 + w1) / 2.0 + sweep * (w0 * w0 + w0 * w1 + w1 * w1) / 3.0);

@@ -81,6 +81,9 @@ pub enum OffsetError {
     Spent,
     /// Input that is no surface or no distance.
     Invalid(GeomError),
+    /// The fit did not come within the limit in the evaluations of the
+    /// exact offset one fit may make ([`MAX_EVALUATIONS`]).
+    OverBudget,
 }
 
 impl From<GeomError> for OffsetError {
@@ -167,6 +170,43 @@ pub struct Held {
     pub reach: f64,
 }
 
+impl Held {
+    /// How far the point of `surface` at `(u, v)` is from the box, by the
+    /// measure the fit is held by: the length along the surface of the
+    /// straight path in parameters from the box's nearest point (each
+    /// parameter clamped to it), nothing inside the box, infinite where
+    /// it is not a number. A caller checks with it that what it made lies
+    /// where the fit was held.
+    pub fn length(&self, surface: &NurbsSurface, u: f64, v: f64) -> f64 {
+        let ((a0, a1), (b0, b1)) = self.around;
+        if !(u.is_finite() && v.is_finite()) {
+            return f64::INFINITY;
+        }
+        let (cu, cv) = (u.clamp(a0, a1), v.clamp(b0, b1));
+        let (du, dv) = (u - cu, v - cv);
+        if du == 0.0 && dv == 0.0 {
+            return 0.0;
+        }
+        const STEPS: usize = 4;
+        let mut length = 0.0;
+        for k in 0..STEPS {
+            for (x, w) in GAUSS3 {
+                let t = (k as f64 + x) / STEPS as f64;
+                let (_, su, sv) = surface.derivatives(cu + du * t, cv + dv * t);
+                length += w * (su * du + sv * dv).length() / STEPS as f64;
+            }
+            if length > self.reach {
+                break;
+            }
+        }
+        if length.is_nan() {
+            f64::INFINITY
+        } else {
+            length
+        }
+    }
+}
+
 /// [`offset_along`] held to `limit` only where `held` says (all of `over`
 /// for `None`). Past the held region the result interpolates the exact
 /// offset at its samples and is not measured: a caller uses it only within
@@ -207,12 +247,30 @@ pub fn offset_held(
     let past = margins(&nurbs, over, limit);
     if past != over
         && regular_over(surface, distance, past).is_ok()
-        && let Ok(fitted) = fit(surface, &nurbs, distance, limit, past, turn, held)
+        && let Ok(fitted) = fit(
+            surface,
+            &nurbs,
+            distance,
+            limit,
+            past,
+            turn,
+            held,
+            MAX_EVALUATIONS,
+        )
         && let Ok(cut) = fitted.restricted(over.0, over.1)
     {
         return Ok(cut);
     }
-    fit(surface, &nurbs, distance, limit, over, turn, held)
+    fit(
+        surface,
+        &nurbs,
+        distance,
+        limit,
+        over,
+        turn,
+        held,
+        MAX_EVALUATIONS,
+    )
 }
 
 /// `over` with a step of the fit's first samples added past each end in a
@@ -1229,6 +1287,13 @@ fn cross(a: &B3, b: &B3) -> B3 {
 /// needs 27 (repro 14).
 const MAX_PER_DIRECTION: usize = crate::refine::MAX_INTERPOLATED_BANDED;
 const MAX_SAMPLES: usize = 1 << 18;
+
+/// Most evaluations of the exact offset one fit makes, its samples and
+/// the points it is held at together: 2²⁵, about ten seconds in release.
+/// With [`MAX_SAMPLES`] a fit of many passes could otherwise make about
+/// 10⁸ (sixteen points per sample at the quarters, two dozen passes),
+/// minutes; the sea kayak's longest panel makes about 10⁷.
+pub const MAX_EVALUATIONS: u64 = 1 << 25;
 /// Passes of the refinement.
 const PASSES: usize = 24;
 /// Steps each knot span of the surface is cut into to begin with: enough
@@ -1630,27 +1695,7 @@ fn held_lattice(nurbs: &NurbsSurface, held: &Held, us: &[f64], vs: &[f64]) -> Ve
         })
         .collect();
     // Past a corner of the box: the straight path from that corner.
-    let diagonal = |u: f64, v: f64| -> f64 {
-        let (cu, cv) = (u.clamp(a0, a1), v.clamp(b0, b1));
-        let (du, dv) = (u - cu, v - cv);
-        const STEPS: usize = 4;
-        let mut length = 0.0;
-        for k in 0..STEPS {
-            for (x, w) in GAUSS3 {
-                let t = (k as f64 + x) / STEPS as f64;
-                let (_, su, sv) = nurbs.derivatives(cu + du * t, cv + dv * t);
-                length += w * (su * du + sv * dv).length() / STEPS as f64;
-            }
-            if length > reach {
-                break;
-            }
-        }
-        if length.is_nan() {
-            f64::INFINITY
-        } else {
-            length
-        }
-    };
+    let diagonal = |u: f64, v: f64| -> f64 { held.length(nurbs, u, v) };
     us.iter()
         .enumerate()
         .map(|(i, &u)| {
@@ -1682,6 +1727,7 @@ fn held_lattice(nurbs: &NurbsSurface, held: &Held, us: &[f64], vs: &[f64]) -> Ve
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fit(
     surface: &Surface,
     nurbs: &NurbsSurface,
@@ -1690,6 +1736,7 @@ fn fit(
     over: Domain,
     turn: &dyn Fn(f64, f64) -> Vec3,
     held: Option<&Held>,
+    budget: u64,
 ) -> Result<NurbsSurface, OffsetError> {
     let (du, dv) = nurbs.domain();
     let (degree_u, degree_v) = nurbs.degrees();
@@ -1723,7 +1770,12 @@ fn fit(
     {
         return Err(OffsetError::NoFit);
     }
+    let evaluations = std::cell::Cell::new(0_u64);
     let point = |u: f64, v: f64| {
+        evaluations.set(evaluations.get().saturating_add(1));
+        if evaluations.get() > budget {
+            return Err(OffsetError::OverBudget);
+        }
         let (at, du, dv) = surface.derivatives(u, v);
         du.cross(dv)
             .normalized()
@@ -1866,6 +1918,43 @@ fn fit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fit that would need more evaluations of the exact offset than
+    /// its budget stops and says so, rather than going on.
+    #[test]
+    fn a_fit_past_its_budget_is_refused_as_over_budget() {
+        let ctrl: Vec<Vec3> = (0..4)
+            .flat_map(|i| {
+                (0..4).map(move |j| {
+                    let (x, y) = (f64::from(i) / 3.0, f64::from(j) / 3.0);
+                    Vec3::new(x, y, (3.0 * x).sin() * (2.0 * y).cos())
+                })
+            })
+            .collect();
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let nurbs =
+            NurbsSurface::new(3, 3, knots.clone(), knots, 4, 4, ctrl, vec![1.0; 16]).unwrap();
+        let surface = Surface::Nurbs(nurbs.clone());
+        let over = nurbs.domain();
+        let zero = |_: f64, _: f64| Vec3::ZERO;
+        assert_eq!(
+            fit(&surface, &nurbs, 0.01, 1e-9, over, &zero, None, 50),
+            Err(OffsetError::OverBudget)
+        );
+        assert!(
+            fit(
+                &surface,
+                &nurbs,
+                0.01,
+                1e-6,
+                over,
+                &zero,
+                None,
+                MAX_EVALUATIONS
+            )
+            .is_ok()
+        );
+    }
 
     /// A simple knot of a cubic is a smooth break (its offset is once
     /// differentiable there), a double one is not; the pieces through

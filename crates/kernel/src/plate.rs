@@ -123,7 +123,8 @@ const SURFACE_REACH: f64 = 3.0;
 /// furthest reach of its faces (a corner further out is refused), and a
 /// length along a straight path in parameters may be longer than the
 /// distance on the surface; the twofold margin is for that, and for the
-/// steps of the solvers on the way to a corner.
+/// steps of the solvers on the way to a corner. A margin, made a
+/// guarantee by checking every vertex and edge of the skins ([`held_by`]).
 const HELD_REACH: f64 = 2.0;
 
 /// Where the material of a plate lies against its faces, along their
@@ -256,6 +257,9 @@ struct Layered<'a> {
     /// The skins at `lo` and at `hi`.
     skins: [Surface; 2],
     levels: [f64; 2],
+    /// How far from the face, as a length along its surface, its skins
+    /// are held to the tolerance ([`Layered::new`]); infinite for a probe.
+    held: f64,
 }
 
 impl<'a> Layered<'a> {
@@ -285,6 +289,7 @@ impl<'a> Layered<'a> {
             skins: [skin(levels.0)?, skin(levels.1)?],
             reference,
             levels: [levels.0, levels.1],
+            held,
         })
     }
 
@@ -298,6 +303,7 @@ impl<'a> Layered<'a> {
             skins: [face.surface.clone(), face.surface.clone()],
             reference: face.surface.clone(),
             levels: [levels.0, levels.1],
+            held: f64::INFINITY,
         }
     }
 
@@ -973,7 +979,9 @@ pub fn plate(
             });
         }
     }
-    build(body, &chosen, thickness, side, joints, tolerance)
+    build(
+        body, &chosen, thickness, side, joints, HELD_REACH, tolerance,
+    )
 }
 
 /// How the faces use an edge.
@@ -992,6 +1000,7 @@ fn build(
     thickness: f64,
     side: Side,
     joints: &BTreeMap<EdgeId, Joint<'_>>,
+    held_reach: f64,
     tolerance: &Tolerance,
 ) -> Result<Plate, KernelError> {
     let tol = tolerance.linear;
@@ -1118,7 +1127,7 @@ fn build(
         .flat_map(|(a, b)| [*a, *b])
         .fold(0.0_f64, f64::max);
     let surface_reach = SURFACE_REACH * furthest + thickness;
-    let held = HELD_REACH * furthest + 2.0 * thickness;
+    let held = held_reach * (furthest + thickness);
     for (made, id) in layered.iter_mut().zip(chosen) {
         let reach = reach_past_vertices(body, made.face, surface_reach, tolerance.linear);
         *made = Layered::new(made.face, levels, reach, held, tolerance)
@@ -1141,7 +1150,7 @@ fn build(
                     surface_reach + n.thickness,
                     tolerance.linear,
                 ),
-                held + 2.0 * n.thickness,
+                held + held_reach * n.thickness,
                 tolerance,
             )
             .map_err(|why| {
@@ -1430,6 +1439,7 @@ fn build(
             } else {
                 !l.face.reversed
             };
+            held_by(&out, &loops, l, level, *id, tolerance)?;
             faces_out.push(out.add_face(skin, reversed, loops));
             made.push(if level == 1 {
                 Made::Front(*id)
@@ -1497,6 +1507,85 @@ fn build(
         body: out,
         faces: made,
     })
+}
+
+/// Samples along each edge of a skin checked to lie where the skin is
+/// held to the tolerance ([`held_by`]), its ends included.
+const HELD_SAMPLES: usize = 16;
+
+/// That every vertex and every sample of the edges of the skin at
+/// `level` of `face` (its loops `loops` in `out`) lies within the region
+/// its offset was held to the tolerance in ([`Layered::new`],
+/// `craft3d_geom::offset::Held`): the held region is chosen with a
+/// margin over the furthest corner, and this makes it a guarantee. Each
+/// point is put on the face's surface continued (the skin keeps its
+/// parameters) and measured from its domain as the fit was. A skin that
+/// is the face's surface itself, or an analytic offset, is exact
+/// everywhere and not checked.
+fn held_by(
+    out: &Body,
+    loops: &[craft3d_topo::LoopId],
+    face: &Layered<'_>,
+    level: usize,
+    id: FaceId,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    let at_level = face.levels.get(level).copied().unwrap_or(0.0);
+    if at_level == 0.0 || !face.held.is_finite() {
+        return Ok(());
+    }
+    let Some((nurbs, _)) =
+        crate::offset_face::reached_each(&face.face.surface, [0.0; 4], tolerance)
+    else {
+        // An analytic surface: its offsets are exact.
+        return Ok(());
+    };
+    let held = craft3d_geom::offset::Held {
+        around: nurbs.domain(),
+        reach: face.held,
+    };
+    for lp in loops {
+        let Some(l) = out.loop_(*lp) else { continue };
+        for c in &l.coedges {
+            let Some(edge) = out.edge(c.edge) else {
+                continue;
+            };
+            let (t0, t1) = edge.range;
+            for k in 0..=HELD_SAMPLES {
+                let t = t0 + (t1 - t0) * k as f64 / HELD_SAMPLES as f64;
+                let p = edge.curve.eval(t);
+                let (u, v) = face.reference.project(p).map_err(|_| {
+                    refuse(
+                        None,
+                        format!(
+                            "a point of the skin of face {} at {} cannot be put on its surface",
+                            id.0,
+                            at(p)
+                        ),
+                    )
+                })?;
+                let length = held.length(&nurbs, u, v);
+                if !(length <= held.reach) {
+                    let which = if k == 0 || k == HELD_SAMPLES {
+                        "the plate's corner"
+                    } else {
+                        "a point of the plate's edge"
+                    };
+                    return Err(refuse(
+                        None,
+                        format!(
+                            "{which} at {} lies {} along the surface past the border of face {}, further than its skin is held to the tolerance ({}): the joints reach further past the face than the plate allows for",
+                            at(p),
+                            short(length),
+                            id.0,
+                            short(held.reach)
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The faces must hang together across the edges they share.
@@ -2234,6 +2323,101 @@ fn corners(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A curved panel `k` (100 by 60, a parabola 20 high along x) with a
+    /// bevel of 30 degrees on its side at x = 100: the bevel's corners on
+    /// the front skin lie past that side by `t tan 30°`. Held only on the
+    /// face itself (a reach of nothing) those corners lie where the skin
+    /// was not held to the tolerance, and the plate is refused, naming the
+    /// corner; held as plates are, it is built. Three scales.
+    #[test]
+    fn a_corner_past_where_the_skin_is_held_is_refused() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let rows = [0.0, 60.0];
+            let profile = [(0.0, 0.0), (50.0, 40.0), (100.0, 0.0)];
+            let mut ctrl = Vec::new();
+            for (x, z) in profile {
+                for y in rows {
+                    ctrl.push(Vec3::new(x, y, z) * k);
+                }
+            }
+            let surface = Surface::Nurbs(
+                NurbsSurface::new(
+                    2,
+                    1,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    3,
+                    2,
+                    ctrl,
+                    vec![1.0; 6],
+                )
+                .unwrap(),
+            );
+            let row = |y: f64| {
+                Curve3::Nurbs(
+                    NurbsCurve::polynomial(
+                        2,
+                        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                        profile
+                            .iter()
+                            .map(|(x, z)| Vec3::new(*x, y, *z) * k)
+                            .collect(),
+                    )
+                    .unwrap(),
+                )
+            };
+            let mut body = Body::new(BodyKind::Sheet);
+            let corners = [(0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0)]
+                .map(|(x, y)| body.add_vertex(Vec3::new(x, y, 0.0) * k));
+            let line = |body: &mut Body, a: usize, b: usize| {
+                let (p, q) = (
+                    body.vertex(corners[a]).unwrap().point,
+                    body.vertex(corners[b]).unwrap().point,
+                );
+                body.add_edge(
+                    Curve3::Line(Line::through(p, q).unwrap()),
+                    (0.0, p.distance(q)),
+                    corners[a],
+                    corners[b],
+                )
+            };
+            let bottom = body.add_edge(row(0.0), (0.0, 1.0), corners[0], corners[1]);
+            let side = line(&mut body, 1, 2);
+            let top = body.add_edge(row(60.0), (0.0, 1.0), corners[3], corners[2]);
+            let start = line(&mut body, 3, 0);
+            let forward = |edge| Coedge {
+                edge,
+                reversed: false,
+            };
+            let lp = body.add_loop(vec![
+                forward(bottom),
+                forward(side),
+                Coedge {
+                    edge: top,
+                    reversed: true,
+                },
+                forward(start),
+            ]);
+            let face = body.add_face(surface, false, vec![lp]);
+            body.add_shell(vec![face]);
+            assert_eq!(check(&body, &tolerance), [], "{k}");
+            let mut joints = BTreeMap::new();
+            joints.insert(side, Joint::Bevel(30f64.to_radians()));
+            let t = 4.0 * k;
+            let refused = build(&body, &[face], t, Side::Out, &joints, 0.0, &tolerance)
+                .err()
+                .unwrap_or_else(|| panic!("{k}: built with the skin held on the face alone"));
+            let text = refused.to_string();
+            assert!(
+                text.contains("the plate's corner") && text.contains("held to the tolerance"),
+                "{k}: {text}"
+            );
+            plate(&body, &[face], t, Side::Out, &joints, &tolerance)
+                .unwrap_or_else(|e| panic!("{k}: {e}"));
+        }
+    }
 
     #[test]
     fn a_circle_through_three_points_runs_their_way() {

@@ -237,6 +237,9 @@ pub(crate) fn offset_surface_each(
                     NoOffset::Refused(why)
                 }
                 OffsetError::Spent => NoOffset::Refused(SPENT),
+                OffsetError::OverBudget => NoOffset::Refused(
+                    "the offset of the freeform face did not converge within the budget of one fit (its evaluations of the exact offset)",
+                ),
                 OffsetError::NoFit | OffsetError::Invalid(_) => NoOffset::NoFit,
             })
         }
