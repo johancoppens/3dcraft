@@ -74,9 +74,12 @@ pub struct CurveRef {
 }
 
 /// Which instance of its seed a curve is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum CurveIndex {
     /// The seed entity itself (instance 0, or 0,0 in a grid): `e7`.
+    #[default]
     Seed,
     /// Instance `k` of a pattern in one direction: `e7[3]`.
     At(u32),

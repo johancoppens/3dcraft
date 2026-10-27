@@ -1,7 +1,7 @@
 //! A fold: a crease pattern on the flat sheet a sketch bounds, folded
 //! rigidly by its fold angles (docs/design/origami.md).
 
-use crate::{EntityId, Expr, FeatureId};
+use crate::{CurveIndex, CurveRef, EntityId, Expr, FeatureId};
 use serde::{Deserialize, Serialize};
 
 /// The most creases one fold may have.
@@ -48,6 +48,29 @@ pub struct Crease {
     /// way is the kind's. Every piece of the line folds by it. `None`:
     /// each piece's angle is solved from the others. A cut has none.
     pub angle: Option<Expr>,
+    /// Which copy of the line the sketch's patterns made: the line itself
+    /// (`Seed`, `e7`), one instance (`e7[2]`, `e7[1,3]`), or the line and
+    /// every instance of it (`All`, `e7[*]`). A crease that names one
+    /// instance wins over `e7[*]` for that instance.
+    #[serde(default)]
+    pub index: CurveIndex,
+    /// With `All`: the kind alternates along the instances, the given one
+    /// on the line itself and every instance whose indices add up to an
+    /// even number, the other one (mountain for valley) on the rest. A cut
+    /// does not alternate.
+    #[serde(default)]
+    pub alternate: bool,
+}
+
+impl Crease {
+    /// The line as the sketch names it: `e7`, `e7[2]`, `e7[*]`.
+    pub fn name(&self) -> String {
+        CurveRef {
+            entity: self.line.0,
+            index: self.index,
+        }
+        .to_string()
+    }
 }
 
 /// A sheet folded along a crease pattern: the closed profiles of the
@@ -72,7 +95,7 @@ impl Fold {
         let mut out: Vec<(String, &Expr)> = self
             .creases
             .iter()
-            .filter_map(|c| Some((format!("crease.{}", c.line), c.angle.as_ref()?)))
+            .filter_map(|c| Some((format!("crease.{}", c.name()), c.angle.as_ref()?)))
             .collect();
         if let Some([x, y]) = &self.fixed {
             out.push(("fixed.x".to_string(), x));

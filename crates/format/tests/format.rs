@@ -4252,16 +4252,22 @@ fn a_fold_is_written_like_this_and_round_trips() {
                     line: EntityId(5),
                     kind: CreaseKind::Valley,
                     angle: Some(Expr::new("fold")),
+                    index: craft3d_doc::CurveIndex::Seed,
+                    alternate: false,
                 },
                 Crease {
                     line: EntityId(6),
                     kind: CreaseKind::Mountain,
                     angle: None,
+                    index: craft3d_doc::CurveIndex::Seed,
+                    alternate: false,
                 },
                 Crease {
                     line: EntityId(9),
                     kind: CreaseKind::Cut,
                     angle: None,
+                    index: craft3d_doc::CurveIndex::Seed,
+                    alternate: false,
                 },
             ],
             fixed: Some([Expr::new("1 mm"), Expr::new("2 mm")]),
@@ -4290,6 +4296,49 @@ fn a_fold_is_written_like_this_and_round_trips() {
     let extra = json.replacen("\"line\": 6,", "\"line\": 6, \"width\": 1,", 1);
     assert_ne!(extra, json);
     assert!(from_manifest_json(extra.as_bytes()).is_err());
+}
+
+#[test]
+fn a_fold_of_pattern_instances_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Crease, CreaseKind, CurveIndex, EntityId, Expr, Fold};
+    let mut doc = small();
+    let crease = |index, alternate| Crease {
+        line: EntityId(5),
+        kind: CreaseKind::Valley,
+        angle: Some(Expr::new("fold")),
+        index,
+        alternate,
+    };
+    doc.add_feature(
+        Some("Pleats"),
+        FeatureKind::Fold(Fold {
+            sketch: FeatureId(7),
+            creases: vec![
+                crease(CurveIndex::All, true),
+                crease(CurveIndex::At(2), false),
+                crease(CurveIndex::Grid(1, 3), false),
+            ],
+            fixed: None,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features.last().unwrap()["kind"]["creases"],
+        serde_json::json!([
+            {"line": 5, "kind": "valley", "angle": "fold", "instance": "all", "alternate": true},
+            {"line": 5, "kind": "valley", "angle": "fold", "instance": {"at": 2}},
+            {"line": 5, "kind": "valley", "angle": "fold", "instance": {"grid": [1, 3]}}
+        ])
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    // An instance that is none is refused.
+    let odd = json.replacen("\"all\"", "\"some\"", 1);
+    assert_ne!(odd, json);
+    assert!(from_manifest_json(odd.as_bytes()).is_err());
 }
 
 #[test]

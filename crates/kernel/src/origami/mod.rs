@@ -25,12 +25,16 @@
 mod arrange;
 mod checks;
 mod collide;
+mod flat;
+mod layers;
 mod sheet;
 mod solve;
 
 pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
 pub use collide::{FacetMeeting, Meeting, first_meeting};
+pub use flat::{fold_flat, folds_flat};
+pub use layers::{Layers, MAX_LAYER_CONSTRAINTS, MAX_LAYER_WORK, layer_order};
 pub use sheet::folded_sheet;
 pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage};
 
@@ -168,6 +172,22 @@ pub enum FoldError {
     Meets(Meeting),
     /// The body could not be built: see the reason.
     Build(String),
+    /// Folded flat (every crease by 180 degrees), the facets round the
+    /// loop through crease `id` do not meet again, by `gap` (a length):
+    /// Kawasaki's condition fails at a vertex of that loop.
+    NotFlat { id: u64, gap: f64 },
+    /// Folded flat, no order of the layers keeps these facets (by index)
+    /// from passing through each other: the mountain-valley assignment
+    /// does not fold flat.
+    NoLayers { facets: Vec<usize> },
+    /// Whether an order of the layers exists was not decided within
+    /// [`MAX_LAYER_WORK`] (`pairs` pairs of facets to order).
+    LayersUndecided { pairs: usize },
+    /// The folded edges could not be divided into cells: see the reason.
+    Overlay(String),
+    /// Crease `id` folds by 180 degrees while another folds by less: a
+    /// sheet folded onto itself is layered only when it is folded flat.
+    MixedFlat { id: u64 },
 }
 
 impl fmt::Display for FoldError {
@@ -238,6 +258,26 @@ impl fmt::Display for FoldError {
                 "two branches from the flat sheet keep every kind; creases {ids:?} differ"
             ),
             FoldError::Build(reason) => write!(f, "{reason}"),
+            FoldError::NotFlat { id, gap } => write!(
+                f,
+                "folded flat, the facets round the loop through crease {id} do not close (by {gap:e})"
+            ),
+            FoldError::NoLayers { facets } => {
+                write!(f, "no order of the layers keeps facets {facets:?} apart")
+            }
+            FoldError::LayersUndecided { pairs } => write!(
+                f,
+                "the order of the layers ({pairs} pairs) was not decided within {MAX_LAYER_WORK} steps"
+            ),
+            FoldError::Overlay(reason) => {
+                write!(
+                    f,
+                    "the folded layers could not be divided into cells: {reason}"
+                )
+            }
+            FoldError::MixedFlat { id } => {
+                write!(f, "crease {id} folds by 180 degrees while others fold less")
+            }
         }
     }
 }

@@ -555,7 +555,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 28] = [
+pub(crate) const MEASURES: [&str; 31] = [
     "volume",
     "area",
     "mass",
@@ -582,6 +582,9 @@ pub(crate) const MEASURES: [&str; 28] = [
     "flangeLength",
     "holeToBend",
     "relief",
+    "kawasakiFails",
+    "maekawaFails",
+    "flatFoldable",
     "value",
     "cornerGap",
 ];
@@ -605,6 +608,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "bendRadius" | "flangeLength" | "holeToBend" | "relief" | "cornerGap" => {
             crate::sheetmetal_cmds::take(ctx, name, p)
         }
+        "kawasakiFails" | "maekawaFails" | "flatFoldable" => crate::fold_cmds::take(ctx, name, p),
         "value" => value(ctx, p),
         _ => Err(format!(
             "unknown measure `{}`; one of {}",

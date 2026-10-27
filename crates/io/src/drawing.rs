@@ -46,6 +46,18 @@ pub fn encode_drawing(
     format: DrawingFormat,
     tolerance: f64,
 ) -> Result<(Vec<u8>, Option<SvgReport>), IoError> {
+    encode_drawing_stroked(drawing, format, tolerance, None)
+}
+
+/// [`encode_drawing`] with the SVG's stroke width in millimetres (`None`:
+/// the laser's hairline, `craft3d_drawing::HAIRLINE_MM`); DXF has no
+/// stroke width and ignores it.
+pub fn encode_drawing_stroked(
+    drawing: &Drawing,
+    format: DrawingFormat,
+    tolerance: f64,
+    stroke_mm: Option<f64>,
+) -> Result<(Vec<u8>, Option<SvgReport>), IoError> {
     let unsupported = |e: craft3d_drawing::DrawingError| IoError::Unsupported {
         body: String::new(),
         what: e.to_string(),
@@ -55,9 +67,10 @@ pub fn encode_drawing(
             .map(|text| (text.into_bytes(), None))
             .map_err(unsupported),
         DrawingFormat::Svg => {
+            let defaults = SvgOptions::default();
             let options = SvgOptions {
                 tolerance,
-                ..SvgOptions::default()
+                stroke_mm: stroke_mm.unwrap_or(defaults.stroke_mm),
             };
             craft3d_drawing::write_svg(drawing, &options)
                 .map(|(text, report)| (text.into_bytes(), Some(report)))

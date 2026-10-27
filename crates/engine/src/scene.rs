@@ -1559,6 +1559,15 @@ fn build(
                 continue;
             }
         };
+        // A fold folded flat lies in one plane: its layers are drawn apart
+        // by their order (display only, fold_cmds::layered_mesh).
+        let (mesh, edges) = match outcome.and_then(|o| o.developed.as_ref()) {
+            Some(craft3d_regen::Developed::FlatFold(flat)) => {
+                let (m, e) = crate::fold_cmds::layered_mesh(&mesh, &edges, body, &flat.offsets);
+                (Arc::new(m), Arc::new(e))
+            }
+            _ => (mesh, edges),
+        };
         let Ok(vertex_base) = u32::try_from(scene.mesh.positions.len()) else {
             scene
                 .problems

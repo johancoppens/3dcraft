@@ -736,7 +736,18 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                              line: doc::EntityId(line),
                              kind,
                              angle,
+                             index,
+                             alternate,
                          }| manifest::FoldCrease {
+                            instance: match index {
+                                doc::CurveIndex::Seed => None,
+                                doc::CurveIndex::At(k) => Some(manifest::FoldInstance::At(*k)),
+                                doc::CurveIndex::Grid(i, j) => {
+                                    Some(manifest::FoldInstance::Grid([*i, *j]))
+                                }
+                                doc::CurveIndex::All => Some(manifest::FoldInstance::All),
+                            },
+                            alternate: *alternate,
                             line: *line,
                             kind: match kind {
                                 doc::CreaseKind::Mountain => manifest::CreaseKind::Mountain,
@@ -2277,15 +2288,32 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 sketch: doc::FeatureId(sketch),
                 creases: creases
                     .into_iter()
-                    .map(|manifest::FoldCrease { line, kind, angle }| doc::Crease {
-                        line: doc::EntityId(line),
-                        kind: match kind {
-                            manifest::CreaseKind::Mountain => doc::CreaseKind::Mountain,
-                            manifest::CreaseKind::Valley => doc::CreaseKind::Valley,
-                            manifest::CreaseKind::Cut => doc::CreaseKind::Cut,
+                    .map(
+                        |manifest::FoldCrease {
+                             line,
+                             kind,
+                             angle,
+                             instance,
+                             alternate,
+                         }| doc::Crease {
+                            index: match instance {
+                                None => doc::CurveIndex::Seed,
+                                Some(manifest::FoldInstance::At(k)) => doc::CurveIndex::At(k),
+                                Some(manifest::FoldInstance::Grid([i, j])) => {
+                                    doc::CurveIndex::Grid(i, j)
+                                }
+                                Some(manifest::FoldInstance::All) => doc::CurveIndex::All,
+                            },
+                            alternate,
+                            line: doc::EntityId(line),
+                            kind: match kind {
+                                manifest::CreaseKind::Mountain => doc::CreaseKind::Mountain,
+                                manifest::CreaseKind::Valley => doc::CreaseKind::Valley,
+                                manifest::CreaseKind::Cut => doc::CreaseKind::Cut,
+                            },
+                            angle: angle.map(doc::Expr),
                         },
-                        angle: angle.map(doc::Expr),
-                    })
+                    )
                     .collect(),
                 fixed: fixed.map(|[x, y]| [doc::Expr(x), doc::Expr(y)]),
             }),

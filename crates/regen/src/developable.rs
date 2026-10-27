@@ -223,6 +223,9 @@ pub enum Developed {
     /// A sheet-metal part: its pattern, bends and folded skin as built
     /// (what the bend table, the measures and the export read).
     SheetMetal(Arc<crate::SheetMetalPart>),
+    /// A fold folded flat: the order of its layers and their display
+    /// offsets (`fold::FlatFold`).
+    FlatFold(Arc<crate::FlatFold>),
 }
 
 /// The faces of an unfold in its source's body, in the order given.

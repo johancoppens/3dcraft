@@ -9,8 +9,8 @@ pub mod drawing;
 pub mod step;
 
 pub use drawing::{
-    DrawingFormat, FaceAxes, FaceOutline, FittedSpline, SketchOutline, encode_drawing, face_frame,
-    face_outline, face_outline_in, sketch_outline,
+    DrawingFormat, FaceAxes, FaceOutline, FittedSpline, SketchOutline, encode_drawing,
+    encode_drawing_stroked, face_frame, face_outline, face_outline_in, sketch_outline,
 };
 pub use step::{AngleUnit, StepBody, StepOptions, StepSummary, export_step, step_model};
 

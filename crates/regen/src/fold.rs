@@ -4,11 +4,12 @@
 //! docs/design/origami.md).
 
 use crate::extrude::drawn;
+use crate::sketch_pattern::CurveIds;
 use crate::{FeatureResult, Names, angle, length};
 use craft3d_doc::{Document, FeatureId, Fold, Geometry};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::origami::{
-    self, Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FoldError, Folded,
+    self, Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FoldError, Folded, Layers,
 };
 use craft3d_kernel::profile::{Shape, detect_profiles};
 use craft3d_math::{Frame, Tolerance};
@@ -21,12 +22,274 @@ use std::collections::BTreeSet;
 pub struct FoldPattern {
     /// The sheet divided into facets, in the sketch's axes.
     pub arrangement: Arrangement,
+    /// Per crease of the arrangement (`arrangement.creases`, in order):
+    /// what the fold says of it.
+    pub creases: Vec<PatternCrease>,
+    /// The names of the sketch's curves (pattern instances among them).
+    pub names: CurveIds,
     /// The sketch's plane.
     pub plane: Frame,
     /// The sheet's outline: each loop as its corners, outer loops
     /// counter-clockwise and holes clockwise, in the sketch's axes.
     pub outline: Vec<Vec<[f64; 2]>>,
     pub tolerance: Tolerance,
+}
+
+/// One crease of a fold's pattern as the fold gives it: a line of the
+/// sketch or a copy a pattern made of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternCrease {
+    /// As the sketch names the curve: `e7`, `e7[2]`.
+    pub name: String,
+    pub kind: craft3d_doc::CreaseKind,
+    pub angle: Option<craft3d_doc::Expr>,
+    /// The entry of the fold's creases it comes from.
+    pub entry: usize,
+}
+
+/// A text of the kernel's, its curves `e` and a number, with each named as
+/// the sketch names it (`e7[2]` for an instance of a pattern).
+fn renamed(text: &str, names: &CurveIds) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut previous: Option<char> = None;
+    while let Some(at) = rest.find('e') {
+        let (before, from) = rest.split_at(at);
+        out.push_str(before);
+        let last = before.chars().last().or(previous);
+        let digits: String = from
+            .chars()
+            .skip(1)
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let word = last.is_none_or(|c| !c.is_alphanumeric());
+        match digits.parse::<u64>() {
+            Ok(id) if word && !digits.is_empty() => {
+                out.push_str(&names.name(id));
+                rest = from.get(1 + digits.len()..).unwrap_or_default();
+                previous = digits.chars().last();
+            }
+            _ => {
+                out.push('e');
+                rest = from.get(1..).unwrap_or_default();
+                previous = Some('e');
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The creases of `fold` laid out: the kernel's crease (its id the
+/// curve's number) and what the fold gives it, in the order of the fold's
+/// entries, an `e7[*]` entry as the line and then its instances in the
+/// sketch's order. Every copy a pattern made of a crease's line must be
+/// a crease too (named one by one or with `[*]`): one left out would be
+/// dropped without a word.
+fn resolve_creases(
+    drawn: &crate::extrude::Drawn<'_>,
+    fold: &Fold,
+) -> Result<Vec<(Crease, PatternCrease)>, String> {
+    use craft3d_doc::{CurveIndex, CurvePath, CurveRef};
+    let name = drawn.name;
+    let names = &drawn.solved.curve_ids;
+    // Every copy the sketch's patterns made, construction ones too.
+    let instances = crate::sketch_pattern::instance_curves(drawn.sketch, drawn.solved, true)
+        .map_err(|reason| format!("sketch `{name}`: {reason}"))?;
+    let copies: Vec<(CurvePath, u64, [f64; 2], [f64; 2])> = instances
+        .iter()
+        .filter_map(|(curve, _)| {
+            let craft3d_kernel::profile::Curve2::Line { start, end } = curve.curve else {
+                return None;
+            };
+            let words = names.words(curve.id);
+            let (path, n) = CurvePath::read(&words)?;
+            (n == words.len()).then_some((path, curve.id, start, end))
+        })
+        .collect();
+    let parity = |path: &CurvePath| {
+        let of = |i: CurveIndex| match i {
+            CurveIndex::At(k) => u64::from(k),
+            CurveIndex::Grid(i, j) => u64::from(i) + u64::from(j),
+            CurveIndex::Seed | CurveIndex::All => 0,
+        };
+        let sum = path
+            .outer
+            .iter()
+            .fold(of(path.curve.index), |s, &i| s.wrapping_add(of(i)));
+        sum % 2 == 1
+    };
+    let flip = |kind: craft3d_doc::CreaseKind| match kind {
+        craft3d_doc::CreaseKind::Mountain => craft3d_doc::CreaseKind::Valley,
+        craft3d_doc::CreaseKind::Valley => craft3d_doc::CreaseKind::Mountain,
+        craft3d_doc::CreaseKind::Cut => craft3d_doc::CreaseKind::Cut,
+    };
+    let kernel_kind = |kind: craft3d_doc::CreaseKind| match kind {
+        craft3d_doc::CreaseKind::Mountain => CreaseKind::Mountain,
+        craft3d_doc::CreaseKind::Valley => CreaseKind::Valley,
+        craft3d_doc::CreaseKind::Cut => CreaseKind::Cut,
+    };
+    let mut entries = BTreeSet::new();
+    let mut taken: BTreeSet<u64> = BTreeSet::new();
+    // First the entries that name one curve, so they win over `[*]`.
+    let mut one: Vec<(usize, u64, [f64; 2], [f64; 2])> = Vec::new();
+    for (k, c) in fold.creases.iter().enumerate() {
+        let shown = c.name();
+        if !entries.insert((c.line, c.index)) {
+            return Err(format!("creases: {shown} is listed twice"));
+        }
+        if c.kind == craft3d_doc::CreaseKind::Cut && c.angle.is_some() {
+            return Err(format!(
+                "creases: {shown} is a cut, which has no fold angle"
+            ));
+        }
+        let entity = drawn
+            .sketch
+            .entity(c.line)
+            .map_err(|_| format!("creases: sketch `{name}` has no {}", c.line))?;
+        let Geometry::Line { start, end } = entity.geometry else {
+            return Err(format!(
+                "creases: {} of sketch `{name}` is a {}, not a line: creases are straight (a curved crease bends its facets, which rigid folding does not do)",
+                c.line,
+                entity.geometry.type_name()
+            ));
+        };
+        let point = |p| {
+            drawn
+                .solved
+                .point(p)
+                .map(|(x, y)| [x, y])
+                .ok_or_else(|| format!("sketch `{name}`: {p} has no solved position"))
+        };
+        match c.index {
+            CurveIndex::Seed => one.push((k, c.line.0, point(start)?, point(end)?)),
+            CurveIndex::All => {}
+            index => {
+                let wanted = CurveRef {
+                    entity: c.line.0,
+                    index,
+                };
+                let Some((_, id, a, b)) = copies
+                    .iter()
+                    .find(|(path, ..)| path.curve == wanted && path.outer.is_empty())
+                else {
+                    return Err(format!(
+                        "creases: sketch `{name}` has no {shown}: no pattern of the sketch makes that copy of {} (sketch.inspect lists its patterns)",
+                        c.line
+                    ));
+                };
+                one.push((k, *id, *a, *b));
+            }
+        }
+    }
+    let mut out: Vec<(usize, Crease, PatternCrease)> = Vec::new();
+    for (k, id, a, b) in one {
+        let Some(c) = fold.creases.get(k) else {
+            continue;
+        };
+        taken.insert(id);
+        out.push((
+            k,
+            Crease {
+                id,
+                start: a,
+                end: b,
+                kind: kernel_kind(c.kind),
+            },
+            PatternCrease {
+                name: names.name(id),
+                kind: c.kind,
+                angle: c.angle.clone(),
+                entry: k,
+            },
+        ));
+    }
+    for (k, c) in fold.creases.iter().enumerate() {
+        if c.index != CurveIndex::All {
+            continue;
+        }
+        if c.alternate && c.kind == craft3d_doc::CreaseKind::Cut {
+            return Err(format!(
+                "creases: {} is a cut, which does not alternate",
+                c.name()
+            ));
+        }
+        let mut members: Vec<(u64, [f64; 2], [f64; 2], bool)> = Vec::new();
+        if let Ok(entity) = drawn.sketch.entity(c.line)
+            && let Geometry::Line { start, end } = entity.geometry
+            && let (Some(a), Some(b)) = (drawn.solved.point(start), drawn.solved.point(end))
+        {
+            members.push((c.line.0, [a.0, a.1], [b.0, b.1], false));
+        }
+        for (path, id, a, b) in &copies {
+            if path.curve.entity == c.line.0 {
+                members.push((*id, *a, *b, parity(path)));
+            }
+        }
+        for (id, a, b, odd) in members {
+            if !taken.insert(id) {
+                continue;
+            }
+            let kind = if c.alternate && odd {
+                flip(c.kind)
+            } else {
+                c.kind
+            };
+            out.push((
+                k,
+                Crease {
+                    id,
+                    start: a,
+                    end: b,
+                    kind: kernel_kind(kind),
+                },
+                PatternCrease {
+                    name: names.name(id),
+                    kind,
+                    angle: c.angle.clone(),
+                    entry: k,
+                },
+            ));
+        }
+    }
+    if let Some(c) = fold
+        .creases
+        .iter()
+        .find(|c| c.alternate && c.index != CurveIndex::All)
+    {
+        return Err(format!(
+            "creases: {} names one curve, which has nothing to alternate with: alternate goes with every copy, {}",
+            c.name(),
+            CurveRef {
+                entity: c.line.0,
+                index: CurveIndex::All
+            }
+        ));
+    }
+    // A copy of a crease's line that is no crease would be dropped.
+    for c in &fold.creases {
+        let left: Vec<String> = copies
+            .iter()
+            .filter(|(path, id, ..)| path.curve.entity == c.line.0 && !taken.contains(id))
+            .map(|(_, id, ..)| names.name(*id))
+            .take(4)
+            .collect();
+        if !left.is_empty() {
+            return Err(format!(
+                "creases: {} is a crease but the sketch's patterns made copies of it that are not ({}): name each copy as a crease ({} as line), or every copy with {}",
+                c.name(),
+                left.join(", "),
+                left.first().map_or("", String::as_str),
+                CurveRef {
+                    entity: c.line.0,
+                    index: CurveIndex::All
+                }
+            ));
+        }
+    }
+    // In the order of the entries, then of the sketch.
+    out.sort_by_key(|(k, ..)| *k);
+    Ok(out.into_iter().map(|(_, c, p)| (c, p)).collect())
 }
 
 /// A fold's crease pattern and (when it could be) its fold.
@@ -37,6 +300,21 @@ pub struct FoldAnalysis {
     pub folded: Result<Folded, String>,
     /// The facet that stays in place.
     pub fixed: usize,
+    /// Folded flat (every crease by 180 degrees): the order of its layers.
+    pub layers: Option<Layers>,
+}
+
+/// A fold folded flat, as its feature's result keeps it: the order of its
+/// layers, and per face of its body the display-only offset that lifts
+/// each layer off the one below it (the body itself lies exactly in the
+/// sketch's plane: docs/design/origami.md › *Folded flat*).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatFold {
+    pub layers: Layers,
+    /// Per face of the body (one per facet, in facet order): where the
+    /// display moves it, along the sketch's normal, by its layer above
+    /// the fixed facet's.
+    pub offsets: Vec<craft3d_math::Vec3>,
 }
 
 /// What a curve id is called in messages: `e7`.
@@ -140,6 +418,32 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             ),
             None => error.to_string(),
         },
+        FoldError::NotFlat { id, gap } => format!(
+            "does not fold flat: with every crease folded by 180 degrees the facets round the loop through {} do not meet again (they stay {gap:e} apart); Kawasaki's condition fails at a vertex of that loop (fold.check names it)",
+            curve(*id)
+        ),
+        FoldError::NoLayers { facets } => {
+            let named: Vec<String> = match arr {
+                Some(arr) => facets.iter().take(8).map(|&f| facet_name(arr, f)).collect(),
+                None => facets.iter().take(8).map(|f| format!("facet {f}")).collect(),
+            };
+            format!(
+                "cannot fold flat with this mountain-valley assignment: no order of the layers keeps {}{} from passing through each other (a facet between the two of a fold, or two folds interleaved); change the kinds of the creases there",
+                named.join(", "),
+                if facets.len() > 8 { " and more" } else { "" }
+            )
+        }
+        FoldError::LayersUndecided { pairs } => format!(
+            "whether it folds flat was not decided within the work allowed ({} steps, {pairs} pairs of facets to order): the general question is NP-hard (Bern and Hayes 1996); 3DCraft does not guess",
+            origami::MAX_LAYER_WORK
+        ),
+        FoldError::Overlay(reason) => format!(
+            "the layers of the flat fold could not be told apart: {reason}"
+        ),
+        FoldError::MixedFlat { id } => format!(
+            "{} folds by 180 degrees while other creases fold by less: facets folded onto each other are layered only when the sheet is folded flat, every crease by 180 degrees (a crease to stay flat is left out of the fold); fold it to just under 180 degrees, or every crease to 180 (layers that fold on by other angles are owed)",
+            curve(*id)
+        ),
         other => other.to_string(),
     }
 }
@@ -163,48 +467,11 @@ fn pattern(doc: &Document, fold: &Fold, earlier: &[FeatureResult]) -> Result<Fol
     let name = drawn.name;
     let tol = drawn.tolerance;
 
-    // The creases: lines of the sketch, each once.
-    let mut ids = BTreeSet::new();
-    let mut creases = Vec::with_capacity(fold.creases.len());
-    for c in &fold.creases {
-        if !ids.insert(c.line.0) {
-            return Err(format!("creases: {} is listed twice", c.line));
-        }
-        let entity = drawn
-            .sketch
-            .entity(c.line)
-            .map_err(|_| format!("creases: sketch `{name}` has no {}", c.line))?;
-        let Geometry::Line { start, end } = entity.geometry else {
-            return Err(format!(
-                "creases: {} of sketch `{name}` is a {}, not a line: creases are straight (a curved crease bends its facets, which rigid folding does not do)",
-                c.line,
-                entity.geometry.type_name()
-            ));
-        };
-        let point = |p| {
-            drawn
-                .solved
-                .point(p)
-                .map(|(x, y)| [x, y])
-                .ok_or_else(|| format!("sketch `{name}`: {p} has no solved position"))
-        };
-        if c.kind == craft3d_doc::CreaseKind::Cut && c.angle.is_some() {
-            return Err(format!(
-                "creases: {} is a cut, which has no fold angle",
-                c.line
-            ));
-        }
-        creases.push(Crease {
-            id: c.line.0,
-            start: point(start)?,
-            end: point(end)?,
-            kind: match c.kind {
-                craft3d_doc::CreaseKind::Mountain => CreaseKind::Mountain,
-                craft3d_doc::CreaseKind::Valley => CreaseKind::Valley,
-                craft3d_doc::CreaseKind::Cut => CreaseKind::Cut,
-            },
-        });
-    }
+    // The creases: lines of the sketch or copies of them its patterns
+    // made, each once.
+    let resolved = resolve_creases(&drawn, fold)?;
+    let ids: BTreeSet<u64> = resolved.iter().map(|r| r.0.id).collect();
+    let (creases, sources): (Vec<Crease>, Vec<PatternCrease>) = resolved.into_iter().unzip();
 
     // The sheet: the closed profiles of the sketch's other curves, of
     // straight lines.
@@ -246,9 +513,12 @@ fn pattern(doc: &Document, fold: &Fold, earlier: &[FeatureResult]) -> Result<Fol
             }
         }
     }
-    let arrangement =
-        origami::arrange(&boundary, &creases, tol.linear).map_err(|e| described(&e, None))?;
+    let names = &drawn.solved.curve_ids;
+    let arrangement = origami::arrange(&boundary, &creases, tol.linear)
+        .map_err(|e| renamed(&described(&e, None), names))?;
     Ok(FoldPattern {
+        creases: sources,
+        names: names.clone(),
         arrangement,
         plane: drawn.plane,
         outline,
@@ -274,9 +544,12 @@ pub(crate) fn analyse(
                 length(doc, variables, "fixed.x", x)?,
                 length(doc, variables, "fixed.y", y)?,
             ];
-            arrangement
-                .facet_at(at)
-                .ok_or_else(|| described(&FoldError::Fixed, Some(arrangement)))?
+            arrangement.facet_at(at).ok_or_else(|| {
+                renamed(
+                    &described(&FoldError::Fixed, Some(arrangement)),
+                    &pattern.names,
+                )
+            })?
         }
         None => {
             arrangement
@@ -293,7 +566,7 @@ pub(crate) fn analyse(
     // The angles, per hinge.
     let mut angles = Vec::with_capacity(arrangement.hinges.len());
     for hinge in &arrangement.hinges {
-        let Some((c, kernel)) = fold
+        let Some((c, kernel)) = pattern
             .creases
             .get(hinge.crease)
             .zip(arrangement.creases.get(hinge.crease))
@@ -303,11 +576,11 @@ pub(crate) fn analyse(
         let sign = kernel.kind.sign();
         angles.push(match &c.angle {
             Some(expr) => {
-                let value = angle(doc, variables, &format!("crease.{}", c.line), expr)?;
+                let value = angle(doc, variables, &format!("crease.{}", c.name), expr)?;
                 if !(value.is_finite() && (0.0..=std::f64::consts::PI).contains(&value)) {
                     return Err(format!(
                         "crease.{}: `{}` is {} degrees; a fold angle is from 0 (flat) to 180 degrees (folded flat), and the crease's kind says which way",
-                        c.line,
+                        c.name,
                         expr.source(),
                         value.to_degrees()
                     ));
@@ -317,19 +590,37 @@ pub(crate) fn analyse(
             None => Angle::Free { sign },
         });
     }
-    let folded = origami::fold(arrangement, &angles, fixed, tol.linear, tol.angular)
-        .map_err(|e| described(&e, Some(arrangement)))
-        .and_then(|folded| {
-            match origami::first_meeting(arrangement, &folded, tol.linear, tol.angular) {
-                Ok(Some(meeting)) => Err(described(&FoldError::Meets(meeting), Some(arrangement))),
-                Ok(None) => Ok(folded),
-                Err(e) => Err(described(&e, Some(arrangement))),
-            }
-        });
+    let mut layers = None;
+    let folded = match origami::folds_flat(arrangement, &angles, tol.angular) {
+        // Folded flat: the facets placed by reflections, and the order of
+        // the layers is the check that the sheet does not pass through
+        // itself (all of it lies in one plane).
+        Ok(true) => origami::fold_flat(arrangement, &angles, fixed, tol.linear)
+            .and_then(|folded| {
+                let order = origami::layer_order(arrangement, &folded, tol.linear)?;
+                layers = Some(order);
+                Ok(folded)
+            })
+            .map_err(|e| described(&e, Some(arrangement))),
+        Ok(false) => origami::fold(arrangement, &angles, fixed, tol.linear, tol.angular)
+            .map_err(|e| described(&e, Some(arrangement)))
+            .and_then(|folded| {
+                match origami::first_meeting(arrangement, &folded, tol.linear, tol.angular) {
+                    Ok(Some(meeting)) => {
+                        Err(described(&FoldError::Meets(meeting), Some(arrangement)))
+                    }
+                    Ok(None) => Ok(folded),
+                    Err(e) => Err(described(&e, Some(arrangement))),
+                }
+            }),
+        Err(e) => Err(described(&e, Some(arrangement))),
+    };
+    let folded = folded.map_err(|e| renamed(&e, &pattern.names));
     Ok(FoldAnalysis {
         pattern,
         folded,
         fixed,
+        layers,
     })
 }
 
@@ -341,14 +632,46 @@ pub(crate) fn build(
     id: FeatureId,
     fold: &Fold,
     earlier: &[FeatureResult],
-) -> Result<(Body, Names), String> {
+) -> Result<(Body, Names, Option<FlatFold>), String> {
     let analysis = analyse(doc, variables, fold, earlier)?;
     let folded = analysis.folded?;
     let p = &analysis.pattern;
     let made = origami::folded_sheet(&p.arrangement, &folded, &p.plane, &p.tolerance)
-        .map_err(|e| described(&e, Some(&p.arrangement)))?;
+        .map_err(|e| renamed(&described(&e, Some(&p.arrangement)), &p.names))?;
     let names = Names::of_origins(id, &made.origins);
-    Ok((made.body, names))
+    let flat = analysis.layers.map(|layers| {
+        let offsets = display_offsets(&layers, analysis.fixed, &made.body, &p.plane);
+        FlatFold { layers, offsets }
+    });
+    Ok((made.body, names, flat))
+}
+
+/// The display-only lift of each layer of a flat fold: per facet its
+/// layer less the fixed facet's, times a step along the sketch's normal
+/// of a thousandth of the body's diagonal (less when there are many
+/// layers: all of them within a fiftieth). Only the picture moves; the
+/// body stays in the plane.
+fn display_offsets(
+    layers: &Layers,
+    fixed: usize,
+    body: &Body,
+    plane: &Frame,
+) -> Vec<craft3d_math::Vec3> {
+    let size = craft3d_math::Bbox3::from_points(body.vertices.iter().map(|v| v.point)).diagonal();
+    let highest = layers.layer.iter().copied().max().unwrap_or(0);
+    let count = f64::from(u32::try_from(highest).unwrap_or(u32::MAX)) + 1.0;
+    let step = size * (1e-3f64).min(0.02 / count);
+    let base = layers.layer.get(fixed).copied().unwrap_or(0);
+    let normal = plane.z();
+    layers
+        .layer
+        .iter()
+        .map(|&l| {
+            let up = f64::from(u32::try_from(l).unwrap_or(u32::MAX))
+                - f64::from(u32::try_from(base).unwrap_or(u32::MAX));
+            normal * (up * step)
+        })
+        .collect()
 }
 
 fn fold_of(doc: &Document, id: FeatureId) -> Result<&Fold, String> {

@@ -854,6 +854,23 @@ pub struct FoldCrease {
     pub kind: CreaseKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<String>,
+    /// Which copy of the line its sketch's patterns made; absent: the line
+    /// itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<FoldInstance>,
+    /// With `instance` `all`: the kind alternates along the instances.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alternate: bool,
+}
+
+/// An instance of a sketch pattern a crease is: `{"at": 2}`, `{"grid":
+/// [1, 3]}`, or `"all"` (the line and every instance).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum FoldInstance {
+    At(u32),
+    Grid([u32; 2]),
+    All,
 }
 
 /// How a crease folds.

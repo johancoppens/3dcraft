@@ -179,8 +179,9 @@ pub(crate) fn export(
         unit: drawing_unit(unit),
         layers,
     };
-    let (bytes, report) = craft3d_io::encode_drawing(&drawing, format, tolerance)
-        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
+    let (bytes, report) =
+        craft3d_io::encode_drawing_stroked(&drawing, format, tolerance, stroke(p, format)?)
+            .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let size = bytes.len();
     session.write_resolved(resolved, bytes)?;
     let counts = drawing.counts();
@@ -1014,4 +1015,24 @@ fn sheet(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         paths: Vec::new(),
         construction: Vec::new(),
     })
+}
+
+/// The SVG's stroke width (`stroke`, in millimetres, whatever the
+/// document's unit): `None` for the laser's hairline. Refused for DXF,
+/// which has no stroke width, and when not positive or over 100 mm.
+pub(crate) fn stroke(p: &Params, format: DrawingFormat) -> Result<Option<f64>, CommandError> {
+    let Some(width) = p.number("stroke")? else {
+        return Ok(None);
+    };
+    if format == DrawingFormat::Dxf {
+        return fail(format!(
+            "{ID}: `stroke` is the width of an SVG's lines; a DXF has none"
+        ));
+    }
+    if !(width.is_finite() && width > 0.0 && width <= 100.0) {
+        return fail(format!(
+            "{ID}: `stroke` is a line width in millimetres, above 0 and at most 100 (0.01 is a laser's hairline, 0.3 prints well)"
+        ));
+    }
+    Ok(Some(width))
 }

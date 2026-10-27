@@ -381,21 +381,18 @@ fn what_a_fold_cannot_do_fails_the_feature_and_bad_parameters_are_errors() {
             {"line": lines[1], "kind": "valley"}]}),
     );
     assert!(why.contains("nothing determines"), "{why}");
-    // Folded flat: the halves lie on each other.
+    // Folded flat: the halves lie on each other, layered by the kind
+    // (refused as lying on each other until the flat state was built,
+    // 2026-10-27; tests/fold_flat.rs holds it further).
     run(
         &mut s,
         "fold.edit",
         json!({"fold": "Free", "creases": [{"line": lines[1], "kind": "valley", "angle": 180}]}),
     );
     let inspect = run(&mut s, "fold.inspect", json!({"fold": "Free"}));
-    assert_eq!(inspect["ok"], false, "{inspect}");
-    assert!(
-        inspect["error"]
-            .as_str()
-            .unwrap()
-            .contains("lie on each other"),
-        "{inspect}"
-    );
+    assert_eq!(inspect["ok"], true, "{inspect}");
+    assert_eq!(inspect["flat"], true, "{inspect}");
+    assert_eq!(inspect["layers"]["count"], 2, "{inspect}");
     // An angle past 180 degrees.
     run(
         &mut s,

@@ -1346,7 +1346,8 @@ pub(crate) fn export(
         unit: crate::drawing_cmds::drawing_unit(unit),
         layers,
     };
-    let (bytes, _) = craft3d_io::encode_drawing(&drawing, format, tolerance)
+    let stroke = crate::drawing_cmds::stroke(p, format)?;
+    let (bytes, _) = craft3d_io::encode_drawing_stroked(&drawing, format, tolerance, stroke)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let size = bytes.len();
     session.write_resolved(resolved, bytes)?;

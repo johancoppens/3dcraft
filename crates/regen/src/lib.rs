@@ -68,7 +68,7 @@ pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
-pub use fold::{FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
+pub use fold::{FlatFold, FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
@@ -1707,11 +1707,12 @@ fn build_feature(
             Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Fold(folding) = &feature.kind {
-        match fold::build(doc, variables, feature.id, folding, earlier)
-            .and_then(|(body, made_names)| checked(doc, body).map(|body| (body, made_names)))
-        {
-            Ok((body, made_names)) => {
+        match fold::build(doc, variables, feature.id, folding, earlier).and_then(
+            |(body, made_names, flat)| checked(doc, body).map(|body| (body, made_names, flat)),
+        ) {
+            Ok((body, made_names, flat)) => {
                 names = Some(Arc::new(made_names));
+                developed = flat.map(|flat| Developed::FlatFold(Arc::new(flat)));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),
