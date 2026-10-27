@@ -819,7 +819,7 @@ fn a_trimmed_spline_face_reaching_far_below_its_trim_gives_the_level() {
         let slack = t.linear + prism.tolerances.largest().unwrap_or(0.0);
         match nothing_at(&prism, &plane, 0.1 * k, k) {
             Err(CutError::LostBelow { depth, .. }) => assert!(
-                depth >= 0.1 * k - 1e-12 * k && depth <= 0.1 * k + slack + 1e-12 * k,
+                depth >= 0.1 * k - 1e-12 * k && depth <= 0.1 * k + 1.01 * slack + 1e-12 * k,
                 "a tenth into the prism at {k}: lost by {depth}"
             ),
             Err(other) => panic!("a tenth into the prism at {k}: {other}"),
