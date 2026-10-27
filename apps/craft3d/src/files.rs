@@ -138,7 +138,7 @@ pub enum Choice {
     Save(PathBuf),
     Import(PathBuf),
     /// Where to export what the export dialog chose.
-    Export(ExportJob),
+    Export(Box<ExportJob>),
     /// Where to publish the document as a Jig (`jig.export`).
     ExportJig(PathBuf),
     /// The dialog was closed without a choice.
@@ -158,8 +158,11 @@ pub struct ExportJob {
     /// `file.export`'s parameters besides `path`, made when Export… was
     /// clicked: a selection changed while the save dialog is open does not
     /// change what the file holds.
-    pub params: Vec<(&'static str, Value)>,
+    pub params: ExportParams,
 }
+
+/// `file.export`'s parameters besides `path`.
+pub type ExportParams = Vec<(&'static str, Value)>;
 
 /// An export being written: what to keep once it is written.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,18 +268,18 @@ impl Picker {
     pub fn ask_export(
         &mut self,
         request: ExportRequest,
-        params: Vec<(&'static str, Value)>,
+        params: ExportParams,
         folder: Option<PathBuf>,
     ) -> Result<(), String> {
         self.ask("export", move |dialogs| {
             dialogs
                 .export(&request.name, request.format, folder.as_deref())
                 .map_or(Choice::Cancelled("file.export"), |path| {
-                    Choice::Export(ExportJob {
+                    Choice::Export(Box::new(ExportJob {
                         path,
                         request,
                         params,
-                    })
+                    }))
                 })
         })
     }
@@ -627,10 +630,7 @@ impl Host {
     /// the one the export was asked for, or when correcting the name would
     /// replace a file the save dialog did not ask about. Nothing is written
     /// before, and nothing is remembered.
-    pub fn export_target(
-        &mut self,
-        job: ExportJob,
-    ) -> Option<(PathBuf, Vec<(&'static str, Value)>, ExportDone)> {
+    pub fn export_target(&mut self, job: ExportJob) -> Option<(PathBuf, ExportParams, ExportDone)> {
         let shown = self.session.document_status().map(|s| s.id);
         if shown != job.request.document {
             self.report(
@@ -815,7 +815,7 @@ impl Host {
                 let _ = self.import_as_user(&path);
             }
             Ok(Choice::Export(job)) => {
-                let _ = self.export_job(job);
+                let _ = self.export_job(*job);
             }
             Ok(Choice::ExportJig(path)) => {
                 let _ = self.export_jig_as_user(&path);

@@ -807,7 +807,7 @@ impl Desk {
                 ),
                 // Written at once: the save dialog named the file.
                 Ok(Choice::Export(job)) => {
-                    if let Some((path, params, done)) = self.host.export_target(job) {
+                    if let Some((path, params, done)) = self.host.export_target(*job) {
                         self.start_export(path, params, done);
                     }
                 }
@@ -903,7 +903,7 @@ impl Desk {
     fn start_export(
         &mut self,
         path: std::path::PathBuf,
-        params: Vec<(&'static str, Value)>,
+        params: files::ExportParams,
         done: files::ExportDone,
     ) {
         self.start(
