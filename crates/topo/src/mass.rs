@@ -1528,6 +1528,96 @@ struct Piece<'a> {
     end: f64,
     /// Where it crosses a knot line of its spline surface.
     crossings: Vec<f64>,
+    /// At its lower and its upper end of the curve's parameter: whether
+    /// its feet on the surface leave that end as the square root of the
+    /// way along it ([`stands_still`]), so that the panel there is summed
+    /// in a graded parameter ([`graded_points`]).
+    graded: [bool; 2],
+}
+
+/// Whether the feet on `surface` of `curve` leave its end `end` (its
+/// parameter; `toward` the other end) as the square root of the way
+/// along the curve, not in proportion to it: where the surface's
+/// parametrisation stands still along the edge at that end (a corner of a
+/// spline face whose row has a turning point there: the strip beside the
+/// fan at a fold of a developable, docs/design/developable.md), so that
+/// the parameters' rate of change along the edge, which the boundary
+/// integral weighs `G` by, grows as one over the square root of the
+/// distance from the end. Gauss sums of that converge as the square root
+/// of the panel's width, which no halving of panels makes agree to
+/// [`CONVERGED`]. Told apart by how far the feet are from the end's foot
+/// at three distances along the curve, each a quarter of the one before
+/// (2⁻⁸, 2⁻¹⁰ and 2⁻¹² of the piece): a regular end moves them by a
+/// quarter each time (ratios of 4), a square-root end by a half (ratios
+/// of 2); both ratios below `2√2`, the middle of the two in logarithms,
+/// is the square root. So close to the end because the square root may be
+/// a small term beside the regular one (at the fold of a sea-kayak-like
+/// sheet the ratios are 3.3, 2.8, 2.4 and 2.2 from a quarter of the piece
+/// down to 2⁻¹⁰ of it, 2026-10-27); not closer, because the feet are
+/// found there only as well as a projection onto a surface whose
+/// parametrisation stands still finds them (to about a millionth of the
+/// face from 2⁻¹⁶ on: there every foot came out at the corner). Only on
+/// Bézier and
+/// NURBS surfaces (an analytic surface's parametrisation stands still only
+/// at an apex or a pole, which are handled as such). Getting it wrong
+/// costs only how fast the sums settle, never what they settle to: the
+/// graded parameter is a change of variable.
+fn stands_still(surface: &Surface, curve: &Curve3, end: f64, toward: f64) -> bool {
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        return false;
+    }
+    let foot = |t: f64| -> Option<(f64, f64)> { surface.project(curve.eval(t)).ok() };
+    let Some((u0, v0)) = foot(end) else {
+        return false;
+    };
+    let mut far = Vec::with_capacity(3);
+    for k in [8, 10, 12] {
+        let t = end + (toward - end) * 0.5_f64.powi(k);
+        let Some((u, v)) = foot(t) else {
+            return false;
+        };
+        far.push((u - u0).hypot(v - v0));
+    }
+    let limit = 2.0 * std::f64::consts::SQRT_2;
+    match far.as_slice() {
+        &[a, b, c] => b > 0.0 && c > 0.0 && a / b < limit && b / c < limit,
+        _ => false,
+    }
+}
+
+/// The nodes and weights of `rule` over `panel`, a panel of a piece
+/// whose curve runs over `(low, high)`, in a parameter graded towards an
+/// end the panel shares with the piece where that end is graded
+/// ([`stands_still`]): `t = low + w τ²` towards the lower end (`dt = 2 w τ
+/// dτ`), `t = high − w (1 − τ)²` towards the upper, `t = low + w (3τ² −
+/// 2τ³)` towards both, with `w` the panel's width and `τ` over `[0, 1]`.
+/// Each turns an integrand that grows as one over the square root of the
+/// distance from that end into a smooth one; elsewhere the plain nodes.
+fn graded_points(
+    rule: &Rule,
+    panel: &Panel,
+    (low, high): (f64, f64),
+    graded: [bool; 2],
+) -> Vec<(f64, f64)> {
+    let at_low = graded[0] && panel.start == low;
+    let at_high = graded[1] && panel.end == high;
+    let (start, width) = (panel.start, panel.end - panel.start);
+    if !(at_low || at_high) || width.is_nan() || width <= 0.0 {
+        return rule.points(panel.start, panel.end).collect();
+    }
+    rule.points(0.0, 1.0)
+        .map(|(tau, w)| match (at_low, at_high) {
+            (true, true) => (
+                start + width * tau * tau * (3.0 - 2.0 * tau),
+                w * width * 6.0 * tau * (1.0 - tau),
+            ),
+            (true, false) => (start + width * tau * tau, w * width * 2.0 * tau),
+            _ => {
+                let r = 1.0 - tau;
+                (panel.end - width * r * r, w * width * 2.0 * r)
+            }
+        })
+        .collect()
 }
 
 /// The boundary of a face: per loop its pieces in the order the loop runs.
@@ -1702,12 +1792,17 @@ fn outline<'a>(
             }
             for (start, end) in stretches {
                 let crossings = crossings.clone();
+                let graded = [
+                    stands_still(surface, curve, start, end),
+                    stands_still(surface, curve, end, start),
+                ];
                 run.push(if reversed {
                     Piece {
                         curve,
                         start: end,
                         end: start,
                         crossings,
+                        graded,
                     }
                 } else {
                     Piece {
@@ -1715,6 +1810,7 @@ fn outline<'a>(
                         start,
                         end,
                         crossings,
+                        graded,
                     }
                 });
             }
@@ -1887,7 +1983,8 @@ fn sampled(
                     return Err(unsettled(index));
                 }
                 let from = samples.len();
-                for (t, w) in rule.points(panel.start, panel.end) {
+                let bounds = (piece.start.min(piece.end), piece.start.max(piece.end));
+                for (t, w) in graded_points(rule, &panel, bounds, piece.graded) {
                     let (point, tangent) = piece.curve.derivatives(t);
                     let ((u, v), (foot, su, sv)) = follow
                         .project(point)

@@ -529,7 +529,9 @@ fn simplest(points: &[Vec3], spline: &NurbsCurve, tol: f64) -> Curve3 {
     } else {
         last
     };
-    if let Some(circle) = circle_through(first, third, middle, closed) {
+    if let Some(circle) =
+        circle_through(first, third, middle, closed).and_then(|circle| running_with(circle, points))
+    {
         let off = |p: &Vec3| {
             let (x, y, z) = circle.frame().local(*p);
             (x.hypot(y) - circle.radius()).hypot(z)
@@ -562,6 +564,39 @@ fn circle_through(a: Vec3, b: Vec3, c: Vec3, closed: bool) -> Option<Circle> {
     let z = if closed { normal } else { -normal };
     let frame = Frame::new(center, z, a - center)?;
     Circle::new(frame, radius).ok()
+}
+
+/// `circle` turned, if need be, to run the way `points` (on it, in order)
+/// go round it: by the sign of the angle they turn through about its axis,
+/// step by step. Three points of a run say which way it goes only while it
+/// is less than a turn: a rim traced past both ends of an arc by more than
+/// what is left of the circle (a slot whose end radius is about the
+/// plate's thickness, the reach being twice the thickness) runs more than
+/// a turn, and its first, middle and last points then lie the other way
+/// round (the sheet-metal enclosure's and the rack's finding, 2026-10-27:
+/// the edges went round the wrong half of their circles). `None` when the
+/// points turn through no angle.
+fn running_with(circle: Circle, points: &[Vec3]) -> Option<Circle> {
+    let frame = *circle.frame();
+    let (center, z) = (frame.origin(), frame.z());
+    let turned: f64 = points
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [a, b] => {
+                let (a, b) = (*a - center, *b - center);
+                Some(a.cross(b).dot(z).atan2(a.dot(b)))
+            }
+            _ => None,
+        })
+        .sum();
+    if !(turned.abs() > 0.0) {
+        return None;
+    }
+    if turned > 0.0 {
+        return Some(circle);
+    }
+    let flipped = Frame::new(center, -z, frame.x())?;
+    Circle::new(flipped, circle.radius()).ok()
 }
 
 /// The range of `curve` from `start` to `end` (two points on it), or
@@ -632,6 +667,74 @@ fn ruled(first: &NurbsCurve, second: &NurbsCurve, tol: f64) -> Result<Surface, K
         vec![1.0; 2 * count],
     )?;
     Ok(flat(&ctrl, tol).unwrap_or(Surface::Nurbs(surface)))
+}
+
+/// The surface of a ruled rim between the traced rows `first` and
+/// `second` (the corners at each station, in order) and their splines:
+/// [`ruled`] (the plane its control points lie in, else the ruled
+/// spline), unless both rows are circles about one axis (their centres on
+/// it within the share of the tolerance, apart along it by more than the
+/// tolerance) and every traced corner and the middle of every ruling
+/// between them lie within the share of the tolerance of the cylinder or
+/// cone through the two circles: then that surface (a square rim round a
+/// hole in a flat plate is the cylinder of the hole, exactly as an
+/// extrusion's side is; a bevelled one a cone). The same share every
+/// other choice of representation in this module holds to; a rim that is
+/// one of these surfaces only roughly stays the spline.
+fn ruled_rim(rows: [&[Vec3]; 2], fits: [&NurbsCurve; 2], tol: f64) -> Result<Surface, KernelError> {
+    let surface = ruled(fits[0], fits[1], tol)?;
+    if matches!(surface, Surface::Plane(_)) {
+        return Ok(surface);
+    }
+    Ok(round_rim(rows, fits, tol).unwrap_or(surface))
+}
+
+/// The cylinder or cone of [`ruled_rim`], if the rows make one.
+fn round_rim(rows: [&[Vec3]; 2], fits: [&NurbsCurve; 2], tol: f64) -> Option<Surface> {
+    let limit = SHARE * tol;
+    let (Curve3::Circle(c0), Curve3::Circle(c1)) = (
+        simplest(rows[0], fits[0], tol),
+        simplest(rows[1], fits[1], tol),
+    ) else {
+        return None;
+    };
+    let (o0, o1) = (c0.frame().origin(), c1.frame().origin());
+    let mut axis = c0.frame().z();
+    let mut height = (o1 - o0).dot(axis);
+    if height < 0.0 {
+        axis = -axis;
+        height = -height;
+    }
+    // Coaxial: the second centre on the first's axis, the second circle's
+    // plane square to it (its axis along it within what the radius allows).
+    let off_axis = ((o1 - o0) - axis * height).length();
+    let tilt = c1.frame().z().cross(axis).length() * c1.radius();
+    if !(height > tol && off_axis <= limit && tilt <= limit) {
+        return None;
+    }
+    let frame = Frame::new(o0, axis, c0.frame().x())?;
+    let (r0, r1) = (c0.radius(), c1.radius());
+    let surface = if (r1 - r0).abs() <= limit {
+        Surface::Cylinder(craft3d_geom::Cylinder::new(frame, 0.5 * (r0 + r1)).ok()?)
+    } else {
+        let half = ((r1 - r0) / height).atan();
+        Surface::Cone(craft3d_geom::Cone::new(frame, r0, half).ok()?)
+    };
+    // The distance of a point from it, in the frame of the axis.
+    let (radius, slope) = match &surface {
+        Surface::Cylinder(c) => (c.radius(), 0.0),
+        Surface::Cone(c) => (c.radius(), c.half_angle().tan()),
+        _ => return None,
+    };
+    let off = |p: Vec3| {
+        let (x, y, z) = frame.local(p);
+        ((x.hypot(y) - (radius + z * slope)) / slope.hypot(1.0)).abs()
+    };
+    let holds = rows[0]
+        .iter()
+        .zip(rows[1])
+        .all(|(a, b)| off(*a) <= limit && off(*b) <= limit && off(a.lerp(*b, 0.5)) <= limit);
+    (holds && rows[0].len() == rows[1].len()).then_some(surface)
 }
 
 /// The plane `points` lie in within the share of the tolerance, if any.
@@ -1636,7 +1739,7 @@ fn trace_boundary(
             .end_surface()
             .cloned()
             .ok_or_else(|| refuse(Some(edge_id), "an onto end lost its surface"))?,
-        _ => ruled(&hi_fit, &lo_fit, tol)?,
+        _ => ruled_rim([&hi_row, &lo_row], [&hi_fit, &lo_fit], tol)?,
     };
     // Outward: away from the material, against the inward direction.
     let mid_rim = (middle.point + middle.normal * levels[0])

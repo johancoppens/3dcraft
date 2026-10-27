@@ -634,14 +634,68 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
             let apex = surface.eval(u, 0.0);
             assert!(apex.length() <= 1e-6 * k, "{k}: the fan's apex at {apex:?}");
         }
-        // Owed: the faces beside the fan have a corner where B stands
-        // still (the ruling at the fold), at which the area integral does
-        // not settle (topo::mass); measuring and unfolding them is refused
-        // with that reason, never a wrong number.
-        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
-        if let Err(e) = develop(&made.body, &faces, &tol(k)) {
-            assert!(e.to_string().contains("cannot be measured"), "{e}");
+        // The faces beside the fan have a corner where B stands still
+        // (the ruling at the fold): measured since 2026-10-27 (topo::mass
+        // grades the boundary's panels at such a corner), where they were
+        // refused, "cannot be measured". The fan is a cone with its apex at
+        // the origin: its area is `½ ∫ |B × dB|` over its stretch of B,
+        // summed here over 1 << 14 chords of the fan's own far row.
+        let areas = craft3d_topo::face_areas(&made.body);
+        for (i, a) in areas.iter().enumerate() {
+            assert!(a.is_ok(), "{k}: face {i}: {a:?}");
         }
+        const CHORDS: usize = 1 << 14;
+        let row: Vec<Vec3> = (0..=CHORDS)
+            .map(|i| surface.eval(i as f64 / CHORDS as f64, 1.0))
+            .collect();
+        let (mut area, mut angle) = (0.0, 0.0);
+        for w in row.windows(2) {
+            area += 0.5 * w[0].cross(w[1]).length();
+            angle += w[0]
+                .normalized()
+                .unwrap()
+                .cross(w[1].normalized().unwrap())
+                .length()
+                .asin();
+        }
+        let measured = *areas[fan].as_ref().unwrap();
+        assert!(
+            (measured - area).abs() <= 1e-6 * area,
+            "{k}: the fan's area {measured} for {area}"
+        );
+        // Laid flat, the fan opens by the length of its stretch's image on
+        // the unit sphere, `∫ |d(B / |B|)|` (an isometry keeps the angle at
+        // the apex). Owed (docs/design/developable.md, Open): the layout of
+        // a strip beside the fan does not converge at its standing corner;
+        // until then the unfold is refused with that reason, never a wrong
+        // pattern.
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        let dev = match develop(&made.body, &faces, &tol(k)) {
+            Ok(dev) => dev,
+            Err(e) => {
+                assert!(e.to_string().contains("converge"), "{k}: {e}");
+                continue;
+            }
+        };
+        let e = dev.error();
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        let flat = |p: Vec3| dev.to_flat(FaceId(fan as u32), p).unwrap();
+        let (apex, first, last) = (
+            flat(surface.eval(0.5, 0.0)),
+            flat(row[0]),
+            flat(row[CHORDS]),
+        );
+        let (a, b) = (
+            [first[0] - apex[0], first[1] - apex[1]],
+            [last[0] - apex[0], last[1] - apex[1]],
+        );
+        let opened = (a[0] * b[1] - a[1] * b[0])
+            .abs()
+            .atan2(a[0] * b[0] + a[1] * b[1]);
+        assert!(
+            (opened - angle).abs() <= 1e-6,
+            "{k}: the fan opens by {opened} in the pattern, {angle} on the part"
+        );
     }
 }
 

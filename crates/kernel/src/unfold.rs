@@ -1211,6 +1211,12 @@ pub struct FaceCurvature {
     lengths: (f64, f64),
 }
 
+/// The share of the square of its larger tangent below which the area
+/// element of a sample of the curvature counts as nearly standing still,
+/// and of the face's parameters by which such a sample is moved inward
+/// ([`curvature_over`]).
+const NEARLY_STILL: f64 = 1e-3;
+
 fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> FaceCurvature {
     const N: usize = 32;
     let rule = Rule::new(4);
@@ -1235,7 +1241,29 @@ fn curvature_over(surface: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
     let mut across_v = vec![0.0_f64; vs.len()];
     for (&u, ku) in us.iter().zip(across_u.iter_mut()) {
         for (&v, kv) in vs.iter().zip(across_v.iter_mut()) {
-            let uv = [u, v];
+            // Where the parametrisation nearly stands still (a corner where
+            // one row has a turning point: the strip beside the fan at a
+            // fold, 2026-10-27) `K = (LN − M²)/(EG − F²)` divides what the
+            // fit leaves of the numerator by a denominator that is all but
+            // zero; `K` is continuous on the surface, so it is taken a
+            // thousandth of the face's parameters inward, where the
+            // parametrisation is regular.
+            if collapsed_at(surface, [u, v], 1e-6) {
+                continue;
+            }
+            let uv = if collapsed_at(surface, [u, v], NEARLY_STILL) {
+                let inward = |x: f64, lo: f64, hi: f64| {
+                    let step = (hi - lo) * NEARLY_STILL;
+                    if x < 0.5 * (lo + hi) {
+                        x + step
+                    } else {
+                        x - step
+                    }
+                };
+                [inward(u, u0, u1), inward(v, v0, v1)]
+            } else {
+                [u, v]
+            };
             // Where the surface collapses (a fan's apex) the curvature is
             // the rounding of 0 / 0: not a curvature of the face.
             if collapsed_at(surface, uv, 1e-6) {

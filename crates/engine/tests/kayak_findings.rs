@@ -160,6 +160,33 @@ fn the_level_for_the_hull_displacement_is_found() {
 }
 
 #[test]
+fn the_hull_is_cut_round_30_mm() {
+    // The boolean refused the hull's cut at 30.28 mm as an invalid body
+    // (docs/design/sections-and-levels.md, Open, until 2026-10-27); on
+    // main 4d82484c it is measured. Held to the section: the volume below
+    // grows by the section's area, (V(30.3) − V(30.2)) / 0.1 within 1e-4
+    // of the mean of the sections there.
+    let (mut s, failed) = steps("sea_kayak_9.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let below = |s: &mut Session, offset: &str| {
+        let m = s
+            .execute("measure.below", &json!({"of": "Hull", "offset": offset}))
+            .unwrap_or_else(|e| panic!("{offset}: {e}"));
+        (
+            m["volume"].as_f64().unwrap(),
+            m["section"]["area"].as_f64().unwrap(),
+        )
+    };
+    let (low, low_area) = below(&mut s, "30.2 mm");
+    let (at, _) = below(&mut s, "30.28 mm");
+    let (high, high_area) = below(&mut s, "30.3 mm");
+    assert!(low < at && at < high, "{low} {at} {high}");
+    let rate = (high - low) / 0.1;
+    let mean = 0.5 * (low_area + high_area);
+    assert!((rate - mean).abs() <= 1e-4 * mean, "{rate} for {mean}");
+}
+
+#[test]
 fn the_hull_panels_have_no_fans_where_their_ends_line_up_with_a_ruling() {
     let (mut s, failed) = steps("sea_kayak_8.steps.json");
     // The four hull panels are built and unfold (U0 to U3); only the deck

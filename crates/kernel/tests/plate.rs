@@ -175,14 +175,93 @@ fn a_flat_plate_with_a_hole_keeps_the_hole() {
             "two skins, four rims and the hole's"
         );
         let area = 12.0 - PI * 0.75 * 0.75;
-        // The hole's rim is a cubic fit of the cylinder within a quarter
-        // of the tolerance.
+        // The hole's rim is the hole's cylinder, exactly as an extrusion's
+        // side is (the rack's finding, 2026-10-27: it was a cubic fit,
+        // which `radius` queries did not find), so the volume is exact.
+        let cylinders: Vec<f64> = made
+            .body
+            .faces
+            .iter()
+            .filter_map(|f| match &f.surface {
+                Surface::Cylinder(c) => Some(c.radius()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cylinders.len(), 1, "{k}: the hole's rim is a cylinder");
+        near(cylinders[0], 0.75 * k, 1e-12, "the rim's radius");
+        assert!(
+            made.body
+                .faces
+                .iter()
+                .all(|f| matches!(f.surface, Surface::Plane(_) | Surface::Cylinder(_))),
+            "{k}: no freeform face"
+        );
         near(
             volume(&made.body),
             area * 0.2 * k * k * k,
-            1e-6,
+            1e-12,
             "plate with a hole",
         );
+    }
+}
+
+/// A stadium slot (two lines and two half circles of radius `r`) in a
+/// flat sheet plated with the thickness `r` and less (the sheet-metal
+/// enclosure's and the rack's finding, 2026-10-27: a slot whose end
+/// radius is about the thickness gave "cannot be tessellated", an
+/// invalid body or a self-check out of work). Every rim is a plane or the
+/// cylinder of its arc, and the volume is `(A − (π r² + 2 r l)) t`.
+#[test]
+fn a_narrow_slot_is_cut_by_planes_and_cylinders() {
+    for k in SCALES {
+        let (r, l) = (1.5, 57.0);
+        let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+        let mut curves: Vec<SketchCurve> = vec![
+            line(1, s([-80.0, -60.0]), s([80.0, -60.0])),
+            line(2, s([80.0, -60.0]), s([80.0, 60.0])),
+            line(3, s([80.0, 60.0]), s([-80.0, 60.0])),
+            line(4, s([-80.0, 60.0]), s([-80.0, -60.0])),
+        ];
+        let (x0, x1) = (-60.0, -60.0 - 2.0 * r);
+        let (y0, y1) = (-0.5 * l, 0.5 * l);
+        curves.push(line(5, s([x0, y0]), s([x0, y1])));
+        curves.push(SketchCurve {
+            id: 6,
+            curve: Curve2::Arc {
+                center: s([x0 - r, y1]),
+                start: s([x0, y1]),
+                end: s([x1, y1]),
+            },
+        });
+        curves.push(line(7, s([x1, y1]), s([x1, y0])));
+        curves.push(SketchCurve {
+            id: 8,
+            curve: Curve2::Arc {
+                center: s([x0 - r, y0]),
+                start: s([x1, y0]),
+                end: s([x0, y0]),
+            },
+        });
+        let tol = tolerance(k);
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let body = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+        for t in [1.5, 1.0, 2.0] {
+            let made = plated(&body, t * k, Side::Out, &BTreeMap::new(), k);
+            assert!(
+                made.body
+                    .faces
+                    .iter()
+                    .all(|f| matches!(f.surface, Surface::Plane(_) | Surface::Cylinder(_))),
+                "{k} {t}: no freeform face"
+            );
+            let area = 160.0 * 120.0 - (PI * r * r + 2.0 * r * l);
+            near(
+                volume(&made.body),
+                area * t * k * k * k,
+                1e-12,
+                "plate with a slot",
+            );
+        }
     }
 }
 
