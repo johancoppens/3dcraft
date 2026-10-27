@@ -899,25 +899,35 @@ fn a_level_refused_where_a_step_lands_is_found_by_halving_instead() {
     assert!((found.below.offset - want).abs() <= 1e-10, "{found:?}");
 }
 
-/// One refused where the halving lands is the error: the halving after a
-/// refused first guess, and a halving the search took because a Newton
-/// step did not halve the residual (0.65, then the middle 0.475).
+/// One refused where the halving lands is stepped around too, by the next
+/// point of `AROUND` not yet tried: the halving after a refused first
+/// guess (0.5, then a quarter of the bracket, 0.25), and a halving the
+/// search took because a Newton step did not halve the residual (0.65,
+/// then the middle 0.475, then a quarter of [0.3, 0.65]); both find √0.3.
+/// Refused at the first guess and at every point of `AROUND` after it,
+/// the last refusal is the error. (Until 2026-10-27 the second refusal in
+/// a row was the error, which the sea kayak's hull met: a halving refused
+/// by the boolean, with offsets beside it that it cuts.)
 #[test]
-fn a_level_refused_where_the_halving_lands_is_the_error() {
+fn a_level_refused_where_the_halving_lands_is_stepped_around() {
+    let want = 0.3_f64.sqrt();
     let (asked, found) = squared(0.3, &[1, 2]);
-    assert_eq!(asked, [0.3, 0.5]);
-    assert!(
-        matches!(found, Err(CutError::Kernel { offset, .. }) if offset == 0.5),
-        "{found:?}"
-    );
+    assert_eq!(asked[..3], [0.3, 0.5, 0.25]);
+    let found = found.unwrap();
+    assert!((found.below.offset - want).abs() <= 1e-10, "{found:?}");
     let (asked, found) = squared(0.3, &[3]);
-    assert_eq!(asked.len(), 3);
     assert!(
-        (asked[1] - 0.65).abs() < 1e-12 && asked[2] == 0.475,
+        (asked[1] - 0.65).abs() < 1e-12
+            && asked[2] == 0.475
+            && (asked[3] - (0.3 + 0.25 * (asked[1] - 0.3))).abs() < 1e-15,
         "{asked:?}"
     );
+    let found = found.unwrap();
+    assert!((found.below.offset - want).abs() <= 1e-10, "{found:?}");
+    let (asked, found) = squared(0.3, &[1, 2, 3, 4, 5]);
+    assert_eq!(asked, [0.3, 0.5, 0.25, 0.75, 0.375]);
     assert!(
-        matches!(found, Err(CutError::Kernel { offset, .. }) if offset == 0.475),
+        matches!(found, Err(CutError::Kernel { offset, .. }) if offset == 0.375),
         "{found:?}"
     );
 }

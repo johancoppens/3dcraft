@@ -62,6 +62,17 @@ pub const SETTLED: f64 = 1e-10;
 /// offset next to a steep section. Further off it is "did not converge".
 pub const UNSETTLED: f64 = 1e-7;
 
+/// Where in the bracket (as shares of it, from its low end) the level
+/// search tries next after an offset the boolean refuses, in turn while
+/// they are refused: its middle, then its quarters and an eighth. An
+/// offset is refused where the plane meets a body in a configuration the
+/// boolean cannot cut (a face in the plane, a tangency), which happens at
+/// isolated offsets; points spread over the bracket step around them
+/// (each further than 1e-9 of the bracket from those refused: nearer is
+/// the same offset up to rounding), and refused at all four after one
+/// refusal the last refusal is the answer.
+const AROUND: [f64; 4] = [0.5, 0.25, 0.75, 0.375];
+
 /// Two Gauss–Legendre sums of a section's panel agree when they differ by
 /// at most this much of the bodies' size to the integral's power, in
 /// proportion to the panel's share of that size (so that the total over
@@ -619,7 +630,9 @@ fn floor(
                 .then(|| one.probe(tolerance))
                 .flatten()
                 .and_then(|probe| {
-                    let slack = 2.0 * linear + one.body.tolerances.largest().unwrap_or(0.0);
+                    // How far a face's edges may be from its surface: the
+                    // modelling tolerance, or an edge's own larger one.
+                    let slack = linear + one.body.tolerances.largest().unwrap_or(0.0);
                     face_floor(probe, index, normal, enough, 0.01 * linear, slack)
                 });
             trimmed
@@ -740,9 +753,11 @@ fn spread(at: impl Fn(f64) -> Vec3, normal: Vec3) -> f64 {
 /// (`craft3d_geom::support`: a piece's least along a direction is proven,
 /// from the convex hull of its Bézier net): a piece of the surface over a
 /// box of its parameters is connected, so one that meets none of the
-/// face's edges (its box grown by `slack`, how far the face's outline may
-/// be from its edges' curves) is all in the face or all out of it, told
-/// by its middle, and dropped when out; every other piece is kept in full
+/// face's edges (its box grown by `slack`, how far an edge may be from
+/// the surface: the face's outline is its edges' curves seen on the
+/// surface, so each of its points is within `slack` of a point of an
+/// edge) is all in the face or all out of it, told by its middle, and
+/// dropped when out; every other piece is kept in full
 /// (it holds every point of the face it covers). The region with the
 /// least bound is cut in two (a piece of the surface across the parameter
 /// along which it spreads more along the normal; an edge's range in
@@ -1277,9 +1292,10 @@ fn edge_sums(
 /// The offset of a plane square to `side.normal` at which the volume of
 /// `bodies` below it is `volume`, found as the module documentation says,
 /// and what lies below the plane there. An offset the boolean refuses
-/// (a face of a body lying in the plane where a Newton step landed) is
-/// stepped around by halving the bracket instead; one refused where the
-/// halving lands is the error.
+/// (a face of a body lying in the plane where a step landed) is stepped
+/// around: the next offset is the first of the points of the bracket in
+/// [`AROUND`] not yet tried since the last offset measured; refused at
+/// all of them, it is the error.
 pub fn level_for(
     bodies: &[&Body],
     side: &CutPlane,
@@ -1319,21 +1335,37 @@ fn search(
     }
     let mut offset = lo + (hi - lo) * (volume / most);
     let mut last_residual = f64::INFINITY;
-    let mut halving_now = false;
+    // The offsets refused since the last one measured, and how far along
+    // `AROUND` the next one to try is.
+    let mut refused: Vec<f64> = Vec::new();
+    let mut around = 0;
     for step in 1..=MAX_STEPS {
         let found = match measure(offset) {
             Ok(found) => found,
             Err(error @ CutError::Kernel { .. }) => {
-                let halving = 0.5 * (lo + hi);
-                if !halving_now && halving > lo && halving < hi && halving != offset {
-                    offset = halving;
-                    halving_now = true;
-                    continue;
-                }
-                return Err(error);
+                refused.push(offset);
+                let next = AROUND
+                    .iter()
+                    .enumerate()
+                    .skip(around)
+                    .map(|(k, share)| (k, lo + (hi - lo) * share))
+                    // Not one refused already, up to rounding.
+                    .find(|&(_, x)| {
+                        x > lo
+                            && x < hi
+                            && refused.iter().all(|&r| (x - r).abs() > 1e-9 * (hi - lo))
+                    });
+                let Some((k, x)) = next else {
+                    return Err(error);
+                };
+                around = k + 1;
+                offset = x;
+                continue;
             }
             Err(error) => return Err(error),
         };
+        refused.clear();
+        around = 0;
         let residual = found.volume - volume;
         if residual.abs() <= SETTLED * volume {
             return Ok(Level {
@@ -1356,7 +1388,6 @@ fn search(
             && newton < hi
             && residual.abs() <= 0.5 * last_residual;
         let next = if use_newton { newton } else { halving };
-        halving_now = !use_newton;
         last_residual = residual.abs();
         if !(next > lo && next < hi) {
             // The bracket is as narrow as an f64 makes it: an answer only
