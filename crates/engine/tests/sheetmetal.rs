@@ -475,6 +475,18 @@ fn a_spline_hole_is_not_proven_and_a_failed_part_is_not_measured() {
         json!({"measure": "bendRadius", "of": "Plate", "min": "1 mm"}),
     );
     assert_eq!(check["status"], "error", "{check}");
+    // Named by `of`, the failed part has no body; named by none, every
+    // sheet-metal part is read and this one refused as failed.
+    assert!(
+        check["message"].as_str().unwrap().contains("no body"),
+        "{check}"
+    );
+    let check = assertion(
+        &mut s,
+        "AnyRadius",
+        json!({"measure": "bendRadius", "min": "1 mm"}),
+    );
+    assert_eq!(check["status"], "error", "{check}");
     assert!(
         check["message"].as_str().unwrap().contains("failed"),
         "{check}"
