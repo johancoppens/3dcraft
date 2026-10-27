@@ -14,7 +14,7 @@
 //!    apart). Now the path is thinned before the fit; the curvature
 //!    measure and its assertion settle.
 //! 6. The coaming: a boolean of the hull's cylinders refused ("imprint
-//!    lost"); diagnosed in docs/design/booleans.md, owed.
+//!    lost"); built since 2026-10-27, the ring cut from the hull owed.
 //! 7. The hull's panels with a deep check: all built and passing (the
 //!    check's finding on TipHalfD was its ray casting, fixed 2026-10-27).
 
@@ -89,16 +89,29 @@ fn the_panels_of_a_five_metre_hull_are_built_and_measured() {
 
 #[test]
 fn the_coaming_boolean_is_refused_as_owed_not_wrong() {
-    // Owed (docs/design/booleans.md, 2026-10-27): the hull's first
-    // intersect loses the ruling in which an end plane cuts a neighbouring
-    // cylinder; everything after it fails for that reason, and nothing
-    // else does.
-    let (_, failed) = steps("sea_kayak_6.steps.json");
-    let first = failed
-        .iter()
-        .find(|f| f.contains("Half1"))
-        .unwrap_or_else(|| panic!("{failed:#?}"));
-    assert!(first.contains("imprint lost"), "{first}");
+    // The hull's first intersect lost the ruling in which an end plane
+    // cuts a neighbouring cylinder ("imprint lost"), and the tips' first
+    // was refused at the edge of tolerance: both were the distance from a
+    // segment to a flat box read as its rounding (docs/design/booleans.md,
+    // *The sea kayak's tips*, 2026-10-27), and both are built now. Owed:
+    // the coaming's ring cut from the hull, refused as a curve that
+    // cannot be fitted; nothing else fails, and what is built passes the
+    // deep check.
+    let (mut s, failed) = steps("sea_kayak_6.steps.json");
+    assert_eq!(failed.len(), 2, "{failed:#?}");
+    assert!(
+        failed[0].starts_with("feature \"RingIn\"") && failed[0].contains("does not support"),
+        "{failed:#?}"
+    );
+    assert!(failed[1].starts_with("feature \"Coaming\""), "{failed:#?}");
+    let check = s.execute("document.check", &json!({"deep": true})).unwrap();
+    let problems = check["problems"].as_array().unwrap();
+    assert!(
+        problems
+            .iter()
+            .all(|p| p["name"] == "RingIn" || p["name"] == "Coaming"),
+        "{check}"
+    );
 }
 
 #[test]
