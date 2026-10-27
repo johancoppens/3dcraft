@@ -743,7 +743,7 @@ pub fn fold_linkage(
                 let Some((solved, _)) = attempt(&flat, guess, &mut budget)? else {
                     continue;
                 };
-                if !(size_of(&solved) >= 0.25 * FIRST_STEP) {
+                if size_of(&solved) < 0.25 * FIRST_STEP {
                     continue;
                 }
                 let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
