@@ -48,8 +48,8 @@ pub use public::{
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
-    BendDirection, CornerRelief, Flange, FlangeFrom, FlangeOn, MAX_SHEET_FLANGES, ReliefShape,
-    SheetMetal,
+    BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn,
+    MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
 };
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 
@@ -1945,6 +1945,15 @@ impl Document {
                     "the sheet-metal part `{}` has {} flanges; the most is {MAX_SHEET_FLANGES}",
                     feature.name,
                     part.flanges.len()
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
+                && part.corners.len() > MAX_SHEET_FLANGES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}` has {} corner treatments; the most is {MAX_SHEET_FLANGES}",
+                    feature.name,
+                    part.corners.len()
                 )));
             }
             if let FeatureKind::SheetMetal(part) = &feature.kind

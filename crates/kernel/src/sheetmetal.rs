@@ -120,6 +120,66 @@ pub struct Relief {
     pub size: f64,
 }
 
+/// How a corner where two flanged edges of the base meet is closed: the
+/// flanges' flats run on sideways past where their bends end, to planes
+/// the folded walls give (docs/design/sheetmetal.md › *Closed corners*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CornerKind {
+    /// Not closed: each flange ends where its bend does.
+    Open,
+    /// The covering flange runs to the gap short of the other's outside
+    /// face; the other runs to the gap short of the covering one's inside
+    /// face.
+    Butt,
+    /// The covering flange runs to the other's outside face (flush,
+    /// covering its end); the other runs to the gap short of the covering
+    /// one's inside face.
+    Overlap,
+    /// Both run to the plane that halves the angle between the walls, each
+    /// half the gap short of it.
+    Miter,
+}
+
+impl CornerKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            CornerKind::Open => "open",
+            CornerKind::Butt => "butt",
+            CornerKind::Overlap => "overlap",
+            CornerKind::Miter => "miter",
+        }
+    }
+}
+
+/// A corner's treatment: its kind, the gap between the two flats, and
+/// (for butt and overlap) the flange that covers the corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Closing {
+    pub kind: CornerKind,
+    pub gap: f64,
+    /// Butt and overlap: the flange that runs over the corner; `None` the
+    /// one on the edge that arrives at the corner (the base's outer loop
+    /// runs counter-clockwise). Resolved in [`Corner::closing`].
+    pub over: Option<usize>,
+}
+
+impl Closing {
+    /// The corner left open.
+    pub const OPEN: Closing = Closing {
+        kind: CornerKind::Open,
+        gap: 0.0,
+        over: None,
+    };
+}
+
+/// The treatment of the one corner where the flanges `flanges` meet (in
+/// either order), in place of the part's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CornerSpec {
+    pub flanges: [usize; 2],
+    pub closing: Closing,
+}
+
 /// One flange as the caller gives it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlangeSpec {
@@ -147,6 +207,11 @@ pub struct Spec {
     pub flanges: Vec<FlangeSpec>,
     /// The relief at every corner where two flanged edges of the base meet.
     pub relief: Option<Relief>,
+    /// How every corner where two flanged edges of the base meet is closed
+    /// ([`Closing::OPEN`]: not) ...
+    pub corner: Closing,
+    /// ... but the corners listed here, each named by its two flanges.
+    pub corners: Vec<CornerSpec>,
     /// Holes and cut-outs drawn in the pattern's axes outside the base:
     /// each closed profile becomes a hole of the one flat (a flange's; the
     /// base's holes are its own) it lies wholly inside in the flat pattern.
@@ -236,6 +301,24 @@ pub struct Flat {
     pub outer: Vec<Segment>,
     pub holes: Vec<Vec<Segment>>,
     pub transform: Transform,
+    /// A flange's flat: the place of its tip (the far edge, `b0 → b1`) in
+    /// `outer`; `None` for the base.
+    pub tip: Option<usize>,
+    /// The ends of the flat's extensions at closed corners: the place of
+    /// each end's segment in `outer`, and the plane (in the pattern's axes
+    /// as folded) its edge of the part lies on.
+    pub ends: Vec<End>,
+}
+
+/// The end of a flange's extension at a closed corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct End {
+    /// The place of the end's segment in the flat's outline.
+    pub segment: usize,
+    /// The plane the end face lies on, folded, in the pattern's axes: a
+    /// point of it and its unit normal.
+    pub point: Vec3,
+    pub normal: Vec3,
 }
 
 /// A corner of the base where two flanged edges meet.
@@ -246,6 +329,9 @@ pub struct Corner {
     /// that leaves it.
     pub bends: [usize; 2],
     pub relief: Option<Relief>,
+    /// How it is closed; for butt and overlap `over` is the covering
+    /// flange.
+    pub closing: Closing,
 }
 
 /// What a face of the folded sheet is.
@@ -348,6 +434,17 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 relief.size
             ),
         ));
+    }
+
+    check_closing("corner", &spec.corner, t, tol)?;
+    if spec.corners.len() > MAX_FLANGES {
+        return Err(refuse(
+            None,
+            format!("a part takes at most {MAX_FLANGES} corner treatments"),
+        ));
+    }
+    for (i, c) in spec.corners.iter().enumerate() {
+        check_closing(&format!("corners.{i}"), &c.closing, t, tol)?;
     }
 
     // The base's flanged edges and the flanges' parents.
@@ -455,7 +552,22 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             point: a.end,
             bends: [fa, fb],
             relief: spec.relief,
+            closing: closing_of(spec, [fa, fb])?,
         });
+    }
+    for (i, c) in spec.corners.iter().enumerate() {
+        let [x, y] = c.flanges;
+        let meet = corners
+            .iter()
+            .any(|k| k.bends == [x, y] || k.bends == [y, x]);
+        if !meet {
+            return Err(refuse(
+                None,
+                format!(
+                    "corners.{i}: the flanges {x} and {y} do not meet at a corner of the base (two flanges on edges of the base that follow each other at a corner)"
+                ),
+            ));
+        }
     }
     let r = spec.relief.map_or(0.0, |relief| relief.size);
     let mut base_outer: Vec<Segment> = Vec::with_capacity(n + 2 * corners.len());
@@ -516,6 +628,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         outer: base_outer,
         holes: base_holes,
         transform: Transform::IDENTITY,
+        tip: None,
+        ends: Vec::new(),
     });
     for (i, f) in spec.flanges.iter().enumerate() {
         let (parent, start, end) = match f.on {
@@ -590,17 +704,22 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             outer: vec![line(a1, a0), line(a0, b0), line(b0, b1), line(b1, a1)],
             holes: Vec::new(),
             transform: Transform::IDENTITY,
+            tip: Some(2),
+            ends: Vec::new(),
         });
         bends.push(bend);
     }
 
-    place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
-    pattern_clear(&flats, &bends, tolerance)?;
+    // The fold places every flat by its bends alone, so the closed
+    // corners' extensions are laid out against the walls as folded.
     let folded = fold(&flats, &bends, tolerance)?;
     for (flat, transform) in flats.iter_mut().zip(&folded.transforms) {
         flat.transform = *transform;
     }
-    let (sheet, sheet_faces) = folded_sheet(
+    close_corners(&mut flats, &bends, &corners, t, tolerance)?;
+    place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
+    pattern_clear(&flats, &bends, tolerance)?;
+    let (sheet, sheet_faces, ends) = folded_sheet(
         spec,
         &flats,
         &bends,
@@ -610,7 +729,12 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     let faces: Vec<FaceId> = (0..sheet.faces.len())
         .filter_map(|f| u32::try_from(f).ok().map(FaceId))
         .collect();
-    let solid = plate(&sheet, &faces, t, Side::Out, &BTreeMap::new(), tolerance)?;
+    // An extension's end lies on its plane; every other end is square.
+    let joints: BTreeMap<EdgeId, crate::plate::Joint<'_>> = ends
+        .iter()
+        .map(|(edge, surface)| (*edge, crate::plate::Joint::Onto(surface)))
+        .collect();
+    let solid = plate(&sheet, &faces, t, Side::Out, &joints, tolerance)?;
     Ok(Part {
         plane: spec.plane,
         thickness: t,
@@ -952,6 +1076,303 @@ fn check_flange(i: usize, f: &FlangeSpec, tol: f64) -> Result<(), KernelError> {
     Ok(())
 }
 
+/// A closed corner's gap is more than the tolerance (flats that touch
+/// would make the part run through itself), and a butt's less than the
+/// thickness (its covering flange would end behind the other's inside
+/// face, covering nothing).
+fn check_closing(what: &str, c: &Closing, t: f64, tol: f64) -> Result<(), KernelError> {
+    if c.kind == CornerKind::Open {
+        return Ok(());
+    }
+    if !(c.gap.is_finite() && c.gap > tol) {
+        return Err(refuse(
+            None,
+            format!(
+                "{what}: a closed corner's gap has to be more than the tolerance {tol}, got {}: flats that touch would make the part one solid through itself",
+                c.gap
+            ),
+        ));
+    }
+    if c.kind == CornerKind::Butt && !(c.gap < t - tol) {
+        return Err(refuse(
+            None,
+            format!(
+                "{what}: a butt corner's gap ({}) has to be less than the thickness {t}: the covering flange would end behind the other's inside face and cover nothing (use overlap, or a smaller gap)",
+                c.gap
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The treatment of the corner where the flanges `bends` meet (the one on
+/// the arriving edge first): the corner's own, else the part's; `over`
+/// resolved to a flange of the two.
+fn closing_of(spec: &Spec, bends: [usize; 2]) -> Result<Closing, KernelError> {
+    let [fa, fb] = bends;
+    let mut own = spec
+        .corners
+        .iter()
+        .filter(|c| c.flanges == [fa, fb] || c.flanges == [fb, fa]);
+    let closing = match (own.next(), own.next()) {
+        (Some(_), Some(_)) => {
+            return Err(refuse(
+                None,
+                format!("corners: the corner of flanges {fa} and {fb} is listed twice"),
+            ));
+        }
+        (Some(c), None) => c.closing,
+        (None, _) => spec.corner,
+    };
+    let over = match closing.kind {
+        CornerKind::Open | CornerKind::Miter => None,
+        CornerKind::Butt | CornerKind::Overlap => match closing.over {
+            None => Some(fa),
+            Some(o) if o == fa || o == fb => Some(o),
+            Some(o) => {
+                return Err(refuse(
+                    None,
+                    format!(
+                        "corners: flange {o} is not one of the corner's flanges {fa} and {fb}, so it cannot cover the corner"
+                    ),
+                ));
+            }
+        },
+    };
+    Ok(Closing { over, ..closing })
+}
+
+/// A wall of a closed corner: the flat of flange `x` as folded, in the
+/// pattern's axes.
+struct Wall {
+    /// A point of its inner skin (the bend's inside: the top for a bend
+    /// up) and of its outer skin.
+    inner: Vec3,
+    outer: Vec3,
+    /// Unit, square to the flat, from the outer skin to the inner one.
+    inward: Vec3,
+    /// The middle of the flat, half way through.
+    middle: Vec3,
+}
+
+fn wall(flats: &[Flat], bends: &[Bend], x: usize, t: f64) -> Result<Wall, KernelError> {
+    let (Some(b), Some(flat)) = (bends.get(x), flats.get(x + 1)) else {
+        return Err(refuse(Some(x), "a corner's flange is missing"));
+    };
+    let up = b.angle > 0.0;
+    let tr = flat.transform;
+    let n = tr
+        .vector(Vec3::Z)
+        .normalized()
+        .ok_or_else(|| refuse(Some(x), "a flange's plane is not finite"))?;
+    let (a0, _) = b.far_line();
+    let at = |z: f64| tr.point(Vec3::new(a0[0], a0[1], z));
+    let (b0, b1) = tip(b);
+    let mid = scale(add(add(a0, b.far_line().1), add(b0, b1)), 0.25);
+    Ok(Wall {
+        inner: at(if up { t } else { 0.0 }),
+        outer: at(if up { 0.0 } else { t }),
+        inward: if up { n } else { -n },
+        middle: tr.point(Vec3::new(mid[0], mid[1], 0.5 * t)),
+    })
+}
+
+/// Lays out the extensions of the flats at the closed corners: each runs
+/// on sideways from its bend's end, along its tangent line and its tip,
+/// to the line where its end plane (folded) meets the flat's bottom skin
+/// (docs/design/sheetmetal.md › *Closed corners*). The planes, for the
+/// covering flange `C` and the other `O` of a butt or overlap, or the walls
+/// `A`, `B` of a mitre, `g` the gap:
+///
+/// - overlap: `C` to `O`'s outer skin; `O` to `C`'s inner skin moved `g`
+///   inward;
+/// - butt: `C` to `O`'s outer skin moved `g` inward; `O` as for overlap;
+/// - miter: each to the plane through the line where the outer skins meet
+///   with the normal `out_A − out_B` (the points as far from both outer
+///   skins), moved `g/2` towards its own wall.
+fn close_corners(
+    flats: &mut [Flat],
+    bends: &[Bend],
+    corners: &[Corner],
+    t: f64,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    // Per flange: the plane its extension ends on at its start and at its
+    // end (the corner at its edge's start or end).
+    let mut at_start: BTreeMap<usize, (Vec3, Vec3)> = BTreeMap::new();
+    let mut at_end: BTreeMap<usize, (Vec3, Vec3)> = BTreeMap::new();
+    for c in corners {
+        let [fa, fb] = c.bends;
+        let g = c.closing.gap;
+        let planes: [(usize, (Vec3, Vec3)); 2] = match c.closing.kind {
+            CornerKind::Open => continue,
+            kind => {
+                let (Some(ba), Some(bb)) = (bends.get(fa), bends.get(fb)) else {
+                    return Err(refuse(Some(fb), "a corner's flange is missing"));
+                };
+                if (ba.angle > 0.0) != (bb.angle > 0.0) {
+                    return Err(refuse(
+                        Some(fb),
+                        format!(
+                            "the corner of flanges {fa} and {fb} cannot be closed: one is bent up and the other down, so their walls do not meet"
+                        ),
+                    ));
+                }
+                let (wa, wb) = (wall(flats, bends, fa, t)?, wall(flats, bends, fb, t)?);
+                match kind {
+                    CornerKind::Miter => {
+                        let (oa, ob) = (-wa.inward, -wb.inward);
+                        let cos = oa.dot(ob);
+                        let sin2 = 1.0 - cos * cos;
+                        if !(sin2.sqrt() > tolerance.angular) {
+                            return Err(refuse(
+                                Some(fb),
+                                format!(
+                                    "the corner of flanges {fa} and {fb} cannot be mitred: their walls are parallel"
+                                ),
+                            ));
+                        }
+                        // A point on both outer skins: α oa + β ob.
+                        let (da, db) = (oa.dot(wa.outer), ob.dot(wb.outer));
+                        let alpha = (da - cos * db) / sin2;
+                        let beta = (db - cos * da) / sin2;
+                        let q = oa * alpha + ob * beta;
+                        let n = (oa - ob)
+                            .normalized()
+                            .ok_or_else(|| refuse(Some(fb), "a mitre's plane has no normal"))?;
+                        let (sa, sb) = (n.dot(wa.middle - q), n.dot(wb.middle - q));
+                        if !(sa * sb < 0.0) {
+                            return Err(refuse(
+                                Some(fb),
+                                format!(
+                                    "the corner of flanges {fa} and {fb} cannot be mitred: both walls lie on one side of the plane that halves the angle between them"
+                                ),
+                            ));
+                        }
+                        let toward = |side: f64| q + n * (0.5 * g * side.signum());
+                        [(fa, (toward(sa), n)), (fb, (toward(sb), n))]
+                    }
+                    _ => {
+                        let cover = c.closing.over.unwrap_or(fa);
+                        let (wc, wo, other) = if cover == fa {
+                            (&wa, &wb, fb)
+                        } else {
+                            (&wb, &wa, fa)
+                        };
+                        let shift = if kind == CornerKind::Butt { g } else { 0.0 };
+                        [
+                            (cover, (wo.outer + wo.inward * shift, wo.inward)),
+                            (other, (wc.inner + wc.inward * g, wc.inward)),
+                        ]
+                    }
+                }
+            }
+        };
+        for (x, plane) in planes {
+            // Flange fa's edge arrives at the corner (its end), fb's leaves
+            // it (its start).
+            let side = if x == fa { &mut at_end } else { &mut at_start };
+            side.insert(x, plane);
+        }
+    }
+    let flanges: Vec<usize> = at_start.keys().chain(at_end.keys()).copied().collect();
+    let mut done: Vec<usize> = Vec::new();
+    for x in flanges {
+        if done.contains(&x) {
+            continue;
+        }
+        done.push(x);
+        let b = bends
+            .get(x)
+            .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
+        let flat = flats
+            .get(x + 1)
+            .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
+        let d = unit(sub(b.end, b.start)).ok_or_else(|| refuse(Some(x), "a bend has no length"))?;
+        let back = flat
+            .transform
+            .inverse()
+            .ok_or_else(|| refuse(Some(x), "a flange's motion cannot be undone"))?;
+        let (a0, a1) = b.far_line();
+        let (b0, b1) = tip(b);
+        // How far along `e` from `near` and `far` the plane meets the
+        // flat's bottom skin.
+        let reach = |plane: (Vec3, Vec3),
+                     e: P2,
+                     near: P2,
+                     far: P2|
+         -> Result<(P2, P2), KernelError> {
+            let (q, n) = (back.point(plane.0), back.vector(plane.1));
+            let den = n.dot(lift(e));
+            let tilted = n.length() * tolerance.angular;
+            if !(den.abs() > tilted) {
+                return Err(refuse(
+                    Some(x),
+                    "a closed corner's end runs along the flange, so the flange cannot reach it",
+                ));
+            }
+            let s_near = n.dot(q - lift(near)) / den;
+            let s_far = n.dot(q - lift(far)) / den;
+            if !(s_near > tolerance.linear && s_far > tolerance.linear) {
+                return Err(refuse(
+                    Some(x),
+                    format!(
+                        "closing its corner would cut the flange back (by {} at its bend, {} at its tip) instead of running it on past its bend: its wall already reaches past where it has to end (walls that lean towards each other, or a wide corner whose relief is too small); not supported (owed): give the corner a larger relief, mitre it, or open it",
+                        -s_near, -s_far
+                    ),
+                ));
+            }
+            Ok((add(near, scale(e, s_near)), add(far, scale(e, s_far))))
+        };
+        let start = match at_start.get(&x) {
+            Some(&plane) => Some(reach(plane, scale(d, -1.0), a0, b0)?),
+            None => None,
+        };
+        let end = match at_end.get(&x) {
+            Some(&plane) => Some(reach(plane, d, a1, b1)?),
+            None => None,
+        };
+        let mut outer = vec![line(a1, a0)];
+        let mut ends = Vec::new();
+        match start {
+            Some((a0e, b0e)) => {
+                outer.push(line(a0, a0e));
+                ends.push((outer.len(), at_start.get(&x).copied()));
+                outer.push(line(a0e, b0e));
+                outer.push(line(b0e, b0));
+            }
+            None => outer.push(line(a0, b0)),
+        }
+        let tip_at = outer.len();
+        outer.push(line(b0, b1));
+        match end {
+            Some((a1e, b1e)) => {
+                outer.push(line(b1, b1e));
+                ends.push((outer.len(), at_end.get(&x).copied()));
+                outer.push(line(b1e, a1e));
+                outer.push(line(a1e, a1));
+            }
+            None => outer.push(line(b1, a1)),
+        }
+        let flat = flats
+            .get_mut(x + 1)
+            .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
+        flat.outer = outer;
+        flat.tip = Some(tip_at);
+        flat.ends = ends
+            .into_iter()
+            .filter_map(|(segment, plane)| {
+                plane.map(|(point, normal)| End {
+                    segment,
+                    point,
+                    normal,
+                })
+            })
+            .collect();
+    }
+    Ok(())
+}
+
 /// The tip of a flange's flat: from `b0` to `b1`, the flange on its left.
 fn tip(bend: &Bend) -> (P2, P2) {
     let h = bend.allowance + bend.flat_length;
@@ -1173,15 +1594,19 @@ fn coedges(edges: &[(EdgeId, bool)]) -> Vec<Coedge> {
         .collect()
 }
 
+/// The edges of the folded sheet that end an extension at a closed
+/// corner, each with the plane (in the world) its end face lies on.
+type Ends = Vec<(EdgeId, Surface)>;
+
 /// The folded bottom skin: a planar face per flat, a cylindrical one per
-/// bend, sharing the tangent lines' edges.
+/// bend, sharing the tangent lines' edges; and the extensions' ends.
 fn folded_sheet(
     spec: &Spec,
     flats: &[Flat],
     bends: &[Bend],
     base_edge: &BTreeMap<usize, usize>,
     tolerance: &Tolerance,
-) -> Result<(Body, Vec<SheetFace>), KernelError> {
+) -> Result<(Body, Vec<SheetFace>, Ends), KernelError> {
     let mut b = Builder {
         body: Body::new(BodyKind::Sheet),
     };
@@ -1221,14 +1646,19 @@ fn folded_sheet(
                 *es.get(k).ok_or_else(|| refuse(Some(i), "no edge"))?,
             )
         } else {
-            // A tip: segment 2 of the parent flange's loop, b0 → b1.
+            // A tip: the parent flange's segment b0 → b1.
             let (vs, es) = rings
                 .get(bend.parent)
                 .ok_or_else(|| refuse(Some(i), "a flange's parent is missing"))?;
+            let k = flats
+                .get(bend.parent)
+                .and_then(|f| f.tip)
+                .ok_or_else(|| refuse(Some(i), "a flange's parent has no tip"))?;
             (
-                *vs.get(2).ok_or_else(|| refuse(Some(i), "no vertex"))?,
-                *vs.get(3).ok_or_else(|| refuse(Some(i), "no vertex"))?,
-                *es.get(2).ok_or_else(|| refuse(Some(i), "no edge"))?,
+                *vs.get(k).ok_or_else(|| refuse(Some(i), "no vertex"))?,
+                *vs.get((k + 1) % vs.len().max(1))
+                    .ok_or_else(|| refuse(Some(i), "no vertex"))?,
+                *es.get(k).ok_or_else(|| refuse(Some(i), "no edge"))?,
             )
         };
         let flat = flats
@@ -1281,6 +1711,23 @@ fn folded_sheet(
             (parent_edge.0, !parent_edge.1),
         ]);
         rings.push(ring);
+    }
+
+    // The extensions' ends, with their planes in the world.
+    let to_world = Transform::from_frame(plane);
+    let mut ends: Ends = Vec::new();
+    for (f, flat) in flats.iter().enumerate() {
+        for end in &flat.ends {
+            let edge = rings
+                .get(f)
+                .and_then(|(_, es)| es.get(end.segment))
+                .ok_or_else(|| refuse(f.checked_sub(1), "an extension's end has no edge"))?;
+            let frame = Frame::from_z(to_world.point(end.point), to_world.vector(end.normal))
+                .ok_or_else(|| {
+                    refuse(f.checked_sub(1), "an extension's end plane is not finite")
+                })?;
+            ends.push((edge.0, Surface::Plane(Plane::new(frame))));
+        }
     }
 
     // The holes of the flanges' flats (after everything a part without
@@ -1348,7 +1795,7 @@ fn folded_sheet(
             defects,
         });
     }
-    Ok((b.body, roles))
+    Ok((b.body, roles, ends))
 }
 
 /// The bend's neutral band, `R + K T` about its axis over its angle and
@@ -1463,6 +1910,39 @@ pub fn measured_radius(part: &Part, bend: usize) -> Option<f64> {
         }
     }
     radii.into_iter().reduce(f64::min)
+}
+
+/// The faces of the part (indices into `part.solid.body`) made from the
+/// flat `flat` (0 the base, `i + 1` flange `i`'s): its two skins and the
+/// rims along its outline's edges that end the sheet.
+pub fn flat_faces(part: &Part, flat: usize) -> Vec<usize> {
+    let Some(face) = part
+        .sheet_faces
+        .iter()
+        .position(|f| *f == SheetFace::Flat(flat))
+        .and_then(|f| u32::try_from(f).ok())
+        .map(FaceId)
+    else {
+        return Vec::new();
+    };
+    let edges: Vec<EdgeId> = part
+        .sheet
+        .face(face)
+        .into_iter()
+        .flat_map(|f| f.loops.iter())
+        .filter_map(|l| part.sheet.loop_(*l))
+        .flat_map(|l| l.coedges.iter().map(|c| c.edge))
+        .collect();
+    part.solid
+        .faces
+        .iter()
+        .enumerate()
+        .filter(|(_, made)| match made {
+            crate::plate::Made::Front(f) | crate::plate::Made::Back(f) => *f == face,
+            crate::plate::Made::Rim(e) => edges.contains(e),
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// The angle between the planes of a bend's two flats, as the fold put
@@ -1790,6 +2270,8 @@ mod tests {
                     from: LengthFrom::Tangent,
                 }],
                 relief: None,
+                corner: Closing::OPEN,
+                corners: Vec::new(),
                 cutouts: Vec::new(),
             },
             tol,

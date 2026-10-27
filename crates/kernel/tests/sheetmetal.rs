@@ -29,9 +29,9 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::plate::Made;
 use craft3d_kernel::profile::{Curve2, Profile, SketchCurve, detect_profiles};
 use craft3d_kernel::sheetmetal::{
-    Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
-    build, developed_allowance, flange_length, flat_area, holes_to_bends, measured_angle,
-    measured_radius, outline,
+    Closing, CornerKind, CornerSpec, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief,
+    ReliefKind, SheetFace, Spec, build, developed_allowance, flange_length, flat_area, flat_faces,
+    holes_to_bends, measured_angle, measured_radius, outline,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{FaceId, check, mass_properties};
@@ -97,6 +97,8 @@ fn spec(base: Profile, t: f64, flanges: Vec<FlangeSpec>, relief: Option<Relief>)
         thickness: t,
         flanges,
         relief,
+        corner: Closing::OPEN,
+        corners: Vec::new(),
         cutouts: Vec::new(),
     }
 }
@@ -1207,4 +1209,298 @@ fn a_flange_hole_lands_where_the_bend_puts_it() {
         );
         assert!(frame.z().cross(Vec3::X).length() <= 1e-12, "axis along x");
     }
+}
+
+/// The points of the part's vertices on the faces made from flat `flat`.
+fn flat_points(part: &Part, flat: usize) -> Vec<Vec3> {
+    let body = &part.solid.body;
+    let mut out = Vec::new();
+    for f in flat_faces(part, flat) {
+        let face = &body.faces[f];
+        for l in &face.loops {
+            for c in &body.loop_(*l).unwrap().coedges {
+                let (v, _) = body.coedge_ends(*c).unwrap();
+                out.push(body.vertex(v).unwrap().point);
+            }
+        }
+    }
+    assert!(!out.is_empty(), "flat {flat} has no faces");
+    out
+}
+
+fn closing(kind: CornerKind, gap: f64) -> Closing {
+    Closing {
+        kind,
+        gap,
+        over: None,
+    }
+}
+
+/// Two flanges, on the bottom edge (flange 0, arriving at the corner
+/// (W, 0)) and on the right edge (flange 1, leaving it), both up 90
+/// degrees, the corner closed. In closed form at 1e-3, 1 and 1e6, with no
+/// relief and with a round one of size s:
+///
+/// - where the flats end, from the part's vertices: overlap, flange 0 flush
+///   with flange 1's outside face `x = W + R + T` and flange 1 `g` from
+///   flange 0's inside face `y = −R`; butt, flange 0 `g` short of flush;
+///   mitre, both `g/2` from the plane `x + y = W` that halves the corner;
+/// - the flat area by the extensions `L × reach` (overlap: `R + T + s` and
+///   `s + R − g`; butt: less `g` for the cover; mitre: `R + T + s − g/√2`
+///   each);
+/// - the volume `A T` at K = ½ (square ends), less `T² L` for a mitre (each
+///   end bevelled at 45 degrees takes `T²/2 × L`);
+/// - healthy, fold then unfold, the same part twice.
+#[test]
+fn closed_corners_by_their_closed_forms() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (w, d, t, r, l, g) = (60.0 * k, 40.0 * k, 1.0 * k, 1.0 * k, 10.0 * k, 0.2 * k);
+        let kf = 0.5;
+        let ba = FRAC_PI_2 * (r + kf * t);
+        let flanges = vec![
+            flange(On::Base(1), l, FRAC_PI_2, Direction::Up, r, kf),
+            flange(On::Base(2), l, FRAC_PI_2, Direction::Up, r, kf),
+        ];
+        let root2 = 2.0_f64.sqrt();
+        for relief in [None, Some(3.0 * k)] {
+            let s = relief.unwrap_or(0.0);
+            let notch = relief.map_or(0.0, |s| PI * s * s / 4.0);
+            for kind in [CornerKind::Overlap, CornerKind::Butt, CornerKind::Miter] {
+                let what = format!("{} at {k} relief {s}", kind.name());
+                let mut sp = spec(
+                    base(60.0, 40.0, None, k),
+                    t,
+                    flanges.clone(),
+                    relief.map(|size| Relief {
+                        kind: ReliefKind::Round,
+                        size,
+                    }),
+                );
+                sp.corner = closing(kind, g);
+                let part = build(&sp, &tol).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(part, build(&sp, &tol).unwrap(), "{what}: deterministic");
+                healthy(&part, &tol);
+                round_trip(&part, &tol);
+                assert_eq!(part.corners.len(), 1);
+                assert_eq!(part.corners[0].closing.kind, kind);
+                let a = flat_points(&part, 1);
+                let b = flat_points(&part, 2);
+                let max = |v: &[Vec3], f: &dyn Fn(Vec3) -> f64| {
+                    v.iter().map(|p| f(*p)).fold(f64::NEG_INFINITY, f64::max)
+                };
+                let min = |v: &[Vec3], f: &dyn Fn(Vec3) -> f64| {
+                    v.iter().map(|p| f(*p)).fold(f64::INFINITY, f64::min)
+                };
+                let slack = 10.0 * tol.linear;
+                // Flange 0's inside face is y = −R.
+                near(max(&a, &|p| p.y), -r, slack, &format!("{what}: 0's inside"));
+                let (reach_a, reach_b) = match kind {
+                    CornerKind::Overlap => {
+                        near(
+                            max(&a, &|p| p.x),
+                            w + r + t,
+                            slack,
+                            &format!("{what}: flush"),
+                        );
+                        near(min(&b, &|p| p.y), -r + g, slack, &format!("{what}: gap"));
+                        (r + t + s, s + r - g)
+                    }
+                    CornerKind::Butt => {
+                        near(
+                            max(&a, &|p| p.x),
+                            w + r + t - g,
+                            slack,
+                            &format!("{what}: set back"),
+                        );
+                        near(min(&b, &|p| p.y), -r + g, slack, &format!("{what}: gap"));
+                        (r + t + s - g, s + r - g)
+                    }
+                    _ => {
+                        let gap = (min(&b, &|p| p.x + p.y) - max(&a, &|p| p.x + p.y)) / root2;
+                        near(gap, g, slack, &format!("{what}: the mitre's gap"));
+                        near(
+                            max(&a, &|p| p.x + p.y),
+                            w - g / root2,
+                            slack,
+                            &format!("{what}: the mitre's place"),
+                        );
+                        (r + t + s - g / root2, r + t + s - g / root2)
+                    }
+                };
+                let area = w * d - notch
+                    + (w - s) * (ba + l)
+                    + (d - s) * (ba + l)
+                    + l * (reach_a + reach_b);
+                near(
+                    flat_area(&part),
+                    area,
+                    1e-9 * area,
+                    &format!("{what}: area"),
+                );
+                let bevel = if kind == CornerKind::Miter {
+                    t * t * l
+                } else {
+                    0.0
+                };
+                let v = area * t - bevel;
+                near(volume(&part), v, 1e-8 * v, &format!("{what}: volume"));
+                // The pattern's outline is still one closed chain.
+                assert_eq!(outline(&part, &tol).len(), 1, "{what}: one chain");
+            }
+        }
+    }
+}
+
+/// A box with four flanges and every corner closed, in each of the three
+/// ways, and one corner its own way: built, healthy, the flat area by the
+/// extensions, and the corner listed with its treatment; flanges bent at
+/// 60 degrees (walls leaning out, so the extensions' ends are slanted in
+/// the flat) close by overlap and butt, while a mitre's extensions cross
+/// in the flat there and are refused; a base corner of 120 degrees closes
+/// every way with a relief (without one the covered wall already reaches
+/// past the cover's inside face, refused).
+#[test]
+fn a_closed_box_and_slanted_corners() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, l, g) = (1.0 * k, 1.0 * k, 10.0 * k, 0.3 * k);
+        let flanges: Vec<FlangeSpec> = (1..=4)
+            .map(|c| flange(On::Base(c), l, FRAC_PI_2, Direction::Up, r, 0.4))
+            .collect();
+        for kind in [CornerKind::Overlap, CornerKind::Butt, CornerKind::Miter] {
+            let mut sp = spec(base(60.0, 40.0, None, k), t, flanges.clone(), None);
+            sp.corner = closing(kind, g);
+            sp.corners = vec![CornerSpec {
+                flanges: [3, 2],
+                closing: Closing {
+                    kind: CornerKind::Overlap,
+                    gap: 2.0 * g,
+                    over: Some(3),
+                },
+            }];
+            let part = build(&sp, &tol).unwrap_or_else(|e| panic!("{}: {e}", kind.name()));
+            healthy(&part, &tol);
+            round_trip(&part, &tol);
+            assert_eq!(part.corners.len(), 4);
+            let own = part.corners.iter().find(|c| c.bends == [2, 3]).unwrap();
+            assert_eq!(own.closing.kind, CornerKind::Overlap);
+            assert_eq!(own.closing.over, Some(3));
+            assert_eq!(own.closing.gap, 2.0 * g);
+            for c in part.corners.iter().filter(|c| c.bends != [2, 3]) {
+                assert_eq!(c.closing.kind, kind);
+                if kind == CornerKind::Miter {
+                    assert_eq!(c.closing.over, None);
+                } else {
+                    assert_eq!(c.closing.over, Some(c.bends[0]));
+                }
+            }
+            assert_eq!(outline(&part, &tol).len(), 1);
+        }
+        // Leaning out at 60 degrees.
+        let leaning: Vec<FlangeSpec> = (1..=2)
+            .map(|c| flange(On::Base(c), l, PI / 3.0, Direction::Up, r, 0.4))
+            .collect();
+        // A mitre's two extensions both grow towards the tips there and
+        // cross in the flat: refused, naming the two flanges.
+        let mut sp = spec(base(60.0, 40.0, None, k), t, leaning.clone(), None);
+        sp.corner = closing(CornerKind::Miter, g);
+        let (_, why) = refused(&sp, &tol);
+        assert!(
+            why.contains("overlaps itself") && why.contains("flange 0 and flange 1"),
+            "{why}"
+        );
+        for kind in [CornerKind::Overlap, CornerKind::Butt] {
+            let mut sp = spec(base(60.0, 40.0, None, k), t, leaning.clone(), None);
+            sp.corner = closing(kind, g);
+            let part = build(&sp, &tol).unwrap_or_else(|e| panic!("60 deg {}: {e}", kind.name()));
+            healthy(&part, &tol);
+            round_trip(&part, &tol);
+            // The extension's end is slanted in the flat: its two ends lie
+            // at different places along the edge.
+            let flat = &part.flats[1];
+            let end = flat.ends[0].segment;
+            let seg = &flat.outer[end];
+            assert!((seg.start[0] - seg.end[0]).abs() > 100.0 * tol.linear);
+        }
+        // A base corner of 120 degrees (the loop turns 60 at (60, 0)).
+        let hex = polygon_base(&[[0.0, 0.0], [60.0, 0.0], [80.0, 34.64], [0.0, 34.64]], k);
+        let two: Vec<FlangeSpec> = (1..=2)
+            .map(|c| flange(On::Base(c), l, FRAC_PI_2, Direction::Up, r, 0.4))
+            .collect();
+        // Without a relief the covered flange's wall already reaches past
+        // the cover's inside face at so wide a corner: refused.
+        let mut sp = spec(hex.clone(), t, two.clone(), None);
+        sp.corner = closing(CornerKind::Overlap, g);
+        let (flange, why) = refused(&sp, &tol);
+        assert_eq!(flange, Some(1));
+        assert!(why.contains("cut the flange back"), "{why}");
+        let relief = Some(Relief {
+            kind: ReliefKind::Round,
+            size: 3.0 * k,
+        });
+        for kind in [CornerKind::Overlap, CornerKind::Butt, CornerKind::Miter] {
+            let mut sp = spec(hex.clone(), t, two.clone(), relief);
+            sp.corner = closing(kind, g);
+            let part = build(&sp, &tol).unwrap_or_else(|e| panic!("120 deg {}: {e}", kind.name()));
+            healthy(&part, &tol);
+            round_trip(&part, &tol);
+        }
+    }
+}
+
+#[test]
+fn closed_corners_refused_by_reason() {
+    let tol = tolerance(1.0);
+    let two = |second: Direction| {
+        vec![
+            flange(On::Base(1), 10.0, FRAC_PI_2, Direction::Up, 1.0, 0.4),
+            flange(On::Base(2), 10.0, FRAC_PI_2, second, 1.0, 0.4),
+        ]
+    };
+    let with = |corner: Closing, corners: Vec<CornerSpec>, second: Direction| {
+        let mut sp = spec(base(60.0, 40.0, None, 1.0), 1.0, two(second), None);
+        sp.corner = corner;
+        sp.corners = corners;
+        refused(&sp, &tol).1
+    };
+    let up = Direction::Up;
+    for gap in [0.0, -0.5, 1e-9, f64::NAN] {
+        let why = with(closing(CornerKind::Overlap, gap), Vec::new(), up);
+        assert!(
+            why.contains("gap has to be more than the tolerance"),
+            "{why}"
+        );
+    }
+    let why = with(closing(CornerKind::Butt, 1.0), Vec::new(), up);
+    assert!(why.contains("less than the thickness"), "{why}");
+    let why = with(closing(CornerKind::Miter, 0.2), Vec::new(), Direction::Down);
+    assert!(why.contains("one is bent up and the other down"), "{why}");
+    let own = |flanges: [usize; 2], over: Option<usize>| CornerSpec {
+        flanges,
+        closing: Closing {
+            kind: CornerKind::Overlap,
+            gap: 0.2,
+            over,
+        },
+    };
+    let why = with(Closing::OPEN, vec![own([0, 5], None)], up);
+    assert!(why.contains("do not meet at a corner"), "{why}");
+    let why = with(
+        Closing::OPEN,
+        vec![own([0, 1], None), own([1, 0], None)],
+        up,
+    );
+    assert!(why.contains("listed twice"), "{why}");
+    let why = with(Closing::OPEN, vec![own([0, 1], Some(7))], up);
+    assert!(why.contains("cannot cover the corner"), "{why}");
+    // Open everywhere is today's part, bit for bit.
+    let mut open = spec(base(60.0, 40.0, None, 1.0), 1.0, two(up), None);
+    let before = build(&open, &tol).unwrap();
+    open.corners = vec![CornerSpec {
+        flanges: [1, 0],
+        closing: Closing::OPEN,
+    }];
+    assert_eq!(build(&open, &tol).unwrap(), before);
+    assert!(before.flats.iter().all(|f| f.ends.is_empty()));
 }

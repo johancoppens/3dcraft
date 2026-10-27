@@ -555,7 +555,7 @@ impl Outcome {
 }
 
 /// The measures, by name: what `assert.add` takes under `measure`.
-pub(crate) const MEASURES: [&str; 27] = [
+pub(crate) const MEASURES: [&str; 28] = [
     "volume",
     "area",
     "mass",
@@ -583,6 +583,7 @@ pub(crate) const MEASURES: [&str; 27] = [
     "holeToBend",
     "relief",
     "value",
+    "cornerGap",
 ];
 
 /// Takes the measure `name` with the parameters `p`.
@@ -601,7 +602,7 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
         "volumeBelow" | "centroidBelow" | "sectionArea" | "sectionCentroid" | "sectionInertia"
         | "levelFor" => crate::below_cmds::measure(ctx, name, p),
         "curvature" | "developable" => crate::develop_cmds::take(ctx, name, p),
-        "bendRadius" | "flangeLength" | "holeToBend" | "relief" => {
+        "bendRadius" | "flangeLength" | "holeToBend" | "relief" | "cornerGap" => {
             crate::sheetmetal_cmds::take(ctx, name, p)
         }
         "value" => value(ctx, p),

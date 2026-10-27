@@ -723,7 +723,63 @@ pub enum FeatureKind {
         relief: Option<SheetRelief>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         cutouts: Vec<u64>,
+        /// How the corners where two flanged edges meet are closed, and
+        /// the corners closed in their own way (format version 44).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner: Option<SheetCornerClose>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        corners: Vec<SheetCorner>,
     },
+}
+
+/// A choice among names: one of them (`"tear"`), or an expression whose
+/// value picks one, 1 for the first (`{"expr": "shape"}`, format version
+/// 44).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pick<T> {
+    Named(T),
+    Expr(PickExpr),
+}
+
+/// The expression of a [`Pick`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickExpr {
+    pub expr: String,
+}
+
+/// How a corner where two flanged edges meet is closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CornerKind {
+    Open,
+    Butt,
+    Overlap,
+    Miter,
+}
+
+/// The part's corner treatment: its kind and the gap between the two
+/// flats.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetCornerClose {
+    pub kind: Pick<CornerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap: Option<String>,
+}
+
+/// One corner's treatment, named by the two flanges that meet there;
+/// `over` the flange that covers it (butt and overlap).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetCorner {
+    pub flanges: [u32; 2],
+    pub kind: Pick<CornerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over: Option<u32>,
 }
 
 /// A flange of a sheet-metal part: on the base's edge of line `base` (an
@@ -769,11 +825,13 @@ impl FlangeFrom {
     }
 }
 
-/// A corner relief of a sheet-metal part.
+/// A corner relief of a sheet-metal part: `shape` is `rect`, `round` or
+/// `tear` (format version 41), or an expression that picks one, 1 to 3
+/// (version 44).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SheetRelief {
-    pub shape: ReliefShape,
+    pub shape: Pick<ReliefShape>,
     pub size: String,
 }
 

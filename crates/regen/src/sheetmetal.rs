@@ -12,15 +12,16 @@
 use crate::extrude::{drawn, profile_error};
 use crate::{FeatureResult, Names, angle, face_ops, length, number};
 use craft3d_doc::{
-    BendDirection, Document, FeatureId, FeatureKind, FlangeFrom, FlangeOn, NameRole,
-    PersistentName, ReliefShape, SheetMetal,
+    BendDirection, CornerKind, Document, FeatureId, FeatureKind, FlangeFrom, FlangeOn, NameRole,
+    PersistentName, Pick, ReliefShape, SheetMetal,
 };
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_kernel::profile::{Curve2, SketchCurve};
 use craft3d_kernel::sheetmetal::{
-    self, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief, ReliefKind, SheetFace, Spec,
+    self, Closing, CornerSpec, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief,
+    ReliefKind, SheetFace, Spec,
 };
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, FaceId};
@@ -200,7 +201,13 @@ pub(crate) fn analyse(
     let relief = match &made.relief {
         None => None,
         Some(r) => Some(Relief {
-            kind: match r.shape {
+            kind: match pick(
+                variables,
+                "relief.shape",
+                &r.shape,
+                &ReliefShape::ALL,
+                ReliefShape::name,
+            )? {
                 ReliefShape::Rect => ReliefKind::Rect,
                 ReliefShape::Round => ReliefKind::Round,
                 ReliefShape::Tear => ReliefKind::Tear,
@@ -208,12 +215,63 @@ pub(crate) fn analyse(
             size: length(doc, variables, "relief.size", &r.size)?,
         }),
     };
+    let closing = |what: &str,
+                   kind: &Pick<CornerKind>,
+                   gap: Option<&craft3d_doc::Expr>,
+                   over: Option<u32>|
+     -> Result<Closing, String> {
+        let kind = pick(
+            variables,
+            &format!("{what}.kind"),
+            kind,
+            &CornerKind::ALL,
+            CornerKind::name,
+        )?;
+        let gap = match (kind, gap) {
+            (CornerKind::Open, _) => 0.0,
+            (_, Some(expr)) => length(doc, variables, &format!("{what}.gap"), expr)?,
+            (_, None) => {
+                return Err(format!(
+                    "{what}: a {} corner needs its `gap` (between the two flats)",
+                    kind.name()
+                ));
+            }
+        };
+        Ok(Closing {
+            kind: match kind {
+                CornerKind::Open => sheetmetal::CornerKind::Open,
+                CornerKind::Butt => sheetmetal::CornerKind::Butt,
+                CornerKind::Overlap => sheetmetal::CornerKind::Overlap,
+                CornerKind::Miter => sheetmetal::CornerKind::Miter,
+            },
+            gap,
+            over: over.map(|o| usize::try_from(o).unwrap_or(usize::MAX)),
+        })
+    };
+    let corner = match &made.corner {
+        None => Closing::OPEN,
+        Some(c) => closing("corner", &c.kind, c.gap.as_ref(), None)?,
+    };
+    let mut corners = Vec::with_capacity(made.corners.len());
+    for (i, c) in made.corners.iter().enumerate() {
+        let gap = c
+            .gap
+            .as_ref()
+            .or_else(|| made.corner.as_ref().and_then(|d| d.gap.as_ref()));
+        let [a, b] = c.flanges.map(|f| usize::try_from(f).unwrap_or(usize::MAX));
+        corners.push(CornerSpec {
+            flanges: [a, b],
+            closing: closing(&format!("corners.{i}"), &c.kind, gap, c.over)?,
+        });
+    }
     let spec = Spec {
         base,
         plane: drawn.plane,
         thickness,
         flanges,
         relief,
+        corner,
+        corners,
         cutouts,
     };
     let part = sheetmetal::build(&spec, &tol).map_err(explain)?;
@@ -222,6 +280,46 @@ pub(crate) fn analyse(
         tolerance: tol,
         sketch: name,
     })
+}
+
+/// The name a [`Pick`] picks: as written, or the expression's value, a
+/// whole number from 1 (the first of `all`) to the count of names.
+fn pick<T: Copy>(
+    variables: &Evaluation,
+    what: &str,
+    choice: &Pick<T>,
+    all: &[T],
+    name: fn(T) -> &'static str,
+) -> Result<T, String> {
+    let expr = match choice {
+        Pick::Named(t) => return Ok(*t),
+        Pick::Expr(expr) => expr,
+    };
+    let listed: Vec<String> = all
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{} ({})", i + 1, name(*t)))
+        .collect();
+    let names: Vec<&str> = all.iter().map(|t| name(*t)).collect();
+    let value = number(variables, what, expr).map_err(|e| {
+        format!(
+            "{e} (it is {}, or an expression that picks {})",
+            names.join(", "),
+            listed.join(", ")
+        )
+    })?;
+    let rounded = value.round();
+    if (value - rounded).abs() <= 1e-9 && (1.0..=all.len() as f64).contains(&rounded) {
+        // `rounded` is a whole number from 1 to all.len().
+        if let Some(t) = all.get(rounded as usize - 1) {
+            return Ok(*t);
+        }
+    }
+    Err(format!(
+        "{what}: `{}` is {value}; it picks {}",
+        expr.source(),
+        listed.join(", ")
+    ))
 }
 
 /// The curves of a sketch drawn in the plane `from`, in the axes of the

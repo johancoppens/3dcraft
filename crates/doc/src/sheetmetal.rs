@@ -117,12 +117,99 @@ impl ReliefShape {
     }
 }
 
+/// A choice among the names of `T`: one of them as written, or an
+/// expression whose value picks one (1 for the first, as a published
+/// choice parameter counts: `docs/guide/05-jigs.md`), so a Jig's choice or
+/// a table lookup can drive it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Pick<T> {
+    Named(T),
+    Expr(Expr),
+}
+
+impl<T> Pick<T> {
+    pub fn expr(&self) -> Option<&Expr> {
+        match self {
+            Pick::Named(_) => None,
+            Pick::Expr(e) => Some(e),
+        }
+    }
+
+    fn expr_mut(&mut self) -> Option<&mut Expr> {
+        match self {
+            Pick::Named(_) => None,
+            Pick::Expr(e) => Some(e),
+        }
+    }
+}
+
 /// The relief cut at every corner of the base where two flanged edges
-/// meet: its shape and how far along each edge from the corner it reaches.
+/// meet: its shape (rect 1, round 2, tear 3) and how far along each edge
+/// from the corner it reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CornerRelief {
-    pub shape: ReliefShape,
+    pub shape: Pick<ReliefShape>,
     pub size: Expr,
+}
+
+/// How a corner where two flanged edges meet is closed
+/// (docs/design/sheetmetal.md › *Closed corners*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CornerKind {
+    Open,
+    Butt,
+    Overlap,
+    Miter,
+}
+
+impl CornerKind {
+    /// In the order a choice counts them (1 open .. 4 miter).
+    pub const ALL: [CornerKind; 4] = [
+        CornerKind::Open,
+        CornerKind::Butt,
+        CornerKind::Overlap,
+        CornerKind::Miter,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CornerKind::Open => "open",
+            CornerKind::Butt => "butt",
+            CornerKind::Overlap => "overlap",
+            CornerKind::Miter => "miter",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+impl ReliefShape {
+    /// In the order a choice counts them (1 rect, 2 round, 3 tear).
+    pub const ALL: [ReliefShape; 3] = [ReliefShape::Rect, ReliefShape::Round, ReliefShape::Tear];
+}
+
+/// The part's treatment of its corners: the kind and the gap between the
+/// two flats (needed when the kind is not open).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CornerClose {
+    pub kind: Pick<CornerKind>,
+    pub gap: Option<Expr>,
+}
+
+/// The treatment of one corner, named by the two flanges that meet there
+/// (their places in the list, either order): its kind, its gap (`None`:
+/// the part's) and, for butt and overlap, the flange that covers the
+/// corner (`None`: the one on the edge arriving at the corner).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetCorner {
+    pub flanges: [u32; 2],
+    pub kind: Pick<CornerKind>,
+    pub gap: Option<Expr>,
+    pub over: Option<u32>,
 }
 
 /// A sheet-metal part.
@@ -146,6 +233,13 @@ pub struct SheetMetal {
     /// suppressed) cuts nothing. Each comes before this feature.
     #[serde(default)]
     pub cutouts: Vec<FeatureId>,
+    /// How the corners where two flanged edges meet are closed (`None`:
+    /// open) ...
+    #[serde(default)]
+    pub corner: Option<CornerClose>,
+    /// ... but these, each its own.
+    #[serde(default)]
+    pub corners: Vec<SheetCorner>,
 }
 
 impl SheetMetal {
@@ -168,7 +262,26 @@ impl SheetMetal {
             }
         }
         if let Some(relief) = &self.relief {
+            if let Some(e) = relief.shape.expr() {
+                out.push(("relief.shape".to_string(), e));
+            }
             out.push(("relief.size".to_string(), &relief.size));
+        }
+        if let Some(corner) = &self.corner {
+            if let Some(e) = corner.kind.expr() {
+                out.push(("corner.kind".to_string(), e));
+            }
+            if let Some(e) = &corner.gap {
+                out.push(("corner.gap".to_string(), e));
+            }
+        }
+        for (i, c) in self.corners.iter().enumerate() {
+            if let Some(e) = c.kind.expr() {
+                out.push((format!("corners.{i}.kind"), e));
+            }
+            if let Some(e) = &c.gap {
+                out.push((format!("corners.{i}.gap"), e));
+            }
         }
         out
     }
@@ -187,7 +300,26 @@ impl SheetMetal {
             }
         }
         if let Some(relief) = &mut self.relief {
+            if let Some(e) = relief.shape.expr_mut() {
+                out.push(e);
+            }
             out.push(&mut relief.size);
+        }
+        if let Some(corner) = &mut self.corner {
+            if let Some(e) = corner.kind.expr_mut() {
+                out.push(e);
+            }
+            if let Some(e) = &mut corner.gap {
+                out.push(e);
+            }
+        }
+        for c in &mut self.corners {
+            if let Some(e) = c.kind.expr_mut() {
+                out.push(e);
+            }
+            if let Some(e) = &mut c.gap {
+                out.push(e);
+            }
         }
         out
     }

@@ -12,13 +12,14 @@ use crate::params::Params;
 use crate::verify_cmds::{Ctx, Dim, Outcome};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
-    BendDirection, CornerRelief, Document, Expr, FeatureId, FeatureKind, Flange, FlangeFrom,
-    FlangeOn, Geometry, MAX_SHEET_FLANGES, ReliefShape, SheetMetal,
+    BendDirection, CornerClose, CornerKind, CornerRelief, Document, Expr, FeatureId, FeatureKind,
+    Flange, FlangeFrom, FlangeOn, Geometry, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner,
+    SheetMetal,
 };
 use craft3d_kernel::profile::{Segment, Shape};
 use craft3d_kernel::sheetmetal::{
-    self, developed_allowance, flange_length, flat_area, holes_to_bends, measured_angle,
-    measured_radius,
+    self, developed_allowance, flange_length, flat_area, flat_faces, holes_to_bends,
+    measured_angle, measured_radius,
 };
 use serde_json::{Map, Value, json};
 
@@ -34,12 +35,12 @@ const FLANGE_KEYS: [&str; 8] = [
 ];
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base, or tip: index of an earlier flange, length: expr, angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent}, ...] = [], "relief": {shape: rect|round|tear, size: expr} or null = none, "cutouts": [sketch id or name, ...] = [], "name": string = automatic, "when": expr = always on}"#,
-        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one across a bend's strip, past or touching the pattern's edge, or with a profile inside it is refused. cutouts adds the closed profiles of other sketches in the base sketch's plane (any origin and axes in it) the same way, each switched on and off with its sketch (a sketch with when, a conditional vent): a hole cut later by another feature (a boolean) is not part of the flat pattern, so a hole that has to be cut flat is drawn in the part's sketch or in a cutouts sketch. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend and relief check it in assertions.", doc: true, feature_sheet_metal),
-    spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list), "relief": {shape, size} or null, "cutouts": [sketch, ...] (the whole list)}"#,
+    spec!("feature.sheetMetal", "Sheet Metal", r#"{"sketch": id or name, "thickness": expr, "radius": expr (inner bend radius), "kFactor": expr (0 to 1), "flanges": [{edge: line entity id of the base, or tip: index of an earlier flange, length: expr, angle: expr (0 to 180 deg), direction: up|down = up, radius: expr = the part's, kFactor: expr = the part's, from: tangent|mould = tangent}, ...] = [], "relief": {shape: rect|round|tear or expr (1 rect, 2 round, 3 tear), size: expr} or null = none, "corner": {kind: open|butt|overlap|miter or expr (1 open, 2 butt, 3 overlap, 4 miter), gap: expr} or null = open, "corners": [{flanges: [i, j], kind, gap: expr = corner's gap, over: i or j = the flange on the edge arriving at the corner}, ...] = [], "cutouts": [sketch id or name, ...] = [], "name": string = automatic, "when": expr = always on}"#,
+        "Adds a sheet-metal part: the closed profile of the sketch its flanges' edges are on (lines, arcs, circles, splines; holes allowed; the sketch's only profile when no flange is on an edge) is the base, a flat of the given thickness, and each flange is bent from a straight edge: a line of the base's outline (edge), or the far edge of an earlier flange (tip, its place in the list: a Z or a U on a U). A bend turns its flange by angle, up (towards the side the sketch's normal points to) or down, about an inner radius; the K-factor places its neutral fibre at radius + kFactor * thickness from the axis, where the length is kept, so the flat pattern grows by the bend allowance angle * (radius + kFactor * thickness) per bend. A flange's length is its flat beyond the bend, measured from the bend's tangent line, or with from mould from the virtual sharp of the outside surfaces (shorter by (radius + thickness) tan(angle/2)). The material and the tooling are the caller's: the radius, the K-factor and every limit come in as expressions or tables, there is no built-in catalogue. relief cuts the base's corner where two flanged edges meet (rect: a square of the size, round: a quarter disc, tear: a disc tangent to both edges), each edge and its flange ending size from the corner; without one the two bends meet at the corner point. Its shape may be an expression that picks 1 rect, 2 round or 3 tear (a Jig's choice parameter, a table lookup). corner closes every such corner (corners: the corner of flanges i and j its own way): the flanges' flats run on sideways past where their bends end, the bends stay apart (the relief, if any, is the hole where they would cross), to planes of the folded walls, gap apart: overlap, the covering flange (over) to the other's outside face, flush, and the other to gap short of the covering one's inside face; butt, as overlap with the covering flange also gap short of flush; miter, both to the plane that halves the angle between the walls, gap/2 short of it each (the ends bevelled). kind may be an expression that picks 1 open, 2 butt, 3 overlap or 4 miter. For any bend angles and corner angles; refused with the reason: a gap not more than the tolerance (a butt's not less than the thickness), flanges bent opposite ways, walls leaning so far towards each other that a flange would be cut back, extensions that overlap in the flat pattern or run into each other when bent. The bends fold the part by the origami linkage (feature.fold's) with a radius at each joint, and the folded bottom skin is plated (feature.plate's method), so the bends' skins are the cylinders radius and radius + thickness exactly. Faces: F9:copy(0)/F9:face(k) the top skin of the base (k 0), of bend i (k 2i+1) and of flange i's flat (k 2i+2), F9:copy(1)/... the bottom skin, F9:rim(...)/... the ends. Refused, with the flange: a radius below 0 (or within the tolerance of 0: a sharp bend is not supported), a K-factor outside 0..1, an angle outside (0, 180] degrees, an edge that is not a straight line of the base's outline or has two flanges, a tip of a later flange, flanged edges that meet at a reflex corner or in line, a relief that does not fit, a flange shorter than its setback, and flanges that run into each other or into the base when bent. The sketch is drawn in the plane of the flat pattern, so its other closed profiles (beside the base) are holes and cut-outs of the flange flat each lies wholly inside in the pattern (each flange's flat starts the bend allowance beyond its edge): cut in the flat pattern and in the folded part alike; one across a bend's strip, past or touching the pattern's edge, or with a profile inside it is refused. cutouts adds the closed profiles of other sketches in the base sketch's plane (any origin and axes in it) the same way, each switched on and off with its sketch (a sketch with when, a conditional vent): a hole cut later by another feature (a boolean) is not part of the flat pattern, so a hole that has to be cut flat is drawn in the part's sketch or in a cutouts sketch. sheetMetal.bends gives the bend table; file.export with sheetMetal writes the flat pattern; the measures bendRadius, flangeLength, holeToBend, relief and cornerGap check it in assertions.", doc: true, feature_sheet_metal),
+    spec!("sheetMetal.edit", "Edit Sheet Metal", r#"{"feature": id or name, "sketch": id or name, "thickness": expr, "radius": expr, "kFactor": expr, "flanges": [flange, ...] as feature.sheetMetal (the whole list), "relief": {shape, size} or null, "corner": {kind, gap} or null, "corners": [corner, ...] (the whole list), "cutouts": [sketch, ...] (the whole list)}"#,
         "Changes a sheet-metal part: what is given replaces what it had (flanges as a whole list; relief null removes it). One undo step.", doc: true, sheet_metal_edit),
     spec!("sheetMetal.bends", "Bend Table", r#"{"feature": id or name}"#,
-        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, relief, size), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side). Read-only.", doc: true, sheet_metal_bends),
+        "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, bends, relief, size, kind (open, butt, overlap, miter), gap (null when open), over (the covering flange of a butt or overlap)), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side). Read-only.", doc: true, sheet_metal_bends),
 ];
 
 fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, CommandError> {
@@ -132,6 +133,173 @@ fn flanges_value(p: &Params) -> Result<Option<Vec<Flange>>, CommandError> {
         .map(Some)
 }
 
+/// A choice among `names` as a parameter gives it: one of the names, or
+/// an expression (a number, or any other text) whose value picks one, 1
+/// for the first (as a published choice parameter counts), so a Jig's
+/// choice or a table lookup drives it. A name wins over a variable of the
+/// same name.
+fn pick_value<T: Copy>(
+    p: &Params,
+    what: &str,
+    value: &Value,
+    all: &[T],
+    name: fn(T) -> &'static str,
+) -> Result<Pick<T>, CommandError> {
+    let id = p.command();
+    let listed: Vec<String> = all
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{} ({})", i + 1, name(*t)))
+        .collect();
+    let names: Vec<&str> = all.iter().map(|t| name(*t)).collect();
+    let wrong = || {
+        CommandError::new(format!(
+            "{id}: {what} is {}, or an expression that picks {}",
+            names.join(", "),
+            listed.join(", ")
+        ))
+    };
+    match value {
+        Value::String(text) => match all.iter().find(|t| name(**t) == text) {
+            Some(t) => Ok(Pick::Named(*t)),
+            None if text.trim().is_empty() => Err(wrong()),
+            None => Ok(Pick::Expr(Expr::new(text.clone()))),
+        },
+        Value::Number(_) => Ok(Pick::Expr(Expr::new(
+            p.expr_of(what, value).map_err(|_| wrong())?,
+        ))),
+        _ => Err(wrong()),
+    }
+}
+
+/// `corner` as given (the part's treatment of its corners): `None` not
+/// given, `Some(None)` null (open).
+fn corner_value(p: &Params) -> Result<Option<Option<CornerClose>>, CommandError> {
+    let id = p.command();
+    if !p.has("corner") {
+        return Ok(None);
+    }
+    match p.get("corner") {
+        None | Some(Value::Null) => Ok(Some(None)),
+        Some(Value::Object(map)) => {
+            if let Some(unknown) = map.keys().find(|k| !["kind", "gap"].contains(&k.as_str())) {
+                return fail(format!(
+                    "{id}: corner: unknown key `{}`; a corner has kind and gap",
+                    unknown.chars().take(40).collect::<String>()
+                ));
+            }
+            let kind = map
+                .get("kind")
+                .ok_or_else(|| CommandError::new(format!("{id}: corner needs its `kind`")))?;
+            let kind = pick_value(p, "corner.kind", kind, &CornerKind::ALL, CornerKind::name)?;
+            let gap = match map.get("gap") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(Expr::new(p.expr_of("corner.gap", v)?)),
+            };
+            if gap.is_none() && !matches!(kind, Pick::Named(CornerKind::Open)) {
+                return fail(format!(
+                    "{id}: corner needs its `gap` (between the two flats) unless its kind is open"
+                ));
+            }
+            Ok(Some(Some(CornerClose { kind, gap })))
+        }
+        Some(_) => fail(format!(
+            "{id}: corner is {{\"kind\": \"open|butt|overlap|miter\" or expr, \"gap\": expr}} or null"
+        )),
+    }
+}
+
+/// `corners` as given (corners closed their own way), when it is.
+fn corners_value(p: &Params) -> Result<Option<Vec<SheetCorner>>, CommandError> {
+    const KEYS: [&str; 4] = ["flanges", "kind", "gap", "over"];
+    let id = p.command();
+    let Some(value) = p.get("corners") else {
+        return Ok(None);
+    };
+    let items: &[Value] = match value {
+        Value::Null => &[],
+        Value::Array(items) => items,
+        _ => {
+            return fail(format!(
+                "{id}: corners is a list of {{\"flanges\": [i, j], \"kind\", \"gap\", \"over\"}}"
+            ));
+        }
+    };
+    if items.len() > MAX_SHEET_FLANGES {
+        return fail(format!(
+            "{id}: corners lists at most {MAX_SHEET_FLANGES} corners"
+        ));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Value::Object(map) = item else {
+            return fail(format!(
+                "{id}: corners.{i} is an object {{\"flanges\": [i, j], \"kind\", \"gap\", \"over\"}}"
+            ));
+        };
+        if let Some(unknown) = map.keys().find(|k| !KEYS.contains(&k.as_str())) {
+            return fail(format!(
+                "{id}: corners.{i}: unknown key `{}`; a corner has {}",
+                unknown.chars().take(40).collect::<String>(),
+                KEYS.join(", ")
+            ));
+        }
+        let index = |v: &Value| v.as_u64().and_then(|n| u32::try_from(n).ok());
+        let flanges = match map
+            .get("flanges")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+        {
+            Some([a, b]) => match (index(a), index(b)) {
+                (Some(a), Some(b)) if a != b => [a, b],
+                _ => {
+                    return fail(format!(
+                        "{id}: corners.{i}.flanges are the places of two different flanges in the list"
+                    ));
+                }
+            },
+            _ => {
+                return fail(format!(
+                    "{id}: corners.{i}.flanges names the corner by its two flanges: [i, j]"
+                ));
+            }
+        };
+        let kind = map
+            .get("kind")
+            .ok_or_else(|| CommandError::new(format!("{id}: corners.{i} needs its `kind`")))?;
+        let kind = pick_value(
+            p,
+            &format!("corners.{i}.kind"),
+            kind,
+            &CornerKind::ALL,
+            CornerKind::name,
+        )?;
+        let gap = match map.get("gap") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(Expr::new(p.expr_of("corners", v)?)),
+        };
+        let over = match map.get("over") {
+            None | Some(Value::Null) => None,
+            Some(v) => match index(v) {
+                Some(o) if flanges.contains(&o) => Some(o),
+                _ => {
+                    return fail(format!(
+                        "{id}: corners.{i}.over is the flange of the two ({} or {}) that covers the corner",
+                        flanges[0], flanges[1]
+                    ));
+                }
+            },
+        };
+        out.push(SheetCorner {
+            flanges,
+            kind,
+            gap,
+            over,
+        });
+    }
+    Ok(Some(out))
+}
+
 /// `relief` as given: `None` not given, `Some(None)` null.
 fn relief_value(p: &Params) -> Result<Option<Option<CornerRelief>>, CommandError> {
     let id = p.command();
@@ -152,11 +320,14 @@ fn relief_value(p: &Params) -> Result<Option<Option<CornerRelief>>, CommandError
             }
             let shape = map
                 .get("shape")
-                .and_then(Value::as_str)
-                .and_then(ReliefShape::from_name)
-                .ok_or_else(|| {
-                    CommandError::new(format!("{id}: relief.shape is rect, round or tear"))
-                })?;
+                .ok_or_else(|| CommandError::new(format!("{id}: relief needs its `shape`")))?;
+            let shape = pick_value(
+                p,
+                "relief.shape",
+                shape,
+                &ReliefShape::ALL,
+                ReliefShape::name,
+            )?;
             let size = map
                 .get("size")
                 .ok_or_else(|| CommandError::new(format!("{id}: relief needs its `size`")))?;
@@ -166,7 +337,7 @@ fn relief_value(p: &Params) -> Result<Option<Option<CornerRelief>>, CommandError
             })))
         }
         Some(_) => fail(format!(
-            "{id}: relief is {{\"shape\": \"rect|round|tear\", \"size\": expr}} or null"
+            "{id}: relief is {{\"shape\": \"rect|round|tear\" or expr, \"size\": expr}} or null"
         )),
     }
 }
@@ -288,6 +459,8 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
             "flanges",
             "relief",
             "cutouts",
+            "corner",
+            "corners",
             "name",
         ],
     )?;
@@ -300,6 +473,9 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
     let flanges = flanges_value(&p)?.unwrap_or_default();
     check_flanges(doc, ID, sketch, &flanges)?;
     let relief = relief_value(&p)?.flatten();
+    let corner = corner_value(&p)?.flatten();
+    let corners = corners_value(&p)?.unwrap_or_default();
+    check_corners(ID, &flanges, &corners)?;
     add_feature(
         session,
         ID,
@@ -312,8 +488,38 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
             flanges,
             relief,
             cutouts,
+            corner,
+            corners,
         }),
     )
+}
+
+/// Refuses corners named by flanges the list does not have, or on a tip
+/// (a corner is where two flanges on edges of the base meet).
+fn check_corners(
+    id: &str,
+    flanges: &[Flange],
+    corners: &[SheetCorner],
+) -> Result<(), CommandError> {
+    for (i, c) in corners.iter().enumerate() {
+        for f in c.flanges {
+            match flanges.get(f as usize).map(|f| f.on) {
+                Some(FlangeOn::Base(_)) => {}
+                Some(FlangeOn::Tip(_)) => {
+                    return fail(format!(
+                        "{id}: corners.{i}: flange {f} sits on a tip; a corner is where two flanges on edges of the base meet"
+                    ));
+                }
+                None => {
+                    return fail(format!(
+                        "{id}: corners.{i}: there is no flange {f} (the part has {})",
+                        flanges.len()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The sheet-metal part `key` names.
@@ -337,7 +543,7 @@ fn part_ref(
 
 fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "sheetMetal.edit";
-    const KEYS: [&str; 7] = [
+    const KEYS: [&str; 9] = [
         "sketch",
         "thickness",
         "radius",
@@ -345,6 +551,8 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
         "flanges",
         "relief",
         "cutouts",
+        "corner",
+        "corners",
     ];
     let mut allowed = vec!["feature"];
     allowed.extend(KEYS);
@@ -374,6 +582,13 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
     if let Some(cutouts) = cutouts_value(&p, session.document()?.history.current())? {
         part.cutouts = cutouts;
     }
+    if let Some(corner) = corner_value(&p)? {
+        part.corner = corner;
+    }
+    if let Some(corners) = corners_value(&p)? {
+        part.corners = corners;
+    }
+    check_corners(ID, &part.flanges, &part.corners)?;
     check_flanges(
         session.document()?.history.current(),
         ID,
@@ -448,6 +663,9 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
                 "bends": c.bends,
                 "relief": c.relief.map(|r| r.kind.name()),
                 "size": c.relief.map(|r| r.size),
+                "kind": c.closing.kind.name(),
+                "gap": closed(c).then_some(c.closing.gap),
+                "over": c.closing.over,
             })
         })
         .collect();
@@ -475,6 +693,27 @@ fn sheet_metal_bends(session: &mut Session, params: &Value) -> Run {
         "holes": holes,
         "lengthUnit": length_unit(doc),
     }))
+}
+
+/// Whether a corner is closed (its flats run on past their bends).
+fn closed(c: &sheetmetal::Corner) -> bool {
+    c.closing.kind != sheetmetal::CornerKind::Open
+}
+
+/// The gap at a closed corner as the part has it: the least distance
+/// between the faces made from the corner's two flats (their skins and
+/// rims), measured on the solid's faces (`verify::distance`, with what is
+/// proven below it).
+fn measured_gap(
+    part: &sheetmetal::Part,
+    c: &sheetmetal::Corner,
+    tolerance: &craft3d_math::Tolerance,
+) -> Result<crate::verify::Nearest, String> {
+    let [fa, fb] = c.bends;
+    let (a, b) = (flat_faces(part, fa + 1), flat_faces(part, fb + 1));
+    let pa = crate::verify::Part::new(&part.solid.body, Some(&a), tolerance)?;
+    let pb = crate::verify::Part::new(&part.solid.body, Some(&b), tolerance)?;
+    crate::verify::distance(&[pa], &[pb])
 }
 
 /// The sketch curves bounding a hole the measure lists, as `e7`.
@@ -976,6 +1215,9 @@ fn parts_of(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Vec<FeatureId>, Str
 /// `relief` (whether every corner where two flanged edges meet has a
 /// relief).
 pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<Outcome, String> {
+    if name == "cornerGap" {
+        return corner_gap(ctx, p);
+    }
     let keys: &[&str] = if name == "flangeLength" {
         &["of", "measured"]
     } else {
@@ -1071,5 +1313,42 @@ pub(crate) fn take(ctx: &Ctx<'_>, name: &str, p: &Map<String, Value>) -> Result<
     };
     listed.truncate(200);
     out.detail.insert(key.into(), listed.into());
+    Ok(out)
+}
+
+/// The measure `cornerGap`: the least gap at the closed corners of the
+/// parts, each measured on the solid between the faces of the corner's
+/// two flats; what is proven below it is the measure's lower bound.
+fn corner_gap(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, String> {
+    crate::verify_cmds::only(p, &["of"])?;
+    let (mut least, mut lower) = (f64::INFINITY, f64::INFINITY);
+    let mut listed = Vec::new();
+    for id in parts_of(ctx, p)? {
+        let fname = ctx.feature_name(id);
+        let built = craft3d_regen::sheet_metal_part(ctx.doc, ctx.regen, id)
+            .map_err(|e| format!("`{fname}`: {e}"))?;
+        let part = &built.part;
+        for c in part.corners.iter().filter(|c| closed(c)) {
+            let near = measured_gap(part, c, &built.tolerance)
+                .map_err(|e| format!("`{fname}`: the corner of flanges {:?}: {e}", c.bends))?;
+            least = least.min(near.distance);
+            lower = lower.min(near.lower);
+            listed.push(json!({
+                "part": fname,
+                "bends": c.bends,
+                "kind": c.closing.kind.name(),
+                "gap": c.closing.gap,
+                "measured": near.distance,
+                "atLeast": near.lower,
+            }));
+        }
+    }
+    if !least.is_finite() {
+        return Err("no corner of the part is closed (corner kind open everywhere)".to_string());
+    }
+    let mut out = Outcome::number(Dim::Length(1), least);
+    out.lower = Some(lower.min(least));
+    listed.truncate(200);
+    out.detail.insert("corners".into(), listed.into());
     Ok(out)
 }

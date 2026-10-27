@@ -4860,8 +4860,8 @@ fn a_developable_and_an_unfold_are_written_like_this_and_round_trip() {
 #[test]
 fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
     use craft3d_doc::{
-        BendDirection, CornerRelief, EntityId, Expr, Flange, FlangeFrom, FlangeOn, ReliefShape,
-        SheetMetal,
+        BendDirection, CornerRelief, EntityId, Expr, Flange, FlangeFrom, FlangeOn, Pick,
+        ReliefShape, SheetMetal,
     };
     let mut doc = small();
     doc.add_feature(
@@ -4892,10 +4892,12 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
                 },
             ],
             relief: Some(CornerRelief {
-                shape: ReliefShape::Tear,
+                shape: Pick::Named(ReliefShape::Tear),
                 size: Expr::new("4 mm"),
             }),
             cutouts: vec![FeatureId(7)],
+            corner: None,
+            corners: Vec::new(),
         }),
     )
     .unwrap();
@@ -4974,4 +4976,76 @@ fn an_output_with_both_or_neither_is_refused_by_name() {
         let text = load_error(&value.to_string()).to_string();
         assert!(text.contains("output `T`") && text.contains(says), "{text}");
     }
+}
+
+/// Closed corners and choices by expression (format 44): a name is written
+/// as itself, an expression as `{"expr": …}`; both round-trip, and an
+/// unknown corner kind is refused on load.
+#[test]
+fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{
+        BendDirection, CornerClose, CornerKind, CornerRelief, EntityId, Expr, Flange, FlangeFrom,
+        FlangeOn, Pick, SheetCorner, SheetMetal,
+    };
+    let flange = |line: u64| Flange {
+        on: FlangeOn::Base(EntityId(line)),
+        length: Expr::new("20 mm"),
+        angle: Expr::new("90 deg"),
+        direction: BendDirection::Up,
+        radius: None,
+        k_factor: None,
+        from: FlangeFrom::Tangent,
+    };
+    let mut doc = small();
+    doc.add_feature(
+        Some("Box"),
+        FeatureKind::SheetMetal(SheetMetal {
+            sketch: FeatureId(7),
+            thickness: Expr::new("1.5 mm"),
+            radius: Expr::new("2 mm"),
+            k_factor: Expr::new("0.42"),
+            flanges: vec![flange(5), flange(6)],
+            relief: Some(CornerRelief {
+                shape: Pick::Expr(Expr::new("notch")),
+                size: Expr::new("4 mm"),
+            }),
+            cutouts: Vec::new(),
+            corner: Some(CornerClose {
+                kind: Pick::Expr(Expr::new("seam")),
+                gap: Some(Expr::new("0.3 mm")),
+            }),
+            corners: vec![SheetCorner {
+                flanges: [0, 1],
+                kind: Pick::Named(CornerKind::Miter),
+                gap: None,
+                over: Some(1),
+            }],
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let kind = &value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["kind"];
+    assert_eq!(
+        kind["relief"],
+        serde_json::json!({"shape": {"expr": "notch"}, "size": "4 mm"})
+    );
+    assert_eq!(
+        kind["corner"],
+        serde_json::json!({"kind": {"expr": "seam"}, "gap": "0.3 mm"})
+    );
+    assert_eq!(
+        kind["corners"],
+        serde_json::json!([{"flanges": [0, 1], "kind": "miter", "over": 1}])
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    let odd = json.replacen("\"kind\": \"miter\"", "\"kind\": \"weld\"", 1);
+    assert_ne!(odd, json);
+    assert!(from_manifest_json(odd.as_bytes()).is_err());
 }

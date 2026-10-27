@@ -214,7 +214,7 @@ the bend's neutral band laid flat by the unfold), the outside setback and the be
 flange's length; and the flat pattern's area and size. The **manufacturability** measures for assertions
 are `bendRadius` (the smallest inner radius), `flangeLength` (the shortest flange; `"measured": "mould"`
 from the virtual sharp), `holeToBend` (the least distance from a hole to a bend's tangent line) and
-`relief` (every corner where two bends meet is relieved). 3DCraft has no material catalogue: the limits
+`relief` (every corner where two bends meet is relieved) and `cornerGap` (the least gap at the closed corners). 3DCraft has no material catalogue: the limits
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.edit` changes a part (flanges as a whole
@@ -250,6 +250,42 @@ sketch or in a `cutouts` sketch instead. A panel with a hole in its flange and a
    "flanges": [{"edge": "e6", "length": "20 mm", "angle": "90 deg"}]}],
  ["assert.add", {"name": "HoleClear", "measure": "holeToBend", "of": "Panel", "min": "1.5 mm"}],
  ["file.export", {"path": "panel.svg", "sheetMetal": "Panel"}]
+]
+```
+
+**Closed corners.** Where two flanges meet at a corner of the base, the corner is open: each flange ends
+where its bend ends. `corner` closes it: the flanges' flats run on sideways past their bends (the bends
+stay apart; the relief, if you give one, is the small hole where they would cross) up to the other
+flange, `gap` apart. `overlap`: one flange covers the corner, its end flush with the other's outside
+face, and the other stops `gap` short of its inside face. `butt`: the same, with the covering flange
+also stopping `gap` short of flush. `miter`: both run to the plane that halves the angle between the
+walls, `gap` apart there (their ends bevelled). At each corner the flange on the edge that arrives at it
+(going round the base counter-clockwise) covers it; `corners` treats one corner its own way, named by
+its two flanges, with `over` for the flange that covers it. Bend angles and corner angles other than 90
+degrees close the same way (the ends are then slanted in the flat pattern). `kind` and the relief's
+`shape` may be expressions that pick by number, as a Jig's choice parameter counts (`corner`: 1 open, 2
+butt, 3 overlap, 4 miter; `shape`: 1 rect, 2 round, 3 tear), so a form can offer them. The measure
+`cornerGap` is the least gap at the closed corners, measured on the part. Refused, with the reason: a
+gap that is not more than the tolerance (a butt's must also be less than the thickness), two flanges
+bent opposite ways, walls that lean so far towards each other that a flange would have to be cut back,
+and extensions that overlap in the flat pattern or run into each other when bent. A tray with closed
+corners, one of them covered the other way round:
+
+```json
+[
+ ["variable.set", {"name": "seam", "expr": "3"}],
+ ["sketch.create", {"plane": "xy", "name": "BoxBase"}],
+ ["sketch.rect", {"sketch": "BoxBase", "from": [0, 0], "to": [120, 80]}],
+ ["feature.sheetMetal", {"sketch": "BoxBase", "name": "Box", "thickness": "1.5 mm", "radius": "2 mm",
+   "kFactor": 0.42, "relief": {"shape": "round", "size": "4 mm"},
+   "corner": {"kind": "seam", "gap": "0.3 mm"},
+   "corners": [{"flanges": [0, 1], "kind": "overlap", "over": 1}],
+   "flanges": [{"edge": "e5", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "20 mm", "angle": "90 deg"}]}],
+ ["assert.add", {"name": "Seams", "measure": "cornerGap", "of": "Box", "eq": "0.3 mm"}],
+ ["file.export", {"path": "box.dxf", "sheetMetal": "Box"}]
 ]
 ```
 

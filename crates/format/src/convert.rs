@@ -685,7 +685,31 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 flanges,
                 relief,
                 cutouts,
+                corner,
+                corners,
             }) => manifest::FeatureKind::SheetMetal {
+                corner: corner.as_ref().map(|doc::CornerClose { kind, gap }| {
+                    manifest::SheetCornerClose {
+                        kind: pick_to_manifest(kind, corner_kind_to_manifest),
+                        gap: gap.as_ref().map(expr_to_manifest),
+                    }
+                }),
+                corners: corners
+                    .iter()
+                    .map(
+                        |doc::SheetCorner {
+                             flanges,
+                             kind,
+                             gap,
+                             over,
+                         }| manifest::SheetCorner {
+                            flanges: *flanges,
+                            kind: pick_to_manifest(kind, corner_kind_to_manifest),
+                            gap: gap.as_ref().map(expr_to_manifest),
+                            over: *over,
+                        },
+                    )
+                    .collect(),
                 cutouts: cutouts.iter().map(|c| c.0).collect(),
                 sketch: *sketch,
                 thickness: expr_to_manifest(thickness),
@@ -694,11 +718,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 flanges: flanges.iter().map(flange_to_manifest).collect(),
                 relief: relief.as_ref().map(|doc::CornerRelief { shape, size }| {
                     manifest::SheetRelief {
-                        shape: match shape {
-                            doc::ReliefShape::Rect => manifest::ReliefShape::Rect,
-                            doc::ReliefShape::Round => manifest::ReliefShape::Round,
-                            doc::ReliefShape::Tear => manifest::ReliefShape::Tear,
-                        },
+                        shape: pick_to_manifest(shape, relief_shape_to_manifest),
                         size: expr_to_manifest(size),
                     }
                 }),
@@ -1292,6 +1312,56 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::FilletCorner => D::FilletCorner,
         M::Thread => D::Thread,
         M::Rim => D::Rim,
+    }
+}
+
+fn pick_to_manifest<T: Copy, U>(pick: &doc::Pick<T>, named: fn(T) -> U) -> manifest::Pick<U> {
+    match pick {
+        doc::Pick::Named(t) => manifest::Pick::Named(named(*t)),
+        doc::Pick::Expr(e) => manifest::Pick::Expr(manifest::PickExpr {
+            expr: expr_to_manifest(e),
+        }),
+    }
+}
+
+fn pick_to_doc<T, U>(pick: manifest::Pick<U>, named: fn(U) -> T) -> doc::Pick<T> {
+    match pick {
+        manifest::Pick::Named(u) => doc::Pick::Named(named(u)),
+        manifest::Pick::Expr(manifest::PickExpr { expr }) => doc::Pick::Expr(doc::Expr(expr)),
+    }
+}
+
+fn corner_kind_to_manifest(kind: doc::CornerKind) -> manifest::CornerKind {
+    match kind {
+        doc::CornerKind::Open => manifest::CornerKind::Open,
+        doc::CornerKind::Butt => manifest::CornerKind::Butt,
+        doc::CornerKind::Overlap => manifest::CornerKind::Overlap,
+        doc::CornerKind::Miter => manifest::CornerKind::Miter,
+    }
+}
+
+fn corner_kind_to_doc(kind: manifest::CornerKind) -> doc::CornerKind {
+    match kind {
+        manifest::CornerKind::Open => doc::CornerKind::Open,
+        manifest::CornerKind::Butt => doc::CornerKind::Butt,
+        manifest::CornerKind::Overlap => doc::CornerKind::Overlap,
+        manifest::CornerKind::Miter => doc::CornerKind::Miter,
+    }
+}
+
+fn relief_shape_to_manifest(shape: doc::ReliefShape) -> manifest::ReliefShape {
+    match shape {
+        doc::ReliefShape::Rect => manifest::ReliefShape::Rect,
+        doc::ReliefShape::Round => manifest::ReliefShape::Round,
+        doc::ReliefShape::Tear => manifest::ReliefShape::Tear,
+    }
+}
+
+fn relief_shape_to_doc(shape: manifest::ReliefShape) -> doc::ReliefShape {
+    match shape {
+        manifest::ReliefShape::Rect => doc::ReliefShape::Rect,
+        manifest::ReliefShape::Round => doc::ReliefShape::Round,
+        manifest::ReliefShape::Tear => doc::ReliefShape::Tear,
     }
 }
 
@@ -2163,7 +2233,31 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 flanges,
                 relief,
                 cutouts,
+                corner,
+                corners,
             } => doc::FeatureKind::SheetMetal(doc::SheetMetal {
+                corner: corner.map(
+                    |manifest::SheetCornerClose { kind, gap }| doc::CornerClose {
+                        kind: pick_to_doc(kind, corner_kind_to_doc),
+                        gap: gap.map(doc::Expr),
+                    },
+                ),
+                corners: corners
+                    .into_iter()
+                    .map(
+                        |manifest::SheetCorner {
+                             flanges,
+                             kind,
+                             gap,
+                             over,
+                         }| doc::SheetCorner {
+                            flanges,
+                            kind: pick_to_doc(kind, corner_kind_to_doc),
+                            gap: gap.map(doc::Expr),
+                            over,
+                        },
+                    )
+                    .collect(),
                 cutouts: cutouts.into_iter().map(doc::FeatureId).collect(),
                 sketch: doc::FeatureId(sketch),
                 thickness: doc::Expr(thickness),
@@ -2171,11 +2265,7 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 k_factor: doc::Expr(k_factor),
                 flanges: flanges.into_iter().map(flange_to_doc).collect(),
                 relief: relief.map(|manifest::SheetRelief { shape, size }| doc::CornerRelief {
-                    shape: match shape {
-                        manifest::ReliefShape::Rect => doc::ReliefShape::Rect,
-                        manifest::ReliefShape::Round => doc::ReliefShape::Round,
-                        manifest::ReliefShape::Tear => doc::ReliefShape::Tear,
-                    },
+                    shape: pick_to_doc(shape, relief_shape_to_doc),
                     size: doc::Expr(size),
                 }),
             }),
