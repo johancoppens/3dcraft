@@ -148,17 +148,23 @@ pub(crate) fn offset_surface(
         distance,
         [by(g0), by(g1), by(g2), by(g3)],
         turn,
+        None,
         tolerance,
     )
 }
 
 /// [`offset_surface`] with a reach of its own per border
-/// ([`reached_each`]).
+/// ([`reached_each`]). With `held`, a freeform offset is held to the
+/// tolerance only within that length along the surface of its own domain
+/// (`craft3d_geom::offset::Held`): the continuation is a box of
+/// parameters, which can reach much further than any caller uses where
+/// the surface moves fast across a border.
 pub(crate) fn offset_surface_each(
     face: &Face,
     distance: f64,
     reaches: Reaches,
     turn: Option<&Turn>,
+    held: Option<f64>,
     tolerance: &Tolerance,
 ) -> Result<Surface, NoOffset> {
     // Along the surface's own normal.
@@ -208,16 +214,20 @@ pub(crate) fn offset_surface_each(
                 .map_err(|_| NoOffset::Gone)
         }
         Surface::Bezier(_) | Surface::Nurbs(_) => {
-            let over = reached_each(&face.surface, reaches, tolerance)
-                .map(|(_, over)| over)
-                .ok_or(NoOffset::NoFit)?;
+            let (nurbs, over) =
+                reached_each(&face.surface, reaches, tolerance).ok_or(NoOffset::NoFit)?;
             let turned = |u: f64, v: f64| turn.map_or(craft3d_math::Vec3::ZERO, |t| t.at(u, v));
-            craft3d_geom::offset::offset_along(
+            let held = held.map(|reach| craft3d_geom::offset::Held {
+                around: nurbs.domain(),
+                reach,
+            });
+            craft3d_geom::offset::offset_held(
                 &face.surface,
                 along,
                 OFFSET_SHARE * tolerance.linear,
                 over,
                 &turned,
+                held.as_ref(),
             )
             .map(Surface::Nurbs)
             .map_err(|error| match error {

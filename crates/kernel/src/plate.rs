@@ -249,10 +249,15 @@ struct Layered<'a> {
 }
 
 impl<'a> Layered<'a> {
+    /// The skins of `face` at `levels`, its surface continued past each
+    /// border by `reaches` (a box of parameters) and its offsets held to
+    /// the tolerance within the length `held` of its own domain, which is
+    /// as far as anything of the plate lies from it.
     fn new(
         face: &'a Face,
         levels: (f64, f64),
         reaches: Reaches,
+        held: f64,
         tolerance: &Tolerance,
     ) -> Result<Self, &'static str> {
         let reference = continued_each(&face.surface, reaches, tolerance);
@@ -260,7 +265,8 @@ impl<'a> Layered<'a> {
             if level == 0.0 {
                 Ok(reference.clone())
             } else {
-                offset_surface_each(face, level, reaches, None, tolerance).map_err(no_offset)
+                offset_surface_each(face, level, reaches, None, Some(held), tolerance)
+                    .map_err(no_offset)
             }
         };
         Ok(Self {
@@ -1104,7 +1110,7 @@ fn build(
     let surface_reach = SURFACE_REACH * furthest + thickness;
     for (made, id) in layered.iter_mut().zip(chosen) {
         let reach = reach_past_vertices(body, made.face, surface_reach, tolerance.linear);
-        *made = Layered::new(made.face, levels, reach, tolerance)
+        *made = Layered::new(made.face, levels, reach, surface_reach, tolerance)
             .map_err(|why| refuse(None, format!("face {}: {why}", id.0)))?;
     }
     for boundary in &mut boundaries {
@@ -1124,6 +1130,7 @@ fn build(
                     surface_reach + n.thickness,
                     tolerance.linear,
                 ),
+                surface_reach + n.thickness,
                 tolerance,
             )
             .map_err(|why| {

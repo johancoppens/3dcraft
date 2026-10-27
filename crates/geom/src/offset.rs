@@ -143,7 +143,50 @@ pub fn offset_along(
     over: Domain,
     turn: &dyn Fn(f64, f64) -> Vec3,
 ) -> Result<NurbsSurface, OffsetError> {
+    offset_held(surface, distance, limit, over, turn, None)
+}
+
+/// Where the fit of an offset is held to its limit: the points of the
+/// surface that lie within `reach`, a length measured along the surface,
+/// of the box of parameters `around` (the points of the box itself
+/// included).
+///
+/// A box of parameters is what a tensor-product surface can be continued
+/// by, but what a caller needs past a border is a length: a developable
+/// whose rulings shrink towards a tip is continued across them by a
+/// parameter that is large where they are short, so the box reaches far
+/// beyond the length needed wherever they are long (the sea kayak's
+/// panel, 2026-10-27: ten rulings' lengths past its chines in the middle
+/// of the panel, for 14 mm at its tip). The offset is then fitted over
+/// the whole box, through samples of the exact offset everywhere, but
+/// held to the limit, and refined, only where it is used.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Held {
+    pub around: Domain,
+    pub reach: f64,
+}
+
+/// [`offset_along`] held to `limit` only where `held` says (all of `over`
+/// for `None`). Past the held region the result interpolates the exact
+/// offset at its samples and is not measured: a caller uses it only within
+/// the held region. The regularity is proven over all of `over`.
+pub fn offset_held(
+    surface: &Surface,
+    distance: f64,
+    limit: f64,
+    over: Domain,
+    turn: &dyn Fn(f64, f64) -> Vec3,
+    held: Option<&Held>,
+) -> Result<NurbsSurface, OffsetError> {
     let nurbs = freeform(surface)?;
+    if let Some(h) = held {
+        let ((a, b), (c, d)) = h.around;
+        if ![a, b, c, d, h.reach].iter().all(|x| x.is_finite()) || !(h.reach >= 0.0) {
+            return Err(OffsetError::Invalid(GeomError::InvalidParameter(
+                "the region an offset is held in needs finite parameters and a reach of no less than nothing",
+            )));
+        }
+    }
     if !(distance.is_finite() && limit.is_finite() && limit > 0.0) {
         return Err(OffsetError::Invalid(GeomError::InvalidParameter(
             "an offset needs a finite distance and a positive limit",
@@ -163,12 +206,12 @@ pub fn offset_along(
     let past = margins(&nurbs, over, limit);
     if past != over
         && regular_over(surface, distance, past).is_ok()
-        && let Ok(fitted) = fit(surface, &nurbs, distance, limit, past, turn)
+        && let Ok(fitted) = fit(surface, &nurbs, distance, limit, past, turn, held)
         && let Ok(cut) = fitted.restricted(over.0, over.1)
     {
         return Ok(cut);
     }
-    fit(surface, &nurbs, distance, limit, over, turn)
+    fit(surface, &nurbs, distance, limit, over, turn, held)
 }
 
 /// `over` with a step of the fit's first samples added past each end in a
@@ -1491,6 +1534,116 @@ fn lattice(params: &[f64], fractions: &[f64]) -> Vec<(f64, Option<usize>)> {
     out
 }
 
+/// Gauss–Legendre nodes and weights on [0, 1], three points: exact for
+/// polynomials of degree five, which is what the length of a short step
+/// of a smooth surface's parameter line needs.
+const GAUSS3: [(f64, f64); 3] = [
+    (0.112_701_665_379_258_31, 5.0 / 18.0),
+    (0.5, 8.0 / 18.0),
+    (0.887_298_334_620_741_7, 5.0 / 18.0),
+];
+
+/// The lengths along a parameter line from the range `(lo, hi)` to each
+/// of the sorted `params` (nothing inside the range), as the integral of
+/// `speed` step by step outward, so each length costs one step; a length
+/// past `reach` is infinite, and so is every one further out (the
+/// lengths grow outward). A speed that is not a number counts as
+/// infinite: a point past it is not held.
+fn outward(
+    params: &[f64],
+    (lo, hi): (f64, f64),
+    reach: f64,
+    speed: &dyn Fn(f64) -> f64,
+) -> Vec<f64> {
+    let mut out = vec![0.0; params.len()];
+    let step = |a: f64, b: f64| -> f64 {
+        let length: f64 = GAUSS3
+            .iter()
+            .map(|(x, w)| w * speed(a + (b - a) * x))
+            .sum::<f64>()
+            * (b - a).abs();
+        if length.is_nan() {
+            f64::INFINITY
+        } else {
+            length
+        }
+    };
+    // Past the end, ascending.
+    let (mut at, mut sum) = (hi, 0.0_f64);
+    for (slot, &p) in out.iter_mut().zip(params) {
+        if p <= hi {
+            continue;
+        }
+        if sum <= reach {
+            sum += step(at, p);
+            at = p;
+        }
+        *slot = if sum <= reach { sum } else { f64::INFINITY };
+    }
+    // Before the start, descending.
+    let (mut at, mut sum) = (lo, 0.0_f64);
+    for (slot, &p) in out.iter_mut().zip(params).rev() {
+        if p >= lo {
+            continue;
+        }
+        if sum <= reach {
+            sum += step(p, at);
+            at = p;
+        }
+        *slot = if sum <= reach { sum } else { f64::INFINITY };
+    }
+    out
+}
+
+/// Which points of the lattice `us × vs` (each sorted) lie within the
+/// region `held` says: the length from the box `around` to the point
+/// along the surface, first along u at the box's nearest v, then along
+/// v (two parameter lines, so no shorter than the surface's own distance
+/// from the box), no more than the reach.
+fn held_lattice(nurbs: &NurbsSurface, held: &Held, us: &[f64], vs: &[f64]) -> Vec<Vec<bool>> {
+    let ((a0, a1), (b0, b1)) = held.around;
+    let reach = held.reach;
+    let speed_u = |v: f64| move |u: f64| nurbs.derivatives(u, v).1.length();
+    // The u legs: at the box's two v ends, and at every v inside it.
+    let leg_u_at = |v: f64| outward(us, (a0, a1), reach, &speed_u(v));
+    let (at_b0, at_b1) = (leg_u_at(b0), leg_u_at(b1));
+    let inside_u = |u: f64| u >= a0 && u <= a1;
+    let any_outside_u = us.iter().any(|u| !inside_u(*u));
+    let legs_inside: Vec<Option<Vec<f64>>> = vs
+        .iter()
+        .map(|&v| (v >= b0 && v <= b1 && any_outside_u).then(|| leg_u_at(v)))
+        .collect();
+    us.iter()
+        .enumerate()
+        .map(|(i, &u)| {
+            // Along v from the box at this u: started from the corner's
+            // leg along u.
+            let leg_v = outward(vs, (b0, b1), reach, &|v: f64| {
+                nurbs.derivatives(u, v).2.length()
+            });
+            vs.iter()
+                .enumerate()
+                .map(|(j, &v)| {
+                    let base = if v < b0 {
+                        at_b0.get(i).copied()
+                    } else if v > b1 {
+                        at_b1.get(i).copied()
+                    } else if inside_u(u) {
+                        Some(0.0)
+                    } else {
+                        legs_inside
+                            .get(j)
+                            .and_then(|l| l.as_ref())
+                            .and_then(|l| l.get(i).copied())
+                    };
+                    let along = leg_v.get(j).copied().unwrap_or(f64::INFINITY);
+                    base.is_some_and(|b| b + along <= reach)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn fit(
     surface: &Surface,
     nurbs: &NurbsSurface,
@@ -1498,6 +1651,7 @@ fn fit(
     limit: f64,
     over: Domain,
     turn: &dyn Fn(f64, f64) -> Vec3,
+    held: Option<&Held>,
 ) -> Result<NurbsSurface, OffsetError> {
     let (du, dv) = nurbs.domain();
     let (degree_u, degree_v) = nurbs.degrees();
@@ -1560,8 +1714,23 @@ fn fit(
         let mut over_u = vec![0.0_f64; us.len().saturating_sub(1)];
         let mut over_v = vec![0.0_f64; vs.len().saturating_sub(1)];
         let mut inside: Vec<(usize, usize, f64)> = Vec::new();
-        for &(u, step_u) in &at_u {
-            for &(v, step_v) in &at_v {
+        let kept = held.map(|h| {
+            let us: Vec<f64> = at_u.iter().map(|(u, _)| *u).collect();
+            let vs: Vec<f64> = at_v.iter().map(|(v, _)| *v).collect();
+            held_lattice(nurbs, h, &us, &vs)
+        });
+        for (i, &(u, step_u)) in at_u.iter().enumerate() {
+            for (j, &(v, step_v)) in at_v.iter().enumerate() {
+                // Not used: not held to the limit (`Held`).
+                if let Some(kept) = &kept
+                    && !kept
+                        .get(i)
+                        .and_then(|row| row.get(j))
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
                 let off = match (step_u, step_v) {
                     // A sample: the fit passes through it.
                     (None, None) => continue,
