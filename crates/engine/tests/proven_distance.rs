@@ -495,12 +495,6 @@ fn a_turned_spline_dome_is_proven_to_its_distance() {
         "feature.revolve",
         json!({"sketch": "Dome", "axis": "x", "name": "Turned"}),
     );
-    let top = run(
-        &mut s,
-        "measure.boxMax",
-        json!({"of": "Turned", "axis": "z"}),
-    );
-    eprintln!("dome top {top}");
     run(
         &mut s,
         "feature.block",
