@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 43"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 44"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 43,
+            file: 44,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 43")
+        text.contains("version 44")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
