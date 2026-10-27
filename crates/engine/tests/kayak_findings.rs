@@ -15,8 +15,8 @@
 //!    measure and its assertion settle.
 //! 6. The coaming: a boolean of the hull's cylinders refused ("imprint
 //!    lost"); diagnosed in docs/design/booleans.md, owed.
-//! 7. The hull's panels with a deep check: all built; the check finds one
-//!    boolean of the tips wrong (TipHalfD), owed (docs/design/booleans.md).
+//! 7. The hull's panels with a deep check: all built and passing (the
+//!    check's finding on TipHalfD was its ray casting, fixed 2026-10-27).
 
 #![allow(
     clippy::unwrap_used,
@@ -102,16 +102,11 @@ fn the_coaming_boolean_is_refused_as_owed_not_wrong() {
 }
 
 #[test]
-fn the_hull_panels_pass_the_deep_check_but_one_boolean_of_the_tips() {
+fn the_hull_panels_pass_the_deep_check() {
+    // Every feature is built and the deep check finds nothing: its one
+    // finding, the intersect of the tips, was the check's own ray casting
+    // missing a crossing (docs/design/booleans.md, *The sea kayak's tips*,
+    // 2026-10-27; boolean_findings.rs › the_sea_kayak_tips_against_the_deck).
     let (_, failed) = steps("sea_kayak_7.steps.json");
-    // Every feature is built; the deep check's only finding is the
-    // intersect of the tips (owed: docs/design/booleans.md, 2026-10-27).
-    assert_eq!(failed.len(), 1, "{failed:#?}");
-    let only = &failed[0];
-    assert!(only.starts_with("document.check"), "{only}");
-    let problems: Value =
-        serde_json::from_str(only.trim_start_matches("document.check: ")).unwrap();
-    let problems = problems["problems"].as_array().unwrap();
-    assert_eq!(problems.len(), 1, "{problems:#?}");
-    assert_eq!(problems[0]["name"], "TipHalfD", "{problems:#?}");
+    assert!(failed.is_empty(), "{failed:#?}");
 }
