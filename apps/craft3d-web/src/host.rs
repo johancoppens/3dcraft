@@ -1013,6 +1013,10 @@ impl WebHost {
         });
         let mut downloads = Vec::new();
         if let Ok(result) = &exported {
+            // The format the next export dialog chooses first.
+            if let Some(format) = craft3d_ui_egui::files::ExportFormat::of_name(&name) {
+                self.shell.state.export.format = format;
+            }
             if let Some(bytes) = self.session.take_file(&name) {
                 downloads.push(Download::export(name.clone(), bytes));
             }
@@ -1591,10 +1595,13 @@ mod tests {
             assert!(host.session.file_names().is_empty(), "{format}");
         }
         // The next export proposes the last format tried (SVG).
-        host.file_action(FileAction::Export);
-        assert_eq!(host.dialog.as_ref().unwrap().name, "untitled.svg");
-        let cancelled = host.answer(host.dialog.clone().unwrap(), false);
-        assert_eq!(cancelled, Outcome::default());
+        // (the shell's export dialog since 2026-10-27, no longer the
+        // page's own name dialog).
+        assert_eq!(host.file_action(FileAction::Export), Outcome::default());
+        assert!(host.dialog.is_none());
+        assert_eq!(host.shell.state.export.name, "untitled.svg");
+        host.shell.answer_export(false);
+        assert_eq!(host.shell.take_export_answer(), None);
         // A cancelled dialog is no error, and every export above worked
         // (the outlines with nothing selected are drawings of the model).
         assert_eq!(host.shell.error_dialog().map(|e| e.title.as_str()), None);

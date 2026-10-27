@@ -573,14 +573,15 @@ fn every_export_kind_is_named_for_its_format_and_exports() {
     session
         .execute("file.save", &json!({"path": "enclosure.3dcraft"}))
         .unwrap();
-    // The block's top face selected: the selection goes to DXF and SVG.
+    // One flat top face selected (of six that fit): the selection goes to
+    // DXF and SVG.
     let top = session
         .execute(
             "select.query",
             &json!({"kind": "face", "where": {"normal": {"along": "z"}}, "limit": 1, "then": "replace"}),
         )
         .unwrap();
-    assert_eq!(top["count"], 1, "{top}");
+    assert_eq!(top["selection"]["count"], 1, "{top}");
     let mut shell = Shell::new();
     frame(&ctx, &mut shell, &mut session, Vec::new());
     shell.open_export(&mut session).unwrap();
