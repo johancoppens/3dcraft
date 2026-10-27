@@ -395,3 +395,88 @@ fn a_sphere_is_refused_with_its_curvature() {
     let error = develop(&ball, &[FaceId(0)], &tol(1.0)).unwrap_err();
     assert!(error.to_string().contains("not developable"), "{error}");
 }
+
+/// A generalised cylinder whose cross-section inflects (the sea kayak's
+/// panel, 2026-10-27): `A(u) = k (100 x, 0, 20 x³)` with `x = 2u − 1`, an
+/// inflection at `u = ½`, and `B(u) = A(u) + w(u) n` with `w = k (40 +
+/// 20 x²)` and `n` fixed, both exact cubics, `B` reparametrized when
+/// `skew`. The developable between them is the cylinder of the rulings
+/// along `n`, whose area is `∫ w |A' × n| du`; at the inflection the
+/// condition's zero set crosses another branch (its gradient vanishes on
+/// the ruling there), which used to be refused as rulings that cross.
+fn inflected_cylinder(k: f64, skew: bool) -> (Rail, Rail, Vec3, f64) {
+    let n = Vec3::new(0.3, 1.0, 0.8).normalized().unwrap();
+    // Bézier control values of x, x³ and w over u in [0, 1].
+    let x = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
+    let x3 = [-1.0, 1.0, -1.0, 1.0];
+    let w = [60.0, 40.0 - 20.0 / 3.0, 40.0 - 20.0 / 3.0, 60.0];
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let a_ctrl: Vec<Vec3> = (0..4)
+        .map(|i| Vec3::new(100.0 * x[i], 0.0, 20.0 * x3[i]) * k)
+        .collect();
+    let b_ctrl: Vec<Vec3> = (0..4).map(|i| a_ctrl[i] + n * (w[i] * k)).collect();
+    let a = NurbsCurve::polynomial(3, knots.clone(), a_ctrl).unwrap();
+    let b = NurbsCurve::polynomial(3, knots, b_ctrl).unwrap();
+    let b = if skew {
+        reparametrized(&b, 0.5, 1.6).unwrap()
+    } else {
+        b
+    };
+    let (ra, rb) = (a.domain(), b.domain());
+    // ∫ w |A' × n| du by Simpson's rule (the integrand is smooth).
+    let steps = 4000;
+    let integrand = |u: f64| {
+        let x = 2.0 * u - 1.0;
+        let da = Vec3::new(200.0, 0.0, 120.0 * x * x) * k;
+        (40.0 + 20.0 * x * x) * k * da.cross(n).length()
+    };
+    let h = 1.0 / steps as f64;
+    let mut area = integrand(0.0) + integrand(1.0);
+    for j in 1..steps {
+        area += integrand(j as f64 * h) * if j % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    area *= h / 3.0;
+    (
+        rail(Curve3::Nurbs(a), ra),
+        rail(Curve3::Nurbs(b), rb),
+        n,
+        area,
+    )
+}
+
+#[test]
+fn a_generalised_cylinder_whose_section_inflects_is_joined_through_the_inflection() {
+    for skew in [false, true] {
+        for k in SCALES {
+            let (a, b, n, area) = inflected_cylinder(k, skew);
+            let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k} {skew}: {e}"));
+            assert_eq!(made.faces, vec![Piece::Rulings]);
+            assert!(
+                made.rulings
+                    .windows(2)
+                    .all(|w| w[1].0 >= w[0].0 && w[1].1 >= w[0].1),
+                "rulings are monotone"
+            );
+            // Through the inflection: rulings on both sides of it.
+            assert!(made.rulings.iter().any(|(s, _)| *s < 0.45));
+            assert!(made.rulings.iter().any(|(s, _)| *s > 0.55));
+            for &(s, t) in &made.rulings {
+                let d = (at(&b, t).0 - at(&a, s).0).normalized().unwrap();
+                assert!(
+                    d.cross(n).length() < 1e-6,
+                    "{k} {skew}: a ruling at ({s}, {t}) is off the cylinder's direction by {}",
+                    d.cross(n).length()
+                );
+            }
+            assert!(made.curvature * k * k < 1e-6, "K {}", made.curvature);
+            let measured = craft3d_topo::mass_properties(&made.body).unwrap().area;
+            assert!(
+                (measured - area).abs() <= 1e-6 * area,
+                "{k} {skew}: area {measured}, expected {area}"
+            );
+            let dev = develop(&made.body, &[FaceId(0)], &tol(k)).unwrap();
+            let e = dev.error();
+            assert!(e.area < 1e-6 && e.length < 1e-6, "{e:?}");
+        }
+    }
+}

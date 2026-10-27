@@ -823,6 +823,78 @@ fn a_projection_from_the_point_before_lands_where_the_search_does() {
     assert!(missed * 1000 < tried, "{missed} of {tried} missed");
 }
 
+/// A long, narrow sheet far from the origin (a kayak's panel, 5 m long
+/// and 15 cm across, 2.5 m off: 2026-10-27): the rounding of the
+/// positions there is many steps of the rounding of the parameter across.
+/// A projection from a start next to the answer settles there (it did not
+/// within its steps when it waited for the parameters' rounding alone),
+/// at every scale.
+#[test]
+fn a_projection_onto_a_long_narrow_sheet_far_from_the_origin_settles() {
+    let mut random = Random(0x4B41_5941);
+    for k in SCALES {
+        // Degree 3 along, 1 across, 24 rows: a wavy strip.
+        let rows = 24;
+        let knots_u: Vec<f64> = {
+            let inner = rows - 4;
+            let mut knots = vec![0.0; 4];
+            knots.extend((1..=inner).map(|i| i as f64 / (inner + 1) as f64));
+            knots.extend([1.0; 4]);
+            knots
+        };
+        let mut ctrl = Vec::new();
+        for i in 0..rows {
+            let x = 5000.0 * i as f64 / (rows - 1) as f64;
+            let wave = (x / 700.0).sin();
+            let low = Vec3::new(2500.0 + x, 40.0 * wave, 200.0 + 10.0 * wave);
+            let high = low + Vec3::new(3.0 * wave, 120.0, 90.0 + 20.0 * wave);
+            ctrl.push(low * k);
+            ctrl.push(high * k);
+        }
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                1,
+                knots_u,
+                vec![0.0, 0.0, 1.0, 1.0],
+                rows,
+                2,
+                ctrl,
+                vec![1.0; 2 * rows],
+            )
+            .unwrap(),
+        );
+        let mut unsettled = Vec::new();
+        for _ in 0..400 {
+            let (u, v) = (random.between(0.0, 1.0), random.between(0.0, 1.0));
+            let normal = surface.normal(u, v).unwrap();
+            let offset = random.between(-1e-7, 1e-7) * k;
+            let p = surface.eval(u, v) + normal * offset;
+            let start = (
+                (u + random.between(-1e-3, 1e-3)).clamp(0.0, 1.0),
+                (v + random.between(-1e-2, 1e-2)).clamp(0.0, 1.0),
+            );
+            match surface.project_from(p, start) {
+                Ok((pu, pv)) => {
+                    let foot = surface.eval(pu, pv);
+                    assert!(
+                        foot.distance(p) <= offset.abs() + 1e-9 * 5000.0 * k,
+                        "scale {k}: ({u}, {v}) came back {} off",
+                        foot.distance(p)
+                    );
+                }
+                Err(e) => unsettled.push(format!("({u}, {v}) from {start:?}: {e}")),
+            }
+        }
+        assert!(
+            unsettled.is_empty(),
+            "scale {k}: {} of 400 did not settle, the first: {:?}",
+            unsettled.len(),
+            unsettled.first()
+        );
+    }
+}
+
 /// On the analytic kinds `project_from` is `project`, whatever the start;
 /// a start or a point that is not finite is an error, and a start outside
 /// the domain is as good as one inside.
