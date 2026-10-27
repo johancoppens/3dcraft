@@ -24,7 +24,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("select.set", "Select", r#"{"items": [{kind, name, feature}], "names": [string], "set": string, "mode": "replace|add|remove|toggle|clear" = "replace"}"#,
         "Sets the selection of the active document. items names each thing with its kind (optional: read from the name) and, for a face, an edge or a vertex, feature: the body that has it (optional: the first body in history order that has the name). names is the short form: a feature's name or id (a body when it has one, otherwise the sketch, datum or feature) or a persistent name of a face, edge or vertex (document.inspect faceNames or aliases, document.edges). replace makes them the selection, add adds what is not selected yet (in order), remove takes them out, toggle adds what is not selected and removes what is, clear empties it (no items needed). set is a named set (set.define): what it holds now, after the items and names. A name that means nothing is an error, and then nothing changes. At most 10000 items. Returns the selection as select.get does, with added and removed counts.", doc: true, names: ["items", "names"], select_set),
     spec!("select.query", "Select by Description", r#"{"kind": "body|face|edge|vertex|feature|sketch|datum" or [kind, ...] = every kind, "where": filter or [filter, ...], "then": "none|replace|add|remove" = "none", "limit": integer = 1000, "context": boolean = false}"#,
-        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With context each item also has what select.get gives with context (surface or curve and its measure, drivers with the edit to make, copyOf). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; set: the name of a named set (set.define): what it holds now; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, names: ["where"], select_query),
+        "Finds what fits a description and returns it (items as select.get gives them, with body: the name of the body of a face, edge or vertex, and origin: {feature, name}, the feature that first made it, at the end of its persistent name's way, such as the cylinder that drilled a hole: the feature to edit to change it), in document order: bodies, features, sketches and datums in history order, faces, edges and vertices body by body in the order of document.inspect and document.edges. count is how many fit, truncated says whether more fit than limit (at most 10000), summary is one line (\"6 faces in Housing\"). With context each item also has what select.get gives with context (surface or curve and its measure, drivers with the edit to make, copyOf). With then the result also becomes the selection (replace), is added to it or taken out of it; the window shows it. A filter is an object; several keys in one object must all hold, an array of filters too. Filters: all: [filters], any: [filters], not: filter; set: the name of a named set (set.define): what it holds now; kind: kind or [kinds]; name: glob (* any run, ? one character) on the name, or for a feature-like item also its id; type: glob on the type of the feature (extrude, boolean, pattern, ...; of the body's feature for a face, edge or vertex); status: ok|failed|suppressed|inactive|rolledBack or a list: how the feature regenerated (inactive: its when is false; of the body's feature for a face, edge or vertex); in: the body (feature id or name) a face, edge or vertex belongs to, or that body itself; madeBy: feature: a face, edge or vertex whose persistent name comes from that feature anywhere along its way (the cylinder that drilled a hole, the extrusion whose side it is), a body or feature made by it or from it; copyOf: pattern or mirror feature, with instance: n: entities that are copies made by it (of that instance), or its body; color: \"#rrggbb\" or [r, g, b] or null (no colour of its own), within: distance in RGB = 0: the colour of the body, or of the face; material: glob or null: the body's material; volume (bodies), area (bodies and faces), radius (cylindrical and spherical faces, circular edges), length (edges): a value (\"6 mm\", a number in the document's unit) or {eq, tol} or {min, max}; tol defaults to a millionth of eq; surface: plane|cylinder|cone|sphere|torus|freeform or a list: the kind of a face's surface; hole: true for the wall of a hole, a cylindrical face whose outward normal points at its axis and that goes all the way round it (not a concave fillet), false for the others; a face a boolean split into pieces that keep its name is one item; normal: {along: axis} (a flat face whose outward normal points along it, \"-y\" for the faces facing -y) or {perpendicular: axis} (flat faces whose normal is square to it, and cylinders and cones whose axis lies along it), with tol: degrees = 0.5; axis: {along: axis, tol}: cylinders, cones, tori and circular edges whose axis lies along it, either way round; inside: [[x, y, z], [x, y, z]]: the item lies wholly within the box; above: {z: value} (or x, y; a number is z): wholly at or above it, below: likewise at or below. An axis is x, y, z, -x, -y, -z or [x, y, z]. A filter that does not apply to an item (volume of a face) does not hold for it. Measures and boxes use the exact geometry (face areas by the integrals document.measure sums).", doc: true, names: ["where"], select_query),
 ];
 
 /// Most filters one query holds, nested ones included.
@@ -200,6 +200,10 @@ enum Filter {
     Kind(BTreeSet<SelectionKind>),
     Name(Glob),
     Type(Glob),
+    /// The regeneration status of the feature (of the body's feature for
+    /// a face, edge or vertex): ok, failed, suppressed, inactive (its
+    /// `when` false) or rolledBack, one or a list.
+    Status(BTreeSet<&'static str>),
     In(FeatureId),
     MadeBy(FeatureId),
     CopyOf {
@@ -252,6 +256,35 @@ impl Range {
 /// A pattern with `*` (any run of characters) and `?` (one character).
 #[derive(Clone, Debug)]
 struct Glob(Vec<char>);
+
+/// The name of a regeneration status, as `document.inspect` writes it.
+fn status_name(status: &craft3d_regen::Status) -> &'static str {
+    use craft3d_regen::Status;
+    match status {
+        Status::Ok => "ok",
+        Status::Failed(_) => "failed",
+        Status::Suppressed => "suppressed",
+        Status::Inactive => "inactive",
+        Status::RolledBack => "rolledBack",
+    }
+}
+
+/// The statuses a `status` filter names: one or a list of them.
+fn statuses(value: &Value) -> Result<BTreeSet<&'static str>, String> {
+    const ALL: [&str; 5] = ["ok", "failed", "suppressed", "inactive", "rolledBack"];
+    let one = |v: &Value| -> Result<&'static str, String> {
+        v.as_str()
+            .and_then(|s| ALL.iter().copied().find(|a| *a == s))
+            .ok_or_else(|| format!("`status` is {} or a list of them", ALL.join(", ")))
+    };
+    match value {
+        Value::Array(items) if !items.is_empty() && items.len() <= ALL.len() * 4 => {
+            items.iter().map(one).collect()
+        }
+        Value::Array(_) => Err(format!("`status` is {} or a list of them", ALL.join(", "))),
+        _ => Ok(BTreeSet::from([one(value)?])),
+    }
+}
 
 /// A name glob with the features it writes by their names written by
 /// their ids, as the persistent names it is matched against have them:
@@ -494,6 +527,7 @@ impl<'a> Parser<'a> {
             "kind" => Filter::Kind(kinds(value)?),
             "name" => Filter::Name(Glob::new(&glob_with_ids(self.doc, text(value, key)?), key)?),
             "type" => Filter::Type(Glob::new(text(value, key)?, key)?),
+            "status" => Filter::Status(statuses(value)?),
             "set" => self.set(text(value, key)?, depth)?,
             "in" => Filter::In(self.feature(value, key)?),
             "madeBy" => Filter::MadeBy(self.feature(value, key)?),
@@ -612,7 +646,7 @@ impl<'a> Parser<'a> {
             other => {
                 let other: String = other.chars().take(40).collect();
                 return Err(format!(
-                    "unknown filter `{other}`; the filters are all, any, not, set, kind, name, type, in, madeBy, copyOf, color, material, volume, area, radius, length, surface, hole, normal, axis, inside, above and below"
+                    "unknown filter `{other}`; the filters are all, any, not, set, kind, name, type, status, in, madeBy, copyOf, color, material, volume, area, radius, length, surface, hole, normal, axis, inside, above and below"
                 ));
             }
         };
@@ -1068,6 +1102,10 @@ impl<'a> Context<'a> {
             Filter::Type(glob) => self
                 .feature_kind(c.feature)
                 .is_some_and(|k| glob.matches(k.type_name())),
+            Filter::Status(wanted) => self
+                .regen
+                .feature(c.feature)
+                .is_some_and(|r| wanted.contains(status_name(&r.status))),
             Filter::In(body) => {
                 (c.kind.is_entity() || c.kind == SelectionKind::Body) && c.feature == *body
             }

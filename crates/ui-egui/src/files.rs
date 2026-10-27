@@ -430,15 +430,18 @@ impl FlatPattern {
 
 /// The sheet-metal parts and folds of the active document, in history
 /// order (the parts first), and with two parts or more every part on one
-/// sheet: each a pattern a DXF or SVG export can draw. None when there is
-/// no document or the query fails.
+/// sheet: each a pattern a DXF or SVG export can draw, of the features
+/// that were built (not switched off, rolled back or failed). None when
+/// there is no document or the query fails.
 pub fn flat_patterns(session: &mut Session) -> Vec<FlatPattern> {
     let mut out = Vec::new();
     for kind in PatternKind::ALL {
         let Ok(found) = guarded(
             session,
             "select.query",
-            &json!({"kind": "feature", "where": {"type": kind.param()}, "limit": 256}),
+            // Only what was built: a part switched off, rolled back or
+            // failed has no pattern to draw.
+            &json!({"kind": "feature", "where": {"type": kind.param(), "status": "ok"}, "limit": 256}),
         ) else {
             continue;
         };

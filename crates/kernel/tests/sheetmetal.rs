@@ -1153,3 +1153,58 @@ fn a_cutout_that_lies_in_no_flat_is_refused() {
         build(&with(&[([x0 + 7.0, 15.0], 3.0)]), &tol).unwrap();
     }
 }
+
+/// A flange's hole lands where the bend puts it, in closed form: flange 0
+/// of a 40 × 30 base, on its right edge, bent up 90 degrees about the axis
+/// x = 40, z = T + R; its flat's bottom skin is the plane x = 40 + R + T,
+/// and a point d beyond the flange's tangent line in the pattern rises to
+/// z = R + T + d. The hole of radius 1.5 six from the tangent line, at
+/// y = 15: its circle on the folded bottom skin has its centre at
+/// (40 + R + T, 15, R + T + 6) and its axis along x.
+#[test]
+fn a_flange_hole_lands_where_the_bend_puts_it() {
+    use craft3d_geom::Curve3;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, kf) = (1.0 * k, 1.0 * k, 0.4);
+        let ba = FRAC_PI_2 * (r + kf * t);
+        let x0 = 40.0 + ba / k;
+        let mut s = spec(
+            base(40.0, 30.0, None, k),
+            t,
+            vec![flange(
+                On::Base(2),
+                15.0 * k,
+                FRAC_PI_2,
+                Direction::Up,
+                r,
+                kf,
+            )],
+            None,
+        );
+        s.cutouts = circles(&[([x0 + 6.0, 15.0], 1.5)], k);
+        let part = build(&s, &tol).unwrap();
+        let want = Vec3::new(40.0 * k + r + t, 15.0 * k, r + t + 6.0 * k);
+        let moved = part.flats[1]
+            .transform
+            .point(Vec3::new(x0 * k + 6.0 * k, 15.0 * k, 0.0));
+        assert!((moved - want).length() <= 1e-9 * k, "{moved:?} vs {want:?}");
+        let circles: Vec<_> = part
+            .sheet
+            .edges
+            .iter()
+            .filter_map(|e| match &e.curve {
+                Curve3::Circle(c) if (c.radius() - 1.5 * k).abs() <= 1e-9 * k => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(circles.len(), 1);
+        let frame = circles[0].frame();
+        assert!(
+            (frame.origin() - want).length() <= 1e-9 * k,
+            "{:?} vs {want:?}",
+            frame.origin()
+        );
+        assert!(frame.z().cross(Vec3::X).length() <= 1e-12, "axis along x");
+    }
+}

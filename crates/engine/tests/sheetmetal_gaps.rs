@@ -348,6 +348,26 @@ fn a_part_switched_off_is_left_out_of_the_measures() {
         named["message"].as_str().unwrap().contains("switched off"),
         "{named}"
     );
+    // A query of the parts that were built: only Plain; inactive, Vented.
+    for (status, name) in [
+        (json!("ok"), "Plain"),
+        (json!(["inactive", "failed"]), "Vented"),
+    ] {
+        let found = run(
+            &mut s,
+            "select.query",
+            json!({"kind": "feature", "where": {"type": "sheetMetal", "status": status}}),
+        );
+        assert_eq!(found["count"], 1, "{found}");
+        assert_eq!(found["items"][0]["name"], name, "{found}");
+    }
+    for bad in [json!("off"), json!([]), json!(3)] {
+        error(
+            &mut s,
+            "select.query",
+            json!({"kind": "feature", "where": {"status": bad}}),
+        );
+    }
     // The other way round: the named one measures, Plain is left out.
     run(&mut s, "variable.set", json!({"name": "on", "expr": "1"}));
     assert_eq!(listed(&mut s, "Named")["status"], "passed");

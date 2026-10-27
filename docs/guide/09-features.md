@@ -231,7 +231,8 @@ starts the bend allowance beyond its edge. `cutouts` adds the closed profiles of
 plane (any origin and axes) the same way, and each sketch switches with its own `when`, so a vent or a
 cable hole can be an option. The holes are cut in the flat pattern and in the folded part, and
 `holeToBend` measures each from the bends beside its own flat. A hole across a bend's strip or past the
-pattern's edge is refused. A hole cut later by another feature (a boolean) is not in the flat pattern
+pattern's edge is refused, and so is the part when a `cutouts` sketch fails (fix the sketch, or switch it
+off). A hole cut later by another feature (a boolean) is not in the flat pattern
 (the bend table and the export say which feature took the part as `changedBy`): draw it in the part's
 sketch or in a `cutouts` sketch instead. A panel with a hole in its flange and an optional vent:
 

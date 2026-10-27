@@ -432,3 +432,70 @@ fn the_export_dialog_offers_a_flat_pattern() {
         Some("Flat pattern of Part")
     );
 }
+
+/// A part switched off (`when` false) or failed has no flat pattern: the
+/// dialog does not offer it, and "every part" is the parts that were
+/// built, so the export goes through (review of r1-smgaps).
+#[test]
+fn a_part_switched_off_is_not_offered_and_every_part_is_the_built_ones() {
+    let mut session = Session::new(Workspace::memory());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute("variable.set", &json!({"name": "lid", "expr": "0"}))
+        .unwrap();
+    for (sketch, name, extra) in [
+        ("S1", "Box", json!({})),
+        ("S2", "Lid", json!({"when": "lid"})),
+        ("S3", "Tray", json!({})),
+        ("S4", "Broken", json!({"kFactor": 1.5})),
+    ] {
+        session
+            .execute("sketch.create", &json!({"plane": "xy", "name": sketch}))
+            .unwrap();
+        session
+            .execute(
+                "sketch.rect",
+                &json!({"sketch": sketch, "from": [0, 0], "to": [50, 40]}),
+            )
+            .unwrap();
+        let mut params = json!({"sketch": sketch, "name": name, "thickness": "1 mm", "radius": "1 mm",
+            "kFactor": 0.4, "flanges": [{"edge": "e6", "length": "15 mm", "angle": "90 deg"}]});
+        if let (Some(map), Some(more)) = (params.as_object_mut(), extra.as_object()) {
+            map.extend(more.clone());
+        }
+        session.execute("feature.sheetMetal", &params).unwrap();
+    }
+    let check = craft3d_ui_egui::files::export_check(&mut session, "parts.svg");
+    let labels: Vec<String> = check.patterns.iter().map(|p| p.label()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Flat pattern of Box",
+            "Flat pattern of Tray",
+            "Flat patterns of every part"
+        ]
+    );
+    let mut plan = craft3d_ui_egui::files::ExportPlan::default();
+    plan.sheet.pattern = check.patterns.last().cloned();
+    let params = craft3d_ui_egui::files::export_params(&mut session, "parts.svg", &plan).unwrap();
+    assert_eq!(params, vec![("sheetMetal", json!(["Box", "Tray"]))]);
+    let mut call = json!({"path": "parts.svg"});
+    for (key, value) in params {
+        call[key] = value;
+    }
+    let written = session.execute("file.export", &call).unwrap();
+    assert_eq!(written["sheetMetal"].as_array().map(Vec::len), Some(2));
+    // The lid switched on: offered, and on the sheet.
+    session
+        .execute("variable.set", &json!({"name": "lid", "expr": "1"}))
+        .unwrap();
+    let check = craft3d_ui_egui::files::export_check(&mut session, "parts.svg");
+    assert_eq!(check.patterns.len(), 4, "{:?}", check.patterns);
+    plan.sheet.pattern = check.patterns.last().cloned();
+    assert_eq!(
+        craft3d_ui_egui::files::export_params(&mut session, "parts.svg", &plan).unwrap(),
+        vec![("sheetMetal", json!(["Box", "Lid", "Tray"]))]
+    );
+}
