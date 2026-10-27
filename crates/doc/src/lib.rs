@@ -19,6 +19,7 @@ pub mod fold;
 pub mod name;
 pub mod public;
 pub mod sets;
+pub mod sheetmetal;
 pub mod sketch;
 pub mod table;
 pub mod visibility;
@@ -44,6 +45,10 @@ pub use public::{
     PublicParam,
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
+pub use sheetmetal::{
+    BendDirection, CornerRelief, Flange, FlangeFrom, FlangeOn, MAX_SHEET_FLANGES, ReliefShape,
+    SheetMetal,
+};
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
 
 pub use sketch::{
@@ -1159,6 +1164,7 @@ pub enum FeatureKind {
     Split(Split),
     Import(Import),
     Fold(Fold),
+    SheetMetal(SheetMetal),
     Developable(Developable),
     Unfold(Unfold),
 }
@@ -1202,6 +1208,7 @@ impl FeatureKind {
             FeatureKind::Unfold(_) => "unfold",
             FeatureKind::Import(_) => "import",
             FeatureKind::Fold(_) => "fold",
+            FeatureKind::SheetMetal(_) => "sheetMetal",
         }
     }
 
@@ -1288,6 +1295,7 @@ impl FeatureKind {
             | FeatureKind::OffsetProfile(_)
             | FeatureKind::Fill(_)
             | FeatureKind::Fold(_)
+            | FeatureKind::SheetMetal(_)
             | FeatureKind::Developable(_)
             | FeatureKind::Import(_) => None,
         }
@@ -1311,6 +1319,7 @@ impl FeatureKind {
             FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Fill(f) => vec![f.sketch],
             FeatureKind::Fold(f) => vec![f.sketch],
+            FeatureKind::SheetMetal(m) => vec![m.sketch],
             FeatureKind::Developable(d) => {
                 let mut out = d.a.inputs();
                 for id in d.b.inputs() {
@@ -1438,6 +1447,7 @@ impl FeatureKind {
             FeatureKind::DatumPoint(d) => out = d.exprs(),
             FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fold(f) => out = f.exprs(),
+            FeatureKind::SheetMetal(m) => out = m.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
@@ -1579,6 +1589,7 @@ impl FeatureKind {
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
             FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fold(f) => f.exprs_mut(),
+            FeatureKind::SheetMetal(m) => m.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Thicken(t) => vec![&mut t.thickness],
@@ -1909,6 +1920,15 @@ impl Document {
                     "the fold `{}` has {} creases; the most is {MAX_FOLD_CREASES}",
                     feature.name,
                     fold.creases.len()
+                )));
+            }
+            if let FeatureKind::SheetMetal(part) = &feature.kind
+                && part.flanges.len() > MAX_SHEET_FLANGES
+            {
+                return Err(DocError::Invalid(format!(
+                    "the sheet-metal part `{}` has {} flanges; the most is {MAX_SHEET_FLANGES}",
+                    feature.name,
+                    part.flanges.len()
                 )));
             }
             if let FeatureKind::Loft(loft) = &feature.kind

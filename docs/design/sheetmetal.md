@@ -1,0 +1,121 @@
+# Sheet metal
+
+A part bent from one sheet: a flat base with flanges bent along straight edges, each bend with an inner radius `R` and a K-factor `K`, corner reliefs where two bends meet, the flat pattern with its bend allowance, the bend table, and the manufacturability measures as assertion measures. Roadmap: [`../roadmap.md`](../roadmap.md) › *R1* (the sheets block, item 3 of `plan/r1-sheets.md`, built 2026-10-27). Code: `crates/kernel/src/sheetmetal.rs` (the pattern, the fold, the solid, the measures), `crates/kernel/src/origami/solve.rs` (`Joint` with a radius), `crates/regen/src/sheetmetal.rs` (the feature in regeneration), `crates/engine/src/sheetmetal_cmds.rs` (`feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, the measures `bendRadius`, `flangeLength`, `holeToBend`, `relief`, the flat pattern's export). Guide: [`../guide/09-features.md`](../guide/09-features.md) › *Sheet metal*.
+
+**Laid out in closed form, measured by the unfold.** The flat pattern is laid out by the closed form `BA = θ (R + K T)` (exact) and folded from it; the unfold (`unfold::develop` on each bend's neutral band) only measures it, in the bend table and the tests, and must agree within a few tolerances. It never lays the pattern out (*The flat pattern measured* below).
+
+**One fold, one unfold, one offset.** Nothing here folds, lays flat or offsets by a method of its own: the bends are joints of origami's linkage ([`origami.md`](origami.md) › *One fold mechanism*), the solid is the plate of the folded bottom skin ([`plates.md`](plates.md)), and the bend allowance is measured by laying each bend's neutral band flat with the unfold ([`developable.md`](developable.md)). This follows the design written in [`plates.md`](plates.md) › *Sheet metal* before it was built, with the changes listed under *Findings and history*.
+
+## Method
+
+### The flat pattern first
+
+The part is defined by its flat pattern, in the plane of the base's sketch (its x and y; `z` along its normal, the side a bend `up` turns to; the bottom skin at `z = 0`, the top at `z = T`). The base is the sketch's one closed profile (lines, arcs, circles, splines; holes allowed). A flange sits on a straight edge `s → e` of a flat, with the flat on its left (the outer loop runs counter-clockwise, so this is the loop's own direction), `û` the unit vector to its right (away from the flat): one of the base's outer edges, by its line's entity id, or the *tip* (far edge) of an earlier flange. The pattern grows across the edge by
+
+- the bend's **strip**, `BA = θ (R + K T)` wide: the bend allowance, the length of the neutral fibre over the angle θ (Machinery's Handbook, *Sheet metal work* › *Bend allowance*), the neutral fibre lying `K T` from the inner surface;
+- the flange's **flat**, a rectangle as wide as the edge and `L` long when the length is measured from the bend's tangent line, or `L − (R + T) tan(θ/2)` when it is measured from the virtual sharp of the outside surfaces (the outside mould line; the outside setback `(R + T) tan(θ/2)` holds for any θ below 180 degrees: the two outside surfaces' planes meet that far from each tangent line). Its tip, `b0 → b1`, has the flange on its left, so a flange on it grows the same way.
+
+So the flat length of a chain of flats and bends is the sum of the flats and `Σ θᵢ (Rᵢ + Kᵢ T)`, in closed form: the oracle of the L, the U, the Z and the box. The bend deduction (DIN 6935's *Ausgleichswert* with its sign turned) is `2 (R + T) tan(θ/2) − BA`, how much shorter the flat is than the two flanges measured to the virtual sharp; both are reported in the bend table.
+
+### Corners and reliefs
+
+Where two flanged edges of the base meet at a corner `p` (the outer loop turns left there by more than the angular tolerance), the two strips meet at `p` only (each lies on the outer side of its own edge). Without a relief the part keeps that corner: the two bends' ends meet along the vertical line at `p`, a reflex edge of the solid. A **relief** of size `r` cuts the base's corner: both edges, and the flanges on them, end `r` from `p`, and the corner is replaced by a notch from `a = p + r eₐ` to `b = p + r e_b` (`eₐ`, `e_b` the edges' unit directions away from `p`), through the base:
+
+- `rect`: the parallelogram `p, a, a + r e_b, b` (a square at a right-angled corner, area `r²`);
+- `round`: the arc of radius `r` about `p` from `a` to `b` (a quarter disc at a right angle, `π r²/4`);
+- `tear`: the far arc of the circle tangent to both edges at `a` and `b` (its centre on the bisector, `r / cos(α/2)` from `p`, its radius `r tan(α/2)` for the corner's angle α), so the notch is tangent to the edges: at a right angle the square and three quarters of the disc of radius `r`, `r² + 3π r²/4`.
+
+A relief is general geometry in the pattern (a cut of the base's outline), not a case of the fold. A corner where the loop turns right (a reflex corner: the two strips overlap in the pattern) or goes straight on (two flanges continuing each other) is refused with the two flanges; a relief that does not fit its edges (an edge shorter than the reliefs at its ends) is refused with the flange.
+
+### Folding: bends are joints with a radius
+
+Every flat is a body of a `Linkage` (the base is body 0 and stays in place; flange `i` is body `i + 1`), every bend a joint whose angle is given: `+θ` up (a valley in origami's convention: towards the side the normal points to), `−θ` down. Origami's `Joint` has a **radius** `r` and a unit vector `û` across the strip (from the left body to the right one). Its motion at angle ρ is
+
+`motion(ρ) = Rot(C(ρ), D, −ρ) ∘ Shift(−|ρ| r û)`,  `C(ρ) = P + sign(ρ) r (û × D)`,
+
+the strip's width the neutral fibre takes up at this angle taken back, then the turn about the axis `r` from the strip's start `P` on the side the body turns to. Its velocity (what the solve's derivative needs) is the turn's `−D × (x − C)` plus the turned shift's `−sign(ρ) r Rot(D, −ρ) û`, both carried by the motion before the joint. A crease is the joint with `r = 0` (exactly origami's turn); the motion and its velocity are continuous through ρ = 0, and both one-sided velocities there are the crease's, so the continuation, loop closure and rank of origami are unchanged. For a bend, `P` is where the strip starts on the neutral fibre: `z = T − K T` for a bend up (its inner skin is the top) and `z = K T` for a bend down; so the axis lies at `z = T + R` (up) or `z = −R` (down) above the tangent line, and the neutral fibre's arc from `P` over ρ ends where the far flat's strip edge lands. A sheet-metal part is a tree (no loops), so `fold_linkage` places every flat by the product of the motions along its path; a closed loop of bends (a box whose walls are joined, a tube) would be the same linkage with loops and is not built (the walls are not joined to each other).
+
+### The part: the folded bottom skin, plated
+
+The folded bottom skin is one sheet: per flat the planar face `z = 0` of its outline carried by its motion (lines, arcs, circles and splines of the base as they are), per bend the cylinder about its axis of radius `T + R` (bend up: the bottom skin is outside) or `R` (bend down: inside) over θ, bounded by the two tangent lines (the parent's edge and the child's) and the two arcs at the bend's ends. Every face's normal points into the material (`+z` carried; the cylinder's face reversed for a bend up), the tangent lines are edges shared by a flat and a bend (the faces are tangent there), a corner without relief is one vertex shared by the base and both bends. The sheet passes `topo::check`. The plate of all its faces on the side `out` by `T` with square ends everywhere is the part ([`plates.md`](plates.md) › *The plate*): a bend's skins are exactly the cylinders `R` and `R + T` (an offset of a cylinder is a cylinder), the flats are slabs, the ends are planes square to the sheet. Flanges that run into each other or into the base when folded are found by regeneration's self-intersection check on the solid ([`regeneration.md`](regeneration.md) › *Never through itself*): the feature fails with "flanges that run into each other or into the base when bent".
+
+**Volume.** The model keeps the skins at `R` and `R + T` (as sheet-metal design does), so a bend's volume is `θ w ((R + T)² − R²)/2 = θ w T (R + T/2)` while its strip's area times `T` is `θ w T (R + K T)`: the volume is the flat area times `T` **exactly when `K = ½`**, and less by `θ w T² (½ − K)` per bend otherwise (the material's neutral fibre is where the length is kept, not the middle). The oracle holds both: `A T` at `K = ½` for the L and the box with every relief, and the difference in closed form at `K` = 0, 0.33, 1. (The brief's "volume = flat area × T exactly" is the case `K = ½`; for other K it would claim a conservation the geometric model does not have.)
+
+### The flat pattern measured: one unfold
+
+The pattern the part is folded from is known; what the unfold adds is a measurement of it on the part. For each bend its **neutral band** (the cylinder `R + K T` about the bend's axis over θ, as long as the bend, built exactly as a sheet of one face) is laid flat by `unfold::develop`, and the flat length of its arcs is the strip's width: it must agree with `θ (R + K T)` (to a few tolerances: the development's own error); the bend table reports both (`allowance`, `developed`). The flats are planes, whose development is the motion back. Fold then unfold is the oracle: every folded flat's vertices, carried back by the inverse of its motion, land at `z = 0` on the flat's outline in the pattern, and every developed band is as wide as the pattern's strip. The closed form is used to lay out the pattern and to fold it (it is exact); the development is the independent measurement, run by the bend table and the tests, not by every regeneration (it costs a development per bend).
+
+The pattern's **outline**: the flats' edges that no strip continues, the strips' ends (straight lines across the strip, `BA` long), chained head to tail into one closed chain per piece, with the holes; the **bend lines** are the middles of the strips. `file.export` with `sheetMetal` draws it in the sketch's axes: the outline on the layer `outline` (black, continuous), bend lines up on `bendUp` (blue, dashed), down on `bendDown` (red, dash-dot), the drawing crate's styles as origami's crease pattern uses them, every curve as it is.
+
+### Manufacturability: measures, not a catalogue
+
+The kernel measures, the limits are the caller's (the developer, 2026-10-26: general geometry in, domain data out):
+
+- `bendRadius`: the smallest inner radius of the bends, measured on the solid (the smaller cylinder the plate made of each bend's face);
+- `flangeLength`: the shortest flange, its flat from the bend's tangent line on the flange's side to the farthest point of its outline; with `measured: mould` plus the outside setback (from the virtual sharp);
+- `holeToBend`: the least distance in the pattern (which is the distance on the part: a flat is rigid) from a hole of the base to the tangent line of a bend on the base; in closed form for lines, arcs and circles (the critical points of the distance between a segment and each); for a spline searched by subdivision (a piece whose box is further from the line than the best found is left out, the others halved until flat within an eighth of the tolerance), so the true distance is proven within an eighth of the tolerance either way: the measure carries that as its lower and upper bound, and an assertion whose limit lies between them is *not proven*, never passed (`exact: false` and `lower` in the detail);
+- `relief`: whether every corner where two flanged edges meet has a relief.
+
+The minimum radius for a material and a thickness, a die's minimum flange, the hole distance a shop asks for are expressions in the assertions' `min` and `max`, a document table among them (`steel["S235"].minRadius`). There is no material table in 3DCraft.
+
+### Names
+
+The folded bottom skin's faces are `F9:face(0)` (the base), `F9:face(2i + 1)` (the bend of flange `i`), `F9:face(2i + 2)` (flange `i`'s flat), its edges and vertices by the faces they lie on; the part's faces are the plate's of that skin (`regen::plate::plate_names`, shared with `feature.plate`): the top skin `F9:copy(0)/F9:face(k)`, the bottom skin `F9:copy(1)/F9:face(k)`, an end `F9:rim(h)/F9:face(k)`. A flange is named by its place in the list: inserting one before it renumbers the later ones (as a fold's facets follow its lines); a name by the flange's edge is owed with a flange that may move.
+
+## The rules this adds, and why each is general
+
+- *A joint's motion `Rot(C(ρ), −ρ) ∘ Shift(−|ρ| r û)`, `C = P + sign(ρ) r (û × D)`*: rolling a strip of width `|ρ| r` onto a cylinder of radius `r` tangent to the sheet at the strip's start, for any `r ≥ 0` and either sign; `r = 0` is the crease. Continuous with a continuous velocity through ρ = 0.
+- *A corner where two flanged edges meet: the loop's left turn by more than the angular tolerance (cross product of the unit directions)*: the document's tolerance decides what is straight; a right turn or straight on is refused (the strips overlap or continue each other), never guessed.
+- *A relief's notch from `a = p + r eₐ` to `b = p + r e_b` (parallelogram, arc about `p`, the circle tangent at `a` and `b`)*: defined for every convex corner angle; a tear at an angle within 1e-9 of 180 degrees (the tangent circle's centre at infinity) is refused.
+- *A bend's radius more than the tolerance*: a sharp bend's inner skin is an edge, which the plate does not make; refused as unsupported (owed), not rounded silently.
+- *K in [0, 1], θ in (0, π]*: the neutral fibre lies in the material; 0 is no bend and beyond π the flange passes through the base.
+- *A flange's flat more than the tolerance long; a mould-line length below 180 degrees by the angular tolerance*: what is left of a length measured to the mould line must be a flat; at 180 degrees the outside surfaces are parallel.
+- *The outline chained at points within the tolerance*: the pieces are made from the same arithmetic, so they meet exactly; the tolerance only decides what is one point.
+- *The developed allowance agrees to a few tolerances*: the development's layout converges within half the tolerance and its outline splines are held to a quarter (developable.md); the tests allow four tolerances.
+- *A spline hole's distance searched to an eighth of the tolerance, with the bounds carried to the assertion*: the subdivision's own guarantee (boxes bound the curve, flat pieces are within the share of their chord); the work limit, if reached, leaves the lower bound at 0 (not proven).
+- *Reliefs checked against the outline*: the base's outline with its notches must still be one profile with the same holes and the outline's area (the sketch's own profile detection); otherwise refused by name. A tear relief's radius `r tan(α/2)` has no bound as α nears 180 degrees, so this is what refuses it there.
+- In the plate (`plate.rs`, found here): *a traced curve's first stations at most 0.1 rad of its tangent's turn apart (summed over 64 samples), at least the 16 (4 past the ends) of before, at most an eighth of the station cap*: the spline through the first stations is then near any curve everywhere, whatever its length of arc; a 270-degree arc's rim never settled from 16 stations (*Findings*).
+
+## Oracles (held to)
+
+`crates/kernel/tests/sheetmetal.rs`, at 1e-3, 1 and 1e6 with the tolerance scaled:
+
+- An L bracket at K = 0, 0.33, ½, 1: BA, the flat length `D + BA + L`, the flat area, the flange's outside at `y = −(R + T)` and top at `T + R + L`, the volume (two slabs and the quarter ring), the volume minus `A T` equal to `θ w T² (½ − K)`, the measured inner radius `R`, the angle back, the flange length; fold then unfold.
+- A flange to the mould line at 60, 90 (up) and 120 (down) degrees: the flat `L − (R + T) tan(θ/2)`, the outside reaching `L` above the base at 90, the deduction.
+- A U channel (flat width `D + 2 (BA + L)`, its box, its volume) and a Z (an up then a down bend on the tip: flat length `D + BA₀ + L₀ + BA₁ + L₁`, top at `T + R₀ + L₀ + R₁ + T`, reach `−(R₀ + T) − R₁ − L₁`, the second radius measured).
+- A box with four flanges, without relief and with each of rect, round and tear: four corners, the flat area by the notches' closed forms and the shortened flanges, the volume `A T` at K = ½, the height, one closed outline chain; fold then unfold.
+- A round hole 4.5 from a bend's tangent line: `holeToBend` exactly, the volume less the hole.
+- A hem (180 degrees): folded back over the base at `2 (R + T)`.
+- Faces: the flats then the bends; two skins per face of the sheet; the same part twice is the same body.
+- Twenty bends in a chain (alternately down and up): built in about 20 ms, the flat length in closed form, fold then unfold.
+- Refusals by reason: a radius below zero, a sharp bend, K outside [0, 1], an angle of 0 or past 180, a flange on a hole's edge or on a curve that is no edge, a tip of a later flange, two flanges on one edge, a relief that does not fit, a mould-line length at 180 degrees or shorter than its setback, flanges at a reflex corner.
+
+`crates/kernel/tests/origami.rs` unchanged (the crease joint is the radius-0 joint). `crates/kernel/tests/plate.rs`: an outline with a 270-degree and a 90-degree arc plated by its area (regression).
+
+`crates/engine/tests/sheetmetal.rs`, at three scales: the L by commands with a thickness variable followed (volume, box, the bend table's allowance, developed allowance, radius, angle, flange length, setback, deduction, flat size and area), its names, saved and reopened to the same body and names; a box with a hole: the volume `A T`, the relief assertion failing then passing after `sheetMetal.edit` adds reliefs, `bendRadius` against two rows of a document table (passing and failing), `flangeLength` from the tangent line and to the mould line, `holeToBend` equal and failing a larger minimum, the corners in the bend table, the flat pattern to DXF and SVG with its layers and dashed bend lines; flanges bent over the base into each other fail the feature, K and radius refusals fail the feature with the flange, bad parameters are errors; twenty bends (four chains of five with round reliefs) by command, with its timing.
+
+## Limits and what is owed
+
+- **The format.** `feature.sheetMetal` is format 41 (its fixture, a box with a Z flange and tear reliefs, written by the build on the Strix, `crates/format/tests/fixtures/versions/v41.*`).
+- **Flanges are rectangles on straight edges** of the base's outer loop or of a flange's tip; a flange on a hole's edge, on a flange's side, a flange narrower than its edge (inset ends), a flange with holes or an outline of its own, a curved bend line (a flange on an arc: a conical or curved-crease bend) are not built.
+- **A sharp bend** (radius 0) is refused: its inner skin would be an edge.
+- **Reflex corners** between two flanged edges are refused; a mitre between the two flanges (and the corner closed by extending them, the usual closed box corner) is owed.
+- **Reliefs** are per part, the same at every corner; a relief at a single bend's end where it stops inside the material (a bend relief) does not arise, since every bend spans its whole edge.
+- **Holes** are those of the base's sketch; a hole cut later by another feature is not seen by `holeToBend`.
+- **A flat pattern that overlaps itself** (two flanges whose flats cross in the pattern though their folded walls do not) is not detected yet: a self-overlap check of the pattern's pieces is owed.
+- **Bend sequence and press-brake collision** (tooling, the order of bends) are later (plan/r1-sheets.md: on top of rigid folding).
+- **No unfold of a foreign part**: the flat pattern is the one the part was folded from, measured by the unfold; recognising flats and bends on an imported solid and unfolding it is not built.
+
+## Findings and history
+
+- 2026-10-27: built (r1-sheetmetal), following [`plates.md`](plates.md) › *Sheet metal* with these changes, with reasons: the part is defined flat-first (base and flanges grow the pattern; the plates design left the input open) because a pattern is what every bend's allowance is measured against, and a 3D-first flange is the same pattern grown by one flat and one strip; the joint's motion is written with the axis on the side the body turns to (`C(ρ)`), so one joint serves a bend up and a bend down; the volume oracle `A T` holds at `K = ½` only (above); the unfold measures the pattern (the bend table, the tests) rather than lay it out at every regeneration, since the closed form is exact and a development per bend per regeneration would cost for nothing.
+- 2026-10-27: a tear relief's 270-degree arc failed the plate at every scale and thickness ("the rim could not be traced within a quarter of the tolerance in 4096 points", stuck 1.08 times the share off at the same place), a 90-degree arc did not: sixteen first stations over 4.7 rad left the global spline so far off that refining in places never settled. The plate's first stations are set by the tangent's turn since (at most 0.1 rad a step), which also covers long arcs of any plate outline (a slot, a D shape).
+
+- 2026-10-27 (review): a joint walked from its right body placed its left body by `motion(−ρ)`, which is the inverse only for a crease; it is `motion(ρ)⁻¹` now, its velocity minus the motion's at the same point with the left body's placement (tested by a bend reached from either body). `holeToBend` on a spline was a 257-point sample (an upper bound) passing `min` assertions it should not; it is searched with proven bounds now (above). The bend table, the measures and the export read the part regeneration built (kept with the feature's result, `Developed::SheetMetal`) and refuse a part that failed or is switched off, instead of building it again. Reliefs are checked against the outline.
+
+## Sources
+
+- E. Oberg, F. D. Jones, H. L. Horton and H. H. Ryffel, *Machinery's Handbook*, 30th ed., Industrial Press, 2016, *Sheet metal work* › *Bend allowance*: `BA = θ (R + K T)`, the K-factor as the neutral fibre's place across the thickness, the outside setback `(R + T) tan(θ/2)`.
+- DIN 6935:2011-10, *Kaltbiegen von Flacherzeugnissen aus Stahl* (cold bending of flat steel products), as published descriptions of it give it: the bend deduction (*Ausgleichswert* `v`) and the correction factor for the neutral fibre's place as a function of `R/T`.
+- S. Kalpakjian and S. R. Schmid, *Manufacturing Engineering and Technology*, 7th ed., Pearson, 2014, ch. 16 (*Sheet-metal forming processes and equipment*): bending, the neutral axis, minimum bend radius and minimum flange length as functions of the material and thickness, bend reliefs and the distance of holes from bends.
+- E. D. Demaine and J. O'Rourke, *Geometric Folding Algorithms*, Cambridge University Press, 2007, §13.1 (the linkage the bends join, as in [`origami.md`](origami.md)); M. P. do Carmo, *Differential Geometry of Curves and Surfaces*, 1976, §3-3 (the parallel surfaces of a cylinder are cylinders) and §3-5 (developables).

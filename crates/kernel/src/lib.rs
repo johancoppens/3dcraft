@@ -36,6 +36,7 @@ pub mod primitives;
 pub mod profile;
 pub mod revolve;
 mod shared;
+pub mod sheetmetal;
 pub mod shell;
 mod spline2;
 pub mod sweep;
@@ -341,6 +342,12 @@ pub enum KernelError {
     /// there is one.
     Plate {
         edge: Option<craft3d_topo::EdgeId>,
+        reason: String,
+    },
+    /// A sheet-metal part cannot be built ([`sheetmetal`]): `flange` is
+    /// the flange it is about (its index), when there is one.
+    SheetMetal {
+        flange: Option<usize>,
         reason: String,
     },
     OffsetProfile {
@@ -675,7 +682,8 @@ impl fmt::Display for KernelError {
             }
             KernelError::Loft { reason, .. }
             | KernelError::Sweep { reason, .. }
-            | KernelError::Plate { reason, .. } => {
+            | KernelError::Plate { reason, .. }
+            | KernelError::SheetMetal { reason, .. } => {
                 write!(f, "{reason}")
             }
         }

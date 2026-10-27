@@ -193,7 +193,7 @@ pub enum Made {
 
 /// A plate and what each of its faces was made from (`faces[i]` for face
 /// `i` of `body`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plate {
     pub body: Body,
     pub faces: Vec<Made>,
@@ -1363,7 +1363,8 @@ fn inner_rows(
         let (foot, na) = creased(edge_id, edge.curve.eval(t), a, b, levels, tol)?;
         Ok(vec![foot + na * levels.0, foot + na * levels.1])
     };
-    let params = steps(edge.range.0, edge.range.1, FIRST_STEPS);
+    let (from, to) = edge.range;
+    let params = steps(from, to, turned_steps(&edge.curve, from, to, FIRST_STEPS));
     let (params, rows) = trace(
         params,
         2,
@@ -1381,6 +1382,42 @@ fn inner_rows(
         .try_into()
         .map_err(|_| refuse(Some(edge_id), "two rows expected"))?;
     Ok([lo, hi])
+}
+
+/// The most a traced curve's tangent turns over one first step (radians):
+/// a long arc starts with as many steps as its turn needs, so that the
+/// spline through the first points is near the curve everywhere and the
+/// middles added where it is not stay few. (Sixteen steps over a 270° arc
+/// left the spline so far off that refining in places never settled.)
+const STEP_TURN: f64 = 0.1;
+
+/// Samples of the tangent for [`turned_steps`].
+const TURN_SAMPLES: usize = 64;
+
+/// How many first steps a curve needs over `a..b`: at least `least`, and
+/// enough that each turns the tangent by at most [`STEP_TURN`] (the turn
+/// summed over [`TURN_SAMPLES`] samples), at most an eighth of
+/// [`MAX_STATIONS`].
+fn turned_steps(curve: &Curve3, a: f64, b: f64, least: usize) -> usize {
+    let mut turn = 0.0;
+    let mut last: Option<Vec3> = None;
+    for k in 0..=TURN_SAMPLES {
+        let t = a + (b - a) * (k as f64 / TURN_SAMPLES as f64);
+        let Some(d) = curve.derivatives(t).1.normalized() else {
+            continue;
+        };
+        if let Some(prev) = last {
+            turn += prev.dot(d).clamp(-1.0, 1.0).acos();
+        }
+        last = Some(d);
+    }
+    let needed = (turn / STEP_TURN).ceil();
+    let needed = if needed.is_finite() && needed > 0.0 {
+        needed.min((MAX_STATIONS / 8) as f64) as usize
+    } else {
+        0
+    };
+    needed.max(least)
 }
 
 fn steps(a: f64, b: f64, n: usize) -> Vec<f64> {
@@ -1420,12 +1457,24 @@ fn trace_boundary(
     };
     let mut params = Vec::new();
     if before > 0.0 {
-        params.extend(steps(a - before, a, REACH_STEPS));
+        params.extend(steps(
+            a - before,
+            a,
+            turned_steps(&edge.curve, a - before, a, REACH_STEPS),
+        ));
         params.pop();
     }
-    params.extend(steps(a, b, FIRST_STEPS));
+    params.extend(steps(a, b, turned_steps(&edge.curve, a, b, FIRST_STEPS)));
     if after > 0.0 {
-        params.extend(steps(b, b + after, REACH_STEPS).into_iter().skip(1));
+        params.extend(
+            steps(
+                b,
+                b + after,
+                turned_steps(&edge.curve, b, b + after, REACH_STEPS),
+            )
+            .into_iter()
+            .skip(1),
+        );
     }
     // Which skins face the neighbour's material, from the middle.
     let middle = station(edge, 0.5 * (a + b), boundary.along, face)

@@ -212,45 +212,14 @@ pub(crate) fn build(
         &source.tolerance,
     )
     .map_err(|error| explain(error, made, &source))?;
-    let mut names = Names::default();
-    // Per rim's name, the name of the sheet's edge it was made from.
-    let mut rims: BTreeMap<PersistentName, PersistentName> = BTreeMap::new();
-    for what in &built.faces {
-        let name = match what {
-            Made::Front(face) | Made::Back(face) => {
-                let instance = u64::from(matches!(what, Made::Back(_)));
-                let of = face_name(&source, *face)?;
-                PersistentName::copy(feature, instance, of)
-            }
-            Made::Rim(edge) => {
-                let edge_name = source
-                    .names
-                    .edge_name(edge.0 as usize)
-                    .ok_or_else(|| "the sheet does not name an edge of the plate's".to_string())?;
-                let face = rim_face(source.body, *edge, &picked)
-                    .ok_or_else(|| "an edge of the plate bounds none of its faces".to_string())?;
-                let rim = PersistentName::rim(feature, &edge_name, face_name(&source, face)?);
-                if let Some(other) = rims.insert(rim.clone(), edge_name.clone()) {
-                    return Err(format!(
-                        "faces: the rims along the edges {other} and {edge_name} of `{}` would both be called {rim}: a rim is named after a 48-bit hash of its edge's name (docs/design/names.md › Rims of a plate), and these two hash alike, which happens to about one pair of edges in 10^14; draw either edge another way (another curve id, another sketch) to tell them apart",
-                        source.made_by
-                    ));
-                }
-                rim
-            }
-        };
-        name.check().map_err(crate::too_long)?;
-        names.faces.push(name);
-    }
-    let none = vec![None; built.body.edges.len()];
-    let no_vertices = vec![None; built.body.vertices.len()];
-    names.name_entities(
+    let names = plate_names(
         feature,
-        &built.body,
+        &built,
+        source.body,
+        source.names,
+        &picked,
+        &source.made_by,
         source.tolerance.linear,
-        &none,
-        &no_vertices,
-        |_| None,
     )?;
     face_ops::not_through_itself(
         &built.body,
@@ -261,6 +230,62 @@ pub(crate) fn build(
         &source.tolerance,
     )?;
     Ok((built.body, Some(names)))
+}
+
+/// The names of a plate's faces, edges and vertices: a skin is the copy
+/// of the sheet's face in instance 0 (front) or 1 (back), a rim
+/// `rim(h)/<face>` after the hash of the sheet's edge's name and the face
+/// it bounds. `sheet` and `sheet_names` are the faces' body and its names,
+/// `picked` the faces plated, `made_by` the sheet's feature for messages.
+pub(crate) fn plate_names(
+    feature: FeatureId,
+    built: &craft3d_kernel::plate::Plate,
+    sheet: &Body,
+    sheet_names: &Names,
+    picked: &[FaceId],
+    made_by: &str,
+    tolerance: f64,
+) -> Result<Names, String> {
+    let face_name = |face: FaceId| -> Result<PersistentName, String> {
+        sheet_names
+            .faces
+            .get(face.0 as usize)
+            .cloned()
+            .ok_or_else(|| "the sheet does not name a face of the plate's".to_string())
+    };
+    let mut names = Names::default();
+    // Per rim's name, the name of the sheet's edge it was made from.
+    let mut rims: BTreeMap<PersistentName, PersistentName> = BTreeMap::new();
+    for what in &built.faces {
+        let name = match what {
+            Made::Front(face) | Made::Back(face) => {
+                let instance = u64::from(matches!(what, Made::Back(_)));
+                PersistentName::copy(feature, instance, face_name(*face)?)
+            }
+            Made::Rim(edge) => {
+                let edge_name = sheet_names
+                    .edge_name(edge.0 as usize)
+                    .ok_or_else(|| "the sheet does not name an edge of the plate's".to_string())?;
+                let face = rim_face(sheet, *edge, picked)
+                    .ok_or_else(|| "an edge of the plate bounds none of its faces".to_string())?;
+                let rim = PersistentName::rim(feature, &edge_name, face_name(face)?);
+                if let Some(other) = rims.insert(rim.clone(), edge_name.clone()) {
+                    return Err(format!(
+                        "faces: the rims along the edges {other} and {edge_name} of `{made_by}` would both be called {rim}: a rim is named after a 48-bit hash of its edge's name (docs/design/names.md › Rims of a plate), and these two hash alike, which happens to about one pair of edges in 10^14; draw either edge another way (another curve id, another sketch) to tell them apart"
+                    ));
+                }
+                rim
+            }
+        };
+        name.check().map_err(crate::too_long)?;
+        names.faces.push(name);
+    }
+    let none = vec![None; built.body.edges.len()];
+    let no_vertices = vec![None; built.body.vertices.len()];
+    names.name_entities(feature, &built.body, tolerance, &none, &no_vertices, |_| {
+        None
+    })?;
+    Ok(names)
 }
 
 /// The surface an `onto` end lies on: a world or datum plane, or any face
@@ -303,15 +328,6 @@ fn kind_name(kind: JointKind) -> &'static str {
         JointKind::Under => "under",
         JointKind::Onto => "onto",
     }
-}
-
-fn face_name(source: &Source<'_>, face: FaceId) -> Result<PersistentName, String> {
-    source
-        .names
-        .faces
-        .get(face.0 as usize)
-        .cloned()
-        .ok_or_else(|| "the sheet does not name a face of the plate's".to_string())
 }
 
 /// The face of `faces` whose loops use `edge`.

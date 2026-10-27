@@ -60,7 +60,7 @@ pub(crate) fn export(
     resolved: &Path,
     format: DrawingFormat,
 ) -> Run {
-    let given: Vec<&str> = ["sketch", "face", "faces", "set", "fold"]
+    let given: Vec<&str> = ["sketch", "face", "faces", "set", "fold", "sheetMetal"]
         .into_iter()
         .filter(|key| p.has(key))
         .collect();
@@ -91,6 +91,13 @@ pub(crate) fn export(
                 "is about the outline of a sketch or of faces; a crease pattern is drawn in its sketch's axes",
             )?;
             crate::fold_cmds::crease_pattern(session, p, ID)?
+        }
+        ["sheetMetal"] => {
+            refuse(
+                &["feature", "construction", "xAxis", "origin", "gap", "width"],
+                "is about the outline of a sketch or of faces; a flat pattern is drawn in its sketch's axes",
+            )?;
+            crate::sheetmetal_cmds::flat_pattern(session, p, ID)?
         }
         ["sketch"] => {
             refuse(

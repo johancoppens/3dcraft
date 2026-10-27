@@ -688,6 +688,80 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fixed: Option<[String; 2]>,
     },
+    /// A sheet-metal part: the one closed profile of sketch `sketch` is
+    /// the base flat, `flanges` are bent from its straight edges and from
+    /// the tips of earlier flanges, with the part's `thickness`, inner
+    /// `radius` and `k_factor` unless a flange gives its own; `relief` is
+    /// cut at every corner where two flanged edges meet (format version 41).
+    SheetMetal {
+        sketch: u64,
+        thickness: String,
+        radius: String,
+        k_factor: String,
+        flanges: Vec<SheetFlange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relief: Option<SheetRelief>,
+    },
+}
+
+/// A flange of a sheet-metal part: on the base's edge of line `base` (an
+/// entity id) or on the tip of flange `tip` (its place in the list).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFlange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip: Option<u32>,
+    pub length: String,
+    pub angle: String,
+    pub direction: BendDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "FlangeFrom::is_tangent")]
+    pub from: FlangeFrom,
+}
+
+/// Which way a bend turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BendDirection {
+    Up,
+    Down,
+}
+
+/// Where a flange's length is measured from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FlangeFrom {
+    #[default]
+    Tangent,
+    Mould,
+}
+
+impl FlangeFrom {
+    fn is_tangent(&self) -> bool {
+        *self == FlangeFrom::Tangent
+    }
+}
+
+/// A corner relief of a sheet-metal part.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetRelief {
+    pub shape: ReliefShape,
+    pub size: String,
+}
+
+/// The shape of a corner relief.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReliefShape {
+    Rect,
+    Round,
+    Tear,
 }
 
 /// A crease of a fold: a line of the sketch by entity id, `mountain`,

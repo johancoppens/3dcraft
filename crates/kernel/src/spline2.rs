@@ -952,6 +952,76 @@ pub(crate) fn moments(spline: &Spline2, origin: P2) -> (f64, f64, f64) {
     sum
 }
 
+/// The least distance between the straight segments `a`–`b` and `c`–`d`:
+/// 0 when they cross, else the least of the four end-to-segment distances.
+pub(crate) fn segment_segment(a: P2, b: P2, c: P2, d: P2) -> f64 {
+    let side = |p: P2, q: P2, r: P2| {
+        let (u, v) = (sub(q, p), sub(r, p));
+        u[0] * v[1] - u[1] * v[0]
+    };
+    let (d1, d2) = (side(a, b, c), side(a, b, d));
+    let (d3, d4) = (side(c, d, a), side(c, d, b));
+    if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+        return 0.0;
+    }
+    point_segment(a, c, d)
+        .min(point_segment(b, c, d))
+        .min(point_segment(c, a, b))
+        .min(point_segment(d, a, b))
+}
+
+/// The least distance from the box `[min x, min y, max x, max y]` to the
+/// segment `a`–`b`: 0 when an end lies in the box, else the least distance
+/// to its four sides.
+fn box_segment(bx: [f64; 4], a: P2, b: P2) -> f64 {
+    let inside = |p: P2| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
+    if inside(a) || inside(b) {
+        return 0.0;
+    }
+    let c = [
+        [bx[0], bx[1]],
+        [bx[2], bx[1]],
+        [bx[2], bx[3]],
+        [bx[0], bx[3]],
+    ];
+    let mut best = f64::INFINITY;
+    for k in 0..4 {
+        if let (Some(&p), Some(&q)) = (c.get(k), c.get((k + 1) % 4)) {
+            best = best.min(segment_segment(a, b, p, q));
+        }
+    }
+    best
+}
+
+/// The least distance from the curve to the straight segment `a`–`b`,
+/// within an eighth of `tol` (pieces whose boxes are further than the best
+/// found are left out, the others cut in two until they are flat within
+/// that), and whether the work limit left it unproven.
+pub(crate) fn distance_to_segment(parts: &[Part], a: P2, b: P2, tol: f64) -> (f64, bool) {
+    let eps = tol / 8.0;
+    let mut best = f64::INFINITY;
+    let mut stack: Vec<Part> = parts.to_vec();
+    let mut work = 0_usize;
+    let mut proven = true;
+    while let Some(part) = stack.pop() {
+        work = work.saturating_add(1);
+        if box_segment(part.bbox(), a, b) >= best {
+            continue;
+        }
+        let limit = work > WORK_LIMIT;
+        if part.is_flat(eps) || limit {
+            proven &= !limit;
+            let (p, q) = part.ends();
+            best = best.min(segment_segment(p, q, a, b));
+            continue;
+        }
+        let (first, second) = part.halves();
+        stack.push(first);
+        stack.push(second);
+    }
+    (best, proven)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

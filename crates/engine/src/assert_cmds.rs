@@ -17,8 +17,8 @@ use craft3d_regen::Regen;
 use serde_json::{Map, Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|levelFor", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
-        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), levelFor (volume: the offset at which the volume below is that). A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
+    spec!("assert.add", "Add Assertion", r#"{"name": string, "measure": "volume|area|mass|count|extent|boxMin|boxMax|centerOfMass|distance|clearance|thickness|through|overlap|symmetric|volumeBelow|centroidBelow|sectionArea|sectionCentroid|sectionInertia|levelFor|curvature|developable|bendRadius|flangeLength|holeToBend|relief", "of": subject, "from": subject, "to": subject, "axis": "x|y|z", "plane": plane, "offset": expr, "xAxis": direction, "about": "x|y|xy|major|minor", "volume": expr, "measured": "tangent|mould", "tol": expr, "eq": expr, "min": expr, "max": expr, "is": boolean}"#,
+        "Adds an assertion to the document: a measure of part of the design and what it must be, checked after every regeneration (one undo step; saved with the document). Measures and their parameters: volume, area, mass (of: bodies, default all; area also of faces; mass needs a material), count (of: a query, the number of things it finds), extent (of: bodies, axis: the size of their box along it), boxMin and boxMax (of: bodies, axis: where their box begins and ends along it, in the model's frame, so each side is bounded on its own), centerOfMass (of: bodies, default all, axis: the coordinate of their centre of mass along it, each body's centroid weighted by its mass; every body needs a material), distance (from, to: faces or bodies, the least distance), clearance (from, to: bodies; a pair that overlaps fails), thickness (of: a body, the thinnest wall), through (of: cylindrical or conical faces, every one cut through along its axis), overlap (of: bodies, to: bodies = each other; whether any pair has a volume in common, so is false asserts that none overlap; the message names the pairs and their common volume, \"Bolt overlaps Plate by 12 mm^3\", or says no overlap), symmetric (of, plane, tol: as measure.symmetry), and what lies on one side of a plane (of: bodies, default all; plane, default xy, as symmetric takes it, or a flat face by name; offset, a length along its normal, default 0; xAxis: the section's x axis; as measure.below, measure.section and measure.levelFor): volumeBelow (the volume below the plane), centroidBelow (axis: the coordinate of its centroid), sectionArea, sectionCentroid (axis), sectionInertia (about: x, y or xy about the section's centroid in its own axes, or major or minor, the principal moments; in the document's unit to the fourth power), levelFor (volume: the offset at which the volume below is that); of sheet-metal parts (of: feature.sheetMetal features, default all): bendRadius (the smallest inner radius of their bends, measured on the part), flangeLength (the shortest flange: its flat from the bend's tangent line, or with measured mould from the virtual sharp of the outside surfaces), holeToBend (the least distance from a hole of the base to a bend's tangent line) and relief (whether every corner where two flanged edges meet has a relief; is). The limits for a material and a thickness are the caller's: min and max are expressions in the document's variables, tables included (table.set), never a built-in catalogue. A subject is a body (feature name or id), a list of them, a query {kind, where} as select.query takes, or a bare filter. What it must be: eq (with tol, default a millionth of eq or ten times the document's tolerance for a length) or min and/or max, expressions in the document's variables (\"wall\", \"2 mm\"), in the measure's unit (length, area or volume in the document's unit, mass in kg); through and symmetric take is (default true); overlap takes is, which must be given. The old form interference (is true for no overlap) is still accepted and written as overlap with the opposite is; saved documents are migrated on load (format 36). A tol may be 0 (exactly; the document's tolerance still applies), and 0 and 1 may carry a power of a unit (0 mm^3). Feature names in the subject are kept as ids, so a renamed feature stays measured. Returns the assertion and its check: status passed, failed (measured, expected), notProven (a least searched for, such as a thickness, lies within the bound but what is proven does not: a warning, never passed) or error (the measure could not be taken, such as a subject that names nothing yet: an assertion may be written before the model meets it). A bound written N unit^k (50 cm^3, which is (50 cm)^3) is refused for any N but 0 and 1: write 50 * (1 cm)^3. Assertions are measured off the caller's thread and only when what they depend on changed; this command waits for its own.", doc: true, names: ["of", "from", "to", "plane"], assert_add),
     spec!("assert.edit", "Edit Assertion", r#"{"name": string, "rename": string, ...the parameters of assert.add}"#,
         "Changes an assertion (one undo step): what is given replaces what it had; measure parameters are replaced as a whole when measure or any of them is given, the expectation when any of eq, tol, min, max or is is given. Returns it with its check.", doc: true, names: ["of", "from", "to", "plane"], assert_edit),
     spec!("assert.delete", "Delete Assertion", r#"{"name": string}"#,
@@ -31,7 +31,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 fn measure_keys(measure: &str) -> &'static [&'static str] {
     match measure {
         "volume" | "area" | "mass" | "count" | "thickness" | "through" | "curvature"
-        | "developable" => &["of"],
+        | "developable" | "bendRadius" | "holeToBend" | "relief" => &["of"],
+        "flangeLength" => &["of", "measured"],
         "extent" | "boxMin" | "boxMax" | "centerOfMass" => &["of", "axis"],
         "distance" | "clearance" => &["from", "to"],
         "overlap" => &["of", "to"],
@@ -41,7 +42,10 @@ fn measure_keys(measure: &str) -> &'static [&'static str] {
 }
 
 fn is_flag(measure: &str) -> bool {
-    matches!(measure, "through" | "overlap" | "symmetric" | "developable")
+    matches!(
+        measure,
+        "through" | "overlap" | "symmetric" | "developable" | "relief"
+    )
 }
 
 /// Keys in a subject's filters whose value names a feature.
@@ -311,14 +315,14 @@ fn without_old_name(params: &Value) -> Value {
     params
 }
 
-const ADD_KEYS: [&str; 18] = [
+const ADD_KEYS: [&str; 19] = [
     "name", "measure", "of", "from", "to", "axis", "plane", "tol", "eq", "min", "max", "is",
-    "offset", "xAxis", "about", "volume", "rename", "details",
+    "offset", "xAxis", "about", "volume", "measured", "rename", "details",
 ];
 
 /// How many of [`ADD_KEYS`] assert.add takes; assert.edit takes `rename`
 /// too.
-const ADD: usize = 16;
+const ADD: usize = 17;
 
 fn params_map(params: &Value) -> Map<String, Value> {
     match params {
@@ -604,7 +608,7 @@ fn dim_of(measure: &str) -> Dim {
         m if let Some(dim) = crate::below_cmds::dim_of(m) => dim,
         "mass" => Dim::Mass,
         "count" => Dim::Count,
-        "through" | "overlap" | "symmetric" | "developable" => Dim::Flag,
+        "through" | "overlap" | "symmetric" | "developable" | "relief" => Dim::Flag,
         "curvature" => Dim::Length(-2),
         _ => Dim::Length(1),
     }

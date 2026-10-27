@@ -1166,3 +1166,45 @@ fn refusals_say_why() {
     assert!(error.to_string().contains("not on the boundary"), "{error}");
     let _ = wall;
 }
+
+/// A plate whose outline has an arc of 270 degrees (a tear-shaped notch,
+/// the material outside the circle) and one of 90 (a round corner): the
+/// rims trace and the volume is the outline's area times the thickness.
+/// The 270-degree rim did not trace before the first stations were set
+/// by the tangent's turn (2026-10-27: sixteen steps left the spline so far
+/// off that refining in places never settled).
+#[test]
+fn an_outline_with_long_arcs_plates_by_its_area() {
+    use std::f64::consts::PI;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+        let arc = |id: u64, center: [f64; 2], start: [f64; 2], end: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Arc {
+                center: s(center),
+                start: s(start),
+                end: s(end),
+            },
+        };
+        // The rectangle 60 x 40 with its corner (60, 0) cut by the disc of
+        // radius 3 tangent to both edges, and its corner (0, 40) rounded
+        // by radius 5.
+        let curves = vec![
+            line(1, s([0.0, 0.0]), s([57.0, 0.0])),
+            arc(2, [57.0, 3.0], [60.0, 3.0], [57.0, 0.0]),
+            line(3, s([60.0, 3.0]), s([60.0, 40.0])),
+            line(4, s([60.0, 40.0]), s([5.0, 40.0])),
+            arc(5, [5.0, 35.0], [5.0, 40.0], [0.0, 35.0]),
+            line(6, s([0.0, 35.0]), s([0.0, 0.0])),
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let sheet = fill(&profiles, &Frame::WORLD, &tol).unwrap().body;
+        let area = (60.0 * 40.0 - 9.0 - 0.75 * PI * 9.0 - 25.0 + 0.25 * PI * 25.0) * k * k;
+        for t in [0.2 * k, 1.0 * k] {
+            let made = plate(&sheet, &[FaceId(0)], t, Side::Out, &BTreeMap::new(), &tol).unwrap();
+            assert!(check(&made.body, &tol).is_empty());
+            near(volume(&made.body), area * t, 1e-6, "volume");
+        }
+    }
+}

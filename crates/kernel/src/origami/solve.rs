@@ -5,10 +5,11 @@
 //! bodies and joints, each joint with its own axis in space (a point, a
 //! direction, a side to sample) and the motion of its right body
 //! relative to its left one at an angle ([`Joint::motion`]: a turn about
-//! the axis by −ρ). A crease pattern is one linkage ([`fold`] builds it
-//! from an [`Arrangement`]); a bend of sheet metal would be another, its
-//! joint's motion a turn plus the offset of its radius
-//! (docs/design/origami.md › *One fold mechanism*).
+//! the axis by −ρ, after a shift along the neutral fibre for a joint with
+//! a radius). A crease pattern is one linkage ([`fold`] builds it from an
+//! [`Arrangement`]); a sheet-metal part is another, its joints bends with
+//! a radius (`crate::sheetmetal`; docs/design/origami.md › *One fold
+//! mechanism*, docs/design/sheetmetal.md).
 //!
 //! A breadth-first forest from the fixed body (and from the first body of
 //! each other piece, which stays where it is) places every body by the
@@ -64,21 +65,91 @@ pub struct Joint {
     pub reach: f64,
     /// The curve the joint is, for messages.
     pub id: u64,
+    /// The radius of the joint's neutral fibre: 0 for a crease (a turn
+    /// about the axis), `R + K T` for a bend of sheet metal (inner radius
+    /// `R`, thickness `T`, K-factor `K`), whose strip of the flat pattern
+    /// `|ρ| r` wide is rolled onto the cylinder of that radius.
+    pub radius: f64,
+    /// A unit vector square to the axis in the left body's plane, from
+    /// the left body towards the right one (across the bend's strip);
+    /// only read when `radius` is not 0.
+    pub across: Vec3,
 }
 
 impl Joint {
-    /// The motion of the right body relative to the left one at angle
-    /// `rho`: `T_right = T_left ∘ motion(rho)`. A turn about the axis by
-    /// −ρ; a joint with an offset (a bend's radius) would add its
-    /// translation here and its velocity in [`Joint::velocity`].
-    fn motion(&self, rho: f64) -> Option<Transform> {
-        Transform::rotation_about(self.point, self.direction, -rho)
+    /// A crease: a turn about the axis, no radius.
+    #[allow(clippy::too_many_arguments)]
+    pub fn crease(
+        left: usize,
+        right: usize,
+        point: Vec3,
+        direction: Vec3,
+        side: Vec3,
+        reach: f64,
+        id: u64,
+    ) -> Joint {
+        Joint {
+            left,
+            right,
+            point,
+            direction,
+            side,
+            reach,
+            id,
+            radius: 0.0,
+            across: -side,
+        }
     }
 
-    /// d/dρ of a point `x` carried by `motion`, with the axis where the
-    /// motion `t` before it puts it.
-    fn velocity(&self, t: &Transform, x: Vec3) -> Vec3 {
-        -(t.vector(self.direction).cross(x - t.point(self.point)))
+    /// Where the right body goes as it turns at `ρ > 0` (a valley):
+    /// `across × direction`, the side `direction × side` points to (for a
+    /// crease, `across` is `−side`; in a sheet in the xy plane, +z).
+    fn towards(&self) -> Vec3 {
+        self.across.cross(self.direction)
+    }
+
+    /// The axis of the turn at angle `rho`: `point` for a crease; for a
+    /// bend `point` is where the strip starts on the neutral fibre and
+    /// the axis lies `radius` from it on the side the body turns to.
+    fn centre(&self, rho: f64) -> Vec3 {
+        if self.radius == 0.0 {
+            self.point
+        } else {
+            self.point + self.towards() * (self.radius * rho.signum())
+        }
+    }
+
+    /// The motion of the right body relative to the left one at angle
+    /// `rho`: `T_right = T_left ∘ motion(rho)`. A turn about the axis by
+    /// −ρ; for a bend first the shift back across the strip by the arc
+    /// length the neutral fibre takes up, `|ρ| r` (the bend allowance at
+    /// this angle), then the turn about the axis `r` from the strip's
+    /// start: `Rot(C(ρ), −ρ) ∘ Shift(−|ρ| r û)`. The motion and its
+    /// velocity are continuous through ρ = 0 (both one-sided velocities
+    /// are the crease's there).
+    fn motion(&self, rho: f64) -> Option<Transform> {
+        let turn = Transform::rotation_about(self.centre(rho), self.direction, -rho)?;
+        if self.radius == 0.0 {
+            return Some(turn);
+        }
+        let shift = Transform::translation(self.across * (-rho.abs() * self.radius));
+        Some(shift.then(&turn))
+    }
+
+    /// d/dρ of a point `x` carried by `motion(rho)`, with the axis where
+    /// the motion `t` before it puts it: the turn's `−D × (x − C)` and,
+    /// for a bend, the shift's `−sign(ρ) r û` turned by the motion.
+    fn velocity(&self, t: &Transform, x: Vec3, rho: f64) -> Vec3 {
+        let turn = -(t
+            .vector(self.direction)
+            .cross(x - t.point(self.centre(rho))));
+        if self.radius == 0.0 {
+            return turn;
+        }
+        let Some(rot) = Transform::rotation(self.direction, -rho) else {
+            return turn;
+        };
+        turn - t.vector(rot.vector(self.across)) * (rho.signum() * self.radius)
     }
 }
 
@@ -215,7 +286,8 @@ fn forest(link: &Linkage, fixed: usize) -> Forest {
 }
 
 /// Where every body is at the angles `rho`, and per joint of the forest
-/// the motion of its parent (which places its axis).
+/// the placement of its left body (which places its axis and the motion
+/// its velocity is the derivative of).
 struct State {
     transforms: Vec<Transform>,
     parent_motion: Vec<Transform>,
@@ -230,13 +302,23 @@ fn place(link: &Linkage, forest: &Forest, rho: &[f64]) -> Option<State> {
         };
         let tp = *transforms.get(p)?;
         let joint = link.joints.get(k)?;
-        let motion = joint.motion(-forest.sign.get(k)? * rho.get(k)?)?;
-        if let Some(slot) = parent_motion.get_mut(k) {
-            *slot = tp;
-        }
+        let forward = joint.motion(*rho.get(k)?)?;
+        // T_right = T_left ∘ motion(ρ): a child on the right takes the
+        // motion, a child on the left its inverse (for a crease that is the
+        // turn by −ρ; for a bend, whose motion shifts too, it is not).
+        let left_parent = *forest.sign.get(k)? < 0.0;
+        let motion = if left_parent {
+            forward
+        } else {
+            forward.inverse()?
+        };
         // T_child = T_parent ∘ motion: the motion first.
+        let tc = motion.then(&tp);
+        if let Some(slot) = parent_motion.get_mut(k) {
+            *slot = if left_parent { tp } else { tc };
+        }
         if let Some(slot) = transforms.get_mut(f) {
-            *slot = motion.then(&tp);
+            *slot = tc;
         }
     }
     Some(State {
@@ -317,12 +399,19 @@ fn rows(
                             state.parent_motion.get(k),
                             forest.sign.get(k),
                         ) {
-                            // The child turns by −sign ρ through the motion.
-                            add(k, j.velocity(t, x) * (-sign * s));
+                            // `t` places the joint's left body: through the
+                            // motion when the child is on the right (+), its
+                            // inverse when the child is on the left (−: the
+                            // derivative of an inverse is minus the
+                            // motion's velocity at the same point).
+                            add(
+                                k,
+                                j.velocity(t, x, rho.get(k).copied().unwrap_or(0.0)) * (-sign * s),
+                            );
                         }
                     }
                 }
-                add(*l, joint.velocity(&ta, x1));
+                add(*l, joint.velocity(&ta, x1, *rho.get(*l).unwrap_or(&0.0)));
             }
             out.push(Row {
                 gap: x1 - x2,

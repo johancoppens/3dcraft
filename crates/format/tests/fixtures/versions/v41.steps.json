@@ -1,0 +1,13 @@
+[
+ ["variable.set", {"name": "t", "expr": "1.5 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "TrayBase"}],
+ ["sketch.rect", {"sketch": "TrayBase", "from": [0, 0], "to": [120, 80]}],
+ ["sketch.circle", {"sketch": "TrayBase", "center": [60, 20], "radius": 4}],
+ ["feature.sheetMetal", {"sketch": "TrayBase", "name": "Tray", "thickness": "t", "radius": "2 mm", "kFactor": 0.42,
+   "relief": {"shape": "tear", "size": "4 mm"},
+   "flanges": [{"edge": "e5", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "20 mm", "angle": "90 deg", "radius": "3 mm", "kFactor": 0.5},
+               {"edge": "e7", "length": "20 mm", "angle": "90 deg", "from": "mould"},
+               {"edge": "e8", "length": "20 mm", "angle": "90 deg"},
+               {"tip": 0, "length": "8 mm", "angle": "90 deg", "direction": "down"}]}]
+]

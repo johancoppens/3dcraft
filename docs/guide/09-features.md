@@ -172,6 +172,59 @@ edge: faces that meet at a crease (plate them apart and join them), plates in li
 corner to join at), an edge that does not run along the neighbour's outline, a plate so thick that its
 ends run into each other.
 
+## Sheet metal
+
+`feature.sheetMetal` makes a part bent from one sheet. The sketch's closed profile is the **base** (holes
+allowed); each **flange** is bent from a straight edge of it (`edge`, the line's entity id) or from the far
+edge of an earlier flange (`tip`, its place in the list: a Z, a U on a U), by `angle`, `up` (towards the
+side the sketch's normal points to) or `down`. Every bend has an inner `radius` and a `kFactor`, the
+neutral fibre's place across the thickness (0 the inside, 1 the outside), where the sheet keeps its length:
+the flat pattern grows by the bend allowance, angle × (radius + kFactor × thickness), per bend. A flange's
+`length` is its flat beyond the bend, or with `"from": "mould"` measured from the virtual sharp of the
+outside surfaces. `relief` cuts the base's corners where two flanged edges meet (`rect`, `round` or
+`tear`, reaching `size` along each edge). A tray with four sides, its corners relieved:
+
+```json
+[
+ ["variable.set", {"name": "t", "expr": "1.5 mm"}],
+ ["sketch.create", {"plane": "xy", "name": "TrayBase"}],
+ ["sketch.rect", {"sketch": "TrayBase", "from": [0, 0], "to": [120, 80]}],
+ ["sketch.circle", {"sketch": "TrayBase", "center": [60, 12], "radius": 3}],
+ ["feature.sheetMetal", {"sketch": "TrayBase", "name": "Tray", "thickness": "t", "radius": "2 mm",
+   "kFactor": 0.42, "relief": {"shape": "round", "size": "4 mm"},
+   "flanges": [{"edge": "e5", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e6", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e7", "length": "20 mm", "angle": "90 deg"},
+               {"edge": "e8", "length": "20 mm", "angle": "90 deg"}]}],
+ ["sheetMetal.bends", {"feature": "Tray"}],
+ ["table.set", {"name": "steel", "columns": ["grade", {"name": "minRadius", "unit": "mm"}],
+   "rows": [["DC01", 1.5], ["S355", 2.25]]}],
+ ["assert.add", {"name": "Radius", "measure": "bendRadius", "of": "Tray", "min": "steel[\"DC01\"].minRadius"}],
+ ["assert.add", {"name": "HoleClear", "measure": "holeToBend", "of": "Tray", "min": "2 * t"}],
+ ["assert.add", {"name": "Relieved", "measure": "relief", "of": "Tray", "is": true}],
+ ["file.export", {"path": "tray.dxf", "sheetMetal": "Tray"}]
+]
+```
+
+The bends are folded by the same mechanism as `feature.fold` (a joint with a radius), and the folded sheet
+is given its thickness as `feature.plate` does, so a bend's skins are the cylinders of the inner radius and
+of the inner radius plus the thickness. `sheetMetal.bends` is the **bend table**: per bend its angle and
+inner radius measured on the part, the K-factor, the bend allowance (in closed form, and as `developed`:
+the bend's neutral band laid flat by the unfold), the outside setback and the bend deduction, the
+flange's length; and the flat pattern's area and size. The **manufacturability** measures for assertions
+are `bendRadius` (the smallest inner radius), `flangeLength` (the shortest flange; `"measured": "mould"`
+from the virtual sharp), `holeToBend` (the least distance from a hole to a bend's tangent line) and
+`relief` (every corner where two bends meet is relieved). 3DCraft has no material catalogue: the limits
+for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
+`sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
+on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.edit` changes a part (flanges as a whole
+list). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported), a K-factor
+outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
+outline, flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into
+each other or into the base when bent. With a K-factor of ½ the part's volume is the flat area times the
+thickness; with another K-factor the part (whose bends keep the skins at the two radii) differs from that
+by angle × width × thickness² × (½ − K) per bend.
+
 ## Several bodies
 
 A document may hold any number of bodies; every feature that does not consume another body adds one.

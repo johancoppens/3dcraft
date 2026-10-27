@@ -219,6 +219,9 @@ pub enum Developed {
     },
     /// An unfold: its development, with the map between pattern and part.
     Pattern(Arc<Development>),
+    /// A sheet-metal part: its pattern, bends and folded skin as built
+    /// (what the bend table, the measures and the export read).
+    SheetMetal(Arc<crate::SheetMetalPart>),
 }
 
 /// The faces of an unfold in its source's body, in the order given.

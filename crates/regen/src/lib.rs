@@ -45,6 +45,7 @@ pub mod progress;
 mod query;
 mod revolve;
 mod selfcheck;
+mod sheetmetal;
 mod shell;
 mod sketch;
 mod sketch_pattern;
@@ -72,6 +73,7 @@ pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};
+pub use sheetmetal::{SheetMetalPart, sheet_face_name, sheet_metal_part};
 pub use sketch::{
     ConstraintResult, ConstraintState, FittedCurve, SketchResult, fit_formula_curve,
     image_places_to_record, record_image_places, settle_sketches, settle_sketches_cached,
@@ -1203,6 +1205,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::OffsetProfile(_) => return Err("an offset has no body".to_string()),
         FeatureKind::Fill(_) => return Err("a fill needs its sketch".to_string()),
         FeatureKind::Fold(_) => return Err("a fold needs its sketch".to_string()),
+        FeatureKind::SheetMetal(_) => {
+            return Err("a sheet-metal part needs its sketch".to_string());
+        }
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
@@ -1686,6 +1691,17 @@ fn build_feature(
         match made {
             Ok((body, named)) => {
                 names = Some(Arc::new(named));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::SheetMetal(made) = &feature.kind {
+        match sheetmetal::build(doc, variables, feature.id, made, earlier).and_then(
+            |(body, made_names, part)| checked(doc, body).map(|body| (body, made_names, part)),
+        ) {
+            Ok((body, made_names, part)) => {
+                names = Some(Arc::new(made_names));
+                developed = Some(Developed::SheetMetal(part));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

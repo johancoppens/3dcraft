@@ -60,6 +60,7 @@ mod select_cmds;
 mod selection;
 mod set_cmds;
 mod sheet_cmds;
+mod sheetmetal_cmds;
 mod sketch_cmds;
 mod sketch_conflicts;
 mod sketch_curve_cmds;
@@ -485,6 +486,7 @@ impl Session {
                 offset_cmds::SPECS,
                 sheet_cmds::SPECS,
                 fold_cmds::SPECS,
+                sheetmetal_cmds::SPECS,
                 split_cmds::SPECS,
                 query_cmds::SPECS,
                 interference_cmds::SPECS,

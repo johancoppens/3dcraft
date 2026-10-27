@@ -254,7 +254,7 @@ impl Segment {
     }
 
     /// The point at `t` in `[0, 1]` along the curve's own direction.
-    fn point_at(&self, t: f64) -> P2 {
+    pub(crate) fn point_at(&self, t: f64) -> P2 {
         match self.shape {
             Shape::Spline(_) => spline2::point_on(&self.parts(), t).unwrap_or([f64::NAN, f64::NAN]),
             Shape::Line => {
@@ -269,9 +269,19 @@ impl Segment {
         }
     }
 
+    /// For a spline, the least distance to the straight segment `a`–`b`
+    /// within an eighth of `tol`, and whether that is proven (the work
+    /// limit was not reached); `None` for the other shapes.
+    pub(crate) fn spline_to_line(&self, a: P2, b: P2, tol: f64) -> Option<(f64, bool)> {
+        match self.shape {
+            Shape::Spline(_) => Some(spline2::distance_to_segment(&self.parts(), a, b, tol)),
+            _ => None,
+        }
+    }
+
     /// The distance from `p` to the nearest point of the segment; to a
     /// spline within an eighth of `tol`.
-    fn distance_to(&self, p: P2, tol: f64) -> f64 {
+    pub(crate) fn distance_to(&self, p: P2, tol: f64) -> f64 {
         match self.shape {
             Shape::Spline(_) => spline2::distance_to(&self.parts(), p, tol),
             Shape::Line => {

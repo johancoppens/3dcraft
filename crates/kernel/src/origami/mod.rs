@@ -325,15 +325,15 @@ pub fn fold(
         let direction = (b - a)
             .normalized()
             .ok_or(FoldError::TooShort { id: e.source })?;
-        joints.push(Joint {
-            left: h.left,
-            right: h.right,
-            point: a,
+        joints.push(Joint::crease(
+            h.left,
+            h.right,
+            a,
             direction,
-            side: Vec3::Z.cross(direction),
-            reach: a.distance(b),
-            id: e.source,
-        });
+            Vec3::Z.cross(direction),
+            a.distance(b),
+            e.source,
+        ));
     }
     let link = Linkage {
         bodies: arr.facets.len(),

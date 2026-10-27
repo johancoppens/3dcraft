@@ -392,3 +392,77 @@ fn freecad_reads_a_crease_pattern() {
         }
     }
 }
+
+/// A sheet-metal part's flat pattern (`file.export` with `sheetMetal`):
+/// FreeCAD reads the outline of a tray with rect reliefs and its bend
+/// lines, as long as ours and in the box of the closed form.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_flat_pattern() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("drawing-freecad-sheetmetal");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Base"}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.rect",
+        json!({"sketch": "Base", "from": [0, 0], "to": [120, 80]}),
+    );
+    let flanges: Vec<Value> = made["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| json!({"edge": e, "length": "20 mm", "angle": "90 deg"}))
+        .collect();
+    run(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Tray", "thickness": "1.5 mm", "radius": "2 mm",
+               "kFactor": 0.42, "relief": {"shape": "rect", "size": "4 mm"}, "flanges": flanges}),
+    );
+    let ba = 0.5 * PI * (2.0 + 0.42 * 1.5);
+    let reach = ba + 20.0;
+    let mut cases = Vec::new();
+    for format in ["dxf", "svg"] {
+        let file = format!("tray.{format}");
+        let result = run(
+            &mut s,
+            "file.export",
+            json!({"path": file, "sheetMetal": "Tray"}),
+        );
+        cases.push((file, result));
+    }
+    let reports = freecad_reads(&dir);
+    assert_eq!(reports.len(), cases.len());
+    for (file, ours) in &cases {
+        let report = &reports[file];
+        let number = |key: &str| -> f64 { report[key].parse().unwrap() };
+        println!(
+            "{file}: length {} (ours {}), bbox {}, {} edges ({})",
+            report["length"], ours["length"], report["bbox"], report["edges"], report["kinds"]
+        );
+        assert!(
+            near(number("length"), ours["length"].as_f64().unwrap(), 1e-9),
+            "{file}"
+        );
+        let bbox: Vec<f64> = report["bbox"]
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        for (got, expected) in bbox
+            .iter()
+            .zip([-reach, -reach, 120.0 + reach, 80.0 + reach])
+        {
+            assert!((got - expected).abs() <= 1e-9 * 120.0, "{file}: {bbox:?}");
+        }
+    }
+}

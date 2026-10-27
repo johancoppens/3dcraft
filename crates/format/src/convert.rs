@@ -634,6 +634,30 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
             }) => manifest::FeatureKind::Fill { sketch: *sketch },
+            doc::FeatureKind::SheetMetal(doc::SheetMetal {
+                sketch: doc::FeatureId(sketch),
+                thickness,
+                radius,
+                k_factor,
+                flanges,
+                relief,
+            }) => manifest::FeatureKind::SheetMetal {
+                sketch: *sketch,
+                thickness: expr_to_manifest(thickness),
+                radius: expr_to_manifest(radius),
+                k_factor: expr_to_manifest(k_factor),
+                flanges: flanges.iter().map(flange_to_manifest).collect(),
+                relief: relief.as_ref().map(|doc::CornerRelief { shape, size }| {
+                    manifest::SheetRelief {
+                        shape: match shape {
+                            doc::ReliefShape::Rect => manifest::ReliefShape::Rect,
+                            doc::ReliefShape::Round => manifest::ReliefShape::Round,
+                            doc::ReliefShape::Tear => manifest::ReliefShape::Tear,
+                        },
+                        size: expr_to_manifest(size),
+                    }
+                }),
+            },
             doc::FeatureKind::Fold(doc::Fold {
                 sketch: doc::FeatureId(sketch),
                 creases,
@@ -1226,14 +1250,72 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
     }
 }
 
-// A name is a chain (a copy of a copy of a face), walked in a loop so a
-// hostile file cannot overflow the stack; `Document::validate` refuses a
-// chain longer than `doc::MAX_NAME_DEPTH`. An edge or a vertex lists the
-// faces it lies on, which list none themselves: with `lists` those are
-// converted, each as a chain without, and never deeper. A list in a place
-// where there is none to be is kept as one empty name per entry on the way
-// in, so that validation refuses the name instead of the list being
-// dropped.
+fn flange_to_manifest(flange: &doc::Flange) -> manifest::SheetFlange {
+    let doc::Flange {
+        on,
+        length,
+        angle,
+        direction,
+        radius,
+        k_factor,
+        from,
+    } = flange;
+    let (base, tip) = match on {
+        doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None),
+        doc::FlangeOn::Tip(i) => (None, Some(*i)),
+    };
+    manifest::SheetFlange {
+        base,
+        tip,
+        length: expr_to_manifest(length),
+        angle: expr_to_manifest(angle),
+        direction: match direction {
+            doc::BendDirection::Up => manifest::BendDirection::Up,
+            doc::BendDirection::Down => manifest::BendDirection::Down,
+        },
+        radius: radius.as_ref().map(expr_to_manifest),
+        k_factor: k_factor.as_ref().map(expr_to_manifest),
+        from: match from {
+            doc::FlangeFrom::Tangent => manifest::FlangeFrom::Tangent,
+            doc::FlangeFrom::Mould => manifest::FlangeFrom::Mould,
+        },
+    }
+}
+
+// A flange on neither or both is read as on the tip of flange u32::MAX,
+// which the part refuses by its place, rather than dropped.
+fn flange_to_doc(flange: manifest::SheetFlange) -> doc::Flange {
+    let manifest::SheetFlange {
+        base,
+        tip,
+        length,
+        angle,
+        direction,
+        radius,
+        k_factor,
+        from,
+    } = flange;
+    doc::Flange {
+        on: match (base, tip) {
+            (Some(id), None) => doc::FlangeOn::Base(doc::EntityId(id)),
+            (None, Some(i)) => doc::FlangeOn::Tip(i),
+            _ => doc::FlangeOn::Tip(u32::MAX),
+        },
+        length: doc::Expr(length),
+        angle: doc::Expr(angle),
+        direction: match direction {
+            manifest::BendDirection::Up => doc::BendDirection::Up,
+            manifest::BendDirection::Down => doc::BendDirection::Down,
+        },
+        radius: radius.map(doc::Expr),
+        k_factor: k_factor.map(doc::Expr),
+        from: match from {
+            manifest::FlangeFrom::Tangent => doc::FlangeFrom::Tangent,
+            manifest::FlangeFrom::Mould => doc::FlangeFrom::Mould,
+        },
+    }
+}
+
 fn rail_to_manifest(rail: &doc::Rail) -> manifest::Rail {
     match rail {
         doc::Rail::Sketch(doc::FeatureId(id)) => manifest::Rail::Sketch(*id),
@@ -1268,6 +1350,14 @@ fn plate_side_to_doc(side: manifest::PlateSide) -> doc::PlateSide {
     }
 }
 
+// A name is a chain (a copy of a copy of a face), walked in a loop so a
+// hostile file cannot overflow the stack; `Document::validate` refuses a
+// chain longer than `doc::MAX_NAME_DEPTH`. An edge or a vertex lists the
+// faces it lies on, which list none themselves: with `lists` those are
+// converted, each as a chain without, and never deeper. A list in a place
+// where there is none to be is kept as one empty name per entry on the way
+// in, so that validation refuses the name instead of the list being
+// dropped.
 fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
     name_to_manifest_with(name, true)
 }
@@ -2017,6 +2107,28 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
             }),
             manifest::FeatureKind::Fill { sketch } => doc::FeatureKind::Fill(doc::Fill {
                 sketch: doc::FeatureId(sketch),
+            }),
+            manifest::FeatureKind::SheetMetal {
+                sketch,
+                thickness,
+                radius,
+                k_factor,
+                flanges,
+                relief,
+            } => doc::FeatureKind::SheetMetal(doc::SheetMetal {
+                sketch: doc::FeatureId(sketch),
+                thickness: doc::Expr(thickness),
+                radius: doc::Expr(radius),
+                k_factor: doc::Expr(k_factor),
+                flanges: flanges.into_iter().map(flange_to_doc).collect(),
+                relief: relief.map(|manifest::SheetRelief { shape, size }| doc::CornerRelief {
+                    shape: match shape {
+                        manifest::ReliefShape::Rect => doc::ReliefShape::Rect,
+                        manifest::ReliefShape::Round => doc::ReliefShape::Round,
+                        manifest::ReliefShape::Tear => doc::ReliefShape::Tear,
+                    },
+                    size: doc::Expr(size),
+                }),
             }),
             manifest::FeatureKind::Fold {
                 sketch,
