@@ -738,6 +738,15 @@ pub(super) fn face_regions<'o>(
                         );
                     }
                 }
+                for edge in own.edges_of(face) {
+                    if let Some(e) = own.body.edge(edge) {
+                        let (a0, a1) = e.range;
+                        let pts: Vec<_> = (0..=4)
+                            .map(|k| e.curve.eval(a0 + (a1 - a0) * f64::from(k) / 4.0))
+                            .collect();
+                        eprintln!("BOOLDBG   boundary edge {} {:?}", edge.0, pts);
+                    }
+                }
                 for &i in across {
                     if let Some(arc) = arcs.arcs.get(i) {
                         eprintln!(
