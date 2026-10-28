@@ -323,9 +323,9 @@ fn without_checks_elsewhere_the_host_regenerates_itself() {
     build(&mut session, 1.0);
     session.set_regen_elsewhere(false);
     assert_eq!(session.scene_job(SceneQuality::display()), None);
-    assert!(
-        session
-            .prepare_some(SceneQuality::display(), || false)
-            .is_some()
-    );
+    assert!(!session.regenerated_here());
+    // Never stopped, one call does it all (the checks stay elsewhere).
+    let _ = session.prepare_some(SceneQuality::display(), || false);
+    assert!(session.regenerated_here());
+    assert!(session.scene_ready(SceneQuality::display()));
 }
