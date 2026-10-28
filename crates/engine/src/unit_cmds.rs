@@ -12,8 +12,9 @@
 //! stores in its unit (the tolerance, the solved points and circles of
 //! sketches) are converted, and what the change cannot prove it converts
 //! it refuses. It is then proven on the result: the document regenerated
-//! in the new unit has every body the size it had (volume and area by
-//! the factor's powers) and every feature the status it had, or the
+//! in the new unit, with every feature built (no marker, none switched
+//! off), has every body the size and place it had (volume, area, centroid
+//! and box by the factor's powers) and every feature the status it had, or the
 //! change is refused and the document left as it was.
 
 use crate::commands::{Run, edit, fail, spec};
@@ -23,13 +24,14 @@ use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::sketch::{ConstraintKind, Geometry, PlaceMap};
 use craft3d_doc::{Document, Expect, Expr, FeatureKind, LengthUnit, PatternLayout};
 use craft3d_expr::{Dimension, Evaluation};
+use craft3d_math::Vec3;
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "document.setUnit",
     "Set Length Unit",
     r#"{"units": "um|mm|cm|m|in|ft", "keep": "numbers|sizes"}"#,
-    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every body has the volume and area it had and every feature the status it had, or the change is refused and the document stays as it was. sizes refuses what it cannot convert for certain: outputs, formula curves, numbers in sets and subjects, measures with expressions of their own, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
+    "Changes the length unit of the active document (one undo step). A plain number read as a length is in the document's unit, so keep says what stays: numbers keeps every number as written and changes only the unit (a block of size 10 is then 10 of the new unit; a value written with a unit, 10 mm, keeps its size, and so does the tolerance's number); sizes keeps the model as large as it was: every plain number read as a length gets the old unit written on it (10 becomes 10 mm, w / 2 becomes (w / 2) * 1 mm; variables are left as they are, their uses get the unit), assertions' bounds likewise, the tolerance and the sketches' points and circles are converted, and the result is proven: regenerated in the new unit, every feature (also those rolled back or switched off) has the status it had and every body the volume, area, centroid and box it had, or the change is refused and the document stays as it was. sizes refuses what it cannot convert for certain: outputs, formula curves, numbers in sets and subjects, measures with expressions of their own, a parameter whose expression does not evaluate. Returns {units, was, keep, rewritten: the expressions given a unit}.",
     doc: true,
     set_unit
 )];
@@ -69,8 +71,11 @@ fn set_unit(session: &mut Session, params: &Value) -> Run {
     if keep_sizes {
         rewritten = keep_the_sizes(&mut changed, from, to)
             .map_err(|e| CommandError::new(format!("{ID}: keep sizes: {e}")))?;
-        let before = session.document_mut()?.regen();
-        let after = craft3d_regen::regenerate(&changed);
+        // Every feature is proven, also those the marker rolls back and
+        // those switched off: both documents are regenerated whole, with
+        // the marker cleared and every feature on.
+        let before = craft3d_regen::regenerate(&everything(&current));
+        let after = craft3d_regen::regenerate(&everything(&changed));
         same_sizes(&before, &after, &changed, factor(from, to)).map_err(|e| {
             CommandError::new(format!(
                 "{ID}: keep sizes: not proven, so nothing was changed: {e}"
@@ -343,6 +348,20 @@ fn keep_the_sizes(doc: &mut Document, from: LengthUnit, to: LengthUnit) -> Resul
     Ok(rewritten)
 }
 
+/// `doc` with every feature built: no rollback marker, nothing
+/// suppressed, no condition. What the proof of keeping the sizes
+/// regenerates, so that a feature it would not otherwise build is proven
+/// too.
+fn everything(doc: &Document) -> Document {
+    let mut all = doc.clone();
+    all.rollback = None;
+    for feature in &mut all.features {
+        feature.suppressed = false;
+        feature.when = None;
+    }
+    all
+}
+
 /// Whether a query or subject holds a number (or a string that is one)
 /// other than an instance's, which would be read in the document's unit.
 fn has_plain_number(value: &Value, depth: usize) -> bool {
@@ -414,9 +433,76 @@ fn same_sizes(
                 was.volume * k.powi(3)
             ));
         }
+        // Where it is, not only how large: its centroid and its box, by
+        // the factor, within a part in 10^7 of its size.
+        let (Ok(box_was), Ok(box_now)) = (body.bbox(), scaled.bbox()) else {
+            return Err(format!(
+                "`{}` cannot be boxed to prove where it is",
+                called(id)
+            ));
+        };
+        let size = box_now.diagonal();
+        let same_place = |a: Vec3, b: Vec3| (a * k - b).length() <= 1e-7 * size;
+        let moved = match (box_was.corners(), box_now.corners()) {
+            (Some((lo, hi)), Some((lo2, hi2))) => !same_place(lo, lo2) || !same_place(hi, hi2),
+            (None, None) => false,
+            _ => true,
+        } || match (was.centroid, now.centroid) {
+            (Some(a), Some(b)) => !same_place(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        if moved {
+            return Err(format!(
+                "`{}` is in another place in the new unit",
+                called(id)
+            ));
+        }
     }
     if bodies_after.next().is_some() {
         return Err("a body is in the new unit that was not before".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    fn block_at(x: &str) -> Document {
+        let mut s = Session::new(Workspace::none());
+        let run = |s: &mut Session, id: &str, p: Value| {
+            s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        };
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"size": [10, 20, 30], "position": [x, "0", "0"]}),
+        );
+        (**s.document().unwrap().history.current()).clone()
+    }
+
+    /// The proof sees a body that is as large as it was but in another
+    /// place: a block moved by 1 has the same volume and area.
+    #[test]
+    fn a_body_in_another_place_is_not_proven() {
+        let was = block_at("0");
+        let same = block_at("0");
+        let moved = block_at("1");
+        let regen = |d: &Document| craft3d_regen::regenerate(&everything(d));
+        assert!(same_sizes(&regen(&was), &regen(&same), &same, 1.0).is_ok());
+        let e = same_sizes(&regen(&was), &regen(&moved), &moved, 1.0).unwrap_err();
+        assert!(e.contains("another place"), "{e}");
+        // At a factor: the block 25.4 times as large is proven only where
+        // its place is 25.4 times as far too.
+        let mut inches = block_at("0");
+        // Its position and size, the first six expressions.
+        for e in inches.features[0].exprs_mut().into_iter().take(6) {
+            let v: f64 = e.source().parse().unwrap();
+            *e = Expr::new(format!("{}", v * 25.4));
+        }
+        assert!(same_sizes(&regen(&was), &regen(&inches), &inches, 25.4).is_ok());
+    }
 }

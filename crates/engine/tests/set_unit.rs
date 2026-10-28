@@ -212,3 +212,54 @@ fn a_dimensioned_sketch_keeps_its_size() {
     );
     close(volume(&mut s), before * 25.4f64.powi(3), "in millimetres");
 }
+
+/// With the history rolled back, the features after the marker are
+/// converted and proven too: rolled forward, the part is as large as it
+/// was.
+#[test]
+fn keeping_the_sizes_with_a_marker_set_converts_what_is_rolled_back() {
+    let mut s = part("mm", 1.0);
+    let whole = volume(&mut s);
+    run(&mut s, "history.rollback", json!({"feature": "Base"}));
+    run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "in", "keep": "sizes"}),
+    );
+    run(&mut s, "history.rollback", json!({"feature": null}));
+    close(volume(&mut s), whole / 25.4f64.powi(3), "rolled forward");
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+}
+
+/// Keeping the numbers from millimetres to metres: a dimensioned sketch
+/// keeps its numbers and solves to the same shape (the same branch), now
+/// in metres.
+#[test]
+fn keeping_the_numbers_from_mm_to_m_solves_the_same_sketch() {
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"plane": "xy", "name": "S"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "S", "closed": true, "points": [[0, 0], [30, 0], [30, 10], [0, 10]]}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "S", "center": [15, 5], "radius": "3"}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "S", "distance": 2}),
+    );
+    let before = volume(&mut s);
+    run(
+        &mut s,
+        "document.setUnit",
+        json!({"units": "m", "keep": "numbers"}),
+    );
+    close(volume(&mut s), before, "the same numbers, in m^3");
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+}

@@ -532,6 +532,8 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build's regeneration and meshing off the page's thread: the shell over a session in the worker, or bodies that cross to the page (the checks are there since 2026-10-28; [`design/engine.md`](design/engine.md) › *Checks in a Web Worker*)
 - [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet
+- [ ] A re-point at the rollback marker is made once, when the feature is inserted: editing or deleting the inserted feature later does not redo or undo it ([`design/names.md`](design/names.md) › *A feature inserted at the marker*)
+- [ ] `document.setUnit` keeping the sizes refuses outputs, formula curves, numbers in sets and subjects, measures with numbers of their own and `value` assertions ([`design/document.md`](design/document.md) › *Changing the length unit*)
 - [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused
 
 #### Acceptance
