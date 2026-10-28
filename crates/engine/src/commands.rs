@@ -309,54 +309,68 @@ pub(crate) fn before_insert(
 
 /// After `id` was inserted at the rollback marker: the features after it
 /// that took a body it now takes first go on with its body instead
-/// ([`Document::repoint_after`]); the result lists them (`repointed`).
-/// What it takes is what regeneration builds it from at its place,
-/// `before` (the document rolled back to the marker, before it was
-/// inserted): its faces followed to the body they are of there.
+/// ([`Document::repoint_after`]). What it takes is what regeneration builds
+/// it from at its place, `before` (the document rolled back to the marker,
+/// before it was inserted): its faces followed to the body they are of
+/// there. Returns what this insertion re-pointed, for the result
+/// (`repointed: [{feature, param, warning?}]`), `None` for nothing.
+///
+/// A boolean's `tool` pointed at a feature that grew from more than one
+/// body (a union inserted before it) now holds the other bodies' material
+/// too, so it cuts, joins or keeps more than it did: that is said in a
+/// `warning` on the entry.
 pub(crate) fn repoint_inserted(
     doc: &mut Document,
     id: FeatureId,
     before: Option<&craft3d_regen::Regen>,
-) -> Result<(), DocError> {
+) -> Result<Option<Value>, DocError> {
     let (Some(before), Some(feature)) = (before, doc.feature(id)) else {
-        return Ok(());
+        return Ok(None);
     };
     let taken = match craft3d_regen::followed_feature(doc, &before.features, feature) {
         Ok(Some(followed)) => followed.kind.grows_from(),
         Ok(None) => feature.kind.grows_from(),
         // It fails where it stands: nothing is taken from the features
         // after it.
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
-    doc.repoint_after(id, &taken)?;
-    Ok(())
-}
-
-/// For a feature inserted at the rollback marker: the parameters of the
-/// features after it that [`Document::repoint_after`] pointed at it,
-/// `[{feature, param, was}]` (`None` when there are none). Features
-/// made before it that name it can only have been pointed there by the
-/// insertion, as long as the marker is on it.
-fn repointed(doc: &Document, id: FeatureId) -> Option<Value> {
-    if doc.rollback != Some(id) {
-        return None;
+    let changed = doc.repoint_after(id, &taken)?;
+    if changed.is_empty() {
+        return Ok(None);
     }
-    let at = doc.features.iter().position(|f| f.id == id)?;
-    let listed: Vec<Value> = doc
-        .features
+    let called = |doc: &Document, f: FeatureId| {
+        doc.feature(f)
+            .map_or_else(|| f.to_string(), |f| f.name.clone())
+    };
+    let inserted = called(doc, id);
+    let listed: Vec<Value> = changed
         .iter()
-        .skip(at.saturating_add(1))
-        .filter(|f| f.id < id)
-        .flat_map(|f| {
-            f.kind
-                .body_params()
-                .into_iter()
-                .filter(|(_, named)| *named == id)
-                .map(|(param, _)| json!({"feature": f.name, "param": param}))
-                .collect::<Vec<_>>()
+        .map(|&(later, param, was)| {
+            let mut entry = json!({"feature": called(doc, later), "param": param});
+            let others: Vec<String> = taken
+                .iter()
+                .filter(|&&t| t != was)
+                .map(|&t| format!("`{}`", called(doc, t)))
+                .collect();
+            if param == "tool"
+                && !others.is_empty()
+                && let Some(map) = entry.as_object_mut()
+            {
+                map.insert(
+                    "warning".into(),
+                    format!(
+                        "the tool of `{}` was `{}` and is now `{inserted}`, which holds {} too: it takes more than it did",
+                        called(doc, later),
+                        called(doc, was),
+                        others.join(", ")
+                    )
+                    .into(),
+                );
+            }
+            entry
         })
         .collect();
-    (!listed.is_empty()).then(|| listed.into())
+    Ok(Some(listed.into()))
 }
 
 pub(crate) fn add_feature(
@@ -367,12 +381,14 @@ pub(crate) fn add_feature(
 ) -> Run {
     let label = format!("Add {}", kind.type_name());
     let before = before_insert(session, &kind)?;
-    let id = edit(session, command, &label, |doc| {
+    let (id, repointed) = edit(session, command, &label, |doc| {
         let id = insert_feature(doc, name, kind)?;
-        repoint_inserted(doc, id, before.as_deref())?;
-        Ok(id)
+        let repointed = repoint_inserted(doc, id, before.as_deref())?;
+        Ok((id, repointed))
     })?;
-    feature_result(session, id)
+    let mut result = feature_result(session, id)?;
+    with_repointed(&mut result, repointed);
+    Ok(result)
 }
 
 /// The `cut`, `join` and `intersect` parameters of a sweep: the body the
@@ -425,7 +441,7 @@ pub(crate) fn add_sweep(
         keep_tool: false,
     });
     let before = before_insert(session, &boolean)?;
-    let (sweep, combined) = edit(session, command, &label, |doc| {
+    let (sweep, combined, repointed) = edit(session, command, &label, |doc| {
         let sweep = insert_feature(doc, None, kind)?;
         let combined = insert_feature(
             doc,
@@ -437,15 +453,23 @@ pub(crate) fn add_sweep(
                 keep_tool: false,
             }),
         )?;
-        repoint_inserted(doc, combined, before.as_deref())?;
-        Ok((sweep, combined))
+        let repointed = repoint_inserted(doc, combined, before.as_deref())?;
+        Ok((sweep, combined, repointed))
     })?;
     let mut result = feature_result(session, combined)?;
+    with_repointed(&mut result, repointed);
     let swept = feature_result(session, sweep)?;
     if let Some(map) = result.as_object_mut() {
         map.insert("sweep".into(), swept);
     }
     Ok(result)
+}
+
+/// `repointed` (what this command's insertion re-pointed) in a result.
+fn with_repointed(result: &mut Value, repointed: Option<Value>) {
+    if let (Some(map), Some(listed)) = (result.as_object_mut(), repointed) {
+        map.insert("repointed".into(), listed);
+    }
 }
 
 /// What a feature command returns: the feature and how it regenerated, so
@@ -480,9 +504,6 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(made) = &outcome.offset {
             map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
-    }
-    if let (Some(map), Some(listed)) = (result.as_object_mut(), repointed(doc, id)) {
-        map.insert("repointed".into(), listed);
     }
     crate::assert_cmds::add_summary(session, &mut result);
     Ok(result)

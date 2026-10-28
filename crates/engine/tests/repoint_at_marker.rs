@@ -237,3 +237,101 @@ fn a_subtraction_inserted_does_not_take_over_its_tool() {
         "{cut}"
     );
 }
+
+/// A re-pointed document is saved and read back as it is: the later
+/// features name the inserted one, and it builds the same volume.
+#[test]
+fn a_re_pointed_document_survives_a_save() {
+    let dir = common::workdir("repoint-at-marker", "save");
+    let mut s = common::session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    build(&mut s, &part(1.0));
+    run(&mut s, "history.rollback", json!({"feature": "Tool"}));
+    let bevel = run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": 0.5, "name": "Bevel"}),
+    );
+    assert_eq!(
+        bevel["repointed"],
+        json!([{"feature": "Cut", "param": "target"}])
+    );
+    run(&mut s, "history.rollback", json!({"feature": null}));
+    let want = volume(&mut s);
+    run(&mut s, "file.save", json!({"path": "r.3dcraft"}));
+    let mut t = common::session_in(&dir);
+    run(&mut t, "file.open", json!({"path": "r.3dcraft"}));
+    assert_eq!(run(&mut t, "document.check", json!({}))["ok"], true);
+    let got = volume(&mut t);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} vs {want}");
+    let inspect = run(&mut t, "document.inspect", json!({"measures": false}));
+    let cut = inspect["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Cut")
+        .unwrap()
+        .clone();
+    let bevel_id = inspect["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Bevel")
+        .unwrap()["id"]
+        .clone();
+    let bevel_number: u64 = bevel_id.as_str().unwrap()[1..].parse().unwrap();
+    assert_eq!(cut["params"]["target"], json!(bevel_number), "{cut}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A union inserted before a subtraction whose tool it joins: the tool is
+/// re-pointed to the union, which holds the other body too, and the entry
+/// says so. Only the command that re-pointed lists it: an edit of the
+/// inserted feature afterwards lists nothing.
+#[test]
+fn a_tool_re_pointed_to_a_larger_body_is_warned_of_once() {
+    let mut s = new(1.0);
+    build(&mut s, &part(1.0));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 4, 4], "position": [30, 1, 1], "name": "Spare"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [2, 2, 2], "position": [31, 2, 3], "name": "E"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Spare", "tool": "E", "name": "Notch"}),
+    );
+    run(&mut s, "history.rollback", json!({"feature": "E"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [31.5, 2.5, 4.5], "name": "A"}),
+    );
+    let joined = run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "A", "tool": "E", "name": "U"}),
+    );
+    let listed = joined["repointed"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{joined}");
+    assert_eq!(listed[0]["feature"], "Notch");
+    assert_eq!(listed[0]["param"], "tool");
+    let warning = listed[0]["warning"].as_str().unwrap();
+    assert!(
+        warning.contains("`A`") && warning.contains("more"),
+        "{warning}"
+    );
+    // An edit of U while the marker is still on it re-points nothing.
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "U", "op": "union"}),
+    );
+    assert!(edited.get("repointed").is_none(), "{edited}");
+}
