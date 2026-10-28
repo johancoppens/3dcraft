@@ -61,10 +61,11 @@
 //!     cannot be followed": near each end its condition has a second
 //!     branch whose rulings run across the panel's, and the two pass each
 //!     other a millimetre apart; the walk stepped from one to the other.
-//!     Now such a place is approached and stepped over (2026-10-28): the
-//!     panel is built with a fan at each end, and the plate on it is
-//!     refused only by the names of its joints' edges (the fans have the
-//!     panel's end edges).
+//!     Now the walk follows its branch into the fold there and closes it
+//!     with a fan (2026-10-28): the panel is an exact developable of seven
+//!     faces named by place, and the plate on it is refused only by the
+//!     names of its joints' edges (the Jig names the edges of `face(0)`
+//!     alone).
 //! 16. The overlap assertions of neighbouring plates (repros 16 to 19: the
 //!     garboards either side of the keel, 17 and 18: planks above one
 //!     another and the sheer plate, 19: the deck plates either side of
@@ -319,22 +320,36 @@ fn plates_on_the_long_developable_panels_are_built() {
     eprintln!("repro 14 (starboard plates) in {:?}", started.elapsed());
     // The sheer panel (DevTop4S, chine to sheer) was refused by the
     // developable until 2026-10-28 ("the rulings between two found ones
-    // cannot be followed": branches of its condition that pass each other
-    // near both ends, stepped over since). It is built now, one sheet of
-    // three faces: its rails' ends do not line up with a ruling, so a fan
-    // closes each end (the rulings face `face(0)`, the fans `face(1)` and
-    // `face(2)`). Its plate `Top4S` is refused by name only: its joints
-    // name the end edges of `face(0)` (`between[DevTop4S:face(0)](0)`),
-    // which the end fans have; the Jig names them by the faces it plates
-    // (expectation changed 2026-10-28, develop-r1b: it was "built", set
-    // by the previous round before the test had run; a regression test of
-    // the names, the panel's geometry is held by the kernel's
-    // `rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over`).
+    // cannot be followed": near each end its condition has a second
+    // branch that passes the panel's own, and the walk stepped from one to
+    // the other). The walk now follows its branch into the fold and closes
+    // it with a fan (docs/design/developable.md, Method 4), so the panel is
+    // an exact developable of seven faces named by place: the fans at its
+    // ends `face(1)` and `face(2)` (its rails' ends do not line up with a
+    // ruling), the first run `face(0)`, the fan at the bow's fold (the
+    // first from the start) `face(10000000000)`, the run after it
+    // `face(110000000000)`, the fan at the stern's fold (the first from the
+    // end) `face(20000000000)` and the run to the end `face(300000000000)`.
+    // Its plate `Top4S` is refused by name only: the Jig plates `face(0)`
+    // and names its joints' edges as the edges of that one face
+    // (`between[DevTop4S:face(0)](2)` and `(3)`), which it no longer has
+    // (expectation changed 2026-10-28, develop-r2; the panel's geometry is
+    // held by the kernel's
+    // `rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans`).
     assert_eq!(failed.len(), 1, "{failed:#?}");
     assert!(
         failed[0].contains("Top4S") && failed[0].contains("has no edge"),
         "{failed:#?}"
     );
+    let edges = s
+        .execute("document.edges", &json!({"feature": "DevTop4S"}))
+        .unwrap();
+    for e in edges["edges"].as_array().unwrap() {
+        eprintln!(
+            "DevTop4S edge {} on {} length {}",
+            e["name"], e["faces"], e["length"]
+        );
+    }
     // The same panels plated square (no joints): the plate's volume is
     // the panel's area times the thickness, less the mean curvature's
     // term (`t² ∫H dA`, under one per cent for a hull's radii of a few
@@ -359,7 +374,7 @@ fn plates_on_the_long_developable_panels_are_built() {
     };
     let sheer = body("DevTop4S");
     assert_eq!(sheer["valid"], true, "{sheer}");
-    assert_eq!(sheer["faces"], 3, "{sheer}");
+    assert_eq!(sheer["faces"], 7, "{sheer}");
     for (plate, panel) in [("Plank1S", "Dev1S"), ("Plank2S", "Dev2S")] {
         let square = body(&format!("Square{panel}"));
         let (plate, panel) = (body(plate), body(panel));

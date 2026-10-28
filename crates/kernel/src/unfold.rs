@@ -260,7 +260,8 @@ fn apex_inward(v: (f64, f64), apex_v: f64) -> f64 {
 
 /// Which side `v = v0` or `v = v1` of the region collapses into one point
 /// of the part, an apex ([`Apex`]): nine points along it within a
-/// millionth of the tolerance of each other and the surface's normal lost
+/// millionth of the tolerance of each other (or within the rounding of
+/// their coordinates' size, if larger) and the surface's normal lost
 /// there; `None` for neither (or both). A side within a millionth of the
 /// region of the surface's own bound (the feet of the apex's points, put
 /// on the surface) is taken at the bound.
@@ -281,11 +282,16 @@ fn apex_side(
             v
         }
     };
+    // Within a millionth of the tolerance, or of the rounding of points
+    // that far from the origin (an apex row's control points are one
+    // point; their sum rounds by a few ulps of its coordinates).
     let collapsed = |v: f64| {
         let first = surface.eval(u0, v);
+        let size = first.x.abs().max(first.y.abs()).max(first.z.abs());
+        let within = (1e-6 * tol).max(64.0 * f64::EPSILON * size);
         (0..=8).all(|k| {
             let u = u0 + (u1 - u0) * k as f64 / 8.0;
-            surface.eval(u, v).distance(first) <= 1e-6 * tol && collapsed_at(surface, [u, v], 1e-9)
+            surface.eval(u, v).distance(first) <= within && collapsed_at(surface, [u, v], 1e-9)
         })
     };
     let (low, high) = (snapped(v0), snapped(v1));

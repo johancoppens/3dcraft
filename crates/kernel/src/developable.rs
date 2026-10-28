@@ -63,20 +63,45 @@ pub struct Rail {
     pub pieces: Vec<RailPiece>,
 }
 
-/// Which face of the sheet.
+/// Which face of the sheet, named by its place (2026-10-28: by place,
+/// not by count, so that a fold that appears or goes at one end of a
+/// sheet leaves the names of the faces at the other as they are).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Piece {
-    /// The rulings that satisfy the condition.
+    /// The first run of rulings that satisfy the condition (the only one
+    /// of a sheet without folds or corners).
     Rulings,
     /// The cone from the first end of one rail to the start of the other.
     StartFan,
     /// The cone from the last end of one rail to the end of the other.
     EndFan,
-    /// A face after the first run of rulings, in order along the rails
-    /// (from 0): a fan where the condition turns back (a cone at one
-    /// point of a rail, across a stretch of the other), or a run of
-    /// rulings after such a fan.
-    Inner(u32),
+    /// The fan at a fold of the condition (a cone at one point of a rail,
+    /// across a stretch of the other) or from a corner of a rail.
+    Fan(Mark),
+    /// A run of rulings after a corner, or after a fold counted from the
+    /// start.
+    After(Mark),
+    /// A run of rulings, after a fold counted from the end, before the
+    /// mark that follows it.
+    Before(Mark),
+    /// The run of rulings that reaches the end, when it is not the first.
+    Last,
+}
+
+/// What parts two runs of rulings of a sheet: a fold of the condition
+/// (closed by a fan) or a corner of a rail (a fan from it, or the faces
+/// part there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Mark {
+    /// A fold in the first half of the sheet (by the mean of the unit rail
+    /// parameters of its fan's first ruling), the `n`-th counted from the
+    /// start (from 0).
+    FoldFromStart(u32),
+    /// A fold in the second half, the `n`-th counted from the end.
+    FoldFromEnd(u32),
+    /// The corner of rail `a` (`rail` 0) or `b` (1) before its piece whose
+    /// [`RailPiece::source`] is `source`.
+    Corner { rail: u8, source: u64 },
 }
 
 /// What [`connect`] made.
@@ -97,12 +122,6 @@ pub struct Connected {
     pub planar: bool,
     /// Whether `b` was run the other way (only that gives a developable).
     pub reversed_b: bool,
-    /// The stepped stretches, by their end rulings as `(s, t)` rail
-    /// parameters: across a place where two branches of the condition pass
-    /// each other, the rulings between the two are interpolated (they do
-    /// not satisfy the condition), within the tolerance of a developable
-    /// (2026-10-28; `rulings` holds those of the fit there too).
-    pub stepped: Vec<((f64, f64), (f64, f64))>,
 }
 
 fn refused(reason: String) -> KernelError {
@@ -487,16 +506,10 @@ const MAX_TURN: f64 = 0.2;
 /// The path of the rulings through the square: its points, and per point
 /// whether the stretch to the next one is a fan (at one `t`, its apex on
 /// B, or at one `s`, its apex on A) rather than rulings on the zero set.
-///
-/// A stretch can also be *stepped*: across a crossing of two branches of
-/// the zero set that rounding or the curves have split ([`split_ahead`]),
-/// the rulings from the point before to the point after are interpolated
-/// between the two (straight in `(s, t)`), not on the zero set.
 #[derive(Clone, Debug, Default)]
 struct Path {
     points: Vec<(f64, f64)>,
     fan_after: Vec<bool>,
-    stepped_after: Vec<bool>,
     /// Per point, whether the faces part there (a corner of a rail whose
     /// fan is no longer than the tolerance: the rulings go on, the faces
     /// do not, as a rail's row cannot follow a corner).
@@ -507,7 +520,6 @@ impl Path {
     fn push(&mut self, p: (f64, f64)) {
         self.points.push(p);
         self.fan_after.push(false);
-        self.stepped_after.push(false);
         self.break_at.push(false);
     }
     /// The faces part at the last point.
@@ -523,20 +535,12 @@ impl Path {
         }
         self.push(p);
     }
-    /// The stretch from the last point to `p` is stepped.
-    fn push_stepped(&mut self, p: (f64, f64)) {
-        if let Some(last) = self.stepped_after.last_mut() {
-            *last = true;
-        }
-        self.push(p);
-    }
-    /// Whether the stretch after point `k` is a fan or stepped.
+    /// Whether the stretch after point `k` is a fan.
     fn special_after(&self, k: usize) -> bool {
         self.fan_after.get(k).copied().unwrap_or(false)
-            || self.stepped_after.get(k).copied().unwrap_or(false)
     }
-    /// Whether point `k` ends or starts a fan or a stepped stretch (it is
-    /// kept as it is).
+    /// Whether point `k` ends or starts a fan, or the faces part there (it
+    /// is kept as it is).
     fn fixed(&self, k: usize) -> bool {
         self.special_after(k)
             || k.checked_sub(1).is_some_and(|j| self.special_after(j))
@@ -688,22 +692,12 @@ fn trace(
             )));
         }
         // A saddle ahead where the branches pass each other by more than
-        // `cross` steps over: stepped over, or approached.
-        if fold.is_none() {
-            match split_ahead(pair, (x, y), (tx, ty), h, heading(&path.points), tolerance) {
-                Some(Ahead::Over(q)) => {
-                    let moved = (q.0 - x).hypot(q.1 - y);
-                    if moved > 0.0 {
-                        before = ((q.0 - x) / moved, (q.1 - y) / moved);
-                    }
-                    (x, y) = q;
-                    path.push_stepped(q);
-                    h = STEP_MAX / 4.0;
-                    continue;
-                }
-                Some(Ahead::Near(far)) => h = h.min(0.5 * far),
-                None => {}
-            }
+        // `cross` steps over: approached, so that the walk stays on its
+        // branch and meets the fold where it turns ([`saddle_ahead`]).
+        if fold.is_none()
+            && let Some(far) = saddle_ahead(pair, (x, y), (tx, ty), h, tolerance)
+        {
+            h = h.min(0.5 * far);
         }
         if fold.is_none() && (tx < BACK || ty < BACK) {
             if let Some(q) = cross(
@@ -1455,47 +1449,28 @@ fn past_saddle(
     on.then_some((px, py))
 }
 
-/// What the walk at a point does about a saddle of the condition's model
-/// ahead of it within its step (`h`), where two branches of the zero set
-/// cross or pass each other and a step could land on the other branch.
-#[derive(Clone, Copy, Debug)]
-enum Ahead {
-    /// Stepped over to this point: the stretch to it is stepped.
-    Over((f64, f64)),
-    /// Approached: the saddle is this far, and the step is kept to half
-    /// of it.
-    Near(f64),
-}
-
-/// A saddle of the model of `f` at `p` that lies ahead of the walk
-/// (along `tangent`) within the step `h`, where the branches of the zero
-/// set are split by more than [`cross`] steps over (the model's value at
-/// the saddle times the ruling's length more than half the tolerance).
-/// The sea kayak's sheer panel (2026-10-28) is such a case: besides the
+/// The distance to a saddle of the model of `f` at `p` that lies ahead of
+/// the walk (along `tangent`) within the step `h`, where the branches of
+/// the zero set are split by more than [`cross`] steps over (the model's
+/// value at the saddle times the ruling's length more than half the
+/// tolerance). A predictor step across such a saddle can land on the other
+/// branch (Allgower & Georg, ch. 8: branch jumping near a bifurcation), and
+/// the fold where the walk's own branch turns is then never seen. The sea
+/// kayak's sheer panel (2026-10-28) is such a case: besides the
 /// developable's own branch its condition has a branch of rulings across
 /// it near each end, the two passing each other 0.85 mm apart along the
-/// rails, and a walk with steps of 1/128 of the square stepped from one
-/// to the other without seeing that they do not join.
-///
-/// The saddle is approached, the step kept to half its distance, until
-/// the walk is within [`SPLIT_REACH`] times the distance by which the two
-/// branches pass (`√(2|c|/|λ|)`, `c` the model's value at the saddle and
-/// `λ` the smaller eigenvalue of its Hessian in size: where the model's
-/// branches are nearest the saddle). There it is stepped over when the
-/// rulings interpolated across it (from `p` to the point on the branch
-/// beyond, as far past the saddle as `p` is before it) are developable
-/// within half the tolerance ([`stepped_stretch`]); otherwise the walk
-/// goes on approaching and meets the place where its branch turns (a
-/// fold, closed by a fan). `None` when there is no such saddle (none,
-/// behind, beyond the step, or one [`cross`] steps over).
-fn split_ahead(
+/// rails, and a walk with steps of 1/128 of the square stepped from one to
+/// the other. The walk keeps its step to half this distance, so it follows
+/// its branch into the fold (closed by a fan, [`trace`]). `None` when there
+/// is no such saddle (none, behind, beyond the step, outside the square, or
+/// one [`cross`] steps over).
+fn saddle_ahead(
     pair: &Pair,
     p: (f64, f64),
     tangent: (f64, f64),
     h: f64,
-    heading: (f64, f64),
     tolerance: f64,
-) -> Option<Ahead> {
+) -> Option<f64> {
     let model = model_saddle(pair, p)?;
     let (dx, dy) = model.offset;
     let far = dx.hypot(dy);
@@ -1507,38 +1482,13 @@ fn split_ahead(
         return None;
     }
     let (pa, pb) = pair.points(c.0, c.1)?;
-    if model.value.abs() * pa.distance(pb) <= 0.5 * tolerance {
-        return None;
-    }
-    let [hxx, hxy, hyy] = model.hessian;
-    // The eigenvalues are `mean ± radius`, of opposite signs: the smaller
-    // in size is `radius − |mean|`.
-    let mean = (0.5 * (hxx + hyy)).abs();
-    let radius = (0.5 * (hxx - hyy)).hypot(hxy);
-    let lambda = radius - mean;
-    let split = (2.0 * model.value.abs() / lambda).sqrt();
-    if !(split.is_finite() && far <= SPLIT_REACH * split) {
-        return Some(Ahead::Near(far));
-    }
-    let over = past_saddle(pair, p, c, model.hessian, heading, 2.0 * far)
-        .filter(|&q| !pair.crosses_corner(p, q))
-        .filter(|&q| stepped_stretch(pair, p, q).is_some_and(|d| d <= 0.5 * tolerance));
-    Some(match over {
-        Some(q) => Ahead::Over(q),
-        None => Ahead::Near(far),
-    })
+    (model.value.abs() * pa.distance(pb) > 0.5 * tolerance).then_some(far)
 }
-
-/// How many times the distance by which two branches pass each other the
-/// walk comes to their saddle before it steps over ([`split_ahead`]): the
-/// stepped stretch is a few times as long as the gap it bridges, and its
-/// interpolated rulings stay near the zero set's.
-const SPLIT_REACH: f64 = 4.0;
 
 /// Whether a saddle of the model of `f` at the middle of `p` and `q` lies
 /// between them where the branches are split by more than [`cross`]
 /// steps over: a step from one to the other may have landed on the other
-/// branch (the check behind [`split_ahead`], whose model at `p` may not
+/// branch (the check behind [`saddle_ahead`], whose model at `p` may not
 /// see so far).
 fn split_between(pair: &Pair, p: (f64, f64), q: (f64, f64), tolerance: f64) -> bool {
     let middle = (0.5 * (p.0 + q.0), 0.5 * (p.1 + q.1));
@@ -1553,45 +1503,6 @@ fn split_between(pair: &Pair, p: (f64, f64), q: (f64, f64), tolerance: f64) -> b
     }
     pair.points(c.0, c.1)
         .is_some_and(|(pa, pb)| model.value.abs() * pa.distance(pb) > 0.5 * tolerance)
-}
-
-/// The stretch a flat sheet would need to lie on the rulings interpolated
-/// from `p` to `q` (straight in the unit square, a stepped stretch): the
-/// estimate of the unfold's gate (`unfold::face_curvature`, the Method's
-/// *Developable within tolerance*), `∫ w² |K| / 8` along the stretch, for
-/// a strip of rulings. A ruled surface whose tangent plane turns by `φ`
-/// along a ruling of length `L` has `|K|` up to `(φ / L)²` there
-/// (`K = −p² / (p² + v²)²` with the distribution parameter `p`, do Carmo
-/// §3-5), and it is `L` wide across the rails: `φ² / 8` per unit of the
-/// stretch's extent along the rails (the longer of its two stretches of
-/// rail), the largest `φ` found along it.
-///
-/// Across a stepped stretch no ruling satisfies the condition, and the
-/// developables through the same rails that do (the walk's branch to the
-/// fold, a fan, the other branch: one of a family, for any cone between
-/// two points of the zero set at one parameter will do) are no reference
-/// for where the sheet lies: it lies on its rails, as every developable
-/// between them does, and what is held to the tolerance there is that it
-/// lies flat, as the unfold will ask of it. Elsewhere the fit holds every
-/// ruling to the turn times its length (the plane at one end against the
-/// plane at the other), which is far stricter.
-fn stepped_stretch(pair: &Pair, p: (f64, f64), q: (f64, f64)) -> Option<f64> {
-    const SAMPLES: usize = 32;
-    let extent = pair
-        .a
-        .length_between(pair.sa(p.0.min(q.0)), pair.sa(p.0.max(q.0)))
-        .max(
-            pair.b
-                .length_between(pair.tb(p.1.min(q.1)), pair.tb(p.1.max(q.1))),
-        );
-    let mut turn: f64 = 0.0;
-    for k in 0..=SAMPLES {
-        let w = k as f64 / SAMPLES as f64;
-        let (x, y) = (p.0 + w * (q.0 - p.0), p.1 + w * (q.1 - p.1));
-        turn = turn.max(ruling_turn(pair, x, y)?.0);
-    }
-    let stretch = turn * turn * extent / 8.0;
-    stretch.is_finite().then_some(stretch)
 }
 
 /// The root of `g` on `[−half, half]` nearest 0, by sampling and
@@ -1739,9 +1650,6 @@ struct Strip {
     /// through, for a face of rulings; empty for a fan (fitted along its
     /// stretch).
     rulings: Vec<(f64, f64)>,
-    /// Per interval between two of `rulings`, whether it lies in a stepped
-    /// stretch ([`Path`]).
-    stepped: Vec<bool>,
 }
 
 impl Rail {
@@ -1809,6 +1717,162 @@ impl Rail {
 /// Most starts on the second rail a tube is tried from ([`tube`]).
 const MAX_TUBE_STARTS: usize = 16;
 
+/// Most points a closed rail is sampled at for the checks of a tube
+/// ([`loop_samples`]).
+const MAX_LOOP_SAMPLES: usize = 4096;
+
+/// Points along a rail, evenly in its parameter: 64 per piece, at most
+/// [`MAX_LOOP_SAMPLES`], both ends included.
+fn loop_samples(rail: &Rail) -> Vec<(f64, Vec3)> {
+    let n = rail
+        .pieces
+        .len()
+        .saturating_mul(64)
+        .clamp(16, MAX_LOOP_SAMPLES);
+    (0..=n)
+        .filter_map(|k| {
+            let s = rail.len() * k as f64 / n as f64;
+            rail.point(s).map(|p| (s, p))
+        })
+        .collect()
+}
+
+/// The distance from `p` to `rail` and the parameter where it is
+/// nearest: from the nearest of `samples`, refined by Newton within the
+/// stretches beside it.
+fn distance_to(rail: &Rail, samples: &[(f64, Vec3)], p: Vec3) -> Option<(f64, f64)> {
+    let (k, _) = samples
+        .iter()
+        .enumerate()
+        .min_by(|x, y| x.1.1.distance(p).total_cmp(&y.1.1.distance(p)))?;
+    let (s, _) = *samples.get(k)?;
+    let lo = k
+        .checked_sub(1)
+        .and_then(|j| samples.get(j))
+        .map_or(s, |x| x.0);
+    let hi = samples.get(k + 1).map_or(s, |x| x.0);
+    let at = rail.nearest(p, s, lo, hi);
+    let d = rail.point(at)?.distance(p);
+    d.is_finite().then_some((d, at))
+}
+
+/// Where two closed rails come within the tolerance of each other, if
+/// they do: from each local minimum of the distance of `b`'s samples to
+/// `a`, the nearest points of the two curves are found by projecting from
+/// one onto the other in turn (which converges to where two curves cross,
+/// as well as to where they touch).
+fn touching(
+    a: &Rail,
+    samples_a: &[(f64, Vec3)],
+    b: &Rail,
+    samples_b: &[(f64, Vec3)],
+    tol: f64,
+) -> Option<Vec3> {
+    let d: Vec<Option<(f64, f64)>> = samples_b
+        .iter()
+        .map(|(_, p)| distance_to(a, samples_a, *p))
+        .collect();
+    let n = d.len();
+    for k in 0..n {
+        let here = d.get(k).copied().flatten();
+        let Some((dk, sk)) = here else {
+            continue;
+        };
+        // The samples wrap round (the first and the last are one point).
+        let before = d
+            .get(if k == 0 { n.saturating_sub(2) } else { k - 1 })
+            .copied()
+            .flatten()
+            .map_or(f64::INFINITY, |x| x.0);
+        let after = d
+            .get(if k + 1 >= n { 1 } else { k + 1 })
+            .copied()
+            .flatten()
+            .map_or(f64::INFINITY, |x| x.0);
+        if dk > before || dk > after {
+            continue;
+        }
+        let (Some(&(t0, _)), step) = (samples_b.get(k), b.len() / samples_b.len().max(1) as f64)
+        else {
+            continue;
+        };
+        let step_a = a.len() / samples_a.len().max(1) as f64;
+        let (mut s, mut t) = (sk, t0);
+        for _ in 0..64 {
+            let (Some(pa), Some(pb)) = (a.point(s), b.point(t)) else {
+                break;
+            };
+            if pa.distance(pb) <= tol {
+                return Some(pa);
+            }
+            t = b.nearest(pa, t, (t - step).max(0.0), (t + step).min(b.len()));
+            let Some(pb) = b.point(t) else {
+                break;
+            };
+            s = a.nearest(pb, s, (s - step_a).max(0.0), (s + step_a).min(a.len()));
+        }
+    }
+    None
+}
+
+/// The winding number of the closed rail `rail` about the point `q`, in
+/// the plane of `frame`, where `q` lies `d` (more than zero) from the
+/// rail: the sum of the angles the rail turns through about `q`, over
+/// stretches shorter than `d / 2`, along each of which the angle is that
+/// between its ends (a stretch shorter than its distance from `q` does not
+/// pass round it). `None` when that needs more than `2¹⁶` stretches.
+fn winding(rail: &Rail, frame: &Frame, q: Vec3, d: f64) -> Option<i64> {
+    if !(d > 0.0 && d.is_finite()) {
+        return None;
+    }
+    let (qx, qy, _) = frame.local(q);
+    let flat = |s: f64| -> Option<(f64, f64)> {
+        let (x, y, _) = frame.local(rail.point(s)?);
+        Some((x - qx, y - qy))
+    };
+    let mut total = 0.0;
+    let mut stack: Vec<(f64, f64)> = (0..rail.pieces.len())
+        .rev()
+        .map(|k| (k as f64, k as f64 + 1.0))
+        .collect();
+    let mut count = 0usize;
+    while let Some((s0, s1)) = stack.pop() {
+        count += 1;
+        if count > 1 << 16 {
+            return None;
+        }
+        if rail.length_between(s0, s1) >= 0.5 * d {
+            let m = 0.5 * (s0 + s1);
+            stack.push((m, s1));
+            stack.push((s0, m));
+            continue;
+        }
+        let (u, w) = (flat(s0)?, flat(s1)?);
+        total += (u.0 * w.1 - u.1 * w.0).atan2(u.0 * w.0 + u.1 * w.1);
+    }
+    let turns = total / std::f64::consts::TAU;
+    turns.is_finite().then(|| turns.round() as i64)
+}
+
+/// The signed area a closed rail's samples enclose in the plane of
+/// `frame` (positive when they run counterclockwise about its z).
+fn signed_area(samples: &[(f64, Vec3)], frame: &Frame) -> f64 {
+    let flat: Vec<(f64, f64)> = samples
+        .iter()
+        .map(|(_, p)| {
+            let (x, y, _) = frame.local(*p);
+            (x, y)
+        })
+        .collect();
+    0.5 * flat
+        .windows(2)
+        .map(|w| match w {
+            [(x0, y0), (x1, y1)] => x0 * y1 - x1 * y0,
+            _ => 0.0,
+        })
+        .sum::<f64>()
+}
+
 /// The developable tube between two closed rails (2026-10-28). The square
 /// of the two rails' parameters is a torus here, and the developable is a
 /// path along the zero set of the condition that goes once round both:
@@ -1830,6 +1894,24 @@ const MAX_TUBE_STARTS: usize = 16;
 /// the shortest segment from `A(0)` to `B`.
 fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError> {
     let tol = tolerance.linear;
+    let (samples_a, samples_b) = (loop_samples(a), loop_samples(b));
+    let farthest = |from: &[(f64, Vec3)], to: &Rail, to_samples: &[(f64, Vec3)]| {
+        from.iter()
+            .filter_map(|(_, p)| distance_to(to, to_samples, *p).map(|(d, _)| (d, *p)))
+            .max_by(|p, q| p.0.total_cmp(&q.0))
+    };
+    let (Some((far_b, qb)), Some((far_a, qa))) = (
+        farthest(&samples_b, a, &samples_a),
+        farthest(&samples_a, b, &samples_b),
+    ) else {
+        return Err(no_point());
+    };
+    if far_b <= tol && far_a <= tol {
+        return Err(refused(
+            "the two closed curves are the same (each lies within the tolerance of the other)"
+                .to_string(),
+        ));
+    }
     let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
     let (Some((a0, d_start)), Some((_, d_end))) =
         (a.at_side(0.0, false), a.at_side(a.len(), false))
@@ -1849,6 +1931,35 @@ fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelEr
         b.length_between(0.0, b.len()),
     );
     if let Some(frame) = common_plane(a, b, tol) {
+        // A flat ring lies between two loops one inside the other that do
+        // not touch, run the same way round.
+        if let Some(at) = touching(a, &samples_a, b, &samples_b, tol) {
+            return Err(refused(format!(
+                "the two closed curves lie in one plane and touch or cross each other at {}: a flat ring lies between two loops one inside the other",
+                fmt_point(at)
+            )));
+        }
+        let (Some(around_b), Some(around_a)) =
+            (winding(a, &frame, qb, far_b), winding(b, &frame, qa, far_a))
+        else {
+            return Err(refused(
+                "the two closed curves lie in one plane, and whether one encloses the other could not be told".to_string(),
+            ));
+        };
+        if around_b == 0 && around_a == 0 {
+            return Err(refused(
+                "the two closed curves lie in one plane and neither encloses the other: a flat ring lies between two loops one inside the other".to_string(),
+            ));
+        }
+        let (area_a, area_b) = (
+            signed_area(&samples_a, &frame),
+            signed_area(&samples_b, &frame),
+        );
+        if !(area_a * area_b > 0.0) {
+            return Err(refused(
+                "the two closed curves lie in one plane and run opposite ways round: draw them the same way round for the flat ring between them".to_string(),
+            ));
+        }
         // The point of B nearest A(0), from the nearest of its samples.
         let samples = b.pieces.len() * 64;
         let start = (0..samples)
@@ -2052,7 +2163,6 @@ fn along_pair(
     } else if first.is_some() {
         path.points.insert(0, (0.0, 0.0));
         path.fan_after.insert(0, false);
-        path.stepped_after.insert(0, false);
         path.break_at.insert(0, false);
     }
     let &(ex, ey) = path.points.last().ok_or_else(no_point)?;
@@ -2126,7 +2236,6 @@ fn along_pair(
                 to: ta,
             },
             rulings: Vec::new(),
-            stepped: Vec::new(),
         }),
         Start::FromB(_) => strips.push(Strip {
             piece: Piece::StartFan,
@@ -2141,14 +2250,13 @@ fn along_pair(
                 to: 0.0,
             },
             rulings: Vec::new(),
-            stepped: Vec::new(),
         }),
         Start::Corner => {}
     }
     strips.extend(middle_strips(
+        pair,
         &rulings,
         &path.fan_after,
-        &path.stepped_after,
         &path.break_at,
     ));
     match end {
@@ -2165,7 +2273,6 @@ fn along_pair(
                 to: b.len(),
             },
             rulings: Vec::new(),
-            stepped: Vec::new(),
         }),
         Some(Start::FromB(_)) => strips.push(Strip {
             piece: Piece::EndFan,
@@ -2180,7 +2287,6 @@ fn along_pair(
                 to: b.len(),
             },
             rulings: Vec::new(),
-            stepped: Vec::new(),
         }),
         _ => {}
     }
@@ -2221,11 +2327,6 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
     };
     let mut out = Path::default();
     out.push(head);
-    if path.stepped_after.first().copied().unwrap_or(false)
-        && let Some(f) = out.stepped_after.last_mut()
-    {
-        *f = true;
-    }
     let mut fixed_out = vec![path.fixed(0)];
     // The length of the last stretch kept that is not a fan.
     let mut last_stretch: Option<f64> = None;
@@ -2248,11 +2349,6 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
             fixed_out.push(fixed);
             if path.fan_after.get(k).copied().unwrap_or(false)
                 && let Some(f) = out.fan_after.last_mut()
-            {
-                *f = true;
-            }
-            if path.stepped_after.get(k).copied().unwrap_or(false)
-                && let Some(f) = out.stepped_after.last_mut()
             {
                 *f = true;
             }
@@ -2284,32 +2380,77 @@ fn thinned(pair: &Pair, path: Path, tol: f64) -> Path {
         }
         out.points.remove(n - 2);
         out.fan_after.remove(n - 2);
-        out.stepped_after.remove(n - 2);
         out.break_at.remove(n - 2);
         fixed_out.remove(n - 2);
     }
     out
 }
 
-/// The faces between the start and the end: the path split at its fans,
-/// each run of rulings a face and each fan a face. The first run of
-/// rulings is [`Piece::Rulings`]; every other face, in order along the
-/// rails, is [`Piece::Inner`] with its number.
+/// What lies between two runs of rulings while the faces are put in order
+/// ([`middle_strips`]): a fan (at a fold or from a corner), or a parting at
+/// a corner (no fan, or a crease).
+enum Item {
+    Run(Strip),
+    Fan(Strip, Place),
+    Part(Place),
+}
+
+/// Where a fan or a parting is, before the folds are counted: a fold at
+/// the given place along the sheet (the mean of the unit parameters of
+/// its first ruling), or a corner of a rail ([`Mark::Corner`]).
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    Fold(f64),
+    Corner { rail: u8, source: u64 },
+}
+
+/// The corner of `rail` (0 for A, 1 for B) at the rail parameter `s`, if
+/// `s` is one of its corners: the [`Mark::Corner`] of the piece after it.
+fn corner_at(pair: &Pair, rail: u8, s: f64) -> Option<Place> {
+    let (r, corners) = if rail == 0 {
+        (pair.a, &pair.corners_a)
+    } else {
+        (pair.b, &pair.corners_b)
+    };
+    let len = r.len();
+    let joint = s.round();
+    if (s - joint).abs() > 1e-9 * len.max(1.0)
+        || !corners
+            .iter()
+            .any(|c| (c * len - joint).abs() <= 1e-9 * len.max(1.0))
+    {
+        return None;
+    }
+    let piece = r.pieces.get(joint as usize)?;
+    Some(Place::Corner {
+        rail,
+        source: piece.source,
+    })
+}
+
+/// The faces between the start and the end: the path split at its fans
+/// and where the faces part, each run of rulings a face and each fan a
+/// face, named by place ([`Piece`]): the first run of rulings is
+/// [`Piece::Rulings`] and the run that reaches the end [`Piece::Last`]; a
+/// fan from a corner is named by the corner, a fan at a fold by its count
+/// from the nearer end of the sheet (the folds in the first half from the
+/// start, those in the second half from the end); a run between them by
+/// the corner or the fold counted from the start before it, or else by
+/// the fold counted from the end after it. A fold that appears or goes at
+/// one end, or between, so leaves the names at the other end as they
+/// were, and the faces that hold the sheet's ends keep theirs.
 fn middle_strips(
+    pair: &Pair,
     rulings: &[(f64, f64)],
     fan_after: &[bool],
-    stepped_after: &[bool],
     break_at: &[bool],
 ) -> Vec<Strip> {
-    let mut strips: Vec<Strip> = Vec::new();
+    let mut items: Vec<Item> = Vec::new();
     let mut run: Vec<(f64, f64)> = Vec::new();
-    // The stepped flags of the run's intervals.
-    let mut flags: Vec<bool> = Vec::new();
-    let close = |run: &mut Vec<(f64, f64)>, flags: &mut Vec<bool>, strips: &mut Vec<Strip>| {
-        let stepped = std::mem::take(flags);
+    let close = |run: &mut Vec<(f64, f64)>, items: &mut Vec<Item>| {
         if let (Some(&(s0, t0)), Some(&(s1, t1)), true) = (run.first(), run.last(), run.len() >= 2)
         {
-            strips.push(Strip {
+            items.push(Item::Run(Strip {
                 piece: Piece::Rulings,
                 lower: Row {
                     side: 0,
@@ -2322,68 +2463,143 @@ fn middle_strips(
                     to: t1,
                 },
                 rulings: std::mem::take(run),
-                stepped,
-            });
+            }));
         }
         run.clear();
     };
+    let unit = |(s, t): (f64, f64)| 0.5 * (s / pair.a.len() + t / pair.b.len());
     for (k, &p) in rulings.iter().enumerate() {
-        if !run.is_empty() {
-            flags.push(
-                k.checked_sub(1)
-                    .and_then(|j| stepped_after.get(j))
-                    .copied()
-                    .unwrap_or(false),
-            );
-        }
         run.push(p);
         // The faces part here: the run ends and the next starts at `p`.
         if break_at.get(k).copied().unwrap_or(false)
             && !fan_after.get(k).copied().unwrap_or(false)
             && k + 1 < rulings.len()
         {
-            close(&mut run, &mut flags, &mut strips);
+            close(&mut run, &mut items);
+            let place = corner_at(pair, 0, p.0)
+                .or_else(|| corner_at(pair, 1, p.1))
+                .unwrap_or(Place::Fold(unit(p)));
+            items.push(Item::Part(place));
             run.push(p);
             continue;
         }
         if fan_after.get(k).copied().unwrap_or(false)
             && let Some(&q) = rulings.get(k + 1)
         {
-            close(&mut run, &mut flags, &mut strips);
+            close(&mut run, &mut items);
             // At one `t` (apex on B) or at one `s` (apex on A).
-            let (lower, upper) = if p.1 == q.1 {
+            let apex_on_b = p.1 == q.1;
+            let (lower, upper) = if apex_on_b {
                 ((p.0, q.0), (p.1, p.1))
             } else {
                 ((p.0, p.0), (p.1, q.1))
             };
-            strips.push(Strip {
-                piece: Piece::Inner(0),
-                lower: Row {
-                    side: 0,
-                    from: lower.0,
-                    to: lower.1,
+            let place = if apex_on_b {
+                corner_at(pair, 1, p.1)
+            } else {
+                corner_at(pair, 0, p.0)
+            }
+            .unwrap_or(Place::Fold(unit(p)));
+            items.push(Item::Fan(
+                Strip {
+                    piece: Piece::Rulings,
+                    lower: Row {
+                        side: 0,
+                        from: lower.0,
+                        to: lower.1,
+                    },
+                    upper: Row {
+                        side: 1,
+                        from: upper.0,
+                        to: upper.1,
+                    },
+                    rulings: Vec::new(),
                 },
-                upper: Row {
-                    side: 1,
-                    from: upper.0,
-                    to: upper.1,
-                },
-                rulings: Vec::new(),
-                stepped: Vec::new(),
-            });
+                place,
+            ));
         }
     }
-    close(&mut run, &mut flags, &mut strips);
-    // Numbered in order, the first run of rulings apart.
-    let mut first = true;
-    let mut number = 0;
-    for strip in &mut strips {
-        if first && !strip.rulings.is_empty() {
-            strip.piece = Piece::Rulings;
-            first = false;
-        } else {
-            strip.piece = Piece::Inner(number);
-            number += 1;
+    close(&mut run, &mut items);
+    // The marks: folds in the first half counted from the start, those in
+    // the second from the end.
+    let places: Vec<Option<Place>> = items
+        .iter()
+        .map(|item| match item {
+            Item::Run(_) => None,
+            Item::Fan(_, place) | Item::Part(place) => Some(*place),
+        })
+        .collect();
+    let folds: Vec<(usize, f64)> = places
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match p {
+            Some(Place::Fold(at)) => Some((i, *at)),
+            _ => None,
+        })
+        .collect();
+    let mut marks: Vec<Option<Mark>> = places
+        .iter()
+        .map(|p| match p {
+            Some(Place::Corner { rail, source }) => Some(Mark::Corner {
+                rail: *rail,
+                source: *source,
+            }),
+            _ => None,
+        })
+        .collect();
+    let mut from_start = 0u32;
+    for &(i, at) in &folds {
+        if at < 0.5
+            && let Some(m) = marks.get_mut(i)
+        {
+            *m = Some(Mark::FoldFromStart(from_start));
+            from_start = from_start.saturating_add(1);
+        }
+    }
+    let mut from_end = 0u32;
+    for &(i, at) in folds.iter().rev() {
+        if at >= 0.5
+            && let Some(m) = marks.get_mut(i)
+        {
+            *m = Some(Mark::FoldFromEnd(from_end));
+            from_end = from_end.saturating_add(1);
+        }
+    }
+    let runs: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| matches!(item, Item::Run(_)).then_some(i))
+        .collect();
+    let (first_run, last_run) = (runs.first().copied(), runs.last().copied());
+    let mut strips = Vec::with_capacity(items.len());
+    for (i, item) in items.into_iter().enumerate() {
+        match item {
+            Item::Part(_) => {}
+            Item::Fan(mut strip, _) => {
+                if let Some(Some(mark)) = marks.get(i) {
+                    strip.piece = Piece::Fan(*mark);
+                }
+                strips.push(strip);
+            }
+            Item::Run(mut strip) => {
+                strip.piece = if Some(i) == first_run {
+                    Piece::Rulings
+                } else if Some(i) == last_run {
+                    Piece::Last
+                } else {
+                    let before = marks.get(..i).and_then(|m| m.iter().rev().flatten().next());
+                    let after = marks.get(i + 1..).and_then(|m| m.iter().flatten().next());
+                    match (before, after) {
+                        (Some(m @ (Mark::Corner { .. } | Mark::FoldFromStart(_))), _) => {
+                            Piece::After(*m)
+                        }
+                        (_, Some(m)) => Piece::Before(*m),
+                        (Some(m), None) => Piece::After(*m),
+                        (None, None) => Piece::Rulings,
+                    }
+                };
+                strips.push(strip);
+            }
         }
     }
     strips
@@ -2414,12 +2630,8 @@ fn ruling_twist_side(pair: &Pair, x: f64, y: f64, before_a: bool, before_b: bool
 }
 
 /// The angle by which the tangent plane turns along the ruling at
-/// `(x, y)` ([`ruling_twist`]) and the ruling's length.
-fn ruling_turn(pair: &Pair, x: f64, y: f64) -> Option<(f64, f64)> {
-    ruling_turn_side(pair, x, y, false, false)
-}
-
-/// [`ruling_turn`] on the given sides of joints.
+/// `(x, y)` ([`ruling_twist`]) and the ruling's length, on the given sides
+/// of joints.
 fn ruling_turn_side(
     pair: &Pair,
     x: f64,
@@ -2540,7 +2752,6 @@ fn planar(
             to: b.len(),
         },
         rulings: vec![(0.0, 0.0), (a.len(), b.len())],
-        stepped: vec![false],
     }];
     // The plane faces the way the loop (A forward, B back) runs round
     // (Newell's normal of its points), so no surface is fitted at all.
@@ -2668,26 +2879,8 @@ fn build(
     let mut surfaces = Vec::with_capacity(strips.len());
     let mut deviation: f64 = 0.0;
     let mut all_rulings = Vec::new();
-    let mut stepped_stretches = Vec::new();
     for strip in &strips {
         let mut rulings = strip_rulings(strip, 16);
-        // Per interval, for one in a stepped stretch, the stretch's extent
-        // along the rails (kept by both halves when it is cut).
-        let mut extents: Vec<Option<f64>> = rulings
-            .windows(2)
-            .enumerate()
-            .map(|(k, w)| match w {
-                [(s0, t0), (s1, t1)] if strip.stepped.get(k).copied().unwrap_or(false) => {
-                    stepped_stretches.push(((*s0, *t0), (*s1, *t1)));
-                    Some(
-                        pair.a
-                            .length_between(s0.min(*s1), s0.max(*s1))
-                            .max(pair.b.length_between(t0.min(*t1), t0.max(*t1))),
-                    )
-                }
-                _ => None,
-            })
-            .collect();
         let mut fit = None;
         for _round in 0..MAX_ROUNDS {
             let points: Vec<(Vec3, Vec3)> = rulings
@@ -2713,11 +2906,8 @@ fn build(
                     return Err(no_point());
                 };
                 let um = 0.5 * (u0 + u1);
-                let extent = extents.get(k).copied().flatten();
-                let true_ruling = if strip.rulings.is_empty() || extent.is_some() {
-                    // Along a fan, and across a stepped stretch (no ruling
-                    // there satisfies the condition), the rulings are
-                    // interpolated.
+                let true_ruling = if strip.rulings.is_empty() {
+                    // Along a fan, the rulings are interpolated.
                     Some((0.5 * (s0 + s1), 0.5 * (t0 + t1)))
                 } else {
                     let (x, y) = (
@@ -2783,14 +2973,9 @@ fn build(
                     // the tolerance: within the tolerance of a surface
                     // whose rulings keep their tangent plane.
                     let fitted = Surface::Nurbs(surface.clone());
-                    // Across a stepped stretch, the stretch of laying it
-                    // flat instead ([`stepped_stretch`]).
                     if let (Some(n0), Some(n1)) = (fitted.normal(um, 0.0), fitted.normal(um, 1.0)) {
                         let turn = n0.cross(n1).length().atan2(n0.dot(n1));
-                        off = off.max(match extent {
-                            Some(e) => turn * turn * e / 8.0,
-                            None => turn * pa.distance(pb),
-                        });
+                        off = off.max(turn * pa.distance(pb));
                     }
                     // The true ruling's middle against the surface.
                     let middle = pa.lerp(pb, 0.5);
@@ -2886,12 +3071,6 @@ fn build(
             }
             for (at, ruling) in added.into_iter().rev() {
                 rulings.insert(at, ruling);
-                let inherited = at
-                    .checked_sub(1)
-                    .and_then(|k| extents.get(k))
-                    .copied()
-                    .flatten();
-                extents.insert(at.min(extents.len()), inherited);
             }
         }
         let surface = fit.ok_or_else(|| {
@@ -2914,7 +3093,7 @@ fn build(
         }
         surfaces.push(Surface::Nurbs(surface));
     }
-    let mut made = sheet(
+    sheet(
         pair,
         &strips,
         surfaces,
@@ -2922,9 +3101,7 @@ fn build(
         tips,
         deviation,
         all_rulings,
-    )?;
-    made.stepped = stepped_stretches;
-    Ok(made)
+    )
 }
 
 /// How far the fitted face's tangent plane along its end ruling `(s, t)`
@@ -3182,6 +3359,5 @@ fn sheet(
         curvature,
         planar: false,
         reversed_b: false,
-        stepped: Vec::new(),
     })
 }

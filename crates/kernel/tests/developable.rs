@@ -17,8 +17,8 @@
 
 use craft3d_geom::refine::{interpolate, piece, reparametrized};
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Sphere, Surface};
-use craft3d_kernel::developable::{Connected, Piece, Rail, RailPiece, connect};
-use craft3d_kernel::unfold::develop;
+use craft3d_kernel::developable::{Connected, Mark, Piece, Rail, RailPiece, connect};
+use craft3d_kernel::unfold::{DEVELOPABLE_SHARE, develop, face_curvature};
 use craft3d_kernel::{KernelError, primitives};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, FaceId};
@@ -131,7 +131,7 @@ fn rails_on_a_cone_are_joined_through_its_apex_with_a_fan_where_the_rail_starts_
                 off.length()
             );
         }
-        assert!(made.curvature * k * k < 1e-4, "K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         // The spline starts at about 0.3 rad, the arc at 0.2, and ends at
         // 2.0 past the spline's 1.9: fans from the spline's ends, to the
         // arc's points at the spline's ends' angles.
@@ -199,7 +199,7 @@ fn a_curve_and_a_differently_drawn_translate_are_joined_by_parallel_rulings() {
             let d = (at(&b, t).0 - at(&a, s).0).normalized().unwrap();
             assert!(d.cross(along).length() < 1e-6, "a ruling is off the shift");
         }
-        assert!(made.curvature * k * k < 1e-4, "K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         let dev = develop(&made.body, &[FaceId(0)], &tol(k)).unwrap();
         let e = dev.error();
         assert!(e.area < 1e-6 && e.length < 1e-6, "{e:?}");
@@ -216,7 +216,7 @@ fn coaxial_arcs_give_a_cone_and_rails_drawn_the_other_way_are_turned() {
         assert_eq!(made.faces, vec![Piece::Rulings]);
         assert!(!made.reversed_b);
         assert!(made.deviation <= 0.5e-6 * k, "deviation {}", made.deviation);
-        assert!(made.curvature * k * k < 1e-6, "K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         for &(s, t) in &made.rulings {
             assert!((s - t).abs() < 1e-7, "a coaxial ruling at ({s}, {t})");
         }
@@ -534,7 +534,7 @@ fn a_generalised_cylinder_whose_section_inflects_is_joined_through_the_inflectio
                     d.cross(n).length()
                 );
             }
-            assert!(made.curvature * k * k < 1e-6, "K {}", made.curvature);
+            assert_flat_within_tolerance(&made, k);
             let measured = craft3d_topo::mass_properties(&made.body).unwrap().area;
             assert!(
                 (measured - area).abs() <= 1e-6 * area,
@@ -589,12 +589,12 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
         let (a, b) = passing_branches(k);
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
         assert!(
-            made.faces.iter().any(|p| matches!(p, Piece::Inner(_))),
+            made.faces.iter().any(|p| matches!(p, Piece::Fan(_))),
             "{k}: a fan inside the sheet: {:?}",
             made.faces
         );
         check_rulings(&made, &a, &b);
-        assert!(made.curvature * k * k < 1e-6, "K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         // Tangent across every edge two faces share, at its middle.
         let body = &made.body;
         let uses = craft3d_topo::edge_uses(body);
@@ -627,7 +627,7 @@ fn branches_that_pass_each_other_at_an_inflection_are_bridged_by_a_fan() {
         let fan = made
             .faces
             .iter()
-            .position(|p| *p == Piece::Inner(0))
+            .position(|p| matches!(p, Piece::Fan(_)))
             .unwrap();
         let surface = &made.body.faces[fan].surface;
         for u in [0.0, 0.3, 0.7, 1.0] {
@@ -988,6 +988,28 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
     }
 }
 
+/// Every face of the sheet is developable within the tolerance by the
+/// unfold's own estimate (docs/design/developable.md › *Developable within
+/// tolerance*): the stretch of laying it flat from its middle line, from
+/// its largest |K| and its width, at most the share of the tolerance the
+/// unfold's layout must converge to. A bound derived from the tolerance
+/// (2026-10-28, review: `K k² < 1e-6` allowed a stretch of a few
+/// millimetres on a 5 m panel).
+fn assert_flat_within_tolerance(made: &Connected, k: f64) {
+    let limit = DEVELOPABLE_SHARE * tol(k).linear;
+    for f in 0..made.body.faces.len() {
+        let c = face_curvature(&made.body, FaceId(f as u32)).unwrap();
+        assert!(
+            c.stretch <= limit,
+            "{k}: face {f} ({:?}) stretches by {} laid flat (|K| {} at {:?}), more than {limit}",
+            made.faces.get(f),
+            c.stretch,
+            c.largest,
+            c.at
+        );
+    }
+}
+
 /// The sea kayak's sheer panel (`DevTop4S`, 2026-10-28): the developable
 /// between its chine and its sheer, edges of a boolean of the hull, cubic
 /// Hermite splines of 522 and 532 control points (every inner knot double)
@@ -1000,32 +1022,22 @@ fn a_plate_on_a_long_developable_that_tapers_to_a_tip_has_its_closed_form_volume
 /// tolerance), and 1e-7 over 24 mm at the stern (2.4e-6 mm). The walk
 /// stepped from one branch to the other in one step and no ruling could be
 /// put between the two it found: refused, "the rulings between two found
-/// ones cannot be followed". Now the walk approaches such a saddle and
-/// steps over it where the rulings interpolated across lie flat within
-/// the tolerance (a stepped stretch), so the panel is one face, as the
-/// kayak's plate on it (`face(0)`, its edges by number) needs. Held to the
-/// condition at every ruling outside the stepped stretches, rulings that
-/// never cross, no curvature, a fit within half the tolerance; at three
-/// scales (the curves scaled about the origin, at 1 the kayak's own).
+/// ones cannot be followed". Now the walk keeps its step short of such a
+/// saddle, follows its branch into the fold where it turns, and closes the
+/// fold with a fan (Method 4), as every fold: at each end a fan, so the
+/// sheet is five faces named by place (the fan at the bow the first fold
+/// from the start, the one at the stern the first from the end).
 ///
-/// Its unfold is refused (expectation changed 2026-10-28, develop-r1b; it
-/// was to keep every edge's length): a stepped stretch is not developable,
-/// its curvature over the stretch adds up to an angle `δ` (about
-/// `φ² Δ / L` for a plane that turns by `φ` along rulings of length `L`
-/// over a stretch `Δ` along the rails), and by Gauss–Bonnet the images of
-/// the two rails turn by `δ` against each other there: a pattern takes it
-/// as a strain of about `δ L` across the panel, or, laid from one side as
-/// the unfold lays a face, as a turn of the rest of the face by `δ`, which
-/// over the metres beyond it is tens of tolerances (measured: 3e-5 mm at
-/// the kayak's scale, layouts that only halve their difference per
-/// doubling of the grid). The same panel between the rails cut short of
-/// both stepped stretches (3 % to 97 % of each) is laid flat keeping every
-/// edge's length, so the refusal is the stepped stretches', not the
-/// panel's (Gauss–Bonnet and that second sheet are the oracle, not the
-/// code under test). Owed: the approximate flatten with its strain
-/// reported (docs/design/developable.md, Open).
+/// Every face is an exact developable: the condition at every ruling
+/// found, the rulings never cross, each face flat within the tolerance by
+/// the unfold's estimate, the fit within half the tolerance, and the faces
+/// tangent across every edge they share; at three scales (the curves
+/// scaled about the origin, at 1 the kayak's own). The same panel between
+/// the rails cut short of both folds (3 % to 97 % of each) is one face,
+/// laid flat keeping every edge's length (it was the oracle against which
+/// the stepped stretches of develop-r1 failed; review of 2026-10-28).
 #[test]
-fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
+fn rails_whose_condition_has_branches_that_pass_each_other_are_closed_by_fans() {
     let text = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/developable_rails/sea_kayak_sheer.json"),
@@ -1068,29 +1080,26 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
         let (a, b) = (rail_of("A", k, (0.0, 1.0)), rail_of("B", k, (0.0, 1.0)));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
         eprintln!(
-            "{k}: faces {:?}, {} rulings, stepped {:?}, deviation {:e}, K {:e}",
+            "{k}: faces {:?}, {} rulings, deviation {:e}, K {:e}",
             made.faces,
             made.rulings.len(),
-            made.stepped,
             made.deviation,
             made.curvature
         );
-        assert_eq!(made.faces, vec![Piece::Rulings], "{k}");
+        // The rails' ends line up with a ruling within the tolerance here
+        // (no end fans); a fold near each end.
+        assert_eq!(
+            made.faces,
+            vec![
+                Piece::Rulings,
+                Piece::Fan(Mark::FoldFromStart(0)),
+                Piece::After(Mark::FoldFromStart(0)),
+                Piece::Fan(Mark::FoldFromEnd(0)),
+                Piece::Last,
+            ],
+            "{k}"
+        );
         assert!(!made.reversed_b, "{k}");
-        // One stepped stretch by each end, each a few millimetres long.
-        assert_eq!(made.stepped.len(), 2, "{k}: {:?}", made.stepped);
-        for &((s0, t0), (s1, t1)) in &made.stepped {
-            assert!(s1 > s0 && t1 > t0, "{k}");
-            let along = (at(&a, s1).0 - at(&a, s0).0)
-                .length()
-                .max((at(&b, t1).0 - at(&b, t0).0).length());
-            assert!(along < 20.0 * k, "{k}: a stepped stretch {along} long");
-        }
-        let inside = |&(s, t): &(f64, f64)| {
-            made.stepped
-                .iter()
-                .any(|&((s0, t0), (s1, t1))| s > s0 && s < s1 && t > t0 && t < t1)
-        };
         // The end rulings are the corners' (the fans there lie within the
         // tolerance of the strip run on to them, so the strip runs on to
         // the corners as in `a_fan_within_the_tolerance_of_the_strip_beside_it_is_not_made`):
@@ -1102,9 +1111,6 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
         assert_eq!(made.rulings.first(), Some(&(0.0, 0.0)), "{k}");
         assert_eq!(made.rulings.last(), Some(&(1.0, 1.0)), "{k}");
         for (i, ruling) in made.rulings.iter().enumerate() {
-            if inside(ruling) {
-                continue;
-            }
             if i == 0 || i == last {
                 let d = twist(&a, &b, *ruling);
                 assert!(
@@ -1122,28 +1128,73 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
                 .all(|w| w[1].0 >= w[0].0 && w[1].1 >= w[0].1),
             "{k}: rulings are monotone"
         );
-        assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
-        // The stepped panel's unfold is refused, never a pattern off by
-        // more than the tolerance; at the kayak's own scale (each refusal
-        // lays the face on the largest grid, minutes in a debug build).
-        if k == 1.0 {
-            match develop(&made.body, &[FaceId(0)], &tol(k)) {
-                Ok(dev) => panic!("{k}: a stepped sheet laid flat, {:?}", dev.error()),
-                Err(e) => assert!(e.to_string().contains("converge"), "{k}: {e}"),
-            }
+        // Tangent across every edge two faces share, at its middle: the
+        // fans meet the rulings beside them in their tangent planes.
+        let body = &made.body;
+        let mut shared = 0;
+        for (edge, faces) in craft3d_topo::edge_uses(body).iter().enumerate() {
+            let [first, second] = faces.as_slice() else {
+                continue;
+            };
+            shared += 1;
+            let e = &body.edges[edge];
+            let mid = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+            let normal = |use_: &craft3d_topo::EdgeUse| {
+                let face = body.face(use_.face).unwrap();
+                let (u, v) = face.surface.project(mid).unwrap();
+                let n = face.surface.normal(u, v).unwrap();
+                if face.reversed { -n } else { n }
+            };
+            let (n0, n1) = (normal(first), normal(second));
+            // Each face's plane along the shared ruling within half the
+            // tolerance over the ruling's length of the developable's (the
+            // fit's end rule), so the two within the tolerance over it.
+            let length = e.curve.eval(e.range.0).distance(e.curve.eval(e.range.1));
+            let limit = 1e-6 * k / length;
+            assert!(
+                n0.cross(n1).length() <= limit && n0.dot(n1) > 0.0,
+                "{k}: faces {:?} and {:?} meet at an angle of {} rad",
+                first.face,
+                second.face,
+                n0.cross(n1).length()
+            );
         }
-        // Cut short of the stepped stretches: laid flat, every edge keeps
+        assert_eq!(shared, 4, "{k}: {shared} shared edges");
+        // The sheet laid flat as one piece, or refused with the reason.
+        let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
+        match develop(&made.body, &faces, &tol(k)) {
+            Ok(dev) => {
+                let e = dev.error();
+                eprintln!("{k}: the sheer panel unfolded, {e:?}");
+                assert!(e.map <= 1e-6 * k, "{k}: {e:?}");
+                for c in dev.outline() {
+                    assert!(
+                        (c.length_flat - c.length_3d).abs() <= 1e-6 * k,
+                        "{k}: an edge {} long on the part, {} flat",
+                        c.length_3d,
+                        c.length_flat
+                    );
+                }
+            }
+            Err(e) => eprintln!("{k}: the sheer panel's unfold refused: {e}"),
+        }
+        // Cut short of the folds: one face, laid flat, every edge keeps
         // its length.
         let part = (0.03, 0.97);
         let (a, b) = (rail_of("A", k, part), rail_of("B", k, part));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: short: {e}"));
-        assert!(made.stepped.is_empty(), "{k}: {:?}", made.stepped);
+        assert!(
+            made.faces.iter().all(|p| !matches!(p, Piece::Fan(_))),
+            "{k}: {:?}",
+            made.faces
+        );
         let faces: Vec<FaceId> = (0..made.body.faces.len() as u32).map(FaceId).collect();
         let dev =
             develop(&made.body, &faces, &tol(k)).unwrap_or_else(|e| panic!("{k}: short: {e}"));
         let e = dev.error();
-        eprintln!("{k}: short of the stepped stretches, unfolded, {e:?}");
+        eprintln!("{k}: short of the folds, unfolded, {e:?}");
         assert!(e.map <= 1e-6 * k, "{k}: {e:?}");
         for c in dev.outline() {
             assert!(
@@ -1171,7 +1222,7 @@ fn a_fan_is_laid_flat_about_its_apex() {
         let fan = made
             .faces
             .iter()
-            .position(|p| *p == Piece::Inner(0))
+            .position(|p| matches!(p, Piece::Fan(_)))
             .unwrap();
         let surface = &made.body.faces[fan].surface;
         const CHORDS: usize = 1 << 14;
@@ -1359,10 +1410,13 @@ fn a_rail_with_a_corner_is_turned_by_a_fan_from_the_corner() {
         eprintln!("{k}: faces {:?}", made.faces);
         assert_eq!(
             made.faces,
+            // The fan from the corner of B before its second piece, and
+            // the run after it, which reaches the end of A (2026-10-28:
+            // named by place).
             vec![
                 Piece::Rulings,
-                Piece::Inner(0),
-                Piece::Inner(1),
+                Piece::Fan(Mark::Corner { rail: 1, source: 2 }),
+                Piece::Last,
                 Piece::EndFan
             ],
             "{k}"
@@ -1377,7 +1431,7 @@ fn a_rail_with_a_corner_is_turned_by_a_fan_from_the_corner() {
                 .all(|w| w[1].0 >= w[0].0 && w[1].1 >= w[0].1),
             "{k}: rulings are monotone"
         );
-        assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
+        assert_flat_within_tolerance(&made, k);
         // Up to the corner, through the cone's apex at height 2.
         let apex = Vec3::new(0.0, 0.0, 2.0 * k);
         for &(s, t) in made.rulings.iter().filter(|(_, t)| *t < 1.0) {
@@ -1446,7 +1500,7 @@ fn rails_with_a_corner_on_one_ruling_crease_the_sheet_there() {
         };
         let (a, b) = (profile(0.0), profile(w));
         let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
-        assert_eq!(made.faces, vec![Piece::Rulings, Piece::Inner(0)], "{k}");
+        assert_eq!(made.faces, vec![Piece::Rulings, Piece::Last], "{k}");
         for &(s, t) in &made.rulings {
             let ((pa, _), (pb, _)) = (chain_at(&a, s, false), chain_at(&b, t, false));
             let d = pb - pa;
@@ -1593,6 +1647,75 @@ fn closed_rails_give_a_developable_tube() {
 }
 
 /// A closed rail with an open one is refused with the reason.
+/// Two closed rails in one plane: the flat ring between two loops one
+/// inside the other, drawn the same way round, has the area between them
+/// (`π (R² − r²)` for concentric circles, closed form). Two identical
+/// loops, loops side by side, loops that cross and loops drawn opposite
+/// ways round have no ring: refused as given with the reason (review of
+/// 2026-10-28: the plane was taken without these checks); a loop drawn
+/// the other way is then turned, as every rail that only that way gives
+/// a developable (`connect`), and reported so. At three scales.
+#[test]
+fn closed_rails_in_one_plane_give_a_ring_only_when_nested_and_run_alike() {
+    for k in SCALES {
+        let (r_out, r_in) = (2.0 * k, 1.0 * k);
+        let ring = TAU / 2.0 * (r_out * r_out - r_in * r_in);
+        let (a, b) = (
+            loop_rail(0.0, 0.0, 0.0, r_out),
+            loop_rail(0.3 * k, 0.0, 0.0, r_in),
+        );
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert!(made.planar && !made.reversed_b, "{k}");
+        let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+        assert!((area - ring).abs() <= 1e-9 * ring, "{k}: {area} for {ring}");
+        // The inner one first: the same ring.
+        let made = connect(&b, &a, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+        assert!((area - ring).abs() <= 1e-9 * ring, "{k}: {area} for {ring}");
+        // Identical.
+        let e = connect(&a, &a.clone(), &tol(k)).unwrap_err().to_string();
+        assert!(e.contains("are the same"), "{k}: {e}");
+        // Side by side.
+        let apart = loop_rail(5.0 * k, 0.0, 0.0, r_in);
+        let e = connect(&a, &apart, &tol(k)).unwrap_err().to_string();
+        assert!(e.contains("neither encloses the other"), "{k}: {e}");
+        // Crossing.
+        let crossing = loop_rail(2.0 * k, 0.0, 0.0, r_in);
+        let e = connect(&a, &crossing, &tol(k)).unwrap_err().to_string();
+        assert!(e.contains("touch or cross"), "{k}: {e}");
+        // Drawn opposite ways round: turned, the same ring.
+        let opposite = b.reversed();
+        let made = connect(&a, &opposite, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert!(made.planar && made.reversed_b, "{k}");
+        let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+        assert!((area - ring).abs() <= 1e-9 * ring, "{k}: {area} for {ring}");
+    }
+}
+
+/// Two identical closed rails that do not lie in one plane (two half
+/// circles at right angles, end to end) have no tube between them:
+/// refused, not a sheet of rulings of no length. At three scales.
+#[test]
+fn identical_closed_rails_are_refused() {
+    for k in SCALES {
+        let r = 2.0 * k;
+        let flat = Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X).unwrap();
+        let upright = Frame::new(Vec3::ZERO, Vec3::Y, -Vec3::X).unwrap();
+        let a = chain(vec![
+            (
+                Curve3::Circle(Circle::new(flat, r).unwrap()),
+                (0.0, TAU / 2.0),
+            ),
+            (
+                Curve3::Circle(Circle::new(upright, r).unwrap()),
+                (0.0, TAU / 2.0),
+            ),
+        ]);
+        let e = connect(&a, &a.clone(), &tol(k)).unwrap_err().to_string();
+        assert!(e.contains("are the same"), "{k}: {e}");
+    }
+}
+
 #[test]
 fn a_closed_and_an_open_rail_are_refused() {
     let a = loop_rail(0.0, 0.0, 0.0, 1.0);
