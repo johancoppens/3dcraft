@@ -1072,9 +1072,15 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
                 .any(|&((s0, t0), (s1, t1))| s > s0 && s < s1 && t > t0 && t < t1)
         };
         // The end rulings are the corners' (the fans there lie within the
-        // tolerance of the strip run on to them): held to the twist the fit
-        // holds every ruling to.
+        // tolerance of the strip run on to them, so the strip runs on to
+        // the corners as in `a_fan_within_the_tolerance_of_the_strip_beside_it_is_not_made`):
+        // a corner ruling is fixed by the rails' ends, not a root of the
+        // condition, so it is held to the corners exactly and to the twist
+        // the fit holds every ruling to (computed from the tangent planes,
+        // not from the condition).
         let last = made.rulings.len() - 1;
+        assert_eq!(made.rulings.first(), Some(&(0.0, 0.0)), "{k}");
+        assert_eq!(made.rulings.last(), Some(&(1.0, 1.0)), "{k}");
         for (i, ruling) in made.rulings.iter().enumerate() {
             if inside(ruling) {
                 continue;
