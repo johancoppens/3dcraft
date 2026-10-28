@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-28: JavaScript in the web build only as glue (decided by the developer)
+
+The rule "Rust only, no JavaScript or TypeScript" stands, with one bounded exception: the web build may carry small hand-written JavaScript that only loads the wasm module and passes messages, never logic. Today that is the loader in `packaging/web/index.html` and the bootstrap of the checking Web Worker (`packaging/web/worker.js`): a browser starts a worker only from a script URL, so a worker needs such an entry. Everything that decides (what goes to the worker, what comes back, errors, restarts) is Rust. Hiding the same glue in a Rust string (a Blob URL) is not an improvement and is not done. No JS or TS framework, no npm build step, no webview shell.
+
 ### 2026-10-27: Measures in expressions only for outputs and assertions (decided by the developer)
 
 Measure values may be used in expressions, but only in assertions and in read-only **output** variables, never in an input that drives the geometry. That keeps regeneration one way: geometry first, then the measures, then the outputs and the assertions, so a measure can never depend on itself. An output is defined by a measure (`variable.measure`, with the measures and parameters of `assert.add`) or by an expression of the variables and other outputs (`variable.output`); outputs may use each other without a cycle; a measure that fails or is not proven makes its output unknown with the reason, and an assertion that uses it notProven, never a silent number. The sea-kayak Jig's stability, GM = KB + BM − KG from `levelFor`, `centroidBelow` and `sectionInertia`, is then an output with an assertion GM ≥ 0 (`docs/design/verification.md` › *Outputs*).
