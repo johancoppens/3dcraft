@@ -181,7 +181,11 @@ fn the_waterbomb_base_folds_flat_and_a_wrong_assignment_does_not() {
             json!({"fold": "Waterbomb", "set": [{"line": lines[0], "kind": "valley"}]}),
         );
         assert!(why.contains("cannot fold flat"), "{why}");
-        // 180 beside 90 degrees is refused with the reason.
+        // 180 beside 90 degrees is a stack folded on (since 2026-10-28;
+        // it was refused as mixed before): the midline folds the square in
+        // half and the diagonal folds the stack on, which its layers cannot
+        // follow with these kinds (the solved diagonal lies on the folded
+        // diagonal face over and would have to turn the other way).
         let why = failed(
             &mut s,
             "fold.edit",
@@ -189,7 +193,7 @@ fn the_waterbomb_base_folds_flat_and_a_wrong_assignment_does_not() {
                 {"line": lines[0], "kind": "mountain"},
                 {"line": lines[1], "angle": "90 deg"}]}),
         );
-        assert!(why.contains("folds by 180 degrees while"), "{why}");
+        assert!(why.contains("could not be followed"), "{why}");
     }
 }
 
