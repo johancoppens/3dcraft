@@ -97,7 +97,7 @@ fn a_square_folded_in_half_is_folded_again_across() {
             json!({"fold": "Stack", "set": [{"line": right, "kind": "valley"}]}),
         );
         assert!(
-            why.contains("could not be followed") || why.contains("other way"),
+            why.contains("the valley e") && why.contains("other way"),
             "{why}"
         );
     }

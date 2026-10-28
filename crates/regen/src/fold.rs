@@ -466,6 +466,16 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             ),
             None => error.to_string(),
         },
+        FoldError::StackNotFlat { id, why } => format!(
+            "{} is folded by 180 degrees, but a stack folded on needs its 180-degree creases to fold flat on their own: {why}; give the creases it meets 180 degrees too, or fold them less",
+            curve(*id)
+        ),
+        FoldError::StackKind { id, sign } => format!(
+            "the {} {} would have to fold the other way: in the stack folded flat it lies face over (or the stacks fold the other way there), so change its kind to {}, or give it an angle",
+            if *sign > 0.0 { "valley" } else { "mountain" },
+            curve(*id),
+            if *sign > 0.0 { "mountain" } else { "valley" }
+        ),
         other => other.to_string(),
     }
 }

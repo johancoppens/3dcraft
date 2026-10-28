@@ -245,3 +245,114 @@ fn thick_panels_round_vertices() {
     let e = thick_panels(&arr, &folded, &frame(), &panels, &tolerance);
     assert!(matches!(e, Err(FoldError::PanelsMeet(_))), "{e:?}");
 }
+
+/// Two panels that are not neighbours: a strip folded back on itself by
+/// two mountains (towards the panels on the back, clearance above the
+/// thickness so the hinges allow 98.9 degrees). Folded by 90 and 90 the
+/// end panels lie 2 apart, each 0.6 thick on the inside: clear. By 90
+/// and 95 the far end of the last comes up to z = -1.13, its panel to
+/// about -0.53, into the first panel (down to -0.6), while the sheet itself
+/// stays clear: refused, naming the two end facets.
+#[test]
+fn panels_that_are_not_neighbours_pass_through_each_other() {
+    let tol = 1e-9;
+    let tolerance = Tolerance::new(tol, ANGULAR).unwrap();
+    let strip = polygon(&[[-10.0, 0.0], [12.0, 0.0], [12.0, 4.0], [-10.0, 4.0]]);
+    let arr = arrange(
+        &strip,
+        &[
+            crease(10, [0.0, 0.0], [0.0, 4.0], CreaseKind::Mountain),
+            crease(11, [2.0, 0.0], [2.0, 4.0], CreaseKind::Mountain),
+        ],
+        tol,
+    )
+    .unwrap();
+    let first = arr.facet_at([-5.0, 2.0]).unwrap();
+    let last = arr.facet_at([7.0, 2.0]).unwrap();
+    let panels = Panels {
+        thickness: 0.6,
+        clearance: 0.7,
+        side: PanelSide::Back,
+    };
+    let at = |a: f64, b: f64| {
+        let folded = fold(
+            &arr,
+            &angles(&arr, &[(10, a.to_radians()), (11, b.to_radians())]),
+            first,
+            tol,
+            ANGULAR,
+        )
+        .unwrap();
+        assert!(
+            craft3d_kernel::origami::first_meeting(&arr, &folded, tol, ANGULAR)
+                .unwrap()
+                .is_none()
+        );
+        thick_panels(&arr, &folded, &frame(), &panels, &tolerance)
+    };
+    assert!(at(90.0, 90.0).is_ok());
+    let e = at(90.0, 95.0);
+    let mut want = [first, last];
+    want.sort_unstable();
+    assert!(
+        matches!(e, Err(FoldError::PanelsMeet(ref m)) if m.facets == want),
+        "{e:?}"
+    );
+}
+
+/// A panel wholly inside another, no faces meeting: the corner test. A
+/// corner square of 0.2 is turned on edge and set in the middle of the
+/// big panel (placed by hand, not folded).
+#[test]
+fn a_panel_inside_another_is_found_by_its_corner() {
+    use craft3d_kernel::origami::Folded;
+    use craft3d_math::Transform;
+    let tol = 1e-9;
+    let tolerance = Tolerance::new(tol, ANGULAR).unwrap();
+    let square = polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]);
+    let arr = arrange(
+        &square,
+        &[
+            crease(10, [3.8, 0.0], [3.8, 4.0], CreaseKind::Valley),
+            crease(11, [3.8, 0.2], [4.0, 0.2], CreaseKind::Valley),
+        ],
+        tol,
+    )
+    .unwrap();
+    let big = arr.facet_at([2.0, 2.0]).unwrap();
+    let small = arr.facet_at([3.9, 0.1]).unwrap();
+    let panels = Panels {
+        thickness: 0.3,
+        clearance: 0.01,
+        side: PanelSide::Back,
+    };
+    // The small panel's middle to the big one's, turned a quarter about y.
+    let middle = Vec3::new(3.905, 0.095, -0.15);
+    let turn = Transform::rotation(Vec3::Y, std::f64::consts::FRAC_PI_2).unwrap();
+    let inside = Transform::translation(-middle)
+        .then(&turn)
+        .then(&Transform::translation(Vec3::new(2.0, 2.0, -0.15)));
+    let transforms: Vec<Transform> = (0..arr.facets.len())
+        .map(|f| {
+            if f == small {
+                inside
+            } else {
+                Transform::IDENTITY
+            }
+        })
+        .collect();
+    let folded = Folded {
+        transforms,
+        angles: vec![0.0; arr.hinges.len()],
+        gap: 0.0,
+        roots: vec![big],
+        piece: vec![0; arr.facets.len()],
+    };
+    let e = thick_panels(&arr, &folded, &frame(), &panels, &tolerance);
+    let mut want = [big, small];
+    want.sort_unstable();
+    assert!(
+        matches!(e, Err(FoldError::PanelsMeet(ref m)) if m.facets == want && m.kind == craft3d_kernel::origami::FacetMeeting::Through),
+        "{e:?}"
+    );
+}

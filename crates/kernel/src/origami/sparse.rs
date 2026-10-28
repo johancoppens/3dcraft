@@ -479,6 +479,59 @@ impl Pattern {
         vals.get_mut(self.index(i, i)?)
     }
 
+    /// How many unknowns, and how many entries the skyline holds.
+    pub fn unknowns(&self) -> usize {
+        self.of.len()
+    }
+
+    pub fn entries(&self) -> usize {
+        self.len
+    }
+
+    /// The skyline of a dense symmetric `n` × `n` matrix (row-major, old
+    /// order); entries outside the profile are left out.
+    pub fn skyline_of(&self, dense: &[f64], n: usize) -> Vec<f64> {
+        let mut vals = vec![0.0; self.len];
+        for (i, (&f, &s)) in self.first.iter().zip(&self.start).enumerate() {
+            let Some(&ci) = self.of.get(i) else { continue };
+            for j in f..=i {
+                let Some(&cj) = self.of.get(j) else { continue };
+                if let (Some(slot), Some(&v)) = (vals.get_mut(s + j - f), dense.get(ci * n + cj)) {
+                    *slot = v;
+                }
+            }
+        }
+        vals
+    }
+
+    /// Takes the unknowns `out` (old order) out of `vals`: their rows and
+    /// columns 0, their diagonal 1.
+    pub fn decouple(&self, vals: &mut [f64], out: &[usize]) {
+        let gone: std::collections::BTreeSet<usize> = out
+            .iter()
+            .filter_map(|&c| self.at.get(c).copied())
+            .collect();
+        for (i, (&f, &s)) in self.first.iter().zip(&self.start).enumerate() {
+            for j in f..=i {
+                if gone.contains(&i) || gone.contains(&j) {
+                    if let Some(v) = vals.get_mut(s + j - f) {
+                        *v = if i == j { 1.0 } else { 0.0 };
+                    }
+                }
+            }
+        }
+    }
+
+    /// The smallest pivot of factored `vals` among the unknowns not in
+    /// `loose` (infinite with none).
+    pub fn smallest_pivot(&self, vals: &[f64], loose: &[usize]) -> f64 {
+        let out: std::collections::BTreeSet<usize> = loose.iter().copied().collect();
+        (0..self.of.len())
+            .filter(|&i| self.of.get(i).is_some_and(|c| !out.contains(c)))
+            .filter_map(|i| self.index(i, i).and_then(|x| vals.get(x)).copied())
+            .fold(f64::INFINITY, f64::min)
+    }
+
     /// Scales the normal equations to unit diagonal: entry `(i, j)` by
     /// `1 / √(dᵢ dⱼ)`, `diag` in the old order (0 where either is not
     /// positive).

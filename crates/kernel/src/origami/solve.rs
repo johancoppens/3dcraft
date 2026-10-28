@@ -718,45 +718,25 @@ pub fn fold_linkage_with(
                     }
                     Ok(c.quarter.clone().flatten())
                 };
-                // The solved angles in which `a` and `b` are two branches:
-                // they differ by more than the tolerance's angle, and the
-                // difference is half as large at half the step and a
-                // quarter at a quarter (each within a quarter of itself),
-                // as two branches through the flat sheet part. A difference
-                // that does not scale so is one branch solved twice. When
-                // the quarter step cannot be solved the difference is not
-                // explained away: it counts as two branches (refused, never
-                // a silent choice).
+                // The solved angles in which `a` and `b` are two branches
+                // (`parting_angles`): solved again at half and a quarter of
+                // the step, any difference that shrinks is two branches.
                 let parting = |a: &mut Candidate,
                                b: &mut Candidate,
                                budget: &mut Budget|
                  -> Result<Vec<usize>, FoldError> {
-                    let scaling: Vec<usize> = (0..a.solved.len())
-                        .filter(|&i| {
-                            let d = a.solved.get(i).copied().unwrap_or(0.0)
-                                - b.solved.get(i).copied().unwrap_or(0.0);
-                            let h = a.half.get(i).copied().unwrap_or(0.0)
-                                - b.half.get(i).copied().unwrap_or(0.0);
-                            d.abs() > same && (d - 2.0 * h).abs() <= 0.25 * d.abs()
-                        })
-                        .collect();
-                    if scaling.is_empty() {
-                        return Ok(scaling);
-                    }
-                    let (Some(qa), Some(qb)) = (quarter_of(a, budget)?, quarter_of(b, budget)?)
-                    else {
-                        return Ok(scaling);
+                    let diff = |x: &[f64], y: &[f64]| -> Vec<f64> {
+                        x.iter().zip(y).map(|(p, q)| p - q).collect()
                     };
-                    Ok(scaling
-                        .into_iter()
-                        .filter(|&i| {
-                            let d = a.solved.get(i).copied().unwrap_or(0.0)
-                                - b.solved.get(i).copied().unwrap_or(0.0);
-                            let q = qa.get(i).copied().unwrap_or(0.0)
-                                - qb.get(i).copied().unwrap_or(0.0);
-                            (d - 4.0 * q).abs() <= 0.25 * d.abs()
+                    let d = diff(&a.solved, &b.solved);
+                    let h = diff(&a.half, &b.half);
+                    let mut quarter = || -> Result<Option<Vec<f64>>, FoldError> {
+                        Ok(match (quarter_of(a, budget)?, quarter_of(b, budget)?) {
+                            (Some(qa), Some(qb)) => Some(diff(&qa, &qb)),
+                            _ => None,
                         })
-                        .collect())
+                    };
+                    parting_angles(&d, &h, &mut quarter, same)
                 };
                 let mut passed: Vec<Candidate> = Vec::new();
                 let mut parted: Option<Vec<usize>> = None;
@@ -1300,7 +1280,11 @@ fn undetermined(
             .map(|i| p.diagonal_mut(&mut vals, i).map_or(0.0, |d| *d))
             .collect();
         p.scale(&mut vals, &diag);
-        return p.factor(&mut vals, Some(RANK_PIVOT)).ok_or(BROKEN);
+        let scaled = vals.clone();
+        let mut loose = p.factor(&mut vals, Some(RANK_PIVOT)).ok_or(BROKEN)?;
+        let smallest = p.smallest_pivot(&vals, &loose);
+        confirm_rank(p, &scaled, &mut loose, smallest, budget)?;
+        return Ok(loose);
     }
     budget.spend((n as u64).saturating_pow(3))?;
     let (mut gram, _) = normal(rows, n);
@@ -1322,6 +1306,8 @@ fn undetermined(
             }
         }
     }
+    let scaled = gram.clone();
+    let mut smallest = f64::INFINITY;
     let mut loose = Vec::new();
     let mut left: Vec<usize> = (0..n).collect();
     while !left.is_empty() {
@@ -1337,6 +1323,7 @@ fn undetermined(
             loose.extend(left.iter().copied());
             break;
         }
+        smallest = smallest.min(pivot);
         left.remove(at);
         for &i in &left {
             let f = gram.get(i * n + p).copied().unwrap_or(0.0) / pivot;
@@ -1349,7 +1336,136 @@ fn undetermined(
         }
     }
     loose.sort_unstable();
+    if smallest <= CONFIRM_PIVOT && n > 0 {
+        // Confirmed on the same matrix as the sparse test: one clique of
+        // every unknown, its skyline the whole lower triangle.
+        let all: Vec<usize> = (0..n).collect();
+        let p = Pattern::new(n, &[all], budget)?;
+        let vals = p.skyline_of(&scaled, n);
+        confirm_rank(&p, &vals, &mut loose, smallest, budget)?;
+    }
     Ok(loose)
+}
+
+/// A smallest pivot at most this (a million times the rank pivot) is
+/// confirmed by an estimate of the smallest eigenvalue: an elimination,
+/// pivoted or not, can show no small pivot where the matrix is near
+/// singular (Kahan's matrix is the textbook case).
+const CONFIRM_PIVOT: f64 = RANK_PIVOT * 1e6;
+
+/// When the smallest pivot kept (`smallest`) is near the rank pivot,
+/// the smallest eigenvalue of the unit-scaled normal equations `scaled`
+/// (skyline of `p`) with the `loose` unknowns taken out, by inverse
+/// iteration on its factor; at most the rank pivot, the unknowns that
+/// carry its eigenvector (a component at least a tenth of the largest)
+/// are undetermined too. Dense and sparse tests come here with the same
+/// matrix, so they agree on a near dependence their eliminations missed.
+fn confirm_rank(
+    p: &Pattern,
+    scaled: &[f64],
+    loose: &mut Vec<usize>,
+    smallest: f64,
+    budget: &mut Budget,
+) -> Result<(), FoldError> {
+    if smallest > CONFIRM_PIVOT {
+        return Ok(());
+    }
+    let n = p.unknowns();
+    let mut a = scaled.to_vec();
+    p.decouple(&mut a, loose);
+    budget.spend(
+        p.flops
+            .saturating_add(60u64.saturating_mul(p.entries() as u64)),
+    )?;
+    let Some(_) = p.factor(&mut a, None) else {
+        return Ok(());
+    };
+    let out: std::collections::BTreeSet<usize> = loose.iter().copied().collect();
+    let mut x: Vec<f64> = (0..n)
+        .map(|i| if out.contains(&i) { 0.0 } else { 1.0 })
+        .collect();
+    let mut lambda = f64::INFINITY;
+    for _ in 0..60 {
+        let norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !(norm.is_finite() && norm > 0.0) {
+            return Ok(());
+        }
+        x.iter_mut().for_each(|v| *v /= norm);
+        let Some(y) = p.solve(&a, &x) else {
+            return Ok(());
+        };
+        let grow = y.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !(grow.is_finite() && grow > 0.0) {
+            return Ok(());
+        }
+        let next = 1.0 / grow;
+        let settled = (next - lambda).abs() <= 1e-6 * next;
+        lambda = next;
+        x = y;
+        if settled {
+            break;
+        }
+    }
+    if lambda <= RANK_PIVOT {
+        let top = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        for (i, v) in x.iter().enumerate() {
+            if v.abs() >= 0.1 * top && !out.contains(&i) {
+                loose.push(i);
+            }
+        }
+        loose.sort_unstable();
+        loose.dedup();
+    }
+    Ok(())
+}
+
+/// The solved angles in which two solutions of the first step are two
+/// branches, from their differences at the step (`d`), at half of it
+/// (`h`) and, asked only when needed, at a quarter (`quarter`, `None`
+/// when that step could not be solved). A difference of more than `same`
+/// (the tolerances' angle) is the solver's play, one branch solved twice,
+/// only when it does not shrink with the step: at half and at a quarter
+/// it is still at least three quarters as large (the play does not
+/// shrink, it grows as the derivative near the flat sheet gets more
+/// singular). Every difference that shrinks is two branches, whatever
+/// the rate: linear (two slopes), quadratic (two branches tangent at the
+/// flat sheet), as the square root of the step (a pitchfork). A quarter
+/// step that cannot be solved explains nothing away: two branches
+/// (refused, never a silent choice).
+fn parting_angles(
+    d: &[f64],
+    h: &[f64],
+    quarter: &mut dyn FnMut() -> Result<Option<Vec<f64>>, FoldError>,
+    same: f64,
+) -> Result<Vec<usize>, FoldError> {
+    let mut parts = Vec::new();
+    let mut steady = Vec::new();
+    for (i, &di) in d.iter().enumerate() {
+        if !(di.abs() > same) {
+            continue;
+        }
+        let hi = h.get(i).copied().unwrap_or(0.0);
+        if hi.abs() < 0.75 * di.abs() {
+            parts.push(i);
+        } else {
+            steady.push(i);
+        }
+    }
+    if steady.is_empty() {
+        return Ok(parts);
+    }
+    match quarter()? {
+        None => parts.extend(steady),
+        Some(q) => parts.extend(steady.into_iter().filter(|&i| {
+            let (di, qi) = (
+                d.get(i).copied().unwrap_or(0.0),
+                q.get(i).copied().unwrap_or(0.0),
+            );
+            qi.abs() < 0.75 * di.abs()
+        })),
+    }
+    parts.sort_unstable();
+    Ok(parts)
 }
 
 /// The first step's guesses at `step`: every unknown turned its kind's way
@@ -1397,4 +1513,97 @@ fn max_diff(a: &[f64], b: &[f64]) -> f64 {
     a.iter()
         .zip(b)
         .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// One pair of solutions per way of parting: linear, quadratic
+    /// (tangent at the flat sheet), as the square root (a pitchfork), the
+    /// solver's play (not shrinking), a quarter step that cannot be
+    /// solved, and a difference within the tolerances.
+    #[test]
+    fn every_difference_that_shrinks_with_the_step_is_two_branches() {
+        let same = 1e-8;
+        let d = 1e-4;
+        let cases: [(f64, Option<f64>, bool); 6] = [
+            (d / 2.0, Some(d / 4.0), true),
+            (d / 4.0, Some(d / 16.0), true),
+            (d / 2f64.sqrt(), Some(d / 2.0), true),
+            (1.1 * d, Some(1.3 * d), false),
+            (0.9 * d, None, true),
+            (0.9 * d, Some(0.2 * d), true),
+        ];
+        for (h, q, two) in cases {
+            let mut asked = false;
+            let mut quarter = || {
+                asked = true;
+                Ok(q.map(|q| vec![q]))
+            };
+            let parts = parting_angles(&[d], &[h], &mut quarter, same).unwrap();
+            assert_eq!(!parts.is_empty(), two, "h {h} q {q:?}");
+            // The quarter is asked only when the half did not shrink.
+            assert_eq!(asked, h.abs() >= 0.75 * d, "h {h}");
+        }
+        // Within the tolerances: nothing to tell apart (below).
+        let mut never = || -> Result<Option<Vec<f64>>, FoldError> { Ok(None) };
+        assert!(
+            parting_angles(&[1e-9], &[1e-9], &mut never, same)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Kahan's matrix as the loops' derivative: no elimination shows a
+    /// small pivot (unpivoted the smallest is about 2e-6), yet its
+    /// smallest eigenvalue is about 4e-15. The dense and the sparse rank
+    /// tests both confirm by the smallest eigenvalue and name the same
+    /// unknowns.
+    #[test]
+    fn a_near_dependence_no_pivot_shows_is_undetermined_dense_and_sparse_alike() {
+        let n = 100usize;
+        let (c, s) = (1.2f64.cos(), 1.2f64.sin());
+        let rows: Vec<Row> = (0..n)
+            .map(|i| {
+                let scale = s.powi(i as i32);
+                let by = (i..n)
+                    .map(|j| {
+                        let k = if j == i { scale } else { -c * scale };
+                        (j, Vec3::new(k, 0.0, 0.0))
+                    })
+                    .collect();
+                Row {
+                    gap: Vec3::ZERO,
+                    by,
+                }
+            })
+            .collect();
+        let mut budget = Budget(0);
+        let dense = undetermined(&rows, n, None, &mut budget).unwrap();
+        let cliques: Vec<Vec<usize>> = rows
+            .iter()
+            .map(|r| r.by.iter().map(|(j, _)| *j).collect())
+            .collect();
+        let pattern = Pattern::new(n, &cliques, &mut budget).unwrap();
+        let sparse = undetermined(&rows, n, Some(&pattern), &mut budget).unwrap();
+        assert!(
+            !dense.is_empty(),
+            "the dense test misses the near dependence"
+        );
+        assert_eq!(dense, sparse);
+        // A healthy matrix (the identity) has nothing undetermined.
+        let plain: Vec<Row> = (0..n)
+            .map(|i| Row {
+                gap: Vec3::ZERO,
+                by: vec![(i, Vec3::new(1.0, 0.0, 0.0))],
+            })
+            .collect();
+        assert!(
+            undetermined(&plain, n, None, &mut budget)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

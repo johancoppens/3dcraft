@@ -198,6 +198,9 @@ struct Piece {
     a: P2,
     b: P2,
     what: What,
+    /// A side of a slit or a slot (a cut with one facet on both sides):
+    /// its folded edge may end inside a cell.
+    slit: bool,
 }
 
 /// The distance from `p` to the line through `a` along the unit `d`.
@@ -288,9 +291,14 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 a: pa,
                 b: pb,
                 what: What::Fold(k),
+                slit: false,
             });
             continue;
         }
+        let slit = matches!(
+            (arr.face_of.get(2 * e), arr.face_of.get(2 * e + 1)),
+            (Some(Some(x)), Some(Some(y))) if x == y
+        );
         for side in 0..2usize {
             let Some(&Some(f)) = arr.face_of.get(2 * e + side) else {
                 continue;
@@ -302,6 +310,7 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 a: pa,
                 b: pb,
                 what: What::End,
+                slit,
             });
         }
     }
@@ -442,32 +451,38 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
             .collect();
         spans.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.2.cmp(&y.2)));
         let index = lines.len();
-        let mut current: Option<(f64, f64)> = None;
+        let mut current: Option<(f64, f64, bool)> = None;
         let at = |t: f64| [a[0] + d[0] * t, a[1] + d[1] * t];
-        let mut push = |from: f64, to: f64, creases: &mut Vec<Crease>| {
+        let mut push = |from: f64, to: f64, slit: bool, creases: &mut Vec<Crease>| {
             creases.push(Crease {
                 id: u64::try_from(creases.len()).unwrap_or(u64::MAX),
                 start: at(from),
                 end: at(to),
-                // As cuts: a folded edge that ends inside a cell (a slit's
-                // or a slot's) divides nothing there, which the
-                // arrangement allows of a cut only.
-                kind: CreaseKind::Cut,
+                // Only a slit's or a slot's folded edge may end inside a
+                // cell (a cut, which the arrangement allows to divide
+                // nothing); every other folded edge must divide.
+                kind: if slit {
+                    CreaseKind::Cut
+                } else {
+                    CreaseKind::Mountain
+                },
             });
             line_of_crease.push(index);
         };
-        for &(s, e, _) in &spans {
+        for &(s, e, k) in &spans {
+            let slit = pieces.get(k).is_some_and(|p| p.slit);
             current = match current {
-                Some((lo, hi)) if s <= hi + tol => Some((lo, hi.max(e))),
-                Some((lo, hi)) => {
-                    push(lo, hi, &mut creases);
-                    Some((s, e))
+                // A merged line is a slit's only when every piece is.
+                Some((lo, hi, all)) if s <= hi + tol => Some((lo, hi.max(e), all && slit)),
+                Some((lo, hi, all)) => {
+                    push(lo, hi, all, &mut creases);
+                    Some((s, e, slit))
                 }
-                None => Some((s, e)),
+                None => Some((s, e, slit)),
             };
         }
-        if let Some((lo, hi)) = current {
-            push(lo, hi, &mut creases);
+        if let Some((lo, hi, all)) = current {
+            push(lo, hi, all, &mut creases);
         }
         lines.push(Line { a, d, spans });
     }

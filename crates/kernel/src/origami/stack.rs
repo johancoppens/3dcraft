@@ -123,7 +123,15 @@ pub fn fold_stacked(
         .filter(|(c, flat)| **flat || c.kind == CreaseKind::Cut)
         .map(|(c, _)| c.clone())
         .collect();
-    let reduced = arrange(&boundary, &creases, tol)?;
+    // The 180-degree creases must divide the sheet and fold flat on their
+    // own: a stack is the flat state of those creases alone.
+    let reduced = arrange(&boundary, &creases, tol).map_err(|e| match e {
+        FoldError::Dangling { id } => FoldError::StackNotFlat {
+            id,
+            why: "it ends on a crease folded by less than 180 degrees, so the 180-degree creases alone do not divide the sheet into stacks",
+        },
+        other => other,
+    })?;
     let inside = |f: usize| -> Option<[f64; 2]> {
         let facet = arr.facets.get(f)?;
         let rings: Vec<Vec<[f64; 2]>> = std::iter::once(&facet.outer)
@@ -152,7 +160,13 @@ pub fn fold_stacked(
     let fixed_reduced = *in_reduced.get(fixed).ok_or(FoldError::Broken {
         reason: "the fixed facet is missing",
     })?;
-    let flat = fold_flat(&reduced, &reduced_angles, fixed_reduced, tol)?;
+    let flat = fold_flat(&reduced, &reduced_angles, fixed_reduced, tol).map_err(|e| match e {
+        FoldError::NotFlat { id, .. } => FoldError::StackNotFlat {
+            id,
+            why: "the 180-degree creases alone do not meet again round a vertex where creases folded by less meet them too (Kawasaki fails among the 180-degree ones)",
+        },
+        other => other,
+    })?;
     let reduced_layers = layer_order(&reduced, &flat, tol)?;
     let place =
         |f: usize| -> Option<Transform> { flat.transforms.get(*in_reduced.get(f)?).copied() };
@@ -247,7 +261,40 @@ pub fn fold_stacked(
         size: box_.diagonal(),
     };
     // The fixed facet's stack is number 0.
-    let moved = fold_linkage(&link, &joint_angles, 0, tol, angular)?;
+    let moved = match fold_linkage(&link, &joint_angles, 0, tol, angular) {
+        Ok(moved) => moved,
+        Err(e @ (FoldError::WrongWay { .. } | FoldError::NotFollowed { .. })) => {
+            // Which crease's kind stands in the way: the same linkage with
+            // the solved creases free to turn either way; a solved crease
+            // that then turns against its kind is named.
+            let open: Vec<Angle> = joint_angles
+                .iter()
+                .map(|a| match a {
+                    Angle::Free { .. } => Angle::Free { sign: 0.0 },
+                    given => *given,
+                })
+                .collect();
+            let against = fold_linkage(&link, &open, 0, tol, angular)
+                .ok()
+                .and_then(|r| {
+                    joint_angles
+                        .iter()
+                        .zip(&r.angles)
+                        .zip(&link.joints)
+                        .find_map(|((a, &v), j)| match a {
+                            Angle::Free { sign } if *sign != 0.0 && sign * v < -angular => {
+                                Some((j.id, *sign))
+                            }
+                            _ => None,
+                        })
+                });
+            return Err(match against {
+                Some((id, sign)) => FoldError::StackKind { id, sign },
+                None => e,
+            });
+        }
+        Err(e) => return Err(e),
+    };
 
     // Every facet: its flat place, then its stack's motion.
     let (from, to) = (

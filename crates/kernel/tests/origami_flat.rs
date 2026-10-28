@@ -679,6 +679,33 @@ fn a_stack_folded_in_half_is_folded_on_by_a_crossing_crease() {
             })
             .collect();
         let e = fold_stacked(&wrong, &angles, 0, t, ANGULAR);
-        assert!(e.is_err(), "{e:?}");
+        assert!(
+            matches!(e, Err(FoldError::StackKind { id: 12, sign }) if sign > 0.0),
+            "{e:?}"
+        );
+        // A 180-degree crease that ends on one folded by less: the
+        // 180-degree creases alone do not divide the sheet, named.
+        let ends = arrange(
+            &boundary,
+            &[
+                crease(10, [0.0, 0.0], [0.0, s], CreaseKind::Valley),
+                crease(11, [-s, 0.0], [s, 0.0], CreaseKind::Valley),
+            ],
+            t,
+        )
+        .unwrap();
+        let angles: Vec<Angle> = ends
+            .hinges
+            .iter()
+            .map(|h| match ends.creases[h.crease].id {
+                10 => Angle::Given(PI),
+                _ => Angle::Given(PI / 2.0),
+            })
+            .collect();
+        let e = fold_stacked(&ends, &angles, 0, t, ANGULAR);
+        assert!(
+            matches!(e, Err(FoldError::StackNotFlat { id: 10, .. })),
+            "{e:?}"
+        );
     }
 }

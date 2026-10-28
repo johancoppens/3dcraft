@@ -193,7 +193,10 @@ fn the_waterbomb_base_folds_flat_and_a_wrong_assignment_does_not() {
                 {"line": lines[0], "kind": "mountain"},
                 {"line": lines[1], "angle": "90 deg"}]}),
         );
-        assert!(why.contains("could not be followed"), "{why}");
+        assert!(
+            why.contains("would have to fold the other way") && why.contains("valley"),
+            "{why}"
+        );
     }
 }
 

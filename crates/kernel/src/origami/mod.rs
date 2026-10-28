@@ -184,6 +184,13 @@ pub enum FoldError {
     /// Thick panels: the panels of two facets pass through each other or
     /// touch.
     PanelsMeet(Meeting),
+    /// A stack folded on: the 180-degree creases do not fold flat on
+    /// their own, at crease `id`, for the reason given.
+    StackNotFlat { id: u64, why: &'static str },
+    /// A stack folded on: the solved crease `id` of kind `sign` (+1
+    /// valley) would have to fold the other way (it lies face over in its
+    /// stack, or the stacks fold the other way there).
+    StackKind { id: u64, sign: f64 },
     /// The body could not be built: see the reason.
     Build(String),
     /// Folded flat (every crease by 180 degrees), the facets round the
@@ -279,6 +286,14 @@ impl fmt::Display for FoldError {
                 c.facets[0],
                 c.facets[1],
                 c.kind.verb()
+            ),
+            FoldError::StackNotFlat { id, why } => {
+                write!(f, "crease {id} at 180 degrees: {why}")
+            }
+            FoldError::StackKind { id, sign } => write!(
+                f,
+                "crease {id} ({}) would have to fold the other way in the stack",
+                if *sign > 0.0 { "valley" } else { "mountain" }
             ),
             FoldError::Build(reason) => write!(f, "{reason}"),
             FoldError::NotFlat { id, gap } => write!(

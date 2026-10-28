@@ -28,7 +28,9 @@
 //! kinematics; they are owed.
 
 use super::collide::{Placed, meet, polygon_face};
-use super::{Arrangement, FacetMeeting, FoldError, Folded, Meeting, P2, cross, dot, lift, sub};
+use super::{
+    Arrangement, FacetMeeting, FoldError, Folded, Meeting, P2, cross, dist, dot, lift, sub,
+};
 use crate::boxtree::BoxTree;
 use crate::extrude::{OpResult, Origin, Origins, Role, extrude};
 use crate::profile::{Loop2, Profile, Segment, Shape};
@@ -152,18 +154,23 @@ fn shrunk(arr: &Arrangement, f: usize, clearance: f64, tol: f64) -> Result<Rings
         }
         out.push((points, cycle.clone()));
     }
-    // No two edges of the outline cross, and every hole stays inside.
-    let edges: Vec<(P2, P2)> = out
+    // No two edges of the outline meet but neighbours at their shared
+    // corner, and every hole stays inside.
+    let edges: Vec<(P2, P2, usize, usize)> = out
         .iter()
-        .flat_map(|(r, _)| {
+        .enumerate()
+        .flat_map(|(ring, (r, _))| {
             let n = r.len();
-            (0..n).filter_map(move |i| Some((*r.get(i)?, *r.get((i + 1) % n)?)))
+            (0..n).filter_map(move |i| Some((*r.get(i)?, *r.get((i + 1) % n)?, ring, i)))
         })
         .collect();
-    for (i, &(a, b)) in edges.iter().enumerate() {
-        for &(c, d) in edges.iter().skip(i + 1) {
-            if proper_crossing(a, b, c, d) {
-                return Err(refuse("the clearance makes its outline cross itself"));
+    let ring_len = |ring: usize| out.get(ring).map_or(0, |(r, _)| r.len());
+    for (k, &(a, b, ra, ia)) in edges.iter().enumerate() {
+        for &(c, d, rc, ic) in edges.iter().skip(k + 1) {
+            let n = ring_len(ra);
+            let next = ra == rc && (ic == (ia + 1) % n || ia == (ic + 1) % n);
+            if edges_meet(a, b, c, d, next, tol) {
+                return Err(refuse("the clearance makes its outline meet itself"));
             }
         }
     }
@@ -179,15 +186,33 @@ fn shrunk(arr: &Arrangement, f: usize, clearance: f64, tol: f64) -> Result<Rings
     Ok(out)
 }
 
-fn proper_crossing(a: P2, b: P2, c: P2, d: P2) -> bool {
+/// Whether segments `a`–`b` and `c`–`d` meet within `tol`: crossing,
+/// touching (an end on the other) or overlapping along one line. For two
+/// edges that follow each other round a ring (`next`, sharing a corner)
+/// only an overlap beyond that corner counts: the outline turning back
+/// on itself.
+fn edges_meet(a: P2, b: P2, c: P2, d: P2, next: bool, tol: f64) -> bool {
+    let near = |p: P2, q0: P2, q1: P2| super::to_segment(p, q0, q1).0 <= tol;
+    if next {
+        // The shared corner is b = c or d = a; the far end of either on
+        // the other is a turn back.
+        let (far_ab, far_cd) = if dist(b, c) <= dist(d, a) {
+            (a, d)
+        } else {
+            (b, c)
+        };
+        return near(far_ab, c, d) || near(far_cd, a, b);
+    }
     let (r, s) = (sub(b, a), sub(d, c));
     let den = cross(r, s);
-    if den == 0.0 {
-        return false;
+    if den != 0.0 {
+        let w = sub(c, a);
+        let (t, v) = (cross(w, s) / den, cross(w, r) / den);
+        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&v) {
+            return true;
+        }
     }
-    let w = sub(c, a);
-    let (t, v) = (cross(w, s) / den, cross(w, r) / den);
-    t > 1e-12 && t < 1.0 - 1e-12 && v > 1e-12 && v < 1.0 - 1e-12
+    near(a, c, d) || near(b, c, d) || near(c, a, b) || near(d, a, b)
 }
 
 /// The thick panels of a folded crease pattern in the sketch's plane
@@ -423,5 +448,74 @@ fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
                 && blo.z <= ahi.z
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edges_meet;
+
+    #[test]
+    fn edges_meet_when_they_cross_touch_or_overlap() {
+        let t = 1e-9;
+        // Crossing, touching (an end on the other), collinear overlap.
+        assert!(edges_meet(
+            [0.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [2.0, 0.0],
+            false,
+            t
+        ));
+        assert!(edges_meet(
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            false,
+            t
+        ));
+        assert!(edges_meet(
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [1.0, 0.0],
+            [3.0, 0.0],
+            false,
+            t
+        ));
+        // Apart, and parallel apart.
+        assert!(!edges_meet(
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0],
+            false,
+            t
+        ));
+        assert!(!edges_meet(
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            false,
+            t
+        ));
+        // Neighbours meet at their corner only; one turning back overlaps.
+        assert!(!edges_meet(
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            true,
+            t
+        ));
+        assert!(edges_meet(
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.0],
+            [1.0, 0.0],
+            true,
+            t
+        ));
     }
 }
