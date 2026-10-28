@@ -52,17 +52,16 @@ pub struct Panels {
     pub side: PanelSide,
 }
 
+/// A panel's outline: per ring (outer first) its corners and the
+/// half-edge each edge comes from.
+type Rings = Vec<(Vec<P2>, Vec<usize>)>;
+
 /// The most corners one panel's outline may have.
 const MAX_CORNERS: usize = 4096;
 
 /// Each ring of facet `f` (outer first) set back by `clearance` from its
 /// creases and cuts, as points and the half-edge each edge comes from.
-fn shrunk(
-    arr: &Arrangement,
-    f: usize,
-    clearance: f64,
-    tol: f64,
-) -> Result<Vec<(Vec<P2>, Vec<usize>)>, FoldError> {
+fn shrunk(arr: &Arrangement, f: usize, clearance: f64, tol: f64) -> Result<Rings, FoldError> {
     let facet = arr.facets.get(f).ok_or(FoldError::Broken {
         reason: "a facet is missing",
     })?;
@@ -393,7 +392,7 @@ pub fn thick_panels(
 /// meeting.
 fn contained(
     folded: &Folded,
-    rings_of: &[Vec<(Vec<P2>, Vec<usize>)>],
+    rings_of: &[Rings],
     a: usize,
     b: usize,
     depth: f64,
