@@ -213,6 +213,10 @@ const MAX_HALVINGS: usize = 24;
 /// The first step is halved at most this many times.
 const FIRST_HALVINGS: usize = 4;
 const MAX_ITERATIONS: usize = 60;
+/// From this many unknowns the sparse solve is taken below the dense
+/// solve's limit too, where it is cheaper: below, the dense factor costs
+/// at most about 11 000 multiplications, no concern to the budget.
+const SPARSE_FROM: usize = 32;
 /// The most work one fold may do, counted as the multiplications of the
 /// dense factorisations and of the residual evaluations (about 20 s on
 /// a laptop at the worst).
@@ -628,14 +632,19 @@ pub(super) fn fold_linkage_within(
         return Err(FoldError::TooManyFree { count: free.len() });
     }
     // Past `dense_up_to` unknowns the sparse solve: a short cycle basis, its
-    // loops in their own frames, the normal equations as a skyline.
-    let (loops, pattern) = if free.len() > dense_up_to {
+    // loops in their own frames, the normal equations as a skyline. Below
+    // it, from `SPARSE_FROM` unknowns, the sparse solve too where its
+    // factor costs less than a quarter of the dense one (a Miura sheet:
+    // the first step's guesses, every sign pattern of kinds left open,
+    // each a solve, fit the budget only so); `dense_up_to = usize::MAX`
+    // is the dense solve always.
+    let sparse = |budget: &mut Budget| -> Result<(Vec<Chain>, Pattern), FoldError> {
         let fundamental: Vec<Chain> = loops
             .iter()
             .map(|(k, ..)| fundamental_chain(link, &forest, *k))
             .collect::<Option<_>>()
             .ok_or(BROKEN)?;
-        let chains = cycle_basis(link, fundamental, &mut *budget)?;
+        let chains = cycle_basis(link, fundamental, budget)?;
         let cliques: Vec<Vec<usize>> = chains
             .iter()
             .map(|c| {
@@ -645,10 +654,27 @@ pub(super) fn fold_linkage_within(
                     .collect()
             })
             .collect();
-        let pattern = Pattern::new(free.len(), &cliques, &mut *budget)?;
-        (Loops::Chains(chains), Some(pattern))
+        let pattern = Pattern::new(free.len(), &cliques, budget)?;
+        Ok((chains, pattern))
+    };
+    let n = free.len();
+    let chosen = if n > dense_up_to {
+        Some(sparse(&mut *budget)?)
+    } else if dense_up_to != usize::MAX && n >= SPARSE_FROM {
+        let dense = (n as u64).saturating_pow(3) / 3;
+        match sparse(&mut *budget) {
+            Ok((chains, pattern)) if pattern.flops.saturating_mul(4) < dense => {
+                Some((chains, pattern))
+            }
+            Err(FoldError::TooMuchWork) => return Err(FoldError::TooMuchWork),
+            _ => None,
+        }
     } else {
-        (Loops::Tree(loops), None)
+        None
+    };
+    let (loops, pattern) = match chosen {
+        Some((chains, pattern)) => (Loops::Chains(chains), Some(pattern)),
+        None => (Loops::Tree(loops), None),
     };
     let given = |scale: f64| -> Vec<f64> {
         angles
@@ -978,7 +1004,7 @@ pub(super) fn fold_linkage_within(
     }
     let final_rows = rows(link, &forest, &loops, &rho, Some(&column), &mut *budget)?;
     let gap = largest_gap(&final_rows);
-    if !(gap <= tol) {
+    if gap.is_nan() || gap > tol {
         if exhausted {
             return Err(FoldError::NotConverged { gap });
         }
@@ -1658,7 +1684,7 @@ fn error_bound(
     let Some(lambda) = smallest_eigenvalue(p, &vals, budget)? else {
         return Ok(0.0);
     };
-    if !(lambda > RANK_PIVOT) {
+    if lambda.is_nan() || lambda <= RANK_PIVOT {
         return Ok(0.0);
     }
     // The derivative's Lipschitz constant, from above: an entry of row

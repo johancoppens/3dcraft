@@ -1583,7 +1583,10 @@ fn a_slit_edge_running_on_past_a_collinear_edge_stays_a_cut_in_the_layers() {
 /// (311 solved angles) with six zigzag pieces without a kind (sign 0), so
 /// every one of the 5 guesses is tried in all 2⁶ sign patterns, each with
 /// its full and half solves. It folds by its closed form with at least
-/// half of the work budget to spare (the work is printed).
+/// half of the work budget to spare (the work is printed): the sparse
+/// solve is taken, its factor far cheaper than the dense one. Forced
+/// dense, the same fold either folds by its closed form or is refused as
+/// too much work, never anything else.
 #[test]
 fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
     use craft3d_kernel::origami::MAX_WORK;
@@ -1624,9 +1627,28 @@ fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
     );
     assert!(folded.work <= MAX_WORK / 2, "{}", folded.work);
     let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
-    for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
-        let c = &arr.creases[hinge.crease];
-        let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
-        assert!(close(*a, want, 1e-8), "e{} {a} vs {want}", c.id);
+    let holds = |folded: &Folded| {
+        for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
+            let c = &arr.creases[hinge.crease];
+            let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+            assert!(close(*a, want, 1e-8), "e{} {a} vs {want}", c.id);
+        }
+    };
+    holds(&folded);
+    let clock = std::time::Instant::now();
+    match fold_with(&arr, &given, 0, tol(1.0), ANGULAR, usize::MAX) {
+        Ok(dense) => {
+            println!(
+                "forced dense: {} work in {:.3} s",
+                dense.work,
+                clock.elapsed().as_secs_f64()
+            );
+            holds(&dense);
+        }
+        Err(FoldError::TooMuchWork) => println!(
+            "forced dense: too much work after {:.3} s",
+            clock.elapsed().as_secs_f64()
+        ),
+        Err(e) => panic!("{e:?}"),
     }
 }
