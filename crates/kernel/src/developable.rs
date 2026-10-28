@@ -1548,7 +1548,7 @@ fn split_between(pair: &Pair, p: (f64, f64), q: (f64, f64), tolerance: f64) -> b
     let (dx, dy) = model.offset;
     let c = (middle.0 + dx, middle.1 + dy);
     let half = 0.5 * (q.0 - p.0).hypot(q.1 - p.1);
-    if !(dx.hypot(dy) < half) {
+    if dx.hypot(dy).partial_cmp(&half) != Some(std::cmp::Ordering::Less) {
         return false;
     }
     pair.points(c.0, c.1)
@@ -2012,9 +2012,9 @@ fn along_pair(
                 let phi = u * std::f64::consts::FRAC_PI_2;
                 (Start::Corner, Some((r0 * phi.cos(), r0 * phi.sin())))
             }
-            None => (start_fan(&pair)?.0, None),
+            None => (start_fan(pair)?.0, None),
         }
-    } else if corner_reach(&pair) <= tol {
+    } else if corner_reach(pair) <= tol {
         // One test at both ends: a fan that would cover no more than the
         // tolerance of its rail is no fan, and the first ruling is the
         // corner's (as the last is snapped to the far corner, below).
@@ -2025,12 +2025,12 @@ fn along_pair(
     } else {
         // A fan within the tolerance of the strip that would run on to
         // the corner instead is no fan either ([`fan_within_tolerance`]).
-        match start_fan(&pair)? {
+        match start_fan(pair)? {
             (_, covered) if covered <= tol => (Start::Corner, Some((0.0, 0.0))),
-            (Start::FromA(y), _) if fan_within_tolerance(&pair, (0.0, y), (0.0, 0.0), tol) => {
+            (Start::FromA(y), _) if fan_within_tolerance(pair, (0.0, y), (0.0, 0.0), tol) => {
                 (Start::Corner, Some((0.0, 0.0)))
             }
-            (Start::FromB(x), _) if fan_within_tolerance(&pair, (x, 0.0), (0.0, 0.0), tol) => {
+            (Start::FromB(x), _) if fan_within_tolerance(pair, (x, 0.0), (0.0, 0.0), tol) => {
                 (Start::Corner, Some((0.0, 0.0)))
             }
             (kind, _) => (kind, None),
@@ -2039,12 +2039,12 @@ fn along_pair(
     let (kind, first) = start;
     let snapped = matches!(first, Some((0.0, 0.0)));
     let origin = match kind {
-        Start::Corner if snapped => start_root(&pair)?,
+        Start::Corner if snapped => start_root(pair)?,
         Start::Corner => first.unwrap_or((0.0, 0.0)),
         Start::FromA(y) => (0.0, y),
         Start::FromB(x) => (x, 0.0),
     };
-    let mut path = trace(&pair, origin, tol, tips, REACH * tol)?;
+    let mut path = trace(pair, origin, tol, tips, REACH * tol)?;
     if snapped {
         if let Some(head) = path.points.first_mut() {
             *head = (0.0, 0.0);
@@ -2072,9 +2072,9 @@ fn along_pair(
         .unwrap_or(false);
     let rest_within = !ends_in_fan
         && if ex >= 1.0 {
-            fan_within_tolerance(&pair, (1.0, ey), (1.0, 1.0), tol)
+            fan_within_tolerance(pair, (1.0, ey), (1.0, 1.0), tol)
         } else {
-            fan_within_tolerance(&pair, (ex, 1.0), (1.0, 1.0), tol)
+            fan_within_tolerance(pair, (ex, 1.0), (1.0, 1.0), tol)
         };
     let end = if (rest_a <= tol && rest_b <= tol) || rest_within {
         // Snapped to the far corner; a fan that ends there would change
@@ -2095,7 +2095,7 @@ fn along_pair(
     } else {
         Some(Start::FromB(ex))
     };
-    let path = thinned(&pair, path, tol);
+    let path = thinned(pair, path, tol);
     if path.points.len() < 2 {
         return Err(refused(format!(
             "no rulings satisfy the condition between the curves {}",
@@ -2184,7 +2184,7 @@ fn along_pair(
         }),
         _ => {}
     }
-    build(&pair, strips, tolerance, tips)
+    build(pair, strips, tolerance, tips)
 }
 
 /// The path's points as the faces are fitted through them:

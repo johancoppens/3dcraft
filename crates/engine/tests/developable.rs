@@ -275,7 +275,7 @@ fn edge_between(s: &mut Session, feature: &str, a: [f64; 3], b: [f64; 3]) -> Val
 }
 
 #[test]
-fn edges_of_bodies_are_rails_and_closed_ones_are_refused() {
+fn edges_of_bodies_are_rails_and_closed_ones_give_a_tube() {
     let dir = workdir("developable", "edges");
     let mut s = session_in(&dir);
     new_document(&mut s, 1.0);
@@ -298,7 +298,8 @@ fn edges_of_bodies_are_rails_and_closed_ones_are_refused() {
         1e-9,
         "the diagonal plane's area",
     );
-    // A cylinder's rims are closed curves: a tube is not built yet.
+    // A cylinder's rims are closed curves: the tube between them is the
+    // cylinder's side (refused until 2026-10-28, when tubes were built).
     built(
         &mut s,
         "feature.cylinder",
@@ -312,10 +313,15 @@ fn edges_of_bodies_are_rails_and_closed_ones_are_refused() {
         .map(|e| e["name"].clone())
         .collect();
     assert_eq!(rims.len(), 2, "{edges}");
-    let why = failed(
+    built(
         &mut s,
         "feature.developable",
         json!({"a": {"edges": [rims[0]]}, "b": {"edges": [rims[1]]}, "name": "Tube"}),
     );
-    assert!(why.contains("closed"), "{why}");
+    near(
+        number(&body(&mut s, "Tube")["area"]),
+        2.0 * std::f64::consts::PI * 2.0 * 3.0,
+        1e-6,
+        "the cylinder's side",
+    );
 }
