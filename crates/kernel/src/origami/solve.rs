@@ -188,11 +188,16 @@ const FIRST_STEP: f64 = PI / 180.0;
 /// taken is decided by the half-step test, not by the guess.
 const FIRST_GUESSES: [f64; 5] = [1.0, 3.0, 10.0, 30.0, 100.0];
 const FIRST_CAP: f64 = PI * 17.0 / 18.0;
-/// Two solutions of the first step closer than this fraction of their
-/// size are one branch found twice (the solve's play near the flat
-/// sheet, where the derivative is near singular); two branches through
-/// the flat sheet part at the rate of the step.
-const BRANCH_APART: f64 = 1e-3;
+/// A solution of the first step that passed the half-step test: solved at
+/// the step, at half of it and (asked only when it is compared with
+/// another) at a quarter.
+struct Candidate {
+    solved: Vec<f64>,
+    half: Vec<f64>,
+    /// `None` not asked yet; `Some(None)` asked and not solved.
+    quarter: Option<Option<Vec<f64>>>,
+    ran_out: bool,
+}
 /// Unknowns without a kind whose sign patterns are all tried at the first
 /// step, at most (2^6 patterns); beyond, all one way and all the other.
 const OPEN_PATTERN_BITS: usize = 6;
@@ -609,23 +614,70 @@ pub fn fold_linkage(
                 // times the step. Two different solutions that both pass
                 // are two branches the kinds do not tell apart: refused.
                 let same = 10.0 * (angular + tol / size);
-                let mut passed: Vec<(Vec<f64>, bool)> = Vec::new();
+                // A candidate solved again at a quarter of the step, from
+                // half its half: `None` when that solve does not close or
+                // does not stay on the line through the flat sheet.
+                let quarter_of = |c: &mut Candidate,
+                                  budget: &mut Budget|
+                 -> Result<Option<Vec<f64>>, FoldError> {
+                    if c.quarter.is_none() {
+                        let guess: Vec<f64> = c.half.iter().map(|v| v / 2.0).collect();
+                        let solved = attempt(&given(target / 4.0), guess.clone(), budget)?
+                            .map(|(q, _)| q)
+                            .filter(|q| max_diff(q, &guess) <= 0.25 * size_of(&guess) + angular);
+                        c.quarter = Some(solved);
+                    }
+                    Ok(c.quarter.clone().flatten())
+                };
+                // The solved angles in which `a` and `b` are two branches:
+                // they differ by more than the tolerance's angle, and the
+                // difference is half as large at half the step and a
+                // quarter at a quarter (each within a quarter of itself),
+                // as two branches through the flat sheet part. A difference
+                // that does not scale so is one branch solved twice. When
+                // the quarter step cannot be solved the difference is not
+                // explained away: it counts as two branches (refused, never
+                // a silent choice).
+                let parting = |a: &mut Candidate,
+                               b: &mut Candidate,
+                               budget: &mut Budget|
+                 -> Result<Vec<usize>, FoldError> {
+                    let scaling: Vec<usize> = (0..a.solved.len())
+                        .filter(|&i| {
+                            let d = a.solved.get(i).copied().unwrap_or(0.0)
+                                - b.solved.get(i).copied().unwrap_or(0.0);
+                            let h = a.half.get(i).copied().unwrap_or(0.0)
+                                - b.half.get(i).copied().unwrap_or(0.0);
+                            d.abs() > same && (d - 2.0 * h).abs() <= 0.25 * d.abs()
+                        })
+                        .collect();
+                    if scaling.is_empty() {
+                        return Ok(scaling);
+                    }
+                    let (Some(qa), Some(qb)) = (quarter_of(a, budget)?, quarter_of(b, budget)?)
+                    else {
+                        return Ok(scaling);
+                    };
+                    Ok(scaling
+                        .into_iter()
+                        .filter(|&i| {
+                            let d = a.solved.get(i).copied().unwrap_or(0.0)
+                                - b.solved.get(i).copied().unwrap_or(0.0);
+                            let q = qa.get(i).copied().unwrap_or(0.0)
+                                - qb.get(i).copied().unwrap_or(0.0);
+                            (d - 4.0 * q).abs() <= 0.25 * d.abs()
+                        })
+                        .collect())
+                };
+                let mut passed: Vec<Candidate> = Vec::new();
+                let mut parted: Option<Vec<usize>> = None;
                 for guess in first_guesses(&signs, step) {
                     let Some((solved, ran_out)) = attempt(&base, guess, &mut budget)? else {
                         continue;
                     };
-                    // One branch found twice: near the flat sheet the loops'
-                    // derivative is near singular, so solutions that close
-                    // within the tolerance may differ by more than the
-                    // tolerance's angle (a Miura sheet of 3 × 12 cells:
-                    // 4.5e-8 rad apart at a 1-degree step); two branches
-                    // through the flat sheet part at the rate of the step
-                    // itself. Within a thousandth of the solution's size
-                    // they are one.
-                    let one_branch = |p: &[f64], q: &[f64]| {
-                        max_diff(p, q) <= same + BRANCH_APART * size_of(p).max(size_of(q))
-                    };
-                    if passed.iter().any(|(p, _)| one_branch(p, &solved)) {
+                    // The same solution again, within the tolerance's angle:
+                    // nothing to tell apart.
+                    if passed.iter().any(|p| max_diff(&p.solved, &solved) <= same) {
                         continue;
                     }
                     let half_guess: Vec<f64> = solved.iter().map(|v| v / 2.0).collect();
@@ -634,21 +686,51 @@ pub fn fold_linkage(
                     else {
                         continue;
                     };
-                    if max_diff(&half, &half_guess) <= 0.25 * size_of(&half_guess) + angular {
-                        passed.push((solved, ran_out));
+                    if max_diff(&half, &half_guess) > 0.25 * size_of(&half_guess) + angular {
+                        continue;
+                    }
+                    let mut candidate = Candidate {
+                        solved,
+                        half,
+                        quarter: None,
+                        ran_out,
+                    };
+                    // One branch found twice, or two branches? Near the flat
+                    // sheet the loops' derivative is near singular, so two
+                    // solves of one branch that both close within the
+                    // tolerance can differ by more than the tolerance's
+                    // angle (a Miura sheet of 3 × 12 cells: 4.5e-8 rad at a
+                    // 1-degree step); that difference is the solver's play,
+                    // which does not shrink with the step. Two branches
+                    // through the flat sheet part in proportion to the
+                    // step. So the difference is asked again at half and at
+                    // a quarter of the step, per solved angle.
+                    let mut duplicate = false;
+                    for p in &mut passed {
+                        let apart = parting(p, &mut candidate, &mut budget)?;
+                        if apart.is_empty() {
+                            duplicate = true;
+                            break;
+                        }
+                        if parted.is_none() {
+                            parted = Some(apart);
+                        }
+                    }
+                    if !duplicate {
+                        passed.push(candidate);
                     }
                 }
                 match passed.as_slice() {
                     [] => {}
-                    [one] => found = Some(one.clone()),
-                    [a, b, ..] => {
+                    [one] => found = Some((one.solved.clone(), one.ran_out)),
+                    [a, ..] => {
                         // A continuum of solutions (the given angles leave
                         // freedom) is undetermined, not two branches.
                         let at = rows(
                             link,
                             &forest,
                             &loops,
-                            &solver.with(&base, &a.0),
+                            &solver.with(&base, &a.solved),
                             Some(&column),
                             &mut budget,
                         )?;
@@ -663,14 +745,12 @@ pub fn fold_linkage(
                             ids.dedup();
                             return Err(FoldError::Undetermined { ids });
                         }
-                        let apart = same + BRANCH_APART * size_of(&a.0).max(size_of(&b.0));
-                        let mut ids: Vec<u64> =
-                            a.0.iter()
-                                .zip(&b.0)
-                                .zip(&free)
-                                .filter(|((x, y), _)| (*x - *y).abs() > apart)
-                                .map(|(_, &k)| source(k))
-                                .collect();
+                        let mut ids: Vec<u64> = parted
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|&c| free.get(c))
+                            .map(|&k| source(k))
+                            .collect();
                         ids.sort_unstable();
                         ids.dedup();
                         return Err(FoldError::Ambiguous { ids });

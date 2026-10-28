@@ -1104,3 +1104,137 @@ fn a_crease_and_a_bend_fold_through_zero_both_ways() {
         }
     }
 }
+
+/// A degree-4 vertex at `centre` in a square of half-side `s`: its
+/// boundary (curve ids from `first_boundary`) and its creases out to the
+/// boundary (ids from `first_crease`).
+fn vertex_piece(
+    centre: [f64; 2],
+    s: f64,
+    directions: &[f64],
+    kinds: &[CreaseKind],
+    first_boundary: u64,
+    first_crease: u64,
+) -> (Vec<BoundarySegment>, Vec<Crease>) {
+    let [cx, cy] = centre;
+    let mut boundary = polygon(&[
+        [cx - s, cy - s],
+        [cx + s, cy - s],
+        [cx + s, cy + s],
+        [cx - s, cy + s],
+    ]);
+    for b in &mut boundary {
+        b.id += first_boundary - 1;
+    }
+    let creases = directions
+        .iter()
+        .zip(kinds)
+        .enumerate()
+        .map(|(i, (&a, &kind))| {
+            let (c, sn) = (a.cos(), a.sin());
+            let t = s / c.abs().max(sn.abs());
+            crease(
+                first_crease + i as u64,
+                centre,
+                [cx + t * c, cy + t * sn],
+                kind,
+            )
+        })
+        .collect();
+    (boundary, creases)
+}
+
+#[test]
+fn two_branches_that_nearly_coincide_are_told_apart_by_how_they_part() {
+    use CreaseKind::{Mountain as M, Valley as V};
+    // Two pieces folded at once. Piece one: a degree-4 vertex of sectors
+    // 100, 35, 80 and 145 degrees driven by e10 at a tenth of a degree, its
+    // other three creases e11..e13 either without a kind or with the kinds
+    // of one mode. Piece two: the 61/59-degree vertex (kinds set, mode B)
+    // driven by e20 at 10 degrees, whose solved creases fold some fifty
+    // times as fast. At the first step (1 degree of the largest given
+    // angle) the two modes of piece one differ by less than a thousandth of
+    // the largest solved angle: two real branches that a fixed relative
+    // threshold took for one, so one was followed silently. They part in
+    // proportion to the step (the solver's play does not), so they are told
+    // apart: without kinds the fold is ambiguous, naming e11..e13; with the
+    // kinds of either mode it follows that mode by its closed form.
+    let t = tol(1.0);
+    let (a, b) = (100f64.to_radians(), 35f64.to_radians());
+    let dirs1 = [0.0, a, a + b, PI + b];
+    let (a2, b2) = (61f64.to_radians(), 59f64.to_radians());
+    let dirs2 = [0.0, a2, a2 + b2, PI + b2];
+    let r_slow = 0.1f64.to_radians();
+    let r_fast = 10f64.to_radians();
+    let ka = -((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
+    let kb = ((a + b) / 2.0).sin() / ((a - b) / 2.0).sin();
+    let q = ((a2 + b2) / 2.0).sin() / ((a2 - b2) / 2.0).sin();
+    let mode_a = |r: f64| {
+        let r2 = 2.0 * (ka * (r / 2.0).tan()).atan();
+        [r2, r, -r2]
+    };
+    let mode_b = |r: f64| {
+        let r2 = 2.0 * (kb * (r / 2.0).tan()).atan();
+        [r2, -r, r2]
+    };
+    // Near coincidence, by the closed forms at the first step.
+    let first = 1f64.to_radians();
+    let slow_first = r_slow * first / r_fast;
+    let fast_first = 2.0 * (q * (first / 2.0).tan()).atan();
+    let apart = mode_a(slow_first)
+        .iter()
+        .zip(mode_b(slow_first))
+        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    assert!(apart < 1e-3 * fast_first, "{apart} vs {fast_first}");
+    assert!(apart > 1e3 * (ANGULAR + t), "{apart}");
+
+    let build = |kinds1: [CreaseKind; 4]| {
+        let (mut boundary, mut creases) = vertex_piece([0.0, 0.0], 1.0, &dirs1, &kinds1, 1, 10);
+        let (b2, c2) = vertex_piece([4.0, 0.0], 1.0, &dirs2, &[V, V, M, V], 101, 20);
+        boundary.extend(b2);
+        creases.extend(c2);
+        arrange(&boundary, &creases, t).unwrap()
+    };
+    let given = [(10, r_slow), (20, r_fast)];
+
+    // Without kinds on e11..e13: ambiguous, naming them.
+    let arr = build([V, V, V, V]);
+    let open: Vec<Angle> = arr
+        .hinges
+        .iter()
+        .map(|h| {
+            let c = &arr.creases[h.crease];
+            match c.id {
+                10 => Angle::Given(r_slow),
+                20 => Angle::Given(r_fast),
+                11..=13 => Angle::Free { sign: 0.0 },
+                _ => Angle::Free {
+                    sign: c.kind.sign(),
+                },
+            }
+        })
+        .collect();
+    let e = fold(&arr, &open, 0, t, ANGULAR);
+    assert!(
+        matches!(e, Err(FoldError::Ambiguous { ref ids }) if ids == &[11, 12, 13]),
+        "{e:?}"
+    );
+
+    // With the kinds of one mode, that mode, by its closed form.
+    let fast = [2.0 * (q * (r_fast / 2.0).tan()).atan(), -r_fast];
+    for (kinds, want) in [
+        ([V, M, V, V], mode_a(r_slow)),
+        ([V, V, M, V], mode_b(r_slow)),
+    ] {
+        let arr = build(kinds);
+        let folded = fold(&arr, &angles(&arr, &given), 0, t, ANGULAR).unwrap();
+        for (id, w) in (11..14).zip(want) {
+            let got = solved(&arr, &folded, id)[0];
+            assert!(close(got, w, 1e-9), "{kinds:?}: e{id} {got} vs {w}");
+        }
+        for (id, w) in [(21, fast[0]), (22, fast[1]), (23, fast[0])] {
+            let got = solved(&arr, &folded, id)[0];
+            assert!(close(got, w, 1e-8), "{kinds:?}: e{id} {got} vs {w}");
+        }
+    }
+}

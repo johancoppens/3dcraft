@@ -494,7 +494,17 @@ pub(crate) fn crease_pattern(
     };
     let mut by_kind: [Vec<Path>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     // Every crease as the pattern resolved it: a line and each copy a
-    // sketch pattern made of it, each with its own kind.
+    // sketch pattern made of it, each with its own kind. The two lists
+    // are one crease each, in one order; if they ever differ in length a
+    // crease would be dropped from the drawing without a word.
+    if analysis.creases.len() != analysis.arrangement.creases.len() {
+        return Err(CommandError::new(format!(
+            "{command}: the fold `{name}`: the pattern has {} creases but its arrangement {}; \
+             the crease pattern cannot be drawn",
+            analysis.creases.len(),
+            analysis.arrangement.creases.len()
+        )));
+    }
     for (c, k) in analysis.creases.iter().zip(&analysis.arrangement.creases) {
         let slot = match c.kind {
             CreaseKind::Mountain => 0,
