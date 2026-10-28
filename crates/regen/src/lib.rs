@@ -70,6 +70,20 @@ pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use fold::{FlatFold, FoldAnalysis, FoldPattern, fold_analysis, fold_pattern};
 pub use follow::{follow_face, follow_face_pieces, newest_body, short_face_name};
+
+/// The feature `feature` as regeneration builds it after `earlier` (the
+/// results before it): its faces, edges and a shell's body followed to
+/// the newest body of their chain, `None` when nothing is followed. An
+/// error is the reason it fails. What a feature inserted into a history
+/// takes is read from this ([`craft3d_doc::FeatureKind::grows_from`] of
+/// the followed kind).
+pub fn followed_feature(
+    doc: &craft3d_doc::Document,
+    earlier: &[FeatureResult],
+    feature: &craft3d_doc::Feature,
+) -> Result<Option<craft3d_doc::Feature>, String> {
+    follow::feature(doc, earlier, feature)
+}
 pub use offset_profile::OffsetResult;
 pub use pass::{Passed, absent_name, left_out};
 pub use query::{ambiguous_cap, edges_between, faces_named, faces_of_edges};

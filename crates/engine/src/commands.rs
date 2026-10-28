@@ -288,12 +288,48 @@ pub(crate) fn insert_feature(
             .ok_or(DocError::UnknownFeature(marker))?;
         doc.move_feature(id, at.saturating_add(1))?;
         doc.set_rollback(Some(id))?;
-        // The features after it that took a body it now takes first go on
-        // with its body instead ([`Document::repoint_after`]); the result
-        // lists them (`repointed`).
-        doc.repoint_after(id)?;
     }
     Ok(id)
+}
+
+/// The regeneration a feature about to be inserted at the rollback marker
+/// is followed against ([`repoint_inserted`]): the document's as it is,
+/// rolled back to the marker. `None` without a marker, or for a kind that
+/// takes no body.
+pub(crate) fn before_insert(
+    session: &mut Session,
+    kind: &FeatureKind,
+) -> Result<Option<std::sync::Arc<craft3d_regen::Regen>>, CommandError> {
+    let open = session.document_mut()?;
+    if open.history.current().rollback.is_none() || kind.sources().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(open.regen()))
+}
+
+/// After `id` was inserted at the rollback marker: the features after it
+/// that took a body it now takes first go on with its body instead
+/// ([`Document::repoint_after`]); the result lists them (`repointed`).
+/// What it takes is what regeneration builds it from at its place,
+/// `before` (the document rolled back to the marker, before it was
+/// inserted): its faces followed to the body they are of there.
+pub(crate) fn repoint_inserted(
+    doc: &mut Document,
+    id: FeatureId,
+    before: Option<&craft3d_regen::Regen>,
+) -> Result<(), DocError> {
+    let (Some(before), Some(feature)) = (before, doc.feature(id)) else {
+        return Ok(());
+    };
+    let taken = match craft3d_regen::followed_feature(doc, &before.features, feature) {
+        Ok(Some(followed)) => followed.kind.grows_from(),
+        Ok(None) => feature.kind.grows_from(),
+        // It fails where it stands: nothing is taken from the features
+        // after it.
+        Err(_) => return Ok(()),
+    };
+    doc.repoint_after(id, &taken)?;
+    Ok(())
 }
 
 /// For a feature inserted at the rollback marker: the parameters of the
@@ -330,8 +366,11 @@ pub(crate) fn add_feature(
     kind: FeatureKind,
 ) -> Run {
     let label = format!("Add {}", kind.type_name());
+    let before = before_insert(session, &kind)?;
     let id = edit(session, command, &label, |doc| {
-        insert_feature(doc, name, kind)
+        let id = insert_feature(doc, name, kind)?;
+        repoint_inserted(doc, id, before.as_deref())?;
+        Ok(id)
     })?;
     feature_result(session, id)
 }
@@ -379,6 +418,13 @@ pub(crate) fn add_sweep(
         return add_feature(session, command, name, kind);
     };
     let label = format!("Add {} and {}", kind.type_name(), op.name());
+    let boolean = FeatureKind::Boolean(Boolean {
+        op,
+        target,
+        tool: target,
+        keep_tool: false,
+    });
+    let before = before_insert(session, &boolean)?;
     let (sweep, combined) = edit(session, command, &label, |doc| {
         let sweep = insert_feature(doc, None, kind)?;
         let combined = insert_feature(
@@ -391,6 +437,7 @@ pub(crate) fn add_sweep(
                 keep_tool: false,
             }),
         )?;
+        repoint_inserted(doc, combined, before.as_deref())?;
         Ok((sweep, combined))
     })?;
     let mut result = feature_result(session, combined)?;

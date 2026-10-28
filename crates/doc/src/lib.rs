@@ -2573,7 +2573,9 @@ impl Document {
     }
 
     /// After `id` was inserted before features that took a body it now
-    /// takes first ([`FeatureKind::grows_from`]): points each parameter
+    /// takes first, `taken` (its [`FeatureKind::grows_from`], with the
+    /// faces it names followed to the body they are of at its place in
+    /// the history): points each parameter
     /// of a later feature that names such a body by id
     /// ([`FeatureKind::body_params_mut`]) at `id`, as a modeller's later
     /// features go on with the body an inserted feature changed. A later
@@ -2584,17 +2586,13 @@ impl Document {
     pub fn repoint_after(
         &mut self,
         id: FeatureId,
+        taken: &[FeatureId],
     ) -> Result<Vec<(FeatureId, &'static str, FeatureId)>, DocError> {
         let at = self
             .features
             .iter()
             .position(|f| f.id == id)
             .ok_or(DocError::UnknownFeature(id))?;
-        let taken = self
-            .features
-            .get(at)
-            .map(|f| f.kind.grows_from())
-            .unwrap_or_default();
         let mut changed = Vec::new();
         if taken.is_empty() {
             return Ok(changed);
@@ -3179,8 +3177,9 @@ mod tests {
             .add_feature(Some("U"), boolean(BooleanOp::Union, a, e))
             .unwrap();
         doc.move_feature(union, 3).unwrap();
+        let taken = doc.feature(union).unwrap().kind.grows_from();
         assert_eq!(
-            doc.repoint_after(union).unwrap(),
+            doc.repoint_after(union, &taken).unwrap(),
             [(cut, "target", a), (both, "tool", e)]
         );
         let FeatureKind::Boolean(c) = &doc.feature(cut).unwrap().kind else {
@@ -3195,7 +3194,7 @@ mod tests {
         // A subtraction grows from its target only; a split from nothing.
         assert_eq!(boolean(BooleanOp::Subtract, a, b).grows_from(), [a]);
         assert_eq!(boolean(BooleanOp::Union, a, a).grows_from(), [a]);
-        assert!(doc.repoint_after(FeatureId(99)).is_err());
+        assert!(doc.repoint_after(FeatureId(99), &[a]).is_err());
     }
 
     #[test]
