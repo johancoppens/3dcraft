@@ -182,6 +182,7 @@ pub fn fold_flat(
         gap,
         roots,
         piece,
+        work: 0,
     })
 }
 

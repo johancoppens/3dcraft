@@ -178,6 +178,8 @@ pub struct Folded {
     pub roots: Vec<usize>,
     /// Per body, which piece (index into `roots`) it belongs to.
     pub piece: Vec<usize>,
+    /// The work the solve did, in the units of [`MAX_WORK`].
+    pub work: u64,
 }
 
 /// The largest step of the given angles (10 degrees), and the first one
@@ -198,6 +200,8 @@ struct Candidate {
     /// `None` not asked yet; `Some(None)` asked and not solved.
     quarter: Option<Option<Vec<f64>>>,
     ran_out: bool,
+    /// The largest gap of `solved`.
+    gap: f64,
     /// Its error bound ([`error_bound`]), `None` not measured yet.
     bound: Option<f64>,
 }
@@ -490,8 +494,16 @@ pub(super) const BROKEN: FoldError = FoldError::Broken {
     reason: "a joint or a body is missing, or a motion is not finite",
 };
 
+/// The largest gap of the rows; NaN when any gap is not a number (a
+/// plain `f64::max` would drop it and read a broken loop as closed).
 fn largest_gap(rows: &[Row]) -> f64 {
-    rows.iter().map(|r| r.gap.length()).fold(0.0, f64::max)
+    rows.iter().map(|r| r.gap.length()).fold(0.0, |m, g| {
+        if m.is_nan() || g.is_nan() {
+            f64::NAN
+        } else {
+            m.max(g)
+        }
+    })
 }
 
 fn cost(rows: &[Row]) -> f64 {
@@ -754,6 +766,12 @@ pub(super) fn fold_linkage_within(
                     if let Some(b) = c.bound {
                         return Ok(b);
                     }
+                    // Valid only near the solution: a solve that ran out or
+                    // stopped above the goal explains no difference.
+                    if !bound_usable(c.ran_out, c.gap, goal) {
+                        c.bound = Some(0.0);
+                        return Ok(0.0);
+                    }
                     let here = rows(
                         link,
                         &forest,
@@ -762,7 +780,7 @@ pub(super) fn fold_linkage_within(
                         Some(&column),
                         budget,
                     )?;
-                    let b = error_bound(&here, free.len(), pattern.as_ref(), budget)?;
+                    let b = error_bound(&here, free.len(), size, pattern.as_ref(), budget)?;
                     c.bound = Some(b);
                     Ok(b)
                 };
@@ -807,7 +825,8 @@ pub(super) fn fold_linkage_within(
                 let mut passed: Vec<Candidate> = Vec::new();
                 let mut parted: Option<Vec<usize>> = None;
                 for guess in first_guesses(&signs, step) {
-                    let Some((solved, ran_out, _)) = first_attempt(&base, guess, &mut *budget)?
+                    let Some((solved, ran_out, first_gap)) =
+                        first_attempt(&base, guess, &mut *budget)?
                     else {
                         continue;
                     };
@@ -821,6 +840,7 @@ pub(super) fn fold_linkage_within(
                         half: Vec::new(),
                         quarter: None,
                         ran_out,
+                        gap: first_gap,
                         bound: None,
                     };
                     // One solution found twice: near the flat sheet the
@@ -958,7 +978,7 @@ pub(super) fn fold_linkage_within(
     }
     let final_rows = rows(link, &forest, &loops, &rho, Some(&column), &mut *budget)?;
     let gap = largest_gap(&final_rows);
-    if gap > tol {
+    if !(gap <= tol) {
         if exhausted {
             return Err(FoldError::NotConverged { gap });
         }
@@ -1051,6 +1071,7 @@ pub(super) fn fold_linkage_within(
         gap,
         roots: forest.roots,
         piece: forest.piece,
+        work: budget.0,
     })
 }
 
@@ -1591,21 +1612,23 @@ fn name_free(
 }
 
 /// How far, in radians, a solution of the loops may lie from the solution
-/// it stands for: twice the length of the Gauss–Newton step it would still
-/// take, bounded by `2 ‖r‖ / σ_min(J)`, with `r` the gaps of `rows` and
-/// `σ_min(J) ≥ √λ_min · min_i ‖J e_i‖` (`λ_min` the smallest eigenvalue of
-/// the normal equations scaled to unit diagonal, as the rank test scales
-/// them). The step is the distance to the solution to first order; twice
-/// it is Kantorovich's bound where the second order is at most half of
-/// the first, which holds at a solve stopped at rounding. `λ_min` is
-/// taken no smaller than the rank pivot (below it the rank test calls the
-/// unknowns free). Inverse iteration estimates `λ_min` from above, and the
-/// bound is 0 where it cannot be measured: every doubt makes the bound
-/// smaller, so a difference it would have explained is two solutions
-/// (refused, never merged).
+/// it stands for, valid only near that solution: twice the Gauss–Newton
+/// step it would still take, `2 ‖r‖ / σ_min(J)`, with `r` the gaps of
+/// `rows` and `σ_min(J) ≥ √λ_min · min_i ‖J e_i‖` (`λ_min` the smallest
+/// eigenvalue of the normal equations scaled to unit diagonal, as the rank
+/// test scales them), and only where Kantorovich's condition
+/// `h = L ‖r‖ / σ² ≤ ½` holds for a Lipschitz constant `L` of `J` taken
+/// from above (below), so that a solution lies within it whatever way the
+/// solve stopped. It is 0, explaining no difference, where `λ_min` is at
+/// most the rank pivot, where inverse iteration did not settle, where `h`
+/// is above a half, and where anything is not finite; the caller also
+/// takes 0 for a solve that ran out or stopped above its goal. A
+/// difference it does not explain is two solutions (refused, never
+/// merged).
 fn error_bound(
     rows: &[Row],
     n: usize,
+    size: f64,
     pattern: Option<&Pattern>,
     budget: &mut Budget,
 ) -> Result<f64, FoldError> {
@@ -1635,14 +1658,63 @@ fn error_bound(
     let Some(lambda) = smallest_eigenvalue(p, &vals, budget)? else {
         return Ok(0.0);
     };
-    let residual = cost(rows).sqrt();
-    let bound = 2.0 * residual / (lambda.max(RANK_PIVOT) * column).sqrt();
-    Ok(if bound.is_finite() { bound } else { 0.0 })
+    if !(lambda > RANK_PIVOT) {
+        return Ok(0.0);
+    }
+    // The derivative's Lipschitz constant, from above: an entry of row
+    // `r` is a point's velocity about a joint on its loop, `D × (X − P)`;
+    // turning another joint of the loop moves `D`, `P` and `X`, each by at
+    // most the distance along the loop, which crosses at most `k + 1`
+    // bodies of diameter at most the sheet's size (`k` the row's
+    // unknowns). So each entry changes by at most `3 (k + 1) size` per
+    // radian of each of the `k`, and in the Frobenius norm
+    // `L ≤ 3 size √Σ_r k_r² (k_r + 1)²`.
+    let lipschitz = 3.0
+        * size
+        * rows
+            .iter()
+            .map(|r| {
+                let k = r.by.len() as f64;
+                k * k * (k + 1.0) * (k + 1.0)
+            })
+            .sum::<f64>()
+            .sqrt();
+    Ok(kantorovich_bound(
+        cost(rows).sqrt(),
+        lambda * column,
+        lipschitz,
+    ))
+}
+
+/// Whether a solve's error bound may explain a difference: only a solve
+/// that did not run out of iterations and closed within its goal is near
+/// its solution.
+fn bound_usable(ran_out: bool, gap: f64, goal: f64) -> bool {
+    !ran_out && gap <= goal
+}
+
+/// Twice the Gauss–Newton step `‖r‖ / σ` (`sigma2 = σ²`, from below)
+/// when Kantorovich's condition `h = L ‖r‖ / σ² ≤ ½` holds, so that a
+/// solution lies within it; 0 otherwise (and for anything not finite):
+/// the bound is valid only near the solution, and where that is not
+/// shown it explains no difference.
+fn kantorovich_bound(residual: f64, sigma2: f64, lipschitz: f64) -> f64 {
+    if !(residual.is_finite() && sigma2 > 0.0 && sigma2.is_finite() && lipschitz.is_finite()) {
+        return 0.0;
+    }
+    let h = lipschitz * residual / sigma2;
+    let bound = 2.0 * residual / sigma2.sqrt();
+    if h <= 0.5 && bound.is_finite() {
+        bound
+    } else {
+        0.0
+    }
 }
 
 /// The smallest eigenvalue of the unit-scaled normal equations `scaled`
 /// (skyline of `p`), by inverse iteration on their factor shifted by the
-/// rank pivot; `None` when the factor fails.
+/// rank pivot; `None` when the factor fails or the estimate does not
+/// settle (to a thousandth) within its iterations.
 fn smallest_eigenvalue(
     p: &Pattern,
     scaled: &[f64],
@@ -1692,10 +1764,10 @@ fn smallest_eigenvalue(
         lambda = Some(next);
         x = y;
         if settled {
-            break;
+            return Ok(lambda);
         }
     }
-    Ok(lambda)
+    Ok(None)
 }
 
 /// The solved angles in which two solutions of the first step are two
@@ -1798,6 +1870,33 @@ fn max_diff(a: &[f64], b: &[f64]) -> f64 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// Two branches 1e-6 rad apart: a solve that ran out of iterations (or
+    /// stopped above its goal) gets no bound, whatever it would measure,
+    /// so the two are never one solution; Kantorovich's condition refuses
+    /// a bound far from the solution and keeps one near it.
+    #[test]
+    fn a_solve_that_ran_out_never_merges_two_branches() {
+        let (a, b) = ([0.1, 0.2], [0.1, 0.2 + 1e-6]);
+        let goal = 1e-13;
+        for (ran_out, gap) in [(true, 1e-14), (false, 1e-9), (false, f64::NAN)] {
+            assert!(!bound_usable(ran_out, gap, goal));
+        }
+        assert!(bound_usable(false, 1e-14, goal));
+        // σ² of 1e-12 (σ_min 1e-6), L of 1e3: a residual of 1e-9 has
+        // h = 1e3 · 1e-9 / 1e-12 = 1e6, no bound (it would be 2e-3, past
+        // the branches' 1e-6); a residual of 1e-17 has h = 1e-2, bound 2e-11.
+        assert_eq!(kantorovich_bound(1e-9, 1e-12, 1e3), 0.0);
+        let near = kantorovich_bound(1e-17, 1e-12, 1e3);
+        assert!((near - 2e-11).abs() <= 1e-24, "{near}");
+        assert!(max_diff(&a, &b) > near + near);
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert_eq!(kantorovich_bound(bad, 1e-12, 1e3), 0.0);
+            assert_eq!(kantorovich_bound(1e-17, bad, 1e3), 0.0);
+            assert_eq!(kantorovich_bound(1e-17, 1e-12, bad), 0.0);
+        }
+        assert_eq!(kantorovich_bound(1e-17, 0.0, 1e3), 0.0);
+    }
 
     /// One pair of solutions per way of parting: linear, quadratic
     /// (tangent at the flat sheet), as the square root (a pitchfork), the

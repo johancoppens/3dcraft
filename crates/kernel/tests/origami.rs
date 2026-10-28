@@ -1578,3 +1578,55 @@ fn a_slit_edge_running_on_past_a_collinear_edge_stays_a_cut_in_the_layers() {
         assert_ne!(layers.layer[0], layers.layer[1]);
     }
 }
+
+/// The first step's worst case on a dense sheet: a Miura sheet of 13 × 13
+/// (311 solved angles) with six zigzag pieces without a kind (sign 0), so
+/// every one of the 5 guesses is tried in all 2⁶ sign patterns, each with
+/// its full and half solves. It folds by its closed form with at least
+/// half of the work budget to spare (the work is printed).
+#[test]
+fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
+    use craft3d_kernel::origami::MAX_WORK;
+    let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
+    let gamma = (h / d).atan();
+    let (boundary, creases) = miura(1.0, 13, 13, l, d, h);
+    let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
+    let driver = creases
+        .iter()
+        .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+        .unwrap()
+        .id;
+    let rho = 60f64.to_radians();
+    let mut given = angles(&arr, &[(driver, rho)]);
+    // Six zigzag pieces spread over the sheet, their kinds left open.
+    let zigzag: Vec<usize> = arr
+        .hinges
+        .iter()
+        .enumerate()
+        .filter(|(_, hg)| {
+            let c = &arr.creases[hg.crease];
+            c.start[1] != c.end[1]
+        })
+        .map(|(k, _)| k)
+        .collect();
+    let open: Vec<usize> = (0..6)
+        .map(|i| zigzag[(2 * i + 1) * zigzag.len() / 12])
+        .collect();
+    for &k in &open {
+        given[k] = Angle::Free { sign: 0.0 };
+    }
+    let clock = std::time::Instant::now();
+    let folded = fold(&arr, &given, 0, tol(1.0), ANGULAR).unwrap();
+    println!(
+        "Miura 13 x 13, six kinds open: {} of {MAX_WORK} work in {:.3} s",
+        folded.work,
+        clock.elapsed().as_secs_f64()
+    );
+    assert!(folded.work <= MAX_WORK / 2, "{}", folded.work);
+    let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+    for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
+        let c = &arr.creases[hinge.crease];
+        let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+        assert!(close(*a, want, 1e-8), "e{} {a} vs {want}", c.id);
+    }
+}

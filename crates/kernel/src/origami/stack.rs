@@ -452,6 +452,7 @@ pub fn fold_stacked(
             gap: moved.gap.max(flat.gap),
             roots,
             piece,
+            work: budget.0,
         },
         stack,
         layers,
