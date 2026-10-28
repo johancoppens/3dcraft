@@ -338,7 +338,13 @@ impl Station {
 }
 
 fn station(edge: &Edge, t: f64, along: f64, face: &Layered<'_>) -> Option<Station> {
-    let (p, d) = edge.curve.derivatives(t);
+    station_on(&edge.curve, t, along, face)
+}
+
+/// [`station`] on the edge's curve `curve` (the edge's own, or that curve
+/// continued past its ends, [`continued_past`]).
+fn station_on(curve: &Curve3, t: f64, along: f64, face: &Layered<'_>) -> Option<Station> {
+    let (p, d) = curve.derivatives(t);
     let (point, normal) = face.foot(p)?;
     let d = d * along;
     let tangent = (d - normal * d.dot(normal)).normalized()?;
@@ -1736,6 +1742,40 @@ fn steps(a: f64, b: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
+/// A spline edge's curve continued over `reach` as the function its end
+/// spans are, re-expressed so that it is evaluated inside its own domain
+/// (`NurbsCurve::extended`); `None` for the other kinds of curve (each
+/// continued exactly by its own closed form) and where the domain already
+/// holds the reach. Evaluating a spline past its domain directly scatters
+/// its points when an end span is short against the reach: the sea
+/// kayak's sheer plate (2026-10-28) traced its end edge, whose first span
+/// is a small part of it, a whole edge length past it, where the edge's
+/// points scattered by 1e-5 mm along it and the rim's stations with them,
+/// and no refinement fitted a spline through them within a quarter of
+/// the tolerance (1e-6 mm).
+fn continued_past(curve: &Curve3, reach: (f64, f64)) -> Option<Curve3> {
+    let Curve3::Nurbs(spline) = curve else {
+        return None;
+    };
+    let (t0, t1) = spline.domain();
+    if !(reach.0 < t0 || reach.1 > t1) {
+        return None;
+    }
+    spline.extended(reach).ok().map(Curve3::Nurbs)
+}
+
+/// The curve to evaluate an edge at `t` on: its own inside its domain
+/// (every point there as it always was), `longer` past it.
+fn curve_at<'c>(own: &'c Curve3, longer: Option<&'c Curve3>, t: f64) -> &'c Curve3 {
+    match (own, longer) {
+        (Curve3::Nurbs(spline), Some(longer)) => {
+            let (t0, t1) = spline.domain();
+            if t < t0 || t > t1 { longer } else { own }
+        }
+        _ => own,
+    }
+}
+
 /// The corners of a boundary edge traced over its range and its reach,
 /// and its rim with whether the rim's outward normal is against its
 /// surface's.
@@ -1765,12 +1805,17 @@ fn trace_boundary(
     } else {
         (past(a, reach_before), past(b, reach_after))
     };
+    // Past its ends the edge's curve goes on as itself, evaluated where
+    // that is well conditioned.
+    let longer = continued_past(&edge.curve, (a - before, b + after));
+    let past_curve = longer.as_ref().unwrap_or(&edge.curve);
+    let curve = |t: f64| curve_at(&edge.curve, longer.as_ref(), t);
     let mut params = Vec::new();
     if before > 0.0 {
         params.extend(steps(
             a - before,
             a,
-            turned_steps(&edge.curve, a - before, a, REACH_STEPS),
+            turned_steps(past_curve, a - before, a, REACH_STEPS),
         ));
         params.pop();
     }
@@ -1780,7 +1825,7 @@ fn trace_boundary(
             steps(
                 b,
                 b + after,
-                turned_steps(&edge.curve, b, b + after, REACH_STEPS),
+                turned_steps(past_curve, b, b + after, REACH_STEPS),
             )
             .into_iter()
             .skip(1),
@@ -1796,10 +1841,10 @@ fn trace_boundary(
     let levels = face.levels;
     let mut at_param = |t: f64| -> Result<Vec<Vec3>, KernelError> {
         let inside = t >= a - 1e-12 * (b - a).abs() && t <= b + 1e-12 * (b - a).abs();
-        let st = station(edge, t, boundary.along, face).ok_or_else(|| {
+        let st = station_on(curve(t), t, boundary.along, face).ok_or_else(|| {
             refuse(
                 Some(edge_id),
-                format!("the face has no normal at {}", at(edge.curve.eval(t))),
+                format!("the face has no normal at {}", at(curve(t).eval(t))),
             )
         })?;
         let [lo, hi] = corners(boundary, face, &st, sides, levels, inside, tolerance)?;

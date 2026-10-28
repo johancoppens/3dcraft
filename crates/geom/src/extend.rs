@@ -17,7 +17,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use crate::GeomError;
-use crate::nurbs::NurbsSurface;
+use crate::nurbs::{NurbsCurve, NurbsSurface};
 use craft3d_math::Vec3;
 
 /// A weighted control point: (w x, w y, w z, w).
@@ -194,6 +194,58 @@ fn extend(
     }
     *knots = mirrored.iter().rev().map(|k| -k).collect();
     Some(())
+}
+
+impl NurbsCurve {
+    /// The same curve over a domain grown to take in `range` (an end of
+    /// the old domain inside it stays): each end span continued as the
+    /// function it is, re-expressed once as a Bézier span over the longer
+    /// interval, so that the curve continued is evaluated inside its own
+    /// domain. The points are those [`NurbsCurve::eval`] gives past the
+    /// domain, but without its rounding: evaluated there, a short end
+    /// span's basis functions grow as a power of how many spans out the
+    /// parameter is and cancel, so the points scatter about the curve (a
+    /// plate's edge continued a whole edge length past an end span a
+    /// thousandth of it long scattered by 1e-5 of its size, the sea
+    /// kayak's sheer plate, 2026-10-28). The rounding of the new control
+    /// points is fixed: what is continued is one smooth curve. Refused
+    /// where a weight would not stay positive (a rational span continued
+    /// far).
+    pub fn extended(&self, range: (f64, f64)) -> Result<NurbsCurve, GeomError> {
+        let refused = || GeomError::InvalidParameter("the curve cannot be continued that far");
+        if !(range.0.is_finite() && range.1.is_finite()) {
+            return Err(refused());
+        }
+        let degree = self.degree();
+        let (t0, t1) = self.domain();
+        let mut rows: Vec<Vec<W>> = vec![
+            self.control_points()
+                .iter()
+                .zip(self.weights())
+                .map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+                .collect(),
+        ];
+        let mut knots = self.knots().to_vec();
+        extend(
+            degree,
+            &mut knots,
+            &mut rows,
+            (range.0.min(t0), range.1.max(t1)),
+        )
+        .ok_or_else(refused)?;
+        let row = rows.first().ok_or_else(refused)?;
+        let mut ctrl = Vec::with_capacity(row.len());
+        let mut weights = Vec::with_capacity(row.len());
+        for p in row {
+            let w = p[3];
+            if !(w > 0.0 && w.is_finite()) {
+                return Err(refused());
+            }
+            ctrl.push(Vec3::new(p[0] / w, p[1] / w, p[2] / w));
+            weights.push(w);
+        }
+        NurbsCurve::new(degree, knots, ctrl, weights)
+    }
 }
 
 impl NurbsSurface {
@@ -442,6 +494,93 @@ fn cut(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
+
+    /// A slanted straight line `k (1, 0.37, −0.61) t` as a cubic spline
+    /// whose first span is `first` long (control points at the Greville
+    /// abscissae, so the parametrization is the line's own).
+    fn line_with_a_short_span(k: f64, first: f64) -> NurbsCurve {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, first, 0.3, 0.6, 1.0, 1.0, 1.0, 1.0];
+        let d = Vec3::new(1.0, 0.37, -0.61) * k;
+        let origin = Vec3::new(2.3, -1.1, 0.7) * k;
+        let ctrl = (0..7)
+            .map(|i| {
+                let xi = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+                origin + d * xi
+            })
+            .collect();
+        NurbsCurve::polynomial(3, knots, ctrl).unwrap()
+    }
+
+    /// Continued a whole domain past an end span 1e-4 of it long, the
+    /// curve is the line it continues, smoothly: points 1e-7 apart along
+    /// the parameter have second differences of rounding, where
+    /// evaluating the spline itself there scatters them (the sea kayak's
+    /// sheer plate, 2026-10-28). Inside the old domain nothing moves.
+    #[test]
+    fn a_curve_continued_far_past_a_short_end_span_is_smooth() {
+        for k in [1e-3, 1.0, 1e6] {
+            let curve = line_with_a_short_span(k, 1e-4);
+            let longer = curve.extended((-1.1, 2.1)).unwrap();
+            assert_eq!(longer.domain(), (-1.1, 2.1));
+            for j in 0..=20 {
+                let t = j as f64 / 20.0;
+                assert!(
+                    longer.eval(t).distance(curve.eval(t)) <= 1e-12 * k,
+                    "{k} at {t}"
+                );
+            }
+            let d = Vec3::new(1.0, 0.37, -0.61) * k;
+            let origin = Vec3::new(2.3, -1.1, 0.7) * k;
+            let mut scattered: f64 = 0.0;
+            let mut smooth: f64 = 0.0;
+            for t in [-1.05, -0.99, 1.5, 2.05] {
+                let points = |c: &NurbsCurve| -> Vec<Vec3> {
+                    (0..12).map(|j| c.eval(t + 1e-7 * j as f64)).collect()
+                };
+                for (c, worst) in [(&curve, &mut scattered), (&longer, &mut smooth)] {
+                    let p = points(c);
+                    for w in p.windows(3) {
+                        *worst = worst.max((w[0] + w[2] - w[1] * 2.0).length() / k);
+                    }
+                }
+            }
+            // On the line it continues, at its own parameter, a hundred
+            // end spans out (further, the end span's rounding grows with
+            // the cube of how far: the curve is smooth, not exact).
+            for t in [-0.01, 1.01] {
+                let p = longer.eval(t);
+                assert!(p.distance(origin + d * t) <= 1e-8 * k, "{k} at {t}: {p:?}");
+            }
+            assert!(smooth <= 1e-12, "{k}: {smooth}");
+            // What it replaces, so the test says why it is there.
+            assert!(scattered > 1e3 * smooth.max(1e-15), "{k}: {scattered}");
+        }
+    }
+
+    /// A rational cubic continued past both ends: inside the old domain
+    /// the same points; past it, what evaluating the old one gives where
+    /// that is still accurate (a fraction of an end span out).
+    #[test]
+    fn a_rational_curve_continued_is_the_function_it_was() {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 0.4, 0.7, 1.0, 1.0, 1.0, 1.0];
+        let ctrl = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.5),
+            Vec3::new(2.5, 2.2, -0.3),
+            Vec3::new(3.0, 0.7, 0.1),
+            Vec3::new(4.2, -0.4, 0.9),
+            Vec3::new(5.0, 0.3, 0.2),
+        ];
+        let weights = vec![1.0, 1.3, 0.8, 1.1, 0.9, 1.0];
+        let curve = NurbsCurve::new(3, knots, ctrl, weights).unwrap();
+        let longer = curve.extended((-0.2, 1.3)).unwrap();
+        for j in -4..=26 {
+            let t = j as f64 / 20.0;
+            let (a, b) = (curve.eval(t), longer.eval(t));
+            assert!(a.distance(b) <= 1e-10, "at {t}: {a:?} {b:?}");
+        }
+        assert!(curve.extended((f64::NAN, 1.0)).is_err());
+    }
 
     /// A bicubic patch of two spans by three, with weights.
     fn patch() -> NurbsSurface {

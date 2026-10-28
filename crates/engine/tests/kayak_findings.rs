@@ -35,6 +35,14 @@
 //!    878 below it"), as each trimmed face of the hull, cut from faces
 //!    3000 mm long, was bound by its whole surface. Now a trimmed freeform
 //!    face is bound by what of its surface lies in its trim.
+//! 12. The plates on the hull's faces (the steps of repro 12 up to the
+//!     plates): the sheer plate `Top4S` was refused, "the rim could not
+//!     be traced within a quarter of the tolerance", along its end on
+//!     the stern plane: that edge, a spline whose first span is a small
+//!     part of it, was continued a whole edge length past its end by
+//!     evaluating the spline there, which scattered its points by 1e-5
+//!     mm. Now a spline edge is continued as the same function evaluated
+//!     inside a longer domain of its own.
 //! 14. Plates on the developable panels (`onto` the end planes, `touch`
 //!     along the chines): refused, "the offset of the freeform face could
 //!     not be approximated", as the panel's surface was continued across
@@ -327,5 +335,39 @@ fn plates_that_touch_along_their_chine_share_no_volume() {
             .unwrap()
             .contains("the result is empty"),
         "{common}"
+    );
+}
+
+#[test]
+fn the_sheer_plate_on_the_hull_face_is_built() {
+    let (mut s, failed) = steps("sea_kayak_12.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    // The same face plated square (no joints): with its joints the plate
+    // is less by what the touch and under joints and the ends take.
+    s.execute(
+        "feature.plate",
+        &json!({"faces": ["Hull:copy(0)/Half3:copy(1)/Cyl3:side(e3)"], "thickness": "tHull",
+                "side": "in", "name": "SquareTop4S"}),
+    )
+    .unwrap();
+    let document = s.execute("document.inspect", &json!({})).unwrap();
+    let bodies = document["bodies"].as_array().unwrap();
+    let body = |name: &str| {
+        bodies
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no body {name}"))
+    };
+    let (plate, square) = (body("Top4S"), body("SquareTop4S"));
+    assert_eq!(plate["valid"], true, "{plate}");
+    assert_eq!(square["valid"], true, "{square}");
+    let (volume, plain) = (
+        plate["volume"].as_f64().unwrap(),
+        square["volume"].as_f64().unwrap(),
+    );
+    eprintln!("Top4S: volume {volume}, square {plain}");
+    assert!(
+        volume < plain && volume > 0.9 * plain,
+        "{plate} against {square}"
     );
 }

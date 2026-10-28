@@ -26,7 +26,7 @@
 mod boolean_common;
 
 use boolean_common::*;
-use craft3d_geom::Surface;
+use craft3d_geom::{Curve3, NurbsCurve, Surface};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::extrude::fill;
@@ -1285,5 +1285,80 @@ fn an_outline_with_long_arcs_plates_by_its_area() {
             assert!(check(&made.body, &tol).is_empty());
             near(volume(&made.body), area * t, 1e-6, "volume");
         }
+    }
+}
+
+/// A flat plate one of whose straight edges is a cubic spline whose end
+/// spans are 1e-4 of it (the sea kayak's sheer plate, 2026-10-28: an
+/// edge of a boolean, fitted as a spline, traced past its ends a whole
+/// edge length, where evaluating the spline scattered its points by 1e-5
+/// mm and the rim could not be traced within a quarter of the tolerance).
+/// The edge is the same line drawn another way, so the plate is the flat
+/// plate it was: its area times the thickness. In a
+/// frame turned off the axes, so that every coordinate of the edge has
+/// rounding; at three scales.
+#[test]
+fn a_plate_whose_edge_is_a_spline_with_short_end_spans_is_its_area_times_the_thickness() {
+    for k in SCALES {
+        let frame = Frame::new(
+            Vec3::new(0.3, -0.7, 1.1) * k,
+            Vec3::new(0.2, -0.5, 1.0),
+            Vec3::new(1.0, 0.4, 0.1),
+        )
+        .unwrap();
+        let mut body = sheet([0.0, 0.0], [3.0, 2.0], None, &frame, k);
+        let along = |x: f64, y: f64| frame.point(x * k, y * k, 0.0);
+        let (p, q) = (along(0.0, 0.0), along(3.0, 0.0));
+        let edge = body
+            .edges
+            .iter()
+            .position(|e| {
+                let (s, t) = (
+                    body.vertices[e.start.0 as usize].point,
+                    body.vertices[e.end.0 as usize].point,
+                );
+                (s.distance(p) <= 1e-9 * k && t.distance(q) <= 1e-9 * k)
+                    || (s.distance(q) <= 1e-9 * k && t.distance(p) <= 1e-9 * k)
+            })
+            .expect("the edge along x");
+        let e = &body.edges[edge];
+        let (s, t) = (
+            body.vertices[e.start.0 as usize].point,
+            body.vertices[e.end.0 as usize].point,
+        );
+        // Control points at the Greville abscissae: the line at its own
+        // parameter over [0, 1].
+        let knots = vec![
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1e-4,
+            0.5,
+            1.0 - 1e-4,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ];
+        let ctrl = (0..7)
+            .map(|i| s.lerp(t, (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0))
+            .collect();
+        let spline = NurbsCurve::polynomial(3, knots, ctrl).unwrap();
+        body.edges[edge].curve = Curve3::Nurbs(spline);
+        body.edges[edge].range = (0.0, 1.0);
+        let made = plated(&body, 0.25 * k, Side::Out, &BTreeMap::new(), k);
+        // The rims are fitted within a quarter of the tolerance: the
+        // volume within that times the rims' area, 1.25e-7 of it here.
+        // (The rim along the spline need not come out a plane: continued
+        // a thousand end spans out, the spline's own end span is known
+        // only to about the tolerance, as its control points' rounding
+        // grows with the cube of how far out.)
+        near(
+            volume(&made.body),
+            6.0 * 0.25 * k * k * k,
+            1e-6,
+            "flat plate with a spline edge",
+        );
     }
 }
