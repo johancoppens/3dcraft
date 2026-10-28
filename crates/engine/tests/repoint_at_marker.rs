@@ -217,7 +217,7 @@ fn a_subtraction_inserted_does_not_take_over_its_tool() {
     run(
         &mut s,
         "feature.block",
-        json!({"size": [5, 5, 5], "position": [8, 3, 3], "name": "Spare"}),
+        json!({"size": [5, 5, 4], "position": [8, 3, 3], "name": "Spare"}),
     );
     let early = run(
         &mut s,
@@ -225,14 +225,15 @@ fn a_subtraction_inserted_does_not_take_over_its_tool() {
         json!({"op": "subtract", "target": "Spare", "tool": "Tool", "name": "Early"}),
     );
     assert!(early.get("repointed").is_none(), "{early}");
-    let forward = run(&mut s, "history.rollback", json!({"feature": null}));
-    let failed = forward["failed"].as_array().unwrap();
-    let cut = failed.iter().find(|f| f["feature"] == "Cut").unwrap();
+    run(&mut s, "history.rollback", json!({"feature": null}));
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let features = inspect["features"].as_array().unwrap();
+    let of = |name: &str| features.iter().find(|f| f["name"] == name).unwrap().clone();
+    assert_eq!(of("Early")["status"], "ok", "{inspect}");
+    let cut = of("Cut");
+    assert_eq!(cut["status"], "failed", "{cut}");
     assert!(
-        cut["error"]
-            .as_str()
-            .unwrap()
-            .contains("already went into `Early`"),
+        cut.to_string().contains("already went into `Early`"),
         "{cut}"
     );
 }
