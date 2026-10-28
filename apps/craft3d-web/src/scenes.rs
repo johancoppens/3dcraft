@@ -270,41 +270,44 @@ mod tests {
         SceneQuality::display()
     }
 
-    fn session() -> Session {
-        let mut s = Session::new(Workspace::memory());
-        s.set_stepwise(true);
-        s.set_checks_elsewhere(true);
+    /// `w` set as the Parameters form sets it: the regeneration is left
+    /// to the host.
+    fn set(s: &mut Session, w: f64) {
+        s.execute("param.set", &json!({"values": {"w": format!("{w} mm")}}))
+            .unwrap();
+    }
+
+    /// A cube of side `w`, a public parameter, set to `w` last.
+    fn cube(s: &mut Session, w: f64) {
         for (id, params) in [
             ("file.new", json!({"units": "mm"})),
             ("variable.set", json!({"name": "w", "expr": "10 mm"})),
             (
+                "variable.publish",
+                json!({"name": "w", "min": "1 mm", "max": "100 mm"}),
+            ),
+            (
                 "feature.block",
                 json!({"size": ["w", "w", "w"], "name": "B"}),
             ),
-            ("variable.set", json!({"name": "w", "expr": "11 mm"})),
         ] {
             s.execute(id, &params).unwrap();
         }
+        set(s, w);
+    }
+
+    fn session() -> Session {
+        let mut s = Session::new(Workspace::memory());
+        s.set_stepwise(true);
+        s.set_checks_elsewhere(true);
+        cube(&mut s, 11.0);
         s
     }
 
     /// The scene a session that builds it itself shows for `w`.
     fn wanted(w: f64) -> Vec<u8> {
         let mut s = Session::new(Workspace::memory());
-        for (id, params) in [
-            ("file.new", json!({"units": "mm"})),
-            ("variable.set", json!({"name": "w", "expr": "10 mm"})),
-            (
-                "feature.block",
-                json!({"size": ["w", "w", "w"], "name": "B"}),
-            ),
-            (
-                "variable.set",
-                json!({"name": "w", "expr": format!("{w} mm")}),
-            ),
-        ] {
-            s.execute(id, &params).unwrap();
-        }
+        cube(&mut s, w);
         scene_bytes(&s.scene_with(quality()).unwrap().unwrap())
     }
 
@@ -336,8 +339,7 @@ mod tests {
         assert!(!s.regenerated_here());
         // Done: the worker is kept for the next state.
         assert_eq!(*fake.stops.borrow(), 0);
-        s.execute("variable.set", &json!({"name": "w", "expr": "12 mm"}))
-            .unwrap();
+        set(&mut s, 12.0);
         let next = scenes
             .frame_at(&mut s, quality(), Vec::new(), 3.0)
             .posted
@@ -358,8 +360,7 @@ mod tests {
             .posted
             .unwrap();
         let late = fake.answers();
-        s.execute("variable.set", &json!({"name": "w", "expr": "13 mm"}))
-            .unwrap();
+        set(&mut s, 13.0);
         // The old job is no longer wanted: cancelled, the new one posted.
         let frame = scenes.frame_at(&mut s, quality(), Vec::new(), 1.0);
         assert_eq!(frame.cancelled, Some(old));
@@ -403,8 +404,7 @@ mod tests {
                 .parts
                 .is_empty()
         );
-        s.execute("variable.set", &json!({"name": "w", "expr": "15 mm"}))
-            .unwrap();
+        set(&mut s, 15.0);
         assert!(
             scenes
                 .frame_at(&mut s, quality(), Vec::new(), 2e7)
@@ -423,8 +423,7 @@ mod tests {
         // It answered once before: it can be had here.
         scenes.frame_at(&mut s, quality(), Vec::new(), 0.0);
         scenes.frame_at(&mut s, quality(), fake.answers(), 1.0);
-        s.execute("variable.set", &json!({"name": "w", "expr": "14 mm"}))
-            .unwrap();
+        set(&mut s, 14.0);
         let token = scenes
             .frame_at(&mut s, quality(), Vec::new(), 2.0)
             .posted
@@ -444,8 +443,7 @@ mod tests {
         assert!(error.message().contains("unreachable"), "{error}");
         assert!(!scenes.home() && !s.regenerated_here());
         // The worker failing outright after it answered: the same.
-        s.execute("variable.set", &json!({"name": "w", "expr": "16 mm"}))
-            .unwrap();
+        set(&mut s, 16.0);
         scenes.frame_at(&mut s, quality(), Vec::new(), 4.0);
         let frame = scenes.frame_at(&mut s, quality(), vec![Reply::Failed("oom".into())], 5.0);
         assert!(frame.home.is_none());
