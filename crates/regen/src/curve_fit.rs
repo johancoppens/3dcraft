@@ -529,7 +529,8 @@ fn interpolate_with_ends(
 /// `None` when the curve does not leave the end at a speed of its own (the
 /// estimate under half the secant's over `2 h`: an involute leaves its
 /// base circle at speed zero, its direction there in a higher derivative),
-/// or when the numbers are not finite: that end is then fitted free.
+/// when the two steps disagree (the end is not resolved at this step), or
+/// when the numbers are not finite: that end is then fitted free.
 fn end_direction(
     at: &mut impl FnMut(f64) -> Result<P2, String>,
     u0: f64,
@@ -555,6 +556,17 @@ fn end_direction(
     let speed = d[0].hypot(d[1]);
     let secant = distance(far, f0) / (2.0 * h);
     if !(speed.is_finite() && secant.is_finite() && speed > 0.0 && speed >= 0.5 * secant) {
+        return Ok(None);
+    }
+    // Resolved at this step: the estimates at `h` and `h / 2` agree in
+    // direction within 1e-5 rad and in speed within 1 %. Where they do
+    // not, the formula changes faster near the end than the step sees (a
+    // power of `t` below one near zero), and a direction fixed there would
+    // be the step's, not the formula's.
+    let (c, f) = (coarse[0].hypot(coarse[1]), fine[0].hypot(fine[1]));
+    let sine = (coarse[0] * fine[1] - coarse[1] * fine[0]) / (c * f);
+    let along = coarse[0] * fine[0] + coarse[1] * fine[1];
+    if !(c > 0.0 && f > 0.0 && along > 0.0 && sine.abs() <= 1e-5 && (c - f).abs() <= 0.01 * f) {
         return Ok(None);
     }
     Ok(Some([d[0] / speed, d[1] / speed]))
@@ -1204,5 +1216,8 @@ mod tests {
         assert!(off(direction(&fit, false), [1.0f64.cos(), 1.0f64.sin()]) < 1e-8);
         let mut at = |u: f64| involute(u);
         assert_eq!(end_direction(&mut at, 0.0, 1.0).unwrap(), None);
+        // A power below one near zero changes faster than the step: free.
+        let mut steep = |u: f64| Ok([u, (u + 1e-3).powf(0.5)]);
+        assert_eq!(end_direction(&mut steep, 0.0, 1.0).unwrap(), None);
     }
 }
