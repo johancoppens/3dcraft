@@ -756,6 +756,7 @@ pub enum CornerKind {
     Open,
     Butt,
     Overlap,
+    #[serde(alias = "mitre")]
     Miter,
 }
 

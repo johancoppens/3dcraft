@@ -229,6 +229,23 @@ fn bad_corner_treatments_are_errors_or_fail_the_part() {
         json!({"sketch": "Base", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
                "flanges": two, "corner": corner})
     };
+    // `mitre`, the plate joints' spelling, is miter too.
+    let made = built(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "name": "Spelt", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
+               "flanges": two, "corner": {"kind": "mitre", "gap": "0.2 mm"}}),
+    );
+    assert_eq!(made["status"], "ok");
+    let table = run(&mut s, "sheetMetal.bends", json!({"feature": "Spelt"}));
+    assert_eq!(table["corners"][0]["kind"], "miter", "{table}");
+    let e = error(
+        &mut s,
+        "feature.sheetMetal",
+        json!({"sketch": "Base", "thickness": "1 mm", "radius": "1 mm", "kFactor": 0.4,
+               "flanges": two, "corners": [{"flanges": [0, 1], "kind": "overlap", "gap": true}]}),
+    );
+    assert!(e.contains("corners.0.gap"), "{e}");
     for (corner, says) in [
         (json!({"kind": "closed", "gap": "1 mm"}), "picks"),
         (json!({"kind": 2.5, "gap": "1 mm"}), "picks"),
@@ -364,4 +381,73 @@ fn the_guide_closed_corners_run_as_it_says() {
         .collect();
     assert_eq!(kinds, ["overlap"; 4], "{table}");
     assert!(dir.join("box.dxf").exists());
+}
+
+/// The area of the one face the name names.
+fn face_area(s: &mut Session, name: &str) -> f64 {
+    let check = assertion(
+        s,
+        "AreaOf",
+        json!({"measure": "area", "of": {"kind": "face", "where": [{"name": name}]}, "min": "0 mm^2"}),
+    );
+    run(s, "assert.delete", json!({"name": "AreaOf"}));
+    check["measured"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{check}"))
+}
+
+/// Closing a corner adds pieces to the flats' outlines, but every face
+/// keeps its name and its target: each rim of the open part (a tip, a
+/// side, a bend's end) is still there when the corners close, as the same
+/// face (the same area: a side's rim is the extension's end now, as long
+/// as the side was), and opening them again gives the names back exactly.
+/// A Jig flips the kind with a choice.
+#[test]
+fn names_keep_their_targets_when_corners_open_and_close() {
+    let dir = workdir("sheetmetal-corners", "names");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "1 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "g", "expr": "0.2 mm"}),
+    );
+    run(&mut s, "variable.set", json!({"name": "how", "expr": "1"}));
+    tray(&mut s, 1.0, "how", "round");
+    let names = |s: &mut Session| -> Vec<String> {
+        body(s, "Tray")["faceNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap().to_string())
+            .collect()
+    };
+    let open = names(&mut s);
+    let rims: Vec<String> = open
+        .iter()
+        .filter(|n| n.contains("rim("))
+        .cloned()
+        .collect();
+    assert!(rims.len() >= 12, "{open:?}");
+    let before: Vec<f64> = rims.iter().map(|n| face_area(&mut s, n)).collect();
+    for how in ["3", "2", "4"] {
+        run(&mut s, "variable.set", json!({"name": "how", "expr": how}));
+        let closed = names(&mut s);
+        for name in &open {
+            assert!(
+                closed.contains(name),
+                "kind {how}: {name} is gone: {closed:?}"
+            );
+        }
+        if how == "3" {
+            // Overlap at 90 degrees: square ends, each as long as its side.
+            for (name, area) in rims.iter().zip(&before) {
+                let now = face_area(&mut s, name);
+                assert!((now - area).abs() <= 1e-6 * area, "{name}: {area} -> {now}");
+            }
+        }
+    }
+    run(&mut s, "variable.set", json!({"name": "how", "expr": "1"}));
+    assert_eq!(names(&mut s), open);
 }

@@ -20,11 +20,12 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_kernel::profile::{Curve2, SketchCurve};
 use craft3d_kernel::sheetmetal::{
-    self, Closing, CornerSpec, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief,
-    ReliefKind, SheetFace, Spec,
+    self, Closing, CornerSpec, Cutout, Direction, EdgeKey, FlangeSpec, LengthFrom, On, Part,
+    Relief, ReliefKind, SheetFace, Spec,
 };
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, FaceId};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// A sheet-metal part as regeneration built it, for the commands that
@@ -420,11 +421,45 @@ pub(crate) fn build(
     let made_by = doc
         .feature(id)
         .map_or_else(|| id.to_string(), |f| f.name.clone());
-    let names = crate::plate::plate_names(
+    // With a corner closed, every edge is named as its counterpart in the
+    // part with every corner open (an extension's end as the side it
+    // replaces), so a rim keeps its name, and a reference its target, when
+    // a corner opens or closes; a piece an extension adds is
+    // `F9:edge(flat, segment)`.
+    let open_names = match &part.open_sheet {
+        None => None,
+        Some((open, keys)) => {
+            let mut named = Names {
+                faces: sheet_names.faces.clone(),
+                ..Names::default()
+            };
+            let none = vec![None; open.edges.len()];
+            let no_vertices = vec![None; open.vertices.len()];
+            named.name_entities(id, open, tolerance.linear, &none, &no_vertices, |_| None)?;
+            let at: BTreeMap<EdgeKey, usize> =
+                keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+            Some((named, at))
+        }
+    };
+    let edge_name = |edge: usize| -> Option<PersistentName> {
+        let Some((named, at)) = &open_names else {
+            return sheet_names.edge_name(edge);
+        };
+        match part.edge_keys.get(edge)? {
+            EdgeKey::Piece { flat, seg } => Some(PersistentName::new(
+                id,
+                NameRole::Edge,
+                vec![*flat as u64, *seg as u64],
+            )),
+            key => named.edge_name(*at.get(key)?),
+        }
+    };
+    let names = crate::plate::plate_names_with(
         id,
         &part.solid,
         &part.sheet,
         &sheet_names,
+        &edge_name,
         &picked,
         &made_by,
         tolerance.linear,

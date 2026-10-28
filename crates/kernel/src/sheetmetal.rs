@@ -308,6 +308,29 @@ pub struct Flat {
     /// each end's segment in `outer`, and the plane (in the pattern's axes
     /// as folded) its edge of the part lies on.
     pub ends: Vec<End>,
+    /// Per segment of `outer`, its place in the flat's outline with every
+    /// corner open (an extension's end stands for the side it replaces),
+    /// or `None` for a piece an extension adds (along its tangent line or
+    /// its tip): what keeps the part's names when a corner is closed.
+    pub was: Vec<Option<usize>>,
+}
+
+/// What an edge of the folded sheet is, the same whether the part's
+/// corners are open or closed ([`Part::edge_keys`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EdgeKey {
+    /// Segment `seg` of flat `flat`'s outline with every corner open.
+    Outline { flat: usize, seg: usize },
+    /// A piece an extension adds: segment `seg` of the closed outline.
+    Piece { flat: usize, seg: usize },
+    /// Segment `seg` of hole `hole` of flat `flat`.
+    Hole {
+        flat: usize,
+        hole: usize,
+        seg: usize,
+    },
+    /// The arc at the start (0) or the end (1) of bend `bend`.
+    Arc { bend: usize, end: usize },
 }
 
 /// The end of a flange's extension at a closed corner.
@@ -351,6 +374,13 @@ pub struct Part {
     pub corners: Vec<Corner>,
     /// The folded bottom skin: one face per flat and per bend.
     pub sheet: Body,
+    /// Per edge of `sheet`, what it is.
+    pub edge_keys: Vec<EdgeKey>,
+    /// With a closed corner, the bottom skin the part would have with
+    /// every corner open (holes and all, not checked) and its edges' keys:
+    /// the part's edges are named as their open counterparts are, so a
+    /// reference keeps its target when a corner opens or closes.
+    pub open_sheet: Option<(Body, Vec<EdgeKey>)>,
     pub sheet_faces: Vec<SheetFace>,
     pub solid: Plate,
 }
@@ -624,12 +654,14 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     // The bends and the flanges' flats, in order: a parent comes first.
     let mut bends: Vec<Bend> = Vec::with_capacity(spec.flanges.len());
     let mut flats: Vec<Flat> = Vec::with_capacity(1 + spec.flanges.len());
+    let n_base = base_outer.len();
     flats.push(Flat {
         outer: base_outer,
         holes: base_holes,
         transform: Transform::IDENTITY,
         tip: None,
         ends: Vec::new(),
+        was: (0..n_base).map(Some).collect(),
     });
     for (i, f) in spec.flanges.iter().enumerate() {
         let (parent, start, end) = match f.on {
@@ -706,6 +738,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             transform: Transform::IDENTITY,
             tip: Some(2),
             ends: Vec::new(),
+            was: (0..4).map(Some).collect(),
         });
         bends.push(bend);
     }
@@ -719,13 +752,35 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     close_corners(&mut flats, &bends, &corners, t, tolerance)?;
     place_cutouts(&mut flats, &spec.cutouts, tolerance)?;
     pattern_clear(&flats, &bends, tolerance)?;
-    let (sheet, sheet_faces, ends) = folded_sheet(
-        spec,
-        &flats,
-        &bends,
-        &base_edge_list(&base_edge, &on_segment),
-        tolerance,
-    )?;
+    let base_edges = base_edge_list(&base_edge, &on_segment);
+    let (sheet, sheet_faces, ends, edge_keys) =
+        folded_sheet(spec, &flats, &bends, &base_edges, tolerance, true)?;
+    let open_sheet = if flats.iter().any(|f| !f.ends.is_empty()) {
+        let open: Vec<Flat> = flats
+            .iter()
+            .enumerate()
+            .map(
+                |(f, flat)| match f.checked_sub(1).and_then(|i| bends.get(i)) {
+                    Some(b) if !flat.ends.is_empty() => {
+                        let (a0, a1) = b.far_line();
+                        let (b0, b1) = tip(b);
+                        Flat {
+                            outer: vec![line(a1, a0), line(a0, b0), line(b0, b1), line(b1, a1)],
+                            tip: Some(2),
+                            ends: Vec::new(),
+                            was: (0..4).map(Some).collect(),
+                            ..flat.clone()
+                        }
+                    }
+                    _ => flat.clone(),
+                },
+            )
+            .collect();
+        let (body, _, _, keys) = folded_sheet(spec, &open, &bends, &base_edges, tolerance, false)?;
+        Some((body, keys))
+    } else {
+        None
+    };
     let faces: Vec<FaceId> = (0..sheet.faces.len())
         .filter_map(|f| u32::try_from(f).ok().map(FaceId))
         .collect();
@@ -742,6 +797,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         bends,
         corners,
         sheet,
+        edge_keys,
+        open_sheet,
         sheet_faces,
         solid,
     })
@@ -1333,6 +1390,7 @@ fn close_corners(
             None => None,
         };
         let mut outer = vec![line(a1, a0)];
+        let mut was = vec![Some(0)];
         let mut ends = Vec::new();
         match start {
             Some((a0e, b0e)) => {
@@ -1340,24 +1398,34 @@ fn close_corners(
                 ends.push((outer.len(), at_start.get(&x).copied()));
                 outer.push(line(a0e, b0e));
                 outer.push(line(b0e, b0));
+                was.extend([None, Some(1), None]);
             }
-            None => outer.push(line(a0, b0)),
+            None => {
+                outer.push(line(a0, b0));
+                was.push(Some(1));
+            }
         }
         let tip_at = outer.len();
         outer.push(line(b0, b1));
+        was.push(Some(2));
         match end {
             Some((a1e, b1e)) => {
                 outer.push(line(b1, b1e));
                 ends.push((outer.len(), at_end.get(&x).copied()));
                 outer.push(line(b1e, a1e));
                 outer.push(line(a1e, a1));
+                was.extend([None, Some(3), None]);
             }
-            None => outer.push(line(b1, a1)),
+            None => {
+                outer.push(line(b1, a1));
+                was.push(Some(3));
+            }
         }
         let flat = flats
             .get_mut(x + 1)
             .ok_or_else(|| refuse(Some(x), "a corner's flange is missing"))?;
         flat.outer = outer;
+        flat.was = was;
         flat.tip = Some(tip_at);
         flat.ends = ends
             .into_iter()
@@ -1606,7 +1674,8 @@ fn folded_sheet(
     bends: &[Bend],
     base_edge: &BTreeMap<usize, usize>,
     tolerance: &Tolerance,
-) -> Result<(Body, Vec<SheetFace>, Ends), KernelError> {
+    checked: bool,
+) -> Result<(Body, Vec<SheetFace>, Ends, Vec<EdgeKey>), KernelError> {
     let mut b = Builder {
         body: Body::new(BodyKind::Sheet),
     };
@@ -1631,6 +1700,7 @@ fn folded_sheet(
     // shares its tangent edge with bend i's face; its tip may be the
     // parent edge of a later bend.
     let mut bend_loops: Vec<Vec<(EdgeId, bool)>> = Vec::with_capacity(bends.len());
+    let mut bend_arcs: Vec<[EdgeId; 2]> = Vec::with_capacity(bends.len());
     for (i, bend) in bends.iter().enumerate() {
         // The parent edge: `s → e` in the parent's loop.
         let (ps, pe, parent_edge) = if bend.parent == 0 {
@@ -1704,6 +1774,7 @@ fn folded_sheet(
         };
         let arc_s = arc(&mut b, ps, a0, 0.0)?;
         let arc_e = arc(&mut b, pe, a1, distance(bend.start, bend.end))?;
+        bend_arcs.push([arc_s, arc_e]);
         bend_loops.push(vec![
             (arc_s, false),
             (tangent.0, !tangent.1),
@@ -1787,6 +1858,50 @@ fn folded_sheet(
         roles.push(SheetFace::Bend(i));
     }
     b.body.add_shell(faces);
+    // What each edge is: the outlines' segments by their open places, the
+    // holes', the bends' arcs.
+    let mut keys: Vec<Option<EdgeKey>> = vec![None; b.body.edges.len()];
+    let mut put = |edge: EdgeId, key: EdgeKey| {
+        if let Some(slot) = usize::try_from(edge.0).ok().and_then(|e| keys.get_mut(e)) {
+            *slot = Some(key);
+        }
+    };
+    for (flat, (_, edges)) in rings.iter().enumerate() {
+        let was = flats.get(flat).map(|f| f.was.as_slice()).unwrap_or(&[]);
+        for (seg, (edge, _)) in edges.iter().enumerate() {
+            put(
+                *edge,
+                match was.get(seg).copied().flatten() {
+                    Some(open) => EdgeKey::Outline { flat, seg: open },
+                    None => EdgeKey::Piece { flat, seg },
+                },
+            );
+        }
+    }
+    for (hole, edges) in hole_rings.iter().enumerate() {
+        for (seg, (edge, _)) in edges.iter().enumerate() {
+            put(*edge, EdgeKey::Hole { flat: 0, hole, seg });
+        }
+    }
+    for (flat, holes) in flange_holes.iter().enumerate() {
+        for (hole, edges) in holes.iter().enumerate() {
+            for (seg, (edge, _)) in edges.iter().enumerate() {
+                put(*edge, EdgeKey::Hole { flat, hole, seg });
+            }
+        }
+    }
+    for (bend, arcs) in bend_arcs.iter().enumerate() {
+        for (end, edge) in arcs.iter().enumerate() {
+            put(*edge, EdgeKey::Arc { bend, end });
+        }
+    }
+    let keys: Vec<EdgeKey> = keys
+        .into_iter()
+        .collect::<Option<_>>()
+        .ok_or_else(|| refuse(None, "an edge of the folded sheet is not accounted for"))?;
+    if !checked {
+        return Ok((b.body, roles, ends, keys));
+    }
     let mut defects = craft3d_topo::check_remembered(&b.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
@@ -1795,7 +1910,7 @@ fn folded_sheet(
             defects,
         });
     }
-    Ok((b.body, roles, ends))
+    Ok((b.body, roles, ends, keys))
 }
 
 /// The bend's neutral band, `R + K T` about its axis over its angle and

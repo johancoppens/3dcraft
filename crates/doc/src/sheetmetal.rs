@@ -182,7 +182,12 @@ impl CornerKind {
         }
     }
 
+    /// The kind a name names; `mitre` (the spelling `feature.plate`'s
+    /// joints use) is `miter` too.
     pub fn from_name(name: &str) -> Option<Self> {
+        if name == "mitre" {
+            return Some(CornerKind::Miter);
+        }
         Self::ALL.into_iter().find(|k| k.name() == name)
     }
 }

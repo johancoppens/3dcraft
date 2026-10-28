@@ -1504,3 +1504,88 @@ fn closed_corners_refused_by_reason() {
     assert_eq!(build(&open, &tol).unwrap(), before);
     assert!(before.flats.iter().all(|f| f.ends.is_empty()));
 }
+
+/// A mitre at a base corner of 120 degrees, in closed form: with both
+/// walls square to the base, the plane that halves the angle between them
+/// is the vertical plane through the corner `p` along the corner's
+/// bisector, and the two end faces lie `g/2` either side of it (the
+/// part's vertices of each flat come no nearer). Between walls of
+/// different angles (90 and 75 degrees) the two ends share one normal,
+/// equally inclined to both walls, and lie `g` apart along it.
+#[test]
+fn a_mitre_at_a_wide_corner_and_between_walls_of_different_angles() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (t, r, l, g) = (1.0 * k, 1.0 * k, 10.0 * k, 0.3 * k);
+        let slack = 10.0 * tol.linear;
+        let relief = Some(Relief {
+            kind: ReliefKind::Round,
+            size: 3.0 * k,
+        });
+        let corner = [[0.0, 0.0], [60.0, 0.0], [80.0, 34.64], [0.0, 34.64]];
+        let hex = polygon_base(&corner, k);
+        let two: Vec<FlangeSpec> = (1..=2)
+            .map(|c| flange(On::Base(c), l, FRAC_PI_2, Direction::Up, r, 0.4))
+            .collect();
+        let mut sp = spec(hex, t, two, relief);
+        sp.corner = closing(CornerKind::Miter, g);
+        let part = build(&sp, &tol).unwrap();
+        healthy(&part, &tol);
+        let p = Vec3::new(60.0 * k, 0.0, 0.0);
+        let ea = Vec3::new(-1.0, 0.0, 0.0);
+        let eb = Vec3::new(20.0, 34.64, 0.0).normalized().unwrap();
+        let u = (ea + eb).normalized().unwrap();
+        let n = Vec3::new(-u.y, u.x, 0.0);
+        let side = |flat: usize| -> f64 {
+            let along: Vec<f64> = flat_points(&part, flat)
+                .iter()
+                .map(|q| n.dot(*q - p))
+                .collect();
+            let sign = along.iter().sum::<f64>().signum();
+            let nearest = along.iter().map(|d| d * sign).fold(f64::INFINITY, f64::min);
+            near(
+                nearest,
+                0.5 * g,
+                slack,
+                &format!("flat {flat} from the bisector at {k}"),
+            );
+            sign
+        };
+        assert_eq!(side(1) * side(2), -1.0, "the flats lie either side");
+
+        let mixed = vec![
+            flange(On::Base(1), l, FRAC_PI_2, Direction::Up, r, 0.4),
+            flange(On::Base(2), l, 75f64.to_radians(), Direction::Up, r, 0.4),
+        ];
+        let mut sp = spec(base(60.0, 40.0, None, k), t, mixed, relief);
+        sp.corner = closing(CornerKind::Miter, g);
+        let part = build(&sp, &tol).unwrap();
+        healthy(&part, &tol);
+        round_trip(&part, &tol);
+        let (na, nb) = (part.flats[1].ends[0].normal, part.flats[2].ends[0].normal);
+        assert!((na - nb).length() <= 1e-12, "{na:?} {nb:?}");
+        let wall = |f: usize| part.flats[f].transform.vector(Vec3::Z);
+        near(
+            na.dot(wall(1)).abs(),
+            na.dot(wall(2)).abs(),
+            1e-12,
+            "the mitre is equally inclined to both walls",
+        );
+        let a: Vec<f64> = flat_points(&part, 1).iter().map(|q| na.dot(*q)).collect();
+        let b: Vec<f64> = flat_points(&part, 2).iter().map(|q| na.dot(*q)).collect();
+        let (amin, amax) = (
+            a.iter().copied().fold(f64::INFINITY, f64::min),
+            a.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let (bmin, bmax) = (
+            b.iter().copied().fold(f64::INFINITY, f64::min),
+            b.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let gap = if amax < bmin {
+            bmin - amax
+        } else {
+            amin - bmax
+        };
+        near(gap, g, slack, &format!("the mixed mitre's gap at {k}"));
+    }
+}

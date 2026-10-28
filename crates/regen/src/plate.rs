@@ -246,6 +246,32 @@ pub(crate) fn plate_names(
     made_by: &str,
     tolerance: f64,
 ) -> Result<Names, String> {
+    plate_names_with(
+        feature,
+        built,
+        sheet,
+        sheet_names,
+        &|edge| sheet_names.edge_name(edge),
+        picked,
+        made_by,
+        tolerance,
+    )
+}
+
+/// [`plate_names`] with the sheet's edges named by `edge_name` (sheet
+/// metal names an edge as its counterpart in the part with every corner
+/// open).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plate_names_with(
+    feature: FeatureId,
+    built: &craft3d_kernel::plate::Plate,
+    sheet: &Body,
+    sheet_names: &Names,
+    edge_name: &dyn Fn(usize) -> Option<PersistentName>,
+    picked: &[FaceId],
+    made_by: &str,
+    tolerance: f64,
+) -> Result<Names, String> {
     let face_name = |face: FaceId| -> Result<PersistentName, String> {
         sheet_names
             .faces
@@ -263,8 +289,7 @@ pub(crate) fn plate_names(
                 PersistentName::copy(feature, instance, face_name(*face)?)
             }
             Made::Rim(edge) => {
-                let edge_name = sheet_names
-                    .edge_name(edge.0 as usize)
+                let edge_name = edge_name(edge.0 as usize)
                     .ok_or_else(|| "the sheet does not name an edge of the plate's".to_string())?;
                 let face = rim_face(sheet, *edge, picked)
                     .ok_or_else(|| "an edge of the plate bounds none of its faces".to_string())?;

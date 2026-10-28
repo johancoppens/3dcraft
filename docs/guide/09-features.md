@@ -259,12 +259,13 @@ stay apart; the relief, if you give one, is the small hole where they would cros
 flange, `gap` apart. `overlap`: one flange covers the corner, its end flush with the other's outside
 face, and the other stops `gap` short of its inside face. `butt`: the same, with the covering flange
 also stopping `gap` short of flush. `miter`: both run to the plane that halves the angle between the
-walls, `gap` apart there (their ends bevelled). At each corner the flange on the edge that arrives at it
+walls, `gap` apart there (their ends bevelled; `mitre`, as plates spell it, is accepted too). At each corner the flange on the edge that arrives at it
 (going round the base counter-clockwise) covers it; `corners` treats one corner its own way, named by
 its two flanges, with `over` for the flange that covers it. Bend angles and corner angles other than 90
 degrees close the same way (the ends are then slanted in the flat pattern). `kind` and the relief's
 `shape` may be expressions that pick by number, as a Jig's choice parameter counts (`corner`: 1 open, 2
-butt, 3 overlap, 4 miter; `shape`: 1 rect, 2 round, 3 tear), so a form can offer them. The measure
+butt, 3 overlap, 4 miter; `shape`: 1 rect, 2 round, 3 tear), so a form can offer them. Opening or closing a corner keeps every face's name: a
+side's end is named as the side was. The measure
 `cornerGap` is the least gap at the closed corners, measured on the part. Refused, with the reason: a
 gap that is not more than the tolerance (a butt's must also be less than the thickness), two flanges
 bent opposite ways, walls that lean so far towards each other that a flange would have to be cut back,
