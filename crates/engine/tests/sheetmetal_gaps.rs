@@ -184,8 +184,11 @@ fn holes_in_flanges_are_cut_flat_and_folded_and_measured() {
     }
 }
 
-/// A hole that lies in no one flat fails the part with the reason; a
-/// cut-out sketch off the base's plane is refused by name.
+/// A hole that lies in no one flat and not inside the pattern fails the
+/// part with the reason; a cut-out sketch off the base's plane is refused
+/// by name. (The hole was across the bend's strip until holes across a bend
+/// were built, 2026-10-28, `sheetmetal_cuts.rs`; it crosses the strip's end
+/// now, past the pattern's edge.)
 #[test]
 fn holes_across_a_bend_or_off_the_plane_fail_the_part() {
     let dir = workdir("sheetmetal-gaps", "refusals");
@@ -195,7 +198,7 @@ fn holes_across_a_bend_or_off_the_plane_fail_the_part() {
     run(
         &mut s,
         "sketch.circle",
-        json!({"sketch": "Base", "center": [51.0, 20.0], "radius": 0.5}),
+        json!({"sketch": "Base", "center": [51.0, 0.0], "radius": 0.5}),
     );
     let made = run(
         &mut s,

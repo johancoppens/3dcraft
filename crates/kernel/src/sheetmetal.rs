@@ -62,7 +62,9 @@ use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
 mod cuts;
+mod later;
 pub use cuts::Cut;
+pub use later::{LaterCuts, later_cuts};
 
 /// The most flanges one part may have.
 pub const MAX_FLANGES: usize = 1024;
@@ -543,7 +545,9 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 if !matches!(outer.get(k).map(|s| &s.shape), Some(Shape::Line)) {
                     return Err(refuse(
                         Some(i),
-                        format!("the curve {id} is not straight; a flange sits on a straight edge"),
+                        format!(
+                            "the curve {id} is not straight; a flange sits on a straight edge (a flange on a curved edge is not a bend but a stretched or shrunk flange: its bend region is a piece of a torus, which is not developable, so it has no flat pattern that keeps lengths; not supported)"
+                        ),
                     ));
                 }
                 if on_segment.insert(k, i).is_some() {
@@ -1207,7 +1211,7 @@ fn check_flange(i: usize, f: &FlangeSpec, tol: f64) -> Result<(), KernelError> {
     if !(f.radius > tol) {
         return Err(refuse(
             Some(i),
-            "a sharp bend (an inner radius within the tolerance of zero) is not supported: its inner skin would be an edge (owed); give the radius the tooling makes",
+            "a sharp bend (an inner radius within the tolerance of zero) is not supported: its inner skin would be an edge and its outer a cylinder of radius T over the angle, which the one offset (the plate of a sheet tangent across its bends) cannot make, and a bend at some smallest radius in its place would be a part other than the one asked for; give the inner radius the tooling makes (in air bending about a sixth of the die opening)",
         ));
     }
     if !(f.k.is_finite() && (0.0..=1.0).contains(&f.k)) {
