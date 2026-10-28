@@ -12,11 +12,18 @@
 //! not the bodies' meshes one after the other (as `scene::build` makes
 //! it), which is then made again on reading.
 //!
-//! Reading never panics and never allocates more than the bytes it is
-//! given can hold: every count is checked against what is left before
-//! anything is made of it. A feature's kind is the page's own (the kind of
-//! the feature of that id in the document the scene is read for), so the
-//! scene of another document does not read.
+//! Reading never panics, and what it makes is bounded by the bytes it is
+//! given: every count is checked against the bytes left before anything
+//! is made of it (each entry takes at least its least size in bytes), no
+//! list is given more room up front than the bytes left would fill, and
+//! a face colour must name a face of a body read before it, those bodies
+//! numbered as `scene::build` numbers them (so the colours, which are
+//! kept by face id, take no more room than the bodies' faces). What
+//! reads is a scene the page can draw: every mesh holds a normal per
+//! position, a face id per triangle and only corners it has, and its
+//! face ids lie within its body's faces. A feature's kind is the page's
+//! own (the kind of the feature of that id in the document the scene is
+//! read for), so the scene of another document does not read.
 
 use crate::meshes::{BodyFacts, EdgePolylines};
 use crate::scene::{
@@ -31,7 +38,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What the bytes of a scene start with, with the form's version.
-const MAGIC: &[u8; 8] = b"C3DSCN\x00\x01";
+const MAGIC: &[u8; 8] = b"C3DSCN\x00\x02";
 
 /// The scene's bytes. The revision is the page's own and is left out.
 pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
@@ -96,11 +103,17 @@ pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
         w.text(&datum.feature);
         w.text(&datum.name);
         match datum.shape {
-            SceneDatumShape::Plane { center, u, v } => {
+            SceneDatumShape::Plane {
+                center,
+                u,
+                v,
+                origin,
+                normal,
+            } => {
                 w.u8(0);
-                w.vec3(center);
-                w.vec3(u);
-                w.vec3(v);
+                for p in [center, u, v, origin, normal] {
+                    w.vec3(p);
+                }
             }
             SceneDatumShape::Axis { from, to } => {
                 w.u8(1);
@@ -158,8 +171,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
     let max_angle = r.opt_f64()?;
     let coarsened = r.bool()?;
     let preview = r.bool()?;
-    let count = r.count(4)?;
-    let mut bodies = Vec::with_capacity(count);
+    let count = r.count(BODY)?;
+    let mut bodies = Vec::with_capacity(r.room::<SceneBody>(count));
     for _ in 0..count {
         bodies.push(SceneBody {
             feature: r.text()?,
@@ -170,14 +183,18 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             facts: Arc::new(r.facts()?),
         });
     }
+    let face_end = numbered(&bodies)?;
     let mesh = match r.u8()? {
         0 => concatenated(&bodies).ok_or("the scene's bodies cannot be joined into one mesh")?,
         1 => r.mesh()?,
         _ => return Err("the scene's mesh is not written as a mesh is".into()),
     };
     let mut face_colors = FaceColors::new();
-    for _ in 0..r.count(5)? {
+    for _ in 0..r.count(FACE_COLOR)? {
         let face = r.u32()?;
+        if face >= face_end {
+            return Err("a face colour of the scene is of no face of its bodies".into());
+        }
         let rgb = [r.u8()?, r.u8()?, r.u8()?];
         let metallic = r.u8()?;
         let roughness = if r.bool()? { Some(r.u8()?) } else { None };
@@ -194,14 +211,14 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             return Err("a face colour of the scene is out of range".into());
         }
     }
-    let count = r.count(4)?;
-    let mut sketches = Vec::with_capacity(count);
+    let count = r.count(SKETCH)?;
+    let mut sketches = Vec::with_capacity(r.room::<SceneSketch>(count));
     for _ in 0..count {
         let feature = r.text()?;
         let name = r.text()?;
         let (origin, x_axis, y_axis, normal) = (r.vec3()?, r.vec3()?, r.vec3()?, r.vec3()?);
-        let lines = r.count(4)?;
-        let mut polylines = Vec::with_capacity(lines);
+        let lines = r.count(POLYLINE)?;
+        let mut polylines = Vec::with_capacity(r.room::<ScenePolyline>(lines));
         for _ in 0..lines {
             let entity = r.text()?;
             let curve = match r.u8()? {
@@ -229,8 +246,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             points: r.points()?,
         });
     }
-    let count = r.count(4)?;
-    let mut datums = Vec::with_capacity(count);
+    let count = r.count(DATUM)?;
+    let mut datums = Vec::with_capacity(r.room::<SceneDatum>(count));
     for _ in 0..count {
         let feature = r.text()?;
         let name = r.text()?;
@@ -239,6 +256,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
                 center: r.vec3()?,
                 u: r.vec3()?,
                 v: r.vec3()?,
+                origin: r.vec3()?,
+                normal: r.vec3()?,
             },
             1 => SceneDatumShape::Axis {
                 from: r.vec3()?,
@@ -259,8 +278,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
         .iter()
         .map(|f| (f.id.to_string(), f.kind.type_name()))
         .collect();
-    let count = r.count(4)?;
-    let mut features = Vec::with_capacity(count);
+    let count = r.count(FEATURE)?;
+    let mut features = Vec::with_capacity(r.room::<SceneFeature>(count));
     for _ in 0..count {
         let id = r.text()?;
         let name = r.text()?;
@@ -323,6 +342,60 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
         bbox,
         bodies_box,
     })
+}
+
+/// The least bytes of an entry of each list of a scene: what its fixed
+/// parts and the counts of its lists take.
+/// A body: two texts, a mesh (four counts), its first face id, its edges
+/// (a count) and its facts (seven counts).
+const BODY: usize = 4 + 4 + 16 + 4 + 4 + 28;
+/// A face colour: the face, the colour, the metal, whether it is rough.
+const FACE_COLOR: usize = 4 + 3 + 1 + 1;
+/// A sketch: two texts, four vectors and two counts.
+const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4;
+/// A sketch's polyline: a text, its kind, construction and its points.
+const POLYLINE: usize = 4 + 1 + 1 + 4;
+/// A datum: two texts, its shape and at least one vector.
+const DATUM: usize = 4 + 4 + 1 + 24;
+/// A feature row: three texts and nine bytes of state and options.
+const FEATURE: usize = 4 + 4 + 4 + 9;
+
+/// One past the highest face id a face colour of `bodies` may have: the
+/// end of the faces of the bodies, checked to be numbered as
+/// `scene::build` numbers them (each body's first id one past the
+/// highest of the one before, the first 0) and each body's face ids
+/// within its faces. A body has as many faces as it has face names (or
+/// lists of aliases), or, without names, no more than it has triangles
+/// (every face the tessellator meshed has a triangle at least). An error
+/// for bodies that are not numbered so: their colours could take room no
+/// face of them has.
+fn numbered(bodies: &[SceneBody]) -> Result<u32, String> {
+    const WRONG: &str = "the scene's faces are not numbered as a scene numbers them";
+    let mut next: u32 = 0;
+    let mut end: u32 = 0;
+    for body in bodies {
+        if body.first_face_id != next {
+            return Err(WRONG.into());
+        }
+        let faces = body
+            .facts
+            .face_names
+            .len()
+            .max(body.facts.face_aliases.len())
+            .max(body.mesh.triangles.len());
+        let faces = u32::try_from(faces).map_err(|_| WRONG)?;
+        if let Some(&highest) = body.mesh.face_ids.iter().max() {
+            if highest >= faces {
+                return Err(WRONG.into());
+            }
+            next = next
+                .checked_add(highest)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(WRONG)?;
+        }
+        end = end.max(body.first_face_id.checked_add(faces).ok_or(WRONG)?);
+    }
+    Ok(end)
 }
 
 /// The bodies' meshes one after the other, as `scene::build` joins them:
@@ -519,12 +592,21 @@ impl Reader<'_> {
         let b: [u8; 8] = self.take(8)?.try_into().map_err(|_| SHORT)?;
         Ok(u64::from_le_bytes(b))
     }
+    /// The bytes not read yet.
+    fn left(&self) -> usize {
+        self.bytes.len().saturating_sub(self.at)
+    }
+    /// The room to give a list of `n` entries of `T` up front: no more
+    /// than the bytes left would fill (a list longer than that grows as
+    /// its entries are read, each of which takes bytes of its own).
+    fn room<T>(&self, n: usize) -> usize {
+        n.min(self.left() / std::mem::size_of::<T>().max(1))
+    }
     /// A count of things of at least `min` bytes each: never more than
     /// the bytes left can hold.
     fn count(&mut self, min: usize) -> Result<usize, String> {
         let n = usize::try_from(self.u32()?).map_err(|_| SHORT)?;
-        let left = self.bytes.len().saturating_sub(self.at);
-        if n.saturating_mul(min.max(1)) > left {
+        if n.saturating_mul(min.max(1)) > self.left() {
             return Err(SHORT.into());
         }
         Ok(n)
@@ -544,7 +626,7 @@ impl Reader<'_> {
     }
     fn points(&mut self) -> Result<Vec<Vec3>, String> {
         let n = self.count(24)?;
-        let mut points = Vec::with_capacity(n);
+        let mut points = Vec::with_capacity(self.room::<Vec3>(n));
         for _ in 0..n {
             points.push(self.vec3()?);
         }
@@ -552,7 +634,7 @@ impl Reader<'_> {
     }
     fn lines(&mut self) -> Result<EdgePolylines, String> {
         let n = self.count(4)?;
-        let mut lines = Vec::with_capacity(n);
+        let mut lines = Vec::with_capacity(self.room::<Vec<Vec3>>(n));
         for _ in 0..n {
             lines.push(self.points()?);
         }
@@ -572,7 +654,7 @@ impl Reader<'_> {
     }
     fn texts(&mut self) -> Result<Vec<String>, String> {
         let n = self.count(4)?;
-        let mut texts = Vec::with_capacity(n);
+        let mut texts = Vec::with_capacity(self.room::<String>(n));
         for _ in 0..n {
             texts.push(self.text()?);
         }
@@ -580,10 +662,10 @@ impl Reader<'_> {
     }
     fn places(&mut self) -> Result<Vec<Vec<usize>>, String> {
         let n = self.count(4)?;
-        let mut lists = Vec::with_capacity(n);
+        let mut lists = Vec::with_capacity(self.room::<Vec<usize>>(n));
         for _ in 0..n {
             let m = self.count(8)?;
-            let mut list = Vec::with_capacity(m);
+            let mut list = Vec::with_capacity(self.room::<usize>(m));
             for _ in 0..m {
                 list.push(usize::try_from(self.u64()?).map_err(|_| "a place is out of range")?);
             }
@@ -595,14 +677,25 @@ impl Reader<'_> {
         let positions = self.points()?;
         let normals = self.points()?;
         let n = self.count(12)?;
-        let mut triangles = Vec::with_capacity(n);
+        let mut triangles = Vec::with_capacity(self.room::<[u32; 3]>(n));
         for _ in 0..n {
             triangles.push([self.u32()?, self.u32()?, self.u32()?]);
         }
         let n = self.count(4)?;
-        let mut face_ids = Vec::with_capacity(n);
+        let mut face_ids = Vec::with_capacity(self.room::<u32>(n));
         for _ in 0..n {
             face_ids.push(self.u32()?);
+        }
+        // What a renderer and a pick take for granted of a mesh.
+        let corners = positions.len();
+        if normals.len() != corners
+            || face_ids.len() != triangles.len()
+            || triangles
+                .iter()
+                .flatten()
+                .any(|&k| !usize::try_from(k).is_ok_and(|k| k < corners))
+        {
+            return Err("a mesh of the scene cannot be read: its triangles, normals or face ids do not match its corners".into());
         }
         Ok(Mesh {
             positions,
@@ -614,7 +707,7 @@ impl Reader<'_> {
     fn facts(&mut self) -> Result<BodyFacts, String> {
         let face_names = self.texts()?;
         let n = self.count(4)?;
-        let mut face_aliases = Vec::with_capacity(n);
+        let mut face_aliases = Vec::with_capacity(self.room::<Vec<String>>(n));
         for _ in 0..n {
             face_aliases.push(self.texts()?);
         }
@@ -700,5 +793,127 @@ mod tests {
         // Another document: its features are not these.
         let other = Document::default();
         assert!(decode(&bytes, &other, 0).is_err());
+    }
+
+    /// The bytes of a scene without bodies that colours face `face`.
+    fn colour_without_bodies(face: u32) -> Vec<u8> {
+        let mut b = MAGIC.to_vec();
+        b.extend(1.0f64.to_bits().to_le_bytes());
+        b.extend([0, 0, 0]); // no angle, not coarsened, no preview
+        b.extend(0u32.to_le_bytes()); // no bodies
+        b.push(0); // the mesh is theirs
+        b.extend(1u32.to_le_bytes());
+        b.extend(face.to_le_bytes());
+        b.extend([200, 100, 50, 0, 0]);
+        for _ in 0..5 {
+            b.extend(0u32.to_le_bytes()); // sketches .. notices
+        }
+        b.extend([0, 0]); // two empty boxes
+        b
+    }
+
+    /// A face colour of a face no body has is refused, however small its
+    /// bytes: kept by face id, it would take room up to that id (16
+    /// million entries for 2^24 - 1 from 60 bytes).
+    #[test]
+    fn a_face_colour_of_no_face_is_refused() {
+        let doc = Document::default();
+        for face in [0, 1 << 20, (1 << 24) - 1] {
+            let error = decode(&colour_without_bodies(face), &doc, 0).unwrap_err();
+            assert!(error.contains("no face of its bodies"), "{face}: {error}");
+        }
+        // Past the faces of real bodies too.
+        let (mut s, scene) = scene();
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        let mut scene = (*scene).clone();
+        let end = scene
+            .bodies
+            .iter()
+            .map(|b| b.first_face_id + b.facts.face_names.len().max(b.mesh.triangles.len()) as u32)
+            .max()
+            .unwrap();
+        Arc::make_mut(&mut scene.face_colors).set(end, Some([1, 2, 3]));
+        assert!(decode(&encode(&scene), &doc, 0).is_err());
+        // Within them it reads.
+        Arc::make_mut(&mut scene.face_colors).set(end, None);
+        Arc::make_mut(&mut scene.face_colors).set(end - 1, Some([1, 2, 3]));
+        let back = decode(&encode(&scene), &doc, scene.revision).unwrap();
+        assert_eq!(back.face_colors.get(end - 1), Some([1, 2, 3]));
+    }
+
+    /// Bodies numbered otherwise than a scene numbers them do not read:
+    /// a first face id moved on, a face id past the body's faces.
+    #[test]
+    fn bodies_numbered_otherwise_do_not_read() {
+        let (mut s, scene) = scene();
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        assert!(scene.bodies.len() >= 2);
+        let mut moved = (*scene).clone();
+        Arc::make_mut(&mut moved.bodies)[1].first_face_id += 1;
+        let error = decode(&encode(&moved), &doc, 0).unwrap_err();
+        assert!(error.contains("numbered"), "{error}");
+        let mut far = (*scene).clone();
+        let body = &mut Arc::make_mut(&mut far.bodies)[0];
+        Arc::make_mut(&mut body.mesh).face_ids[0] = (1 << 24) - 2;
+        let error = decode(&encode(&far), &doc, 0).unwrap_err();
+        assert!(error.contains("numbered"), "{error}");
+    }
+
+    /// A mesh a renderer could not draw does not read: a corner it does
+    /// not have, a normal short, a face id short; in a body's mesh and in
+    /// the scene's own (written when it is not the bodies' joined).
+    #[test]
+    fn a_mesh_that_does_not_hold_together_does_not_read() {
+        let (mut s, scene) = scene();
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        let breaks: [fn(&mut Mesh); 3] = [
+            |m| m.triangles[0][1] = m.positions.len() as u32,
+            |m| {
+                m.normals.pop();
+            },
+            |m| {
+                m.face_ids.pop();
+            },
+        ];
+        for (k, broken) in breaks.iter().enumerate() {
+            let mut own = (*scene).clone();
+            broken(Arc::make_mut(&mut own.mesh));
+            let error = decode(&encode(&own), &doc, 0).unwrap_err();
+            assert!(error.contains("cannot be read"), "{k}: {error}");
+            let mut body = (*scene).clone();
+            let first = &mut Arc::make_mut(&mut body.bodies)[0];
+            broken(Arc::make_mut(&mut first.mesh));
+            let error = decode(&encode(&body), &doc, 0).unwrap_err();
+            assert!(error.contains("cannot be read"), "{k}: {error}");
+        }
+    }
+
+    /// A scene whose own mesh is not its bodies' joined (written whole,
+    /// the tag 1) reads back bit for bit too.
+    #[test]
+    fn a_scene_mesh_written_whole_reads_back() {
+        let (mut s, scene) = scene();
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        let joined = encode(&scene);
+        let mut own = (*scene).clone();
+        own.mesh = Arc::clone(&scene.bodies[0].mesh);
+        let bytes = encode(&own);
+        assert_ne!(bytes, joined);
+        let back = decode(&bytes, &doc, own.revision).unwrap();
+        assert_eq!(back, own);
+        assert_eq!(encode(&back), bytes);
+    }
+
+    /// No list is given more room up front than the bytes left would fill.
+    #[test]
+    fn the_room_given_up_front_is_within_the_bytes() {
+        let bytes = [0u8; 100];
+        let r = Reader {
+            bytes: &bytes,
+            at: 10,
+        };
+        assert!(r.room::<SceneFeature>(1_000_000) * std::mem::size_of::<SceneFeature>() <= 90);
+        assert!(r.room::<u32>(1_000_000) <= 22);
+        assert_eq!(r.room::<u8>(5), 5);
     }
 }

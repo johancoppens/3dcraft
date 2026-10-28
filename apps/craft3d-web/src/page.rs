@@ -113,6 +113,17 @@ fn document() -> Option<web_sys::Document> {
     window()?.document()
 }
 
+/// Milliseconds on the page's monotonic clock (`performance.now()`), which
+/// never goes back as the wall clock may (a clock set back, a laptop
+/// woken): what the frame's budget and the workers' deadlines are
+/// measured with. The wall clock only where the page has no
+/// `performance`.
+fn now_ms() -> f64 {
+    window()
+        .and_then(|w| w.performance())
+        .map_or_else(js_sys::Date::now, |p| p.now())
+}
+
 /// Puts `text` into the loading element, in place of the app.
 fn say(text: &str) {
     if let Some(element) = document().and_then(|d| d.get_element_by_id(LOADING_ID)) {
@@ -1015,12 +1026,7 @@ impl eframe::App for Page {
         if let Some(scenes) = &mut self.scenes {
             let replies: Vec<Reply> = self.scene_replies.borrow_mut().drain(..).collect();
             let quality = self.host.shell.scene_quality();
-            let done = scenes.frame_at(
-                &mut self.host.session,
-                quality,
-                replies,
-                js_sys::Date::now(),
-            );
+            let done = scenes.frame_at(&mut self.host.session, quality, replies, now_ms());
             if let Some(why) = done.home {
                 log::warn!("regeneration: on the page, the worker cannot be had: {why}");
             }
@@ -1039,10 +1045,10 @@ impl eframe::App for Page {
         }
         // A piece of the long work, for as long as a frame allows: the
         // rest in the next frames, drawn in between.
-        let started = js_sys::Date::now();
+        let started = now_ms();
         let busy = self
             .host
-            .prepare(move || js_sys::Date::now() - started > FRAME_WORK_MS);
+            .prepare(move || now_ms() - started > FRAME_WORK_MS);
         if busy {
             ctx.request_repaint();
         }
@@ -1050,7 +1056,7 @@ impl eframe::App for Page {
         // for the frame that takes it.
         if let Some(checks) = &mut self.checks {
             let replies: Vec<Reply> = self.replies.borrow_mut().drain(..).collect();
-            let done = checks.frame_at(&mut self.host.session, replies, js_sys::Date::now());
+            let done = checks.frame_at(&mut self.host.session, replies, now_ms());
             if let Some(why) = done.home {
                 log::warn!("checks: measured on the page, the worker cannot be had: {why}");
             }

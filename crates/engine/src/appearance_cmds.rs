@@ -270,7 +270,7 @@ fn wanted_faces(session: &mut Session, p: &Params) -> Result<(Wanted, Vec<String
             ));
         }
         let mut faces = Vec::new();
-        for item in session.selection().items {
+        for item in session.checked_selection().items {
             if item.kind == SelectionKind::Face {
                 faces.push((Some(item.feature), item.name));
             } else {

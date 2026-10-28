@@ -359,10 +359,17 @@ pub enum SceneDatumShape {
     /// The square `center ± u ± v` in the datum plane: centred on the foot
     /// of the model's centre on the plane, `u` and `v` along the plane's
     /// own axes, each [`DATUM_PLANE_EXTENT`] of the model's diagonal long.
+    ///
+    /// `origin` and `normal` are the plane as regeneration placed it (the
+    /// datum's own origin and its unit normal, bit for bit): what a
+    /// section on the datum plane lies on when the bodies are not at
+    /// hand (`Session::section_plane` under regeneration elsewhere).
     Plane {
         center: Vec3,
         u: Vec3,
         v: Vec3,
+        origin: Vec3,
+        normal: Vec3,
     },
     /// The part of the axis around the foot of the model's centre on it,
     /// [`DATUM_AXIS_EXTENT`] of the model's diagonal to either side.
@@ -1697,7 +1704,13 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
                     let c = centre.unwrap_or(origin);
                     let center = c - normal * (c - origin).dot(normal);
                     let (u, v) = (frame.x() * plane_half, frame.y() * plane_half);
-                    finite(&[center, u, v]).then_some(SceneDatumShape::Plane { center, u, v })?
+                    finite(&[center, u, v, origin, normal]).then_some(SceneDatumShape::Plane {
+                        center,
+                        u,
+                        v,
+                        origin,
+                        normal,
+                    })?
                 }
                 craft3d_regen::Datum::Axis { origin, direction } => {
                     let c = centre.unwrap_or(origin);

@@ -13,8 +13,8 @@
 )]
 
 use craft3d_engine::{
-    AssertionStatus, SceneQuality, Session, Workspace, measure_checks, scene_begin, scene_bytes,
-    scene_next,
+    AssertionStatus, SceneQuality, SectionSpec, Session, Workspace, measure_checks, scene_begin,
+    scene_bytes, scene_next,
 };
 use serde_json::json;
 
@@ -328,4 +328,108 @@ fn without_checks_elsewhere_the_host_regenerates_itself() {
     let _ = session.prepare_some(SceneQuality::display(), || false);
     assert!(session.regenerated_here());
     assert!(session.scene_ready(SceneQuality::display()));
+}
+
+/// What a frame reads of the state it shows (the selection, its serial,
+/// a section on a datum plane) never regenerates it on the host: not for
+/// a document opened beside another whose selection the window held, not
+/// after an edit of a document with a selection. A command still checks
+/// the selection against the bodies, regenerating as it always did.
+#[test]
+fn what_a_frame_reads_never_regenerates_on_the_host() {
+    let mut session = elsewhere();
+    build(&mut session, 1.0);
+    settle(&mut session);
+    // A click selects: a command, which regenerates here.
+    session
+        .execute("select.set", &json!({"names": ["B"]}))
+        .unwrap();
+    assert!(session.regenerated_here());
+    assert_eq!(session.selection().items.len(), 1);
+    // A second document beside it (another tab, a Jig opened).
+    build(&mut session, 2.0);
+    settle(&mut session);
+    assert!(!session.regenerated_here());
+    let serial = session.selection_serial();
+    let view = session.selection();
+    assert!(view.items.is_empty());
+    assert_eq!(view.serial, serial);
+    assert!(
+        !session.regenerated_here(),
+        "reading the selection of a document not regenerated here regenerated it"
+    );
+    // A selection in it, then an edit: the state shown is new.
+    session
+        .execute("select.set", &json!({"names": ["Ball"]}))
+        .unwrap();
+    set_w(&mut session, "83 mm");
+    settle(&mut session);
+    assert!(!session.regenerated_here());
+    let serial = session.selection_serial();
+    let view = session.selection();
+    assert_eq!(view.items.len(), 1);
+    assert_eq!(view.serial, serial);
+    assert!(!session.regenerated_here(), "the selection regenerated it");
+    // A section on the datum plane: the plane a host that regenerates
+    // itself finds, bit for bit, from the scene.
+    let scene = session
+        .scene_with(SceneQuality::display())
+        .unwrap()
+        .unwrap();
+    let spec = SectionSpec {
+        plane: Some("Top".to_string()),
+        offset: 1.5,
+        ..SectionSpec::default()
+    };
+    let got = session.section_plane(&scene, &spec).unwrap();
+    assert!(!session.regenerated_here(), "the section regenerated it");
+    let mut want = here(2.0, Some(41.5));
+    let wanted_scene = want.scene_with(SceneQuality::display()).unwrap().unwrap();
+    let wanted = want.section_plane(&wanted_scene, &spec).unwrap();
+    assert_eq!(got, wanted);
+    assert_eq!(format!("{got:?}"), format!("{wanted:?}"));
+    // 24 mm up, moved by the offset.
+    assert!((got.origin.z - 25.5).abs() < 1e-12, "{got:?}");
+    // Not a datum plane of this document: an error, still without
+    // regenerating.
+    let missing = SectionSpec {
+        plane: Some("Nowhere".to_string()),
+        ..SectionSpec::default()
+    };
+    assert!(session.section_plane(&scene, &missing).is_err());
+    assert!(!session.regenerated_here());
+    // A command checks the selection against the bodies.
+    let got = session.execute("select.get", &json!({})).unwrap();
+    assert_eq!(got["items"].as_array().map(Vec::len), Some(1), "{got}");
+    assert!(session.regenerated_here());
+}
+
+/// A state the view is scrubbed to is built elsewhere as a host that
+/// builds it itself builds it, bit for bit, and so is the end again.
+#[test]
+fn a_scrubbed_state_built_elsewhere_is_the_one_built_here() {
+    let mut want = here(1.0, None);
+    let mut session = elsewhere();
+    build(&mut session, 1.0);
+    settle(&mut session);
+    for step in [
+        json!({"step": 2}),
+        json!({"step": 4}),
+        json!({"step": 6}),
+        json!({"feature": null}),
+    ] {
+        for host in [&mut session, &mut want] {
+            host.execute("view.scrub", &step).unwrap();
+        }
+        settle(&mut session);
+        for quality in [SceneQuality::Preview, SceneQuality::display()] {
+            let got = session.scene_with(quality).unwrap().unwrap();
+            let wanted = want.scene_with(quality).unwrap().unwrap();
+            assert_eq!(
+                scene_bytes(&got),
+                scene_bytes(&wanted),
+                "{step} {quality:?}"
+            );
+        }
+    }
 }

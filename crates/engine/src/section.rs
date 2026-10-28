@@ -12,7 +12,7 @@
 use crate::commands::fail;
 use crate::datum_cmds::plane_value;
 use crate::params::Params;
-use crate::scene::Scene;
+use crate::scene::{Scene, SceneDatumShape};
 use crate::{CommandError, Session};
 use craft3d_doc::{PlaneRef, WorldPlane};
 use craft3d_math::{Bbox3, Vec3};
@@ -197,7 +197,14 @@ impl Session {
         text: &str,
         feature: Option<&str>,
     ) -> Result<(Vec3, Vec3), String> {
+        // Regenerated elsewhere and not here: a datum plane is taken
+        // from the scene, which carries it as regeneration placed it
+        // (bit for bit), so that a frame never regenerates for it. Not
+        // while the view is scrubbed: the scene is then of another state,
+        // and the section lies on the plane of the document as it is.
+        let from_scene = self.regen_elsewhere() && !self.regenerated_here();
         let open = self.document_mut().map_err(|e| e.message().to_string())?;
+        let from_scene = from_scene && open.scrubbed_to().is_none();
         let reference = plane_value(
             open.history.current(),
             "section",
@@ -226,12 +233,30 @@ impl Session {
                     .current()
                     .feature(id)
                     .map_or_else(|| id.to_string(), |f| f.name.clone());
+                let not_placed = || {
+                    format!(
+                        "the datum plane `{name}` is not placed (its feature failed or is suppressed), so it gives no section"
+                    )
+                };
+                if from_scene {
+                    let id = id.to_string();
+                    return scene
+                        .datums
+                        .iter()
+                        .find_map(|datum| match datum.shape {
+                            SceneDatumShape::Plane { origin, normal, .. }
+                                if datum.feature == id =>
+                            {
+                                Some((origin, normal))
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(not_placed);
+                }
                 let regen = open.regen();
                 match regen.feature(id).and_then(|result| result.datum.as_ref()) {
                     Some(Datum::Plane(frame)) => Ok((frame.origin(), frame.z())),
-                    _ => Err(format!(
-                        "the datum plane `{name}` is not placed (its feature failed or is suppressed), so it gives no section"
-                    )),
+                    _ => Err(not_placed()),
                 }
             }
             PlaneRef::Face { face } => {

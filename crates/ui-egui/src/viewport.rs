@@ -309,7 +309,7 @@ impl Marks {
         let mut out = Vec::new();
         for datum in &self.datums {
             match datum.shape {
-                SceneDatumShape::Plane { center, u, v } => {
+                SceneDatumShape::Plane { center, u, v, .. } => {
                     let corners = plane_corners(center, u, v);
                     for k in 0..4 {
                         if let (Some(&a), Some(&b)) = (corners.get(k), corners.get((k + 1) % 4)) {
@@ -341,7 +341,7 @@ impl Marks {
         self.datums
             .iter()
             .filter_map(|datum| match datum.shape {
-                SceneDatumShape::Plane { center, u, v } => Some((center, u, v)),
+                SceneDatumShape::Plane { center, u, v, .. } => Some((center, u, v)),
                 _ => None,
             })
             .collect()
@@ -402,7 +402,7 @@ pub fn datum_labels(
         .iter()
         .filter_map(|datum| {
             let anchor = match datum.shape {
-                SceneDatumShape::Plane { center, u, v } => center - u + v,
+                SceneDatumShape::Plane { center, u, v, .. } => center - u + v,
                 SceneDatumShape::Axis { to, .. } => to,
                 SceneDatumShape::Point(p) => p,
             };

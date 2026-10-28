@@ -443,7 +443,10 @@ impl WebHost {
         let quality = self.shell.scene_quality();
         // Regenerated and meshed in a worker (`scenes.rs`): nothing to do
         // here but say so until the scene is there; the window is drawn
-        // as it was meanwhile, and takes edits.
+        // as it was meanwhile, and takes edits. No work is left on the
+        // page, so no frame is asked for: the worker's answer asks for
+        // the frame that takes it (`worker.rs`), and the page looks at
+        // the deadline now and then (`page.rs`).
         if self.session.regen_elsewhere() {
             self.away = !self.session.scene_ready(quality);
             if self.session.scene_job(quality).is_none() {
@@ -463,7 +466,7 @@ impl WebHost {
                 step: 0,
                 steps: 0,
             }));
-            return true;
+            return false;
         }
         let step = self.session.prepare_some(quality, stop);
         self.away = !self.session.scene_ready(quality);
@@ -1281,6 +1284,47 @@ mod tests {
         ] {
             assert!(!page_keeps_key(true, false, shift, key), "{shift} {key}");
         }
+    }
+
+    /// Regenerated in a worker, the page has no work of its own while the
+    /// worker builds: `prepare` asks for no frame (the worker's answer
+    /// does), while the window is drawn as it was and says it is
+    /// regenerating; once the scene is there it is drawn.
+    #[test]
+    fn regenerated_in_a_worker_the_page_asks_for_no_frames_of_its_own() {
+        use craft3d_engine::{scene_begin, scene_next};
+        let mut host = host();
+        host.set_stepwise(true);
+        host.session.set_checks_elsewhere(true);
+        host.session.set_regen_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("feature.block", json!({"size": [10, 20, 5]})),
+        ] {
+            host.session.execute(id, &params).unwrap();
+        }
+        assert!(host.session.regen_elsewhere());
+        assert!(
+            !host.prepare(|| false),
+            "a frame asked for while the worker builds"
+        );
+        assert!(host.away());
+        assert_eq!(
+            host.shell.work().map(|w| w.phase.as_str()),
+            Some("regenerating")
+        );
+        let quality = host.shell.scene_quality();
+        let token = host.session.scene_job(quality).unwrap();
+        let request = host.session.scene_request(token).unwrap();
+        scene_begin(&request.document, &request.work);
+        while let Some(part) = scene_next() {
+            assert!(host.session.scene_answered(token, Ok(&part)));
+        }
+        assert!(host.session.scene_done(token));
+        assert!(!host.prepare(|| false));
+        assert!(!host.away());
+        assert!(host.shell.work().is_none());
+        assert!(!host.session.regenerated_here());
     }
 
     /// On the page (a piece per frame) a commit of the Parameters form

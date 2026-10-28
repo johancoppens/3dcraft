@@ -476,4 +476,76 @@ mod tests {
             );
         }
     }
+
+    /// Another quality asked for (a finer display, the window's own)
+    /// while the worker builds: the job is cancelled and the one at the
+    /// new quality posted; its answer is the scene at that quality.
+    #[test]
+    fn another_quality_cancels_the_job_the_worker_builds() {
+        let mut s = session();
+        let fake = Fake::default();
+        let mut scenes = Scenes::new(fake.clone(), &mut s);
+        let old = scenes
+            .frame_at(&mut s, quality(), Vec::new(), 0.0)
+            .posted
+            .unwrap();
+        let late = fake.answers();
+        let finer = SceneQuality::Display {
+            relative: 1e-4,
+            max_triangles: 1_000_000,
+            max_angle: None,
+        };
+        let frame = scenes.frame_at(&mut s, finer, Vec::new(), 1.0);
+        assert_eq!(frame.cancelled, Some(old));
+        assert_eq!(*fake.stops.borrow(), 1);
+        let new = frame.posted.unwrap();
+        assert!(scenes.frame_at(&mut s, finer, late, 2.0).parts.is_empty());
+        scenes.frame_at(&mut s, finer, fake.answers(), 3.0);
+        assert_eq!(scenes.busy(), None);
+        assert!(s.scene_ready(finer));
+        let mut here = Session::new(Workspace::memory());
+        cube(&mut here, 11.0);
+        assert_eq!(
+            scene_bytes(&s.scene_with(finer).unwrap().unwrap()),
+            scene_bytes(&here.scene_with(finer).unwrap().unwrap()),
+            "job {new}"
+        );
+    }
+
+    /// Another tab made active while the worker builds the first: the job
+    /// is cancelled, the other document's posted; back on the first tab,
+    /// its state is built again, never shown from a late answer.
+    #[test]
+    fn another_tab_cancels_the_job_the_worker_builds() {
+        let mut s = session();
+        cube(&mut s, 17.0);
+        let fake = Fake::default();
+        let mut scenes = Scenes::new(fake.clone(), &mut s);
+        let second = scenes
+            .frame_at(&mut s, quality(), Vec::new(), 0.0)
+            .posted
+            .unwrap();
+        let late = fake.answers();
+        s.execute("file.activate", &json!({"document": 0})).unwrap();
+        let frame = scenes.frame_at(&mut s, quality(), Vec::new(), 1.0);
+        assert_eq!(frame.cancelled, Some(second));
+        assert_eq!(*fake.stops.borrow(), 1);
+        let first = frame.posted.unwrap();
+        assert_ne!(first, second);
+        assert!(
+            scenes
+                .frame_at(&mut s, quality(), late, 2.0)
+                .parts
+                .is_empty()
+        );
+        assert!(!s.scene_ready(quality()));
+        scenes.frame_at(&mut s, quality(), fake.answers(), 3.0);
+        assert_eq!(shown(&mut s), wanted(11.0));
+        s.execute("file.activate", &json!({"document": 1})).unwrap();
+        assert!(!s.scene_ready(quality()));
+        scenes.frame_at(&mut s, quality(), Vec::new(), 4.0);
+        scenes.frame_at(&mut s, quality(), fake.answers(), 5.0);
+        assert_eq!(shown(&mut s), wanted(17.0));
+        assert!(!s.regenerated_here());
+    }
 }

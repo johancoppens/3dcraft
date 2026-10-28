@@ -44,7 +44,7 @@ fn select_get(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("select.get", params, &["context"])?;
     let context = p.bool("context")?.unwrap_or(true);
     session.document()?;
-    let view = session.selection();
+    let view = session.checked_selection();
     let mut result = view.json();
     if context {
         let open = session.document_mut()?;
@@ -154,7 +154,7 @@ fn select_set(session: &mut Session, params: &Value) -> Run {
     }
     // Checked against the document as it is now, so that what dropped out
     // before is said before the new choice replaces it.
-    session.selection();
+    session.checked_selection();
     let open = session.document_mut()?;
     let regen = open.regen();
     let mut resolver = Resolver::new(open.history.current(), &regen);
@@ -1726,7 +1726,7 @@ fn select_query(session: &mut Session, params: &Value) -> Run {
     let kinds = kinds_param(&p, ID)?;
     // Checked against the document as it is now before it changes.
     if then.is_some() {
-        session.selection();
+        session.checked_selection();
     }
     let open = session.document_mut()?;
     let regen = open.regen();

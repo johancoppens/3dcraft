@@ -71,7 +71,7 @@ impl Scene {
             return false;
         };
         match datum.shape {
-            SceneDatumShape::Plane { center, u, v } => {
+            SceneDatumShape::Plane { center, u, v, .. } => {
                 for point in [
                     center + u + v,
                     center + u - v,

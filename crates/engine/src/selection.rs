@@ -1028,7 +1028,26 @@ impl Session {
     /// The active document's selection, checked against its current
     /// regeneration first: what no longer exists has dropped out. Empty
     /// without a document.
+    ///
+    /// What a frontend reads every frame: while the document is
+    /// regenerated elsewhere ([`Session::regen_elsewhere`]) and its
+    /// current state not here, it is the selection as it was last
+    /// checked (or as it was set), as [`Session::selection_serial`] is:
+    /// reading it never regenerates. A command that needs it checked
+    /// reads [`Session::checked_selection`].
     pub fn selection(&mut self) -> SelectionView {
+        if !(self.regen_elsewhere() && !self.regenerated_here()) {
+            self.check_selection();
+        }
+        self.document()
+            .map_or_else(|_| SelectionView::default(), |open| open.selection.view())
+    }
+
+    /// The active document's selection, checked against its current
+    /// regeneration first whatever it takes (it regenerates here when
+    /// the state is not): what a command reads. Empty without a
+    /// document.
+    pub(crate) fn checked_selection(&mut self) -> SelectionView {
         self.check_selection();
         self.document()
             .map_or_else(|_| SelectionView::default(), |open| open.selection.view())
@@ -1041,8 +1060,8 @@ impl Session {
     ///
     /// While the document is regenerated elsewhere
     /// ([`Session::regen_elsewhere`]) and not here, it is checked once it
-    /// is regenerated here (a command that needs the bodies, or
-    /// [`Session::selection`]): a frame that asks never regenerates.
+    /// is regenerated here (a command that needs the bodies): a frame
+    /// that asks never regenerates.
     pub fn selection_serial(&mut self) -> u64 {
         if self.regen_elsewhere() && !self.regenerated_here() {
             return self.document().map_or(0, |open| open.selection.serial());

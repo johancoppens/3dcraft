@@ -128,7 +128,7 @@ fn the_scene_places_and_sizes_the_datums_that_are_built() {
     let reach = scene.bbox.diagonal() * DATUM_AXIS_EXTENT;
     let centre = scene.bbox.center().unwrap();
     match scene.datums[0].shape {
-        SceneDatumShape::Plane { center, u, v } => {
+        SceneDatumShape::Plane { center, u, v, .. } => {
             // The foot of the model's centre on the plane z = 20.
             assert!((center.z - 20.0).abs() < 1e-9);
             assert!((center.x - centre.x).abs() < 1e-9 && (center.y - centre.y).abs() < 1e-9);
