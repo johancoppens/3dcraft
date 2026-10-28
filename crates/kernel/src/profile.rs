@@ -409,10 +409,14 @@ impl Segment {
                 // it. That region is inside the circle and to the right of
                 // the chord, where the cross product is negative; the same
                 // number decides the sign of the chord's angle, so the sum
-                // is continuous when `p` is on the chord itself.
+                // is continuous when `p` is on the chord itself: there the
+                // cross product is a zero whose sign `atan2` reads (±π), so
+                // the sign decides `behind` too (a `-0.0` with `s < 0.0`
+                // false gave −π and no turn: a circle centred level with
+                // an arc's ends was not inside it, 2026-10-28).
                 let s = cross(a, b);
                 let chord = s.atan2(dot(a, b));
-                let behind = distance(p, center) < radius && s < 0.0;
+                let behind = distance(p, center) < radius && s.is_sign_negative();
                 sign * (chord + if behind { TAU } else { 0.0 })
             }
         }
