@@ -629,3 +629,102 @@ fn bad_insets_and_sides_are_refused_by_reason() {
         assert!(got.contains(why), "{why}: {got}");
     }
 }
+
+/// An inset is 0 (within the tolerance) or at least
+/// `SLIVER_TOLERANCES` tolerances, and two bends on one edge are at least
+/// that far apart: a piece of the edge between is never a sliver of a
+/// rim (review 2026-10-28). Held at three scales: within the tolerance it
+/// is the edge's end, at twice the tolerance it is refused, at the floor
+/// it is built.
+#[test]
+fn an_inset_or_a_gap_is_never_a_sliver() {
+    use craft3d_kernel::sheetmetal::SLIVER_TOLERANCES;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let e = tol.linear;
+        let f = flange(On::Base(1), 10.0 * k, Direction::Up, 1.0 * k, 0.4);
+        let floor = SLIVER_TOLERANCES * e;
+        let base = || rect(40.0, 30.0, k);
+        let snapped = build(
+            &spec(base(), 1.0 * k, vec![inset(f.clone(), 0.5 * e, 0.0)]),
+            &tol,
+        )
+        .unwrap();
+        assert_eq!(snapped.bends[0].start, [0.0, 0.0], "within the tolerance");
+        let got = reason(
+            &spec(base(), 1.0 * k, vec![inset(f.clone(), 2.0 * e, 0.0)]),
+            &tol,
+        );
+        assert!(got.contains("narrower than"), "{got}");
+        let got = reason(
+            &spec(base(), 1.0 * k, vec![inset(f.clone(), 0.0, 2.0 * e)]),
+            &tol,
+        );
+        assert!(got.contains("narrower than"), "{got}");
+        let built = build(
+            &spec(base(), 1.0 * k, vec![inset(f.clone(), floor, 0.0)]),
+            &tol,
+        )
+        .unwrap();
+        healthy(&built, &tol);
+        // Two tabs on one edge: 2 tolerances apart refused, the floor built.
+        for (gap, ok) in [(2.0 * e, false), (1.01 * floor, true)] {
+            let half = 20.0 * k;
+            let tabs = vec![
+                inset(f.clone(), 0.0, half + 0.5 * gap),
+                inset(f.clone(), half + 0.5 * gap, 0.0),
+            ];
+            let s = spec(base(), 1.0 * k, tabs);
+            if ok {
+                healthy(&build(&s, &tol).unwrap(), &tol);
+            } else {
+                let got = reason(&s, &tol);
+                assert!(got.contains("apart"), "{got}");
+            }
+        }
+    }
+}
+
+/// An outline on a flange's tip is drawn where the tip lies with every
+/// bend between the base and it of no width, so changing the thickness,
+/// the radius or the K-factor moves it with the tip instead of refusing
+/// it (review 2026-10-28): the same arch on the tip of a 10 long wall is
+/// built for two thicknesses and radii, its bend where the tip really is
+/// (10 plus the wall's bend allowance from the base) and as far reaching.
+#[test]
+fn an_outline_on_a_tip_moves_with_the_tip() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (t, r, kf) in [(1.0 * k, 2.0 * k, 0.4), (2.0 * k, 3.0 * k, 0.33)] {
+            let wall = flange(On::Base(1), 10.0 * k, Direction::Up, r, kf);
+            let ear = FlangeSpec {
+                on: On::Tip(0),
+                length: 0.0,
+                outline: Some(arch(k, -10.0, 10.0)),
+                ..flange(On::Base(1), 0.0, Direction::Up, r, kf)
+            };
+            let part = build(&spec(rect(40.0, 30.0, k), t, vec![wall, ear]), &tol).unwrap();
+            healthy(&part, &tol);
+            let ba = FRAC_PI_2 * (r + kf * t);
+            near(
+                part.bends[1].start[0],
+                10.0 * k,
+                1e-12 * k,
+                "the ear's start",
+            );
+            near(part.bends[1].end[0], 30.0 * k, 1e-12 * k, "the ear's end");
+            near(
+                part.bends[1].start[1],
+                -(10.0 * k + ba),
+                1e-9 * k,
+                "the ear's bend on the wall's tip",
+            );
+            near(
+                flange_length(&part, 1).unwrap(),
+                20.0 * k,
+                1e-9 * k,
+                "the ear's reach",
+            );
+        }
+    }
+}

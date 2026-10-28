@@ -72,6 +72,29 @@ pub const MAX_FLANGES: usize = 1024;
 /// The most cut-outs (closed profiles beside the base) one part may have.
 pub const MAX_CUTOUTS: usize = 4096;
 
+/// The narrowest piece of an edge an inset may leave beside a bend, and
+/// the least gap between two bends on one edge, in tolerances: a piece
+/// within a few tolerances of nothing is a rim face the plate, the
+/// self-intersection check and the tessellator cannot tell from a
+/// degenerate one, so an inset is either 0 (within the tolerance) or at
+/// least this many tolerances, never a sliver in between.
+pub const SLIVER_TOLERANCES: f64 = 4.0;
+
+/// Refuses an inset `x` that is more than the tolerance (not 0) but less
+/// than [`SLIVER_TOLERANCES`] tolerances: it would leave a sliver.
+fn sliver(i: usize, which: &str, x: f64, tol: f64) -> Result<(), KernelError> {
+    let floor = SLIVER_TOLERANCES * tol;
+    if x > tol && x < floor {
+        return Err(refuse(
+            Some(i),
+            format!(
+                "its {which} inset {x} leaves a piece of the edge narrower than {SLIVER_TOLERANCES} tolerances ({floor}) beside the bend: make it 0 or at least {floor}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Which way a bend turns the flange: towards the side the base's normal
 /// points to, or away from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,8 +296,12 @@ pub struct Bend {
 
 /// What a segment of a flat's outline is, as four numbers that stay the
 /// same when flanges are added elsewhere: `[1, curve, piece, part]` a
-/// piece of a sketch curve of the base (its `part`-th after the edge is
-/// split at the bends on it), `[2, a, b, j]` piece `j` of the relief at
+/// piece of a sketch curve of the base (`part` 0 for the whole edge;
+/// when the edge is split at the bends on it, `from · 2³² + to` with
+/// `from` 0 at the edge's start or `b + 1` after bend `b` and `to` 0 at
+/// its end or `b + 1` before bend `b`, so a flange added or deleted on the
+/// edge renames only the piece it splits or joins),
+/// `[2, a, b, j]` piece `j` of the relief at
 /// the corner of flanges `a` and `b`, `[3, i, side, part]` a side of
 /// flange `i`'s rectangle (0 its tangent line, 1 the side at its bend's
 /// start, 2 its tip, 3 the side at its end), `[4, i, curve, piece]` a
@@ -793,6 +820,11 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     // Per flange, the edge it sits on before the edges are split at the
     // insets: its flat, loop and segment.
     let mut seated: Vec<(usize, Option<usize>, usize)> = Vec::with_capacity(spec.flanges.len());
+    // Per flat, how far it lies from where it would with every bend
+    // between the base and it of no width (where an outline of a flange
+    // on its edge is drawn, `own_outline`).
+    let mut lifts: Vec<P2> = Vec::with_capacity(1 + spec.flanges.len());
+    lifts.push([0.0, 0.0]);
     for (i, f) in spec.flanges.iter().enumerate() {
         let lost = || refuse(Some(i), "a flange lost its edge");
         let (parent, hole, k) = match f.on {
@@ -829,7 +861,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         let (start, end, outer, holes, flat_length, (ids, hole_ids)) = match &f.outline {
             None => {
                 let [i0, i1] = f.inset;
-                if !(i0 + i1 < len - tol) {
+                if !(i0 + i1 <= len - SLIVER_TOLERANCES * tol) {
                     return Err(refuse(
                         Some(i),
                         format!(
@@ -837,6 +869,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         ),
                     ));
                 }
+                sliver(i, "start", i0, tol)?;
+                sliver(i, "end", i1, tol)?;
                 let start = if i0 <= tol { s } else { add(s, scale(d, i0)) };
                 let end = if i1 <= tol { e } else { sub(e, scale(d, i1)) };
                 let flat_length = match f.from {
@@ -886,8 +920,9 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         "a flange with an outline of its own spans the outline's line on its edge, which gives its insets; give it no insets",
                     ));
                 }
+                let lift = lifts.get(parent).copied().ok_or_else(lost)?;
                 let (start, end, outer, holes, flat_length) =
-                    own_outline(i, profile, (s, e), shift, tol)?;
+                    own_outline(i, profile, (s, e), shift, lift, tol)?;
                 // Its curves by their sketch's ids, its tangent line as a
                 // rectangle's is, its holes by their place.
                 let mut ids: Vec<SegId> = outer
@@ -940,6 +975,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             outlined: f.outline.is_some(),
         });
         seated.push((parent, hole, k));
+        let below = lifts.get(parent).copied().ok_or_else(lost)?;
+        lifts.push(add(below, shift));
     }
     split_at_seats(&mut flats, &bends, &seated, tol)?;
 
@@ -1743,9 +1780,18 @@ fn split_at_seats(
                     out_ids.push(id);
                     continue;
                 };
-                // The pieces of the edge, numbered along it.
-                let part = |j: usize| [id[0], id[1], id[2], j as u64];
-                let first = out.len();
+                // The pieces of the edge, named by the bends at their two
+                // ends, not by their place along it (rule 4: a flange added
+                // or deleted on the same edge renames only the piece it
+                // splits or joins, never another): `part` is
+                // `from · 2³² + to`, `from` 0 at the edge's start or
+                // `b + 1` after bend `b`, `to` 0 at the edge's end or
+                // `b + 1` before bend `b`; bend `b`'s own tangent line is
+                // `(b + 1) · 2³² + b + 1` (no gap starts and ends at one
+                // bend; it is named as the bend's tangent line in any case).
+                let part =
+                    |from: u64, to: u64| [id[0], id[1], id[2], (from << 32) | (to & 0xffff_ffff)];
+                let mark = |b: usize| (b as u64).saturating_add(1);
                 let d = unit(sub(seg.end, seg.start))
                     .ok_or_else(|| refuse(list.first().copied(), "the edge has no length"))?;
                 let along = |p: P2| dot(sub(p, seg.start), d);
@@ -1755,15 +1801,17 @@ fn split_at_seats(
                     .collect();
                 spans.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)));
                 let mut cursor = seg.start;
+                let mut next_part = 0u64;
                 let mut last: Option<(f64, usize)> = None;
                 for &(from, to, b) in &spans {
                     if let Some((reached, other)) = last
-                        && !(from > reached + tol)
+                        && !(from >= reached + SLIVER_TOLERANCES * tol)
                     {
                         return Err(refuse(
                             Some(b),
                             format!(
-                                "the edge it sits on has a flange already (flange {other}) where this one would be: flanges on one edge need insets that keep them more than the tolerance apart"
+                                "the edge it sits on has a flange already (flange {other}) where this one would be: flanges on one edge need insets that keep them at least {SLIVER_TOLERANCES} tolerances ({}) apart",
+                                SLIVER_TOLERANCES * tol
                             ),
                         ));
                     }
@@ -1771,7 +1819,7 @@ fn split_at_seats(
                         .get(b)
                         .ok_or_else(|| refuse(Some(b), "a bend is missing"))?;
                     if cursor != bd.start {
-                        out_ids.push(part(out.len() - first));
+                        out_ids.push(part(next_part, mark(b)));
                         out.push(piece(seg, cursor, bd.start));
                     }
                     flat.seats.push(Seat {
@@ -1779,13 +1827,16 @@ fn split_at_seats(
                         hole,
                         seg: out.len(),
                     });
-                    out_ids.push(part(out.len() - first));
+                    // A bend spanning the whole edge keeps the edge's own id.
+                    let whole = bd.start == seg.start && bd.end == seg.end;
+                    out_ids.push(if whole { id } else { part(mark(b), mark(b)) });
                     out.push(piece(seg, bd.start, bd.end));
                     cursor = bd.end;
+                    next_part = mark(b);
                     last = Some((to, b));
                 }
                 if cursor != seg.end {
-                    out_ids.push(part(out.len() - first));
+                    out_ids.push(part(next_part, 0));
                     out.push(piece(seg, cursor, seg.end));
                 }
             }
@@ -1876,20 +1927,27 @@ fn reach_along(seg: &Segment, o: P2, n: P2) -> (f64, f64) {
 /// bend's span (the outline's line on the edge), the outer loop moved
 /// `shift` on (the bend allowance across) and turned to start at that
 /// line, its holes moved likewise, and how far beyond its tangent line it
-/// reaches.
+/// reaches. `lift` is how far the edge lies from where it would with
+/// every bend between the base and it of no width (the sum of those
+/// bends' allowances, each across its bend): the outline is drawn there,
+/// in the edge's own place, so that changing the thickness, a radius or
+/// a K-factor moves it with its edge instead of refusing it.
 #[allow(clippy::type_complexity)]
 fn own_outline(
     i: usize,
     profile: &Profile,
     (s, e): (P2, P2),
     shift: P2,
+    lift: P2,
     tol: f64,
 ) -> Result<(P2, P2, Vec<Segment>, Vec<Vec<Segment>>, f64), KernelError> {
     let len = distance(s, e);
     let d = unit(sub(e, s)).ok_or_else(|| refuse(Some(i), "the edge has no length"))?;
     let across = [d[1], -d[0]];
-    let off = |p: P2| dot(sub(p, s), across);
-    let along = |p: P2| dot(sub(p, s), d);
+    // The edge where the outline is drawn.
+    let drawn = sub(s, lift);
+    let off = |p: P2| dot(sub(p, drawn), across);
+    let along = |p: P2| dot(sub(p, drawn), d);
     let segs = &profile.outer.segments;
     let on_line: Vec<usize> = segs
         .iter()
@@ -1933,13 +1991,15 @@ fn own_outline(
         ));
     }
     for (j, seg) in segs.iter().enumerate() {
-        if j != k && reach_along(seg, s, across).0 < -tol {
+        if j != k && reach_along(seg, drawn, across).0 < -tol {
             return Err(refuse(
                 Some(i),
                 "the flange's outline reaches back across its edge's line; the flat lies beyond its bend",
             ));
         }
     }
+    sliver(i, "start", u0, tol)?;
+    sliver(i, "end", len - u1, tol)?;
     let start = if u0 <= tol { s } else { add(s, scale(d, u0)) };
     let end = if len - u1 <= tol {
         e
@@ -1947,10 +2007,11 @@ fn own_outline(
         add(s, scale(d, u1))
     };
     let (a0, a1) = (add(start, shift), add(end, shift));
+    let moved = add(shift, lift);
     let m = segs.len();
     let mut outer: Vec<Segment> = (0..m)
         .filter_map(|j| segs.get((k + j) % m))
-        .map(|seg| shifted(seg, shift))
+        .map(|seg| shifted(seg, moved))
         .collect();
     // The tangent line exactly where the strip ends, its neighbours meeting
     // it there (moved at most the tolerance).
@@ -1967,11 +2028,11 @@ fn own_outline(
     let holes: Vec<Vec<Segment>> = profile
         .holes
         .iter()
-        .map(|h| h.segments.iter().map(|seg| shifted(seg, shift)).collect())
+        .map(|h| h.segments.iter().map(|seg| shifted(seg, moved)).collect())
         .collect();
     let flat_length = segs
         .iter()
-        .map(|seg| reach_along(seg, s, across).1)
+        .map(|seg| reach_along(seg, drawn, across).1)
         .fold(0.0, f64::max);
     if !(flat_length > tol) {
         return Err(refuse(

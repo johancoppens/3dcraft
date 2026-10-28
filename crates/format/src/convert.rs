@@ -1594,7 +1594,7 @@ fn name_to_manifest_with(name: &doc::PersistentName, lists: bool) -> manifest::N
     })
 }
 
-fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
+pub(crate) fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
     // A file written before format version 15 has a copy of a copy as two
     // links (`F9:copy(0)/F7:copy(1)/…`); it means the same entity as the
     // one link regeneration names it by now (`F9:copy(0,1)/…`).

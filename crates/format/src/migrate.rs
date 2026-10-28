@@ -820,11 +820,134 @@ fn v47_to_v48(manifest: Value) -> Result<Value, String> {
 /// narrower than its edge) and `outline` (the sketch of the flange's own
 /// flat) (docs/design/sheetmetal.md › *Inset flanges*). A file of an
 /// older version has none, which reads as before (on its edge or tip, the
-/// whole edge, the rectangle), so nothing changes; the version was raised
-/// so that an older build says a newer 3DCraft is needed instead of
-/// refusing the fields.
+/// whole edge, the rectangle).
+///
+/// It also **changes the names of a sheet-metal part's edges and rims**:
+/// they are named by what the edge is (a piece of a base curve, a side of
+/// a flange, a bend's tangent line), no longer by the faces round it
+/// (docs/design/sheetmetal.md › *Names*). The old names cannot be mapped
+/// to the new ones without the old naming, which is gone, so nothing is
+/// rewritten here: every stored name that refers to such an edge or rim
+/// (a fillet's or chamfer's edge, a datum, a face colour, a set, a sketch
+/// on a face; [`sheet_metal_edge_names`]) is reported as a load warning
+/// by `from_manifest_json_noted`, naming it, so it can be picked again;
+/// left as it is, it names nothing (the feature fails with the name it
+/// lost, a colour colours nothing). The part's faces keep their names.
 fn v48_to_v49(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
+}
+
+/// The stored names of a manifest (of a version before 49) that refer to
+/// the edge or rim of a `sheetMetal` part, whose names changed in format
+/// 49 (see [`v48_to_v49`]): every persistent name anywhere in the
+/// document that is a `rim` or an `edge` of a sheet-metal feature, or
+/// lists one among its faces (a `between` edge or a `corner`), or is the
+/// image (`of`) of one. Each with where it is stored: the feature's name,
+/// or the document's field. In document order; the outermost name only.
+pub(crate) fn sheet_metal_edge_names(manifest: &Value) -> Vec<(String, Value)> {
+    let document = manifest.get("document");
+    let features = document
+        .and_then(|d| d.get("features"))
+        .and_then(Value::as_array);
+    let parts: std::collections::BTreeSet<u64> = features
+        .into_iter()
+        .flatten()
+        .filter(|f| f.pointer("/kind/type").and_then(Value::as_str) == Some("sheetMetal"))
+        .filter_map(|f| f.get("id").and_then(Value::as_u64))
+        .collect();
+    let mut found = Vec::new();
+    if parts.is_empty() {
+        return found;
+    }
+    let Some(Value::Object(fields)) = document else {
+        return found;
+    };
+    for (key, value) in fields {
+        if key == "features" {
+            for feature in features.into_iter().flatten() {
+                let at = feature
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| "a feature".to_string(), |n| format!("feature `{n}`"));
+                if let Some(kind) = feature.get("kind") {
+                    sheet_metal_names_in(kind, &parts, &at, &mut found, 0);
+                }
+            }
+        } else {
+            sheet_metal_names_in(value, &parts, &format!("`{key}`"), &mut found, 0);
+        }
+    }
+    found
+}
+
+/// Deepest a stored name or the JSON round it is walked (serde_json's own
+/// limit is 128).
+const MAX_NAME_DEPTH: usize = 256;
+
+/// Whether `value` is a persistent name, as `manifest::Name` writes it.
+fn is_name(value: &Value) -> bool {
+    value.get("feature").is_some_and(Value::is_u64)
+        && value.get("role").is_some_and(Value::is_string)
+        && value.get("sources").is_some_and(Value::is_array)
+}
+
+/// Whether the name `value` refers to a sheet-metal part's edge or rim.
+fn names_sheet_metal_edge(
+    value: &Value,
+    parts: &std::collections::BTreeSet<u64>,
+    depth: usize,
+) -> bool {
+    if depth > MAX_NAME_DEPTH || !is_name(value) {
+        return false;
+    }
+    let feature = value.get("feature").and_then(Value::as_u64);
+    let role = value.get("role").and_then(Value::as_str);
+    if feature.is_some_and(|f| parts.contains(&f)) && matches!(role, Some("rim" | "edge")) {
+        return true;
+    }
+    let nested = |v: Option<&Value>| {
+        v.and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|n| names_sheet_metal_edge(n, parts, depth + 1))
+    };
+    value
+        .get("of")
+        .is_some_and(|of| names_sheet_metal_edge(of, parts, depth + 1))
+        || value
+            .get("faces")
+            .is_some_and(|f| nested(f.get("on")) || nested(f.get("near")))
+}
+
+fn sheet_metal_names_in(
+    value: &Value,
+    parts: &std::collections::BTreeSet<u64>,
+    at: &str,
+    found: &mut Vec<(String, Value)>,
+    depth: usize,
+) {
+    if depth > MAX_NAME_DEPTH {
+        return;
+    }
+    if is_name(value) {
+        if names_sheet_metal_edge(value, parts, depth) {
+            found.push((at.to_string(), value.clone()));
+        }
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                sheet_metal_names_in(item, parts, at, found, depth + 1);
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values() {
+                sheet_metal_names_in(item, parts, at, found, depth + 1);
+            }
+        }
+        _ => {}
+    }
 }
 
 // One step per version after the first: forgetting either half of a

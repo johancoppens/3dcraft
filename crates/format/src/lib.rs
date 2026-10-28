@@ -77,6 +77,11 @@ const FORMAT_VERSION_OF_CONDITION_FUNCTIONS: u32 = 31;
 /// `sign` function names (`migrate::v36_to_v37`).
 const FORMAT_VERSION_OF_INVERSE_HYPERBOLIC_FUNCTIONS: u32 = 37;
 
+/// The version that renamed a sheet-metal part's edges and rims
+/// (TEMPORARY number; `migrate::v48_to_v49`): a stored name of one in an
+/// older file is reported on reading.
+const FORMAT_VERSION_OF_SHEET_METAL_EDGE_NAMES: u32 = 49;
+
 /// The format version since which `name` is reserved in expressions, for
 /// the warning that a variable of an older file was renamed.
 fn reserved_since(name: &str) -> u32 {
@@ -600,6 +605,13 @@ fn read_manifest(
         },
     };
 
+    // Names the version can no longer read the old way are found before
+    // the migration (which leaves them as they are) and reported below.
+    let renamed = if version < FORMAT_VERSION_OF_SHEET_METAL_EDGE_NAMES {
+        migrate::sheet_metal_edge_names(&value)
+    } else {
+        Vec::new()
+    };
     let value = migrate::migrate(value, version)?;
     let manifest =
         manifest::Manifest::deserialize(&value).map_err(|error| shape_error(&value, &error))?;
@@ -648,6 +660,15 @@ fn read_manifest(
     }
     let mut document = convert::to_doc(document, blobs);
     let mut warnings = Vec::new();
+    for (at, name) in renamed {
+        let shown = manifest::Name::deserialize(&name).map_or_else(
+            |_| name.to_string(),
+            |name| convert::name_to_doc(name).to_string(),
+        );
+        warnings.push(format!(
+            "sheet-metal edge names changed in format {FORMAT_VERSION_OF_SHEET_METAL_EDGE_NAMES}: pick the edge again: {at} refers to {shown}, which now names nothing or another edge"
+        ));
+    }
     let read = document.tolerance.in_range();
     if read.linear != document.tolerance.linear {
         let unit = document.units.length.symbol();

@@ -156,8 +156,8 @@ fn a_panel_of_every_kind_of_flange_by_its_closed_forms() {
 /// rim along the edge it is bent from: adding the tab on the wall's side
 /// takes the side's rim (that edge is a bend's tangent line now, no end of
 /// the part) and nothing else; adding the arch or the hole's tab, inset on
-/// its edge, keeps even that edge's rim name for the piece of the edge
-/// before the bend.
+/// its edge, takes that edge's rim (its pieces are named by the bends at
+/// their ends) and nothing else.
 #[test]
 fn names_stay_when_another_flange_is_added() {
     let k = 1.0;
@@ -183,6 +183,105 @@ fn names_stay_when_another_flange_is_added() {
             upto - 1
         );
         before = after;
+    }
+}
+
+/// Where each rim of the panel lies: its edges' total length and their
+/// length-weighted middle, by the rim's name.
+fn rims(s: &mut Session) -> std::collections::BTreeMap<String, [f64; 4]> {
+    let edges = run(s, "document.edges", json!({"feature": "Panel"}));
+    let mut out = std::collections::BTreeMap::new();
+    for e in edges["edges"].as_array().unwrap() {
+        let len = e["length"].as_f64().unwrap();
+        let mid: Vec<f64> = (0..3)
+            .map(|i| 0.5 * (e["start"][i].as_f64().unwrap() + e["end"][i].as_f64().unwrap()))
+            .collect();
+        for f in e["faces"].as_array().unwrap() {
+            let f = f.as_str().unwrap();
+            if !f.contains("rim(") {
+                continue;
+            }
+            let a: &mut [f64; 4] = out.entry(f.to_string()).or_insert([0.0; 4]);
+            a[0] += len;
+            for i in 0..3 {
+                a[i + 1] += len * mid[i];
+            }
+        }
+    }
+    for a in out.values_mut() {
+        for i in 1..4 {
+            a[i] /= a[0];
+        }
+    }
+    out
+}
+
+/// Every rim name in both lists lies in the same place in both.
+fn same_places(
+    before: &std::collections::BTreeMap<String, [f64; 4]>,
+    after: &std::collections::BTreeMap<String, [f64; 4]>,
+    k: f64,
+    what: &str,
+) {
+    for (name, a) in before {
+        if let Some(b) = after.get(name) {
+            let off = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f64::max);
+            assert!(
+                off <= 1e-6 * k,
+                "{what} at scale {k}: {name} moved from {a:?} to {b:?}"
+            );
+        }
+    }
+}
+
+/// Rule 4 on one edge: a second inset flange added on the edge the arch
+/// sits on, ahead of the arch along it, takes only the rim of the piece
+/// it splits; every rim name that survives (the piece from the edge's
+/// start, the piece past the arch, every other rim) lies where it lay;
+/// deleting the flange again gives back every name in its place.
+#[test]
+fn names_stay_in_place_when_a_flange_is_added_on_the_same_edge() {
+    for k in SCALES {
+        let dir = workdir("sheetmetal-flanges", &format!("same-edge-{k}"));
+        let mut s = session_in(&dir);
+        new_document(&mut s, k);
+        let (base, hole) = sketches(&mut s, k);
+        let mut all = flanges(k, &base, &hole);
+        panel(&mut s, k, all.clone());
+        let first = rims(&mut s);
+        // The top edge runs from x = 60 to x = 0; the arch is at 40..20,
+        // the new tab at 55..45, ahead of it.
+        all.push(
+            json!({"edge": base[2], "length": mm(10.0 * k), "angle": "90 deg",
+                        "insetStart": mm(5.0 * k), "insetEnd": mm(45.0 * k)}),
+        );
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": all}),
+        );
+        let added = rims(&mut s);
+        let lost: Vec<&String> = first.keys().filter(|n| !added.contains_key(*n)).collect();
+        assert_eq!(lost.len(), 1, "adding the tab at scale {k}: lost {lost:?}");
+        same_places(&first, &added, k, "adding the tab");
+        all.pop();
+        run(
+            &mut s,
+            "sheetMetal.edit",
+            json!({"feature": "Panel", "flanges": all}),
+        );
+        let deleted = rims(&mut s);
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            deleted.keys().collect::<Vec<_>>(),
+            "deleting the tab at scale {k}"
+        );
+        same_places(&first, &deleted, k, "deleting the tab");
+        same_places(&added, &deleted, k, "deleting the tab");
     }
 }
 

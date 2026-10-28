@@ -301,7 +301,8 @@ earlier flange (`{"flange": 0, "end": "start"}` or `"end"`, the side at its bend
 wraps round a corner), and on a straight edge of a hole of the base, where it grows into the hole (a tab
 bent out of a cut-out, a louver; give it insets, or its bend's ends lie along the hole's sides). With
 `outline` a flange's flat is the closed profile of a sketch of its own (holes allowed) instead of a
-rectangle `length` long: draw it in the base sketch's plane as if the bend had no width, one line of it
+rectangle `length` long: draw it in the base sketch's plane as if the bend had no width (on a flange's tip
+or side, as if every bend from the base to it had none, so it follows a change of thickness or radius), one line of it
 on the edge's line and the rest beyond; the bend spans that line and the flat is laid out the bend
 allowance further on (give no `length`). The flat pattern is checked as a whole, so tabs whose flats would
 overlap in it are refused naming them. A flange added later changes no name the part had but the end

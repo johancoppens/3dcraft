@@ -5061,6 +5061,94 @@ fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() 
     assert!(from_manifest_json(odd.as_bytes()).is_err());
 }
 
+/// A file older than 49 (TEMPORARY number) that refers to a sheet-metal
+/// part's rim or edge (a fillet on an edge beside a rim, a colour on a
+/// rim) loads with a warning per name that says the names changed and
+/// names it; references to the part's skins, and the same file at the
+/// current version, give none.
+#[test]
+fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
+    use craft3d_doc::{
+        Appearance, BendDirection, Fillet, Flange, FlangeFrom, FlangeOn, PersistentName, SheetMetal,
+    };
+    use craft3d_format::from_manifest_json_noted;
+    let name = |text: &str| text.parse::<PersistentName>().unwrap();
+    let mut doc = small();
+    let part = doc
+        .add_feature(
+            Some("Tray"),
+            FeatureKind::SheetMetal(SheetMetal {
+                sketch: FeatureId(1),
+                thickness: Expr::new("1 mm"),
+                radius: Expr::new("1 mm"),
+                k_factor: Expr::new("0.5"),
+                flanges: vec![Flange {
+                    on: FlangeOn::Base(EntityId(5)),
+                    length: Expr::new("20 mm"),
+                    angle: Expr::new("90 deg"),
+                    direction: BendDirection::Up,
+                    radius: None,
+                    k_factor: None,
+                    from: FlangeFrom::Tangent,
+                    inset_start: None,
+                    inset_end: None,
+                    outline: None,
+                }],
+                relief: None,
+                cutouts: Vec::new(),
+                corner: None,
+                corners: Vec::new(),
+            }),
+        )
+        .unwrap();
+    let f = part.0;
+    let rim = format!("F{f}:rim(77)/F{f}:face(0)");
+    let skin = format!("F{f}:copy(0)/F{f}:face(0)");
+    doc.add_feature(
+        Some("Round"),
+        FeatureKind::Fillet(Fillet {
+            edges: vec![[name(&rim), name(&skin)]],
+            radius: Expr::new("1 mm"),
+            chain: false,
+        }),
+    )
+    .unwrap();
+    let colour = Some(Appearance {
+        color: [200, 30, 30],
+        metallic: None,
+        roughness: None,
+    });
+    let painted = format!("F{f}:rim(78)/F{f}:face(2)");
+    doc.set_face_appearance(part, name(&painted), colour.clone())
+        .unwrap();
+    doc.set_face_appearance(part, name(&format!("F{f}:copy(1)/F{f}:face(2)")), colour)
+        .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let (_, now) = from_manifest_json_noted(json.as_bytes()).unwrap();
+    assert!(now.is_empty(), "{now:?}");
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value["format_version"] = serde_json::json!(47);
+    let (read, warnings) = from_manifest_json_noted(value.to_string().as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for w in &warnings {
+        assert!(
+            w.contains("sheet-metal edge names changed in format 49: pick the edge again"),
+            "{w}"
+        );
+    }
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("feature `Round`") && w.contains(&rim)),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains(&painted)),
+        "{warnings:?}"
+    );
+}
+
 /// Outputs (format 43) are saved as written, in their order, a measure as
 /// a JSON object and an expression as its text, and load back the same.
 #[test]
