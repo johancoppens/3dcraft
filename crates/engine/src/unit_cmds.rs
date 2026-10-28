@@ -78,21 +78,26 @@ fn set_unit(session: &mut Session, params: &Value) -> Run {
         let checks = (!current.assertions.is_empty() || !current.outputs.is_empty())
             .then(|| session.checks_and_outputs(Wait::All))
             .transpose()?;
-        rewritten = keep_the_sizes(&mut changed, from, to, checks.as_ref().map(|c| &*c.1))
-            .map_err(|e| CommandError::new(format!("{ID}: keep sizes: {e}")))?;
+        let powers;
+        (rewritten, powers) =
+            keep_the_sizes(&mut changed, from, to, checks.as_ref().map(|c| &*c.1))
+                .map_err(|e| CommandError::new(format!("{ID}: keep sizes: {e}")))?;
         // Every feature is proven, also those the marker rolls back and
         // those switched off: both documents are regenerated whole, with
         // the marker cleared and every feature on.
-        let before = craft3d_regen::regenerate(&everything(&current));
-        let after = craft3d_regen::regenerate(&everything(&changed));
-        same_sizes(&before, &after, &changed, factor(from, to)).map_err(|e| {
-            CommandError::new(format!(
-                "{ID}: keep sizes: not proven, so nothing was changed: {e}"
-            ))
-        })?;
+        let (all_before, all_after) = (everything(&current), everything(&changed));
+        let before = craft3d_regen::regenerate(&all_before);
+        let after = craft3d_regen::regenerate(&all_after);
+        same_sizes(&before, &after, &changed, factor(from, to))
+            .and_then(|()| same_sets(&all_before, &before, &all_after, &after))
+            .map_err(|e| {
+                CommandError::new(format!(
+                    "{ID}: keep sizes: not proven, so nothing was changed: {e}"
+                ))
+            })?;
         if let Some(checks) = &checks {
             let now = checked_alone(session, changed.clone())?;
-            same_checks(checks, &now).map_err(|e| {
+            same_checks(checks, &now, &powers, factor(from, to)).map_err(|e| {
                 CommandError::new(format!(
                     "{ID}: keep sizes: not proven, so nothing was changed: {e}"
                 ))
@@ -539,8 +544,11 @@ fn keep_the_sizes(
     from: LengthUnit,
     to: LengthUnit,
     outputs: Option<&Resolved>,
-) -> Result<usize, String> {
+) -> Result<(usize, Vec<Option<i32>>), String> {
     let k = factor(from, to);
+    // Per assertion, the power of the length its measured value is to (0
+    // for a mass, a count, a yes or no), `None` where it is not known.
+    let mut powers: Vec<Option<i32>> = Vec::new();
     let variables = doc
         .variable_table()
         .map_err(|e| format!("its variables: {e}"))?
@@ -710,6 +718,10 @@ fn keep_the_sizes(
         if let Some(sized) = sizer.measure(&assertion.measure, &what)? {
             assertion.measure = sized;
         }
+        powers.push(match (kind, crate::assert_cmds::dim_of(kind)) {
+            ("value", _) | (_, Dim::Of(_) | Dim::Length(_)) => dim.map(|d| d.length),
+            (_, Dim::Mass | Dim::Count | Dim::Flag) => Some(0),
+        });
         let Some(dim) = dim.filter(|d| d.length != 0) else {
             continue;
         };
@@ -743,7 +755,43 @@ fn keep_the_sizes(
             to.symbol()
         ));
     }
-    Ok(rewritten)
+    Ok((rewritten, powers))
+}
+
+/// The proof that every named set holds what it held: the same items
+/// (kind, name and feature), in the same order, in `doc_after` regenerated
+/// as `after` as in `doc_before` regenerated as `before`; a set that could
+/// not be read before must not be readable after either.
+fn same_sets(
+    doc_before: &Document,
+    before: &craft3d_regen::Regen,
+    doc_after: &Document,
+    after: &craft3d_regen::Regen,
+) -> Result<(), String> {
+    for set in &doc_before.sets {
+        let was = crate::select_cmds::set_items(doc_before, before, &set.name);
+        let now = crate::select_cmds::set_items(doc_after, after, &set.name);
+        let same = match (&was, &now) {
+            (Ok(a), Ok(b)) => a == b,
+            (Err(_), Err(_)) => true,
+            _ => false,
+        };
+        if !same {
+            let count = |r: &Result<Vec<_>, String>| {
+                r.as_ref().map_or_else(
+                    |e| format!("an error ({e})"),
+                    |v| format!("{} items", v.len()),
+                )
+            };
+            return Err(format!(
+                "the set `{}` holds {} before and {} in the new unit, or not the same ones",
+                set.name,
+                count(&was),
+                count(&now)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `doc` with every feature built: no rollback marker, nothing
@@ -799,17 +847,40 @@ fn checked_alone(
 fn same_checks(
     before: &(Vec<Checked>, std::sync::Arc<Resolved>),
     after: &(Vec<Checked>, std::sync::Arc<Resolved>),
+    powers: &[Option<i32>],
+    k: f64,
 ) -> Result<(), String> {
     if before.0.len() != after.0.len() {
         return Err("the assertions are not the same in the new unit".into());
     }
-    for (was, now) in before.0.iter().zip(&after.0) {
+    for (i, (was, now)) in before.0.iter().zip(&after.0).enumerate() {
         if was.state.status != now.state.status {
             return Err(format!(
                 "the assertion `{}` is {} in the new unit and was {}",
                 now.state.name,
                 now.state.status.name(),
                 was.state.status.name()
+            ));
+        }
+        // What it measured, in the document's unit: as large, so its
+        // number by the factor to the power of its dimension (a failed or
+        // not proven one too, whose status alone would not tell).
+        let power = powers.get(i).copied().flatten();
+        let same = match (&was.value, &now.value, power) {
+            (Value::Number(a), Value::Number(b), Some(p)) => match (a.as_f64(), b.as_f64()) {
+                (Some(a), Some(b)) => {
+                    let a = a * k.powi(p);
+                    (a - b).abs() <= 1e-6 * a.abs().max(b.abs()) + 1e-12
+                }
+                _ => false,
+            },
+            (Value::Bool(a), Value::Bool(b), _) => a == b,
+            _ => true,
+        };
+        if !same {
+            return Err(format!(
+                "the assertion `{}` measured {} before and {} in the new unit",
+                now.state.name, was.value, now.value
             ));
         }
     }
@@ -958,5 +1029,56 @@ mod tests {
             *e = Expr::new(format!("{}", v * 25.4));
         }
         assert!(same_sizes(&regen(&was), &regen(&inches), &inches, 25.4).is_ok());
+    }
+    /// A failed assertion keeps its status whatever its number is: the
+    /// proof also holds its measured value to the factor to the power of
+    /// its dimension, so a number left unscaled is caught.
+    #[test]
+    fn a_failed_assertion_measured_at_the_wrong_size_is_not_proven() {
+        let mut s = Session::new(Workspace::none());
+        for (id, p) in [
+            ("file.new", json!({"units": "mm"})),
+            ("feature.block", json!({"size": [10, 20, 30], "name": "B"})),
+            (
+                "assert.add",
+                json!({"name": "small", "measure": "volume", "of": "B", "max": 1000}),
+            ),
+        ] {
+            s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let was = s.checks_and_outputs(Wait::All).unwrap();
+        assert_eq!(was.0[0].state.status.name(), "failed");
+        assert_eq!(was.0[0].value, json!(6000.0));
+        let k: f64 = 0.1;
+        let mut scaled = was.clone();
+        scaled.0[0].value = json!(6000.0 * k.powi(3));
+        assert!(same_checks(&was, &scaled, &[Some(3)], k).is_ok());
+        let mut unscaled = was.clone();
+        unscaled.0[0].value = json!(6000.0 * k);
+        let e = same_checks(&was, &unscaled, &[Some(3)], k).unwrap_err();
+        assert!(e.contains("small") && e.contains("measured"), "{e}");
+    }
+
+    /// A named set that holds other items in the new unit is not proven.
+    #[test]
+    fn a_set_that_holds_other_items_is_not_proven() {
+        let mut s = Session::new(Workspace::none());
+        for (id, p) in [
+            ("file.new", json!({"units": "mm"})),
+            ("feature.block", json!({"size": [10, 20, 30], "name": "B"})),
+            (
+                "set.define",
+                json!({"name": "big", "kind": "face", "where": {"area": {"min": 500}}}),
+            ),
+        ] {
+            s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        let doc = (**s.document().unwrap().history.current()).clone();
+        let regen = craft3d_regen::regenerate(&doc);
+        assert!(same_sets(&doc, &regen, &doc, &regen).is_ok());
+        let mut other = doc.clone();
+        other.sets[0].query = other.sets[0].query.replace("500", "100");
+        let e = same_sets(&doc, &regen, &other, &regen).unwrap_err();
+        assert!(e.contains("big"), "{e}");
     }
 }

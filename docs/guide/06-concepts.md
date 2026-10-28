@@ -41,8 +41,10 @@ Commands that change the history (`feature.edit`, `feature.suppress`, `feature.m
   into `Bevel`*, and the message gives the `feature.edit` that points them on. A fillet, a chamfer or a
   face operation after the marker names faces, not a body, and follows them into the new body by itself.
   The document remembers what it re-pointed, also in the file: deleting the inserted feature later points
-  them back (`"restored"` in the result), as if it had never been inserted, and editing it so it takes
-  another body re-points the features that named that one.
+  them back (`"restored"` in the result), as if it had never been inserted, and editing it so it no
+  longer takes that body points them back too. A reference you point elsewhere yourself stays yours:
+  deleting or editing the inserted feature leaves it alone. `document.inspect` lists what is
+  remembered under `inserted`.
 - `edit.undo` and `edit.redo` undo and redo any change, one command at a time.
 
 ## Variables, expressions and units

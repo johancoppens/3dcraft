@@ -43,6 +43,25 @@ pub struct Repointed {
     pub was: FeatureId,
 }
 
+/// What [`Document::restore_repointed`] gave back, and what it kept as it
+/// is because the feature named before no longer comes before the later
+/// one: `(feature, parameter, the feature it named before)` each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Restored {
+    pub given: Vec<(FeatureId, String, FeatureId)>,
+    pub kept: Vec<(FeatureId, String, FeatureId)>,
+}
+
+/// One recorded re-point at a moment ([`Document::recorded`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recorded {
+    /// The inserted feature it is of.
+    pub inserted: FeatureId,
+    pub repointed: Repointed,
+    /// What its parameter names then.
+    pub names: Option<FeatureId>,
+}
+
 /// Most entries a document keeps: one per feature at most.
 pub const MAX_INSERTED: usize = crate::MAX_FEATURES;
 
@@ -78,34 +97,41 @@ impl Document {
 
     /// Takes back what inserting `id` re-pointed from the features in
     /// `from` (every one when `None`): each such parameter that still names
-    /// `id` names the feature it named before again. Returns `(feature,
-    /// parameter, the feature it names now)` for each parameter given back,
-    /// in history order. The entries taken back are dropped; the entry of
-    /// `id` itself stays (it may re-point again when edited).
-    pub fn restore_repointed(
-        &mut self,
-        id: FeatureId,
-        from: Option<&[FeatureId]>,
-    ) -> Vec<(FeatureId, String, FeatureId)> {
+    /// `id` names the feature it named before again, unless that feature
+    /// no longer comes before it in the history (moved after it, or gone):
+    /// such a parameter is left as it is and listed as kept. Returns
+    /// `(given, kept)`, each `(feature, parameter, the feature it named
+    /// before)` in history order. The entries taken back are dropped,
+    /// given or kept; the entry of `id` itself stays.
+    pub fn restore_repointed(&mut self, id: FeatureId, from: Option<&[FeatureId]>) -> Restored {
         let Some(at) = self.inserted.iter().position(|e| e.feature == id) else {
-            return Vec::new();
+            return Restored::default();
         };
         let Some(entry) = self.inserted.get_mut(at) else {
-            return Vec::new();
+            return Restored::default();
         };
         let (back, kept): (Vec<Repointed>, Vec<Repointed>) = std::mem::take(&mut entry.repointed)
             .into_iter()
             .partition(|r| from.is_none_or(|from| from.contains(&r.was)));
         entry.repointed = kept;
-        let mut given = Vec::new();
+        let position = |doc: &Document, f: FeatureId| doc.features.iter().position(|x| x.id == f);
+        let mut out = Restored::default();
         for r in &back {
+            let in_order = matches!(
+                (position(self, r.was), position(self, r.feature)),
+                (Some(was), Some(later)) if was < later
+            );
             let Ok(later) = self.feature_mut(r.feature) else {
                 continue;
             };
             for (param, named) in later.kind.body_params_mut() {
                 if param == r.param && *named == id {
-                    *named = r.was;
-                    given.push((r.feature, r.param.clone(), r.was));
+                    if in_order {
+                        *named = r.was;
+                        out.given.push((r.feature, r.param.clone(), r.was));
+                    } else {
+                        out.kept.push((r.feature, r.param.clone(), r.was));
+                    }
                 }
             }
         }
@@ -125,7 +151,83 @@ impl Document {
                 }
             }
         }
-        given
+        out
+    }
+
+    /// What `param` of `later` names now, if `later` is a feature with it.
+    fn names_now(&self, later: FeatureId, param: &str) -> Option<FeatureId> {
+        self.feature(later)?
+            .kind
+            .body_params()
+            .into_iter()
+            .find(|(p, _)| *p == param)
+            .map(|(_, named)| named)
+    }
+
+    /// Every recorded re-point with the inserted feature it is of and what
+    /// its parameter names now: what [`Document::forget_hand_edits`]
+    /// compares a command's result with.
+    pub fn recorded(&self) -> Vec<Recorded> {
+        self.inserted
+            .iter()
+            .flat_map(|entry| {
+                entry.repointed.iter().map(|r| Recorded {
+                    inserted: entry.feature,
+                    names: self.names_now(r.feature, &r.param),
+                    repointed: r.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// After a command, given what was [`Document::recorded`] before it:
+    /// a recorded parameter the command pointed elsewhere itself (by hand:
+    /// not a re-point at the marker, which records it anew, nor a re-point
+    /// given back, which drops its entry) is the user's choice, and every
+    /// entry of it is dropped, so that no later delete or edit of an
+    /// inserted feature changes it again; also when it is pointed back.
+    pub fn forget_hand_edits(&mut self, before: &[Recorded]) {
+        if before.is_empty() {
+            return;
+        }
+        let after = self.recorded();
+        let same =
+            |a: &Recorded, b: &Recorded| a.inserted == b.inserted && a.repointed == b.repointed;
+        let mut chosen: Vec<(FeatureId, String)> = Vec::new();
+        for b in before {
+            let r = &b.repointed;
+            let Some(now) = self.names_now(r.feature, &r.param) else {
+                continue;
+            };
+            if Some(now) == b.names {
+                continue;
+            }
+            let key =
+                |x: &Recorded| x.repointed.feature == r.feature && x.repointed.param == r.param;
+            let re_pointed = after
+                .iter()
+                .any(|a| key(a) && a.inserted == now && !before.iter().any(|x| same(x, a)));
+            let given_back = before.iter().any(|x| {
+                key(x)
+                    && x.names == Some(x.inserted)
+                    && x.repointed.was == now
+                    && !after.iter().any(|a| same(x, a))
+            });
+            if !re_pointed
+                && !given_back
+                && !chosen.iter().any(|(f, p)| *f == r.feature && *p == r.param)
+            {
+                chosen.push((r.feature, r.param.clone()));
+            }
+        }
+        if chosen.is_empty() {
+            return;
+        }
+        for entry in &mut self.inserted {
+            entry
+                .repointed
+                .retain(|r| !chosen.iter().any(|(f, p)| *f == r.feature && *p == r.param));
+        }
     }
 
     /// Drops what the document keeps of `id` as an inserted feature, as a
@@ -305,7 +407,7 @@ mod tests {
         if let FeatureKind::Boolean(boolean) = &mut doc.feature_mut(cut).unwrap().kind {
             boolean.target = c;
         }
-        assert!(doc.restore_repointed(x, None).is_empty());
+        assert_eq!(doc.restore_repointed(x, None), super::Restored::default());
         assert_eq!(target(&doc, cut), c);
         // A hostile entry is refused by validation.
         let mut bad = doc.clone();
@@ -348,6 +450,77 @@ mod tests {
         doc.remove_feature(x).unwrap();
         assert_eq!(target(&doc, cut), x);
         assert!(doc.inserted.is_empty());
+        doc.validate().unwrap();
+    }
+
+    /// A and B, Cut (A minus B) and C, with X inserted after B taking A.
+    fn with_x() -> (Document, [FeatureId; 5]) {
+        let mut doc = Document::new(Units::default());
+        let a = doc.add_feature(Some("A"), block()).unwrap();
+        let b = doc.add_feature(Some("B"), block()).unwrap();
+        let cut = doc
+            .add_feature(
+                Some("Cut"),
+                FeatureKind::Boolean(Boolean {
+                    op: BooleanOp::Subtract,
+                    target: a,
+                    tool: b,
+                    keep_tool: false,
+                }),
+            )
+            .unwrap();
+        let c = doc.add_feature(Some("C"), block()).unwrap();
+        let x = insert(&mut doc, b, "X", moved(a));
+        (doc, [a, b, cut, c, x])
+    }
+
+    fn set_target(doc: &mut Document, cut: FeatureId, to: FeatureId) {
+        if let FeatureKind::Boolean(boolean) = &mut doc.feature_mut(cut).unwrap().kind {
+            boolean.target = to;
+        }
+    }
+
+    /// A recorded parameter pointed elsewhere by hand, and back again, is
+    /// the user's: its entry is dropped, so deleting the inserted feature
+    /// leaves it as the user set it.
+    #[test]
+    fn a_parameter_pointed_by_hand_is_left_alone() {
+        let (mut doc, [_, _, cut, c, x]) = with_x();
+        let before = doc.recorded();
+        set_target(&mut doc, cut, c);
+        doc.forget_hand_edits(&before);
+        let before = doc.recorded();
+        set_target(&mut doc, cut, x);
+        doc.forget_hand_edits(&before);
+        assert!(doc.inserted(x).unwrap().repointed.is_empty());
+        doc.remove_feature(x).unwrap();
+        assert_eq!(target(&doc, cut), x);
+        // A re-point at the marker and one given back are not by hand.
+        let (mut doc, [a, _, cut, _, x]) = with_x();
+        let before = doc.recorded();
+        let x2 = insert(&mut doc, x, "X2", moved(x));
+        doc.forget_hand_edits(&before);
+        assert_eq!(doc.inserted(x).unwrap().repointed.len(), 1);
+        let before = doc.recorded();
+        doc.remove_feature(x2).unwrap();
+        doc.forget_hand_edits(&before);
+        assert_eq!(target(&doc, cut), x);
+        assert_eq!(doc.inserted(x).unwrap().repointed[0].was, a);
+    }
+
+    /// The feature a parameter named before moved after the later one: it
+    /// is not given back (it would come after what uses it), but kept.
+    #[test]
+    fn a_feature_moved_after_the_later_one_is_not_given_back() {
+        let (mut doc, [a, _, cut, _, x]) = with_x();
+        let last = doc.features.len() - 1;
+        doc.move_feature(a, last).unwrap();
+        let restored = doc.restore_repointed(x, None);
+        assert!(restored.given.is_empty());
+        assert_eq!(restored.kept, vec![(cut, "target".to_string(), a)]);
+        assert_eq!(target(&doc, cut), x);
+        doc.remove_feature(x).unwrap();
+        assert_eq!(target(&doc, cut), x);
         doc.validate().unwrap();
     }
 }

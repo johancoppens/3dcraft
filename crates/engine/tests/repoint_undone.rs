@@ -284,9 +284,9 @@ fn two_insertions_on_one_parameter_deleted_undone_and_redone() {
 
 /// A move of the fillet inserted before the pattern, edited to move the
 /// spare block instead: the pattern repeats the fillet again, and the
-/// move after it, which named the spare block, moves the inserted one;
-/// as the same features built in that order. Deleted after a save and a
-/// load, the part is the one never changed.
+/// move after it, which the user pointed at the spare block, still names
+/// it (an edit re-points only what the inserted feature re-pointed).
+/// Deleted after a save and a load, the part is the one never changed.
 #[test]
 fn an_inserted_feature_edited_to_take_another_body_and_then_deleted() {
     for k in SCALES {
@@ -301,6 +301,7 @@ fn an_inserted_feature_edited_to_take_another_body_and_then_deleted() {
         let mut original = new(k);
         build(&mut original, &part(k));
         let before = features(&mut original);
+        let spare = number(&before, "Spare");
         run(&mut s, "history.rollback", json!({"feature": "Round"}));
         let added = run(
             &mut s,
@@ -323,38 +324,101 @@ fn an_inserted_feature_edited_to_take_another_body_and_then_deleted() {
             json!([{"feature": "Row", "param": "source", "names": "Round"}]),
             "{edited}"
         );
-        assert_eq!(
-            edited["repointed"],
-            json!([{"feature": "Up", "param": "source"}]),
-            "{edited}"
-        );
-        forward(&mut s);
-        // Built so from the start: Lift after Round moves Spare, Row
-        // repeats Round, Up moves Lift.
-        let mut steps = part(k);
-        steps[6].1["source"] = json!("Lift");
-        steps.insert(
-            5,
-            (
-                "feature.transform",
-                json!({"source": "Spare", "translate": [0, 0, 5.0 * k], "name": "Lift"}),
-            ),
-        );
-        let mut straight = new(k);
-        build(&mut straight, &steps);
-        same_bodies(&mut s, &mut straight, k, "edited");
+        assert!(edited.get("repointed").is_none(), "{edited}");
+        let now = features(&mut s);
+        let up = now.iter().find(|f| f["name"] == "Up").unwrap();
+        assert_eq!(up["params"]["source"], spare, "{k}");
+        run(&mut s, "history.rollback", json!({"feature": null}));
         // Saved with the marker cleared, opened, and the move deleted.
         round_trip(&mut s, &dir, "edited");
         let deleted = run(&mut s, "feature.delete", json!({"feature": "Lift"}));
-        assert_eq!(
-            deleted["restored"],
-            json!([{"feature": "Up", "param": "source", "names": "Spare"}]),
-            "{deleted}"
-        );
+        assert!(deleted.get("restored").is_none(), "{deleted}");
         assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
         assert_eq!(features(&mut s), before, "{k}");
         same_bodies(&mut s, &mut original, k, "deleted");
     }
+}
+
+/// A parameter the user points elsewhere and back again is the user's:
+/// deleting the inserted feature leaves it, and document.inspect no
+/// longer lists it under inserted.
+#[test]
+fn a_parameter_pointed_by_hand_stays_as_the_user_left_it() {
+    let mut s = new(1.0);
+    build(&mut s, &part(1.0));
+    run(&mut s, "history.rollback", json!({"feature": "Tool"}));
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": 0.5, "name": "Bevel"}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    let all = features(&mut s);
+    let (bevel, base, cut) = (
+        number(&all, "Bevel"),
+        number(&all, "Base"),
+        number(&all, "Cut"),
+    );
+    let id = |n: &Value| json!(format!("F{n}"));
+    assert_eq!(
+        inspect["inserted"],
+        json!([{"feature": id(&bevel), "repointed": [{"feature": id(&cut), "param": "target", "was": id(&base)}]}]),
+        "{inspect}"
+    );
+    run(&mut s, "history.rollback", json!({"feature": null}));
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Cut", "target": "Spare"}),
+    );
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Cut", "target": "Bevel"}),
+    );
+    let inspect = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(
+        inspect["inserted"],
+        json!([{"feature": id(&bevel), "repointed": []}]),
+        "{inspect}"
+    );
+    let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel"}));
+    assert!(deleted.get("restored").is_none(), "{deleted}");
+    assert_eq!(cut_target(&mut s), bevel);
+}
+
+/// The block the subtraction named before moved after it: deleting the
+/// chamfer inserted on it cannot give it back (it would come after the
+/// subtraction), says so under notRestored and leaves the subtraction
+/// naming the chamfer, which fails as a reference to a deleted feature
+/// does; nothing panics and the document stays valid.
+#[test]
+fn what_moved_after_the_later_feature_is_not_given_back() {
+    let dir = workdir("repoint_undone", "moved");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    build(&mut s, &part(1.0));
+    run(&mut s, "history.rollback", json!({"feature": "Tool"}));
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(3)"]], "distance": 0.5, "name": "Bevel"}),
+    );
+    run(&mut s, "history.rollback", json!({"feature": null}));
+    let bevel = number(&features(&mut s), "Bevel");
+    let last = features(&mut s).len() - 1;
+    run(
+        &mut s,
+        "feature.move",
+        json!({"feature": "Base", "position": last}),
+    );
+    let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel"}));
+    assert!(deleted.get("restored").is_none(), "{deleted}");
+    assert_eq!(deleted["notRestored"][0]["feature"], "Cut", "{deleted}");
+    assert_eq!(deleted["notRestored"][0]["was"], "Base", "{deleted}");
+    assert_eq!(cut_target(&mut s), bevel);
+    round_trip(&mut s, &dir, "moved");
+    assert_eq!(cut_target(&mut s), bevel);
 }
 
 /// An edit of an inserted feature that keeps the body it takes changes

@@ -47,7 +47,7 @@ pub use public::{
     DocInfo, MAX_CHOICES, MAX_DESCRIPTION, MAX_INFO_TEXT, MAX_PARAM_TEXT, MAX_TAGS, ParamKind,
     PublicParam,
 };
-pub use repoint::{Inserted, MAX_INSERTED, Repointed};
+pub use repoint::{Inserted, MAX_INSERTED, Recorded, Repointed, Restored};
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn, FlangeSide,
