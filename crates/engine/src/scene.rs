@@ -2309,6 +2309,39 @@ impl Session {
             .is_some_and(|seen| Arc::ptr_eq(seen, &doc))
     }
 
+    /// True when the scenes kept for the document state `doc` have one
+    /// (or its error) for `quality` (`regen_elsewhere.rs`).
+    pub(crate) fn has_scene_of(&self, doc: &Arc<Document>, quality: SceneQuality) -> bool {
+        let key = quality.key();
+        self.scene
+            .kept
+            .iter()
+            .any(|kept| Arc::ptr_eq(&kept.doc, doc) && kept.scenes.iter().any(|(k, ..)| *k == key))
+    }
+
+    /// Keeps `built` as the scene of the document state `doc` for
+    /// `quality`, as one built here would be kept (`regen_elsewhere.rs`).
+    pub(crate) fn keep_scene_of(
+        &mut self,
+        doc: &Arc<Document>,
+        quality: SceneQuality,
+        built: Built,
+    ) {
+        self.scene_revision();
+        self.scene.store(doc, quality.key(), built);
+    }
+
+    /// The revision the scenes of the active document are shown at now,
+    /// as [`Self::scene_revision`] last counted it.
+    pub(crate) fn scene_revision_now(&self) -> u64 {
+        self.scene.revision
+    }
+
+    /// The most bytes of scenes kept ([`Self::set_scene_budget`]).
+    pub(crate) fn scene_budget(&self) -> usize {
+        self.scene.budget
+    }
+
     /// Says that the display scene is built elsewhere, by a host that runs
     /// [`Self::refinement`] on a thread of its own (the window), so that
     /// [`Self::scene_with`] answers the display rule with the quick first

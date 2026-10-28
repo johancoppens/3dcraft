@@ -436,10 +436,30 @@ impl Session {
         wait: Wait,
     ) -> Result<(Vec<Checked>, Arc<Resolved>), CommandError> {
         let stepwise = self.stepwise;
+        let elsewhere = self.regen_elsewhere() && !matches!(wait, Wait::All);
         let open = self.document_mut()?;
         let doc = Arc::clone(open.history.current());
         if doc.assertions.is_empty() && doc.outputs.is_empty() {
             return Ok((Vec::new(), Arc::new(Resolved::default())));
+        }
+        // Regenerated and measured elsewhere, a state at a time
+        // (`regen_elsewhere.rs`): its answer once it is there, pending
+        // until then. Only what waits for every answer regenerates here.
+        if elsewhere {
+            if let Some((of, checked, outputs)) = &open.state_checks.answer
+                && Arc::ptr_eq(of, &doc)
+            {
+                return Ok((checked.clone(), Arc::clone(outputs)));
+            }
+            let outputs = doc
+                .outputs
+                .iter()
+                .map(|o| (o.name.clone(), OutputValue::Pending))
+                .collect();
+            return Ok((
+                doc.assertions.iter().map(pending).collect(),
+                Arc::new(Resolved::from_entries(outputs)),
+            ));
         }
         let revision = open.history.revision();
         let regen = open.regen();

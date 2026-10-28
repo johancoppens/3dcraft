@@ -52,12 +52,14 @@ mod recovery;
 mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
+mod regen_elsewhere;
 mod replay_cmds;
 mod report;
 mod sample_cmds;
 mod scene;
 mod scene_box;
 mod scene_view;
+mod scene_wire;
 mod scrub;
 mod section;
 mod select_cmds;
@@ -109,6 +111,7 @@ pub use recovery::{
     Recoverable, RecoveryNotify, RecoveryOptions, RecoveryOverview, default_recovery_directory,
     parse_autosave_interval,
 };
+pub use regen_elsewhere::{SceneRequest, scene_begin, scene_bytes, scene_next};
 pub use report::{
     FailedCommand, MAX_REPORT_FIELD_CHARS, VERSION, bug_report, build_commit, platform,
     set_build_commit,
@@ -228,6 +231,9 @@ pub(crate) struct OpenDocument {
     /// parameter changes are not unsaved changes (`jig_cmds.rs`). Derived
     /// from how it was opened, not stored in the file.
     pub(crate) jig_in_use: bool,
+    /// The assertions and outputs of a state measured elsewhere, whole
+    /// (`regen_elsewhere.rs`): the job handed out and the last answer.
+    pub(crate) state_checks: regen_elsewhere::StateChecks,
 }
 
 /// A regeneration cache with the budget of bodies the environment asks
@@ -273,6 +279,7 @@ impl OpenDocument {
             scrub: scrub::Scrub::default(),
             thumbnail: None,
             jig_in_use: false,
+            state_checks: regen_elsewhere::StateChecks::default(),
         }
     }
 
@@ -390,6 +397,14 @@ pub struct Session {
     pub(crate) checks_elsewhere: bool,
     /// The last number a job of checks was handed out under.
     pub(crate) checks_token: u64,
+    /// The host has the active document regenerated and meshed elsewhere
+    /// (a Web Worker: `regen_elsewhere.rs`) and hands the scenes' jobs
+    /// over.
+    pub(crate) regen_elsewhere: bool,
+    /// The job of scenes handed out last, while it waits.
+    pub(crate) scene_job: Option<regen_elsewhere::SceneJob>,
+    /// The last number a job of scenes was handed out under.
+    pub(crate) scene_token: u64,
 }
 
 /// Most documents open at once.
@@ -416,6 +431,9 @@ impl Session {
             prepare_broken: None,
             checks_elsewhere: false,
             checks_token: 0,
+            regen_elsewhere: false,
+            scene_job: None,
+            scene_token: 0,
         }
     }
 

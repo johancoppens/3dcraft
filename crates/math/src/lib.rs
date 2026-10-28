@@ -152,6 +152,16 @@ impl Bbox3 {
         b
     }
 
+    /// The box with these corners, as [`Self::corners`] gives them, bit
+    /// for bit (what a box written out reads back as).
+    pub fn from_corners(min: Vec3, max: Vec3) -> Self {
+        Bbox3 {
+            min,
+            max,
+            empty: false,
+        }
+    }
+
     pub fn add(&mut self, p: Vec3) {
         if self.empty {
             *self = Bbox3 {

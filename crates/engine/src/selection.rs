@@ -1029,7 +1029,7 @@ impl Session {
     /// regeneration first: what no longer exists has dropped out. Empty
     /// without a document.
     pub fn selection(&mut self) -> SelectionView {
-        self.selection_serial();
+        self.check_selection();
         self.document()
             .map_or_else(|_| SelectionView::default(), |open| open.selection.view())
     }
@@ -1038,7 +1038,20 @@ impl Session {
     /// its current regeneration first: it moves whenever the items or
     /// what dropped out change, so a frontend copies the selection only
     /// then. 0 without a document.
+    ///
+    /// While the document is regenerated elsewhere
+    /// ([`Session::regen_elsewhere`]) and not here, it is checked once it
+    /// is regenerated here (a command that needs the bodies, or
+    /// [`Session::selection`]): a frame that asks never regenerates.
     pub fn selection_serial(&mut self) -> u64 {
+        if self.regen_elsewhere() && !self.regenerated_here() {
+            return self.document().map_or(0, |open| open.selection.serial());
+        }
+        self.check_selection()
+    }
+
+    /// [`Session::selection_serial`], checked whatever it takes.
+    fn check_selection(&mut self) -> u64 {
         let Ok(open) = self.document_mut() else {
             return 0;
         };

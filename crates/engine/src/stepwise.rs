@@ -96,6 +96,11 @@ impl Session {
         if tests::PANIC.with(std::cell::Cell::take) {
             panic!("a bug in the work, for the test");
         }
+        // Regenerated and meshed elsewhere (`regen_elsewhere.rs`): the
+        // host hands the scenes' jobs over, and the checks go with them.
+        if self.regen_elsewhere() {
+            return None;
+        }
         if let Some(progress) = self.regenerate_some(stop.clone()) {
             return Some(progress);
         }

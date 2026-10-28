@@ -31,7 +31,7 @@ use crate::Session;
 use crate::assert_check::{Wait, pending};
 use crate::assert_cmds::{AssertionState, AssertionStatus, Checked, check_one};
 use crate::output_cmds::{OutputValue, Resolved};
-use craft3d_doc::Assertion;
+use craft3d_doc::{Assertion, Document};
 use craft3d_expr::{Dimension, Quantity};
 use craft3d_regen::RegenCache;
 use serde_json::{Map, Value, json};
@@ -86,7 +86,14 @@ impl Session {
     /// done): a host whose number changed drops the work it started for
     /// the old one.
     pub fn checks_job(&mut self) -> Option<u64> {
-        if !(self.checks_elsewhere && self.stepwise) || self.regeneration_deferred() {
+        if !(self.checks_elsewhere && self.stepwise) {
+            return None;
+        }
+        // Regenerated elsewhere: a whole state at a time.
+        if self.regen_elsewhere() {
+            return self.state_checks_job();
+        }
+        if self.regeneration_deferred() {
             return None;
         }
         // Collects what a finished job measured and makes the next one.
@@ -108,6 +115,15 @@ impl Session {
     /// [`measure_checks`]. An error when no open document has that job
     /// waiting any more, or its document cannot be written.
     pub fn checks_request(&self, token: u64) -> Result<CheckRequest, String> {
+        if let Some((_, doc)) = self.state_job(token) {
+            let document = craft3d_format::to_bytes(&doc)
+                .map_err(|e| format!("the document cannot be written out: {e}"))?;
+            return Ok(CheckRequest {
+                token,
+                document,
+                work: json!({ "state": true }).to_string(),
+            });
+        }
         let job = self
             .job_with_token(token)
             .ok_or_else(|| format!("no job of checks {token} waits for answers"))?;
@@ -132,6 +148,22 @@ impl Session {
     /// waiting any more (an edit replaced it, it was measured here): the
     /// answer is dropped.
     pub fn checks_answered(&mut self, token: u64, answer: Result<&str, &str>) -> bool {
+        if let Some((at, doc)) = self.state_job(token) {
+            let decoded = match answer {
+                Ok(text) => decode_state(text, &doc),
+                Err(why) => Err(format!("the worker measuring it stopped: {why}")),
+            };
+            let (checked, outputs) = decoded.unwrap_or_else(|why| {
+                failed_state(
+                    &doc,
+                    &format!(
+                        "internal error (a bug in 3DCraft, please report it): could not be measured off the page's thread: {why}"
+                    ),
+                )
+            });
+            self.state_answered(at, doc, checked, outputs);
+            return true;
+        }
         let Some(job) = self.job_with_token(token) else {
             return false;
         };
@@ -168,6 +200,11 @@ impl Session {
     /// every one of its checks is an error that says `why` as it is. The
     /// job is then done. False when it no longer waits.
     pub fn checks_failed(&mut self, token: u64, why: &str) -> bool {
+        if let Some((at, doc)) = self.state_job(token) {
+            let (checked, outputs) = failed_state(&doc, &format!("not measured: {why}"));
+            self.state_answered(at, doc, checked, outputs);
+            return true;
+        }
         let Some(job) = self.job_with_token(token) else {
             return false;
         };
@@ -209,6 +246,10 @@ thread_local! {
 /// `{"error": why}` when the request cannot be read. Never panics on any
 /// input.
 pub fn measure_checks(document: &[u8], work: &str) -> String {
+    if serde_json::from_str::<Value>(work).is_ok_and(|w| w.get("state") == Some(&Value::Bool(true)))
+    {
+        return measure_state(document);
+    }
     let measured = (|| -> Result<Vec<Value>, String> {
         let doc = craft3d_format::from_bytes(document)
             .map_err(|e| format!("the document cannot be read: {e}"))?;
@@ -231,6 +272,76 @@ pub fn measure_checks(document: &[u8], work: &str) -> String {
         Ok(checked) => json!({ "checked": checked }).to_string(),
         Err(why) => json!({ "error": why }).to_string(),
     }
+}
+
+thread_local! {
+    /// The session that measures whole states on this side: the next
+    /// state of a document rebuilds only what changed, and an assertion
+    /// whose subjects did not change is not measured again.
+    static STATES: RefCell<Option<Session>> = const { RefCell::new(None) };
+}
+
+/// Measures every assertion and output of the document state `document`
+/// (a job of checks of a whole state: the host regenerates elsewhere,
+/// `regen_elsewhere.rs`). `{"checked": [...], "outputs": [...]}`, or
+/// `{"error": why}`.
+fn measure_state(document: &[u8]) -> String {
+    let measured = (|| -> Result<Value, String> {
+        let doc = craft3d_format::from_bytes(document)
+            .map_err(|e| format!("the document cannot be read: {e}"))?;
+        STATES.with(|states| {
+            let mut states = states
+                .try_borrow_mut()
+                .map_err(|_| "the checks are being measured already".to_string())?;
+            let session = states.get_or_insert_with(|| {
+                let mut s = Session::new(crate::Workspace::none());
+                // Measured in line, on this thread.
+                s.set_stepwise(true);
+                s
+            });
+            crate::regen_elsewhere::load_state(session, doc);
+            let (checked, outputs) = session
+                .checks_and_outputs(Wait::All)
+                .map_err(|e| e.message().to_string())?;
+            Ok(json!({
+                "checked": checked.iter().map(checked_json).collect::<Vec<_>>(),
+                "outputs": outputs_json(&outputs),
+            }))
+        })
+    })();
+    match measured {
+        Ok(answer) => answer.to_string(),
+        Err(why) => json!({ "error": why }).to_string(),
+    }
+}
+
+/// The answer of [`measure_state`] for `doc`.
+fn decode_state(text: &str, doc: &Document) -> Result<(Vec<Checked>, Resolved), String> {
+    let checked = decode_answer(text, doc.assertions.len())?;
+    let answer: Value =
+        serde_json::from_str(text).map_err(|e| format!("its answer cannot be read: {e}"))?;
+    let outputs = outputs_from(answer.get("outputs").unwrap_or(&Value::Null))?;
+    Ok((checked, outputs))
+}
+
+/// Every assertion and output of `doc` an error that says `why`.
+fn failed_state(doc: &Document, why: &str) -> (Vec<Checked>, Resolved) {
+    let checked = doc
+        .assertions
+        .iter()
+        .map(|assertion| {
+            let mut failed = pending(assertion);
+            failed.state.status = AssertionStatus::Error;
+            failed.state.message = why.to_string();
+            failed
+        })
+        .collect();
+    let outputs = doc
+        .outputs
+        .iter()
+        .map(|o| (o.name.clone(), OutputValue::Unknown(why.to_string())))
+        .collect();
+    (checked, Resolved::from_entries(outputs))
 }
 
 /// The outputs as far as they are known: `[[name, value]]`, a value

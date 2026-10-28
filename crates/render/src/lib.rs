@@ -627,6 +627,15 @@ impl FaceColors {
         self.colors.iter().all(Option::is_none)
     }
 
+    /// The faces with a colour of their own and its finish, by ascending
+    /// id.
+    pub fn looks(&self) -> impl Iterator<Item = (u32, ([u8; 3], Finish))> + '_ {
+        self.colors
+            .iter()
+            .enumerate()
+            .filter_map(|(face, look)| Some((u32::try_from(face).ok()?, (*look)?)))
+    }
+
     /// The faces with a colour of their own, by ascending id.
     pub fn iter(&self) -> impl Iterator<Item = (u32, [u8; 3])> + '_ {
         self.colors
