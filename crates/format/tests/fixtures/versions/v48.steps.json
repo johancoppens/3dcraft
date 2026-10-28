@@ -1,0 +1,6 @@
+[
+ ["sketch.create", {"plane": "xy", "name": "Board"}],
+ ["sketch.polyline", {"sketch": "Board", "closed": true, "points": [[0, 0], [40, 0], [40, 20], [0, 20]]}],
+ ["sketch.line", {"sketch": "Board", "from": [20, 0], "to": [20, 20], "construction": true}],
+ ["feature.fold", {"sketch": "Board", "name": "Lid", "fixed": [10, 10], "creases": [{"line": "e11", "kind": "valley", "angle": "60 deg"}], "panels": {"thickness": "2 mm", "clearance": "1 mm", "side": "back"}}]
+]
