@@ -1445,3 +1445,109 @@ fn a_rail_that_turns_back_is_refused() {
     let e = connect(&a, &b, &tol(k)).unwrap_err();
     assert!(e.to_string().contains("cusp"), "{e}");
 }
+
+/// A full circle of radius `r` about `(cx, cy, z)` as a closed rail.
+fn loop_rail(cx: f64, cy: f64, z: f64, r: f64) -> Rail {
+    let frame = Frame::new(Vec3::new(cx, cy, z), Vec3::Z, Vec3::X).unwrap();
+    chain(vec![(
+        Curve3::Circle(Circle::new(frame, r).unwrap()),
+        (0.0, TAU),
+    )])
+}
+
+/// Rails that close on themselves: a developable tube (2026-10-28). Two
+/// coaxial circles give the frustum of a cone, its rulings through the
+/// apex, one face whose seam (the ruling from the first circle's start)
+/// it uses on both sides; laid flat, a ring's sector with the frustum's
+/// area `π (R₁ + R₂) √(h² + (R₁ − R₂)²)` and the circles' lengths. Two
+/// parallel circles whose centres are not over one another give an
+/// oblique cone: every ruling through the circles' centre of similitude.
+/// At three scales.
+#[test]
+fn closed_rails_give_a_developable_tube() {
+    for k in SCALES {
+        let (r1, r2, h) = (2.0 * k, 1.0 * k, 1.5 * k);
+        let (a, b) = (loop_rail(0.0, 0.0, 0.0, r1), loop_rail(0.0, 0.0, h, r2));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        eprintln!(
+            "{k}: tube faces {:?}, {} rulings",
+            made.faces,
+            made.rulings.len()
+        );
+        assert_eq!(made.faces, vec![Piece::Rulings], "{k}");
+        check_rulings(&made, &a, &b);
+        let apex = Vec3::new(0.0, 0.0, h * r1 / (r1 - r2));
+        for &(s, t) in &made.rulings {
+            let ((pa, _), (pb, _)) = (chain_at(&a, s, false), chain_at(&b, t, false));
+            let d = (pb - pa).normalized().unwrap();
+            let off = (apex - pa) - d * (apex - pa).dot(d);
+            assert!(
+                off.length() <= 1e-6 * k,
+                "{k}: misses the apex by {}",
+                off.length()
+            );
+        }
+        // Closed: every edge used twice but the two circles; the seam used
+        // twice by the one face.
+        let uses = craft3d_topo::edge_uses(&made.body);
+        let once = uses.iter().filter(|u| u.len() == 1).count();
+        let twice = uses
+            .iter()
+            .filter(|u| u.len() == 2 && u[0].face == u[1].face)
+            .count();
+        assert_eq!((once, twice), (2, 1), "{k}: {uses:?}");
+        let area: f64 = craft3d_topo::face_areas(&made.body)
+            .iter()
+            .map(|a| *a.as_ref().unwrap())
+            .sum();
+        let expected = std::f64::consts::PI * (r1 + r2) * (h * h + (r1 - r2) * (r1 - r2)).sqrt();
+        assert!(
+            (area - expected).abs() <= 1e-6 * expected,
+            "{k}: area {area} for {expected}"
+        );
+        let dev = develop(&made.body, &[FaceId(0)], &tol(k)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        let e = dev.error();
+        assert!(e.area < 1e-6 && e.length < 1e-6, "{k}: {e:?}");
+        let mut circles: Vec<f64> = dev
+            .outline()
+            .iter()
+            .map(|c| c.length_flat)
+            .filter(|l| *l > 2.0 * k)
+            .collect();
+        circles.sort_by(f64::total_cmp);
+        assert_eq!(circles.len(), 2, "{k}: {circles:?}");
+        assert!(
+            (circles[0] - TAU * r2).abs() <= 1e-6 * k,
+            "{k}: {circles:?}"
+        );
+        assert!(
+            (circles[1] - TAU * r1).abs() <= 1e-6 * k,
+            "{k}: {circles:?}"
+        );
+
+        // Oblique.
+        let (a, b) = (loop_rail(0.0, 0.0, 0.0, r1), loop_rail(0.4 * k, 0.0, h, r2));
+        let made = connect(&a, &b, &tol(k)).unwrap_or_else(|e| panic!("{k}: oblique: {e}"));
+        check_rulings(&made, &a, &b);
+        let centre = Vec3::new(r1 * 0.4 * k / (r1 - r2), 0.0, h * r1 / (r1 - r2));
+        for &(s, t) in &made.rulings {
+            let ((pa, _), (pb, _)) = (chain_at(&a, s, false), chain_at(&b, t, false));
+            let d = (pb - pa).normalized().unwrap();
+            let off = (centre - pa) - d * (centre - pa).dot(d);
+            assert!(
+                off.length() <= 1e-6 * k,
+                "{k}: oblique: misses the centre by {}",
+                off.length()
+            );
+        }
+    }
+}
+
+/// A closed rail with an open one is refused with the reason.
+#[test]
+fn a_closed_and_an_open_rail_are_refused() {
+    let a = loop_rail(0.0, 0.0, 0.0, 1.0);
+    let b = arc(Vec3::new(0.0, 0.0, 1.0), 1.0, 0.0, 3.0);
+    let e = connect(&a, &b, &tol(1.0)).unwrap_err();
+    assert!(e.to_string().contains("closed"), "{e}");
+}

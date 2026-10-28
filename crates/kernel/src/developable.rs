@@ -296,6 +296,9 @@ struct Pair<'a> {
     b: &'a Rail,
     corners_a: Vec<f64>,
     corners_b: Vec<f64>,
+    /// Both rails close on themselves (a tube): their ends are one point
+    /// each, and the last ruling is the first.
+    closed: bool,
 }
 
 impl<'a> Pair<'a> {
@@ -309,6 +312,7 @@ impl<'a> Pair<'a> {
             corners_b: unit(b),
             a,
             b,
+            closed: false,
         }
     }
 }
@@ -1722,6 +1726,160 @@ impl Rail {
     }
 }
 
+impl Rail {
+    /// A closed rail started at `t` (a rail parameter): the piece there
+    /// split at it, the chain run on from there round to it. `None` when
+    /// `t` is not inside the rail.
+    fn rotated(&self, t: f64) -> Option<Rail> {
+        let n = self.pieces.len();
+        if !(t.is_finite() && t >= 0.0 && t < n as f64) {
+            return None;
+        }
+        let index = (t.floor() as usize).min(n.checked_sub(1)?);
+        let local = t - index as f64;
+        let piece = self.pieces.get(index)?;
+        let mut pieces = Vec::with_capacity(n + 1);
+        if local <= 0.0 {
+            pieces.extend(self.pieces.iter().skip(index).cloned());
+            pieces.extend(self.pieces.iter().take(index).cloned());
+            return Some(Rail { pieces });
+        }
+        let (a, b) = piece.range;
+        let cut = if piece.reversed {
+            b - local * (b - a)
+        } else {
+            a + local * (b - a)
+        };
+        // In the chain's direction: the part from `t` on, then the part up
+        // to it.
+        let (after, before) = if piece.reversed {
+            ((a, cut), (cut, b))
+        } else {
+            ((cut, b), (a, cut))
+        };
+        pieces.push(RailPiece {
+            range: after,
+            ..piece.clone()
+        });
+        pieces.extend(self.pieces.iter().skip(index + 1).cloned());
+        pieces.extend(self.pieces.iter().take(index).cloned());
+        pieces.push(RailPiece {
+            range: before,
+            ..piece.clone()
+        });
+        Some(Rail { pieces })
+    }
+}
+
+/// Most starts on the second rail a tube is tried from ([`tube`]).
+const MAX_TUBE_STARTS: usize = 16;
+
+/// The developable tube between two closed rails (2026-10-28). The square
+/// of the two rails' parameters is a torus here, and the developable is a
+/// path along the zero set of the condition that goes once round both:
+/// from a ruling `A(0) B(t*)` that satisfies the condition, round to the
+/// same ruling. `B` is started at `t*` ([`Rail::rotated`]), so the walk
+/// starts at the corner of the square on the zero set, and the tube is
+/// built as a sheet whose last ruling is its first (one edge, its seam,
+/// used by the faces on both sides of it; the rails' ends one vertex
+/// each). Where the walk reaches the end of one rail before the other, the
+/// rest is a fan from that end, which closes the tube as smoothly as at
+/// the ends of an open sheet (its first ruling satisfies the condition and
+/// its last is the seam). Of the rulings from `A(0)` that satisfy the
+/// condition (the zeros of `f(0, ·)`), the shortest is tried first, then
+/// the others in order of length, at most [`MAX_TUBE_STARTS`]: each that
+/// goes round gives a developable (two coaxial circles: the frustum's
+/// rulings, and the ones across the axis), and the shortest is the one a
+/// tube between two loops is. `A`'s start must be smooth (the seam lies
+/// there); rails in one plane give the flat ring between them, cut along
+/// the shortest segment from `A(0)` to `B`.
+fn tube(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connected, KernelError> {
+    let tol = tolerance.linear;
+    let turn = |u: Vec3, w: Vec3| u.cross(w).length().atan2(u.dot(w));
+    let (Some((a0, d_start)), Some((_, d_end))) =
+        (a.at_side(0.0, false), a.at_side(a.len(), false))
+    else {
+        return Err(no_point());
+    };
+    if let (Some(u), Some(w)) = (d_end.normalized(), d_start.normalized())
+        && turn(u, w) > tolerance.angular
+    {
+        return Err(refused(format!(
+            "the first curve has a corner where it closes, at {}: a tube's seam starts there; start the curve where it is smooth",
+            fmt_point(a0)
+        )));
+    }
+    let lengths = (
+        a.length_between(0.0, a.len()),
+        b.length_between(0.0, b.len()),
+    );
+    if let Some(frame) = common_plane(a, b, tol) {
+        // The point of B nearest A(0), from the nearest of its samples.
+        let samples = b.pieces.len() * 64;
+        let start = (0..samples)
+            .map(|k| b.len() * k as f64 / samples as f64)
+            .filter_map(|t| b.point(t).map(|p| (t, p.distance(a0))))
+            .min_by(|p, q| p.1.total_cmp(&q.1))
+            .map(|(t, _)| t)
+            .ok_or_else(no_point)?;
+        let step = b.len() / samples as f64;
+        let t = b.nearest(
+            a0,
+            start,
+            (start - step).max(0.0),
+            (start + step).min(b.len()),
+        );
+        let t = if t >= b.len() { 0.0 } else { t };
+        let b = b.rotated(t).ok_or_else(no_point)?;
+        return planar(a, &b, frame, tolerance, [false, false], true);
+    }
+    let pair = Pair::new(a, b, tolerance.angular);
+    // The rulings from A(0) that satisfy the condition, shortest first.
+    let mut starts: Vec<(f64, f64)> = Vec::new();
+    let mut from = 0.0;
+    if pair.f(0.0, 0.0).is_some_and(|v| v == 0.0) {
+        starts.push((0.0, a0.distance(b.point(0.0).ok_or_else(no_point)?)));
+        from = 1e-9;
+    }
+    while starts.len() < 4 * MAX_TUBE_STARTS {
+        let Some(y) = first_root(&|y| pair.f(0.0, y), from) else {
+            break;
+        };
+        if y >= 1.0 {
+            break;
+        }
+        let length = b
+            .point(pair.tb(y))
+            .map_or(f64::INFINITY, |p| p.distance(a0));
+        starts.push((y, length));
+        from = y + 1e-9;
+    }
+    starts.sort_by(|p, q| p.1.total_cmp(&q.1));
+    let mut first_error = None;
+    for (y, length) in starts.into_iter().take(MAX_TUBE_STARTS) {
+        if length <= tol {
+            continue;
+        }
+        let Some(rotated) = b.rotated(pair.tb(y)) else {
+            continue;
+        };
+        let mut turned = Pair::new(a, &rotated, tolerance.angular);
+        turned.closed = true;
+        match along_pair(&turned, tolerance, [false, false], lengths) {
+            Ok(made) => return Ok(made),
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| {
+        refused(format!(
+            "no ruling from the start of the first curve, {}, to the second satisfies the condition (tangents and ruling in one plane): these closed curves have no developable tube between them",
+            fmt_point(a0)
+        ))
+    }))
+}
+
 /// The sheet between the rails `a` and `b`. `a` is run as given; `b` as
 /// given, or the other way when only that gives a developable (rails
 /// drawn in opposite directions; with both ways possible, as given, so a
@@ -1756,18 +1914,6 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
         b.point(0.0).ok_or_else(no_point)?,
         b.point(b.len()).ok_or_else(no_point)?,
     );
-    for (name, start, end) in [("first", a0, a1), ("second", b0, b1)] {
-        if start.distance(end) <= tol {
-            return Err(refused(format!(
-                "the {name} curve is closed (it ends where it starts, at {}); a developable between closed curves (a tube) is not built yet: connect two open stretches",
-                fmt_point(start)
-            )));
-        }
-    }
-    let tips = [a0.distance(b0) <= tol, a1.distance(b1) <= tol];
-    if tips[0] && tips[1] && a.len() == b.len() && a == b {
-        return Err(refused("the two curves are the same".to_string()));
-    }
     let (length_a, length_b) = (
         a.length_between(0.0, a.len()),
         b.length_between(0.0, b.len()),
@@ -1777,14 +1923,50 @@ fn connect_as_given(a: &Rail, b: &Rail, tolerance: &Tolerance) -> Result<Connect
             "a curve is no longer than the tolerance (lengths {length_a} and {length_b})"
         )));
     }
+    match (a0.distance(a1) <= tol, b0.distance(b1) <= tol) {
+        (true, true) => return tube(a, b, tolerance),
+        (false, false) => {}
+        (closed_a, _) => {
+            let (name, at) = if closed_a {
+                ("first", a0)
+            } else {
+                ("second", b0)
+            };
+            return Err(refused(format!(
+                "the {name} curve is closed (it ends where it starts, at {}) and the other is not: a developable joins two open curves, or two closed ones (a tube)",
+                fmt_point(at)
+            )));
+        }
+    }
+    let tips = [a0.distance(b0) <= tol, a1.distance(b1) <= tol];
+    if tips[0] && tips[1] && a.len() == b.len() && a == b {
+        return Err(refused("the two curves are the same".to_string()));
+    }
     if let Some(frame) = common_plane(a, b, tol) {
-        return planar(a, b, frame, tolerance, tips);
+        return planar(a, b, frame, tolerance, tips, false);
     }
     let pair = Pair::new(a, b, tolerance.angular);
+    along_pair(&pair, tolerance, tips, (length_a, length_b))
+}
+
+/// The developable of a pair of rails that do not lie in one plane: the
+/// walk from the start, the faces, the fit. For a pair of closed rails
+/// (`pair.closed`, a tube) the walk starts at the corner of the square,
+/// on the zero set by construction ([`tube`]).
+fn along_pair(
+    pair: &Pair,
+    tolerance: &Tolerance,
+    tips: [bool; 2],
+    (length_a, length_b): (f64, f64),
+) -> Result<Connected, KernelError> {
+    let tol = tolerance.linear;
+    let (a, b) = (pair.a, pair.b);
 
     // The start: a fan from an end to the first ruling that satisfies the
     // condition, unless the corner's ruling does.
-    let start = if tips[0] {
+    let start = if pair.closed {
+        (Start::Corner, None)
+    } else if tips[0] {
         // Ends that meet: the zero set leaves the corner along a line
         // (`α s² = β t²` to second order); find it on a small arc.
         // A radius of about a hundred tolerances along the rails.
@@ -2289,8 +2471,10 @@ fn planar(
     frame: Frame,
     tolerance: &Tolerance,
     tips: [bool; 2],
+    closed: bool,
 ) -> Result<Connected, KernelError> {
-    let pair = Pair::new(a, b, tolerance.angular);
+    let mut pair = Pair::new(a, b, tolerance.angular);
+    pair.closed = closed;
     let strips = vec![Strip {
         piece: Piece::Rulings,
         lower: Row {
@@ -2676,6 +2860,12 @@ impl Parts {
         tips: [bool; 2],
     ) -> Result<VertexId, KernelError> {
         let rail = rail_of(pair, side);
+        // A closed rail's ends are one vertex.
+        let at = if pair.closed && at >= rail.len() {
+            0.0
+        } else {
+            at
+        };
         // Ends that meet are one vertex: B's is A's.
         let (side, at) = if side == 1 && tips[0] && at <= 0.0 {
             (0, 0.0)
@@ -2765,7 +2955,12 @@ impl Parts {
         if length <= tol {
             return Ok(None);
         }
-        let key = (s.to_bits(), t.to_bits());
+        // A tube's last ruling is its first.
+        let key = if pair.closed && s >= pair.a.len() && t >= pair.b.len() {
+            (0.0_f64.to_bits(), 0.0_f64.to_bits())
+        } else {
+            (s.to_bits(), t.to_bits())
+        };
         let edge = match self.rulings.get(&key) {
             Some(&e) => e,
             None => {
