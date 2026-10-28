@@ -377,7 +377,7 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             if ids.len() == 1 { "it" } else { "one or more of them" }
         ),
         FoldError::TooManyFree { count } => format!(
-            "{count} fold angles to solve for, more than {} at once: give more creases an angle (a sparse solve is owed)",
+            "{count} fold angles to solve for, more than {} at once: give more creases an angle",
             origami::MAX_FREE
         ),
         FoldError::NotClosing { id, gap } => format!(
@@ -441,6 +441,23 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             "{} folds by 180 degrees while other creases fold by less: facets folded onto each other are layered only when the sheet is folded flat, every crease by 180 degrees (a crease to stay flat is left out of the fold); fold it to just under 180 degrees, or every crease to 180 (layers that fold on by other angles are owed)",
             curve(*id)
         ),
+        FoldError::Clearance { facet, reason } => match arr {
+            Some(arr) => format!(
+                "the thick panel of {} does not fit: {reason} (make the clearance smaller)",
+                facet_name(arr, *facet)
+            ),
+            None => error.to_string(),
+        },
+        FoldError::PanelsMeet(c) => match arr {
+            Some(arr) => format!(
+                "the thick panels of {} and {} {} at these angles (at {:?} in the sketch's axes, folded): fold less far, or make the clearance larger or the panels thinner (beside a crease folded towards the panels they meet past 2 atan(clearance / thickness))",
+                facet_name(arr, c.facets[0]),
+                facet_name(arr, c.facets[1]),
+                c.kind.verb(),
+                [c.at.x, c.at.y, c.at.z]
+            ),
+            None => error.to_string(),
+        },
         other => other.to_string(),
     }
 }
@@ -633,10 +650,30 @@ pub(crate) fn build(
     let analysis = analyse(doc, variables, fold, earlier)?;
     let folded = analysis.folded?;
     let p = &analysis.pattern;
-    let made = origami::folded_sheet(&p.arrangement, &folded, &p.plane, &p.tolerance)
-        .map_err(|e| renamed(&described(&e, Some(&p.arrangement)), &p.names))?;
+    let made = match &fold.panels {
+        Some(panels) => {
+            let thick = origami::Panels {
+                thickness: length(doc, variables, "panels.thickness", &panels.thickness)?,
+                clearance: length(doc, variables, "panels.clearance", &panels.clearance)?,
+                side: match panels.side {
+                    craft3d_doc::PanelSide::Back => origami::PanelSide::Back,
+                    craft3d_doc::PanelSide::Front => origami::PanelSide::Front,
+                },
+            };
+            origami::thick_panels(&p.arrangement, &folded, &p.plane, &thick, &p.tolerance)
+        }
+        None => origami::folded_sheet(&p.arrangement, &folded, &p.plane, &p.tolerance),
+    }
+    .map_err(|e| renamed(&described(&e, Some(&p.arrangement)), &p.names))?;
     let names = Names::of_origins(id, &made.origins);
-    let flat = analysis.layers.map(|layers| {
+    // Thick panels folded flat pass through each other and were refused;
+    // the layers' picture is the sheet's.
+    let layers = if fold.panels.is_some() {
+        None
+    } else {
+        analysis.layers
+    };
+    let flat = layers.map(|layers| {
         let offsets = display_offsets(&layers, analysis.fixed, &made.body, &p.plane);
         FlatFold { layers, offsets }
     });

@@ -4280,6 +4280,7 @@ fn a_fold_is_written_like_this_and_round_trips() {
                 },
             ],
             fixed: Some([Expr::new("1 mm"), Expr::new("2 mm")]),
+            panels: None,
         }),
     )
     .unwrap();
@@ -4328,6 +4329,7 @@ fn a_fold_of_pattern_instances_is_written_like_this_and_round_trips() {
                 crease(CurveIndex::Grid(1, 3), false),
             ],
             fixed: None,
+            panels: None,
         }),
     )
     .unwrap();
@@ -5107,6 +5109,47 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
     assert_eq!(read, doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
     let odd = json.replacen("\"kind\": \"miter\"", "\"kind\": \"weld\"", 1);
+    assert_ne!(odd, json);
+    assert!(from_manifest_json(odd.as_bytes()).is_err());
+}
+
+#[test]
+fn a_fold_of_thick_panels_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{
+        Crease, CreaseKind, CurveIndex, EntityId, Expr, Fold, FoldPanels, PanelSide,
+    };
+    let mut doc = small();
+    doc.add_feature(
+        Some("Panels"),
+        FeatureKind::Fold(Fold {
+            sketch: FeatureId(7),
+            creases: vec![Crease {
+                line: EntityId(5),
+                kind: CreaseKind::Valley,
+                angle: Some(Expr::new("fold")),
+                index: CurveIndex::Seed,
+                alternate: false,
+            }],
+            fixed: None,
+            panels: Some(FoldPanels {
+                thickness: Expr::new("2 mm"),
+                clearance: Expr::new("1 mm"),
+                side: PanelSide::Front,
+            }),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 47);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features.last().unwrap()["kind"]["panels"],
+        serde_json::json!({"thickness": "2 mm", "clearance": "1 mm", "side": "front"})
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    let odd = json.replacen("\"side\": \"front\"", "\"side\": \"middle\"", 1);
     assert_ne!(odd, json);
     assert!(from_manifest_json(odd.as_bytes()).is_err());
 }

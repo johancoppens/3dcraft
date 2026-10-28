@@ -736,7 +736,22 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 sketch: doc::FeatureId(sketch),
                 creases,
                 fixed,
+                panels,
             }) => manifest::FeatureKind::Fold {
+                panels: panels.as_ref().map(
+                    |doc::FoldPanels {
+                         thickness,
+                         clearance,
+                         side,
+                     }| manifest::FoldPanels {
+                        thickness: expr_to_manifest(thickness),
+                        clearance: expr_to_manifest(clearance),
+                        side: match side {
+                            doc::PanelSide::Back => manifest::PanelSide::Back,
+                            doc::PanelSide::Front => manifest::PanelSide::Front,
+                        },
+                    },
+                ),
                 sketch: *sketch,
                 creases: creases
                     .iter()
@@ -2298,7 +2313,22 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 sketch,
                 creases,
                 fixed,
+                panels,
             } => doc::FeatureKind::Fold(doc::Fold {
+                panels: panels.map(
+                    |manifest::FoldPanels {
+                         thickness,
+                         clearance,
+                         side,
+                     }| doc::FoldPanels {
+                        thickness: doc::Expr(thickness),
+                        clearance: doc::Expr(clearance),
+                        side: match side {
+                            manifest::PanelSide::Back => doc::PanelSide::Back,
+                            manifest::PanelSide::Front => doc::PanelSide::Front,
+                        },
+                    },
+                ),
                 sketch: doc::FeatureId(sketch),
                 creases: creases
                     .into_iter()

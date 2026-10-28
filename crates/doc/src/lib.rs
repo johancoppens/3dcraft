@@ -35,7 +35,7 @@ pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
     PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
-pub use fold::{Crease, CreaseKind, Fold, MAX_FOLD_CREASES};
+pub use fold::{Crease, CreaseKind, Fold, FoldPanels, MAX_FOLD_CREASES, PanelSide};
 pub use name::{
     CurveIndex, CurvePath, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,

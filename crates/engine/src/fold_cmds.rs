@@ -11,7 +11,7 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     Crease, CreaseKind, CurveIndex, CurveRef, Document, EntityId, Expr, FeatureId, FeatureKind,
-    Fold, Geometry, MAX_FOLD_CREASES,
+    Fold, FoldPanels, Geometry, MAX_FOLD_CREASES, PanelSide,
 };
 use craft3d_kernel::origami::{EdgeKind, vertex_checks};
 use serde_json::{Map, Value, json};
@@ -104,10 +104,10 @@ pub(crate) fn layered_mesh(
 }
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.fold", "Fold", r#"{"sketch": id or name, "creases": [{line: entity id or e7[2] or e7[*], kind: mountain|valley|cut, angle: expr = solved, alternate: boolean = false}], "fixed": [x, y] = the largest facet, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a fold: a sheet folded rigidly along a crease pattern. The closed profiles of the sketch's lines that are not creases bound the sheet (straight lines only; holes allowed); the creases are straight lines of the sketch (drawn or construction), each a mountain or a valley (seen from the side the sketch's normal points to, a valley folds towards the viewer) or a cut (the sheet is cut through there). A crease runs between the boundary, cuts and other creases; where creases cross or end on each other is a vertex, and the creases divide the sheet into facets. Each facet turns as a rigid body about the creases it shares with its neighbours: angle is a crease's fold angle, an expression from 0 (flat) to 180 deg (folded flat), every piece of the line folding by it (so a variable folds the sheet as it changes); a crease without an angle has each of its pieces solved from the others, by the condition that the facets round every closed loop of creases meet again (a degree-4 vertex has one degree of freedom: give one of its creases an angle). fixed is a point (sketch axes) inside the facet that stays in place; each other piece of a cut sheet keeps its first facet in place. Fails, with the reason, when the angles cannot all hold (not rigidly foldable at these angles), a solved crease would turn against its kind or past 180 degrees, the given angles leave some free (named; also with no angle given or every given angle 0, since the flat sheet does not decide which way solved creases go), the fold cannot be followed continuously from the flat sheet along its tangent, reaches a bifurcation partway (undetermined, the creases named), the solve does not converge or needs more work than its budget, or two facets pass through or lie on each other. With every given angle 180 deg the sheet is folded flat: every crease, the solved ones too, folds by 180 deg its kind's way, each facet placed by the reflections across the creases from the fixed one, and the layers are ordered (adjacent facets by their crease's kind, taco-taco, taco-tortilla, transitivity); it fails with the reason when the facets round a vertex do not close (Kawasaki), when no order exists (cannot fold flat with this mountain-valley assignment, the facets named), or when the search ran out of work (not decided: flat-foldability is NP-hard); a given 180 beside another angle is refused. The body lies in the sketch's plane; only the picture lifts the layers apart. A crease line copied by a sketch pattern gives creases of its copies: line e7[2] is one copy, e7[*] the line and every copy (alternate: kinds alternate along the copies, the given one on the line; a crease naming one copy wins over [*]); a copy left out is refused, never dropped. The result is a sheet of planar faces named as a fill's: a facet F7:startCap(e1,e5,e8) after the curves of its outer boundary, an edge F7:startEdge(e5) (piece numbers along the curve; a cut's two sides pieces 2i and 2i+1), a vertex F7:startVertex(e1,e5) after the curves that meet there. fold.inspect gives the solved angles, fold.check Kawasaki and Maekawa per vertex, file.export with fold the crease pattern as SVG or DXF; fold.edit changes the creases.", doc: true, feature_fold),
-    spec!("fold.edit", "Edit Fold", r#"{"fold": id or name, "creases": [{line, kind, angle} as feature.fold], "set": [{line: entity id or e7[2] or e7[*], kind: mountain|valley|cut, angle: expr or null, alternate: boolean}], "remove": [entity id or e7[2] or e7[*]], "fixed": [x, y] or null}"#,
-        "Changes a fold (one undo step): creases replaces all its creases; set changes the creases it names (kind and angle as given, angle null to solve it) and adds those it does not have (kind then needed); remove takes creases out (the lines stay in the sketch, as boundary if they close a profile); fixed moves the point of the facet that stays (null: the largest facet). Returns the fold as feature.fold does.", doc: true, fold_edit),
+    spec!("feature.fold", "Fold", r#"{"sketch": id or name, "creases": [{line: entity id or e7[2] or e7[*], kind: mountain|valley|cut, angle: expr = solved, alternate: boolean = false}], "fixed": [x, y] = the largest facet, "panels": {thickness: expr, clearance: expr, side: back|front = back} = none (a sheet of no thickness), "name": string = automatic, "when": expr = always on}"#,
+        "Adds a fold: a sheet folded rigidly along a crease pattern. The closed profiles of the sketch's lines that are not creases bound the sheet (straight lines only; holes allowed); the creases are straight lines of the sketch (drawn or construction), each a mountain or a valley (seen from the side the sketch's normal points to, a valley folds towards the viewer) or a cut (the sheet is cut through there). A crease runs between the boundary, cuts and other creases; where creases cross or end on each other is a vertex, and the creases divide the sheet into facets. Each facet turns as a rigid body about the creases it shares with its neighbours: angle is a crease's fold angle, an expression from 0 (flat) to 180 deg (folded flat), every piece of the line folding by it (so a variable folds the sheet as it changes); a crease without an angle has each of its pieces solved from the others, by the condition that the facets round every closed loop of creases meet again (a degree-4 vertex has one degree of freedom: give one of its creases an angle). fixed is a point (sketch axes) inside the facet that stays in place; each other piece of a cut sheet keeps its first facet in place. Fails, with the reason, when the angles cannot all hold (not rigidly foldable at these angles), a solved crease would turn against its kind or past 180 degrees, the given angles leave some free (named; also with no angle given or every given angle 0, since the flat sheet does not decide which way solved creases go), the fold cannot be followed continuously from the flat sheet along its tangent, reaches a bifurcation partway (undetermined, the creases named), the solve does not converge or needs more work than its budget, or two facets pass through or lie on each other. With every given angle 180 deg the sheet is folded flat: every crease, the solved ones too, folds by 180 deg its kind's way, each facet placed by the reflections across the creases from the fixed one, and the layers are ordered (adjacent facets by their crease's kind, taco-taco, taco-tortilla, transitivity); it fails with the reason when the facets round a vertex do not close (Kawasaki), when no order exists (cannot fold flat with this mountain-valley assignment, the facets named), or when the search ran out of work (not decided: flat-foldability is NP-hard); a given 180 beside another angle is refused. The body lies in the sketch's plane; only the picture lifts the layers apart. A crease line copied by a sketch pattern gives creases of its copies: line e7[2] is one copy, e7[*] the line and every copy (alternate: kinds alternate along the copies, the given one on the line; a crease naming one copy wins over [*]); a copy left out is refused, never dropped. The result is a sheet of planar faces named as a fill's: a facet F7:startCap(e1,e5,e8) after the curves of its outer boundary, an edge F7:startEdge(e5) (piece numbers along the curve; a cut's two sides pieces 2i and 2i+1), a vertex F7:startVertex(e1,e5) after the curves that meet there. With panels the fold is thick panels on a membrane instead: one solid prism per facet, thickness thick on the sketch's back or front, its outline set back by clearance from every crease and cut (not from the boundary), the hinges staying on the sheet so it folds exactly as the sheet does; beside a crease folded towards the panels they meet past 2 atan(clearance / thickness), and any two panels that meet are refused naming the facets (a slit or slot, a crease running on straight into the boundary, or a clearance that eats a facet are refused too); the offset-panel and tapered-panel methods, which fold thick panels flat, are not built. fold.inspect gives the solved angles, fold.check Kawasaki and Maekawa per vertex, file.export with fold the crease pattern as SVG or DXF; fold.edit changes the creases.", doc: true, feature_fold),
+    spec!("fold.edit", "Edit Fold", r#"{"fold": id or name, "creases": [{line, kind, angle} as feature.fold], "set": [{line: entity id or e7[2] or e7[*], kind: mountain|valley|cut, angle: expr or null, alternate: boolean}], "remove": [entity id or e7[2] or e7[*]], "fixed": [x, y] or null, "panels": {thickness, clearance, side} as feature.fold or null}"#,
+        "Changes a fold (one undo step): creases replaces all its creases; set changes the creases it names (kind and angle as given, angle null to solve it) and adds those it does not have (kind then needed); remove takes creases out (the lines stay in the sketch, as boundary if they close a profile); fixed moves the point of the facet that stays (null: the largest facet); panels makes it thick panels (null: the sheet again). Returns the fold as feature.fold does.", doc: true, fold_edit),
     spec!("fold.inspect", "Inspect Fold", r#"{"fold": id or name}"#,
         "What a fold folds to, without changing the document: facets (each with its area and the curves of its outer boundary), creases (each line with its kind, given angle and the solved angle of each of its pieces, in degrees, valleys positive), fixed (the facet that stays), gap (how far the loops of facets are from closing, a length), flat (folded flat, every crease at 180 deg) with layers when it is (facetLayers per facet, above the pairs of facets that overlap as [upper, lower] seen from the sketch's front, count, cyclic, and per facet layer and faceDown) and, when the fold fails, error with the reason. The crease pattern itself must divide the sheet; a pattern that cannot is an error.", doc: true, fold_inspect),
     spec!("fold.check", "Check Fold", r#"{"fold": id or name}"#,
@@ -249,6 +249,49 @@ fn fixed_value(p: &Params) -> Result<Option<Option<[Expr; 2]>>, CommandError> {
     }
 }
 
+/// `panels` as given: `None` not given, `Some(None)` null (the sheet).
+fn panels_value(p: &Params) -> Result<Option<Option<FoldPanels>>, CommandError> {
+    let id = p.command();
+    if !p.has("panels") {
+        return Ok(None);
+    }
+    let shape = || {
+        CommandError::new(format!(
+            "{id}: `panels` is {{\"thickness\": expr, \"clearance\": expr, \"side\": \"back\" or \"front\"}}, or null for the sheet"
+        ))
+    };
+    let map = match p.get("panels") {
+        None => return Ok(Some(None)),
+        Some(Value::Object(map)) => map,
+        Some(_) => return Err(shape()),
+    };
+    if let Some(unknown) = map
+        .keys()
+        .find(|k| !["thickness", "clearance", "side"].contains(&k.as_str()))
+    {
+        return fail(format!(
+            "{id}: unknown key `{}` in `panels`; it has thickness, clearance and side",
+            unknown.chars().take(40).collect::<String>()
+        ));
+    }
+    let expr = |key: &str| -> Result<Expr, CommandError> {
+        let v = map
+            .get(key)
+            .ok_or_else(|| CommandError::new(format!("{id}: `panels` needs its `{key}`")))?;
+        Ok(Expr::new(p.expr_of(key, v)?))
+    };
+    let side = match map.get("side") {
+        None | Some(Value::Null) => PanelSide::Back,
+        Some(Value::String(name)) => PanelSide::from_name(name).ok_or_else(shape)?,
+        Some(_) => return Err(shape()),
+    };
+    Ok(Some(Some(FoldPanels {
+        thickness: expr("thickness")?,
+        clearance: expr("clearance")?,
+        side,
+    })))
+}
+
 /// Refuses creases that are no lines of the sketch, are listed twice or
 /// give a cut an angle.
 fn check_creases(
@@ -313,7 +356,11 @@ fn check_creases(
 
 fn feature_fold(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "feature.fold";
-    let p = Params::new(ID, params, &["sketch", "creases", "fixed", "name"])?;
+    let p = Params::new(
+        ID,
+        params,
+        &["sketch", "creases", "fixed", "panels", "name"],
+    )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, ID, "sketch")?;
     let creases = crease_list(&p, "creases")?.ok_or_else(|| p.missing("creases"))?;
@@ -322,6 +369,7 @@ fn feature_fold(session: &mut Session, params: &Value) -> Run {
     }
     check_creases(doc, ID, sketch, &creases)?;
     let fixed = fixed_value(&p)?.flatten();
+    let panels = panels_value(&p)?.flatten();
     add_feature(
         session,
         ID,
@@ -330,6 +378,7 @@ fn feature_fold(session: &mut Session, params: &Value) -> Run {
             sketch,
             creases,
             fixed,
+            panels,
         }),
     )
 }
@@ -351,13 +400,20 @@ fn fold_ref(session: &Session, p: &Params, key: &str) -> Result<(FeatureId, Fold
 
 fn fold_edit(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "fold.edit";
-    let p = Params::new(ID, params, &["fold", "creases", "set", "remove", "fixed"])?;
+    let p = Params::new(
+        ID,
+        params,
+        &["fold", "creases", "set", "remove", "fixed", "panels"],
+    )?;
     let (id, mut fold) = fold_ref(session, &p, "fold")?;
-    if !["creases", "set", "remove", "fixed"]
+    if !["creases", "set", "remove", "fixed", "panels"]
         .iter()
         .any(|k| p.has(k))
     {
-        return fail(format!("{ID}: give creases, set, remove or fixed"));
+        return fail(format!("{ID}: give creases, set, remove, fixed or panels"));
+    }
+    if let Some(panels) = panels_value(&p)? {
+        fold.panels = panels;
     }
     if let Some(creases) = crease_list(&p, "creases")? {
         fold.creases = creases;

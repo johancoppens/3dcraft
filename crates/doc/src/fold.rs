@@ -86,6 +86,46 @@ pub struct Fold {
     /// A point of the sketch (in its axes) inside the facet that stays in
     /// place; `None`: the largest facet.
     pub fixed: Option<[Expr; 2]>,
+    /// Thick panels instead of a sheet of no thickness: one prism per
+    /// facet on a membrane at the sheet (docs/design/origami.md › *Thick
+    /// panels*); `None`: the sheet.
+    #[serde(default)]
+    pub panels: Option<FoldPanels>,
+}
+
+/// Which side of the sheet thick panels lie on, as the sketch's normal
+/// points (valleys fold towards the front).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PanelSide {
+    Back,
+    Front,
+}
+
+impl PanelSide {
+    pub fn name(self) -> &'static str {
+        match self {
+            PanelSide::Back => "back",
+            PanelSide::Front => "front",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "back" => Some(PanelSide::Back),
+            "front" => Some(PanelSide::Front),
+            _ => None,
+        }
+    }
+}
+
+/// The thick panels of a fold: their thickness and the clearance they
+/// keep from every crease and cut (lengths), and their side.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldPanels {
+    pub thickness: Expr,
+    pub clearance: Expr,
+    pub side: PanelSide,
 }
 
 impl Fold {
@@ -101,6 +141,10 @@ impl Fold {
             out.push(("fixed.x".to_string(), x));
             out.push(("fixed.y".to_string(), y));
         }
+        if let Some(p) = &self.panels {
+            out.push(("panels.thickness".to_string(), &p.thickness));
+            out.push(("panels.clearance".to_string(), &p.clearance));
+        }
         out
     }
 
@@ -113,6 +157,10 @@ impl Fold {
         if let Some([x, y]) = &mut self.fixed {
             out.push(x);
             out.push(y);
+        }
+        if let Some(p) = &mut self.panels {
+            out.push(&mut p.thickness);
+            out.push(&mut p.clearance);
         }
         out
     }

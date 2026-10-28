@@ -709,6 +709,9 @@ pub enum FeatureKind {
         creases: Vec<FoldCrease>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fixed: Option<[String; 2]>,
+        /// Thick panels instead of the sheet (format version 48).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        panels: Option<FoldPanels>,
     },
     /// A sheet-metal part: the one closed profile of sketch `sketch` is
     /// the base flat, `flanges` are bent from its straight edges and from
@@ -865,6 +868,24 @@ pub struct FoldCrease {
     /// With `instance` `all`: the kind alternates along the instances.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub alternate: bool,
+}
+
+/// The thick panels of a fold: thickness and clearance (expressions,
+/// lengths) and the side of the sheet they lie on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FoldPanels {
+    pub thickness: String,
+    pub clearance: String,
+    pub side: PanelSide,
+}
+
+/// The side of the sheet thick panels lie on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PanelSide {
+    Back,
+    Front,
 }
 
 /// An instance of a sketch pattern a crease is: `{"at": 2}`, `{"grid":
