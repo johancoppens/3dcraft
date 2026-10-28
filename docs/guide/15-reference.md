@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.0 has 129 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.0 has 130 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -28,6 +28,7 @@ The full description of any command, with every value it takes and what it refus
 | Command | Does |
 |---|---|
 | `variable.set`, `variable.delete`, `variable.rename` | Define, change, delete and rename variables ([chapter 6](06-concepts.md#variables-expressions-and-units)) |
+| `document.setUnit` | Change the length unit, keeping the numbers or the sizes ([chapter 6](06-concepts.md#variables-expressions-and-units)) |
 | `table.set`, `table.delete`, `table.rename`, `table.list` | Tables of values to look up ([chapter 8](08-formulas.md#tables)) |
 | `variable.publish`, `variable.unpublish` | Make a variable a Jig's parameter, or an ordinary variable again ([chapter 5](05-jigs.md#making-a-jig)) |
 | `param.list`, `param.set` | List and set a Jig's parameters |
