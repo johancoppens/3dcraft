@@ -87,9 +87,9 @@ When a fold cannot be made, the feature fails and says why:
 - **pass through each other** or **lie on each other**: two facets meet. Below 180 degrees a sheet without
   thickness may not touch itself; at exactly 180 degrees it is *folded flat* (next section), where facets
   lie on one another in an order of layers;
-- **folds by 180 degrees while other creases fold by less**: facets folded onto each other are layered only
-  when the whole sheet is folded flat. Give every crease 180 degrees (or leave the others to be solved),
-  or fold to just under 180.
+- **folds by 180 degrees while other creases fold by less**: a crease at 180 degrees beside creases given
+  0 only. Give the others an angle (a stack folded on, below), every crease 180 degrees, or leave the
+  zeros out.
 
 ## Folding flat
 
@@ -230,6 +230,61 @@ order of the layers), whatever angles the fold has now:
 The first two are necessary for folding flat and prove nothing more; `flatFoldable` is decided, or the
 assertion is an error when the search for an order of the layers runs out of work.
 
+## A stack folded on
+
+Fold a square in half, then fold the doubled layers again across: give the first crease 180 degrees and
+the crossing one another angle. The crossing crease is two lines meeting at the middle, a valley on the
+half that stays face up and a mountain on the half that comes down face over; leave the mountain to be
+solved:
+
+```json
+[
+  ["file.new", {"units": "mm"}],
+  ["sketch.create", {"plane": "xy", "name": "Paper"}],
+  ["sketch.polyline", {"sketch": "Paper", "points": [[-50, -50], [50, -50], [50, 50], [-50, 50]], "closed": true}],
+  ["sketch.line", {"sketch": "Paper", "from": [0, -50], "to": [0, 50], "construction": true}],
+  ["sketch.line", {"sketch": "Paper", "from": [-50, 0], "to": [0, 0], "construction": true}],
+  ["sketch.line", {"sketch": "Paper", "from": [0, 0], "to": [50, 0], "construction": true}],
+  ["feature.fold", {"sketch": "Paper", "name": "Twice", "fixed": [-25, -25], "creases": [
+    {"line": "e11", "kind": "valley", "angle": "180 deg"},
+    {"line": "e14", "kind": "valley", "angle": "90 deg"},
+    {"line": "e17", "kind": "mountain"}]}],
+  ["fold.inspect", {"fold": "Twice"}]
+]
+```
+
+The creases at 180 degrees fold the sheet flat into **stacks**, layered as above; the other creases fold
+the stacks on, each about the line where the flat fold put it. `fold.inspect` says `stacked` and gives
+each stack's layers. Every layer of a stack that a crease crosses must have that crease: paper cannot
+bend without one, so a crease on one layer only is *not rigidly foldable*. Two stacks may touch only along
+a line both fold about.
+
+## Thick panels
+
+Real card, wood or plastic has a thickness. Give a fold `panels` and each facet becomes a solid panel
+of that thickness, on the sketch's back (or its `"side": "front"`), joined by hinges on the sheet's
+surface, as tape or fabric joins rigid panels. Each panel stands back from every crease and cut by the
+**clearance**, so the two beside a crease have room to turn:
+
+```json
+[
+  ["file.new", {"units": "mm"}],
+  ["sketch.create", {"plane": "xy", "name": "Board"}],
+  ["sketch.polyline", {"sketch": "Board", "points": [[0, 0], [100, 0], [100, 100], [0, 100]], "closed": true}],
+  ["sketch.line", {"sketch": "Board", "from": [50, 0], "to": [50, 100], "construction": true}],
+  ["feature.fold", {"sketch": "Board", "name": "Lid", "fixed": [25, 50],
+    "creases": [{"line": "e11", "kind": "valley", "angle": "120 deg"}],
+    "panels": {"thickness": "3 mm", "clearance": "1 mm"}}]
+]
+```
+
+The result is a solid, one prism per facet (here two of 49 × 100 × 3 mm). The panels fold exactly as the
+sheet does. A crease folding *away* from the panels (a valley with panels on the back) can go to just under
+180 degrees; one folding *towards* them stops where the panels meet, at 2 atan(clearance / thickness):
+with 1 mm clearance on 3 mm panels, about 37 degrees. Any two panels that meet are refused, naming the
+facets. Panels folded flat pass through each other; methods that fold thick panels flat (offset panels)
+are not built.
+
 ## Exporting the crease pattern
 
 `file.export` with `fold` writes the flat crease pattern as `.svg` or `.dxf`, in the sketch's own axes, the
@@ -242,10 +297,11 @@ by default, too thin to print: `"stroke": 0.3` gives them a width in millimetres
 
 - Creases are straight, and the sheet's outline is made of straight lines. A curved crease bends the paper
   beside it, which rigid folding does not do.
-- The sheet has no thickness: folded flat, its layers lie in one plane, ordered (the picture draws them
-  apart). Layers that fold on by other angles (a flat-folded stack folded again by 90 degrees) are not
-  built yet.
-- A cut must divide the sheet; a slit that ends inside a facet is not built yet.
-- At most 400 crease angles are solved at once; give more of them an angle in a larger pattern.
+- Without `panels` the sheet has no thickness: folded flat, its layers lie in one plane, ordered (the
+  picture draws them apart). Thick panels fold as the sheet does but not flat; a panel cannot have a slit.
+- A cut may end inside a facet (a slit) or touch nothing (a slot); it changes no motion, the facet stays
+  rigid.
+- Large patterns (thousands of creases) solve in a second or so; past the work budget a fold is refused
+  with the advice to give more creases an angle.
 
 How it works, and the sources: [docs/design/origami.md](../design/origami.md).
