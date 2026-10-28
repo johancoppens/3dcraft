@@ -148,7 +148,7 @@ fn not_cycle(p: Lit, q: Lit, r: Lit) -> Rule {
 /// A point inside the region the `rings` bound (even-odd), as far from
 /// their edges as a scan along the middles between their corners' heights
 /// finds; `None` for a region without area.
-fn interior_point(rings: &[Vec<P2>]) -> Option<P2> {
+pub(super) fn interior_point(rings: &[Vec<P2>]) -> Option<P2> {
     let mut ys: Vec<f64> = rings.iter().flatten().map(|p| p[1]).collect();
     ys.sort_by(f64::total_cmp);
     ys.dedup();

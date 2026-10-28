@@ -30,16 +30,18 @@ mod layers;
 mod sheet;
 mod solve;
 mod sparse;
+mod stack;
 mod thick;
 
 pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
-pub use collide::{FacetMeeting, Meeting, first_meeting};
+pub use collide::{FacetMeeting, Meeting, first_meeting, first_meeting_stacked};
 pub use flat::{fold_flat, folds_flat};
 pub use layers::{Layers, MAX_LAYER_CONSTRAINTS, MAX_LAYER_WORK, layer_order};
 pub use sheet::folded_sheet;
 pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage, fold_linkage_with};
 pub use sparse::MAX_PROFILE;
+pub use stack::{Stacked, fold_stacked, folds_stacked};
 pub use thick::{PanelSide, Panels, thick_panels};
 
 pub(crate) use crate::profile::{P2, cross, distance as dist, dot, sub};

@@ -695,7 +695,11 @@ fn fold_inspect(session: &mut Session, params: &Value) -> Run {
     out.insert("fixed".into(), analysis.fixed.into());
     out.insert("unit".into(), unit.into());
     out.insert("anglesIn".into(), "deg".into());
-    out.insert("flat".into(), layers.is_some().into());
+    out.insert(
+        "flat".into(),
+        (layers.is_some() && analysis.stacked.is_none()).into(),
+    );
+    out.insert("stacked".into(), analysis.stacked.is_some().into());
     if let Some(layers) = layers {
         out.insert(
             "layers".into(),
@@ -847,7 +851,9 @@ pub(crate) fn take(
         let linear = pattern.tolerance.linear;
         // Built flat already: its layers as regeneration found them.
         let built = ctx.regen.feature(id).and_then(|r| match &r.developed {
-            Some(craft3d_regen::Developed::FlatFold(flat)) => Some(flat.layers.clone()),
+            Some(craft3d_regen::Developed::FlatFold(flat)) if !flat.stacked => {
+                Some(flat.layers.clone())
+            }
             _ => None,
         });
         let found = match built {

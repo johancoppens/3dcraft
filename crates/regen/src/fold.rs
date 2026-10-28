@@ -300,8 +300,13 @@ pub struct FoldAnalysis {
     pub folded: Result<Folded, String>,
     /// The facet that stays in place.
     pub fixed: usize,
-    /// Folded flat (every crease by 180 degrees): the order of its layers.
+    /// Folded flat (every crease by 180 degrees): the order of its layers;
+    /// a stack folded on: the layers of its flat-folded stacks.
     pub layers: Option<Layers>,
+    /// A stack folded on (some creases at 180 degrees, others by other
+    /// angles): per facet the direction its stack's layers rise, in the
+    /// sheet's axes; `None` otherwise.
+    pub stacked: Option<Vec<craft3d_math::Vec3>>,
 }
 
 /// A fold folded flat, as its feature's result keeps it: the order of its
@@ -315,6 +320,9 @@ pub struct FlatFold {
     /// display moves it, along the sketch's normal, by its layer above
     /// the fixed facet's.
     pub offsets: Vec<craft3d_math::Vec3>,
+    /// A stack folded on, not the whole sheet folded flat: its layers are
+    /// those of its stacks, each lifted along its own plane's normal.
+    pub stacked: bool,
 }
 
 /// What a curve id is called in messages: `e7`.
@@ -605,29 +613,55 @@ pub(crate) fn analyse(
         });
     }
     let mut layers = None;
-    let folded = match origami::folds_flat(arrangement, &angles, tol.angular) {
-        // Folded flat: the facets placed by reflections, and the order of
-        // the layers is the check that the sheet does not pass through
-        // itself (all of it lies in one plane).
-        Ok(true) => origami::fold_flat(arrangement, &angles, fixed, tol.linear)
-            .and_then(|folded| {
-                let order = origami::layer_order(arrangement, &folded, tol.linear)?;
-                layers = Some(order);
-                Ok(folded)
-            })
-            .map_err(|e| described(&e, Some(arrangement))),
-        Ok(false) => origami::fold(arrangement, &angles, fixed, tol.linear, tol.angular)
-            .map_err(|e| described(&e, Some(arrangement)))
-            .and_then(|folded| {
-                match origami::first_meeting(arrangement, &folded, tol.linear, tol.angular) {
-                    Ok(Some(meeting)) => {
-                        Err(described(&FoldError::Meets(meeting), Some(arrangement)))
-                    }
-                    Ok(None) => Ok(folded),
-                    Err(e) => Err(described(&e, Some(arrangement))),
+    let mut stacked = None;
+    let folded = if origami::folds_stacked(&angles, tol.angular) {
+        // A stack folded on: the 180-degree creases folded flat into
+        // stacks (layered), the stacks folded on by the other creases.
+        origami::fold_stacked(arrangement, &angles, fixed, tol.linear, tol.angular)
+            .and_then(|s| {
+                match origami::first_meeting_stacked(
+                    arrangement,
+                    &s.folded,
+                    tol.linear,
+                    tol.angular,
+                    &s.stack,
+                    &s.bends,
+                )? {
+                    Some(meeting) => Err(FoldError::Meets(meeting)),
+                    None => Ok(s),
                 }
-            }),
-        Err(e) => Err(described(&e, Some(arrangement))),
+            })
+            .map(|s| {
+                layers = Some(s.layers);
+                stacked = Some(s.up);
+                s.folded
+            })
+            .map_err(|e| described(&e, Some(arrangement)))
+    } else {
+        match origami::folds_flat(arrangement, &angles, tol.angular) {
+            // Folded flat: the facets placed by reflections, and the order of
+            // the layers is the check that the sheet does not pass through
+            // itself (all of it lies in one plane).
+            Ok(true) => origami::fold_flat(arrangement, &angles, fixed, tol.linear)
+                .and_then(|folded| {
+                    let order = origami::layer_order(arrangement, &folded, tol.linear)?;
+                    layers = Some(order);
+                    Ok(folded)
+                })
+                .map_err(|e| described(&e, Some(arrangement))),
+            Ok(false) => origami::fold(arrangement, &angles, fixed, tol.linear, tol.angular)
+                .map_err(|e| described(&e, Some(arrangement)))
+                .and_then(|folded| {
+                    match origami::first_meeting(arrangement, &folded, tol.linear, tol.angular) {
+                        Ok(Some(meeting)) => {
+                            Err(described(&FoldError::Meets(meeting), Some(arrangement)))
+                        }
+                        Ok(None) => Ok(folded),
+                        Err(e) => Err(described(&e, Some(arrangement))),
+                    }
+                }),
+            Err(e) => Err(described(&e, Some(arrangement))),
+        }
     };
     let folded = folded.map_err(|e| renamed(&e, &pattern.names));
     Ok(FoldAnalysis {
@@ -635,6 +669,7 @@ pub(crate) fn analyse(
         folded,
         fixed,
         layers,
+        stacked,
     })
 }
 
@@ -673,9 +708,14 @@ pub(crate) fn build(
     } else {
         analysis.layers
     };
+    let up = analysis.stacked;
     let flat = layers.map(|layers| {
-        let offsets = display_offsets(&layers, analysis.fixed, &made.body, &p.plane);
-        FlatFold { layers, offsets }
+        let offsets = display_offsets(&layers, analysis.fixed, &made.body, &p.plane, up.as_deref());
+        FlatFold {
+            layers,
+            offsets,
+            stacked: up.is_some(),
+        }
     });
     Ok((made.body, names, flat))
 }
@@ -690,20 +730,27 @@ fn display_offsets(
     fixed: usize,
     body: &Body,
     plane: &Frame,
+    up: Option<&[craft3d_math::Vec3]>,
 ) -> Vec<craft3d_math::Vec3> {
     let size = craft3d_math::Bbox3::from_points(body.vertices.iter().map(|v| v.point)).diagonal();
     let highest = layers.layer.iter().copied().max().unwrap_or(0);
     let count = f64::from(u32::try_from(highest).unwrap_or(u32::MAX)) + 1.0;
     let step = size * (1e-3f64).min(0.02 / count);
     let base = layers.layer.get(fixed).copied().unwrap_or(0);
-    let normal = plane.z();
     layers
         .layer
         .iter()
-        .map(|&l| {
-            let up = f64::from(u32::try_from(l).unwrap_or(u32::MAX))
+        .enumerate()
+        .map(|(f, &l)| {
+            let rise = f64::from(u32::try_from(l).unwrap_or(u32::MAX))
                 - f64::from(u32::try_from(base).unwrap_or(u32::MAX));
-            normal * (up * step)
+            // The stack's own up for a stack folded on, the sketch's
+            // normal for the sheet folded flat.
+            let normal = match up.and_then(|u| u.get(f)) {
+                Some(v) => plane.vector(v.x, v.y, v.z),
+                None => plane.z(),
+            };
+            normal * (rise * step)
         })
         .collect()
 }

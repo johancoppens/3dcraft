@@ -154,6 +154,32 @@ pub fn first_meeting(
     tol: f64,
     angular: f64,
 ) -> Result<Option<Meeting>, FoldError> {
+    meetings(arr, folded, tol, angular, None)
+}
+
+/// [`first_meeting`] of a stack folded on (`stack.rs`): facets of one
+/// stack are not asked (their order is the flat state's layers), and two
+/// facets of different stacks may touch where both have an edge of a
+/// crease in `bends` (the creases that fold the stacks) along the same
+/// stretch: the layers of a stack bend round one line.
+pub fn first_meeting_stacked(
+    arr: &Arrangement,
+    folded: &Folded,
+    tol: f64,
+    angular: f64,
+    stack: &[usize],
+    bends: &BTreeSet<usize>,
+) -> Result<Option<Meeting>, FoldError> {
+    meetings(arr, folded, tol, angular, Some((stack, bends)))
+}
+
+fn meetings(
+    arr: &Arrangement,
+    folded: &Folded,
+    tol: f64,
+    angular: f64,
+    stacked: Option<(&[usize], &BTreeSet<usize>)>,
+) -> Result<Option<Meeting>, FoldError> {
     let mut all = Vec::with_capacity(arr.facets.len());
     for f in 0..arr.facets.len() {
         all.push(placed(arr, folded, f).ok_or(FoldError::Broken {
@@ -175,7 +201,12 @@ pub fn first_meeting(
         near.sort_unstable();
         for &j in &near {
             let Some(q) = all.get(j) else { continue };
-            if let Some((kind, at)) = meet(p, q, tol, angular) {
+            if let Some((stack, _)) = stacked
+                && stack.get(i) == stack.get(j)
+            {
+                continue;
+            }
+            if let Some((kind, at)) = meet_bent(p, q, tol, angular, stacked.map(|s| s.1)) {
                 return Ok(Some(Meeting {
                     facets: [i, j],
                     kind,
@@ -202,6 +233,16 @@ fn boxes_meet(a: &Bbox3, b: &Bbox3) -> bool {
 }
 
 pub(super) fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(FacetMeeting, Vec3)> {
+    meet_bent(p, q, tol, angular, None)
+}
+
+fn meet_bent(
+    p: &Placed,
+    q: &Placed,
+    tol: f64,
+    angular: f64,
+    bends: Option<&BTreeSet<usize>>,
+) -> Option<(FacetMeeting, Vec3)> {
     let shared_v: BTreeSet<usize> = p.vertices.intersection(&q.vertices).copied().collect();
     let shared_e: BTreeSet<usize> = p.edges.intersection(&q.edges).copied().collect();
     // Parallel when the normals are within the angular tolerance (the
@@ -263,6 +304,36 @@ pub(super) fn meet(p: &Placed, q: &Placed, tol: f64, angular: f64) -> Option<(Fa
             if edge_shared {
                 let (ta, tb) = (t_of(a), t_of(b));
                 removed.push((ta.min(tb) - tol, ta.max(tb) + tol));
+            }
+        }
+    }
+    // Edges of a bend that both lie along, on the same stretch.
+    if let Some(bends) = bends {
+        let along = |f: &Placed| -> Vec<(f64, f64)> {
+            let mut out = Vec::new();
+            for (ring, edge_ids) in f.folded.iter().zip(&f.edge_ids) {
+                let n = ring.len();
+                for k in 0..n {
+                    let (Some(&a), Some(&b), Some(e)) =
+                        (ring.get(k), ring.get((k + 1) % n), edge_ids.get(k))
+                    else {
+                        continue;
+                    };
+                    if bends.contains(e) && off_line(a) <= tol && off_line(b) <= tol {
+                        let (ta, tb) = (t_of(a), t_of(b));
+                        out.push((ta.min(tb), ta.max(tb)));
+                    }
+                }
+            }
+            out
+        };
+        let (bp, bq) = (along(p), along(q));
+        for &(a0, a1) in &bp {
+            for &(b0, b1) in &bq {
+                let (lo, hi) = (a0.max(b0), a1.min(b1));
+                if lo <= hi + tol {
+                    removed.push((lo - tol, hi + tol));
+                }
             }
         }
     }

@@ -546,3 +546,139 @@ fn how_fast_the_layer_search_works() {
         per_step * craft3d_kernel::origami::MAX_LAYER_WORK as f64
     );
 }
+
+/// A stack folded on (docs/design/origami.md › *A stack folded on*): a
+/// square folded in half by a valley at 180 degrees, then the doubled
+/// layers folded by a crossing crease. The crossing crease is two lines
+/// meeting at the middle, a valley on the half that stays face up and a
+/// mountain on the half that lies face down (Maekawa at the middle: one
+/// mountain, three valleys). Given the valley, the mountain is solved to
+/// the same angle; the two layers of the folded part lie on each other
+/// at (−s, s cos ρ, s sin ρ) whichever corner, the area is kept, and the
+/// layers are the flat state's within each stack. A crossing crease on
+/// one layer only cannot fold the stack; a crossing crease of the wrong
+/// kind turns the wrong way.
+#[test]
+fn a_stack_folded_in_half_is_folded_on_by_a_crossing_crease() {
+    use craft3d_kernel::origami::{fold_stacked, folds_stacked};
+    for scale in SCALES {
+        let s = scale;
+        let t = 1e-9 * scale;
+        let boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
+        let half = crease(10, [0.0, -s], [0.0, s], CreaseKind::Valley);
+        let left = crease(11, [-s, 0.0], [0.0, 0.0], CreaseKind::Valley);
+        let right = crease(12, [0.0, 0.0], [s, 0.0], CreaseKind::Mountain);
+        let arr = arrange(&boundary, &[half.clone(), left.clone(), right.clone()], t).unwrap();
+        assert_eq!(arr.facets.len(), 4);
+        let at = |x: f64, y: f64| arr.facet_at([x * s, y * s]).unwrap();
+        let (ul, ur, ll, lr) = (at(-0.5, 0.5), at(0.5, 0.5), at(-0.5, -0.5), at(0.5, -0.5));
+        for degrees in [30.0f64, 90.0, 150.0] {
+            let rho = degrees.to_radians();
+            let angles: Vec<Angle> = arr
+                .hinges
+                .iter()
+                .map(|h| match arr.creases[h.crease].id {
+                    10 => Angle::Given(PI),
+                    11 => Angle::Given(rho),
+                    _ => Angle::Free { sign: -1.0 },
+                })
+                .collect();
+            assert!(folds_stacked(&angles, ANGULAR));
+            let stacked = fold_stacked(&arr, &angles, ll, t, ANGULAR).unwrap();
+            let f = &stacked.folded;
+            // The mountain solved to the same angle.
+            for (h, a) in arr.hinges.iter().zip(&f.angles) {
+                let want = match arr.creases[h.crease].id {
+                    10 => PI,
+                    11 => rho,
+                    _ => -rho,
+                };
+                assert!((a - want).abs() <= 1e-9, "{degrees}: {a} vs {want}");
+            }
+            // Two stacks, the folded one's two corners on each other.
+            assert_eq!(stacked.stack[ul], stacked.stack[ur]);
+            assert_eq!(stacked.stack[ll], stacked.stack[lr]);
+            assert_ne!(stacked.stack[ul], stacked.stack[ll]);
+            let want = Vec3::new(-s, s * rho.cos(), s * rho.sin());
+            for (facet, corner) in [(ul, [-s, s]), (ur, [s, s])] {
+                let got = f.transforms[facet].point(Vec3::new(corner[0], corner[1], 0.0));
+                assert!(
+                    got.distance(want) <= 1e-9 * s,
+                    "{degrees}: {got:?} vs {want:?}"
+                );
+            }
+            // The fixed stack lies flat, its right half face down on it.
+            let got = f.transforms[lr].point(Vec3::new(s, -s, 0.0));
+            assert!(got.distance(Vec3::new(-s, -s, 0.0)) <= 1e-9 * s, "{got:?}");
+            // Layers within each stack: the right halves above.
+            assert_eq!(stacked.layers.layer[lr], stacked.layers.layer[ur]);
+            assert!(stacked.layers.layer[lr] > stacked.layers.layer[ll]);
+            assert_eq!(stacked.layers.above, {
+                let mut v = vec![[lr, ll], [ur, ul]];
+                v.sort_unstable();
+                v
+            });
+            // No meeting other than along the crease both are folded about.
+            assert!(
+                craft3d_kernel::origami::first_meeting_stacked(
+                    &arr,
+                    f,
+                    t,
+                    ANGULAR,
+                    &stacked.stack,
+                    &stacked.bends
+                )
+                .unwrap()
+                .is_none()
+            );
+            let made = folded_sheet(
+                &arr,
+                f,
+                &Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X).unwrap(),
+                &Tolerance::new(t, ANGULAR).unwrap(),
+            )
+            .unwrap();
+            let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+            assert!((area - 4.0 * s * s).abs() <= 1e-10 * s * s, "{area}");
+        }
+        // The crossing crease on one layer only: one stack, the crease
+        // inside it cannot turn.
+        let one = arrange(&boundary, &[half.clone(), left.clone()], t).unwrap();
+        let angles: Vec<Angle> = one
+            .hinges
+            .iter()
+            .map(|h| match one.creases[h.crease].id {
+                10 => Angle::Given(PI),
+                _ => Angle::Given(PI / 2.0),
+            })
+            .collect();
+        let e = fold_stacked(&one, &angles, 0, t, ANGULAR);
+        assert!(
+            matches!(e, Err(FoldError::NotClosing { id: 11, .. })),
+            "{e:?}"
+        );
+        // Both halves of the crossing crease valleys: the solved one would
+        // turn against its kind.
+        let wrong = arrange(
+            &boundary,
+            &[
+                half.clone(),
+                left.clone(),
+                crease(12, [0.0, 0.0], [s, 0.0], CreaseKind::Valley),
+            ],
+            t,
+        )
+        .unwrap();
+        let angles: Vec<Angle> = wrong
+            .hinges
+            .iter()
+            .map(|h| match wrong.creases[h.crease].id {
+                10 => Angle::Given(PI),
+                11 => Angle::Given(PI / 2.0),
+                _ => Angle::Free { sign: 1.0 },
+            })
+            .collect();
+        let e = fold_stacked(&wrong, &angles, 0, t, ANGULAR);
+        assert!(e.is_err(), "{e:?}");
+    }
+}
