@@ -68,10 +68,13 @@ pub enum ErrorKind {
     UnitWithoutNumber {
         unit: Unit,
     },
-    /// A unit after something that is not a number: `(pi / 4) rad`,
-    /// `width mm`. A unit belongs to the number just before it.
+    /// A unit after a variable's name, also in parentheses alone
+    /// (`width mm`, `(width) mm`), or after a table's value. A unit
+    /// belongs to a number, a parenthesis or `pi`; `name` is the variable
+    /// when there is one.
     UnitAfterExpression {
         unit: Unit,
+        name: Option<String>,
     },
     /// A unit after a parenthesis, a call or `pi` whose value has a
     /// dimension already: `(a + b) mm` with `a` a length. Such a unit gives
@@ -254,12 +257,15 @@ impl fmt::Display for ErrorKind {
                 "the unit `{unit}` must follow a number, as in `1 {unit}`; it cannot be \
                  used as a name"
             ),
-            ErrorKind::UnitAfterExpression { unit } => write!(
-                f,
-                "the unit `{unit}` must follow a number, a parenthesis or `pi` directly, as in \
-                 `45 {unit}` or `(a + b) {unit}`; to give a variable a unit, multiply by one: \
-                 `width * 1 {unit}`"
-            ),
+            ErrorKind::UnitAfterExpression { unit, name } => {
+                let name = name.as_deref().unwrap_or("x");
+                write!(
+                    f,
+                    "the unit `{unit}` must follow a number, a parenthesis or `pi` directly, as \
+                     in `45 {unit}` or `(a + b) {unit}`, not a variable; to give `{name}` a \
+                     unit, multiply by one: `{name} * 1 {unit}`"
+                )
+            }
             ErrorKind::UnitOnQuantity { unit, dimension } => write!(
                 f,
                 "the unit `{unit}` after a parenthesis gives a plain number a unit, but this \

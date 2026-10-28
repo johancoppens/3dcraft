@@ -70,8 +70,9 @@ Every length, angle and count may be an **expression** in the document's variabl
   `pi / 4 rad` is pi / (4 rad): write `1 in / 16` and `pi / 4 * 1 rad`. A unit may also follow a
   parenthesis, a function's call or `pi`, and gives the plain number there its unit: `(a + b) mm`,
   `(360 / n) deg`, `sqrt(2) mm`, `2 * pi rad / n`. The value inside has to be a plain number (with `a`
-  a length, `(a + b) mm` is an error, not an area). After a variable's name a unit is refused
-  (`width mm`): multiply by one instead (`width * 1 mm`). When a variable comes out as an inverse length
+  a length, `(a + b) mm` is an error, not an area). After a variable's name a unit is refused,
+  also when the variable stands alone in parentheses (`width mm`, `(width) mm`): multiply by one
+  instead (`width * 1 mm`); the error names the variable. When a variable comes out as an inverse length
   or angle because a `/` is followed by a number with a unit, its result has a `warning`; an inverse
   written as meant (`1 / (2 mm)`, `10 mm / (360 deg)`) has none.
 - **Angles.** A number without a unit where an angle is expected (a pattern's `angle`, a transform's, an

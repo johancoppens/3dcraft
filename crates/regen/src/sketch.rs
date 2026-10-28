@@ -702,11 +702,37 @@ fn problem(
                 let other = &sketch.entity(o).map_err(|e| e.to_string())?.geometry;
                 match sketch.tangent_at(f, o) {
                     Some((at_f, at_o)) => {
-                        let start = sketch
-                            .entity(f)
-                            .ok()
-                            .and_then(|e| e.geometry.ends())
-                            .map(|(start, _)| start);
+                        let ends_of =
+                            |id: EntityId| sketch.entity(id).ok().and_then(|e| e.geometry.ends());
+                        let start = ends_of(f).map(|(start, _)| start);
+                        // At the seam of a closed curve the tangency is
+                        // the curve's only where it leaves and arrives in
+                        // one direction: a formula that closes smoothly.
+                        // A live spline is clamped, its directions at the
+                        // seam its points' (refused); so is a corner.
+                        let seam = |id: EntityId| ends_of(id).is_some_and(|(a, b)| a == b);
+                        let ambiguous = |curve: EntityId| {
+                            format!(
+                                "{id}: {curve} closes on itself at the point it shares with the other curve, and leaves and arrives there in different directions, so a tangent there is ambiguous; share another point, or split the curve at the seam"
+                            )
+                        };
+                        if seam(f) {
+                            let smooth =
+                                match &sketch.entity(f).map_err(|e| e.to_string())?.geometry {
+                                    Geometry::Formula { .. } => fits
+                                        .iter()
+                                        .find(|(c, _)| *c == f)
+                                        .and_then(|(_, fit)| fit.as_ref().ok())
+                                        .is_some_and(|fit| closes_smoothly(&fit.spline.control)),
+                                    _ => false,
+                                };
+                            if !smooth {
+                                return Err(ambiguous(f));
+                            }
+                        }
+                        if seam(o) && matches!(other, Geometry::Interpolated { .. }) {
+                            return Err(ambiguous(o));
+                        }
                         let end = if start == Some(at_f) {
                             solve::SplineEnd::Start
                         } else {
@@ -930,6 +956,31 @@ fn problem(
         image_maps,
         pins,
     })
+}
+
+/// Whether a closed curve on `control` (clamped, its first and last
+/// control points one place) leaves its seam in the direction it arrives
+/// there: its first and last legs along one line and the same way, within
+/// a millionth of a radian (the fit's end directions are the formula's to
+/// about 1e-8, `curve_fit::end_direction`).
+fn closes_smoothly(control: &[[f64; 2]]) -> bool {
+    let (Some(a), Some(b), Some(y), Some(z)) = (
+        control.first(),
+        control.get(1),
+        control.len().checked_sub(2).and_then(|i| control.get(i)),
+        control.last(),
+    ) else {
+        return false;
+    };
+    let leave = [b[0] - a[0], b[1] - a[1]];
+    let arrive = [z[0] - y[0], z[1] - y[1]];
+    let (l, r) = (leave[0].hypot(leave[1]), arrive[0].hypot(arrive[1]));
+    if !(l > 0.0 && r > 0.0 && l.is_finite() && r.is_finite()) {
+        return false;
+    }
+    let sine = (leave[0] * arrive[1] - leave[1] * arrive[0]) / (l * r);
+    let cosine = (leave[0] * arrive[0] + leave[1] * arrive[1]) / (l * r);
+    cosine > 0.0 && sine.abs() <= 1e-6
 }
 
 /// The map an image had, in the solver's terms: the numbers stored with

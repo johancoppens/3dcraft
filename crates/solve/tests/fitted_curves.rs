@@ -525,3 +525,42 @@ fn bad_input_is_an_error_and_every_cap_holds() {
         ),
     }
 }
+
+/// A line touching a spline through points of degree 7 anywhere: refused
+/// as undefined with its own reason (degree 6 at most), the rest solves.
+#[test]
+fn a_line_touching_a_live_spline_of_degree_seven_says_degree_six() {
+    let mut s = Sketch::new();
+    let points: Vec<EntityId> = (0..8)
+        .map(|i| s.add_point(i as f64, if i % 2 == 0 { 0.0 } else { 2.0 }))
+        .collect();
+    for id in &points {
+        s.add_constraint(C::Fixed {
+            point: *id,
+            at: None,
+        });
+    }
+    let knots: Vec<f64> = [vec![0.0; 8], vec![1.0; 8]].concat();
+    let inner: Vec<EntityId> = (1..7).map(|i| s.add_point(i as f64, 1.0)).collect();
+    let mut control = vec![points[0]];
+    control.extend(&inner);
+    control.push(points[7]);
+    let through = (1..7)
+        .map(|i| (points[i], knots[i + 1..=i + 7].iter().sum::<f64>() / 7.0))
+        .collect();
+    let spline = s.add_spline_through(7, knots, control, through);
+    let a = s.add_point(0.0, 3.0);
+    let b = s.add_point(7.0, 3.0);
+    let line = s.add_line(a, b);
+    let touch = s.add_constraint(C::TangentToSpline {
+        curve: line,
+        spline,
+        at: None,
+    });
+    let solution = solve(&s, &options(1.0)).unwrap();
+    assert_eq!(solution.constraints[touch].status, Conflicting);
+    assert_eq!(
+        solution.constraints[touch].undefined,
+        Some(craft3d_solve::TOUCH_TOO_HIGH)
+    );
+}

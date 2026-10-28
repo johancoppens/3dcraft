@@ -101,7 +101,7 @@ mod model;
 mod solver;
 mod spline;
 
-pub use equations::{CROWDED, MAX_IMAGE_DEPTH};
+pub use equations::{CROWDED, MAX_IMAGE_DEPTH, TOUCH_TOO_HIGH};
 pub use error::{Site, SolveError};
 pub use model::{
     Carried, Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind,

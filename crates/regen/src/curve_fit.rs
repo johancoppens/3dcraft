@@ -22,7 +22,13 @@
 //! span). A span off by more than half the tolerance is halved (its middle
 //! check becomes a sample, each half is checked afresh at the same shares),
 //! and the spline is interpolated again, until every check holds. The ends
-//! are the formula's end points exactly.
+//! are the formula's end points exactly, and the spline leaves them in the
+//! formula's directions there (*The NURBS Book* § 9.2.2, the end
+//! derivatives as two more equations, `interpolate_with_ends`), estimated
+//! by one-sided differences extrapolated to third order (`end_direction`);
+//! an end the formula leaves at speed zero (an involute's base circle) is
+//! fitted free, as before, and so is any end when the system with them
+//! cannot be solved.
 //!
 //! **What the fit guarantees.** Every sample lies on the spline (up to
 //! rounding), and every check within half the document's tolerance of it,
@@ -368,7 +374,7 @@ fn interpolate_at(params: &[f64], points: &[P2]) -> Result<Spline2, String> {
     // Row i holds the columns i − p ..= i + p.
     let width = 2 * p + 1;
     let mut band = vec![0.0; n * width];
-    let mut rhs: Vec<P2> = points.to_vec();
+    let rhs: Vec<P2> = points.to_vec();
     for (i, u) in params.iter().enumerate() {
         let (span, values) = basis(p, &knots, n, *u).ok_or("the knots do not fit the samples")?;
         let first = span
@@ -388,6 +394,177 @@ fn interpolate_at(params: &[f64], points: &[P2]) -> Result<Spline2, String> {
                 .ok_or("the fit's equations are not banded")? = *value;
         }
     }
+    let mut control = band_solve(p, n, band, rhs)?;
+    // The ends are the end samples exactly.
+    if let (Some(first), Some(sample)) = (control.first_mut(), points.first()) {
+        *first = *sample;
+    }
+    if let (Some(last), Some(sample)) = (control.last_mut(), points.last()) {
+        *last = *sample;
+    }
+    Ok(Spline2 {
+        degree: p,
+        knots,
+        control,
+    })
+}
+
+/// The cubic through `points` at `params`, as [`interpolate_at`], that
+/// leaves its first point along `ends[0]` and arrives at its last along
+/// `ends[1]` (unit directions; an end without one is free): *The NURBS
+/// Book* § 9.2.2, the end derivatives as two more equations. Each given
+/// direction is an end parameter counted twice for the knots (eq. 9.22),
+/// and sets the control point next to that end: `P1 = P0 + u_{p+1} / p D0`,
+/// with the derivative `D0` the direction times the polygon's length (the
+/// speed of a chord-length parametrisation). The other control points
+/// solve the collocation of the inner points, a square submatrix of a
+/// B-spline collocation matrix, totally positive, so the band is solved
+/// without pivoting.
+fn interpolate_with_ends(
+    params: &[f64],
+    points: &[P2],
+    ends: [Option<P2>; 2],
+) -> Result<Spline2, String> {
+    let p = FIT_DEGREE;
+    let n = points.len();
+    if n != params.len() || n <= p {
+        return Err(format!("a fit needs at least {} samples", p + 1));
+    }
+    let (start, end) = (
+        usize::from(ends[0].is_some()),
+        usize::from(ends[1].is_some()),
+    );
+    let m = n + start + end;
+    // The parameters with each given end counted twice.
+    let mut doubled = Vec::with_capacity(m);
+    for (i, u) in params.iter().enumerate() {
+        doubled.push(*u);
+        if (i == 0 && start == 1) || (i + 1 == n && end == 1) {
+            doubled.push(*u);
+        }
+    }
+    let mut knots = vec![0.0; p + 1];
+    for j in 1..m - p {
+        let window = doubled.get(j..j + p).ok_or("the samples are too few")?;
+        knots.push(window.iter().sum::<f64>() / p as f64);
+    }
+    knots.extend(std::iter::repeat_n(1.0, p + 1));
+    let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+        return Err("there are no samples".into());
+    };
+    let length: f64 = points
+        .windows(2)
+        .map(|w| match *w {
+            [a, b] => distance(a, b),
+            _ => 0.0,
+        })
+        .sum();
+    let mut control = vec![[0.0; 2]; m];
+    *control.first_mut().ok_or("no control points")? = first;
+    *control.last_mut().ok_or("no control points")? = last;
+    if let Some(d) = ends[0] {
+        let step = knots.get(p + 1).ok_or("the knots are too short")? / p as f64 * length;
+        *control.get_mut(1).ok_or("no control points")? =
+            [first[0] + step * d[0], first[1] + step * d[1]];
+    }
+    if let Some(d) = ends[1] {
+        let step = (1.0 - knots.get(m - 1).ok_or("the knots are too short")?) / p as f64 * length;
+        *control.get_mut(m - 2).ok_or("no control points")? =
+            [last[0] - step * d[0], last[1] - step * d[1]];
+    }
+    // Unknown: the control points `lo ..= hi`, one per inner point.
+    let lo = 1 + start;
+    let hi = m - 2 - end;
+    let count = n - 2;
+    let width = 2 * p + 1;
+    let mut band = vec![0.0; count * width];
+    let mut rhs: Vec<P2> = Vec::with_capacity(count);
+    for i in 0..count {
+        let u = *params.get(i + 1).ok_or("a sample is missing")?;
+        let mut value = *points.get(i + 1).ok_or("a sample is missing")?;
+        let (span, values) = basis(p, &knots, m, u).ok_or("the knots do not fit the samples")?;
+        let first_column = span
+            .checked_sub(p)
+            .ok_or("the knots do not fit the samples")?;
+        for (k, weight) in values.iter().enumerate() {
+            let column = first_column + k;
+            if *weight == 0.0 {
+                continue;
+            }
+            if column < lo || column > hi {
+                let known = control.get(column).ok_or("a control point is missing")?;
+                value[0] -= weight * known[0];
+                value[1] -= weight * known[1];
+                continue;
+            }
+            let offset = (column - lo + p)
+                .checked_sub(i)
+                .filter(|o| *o < width)
+                .ok_or("the fit's equations are not banded")?;
+            *band
+                .get_mut(i * width + offset)
+                .ok_or("the fit's equations are not banded")? = *weight;
+        }
+        rhs.push(value);
+    }
+    let inner = band_solve(p, count, band, rhs)?;
+    for (slot, solved) in control.iter_mut().skip(lo).zip(inner) {
+        *slot = solved;
+    }
+    if control.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("the samples do not determine a spline".into());
+    }
+    Ok(Spline2 {
+        degree: p,
+        knots,
+        control,
+    })
+}
+
+/// The unit direction in which the curve `at(u)` (`u` the share of the
+/// range) leaves the end `u0` going inwards along `sign` (`1` at the
+/// start, `-1` at the end), as the derivative there: a one-sided
+/// difference of second order at the steps `h` and `h / 2`, `h` a
+/// thousandth of the range, extrapolated (Richardson) to third order.
+/// `None` when the curve does not leave the end at a speed of its own (the
+/// estimate under half the secant's over `2 h`: an involute leaves its
+/// base circle at speed zero, its direction there in a higher derivative),
+/// or when the numbers are not finite: that end is then fitted free.
+fn end_direction(
+    at: &mut impl FnMut(f64) -> Result<P2, String>,
+    u0: f64,
+    sign: f64,
+) -> Result<Option<P2>, String> {
+    let h = 1e-3;
+    let f0 = at(u0)?;
+    let mut estimate = |step: f64| -> Result<(P2, P2), String> {
+        let a = at(u0 + sign * step)?;
+        let b = at(u0 + sign * 2.0 * step)?;
+        let d = [
+            sign * (-3.0 * f0[0] + 4.0 * a[0] - b[0]) / (2.0 * step),
+            sign * (-3.0 * f0[1] + 4.0 * a[1] - b[1]) / (2.0 * step),
+        ];
+        Ok((d, b))
+    };
+    let (coarse, far) = estimate(h)?;
+    let (fine, _) = estimate(h / 2.0)?;
+    let d = [
+        (4.0 * fine[0] - coarse[0]) / 3.0,
+        (4.0 * fine[1] - coarse[1]) / 3.0,
+    ];
+    let speed = d[0].hypot(d[1]);
+    let secant = distance(far, f0) / (2.0 * h);
+    if !(speed.is_finite() && secant.is_finite() && speed > 0.0 && speed >= 0.5 * secant) {
+        return Ok(None);
+    }
+    Ok(Some([d[0] / speed, d[1] / speed]))
+}
+
+/// Solves the banded system of [`interpolate_at`]: `n` rows, row `i`
+/// holding the columns `i − p ..= i + p` in `band` (`2 p + 1` per row),
+/// without pivoting (the matrix is totally positive).
+fn band_solve(p: usize, n: usize, mut band: Vec<f64>, mut rhs: Vec<P2>) -> Result<Vec<P2>, String> {
+    let width = 2 * p + 1;
     let at = |band: &[f64], row: usize, column: usize| -> f64 {
         (column + p)
             .checked_sub(row)
@@ -439,18 +616,7 @@ fn interpolate_at(params: &[f64], points: &[P2]) -> Result<Spline2, String> {
         }
         *control.get_mut(i).ok_or("a sample is missing")? = solved;
     }
-    // The ends are the end samples exactly.
-    if let (Some(first), Some(sample)) = (control.first_mut(), points.first()) {
-        *first = *sample;
-    }
-    if let (Some(last), Some(sample)) = (control.last_mut(), points.last()) {
-        *last = *sample;
-    }
-    Ok(Spline2 {
-        degree: p,
-        knots,
-        control,
-    })
+    Ok(control)
 }
 
 /// The parameters of `points` by the length of the polygon through them,
@@ -620,12 +786,25 @@ pub fn fit_formula(
             first[0], first[1]
         ));
     }
+    // The directions the formula leaves its ends in: the fit leaves them
+    // in those, so a curve tangent to the fit at an end is tangent to the
+    // formula there (to the estimate's accuracy).
+    let ends = [
+        end_direction(&mut at, 0.0, 1.0)?,
+        end_direction(&mut at, 1.0, -1.0)?,
+    ];
     // Where the last round found the fit worst: where samples crowd.
     let mut last_worst = from;
     for round in 0..=MAX_FIT_ROUNDS {
         let points: Vec<P2> = samples.iter().map(|(_, p)| *p).collect();
         let params = chord_lengths(&points);
-        let spline = interpolate_at(&params, &points).map_err(|why| {
+        let spline = match ends {
+            [None, None] => interpolate_at(&params, &points),
+            // Free ends where the band cannot be solved with them.
+            _ => interpolate_with_ends(&params, &points, ends)
+                .or_else(|_| interpolate_at(&params, &points)),
+        }
+        .map_err(|why| {
             format!(
                 "it could not be fitted: {why}, as its samples crowd together near t = {last_worst}. A formula with a kink or a jump is not fitted: split the curve there into two"
             )
@@ -976,6 +1155,54 @@ mod tests {
     fn a_line_needs_no_refinement() {
         let fit = fit_formula(|t| Ok([t, 2.0 * t]), 0.0, 1.0, 1e-6).unwrap();
         assert_eq!(fit.rounds, 0);
-        assert_eq!(fit.spline.control.len(), FIRST_SPANS + 1);
+        // One sample per first span and its ends, and one more control
+        // point beside each end for its direction (2026-10-28).
+        assert_eq!(fit.spline.control.len(), FIRST_SPANS + 3);
+    }
+
+    /// The fit leaves its ends in the directions the formula does: the
+    /// parabola y = t^2 on [0, 1] along (1, 0) and arrives along (1, 2),
+    /// a circle along its tangents, at several scales; an involute, which
+    /// leaves its base circle at speed zero, leaves it free.
+    #[test]
+    fn the_fit_leaves_its_ends_as_the_formula_does() {
+        let direction = |fit: &Fit, start: bool| {
+            let c = &fit.spline.control;
+            let (a, b) = if start {
+                (c[0], c[1])
+            } else {
+                (c[c.len() - 2], c[c.len() - 1])
+            };
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let n = dx.hypot(dy);
+            [dx / n, dy / n]
+        };
+        let off = |d: [f64; 2], want: [f64; 2]| {
+            let n = want[0].hypot(want[1]);
+            (d[0] * want[1] / n - d[1] * want[0] / n).abs()
+        };
+        for k in [1e-3, 1.0, 1e3, 1e6] {
+            let fit = fit_formula(|t| Ok([k * t, k * t * t]), 0.0, 1.0, 1e-6 * k).unwrap();
+            assert!(off(direction(&fit, true), [1.0, 0.0]) < 1e-12, "x{k}");
+            assert!(off(direction(&fit, false), [1.0, 2.0]) < 1e-12, "x{k}");
+            let circle = |t: f64| Ok([10.0 * k * t.cos(), 10.0 * k * t.sin()]);
+            let fit = fit_formula(circle, 0.3, 2.0, 1e-6 * k).unwrap();
+            assert!(
+                off(direction(&fit, true), [-(0.3f64).sin(), 0.3f64.cos()]) < 1e-8,
+                "x{k}"
+            );
+            assert!(
+                off(direction(&fit, false), [-(2.0f64).sin(), 2.0f64.cos()]) < 1e-8,
+                "x{k}"
+            );
+        }
+        let involute = |t: f64| Ok([t.cos() + t * t.sin(), t.sin() - t * t.cos()]);
+        let fit = fit_formula(involute, 0.0, 1.0, 1e-6).unwrap();
+        // Free at the base circle: the fit's own interpolation there.
+        assert!(fit.deviation <= 0.5e-6);
+        // At t = 1 it runs along (t cos t, t sin t).
+        assert!(off(direction(&fit, false), [1.0f64.cos(), 1.0f64.sin()]) < 1e-8);
+        let mut at = |u: f64| involute(u);
+        assert_eq!(end_direction(&mut at, 0.0, 1.0).unwrap(), None);
     }
 }

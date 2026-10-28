@@ -357,3 +357,82 @@ fn what_fitted_curves_do_not_take_is_refused_with_the_reason() {
     let backwards = refused(&mut s, "pointOn", json!([a["entity"], a["start"]]));
     assert!(!backwards.is_empty());
 }
+
+/// At the seam of a closed curve: a formula that closes smoothly (a
+/// circle) takes a tangent there, along its one direction; one that
+/// closes with a corner, and a closed live spline (clamped, its directions
+/// at the seam its points'), fail the sketch with the reason.
+#[test]
+fn a_tangent_at_the_seam_of_a_closed_curve() {
+    for k in SCALES {
+        let mut s = document(k);
+        let circle = run(
+            &mut s,
+            "sketch.curve",
+            json!({"sketch": "S", "x": format!("{} * cos(t)", 10.0 * k), "y": format!("{} * sin(t)", 10.0 * k), "t": [0, "360 deg"]}),
+        );
+        let line = run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "S", "from": circle["start"], "to": [11.0 * k, 4.0 * k]}),
+        );
+        constrain(
+            &mut s,
+            "distance",
+            json!([line["entity"]]),
+            Some(format!("{} mm", 5.0 * k)),
+        );
+        let made = constrain(
+            &mut s,
+            "tangent",
+            json!([circle["entity"], line["entity"]]),
+            None,
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        near(
+            at(&mut s, &line["end"]),
+            [10.0 * k, 5.0 * k],
+            k,
+            &format!("x{k}: along the seam's one direction"),
+        );
+    }
+    let mut s = document(1.0);
+    let drop = run(
+        &mut s,
+        "sketch.curve",
+        json!({"sketch": "S", "x": "(t - t^2) * 10", "y": "(t^2 - t^3) * 10", "t": [0, 1]}),
+    );
+    assert_eq!(drop["closed"], true, "{drop}");
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "S", "from": drop["start"], "to": [3, -1]}),
+    );
+    let made = constrain(
+        &mut s,
+        "tangent",
+        json!([drop["entity"], line["entity"]]),
+        None,
+    );
+    assert_ne!(made["status"], "ok", "{made}");
+    assert!(made.to_string().contains("ambiguous"), "{made}");
+    let mut s = document(1.0);
+    let live = run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "S", "through": [[0, 0], [5, 5], [10, 0]], "closed": true, "live": true}),
+    );
+    let line = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "S", "from": live["start"], "to": [-3, 1]}),
+    );
+    let made = constrain(
+        &mut s,
+        "tangent",
+        json!([live["entity"], line["entity"]]),
+        None,
+    );
+    assert_ne!(made["status"], "ok", "{made}");
+    assert!(made.to_string().contains("ambiguous"), "{made}");
+}

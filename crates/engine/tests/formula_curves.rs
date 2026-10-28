@@ -753,13 +753,13 @@ fn a_line_leaves_a_formula_curve_along_it_and_its_end_is_on_it() {
     let (from, to) = (find(&line["start"]), find(&line["end"]));
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
     assert!((from[0] - 1.0).abs() < 1e-9 && (from[1] - 1.0).abs() < 1e-9);
-    // Along the curve as fitted, whose direction at its end is the
-    // formula's to the fit's accuracy of direction, not of place (5.4e-5
-    // rad here at a tolerance of 1e-6: the end span is short); the solver
-    // holds the line to the fitted spline itself (crates/solve/tests/
-    // fitted_curves.rs).
+    // Along the formula's own direction at its end: the fit leaves its
+    // ends as the formula does (since 2026-10-28; before, the fit's own
+    // direction was 5.4e-5 rad off here, and this held 1e-3). The
+    // one-sided estimate is exact for a parabola, the solve holds the
+    // angle to the document's angular tolerance.
     assert!(
-        (dy - 2.0 * dx).abs() <= 1e-3 * dx.hypot(dy),
+        (dy - 2.0 * dx).abs() <= 1e-8 * dx.hypot(dy),
         "the line runs along ({dx}, {dy})"
     );
 }

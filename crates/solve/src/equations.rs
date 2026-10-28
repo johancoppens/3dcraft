@@ -20,6 +20,11 @@ const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent
 const STALLED_SPLINE: &str =
     "a spline that stands still where the point is nearest to it has no direction there";
 const STALLED_END: &str = "a spline that stands still at its end has no direction there";
+/// A line, circle or arc touching a spline anywhere is one equation in
+/// the curve's unknowns and those of the `degree + 1` control points that
+/// count where they touch: more than [`SLOTS`] from degree 7 on when the
+/// control points move.
+pub const TOUCH_TOO_HIGH: &str = "a line, circle or arc touching a spline whose control points move (a live spline, a sketch spline) anywhere takes one of degree 6 at most: at degree 7 one equation would hold 16 unknowns of the spline and 3 or 4 of the curve, more than the 18 it holds; give the spline degree 6 or lower, or let the two share an end point";
 const NOWHERE_PARALLEL: &str =
     "the line runs parallel to the curve nowhere between its ends, so it cannot touch it";
 /// Most image points an image point may be made from one after the other
@@ -685,6 +690,19 @@ impl<'a> Ctx<'a> {
         Ok([cx - px, cy - py])
     }
 
+    /// [`TOUCH_TOO_HIGH`] when a curve with `own` unknowns touching
+    /// spline `s` anywhere would need more slots than one equation has.
+    fn touch_fits(s: &SplineVars, own: usize) -> Result<(), Fail> {
+        let moving = s.control.iter().any(|c| !matches!(c, Pt::At(_)));
+        let needed = 2usize
+            .saturating_mul(s.degree.saturating_add(1))
+            .saturating_add(own);
+        if moving && needed > SLOTS {
+            return Err(Fail::Degenerate(TOUCH_TOO_HIGH));
+        }
+        Ok(())
+    }
+
     /// The row of [`Equation::TangentSplineLine`].
     fn tangent_spline_line(
         &mut self,
@@ -695,6 +713,9 @@ impl<'a> Ctx<'a> {
         let splines = self.splines;
         let s = splines.get(spline).ok_or(Fail::NonFinite)?;
         let points = self.spline_places(s)?;
+        if end.is_none() {
+            Self::touch_fits(s, 4)?;
+        }
         let ([ax, ay], [dx, dy], len) = self.line(line)?;
         let at = match end {
             Some(u) => s.at(&points, u).ok_or(Fail::NonFinite)?,
@@ -731,6 +752,11 @@ impl<'a> Ctx<'a> {
         side: f64,
     ) -> Result<Dual, Fail> {
         let Some(u) = end else {
+            let own = match round {
+                Round::Circle { .. } => 3,
+                Round::Arc { .. } => 4,
+            };
+            Self::touch_fits(self.splines.get(spline).ok_or(Fail::NonFinite)?, own)?;
             let gap = self.spline_distance(round.center(), spline)?;
             return Ok(gap * side - self.radius(round)?);
         };
@@ -2461,6 +2487,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// At degree 7 a line, circle or arc touching a spline whose control
+    /// points move needs more slots than one equation has: refused with
+    /// its own reason, not the image points'. With fixed control points
+    /// (a formula curve's fit) it is no problem.
+    #[test]
+    fn touching_a_moving_spline_of_degree_seven_is_refused_with_its_reason() {
+        let count = 9;
+        let knots = {
+            let mut k = vec![0.0; 8];
+            k.push(0.5);
+            k.extend(vec![1.0; 8]);
+            k
+        };
+        let mut x: Vec<f64> = (0..count)
+            .flat_map(|i| [i as f64, ((i * 7) % 5) as f64])
+            .collect();
+        let base = x.len();
+        x.extend([0.0, 3.0, 8.0, 3.5, 4.0, 1.0, 0.5]);
+        let line = Ln {
+            a: Pt::Own(base),
+            b: Pt::Own(base + 2),
+        };
+        let circle = Round::Circle {
+            c: Pt::Own(base + 4),
+            r: base + 6,
+        };
+        let moving = [SplineVars {
+            degree: 7,
+            knots: knots.clone(),
+            control: (0..count).map(|i| Pt::Own(2 * i)).collect(),
+        }];
+        let fixed = [SplineVars {
+            degree: 7,
+            knots,
+            control: (0..count)
+                .map(|i| Pt::At([i as f64, ((i * 7) % 5) as f64]))
+                .collect(),
+        }];
+        let touch_line = Equation::TangentSplineLine {
+            line,
+            spline: 0,
+            end: None,
+        };
+        let touch_circle = Equation::TangentSplineRound {
+            round: circle,
+            spline: 0,
+            end: None,
+            side: 1.0,
+        };
+        for eq in [touch_line, touch_circle] {
+            assert!(matches!(
+                eq.eval_with(&x, 1e-9, &moving, &[]),
+                Err(Fail::Degenerate(TOUCH_TOO_HIGH))
+            ));
+            let e = eq.eval_with(&x, 1e-9, &fixed, &[]);
+            assert!(
+                !matches!(e, Err(Fail::Degenerate(TOUCH_TOO_HIGH))),
+                "{eq:?}"
+            );
+        }
+        // At its end it is two control points, which fit.
+        let at_end = Equation::TangentSplineLine {
+            line,
+            spline: 0,
+            end: Some(0.0),
+        };
+        assert!(at_end.eval_with(&x, 1e-9, &moving, &[]).is_ok());
     }
 
     /// A spline of fixed control points has no unknowns: a point on it

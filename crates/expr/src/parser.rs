@@ -518,7 +518,11 @@ impl Parser<'_> {
                 _ => false,
             };
             if let (true, Some(unit)) = (after_operand, Unit::from_symbol(word)) {
-                return ExprError::new(found.pos, ErrorKind::UnitAfterExpression { unit });
+                let name = match before {
+                    Some((TokenKind::Ident, text)) => Some(text.to_string()),
+                    _ => None,
+                };
+                return ExprError::new(found.pos, ErrorKind::UnitAfterExpression { unit, name });
             }
             // `2 inch`, `3 MM`, `5 degrees`: a unit spelled otherwise.
             if let (Some((TokenKind::Number(_), _)), Some(meant)) = (before, spelled_unit(word)) {
@@ -755,6 +759,24 @@ impl Parser<'_> {
                 }
                 self.advance();
                 self.leave();
+                // `(width) mm` is `width mm`, which is refused: one rule
+                // for a unit after a variable, in parentheses or not.
+                if let Some(Node {
+                    kind: NodeKind::Variable(name),
+                    ..
+                }) = self.nodes.get(inner)
+                {
+                    let next = self.peek();
+                    if next.kind == TokenKind::Ident
+                        && let Some(unit) = Unit::from_symbol(self.text(next))
+                    {
+                        let name = Some(name.clone());
+                        return Err(ExprError::new(
+                            next.pos,
+                            ErrorKind::UnitAfterExpression { unit, name },
+                        ));
+                    }
+                }
                 Ok(self.unit_after(inner))
             }
             _ => Err(self.expected("a number, a variable, a function or `(`", token)),
@@ -1190,10 +1212,27 @@ mod tests {
         assert_eq!(tree("(a + b) mm"), "((a + b) mm)");
         assert_eq!(tree("(360 / n) deg"), "((360 / n) deg)");
         assert_eq!(tree("2 * pi rad / n"), "((2 * (pi rad)) / n)");
-        assert_eq!(tree("-(a) mm ^ 2"), "-((a mm) ^ 2)");
+        assert_eq!(tree("-(2 * a) mm ^ 2"), "-(((2 * a) mm) ^ 2)");
         assert_eq!(tree("sqrt(2) mm + 1"), "((sqrt(2) mm) + 1)");
         assert_eq!(tree("(a) * 2 mm"), "(a * 2)");
         assert!(Expr::parse("(pi / 4) rad").is_ok());
+        assert!(Expr::parse("(n + 0) deg").is_ok());
+        // The refusal names the variable.
+        for (source, name) in [("n deg", "n"), ("(wall) mm", "wall")] {
+            let e = err(source);
+            assert_eq!(
+                e.kind,
+                ErrorKind::UnitAfterExpression {
+                    unit: Unit::from_symbol(source.rsplit(' ').next().unwrap()).unwrap(),
+                    name: Some(name.into())
+                },
+                "{source}"
+            );
+            assert!(
+                e.to_string().contains(&format!("`{name} * 1 ")),
+                "{source}: {e}"
+            );
+        }
         assert!(Expr::parse("pi rad / 4").is_ok());
     }
 
@@ -1236,7 +1275,8 @@ mod tests {
         assert_eq!(
             err("(1 + 2) * width mm").kind,
             ErrorKind::UnitAfterExpression {
-                unit: Unit::Millimetre
+                unit: Unit::Millimetre,
+                name: Some("width".into())
             }
         );
         for unit in Unit::ALL {
@@ -1321,7 +1361,13 @@ mod tests {
         // A unit after a name: the error says a unit belongs to a number,
         // and how to give an expression a unit. (After a parenthesis or
         // `pi` it is accepted since 2026-10-28.)
-        for source in ["width mm", "2 * n deg", "t[1].a mm"] {
+        for source in [
+            "width mm",
+            "2 * n deg",
+            "t[1].a mm",
+            "(width) mm",
+            "2 * (n) deg",
+        ] {
             let e = err(source);
             assert!(
                 matches!(e.kind, ErrorKind::UnitAfterExpression { .. }),

@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(eval("(12.5) in").value, eval("12.5 in").value);
         for (source, unit, dimension) in [
             ("(a + b) mm", Unit::Millimetre, LENGTH),
-            ("(tilt) deg", Unit::Degree, ANGLE),
+            ("(tilt * 1) deg", Unit::Degree, ANGLE),
             ("abs(r) mm", Unit::Millimetre, LENGTH),
         ] {
             let e = err(source);

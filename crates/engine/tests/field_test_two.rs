@@ -227,7 +227,7 @@ fn a_unit_in_the_wrong_place_or_spelled_otherwise_says_what_to_write() {
         after["error"]
             .as_str()
             .unwrap()
-            .contains("multiply by one: `width * 1 rad`"),
+            .contains("multiply by one: `w * 1 rad`"),
         "{after}"
     );
     let inch = set(&mut s, "2 inch");
