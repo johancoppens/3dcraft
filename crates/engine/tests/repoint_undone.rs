@@ -197,6 +197,13 @@ fn deleting_an_inserted_feature_gives_the_later_ones_their_bodies_back() {
     }
 }
 
+/// The number a parameter names the feature `name` by (`document.inspect`
+/// lists features as `F9`, their parameters name them as 9).
+fn number(features: &[Value], name: &str) -> Value {
+    let f = features.iter().find(|f| f["name"] == name).unwrap();
+    json!(f["id"].as_str().unwrap()[1..].parse::<u64>().unwrap())
+}
+
 /// The target of the subtraction as `document.inspect` lists it.
 fn cut_target(s: &mut Session) -> Value {
     features(s)
@@ -242,8 +249,8 @@ fn two_insertions_on_one_parameter_deleted_undone_and_redone() {
             );
         }
         let both = features(&mut s);
-        let bevel = both.iter().find(|f| f["name"] == "Bevel").unwrap()["id"].clone();
-        let bevel2 = both.iter().find(|f| f["name"] == "Bevel2").unwrap()["id"].clone();
+        let bevel = number(&both, "Bevel");
+        let bevel2 = number(&both, "Bevel2");
         assert_eq!(cut_target(&mut s), bevel2, "{k}");
         let deleted = run(&mut s, "feature.delete", json!({"feature": "Bevel2"}));
         assert_eq!(
