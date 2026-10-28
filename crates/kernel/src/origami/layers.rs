@@ -449,7 +449,10 @@ pub fn layer_order(arr: &Arrangement, folded: &Folded, tol: f64) -> Result<Layer
                 id: u64::try_from(creases.len()).unwrap_or(u64::MAX),
                 start: at(from),
                 end: at(to),
-                kind: CreaseKind::Mountain,
+                // As cuts: a folded edge that ends inside a cell (a slit's
+                // or a slot's) divides nothing there, which the
+                // arrangement allows of a cut only.
+                kind: CreaseKind::Cut,
             });
             line_of_crease.push(index);
         };
