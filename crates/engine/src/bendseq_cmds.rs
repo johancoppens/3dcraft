@@ -245,8 +245,7 @@ impl Check<'_> {
                 let near = verify::distance(&[measured], std::slice::from_ref(&piece.measured))?;
                 let inside = contains_points(&body, &piece.points, &self.tol)
                     .map_err(|e| e.to_string())?
-                    .iter()
-                    .any(|x| *x == Some(true));
+                    .contains(&Some(true));
                 let lower = if inside { 0.0 } else { near.lower.max(0.0) };
                 if lower < self.clearance {
                     return Ok(Err(Failure::Collision {
@@ -539,10 +538,9 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
         .filter_map(|((before, b), r)| r.as_ref().err().map(|f| (before, b, f)))
         .take(MAX_LISTED)
         .map(|(before, b, f)| {
-            let mut v = json!({
-                "flange": b,
-                "done": before.iter().collect::<Vec<_>>(),
-            });
+            let mut v = serde_json::Map::new();
+            v.insert("flange".into(), json!(b));
+            v.insert("done".into(), json!(before.iter().collect::<Vec<_>>()));
             match f {
                 Failure::Collision {
                     tool,
@@ -551,17 +549,17 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
                     distance,
                     lower,
                 } => {
-                    v["tool"] = json!(tool);
-                    v["piece"] = json!(piece.text());
-                    v["angle"] = json!(degrees(*angle));
-                    v["distance"] = json!(distance);
-                    v["lower"] = json!(lower);
+                    v.insert("tool".into(), json!(tool));
+                    v.insert("piece".into(), json!(piece.text()));
+                    v.insert("angle".into(), json!(degrees(*angle)));
+                    v.insert("distance".into(), json!(distance));
+                    v.insert("lower".into(), json!(lower));
                 }
                 Failure::NotProven { from, to } => {
-                    v["notProven"] = json!([degrees(*from), degrees(*to)]);
+                    v.insert("notProven".into(), json!([degrees(*from), degrees(*to)]));
                 }
             }
-            v
+            Value::Object(v)
         })
         .collect();
     Ok(json!({
