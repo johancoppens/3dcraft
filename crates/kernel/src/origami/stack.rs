@@ -53,7 +53,8 @@ pub struct Stacked {
 
 /// Whether the angles are a stack folded on: at least one given angle at
 /// 180 degrees (within `angular`) and at least one other given angle that
-/// is not 0 or 180.
+/// is neither 0 nor 180 (a 180 beside given 0s only is the flat state's
+/// `MixedFlat`).
 pub fn folds_stacked(angles: &[Angle], angular: f64) -> bool {
     let at_flat = |v: f64| (v.abs() - PI).abs() <= angular;
     let flat = angles
@@ -61,7 +62,7 @@ pub fn folds_stacked(angles: &[Angle], angular: f64) -> bool {
         .any(|a| matches!(a, Angle::Given(v) if at_flat(*v)));
     let other = angles
         .iter()
-        .any(|a| matches!(a, Angle::Given(v) if !at_flat(*v)));
+        .any(|a| matches!(a, Angle::Given(v) if !at_flat(*v) && v.abs() > angular));
     flat && other
 }
 
