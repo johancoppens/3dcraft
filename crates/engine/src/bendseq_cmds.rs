@@ -434,7 +434,13 @@ fn bend_sequence(session: &mut Session, params: &Value) -> Run {
     // is an error before any search.
     let unit = craft3d_math::Frame::WORLD;
     for (name, points) in [("punch", &punch), ("die", &die)] {
-        prism(points, &unit, 0.0, 1.0, &tol)
+        // As tall as the polygon is wide, so the check holds at any scale.
+        let size = points
+            .iter()
+            .flat_map(|q| q.iter())
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+            .max(tol.linear * 1e3);
+        prism(points, &unit, 0.0, size, &tol)
             .map_err(|e| CommandError::new(format!("{ID}: `{name}`: {e}")))?;
     }
     let body = &part.solid.body;
