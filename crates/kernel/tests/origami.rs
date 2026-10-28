@@ -11,7 +11,7 @@
 
 use craft3d_kernel::origami::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FacetMeeting, FoldError, Folded,
-    arrange, first_meeting, fold, folded_sheet, vertex_checks,
+    arrange, first_meeting, fold, fold_with, folded_sheet, vertex_checks,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::PI;
@@ -1235,6 +1235,161 @@ fn two_branches_that_nearly_coincide_are_told_apart_by_how_they_part() {
         for (id, w) in [(21, fast[0]), (22, fast[1]), (23, fast[0])] {
             let got = solved(&arr, &folded, id)[0];
             assert!(close(got, w, 1e-8), "{kinds:?}: e{id} {got} vs {w}");
+        }
+    }
+}
+
+/// The sparse solve (forced with `fold_with(.., 0)`) against the dense one
+/// and the closed forms: a degree-4 vertex, the same vertex with a hole
+/// where the vertex was (its loop goes round the hole, through no
+/// vertex), the waterbomb (one diagonal solved; the midline alone
+/// undetermined), a 4 × 4 Miura sheet, a cut sheet; and bit for bit the
+/// same run twice.
+#[test]
+fn the_sparse_solve_agrees_with_the_dense_one_and_the_closed_forms() {
+    use CreaseKind::{Mountain as M, Valley as V};
+    for scale in SCALES {
+        let t = tol(scale);
+        // A degree-4 vertex, mode A.
+        let (a, b) = (70f64.to_radians(), 50f64.to_radians());
+        let dirs = [0.0, a, a + b, PI + b];
+        let p = ((a + b) / 2.0).cos() / ((a - b) / 2.0).cos();
+        for rho in [10f64, 60.0, 120.0] {
+            let r1 = rho.to_radians();
+            let r2 = 2.0 * (-p * (r1 / 2.0).tan()).atan();
+            let arr = single_vertex(scale, &dirs, &[V, M, V, V]);
+            let given = angles(&arr, &[(10, r1)]);
+            let dense = fold_with(&arr, &given, 0, t, ANGULAR, usize::MAX).unwrap();
+            let sparse = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
+            for (id, w) in (10..14).zip([r1, r2, r1, -r2]) {
+                for f in [&dense, &sparse] {
+                    let got = solved(&arr, f, id)[0];
+                    assert!(close(got, w, 1e-9), "{rho}: e{id} {got} vs {w}");
+                }
+            }
+            // The same vertex with a hole where the vertex was.
+            let s = scale;
+            let mut boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
+            let h = 0.2 * s;
+            let hole = [[-h, -h], [-h, h], [h, h], [h, -h]];
+            for i in 0..4 {
+                boundary.push(BoundarySegment {
+                    id: 20 + i as u64,
+                    start: hole[i],
+                    end: hole[(i + 1) % 4],
+                    reversed: false,
+                });
+            }
+            let creases: Vec<Crease> = dirs
+                .iter()
+                .zip([V, M, V, V])
+                .enumerate()
+                .map(|(i, (&d, kind))| {
+                    let (c, sn) = (d.cos(), d.sin());
+                    let m = c.abs().max(sn.abs());
+                    crease(
+                        10 + i as u64,
+                        [h / m * c, h / m * sn],
+                        [s / m * c, s / m * sn],
+                        kind,
+                    )
+                })
+                .collect();
+            let ring = arrange(&boundary, &creases, t).unwrap();
+            assert_eq!(ring.facets.len(), 4);
+            let given = angles(&ring, &[(10, r1)]);
+            let sparse = fold_with(&ring, &given, 0, t, ANGULAR, 0).unwrap();
+            for (id, w) in (10..14).zip([r1, r2, r1, -r2]) {
+                let got = solved(&ring, &sparse, id)[0];
+                assert!(close(got, w, 1e-9), "ring {rho}: e{id} {got} vs {w}");
+            }
+        }
+        // The waterbomb.
+        let s = scale;
+        let boundary = polygon(&[[-s, -s], [s, -s], [s, s], [-s, s]]);
+        let creases = [
+            crease(10, [-s, 0.0], [s, 0.0], M),
+            crease(11, [-s, -s], [s, s], V),
+            crease(12, [s, -s], [-s, s], V),
+        ];
+        let arr = arrange(&boundary, &creases, t).unwrap();
+        for w in [0.2, 1.0] {
+            let (mu, delta) = waterbomb_angles(w);
+            let given = angles(&arr, &[(10, mu), (11, delta)]);
+            let sparse = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
+            for a in solved(&arr, &sparse, 12) {
+                assert!(close(a, delta, 1e-9), "{a} vs {delta}");
+            }
+            let loose = fold_with(&arr, &angles(&arr, &[(10, mu)]), 0, t, ANGULAR, 0);
+            assert!(
+                matches!(loose, Err(FoldError::Undetermined { .. })),
+                "{loose:?}"
+            );
+        }
+        // A Miura sheet of 4 × 4, against the dense solve and the closed
+        // form; twice, bit for bit.
+        let (l, d, hh): (f64, f64, f64) = (1.0, 0.5, 1.0);
+        let gamma = (hh / d).atan();
+        let (boundary, creases) = miura(scale, 4, 4, l, d, hh);
+        let arr = arrange(&boundary, &creases, t).unwrap();
+        let driver = creases
+            .iter()
+            .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+            .unwrap()
+            .id;
+        for degrees in [20.0f64, 140.0] {
+            let rho = degrees.to_radians();
+            let given = angles(&arr, &[(driver, rho)]);
+            let dense = fold_with(&arr, &given, 0, t, ANGULAR, usize::MAX).unwrap();
+            let sparse = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
+            let again = fold_with(&arr, &given, 0, t, ANGULAR, 0).unwrap();
+            assert_eq!(sparse, again);
+            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            for (i, hinge) in arr.hinges.iter().enumerate() {
+                let c = &arr.creases[hinge.crease];
+                let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+                assert!(close(sparse.angles[i], want, 1e-8), "{degrees}: e{}", c.id);
+                assert!(close(sparse.angles[i], dense.angles[i], 1e-8));
+            }
+        }
+    }
+}
+
+/// A Miura sheet past the dense solve's 400 unknowns folds by its closed
+/// form with the sparse solve, and how long it takes is printed (run with
+/// `--release --nocapture` for the timings of docs/design/origami.md).
+#[test]
+fn a_large_miura_sheet_folds_by_the_sparse_solve() {
+    let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
+    let gamma = (h / d).atan();
+    for (n, degrees) in [(16usize, [20.0f64, 70.0]), (24, [60.0, 60.0])] {
+        let (boundary, creases) = miura(1.0, n, n, l, d, h);
+        let arr = arrange(&boundary, &creases, tol(1.0)).unwrap();
+        assert!(arr.hinges.len() > 401, "{}", arr.hinges.len());
+        let driver = creases
+            .iter()
+            .find(|c| c.start[1] > 0.0 && c.start[1] == c.end[1])
+            .unwrap()
+            .id;
+        for degrees in degrees {
+            let rho = degrees.to_radians();
+            let clock = std::time::Instant::now();
+            let folded = fold(&arr, &angles(&arr, &[(driver, rho)]), 0, tol(1.0), ANGULAR).unwrap();
+            println!(
+                "Miura {n} x {n}: {} angles solved at {degrees} degrees in {:.3} s",
+                arr.hinges.len() - 1,
+                clock.elapsed().as_secs_f64()
+            );
+            let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
+            for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
+                let c = &arr.creases[hinge.crease];
+                let want = c.kind.sign() * if c.start[1] == c.end[1] { rho } else { zig };
+                assert!(close(*a, want, 1e-8), "{degrees}: e{} {a} vs {want}", c.id);
+            }
+            let made = folded_sheet(&arr, &folded, &frame(), &tolerance(1.0)).unwrap();
+            let area = craft3d_topo::mass_properties(&made.body).unwrap().area;
+            let flat = (n * n) as f64 * l * h;
+            assert!(close(area, flat, 1e-10 * flat));
         }
     }
 }

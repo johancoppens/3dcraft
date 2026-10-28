@@ -32,7 +32,8 @@
 //! solution must close within the tolerance, have full rank and turn
 //! every solved joint its kind's way.
 
-use super::{FoldError, MAX_FREE};
+use super::sparse::{Chain, Pattern, chain_rows, cycle_basis};
+use super::{FoldError, MAX_DENSE, MAX_FREE};
 use craft3d_math::{Transform, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
@@ -127,7 +128,7 @@ impl Joint {
     /// start: `Rot(C(ρ), −ρ) ∘ Shift(−|ρ| r û)`. The motion and its
     /// velocity are continuous through ρ = 0 (both one-sided velocities
     /// are the crease's there).
-    fn motion(&self, rho: f64) -> Option<Transform> {
+    pub(super) fn motion(&self, rho: f64) -> Option<Transform> {
         let turn = Transform::rotation_about(self.centre(rho), self.direction, -rho)?;
         if self.radius == 0.0 {
             return Some(turn);
@@ -139,7 +140,7 @@ impl Joint {
     /// d/dρ of a point `x` carried by `motion(rho)`, with the axis where
     /// the motion `t` before it puts it: the turn's `−D × (x − C)` and,
     /// for a bend, the shift's `−sign(ρ) r û` turned by the motion.
-    fn velocity(&self, t: &Transform, x: Vec3, rho: f64) -> Vec3 {
+    pub(super) fn velocity(&self, t: &Transform, x: Vec3, rho: f64) -> Vec3 {
         let turn = -(t
             .vector(self.direction)
             .cross(x - t.point(self.centre(rho))));
@@ -349,19 +350,65 @@ fn path(forest: &Forest, mut f: usize) -> Vec<usize> {
     out
 }
 
-struct Row {
-    gap: Vec3,
-    by: Vec<(usize, Vec3)>,
+pub(super) struct Row {
+    pub gap: Vec3,
+    pub by: Vec<(usize, Vec3)>,
 }
 
 /// One loop: the joint that closes it and the paths of its two bodies.
 type Loop = (usize, Vec<usize>, Vec<usize>);
 
+/// The loops the solve closes: the forest's fundamental cycles, written
+/// in the fixed body's frame (the dense solve), or a short cycle basis of
+/// chains, each written in its own frame (the sparse solve, past
+/// [`MAX_DENSE`] unknowns: `sparse.rs`).
+enum Loops {
+    Tree(Vec<Loop>),
+    Chains(Vec<Chain>),
+}
+
+impl Loops {
+    /// The joint that closes each loop, in order.
+    fn closing(&self) -> Vec<usize> {
+        match self {
+            Loops::Tree(l) => l.iter().map(|(k, ..)| *k).collect(),
+            Loops::Chains(c) => c.iter().map(|c| c.closing).collect(),
+        }
+    }
+}
+
+/// The chain of the fundamental cycle of joint `k`: from its left body up
+/// the forest to the bodies' common ancestor and down to its right body.
+fn fundamental_chain(link: &Linkage, forest: &Forest, k: usize) -> Option<Chain> {
+    let j = link.joints.get(k)?;
+    let (mut a, mut b) = (j.left, j.right);
+    let (mut up_a, mut up_b) = (Vec::new(), Vec::new());
+    let mut guard = 0usize;
+    while a != b {
+        guard += 1;
+        if guard > 2 * link.bodies + 2 {
+            return None;
+        }
+        if forest.depth.get(a) >= forest.depth.get(b) {
+            let (kk, p) = forest.parent.get(a).copied().flatten()?;
+            up_a.push((kk, a, p));
+            a = p;
+        } else {
+            let (kk, p) = forest.parent.get(b).copied().flatten()?;
+            up_b.push((kk, b, p));
+            b = p;
+        }
+    }
+    let mut steps = up_a;
+    steps.extend(up_b.into_iter().rev().map(|(kk, body, p)| (kk, p, body)));
+    Some(Chain { closing: k, steps })
+}
+
 /// Counts the work done, and refuses past [`MAX_WORK`].
-struct Budget(u64);
+pub(super) struct Budget(pub u64);
 
 impl Budget {
-    fn spend(&mut self, work: u64) -> Result<(), FoldError> {
+    pub(super) fn spend(&mut self, work: u64) -> Result<(), FoldError> {
         self.0 = self.0.saturating_add(work);
         if self.0 > MAX_WORK {
             Err(FoldError::TooMuchWork)
@@ -374,11 +421,15 @@ impl Budget {
 fn rows(
     link: &Linkage,
     forest: &Forest,
-    loops: &[Loop],
+    loops: &Loops,
     rho: &[f64],
     column: Option<&[Option<usize>]>,
     budget: &mut Budget,
 ) -> Result<Vec<Row>, FoldError> {
+    let loops = match loops {
+        Loops::Tree(l) => l,
+        Loops::Chains(c) => return chain_rows(link, c, rho, column, budget),
+    };
     let state = place(link, forest, rho).ok_or(BROKEN)?;
     let mut out = Vec::with_capacity(loops.len() * 3);
     // About 40 multiplications to place a body, 60 per sample point and
@@ -433,7 +484,7 @@ fn rows(
     Ok(out)
 }
 
-const BROKEN: FoldError = FoldError::Broken {
+pub(super) const BROKEN: FoldError = FoldError::Broken {
     reason: "a joint or a body is missing, or a motion is not finite",
 };
 
@@ -453,6 +504,20 @@ pub fn fold_linkage(
     fixed: usize,
     tol: f64,
     angular: f64,
+) -> Result<Folded, FoldError> {
+    fold_linkage_with(link, angles, fixed, tol, angular, MAX_DENSE)
+}
+
+/// [`fold_linkage`], with the dense solve up to `dense_up_to` unknowns
+/// and the sparse one past it (`fold_linkage` uses [`MAX_DENSE`]; a
+/// test asks for either to compare them).
+pub fn fold_linkage_with(
+    link: &Linkage,
+    angles: &[Angle],
+    fixed: usize,
+    tol: f64,
+    angular: f64,
+    dense_up_to: usize,
 ) -> Result<Folded, FoldError> {
     if !(tol.is_finite() && tol > 0.0 && angular.is_finite() && angular > 0.0) {
         return Err(FoldError::Tolerance);
@@ -526,6 +591,30 @@ pub fn fold_linkage(
     if free.len() > MAX_FREE {
         return Err(FoldError::TooManyFree { count: free.len() });
     }
+    let mut budget = Budget(0);
+    // Past `dense_up_to` unknowns the sparse solve: a short cycle basis, its
+    // loops in their own frames, the normal equations as a skyline.
+    let (loops, pattern) = if free.len() > dense_up_to {
+        let fundamental: Vec<Chain> = loops
+            .iter()
+            .map(|(k, ..)| fundamental_chain(link, &forest, *k))
+            .collect::<Option<_>>()
+            .ok_or(BROKEN)?;
+        let chains = cycle_basis(link, fundamental, &mut budget)?;
+        let cliques: Vec<Vec<usize>> = chains
+            .iter()
+            .map(|c| {
+                std::iter::once(c.closing)
+                    .chain(c.steps.iter().map(|s| s.0))
+                    .filter_map(|k| column.get(k).copied().flatten())
+                    .collect()
+            })
+            .collect();
+        let pattern = Pattern::new(free.len(), &cliques, &mut budget)?;
+        (Loops::Chains(chains), Some(pattern))
+    } else {
+        (Loops::Tree(loops), None)
+    };
     let given = |scale: f64| -> Vec<f64> {
         angles
             .iter()
@@ -548,7 +637,6 @@ pub fn fold_linkage(
         1.0
     };
     let goal = (tol * 1e-3).max(size * 1e-13);
-    let mut budget = Budget(0);
     let solver = Solver {
         link,
         forest: &forest,
@@ -558,6 +646,7 @@ pub fn fold_linkage(
         signs: &signs,
         goal,
         weight: size,
+        pattern: pattern.as_ref(),
     };
 
     // A guess solved at `base`: the solution when it closes within the
@@ -734,7 +823,7 @@ pub fn fold_linkage(
                             Some(&column),
                             &mut budget,
                         )?;
-                        let loose = undetermined(&at, free.len(), &mut budget)?;
+                        let loose = undetermined(&at, free.len(), pattern.as_ref(), &mut budget)?;
                         if !loose.is_empty() {
                             let mut ids: Vec<u64> = loose
                                 .iter()
@@ -811,8 +900,8 @@ pub fn fold_linkage(
         }
         let worst = final_rows
             .chunks(3)
-            .zip(&loops)
-            .map(|(r, (k, ..))| (largest_gap(r), *k))
+            .zip(loops.closing())
+            .map(|(r, k)| (largest_gap(r), k))
             .fold((0.0, 0usize), |a, b| if b.0 > a.0 { b } else { a });
         return Err(FoldError::NotClosing {
             id: source(worst.1),
@@ -832,7 +921,7 @@ pub fn fold_linkage(
     // stays at half (within a quarter). With none the flat sheet is the
     // only fold near it, and it is the answer.
     if !free.is_empty() {
-        let mut loose = undetermined(&final_rows, free.len(), &mut budget)?;
+        let mut loose = undetermined(&final_rows, free.len(), pattern.as_ref(), &mut budget)?;
         if !loose.is_empty() && largest == 0.0 {
             let flat = given(0.0);
             let mut branch = false;
@@ -904,12 +993,13 @@ pub fn fold_linkage(
 struct Solver<'a> {
     link: &'a Linkage,
     forest: &'a Forest,
-    loops: &'a [Loop],
+    loops: &'a Loops,
     free: &'a [usize],
     column: &'a [Option<usize>],
     signs: &'a [f64],
     goal: f64,
     weight: f64,
+    pattern: Option<&'a Pattern>,
 }
 
 impl Solver<'_> {
@@ -939,7 +1029,7 @@ impl Solver<'_> {
             Some(self.column),
             budget,
         )?;
-        let loose = undetermined(&free_rows, n, budget)?;
+        let loose = undetermined(&free_rows, n, self.pattern, budget)?;
         if !loose.is_empty() {
             let mut ids: Vec<u64> = loose
                 .iter()
@@ -961,6 +1051,35 @@ impl Solver<'_> {
         }
         let m = n + given_change.len();
         let all_rows = rows(self.link, self.forest, self.loops, rho, Some(&all), budget)?;
+        let everything = || FoldError::Undetermined {
+            ids: self
+                .free
+                .iter()
+                .filter_map(|&k| self.link.joints.get(k).map(|j| j.id))
+                .collect(),
+        };
+        if let Some(p) = self.pattern {
+            // The free block as the skyline; the right-hand side row by
+            // row, −J_freeᵀ (J_given dg).
+            budget.spend(p.flops.saturating_add(all_rows.len() as u64 * 64))?;
+            let (mut a, _) = p.normal(&all_rows, n);
+            let mut b = vec![0.0; n];
+            for row in &all_rows {
+                let mut moved = Vec3::ZERO;
+                for &(c, v) in &row.by {
+                    if c >= n {
+                        moved += v * given_change.get(c - n).copied().unwrap_or(0.0);
+                    }
+                }
+                for &(c, v) in &row.by {
+                    if let Some(slot) = b.get_mut(c) {
+                        *slot -= v.dot(moved);
+                    }
+                }
+            }
+            p.factor(&mut a, None).ok_or_else(everything)?;
+            return p.solve(&a, &b).ok_or_else(everything);
+        }
         budget.spend(
             (m as u64)
                 .saturating_pow(2)
@@ -983,14 +1102,17 @@ impl Solver<'_> {
                 *slot = sum;
             }
         }
-        solve_dense(&mut a, &mut b, n).ok_or(FoldError::Undetermined {
-            ids: self
-                .free
-                .iter()
-                .filter_map(|&k| self.link.joints.get(k).map(|j| j.id))
-                .collect(),
-        })?;
+        solve_dense(&mut a, &mut b, n).ok_or_else(everything)?;
         Ok(b)
+    }
+
+    /// The diagonal entry of unknown `i` in normal equations of `n`
+    /// unknowns, dense or as the pattern's skyline.
+    fn diagonal<'v>(&self, gram: &'v mut [f64], i: usize) -> Option<&'v mut f64> {
+        match self.pattern {
+            Some(p) => p.diagonal_mut(gram, i),
+            None => gram.get_mut(i * self.free.len() + i),
+        }
     }
 
     /// The kinds' penalty: an unknown turned against its kind costs the
@@ -1030,11 +1152,14 @@ impl Solver<'_> {
                 return Ok((x, false));
             }
             let c0 = cost(&now) + self.penalty(&x);
-            let (mut gram, mut grad) = normal(&now, n);
+            let (mut gram, mut grad) = match self.pattern {
+                Some(p) => p.normal(&now, n),
+                None => normal(&now, n),
+            };
             let w2 = self.weight * self.weight;
             for (i, (v, s)) in x.iter().zip(self.signs).enumerate() {
                 if s * v < 0.0 {
-                    if let Some(d) = gram.get_mut(i * n + i) {
+                    if let Some(d) = self.diagonal(&mut gram, i) {
                         *d += w2;
                     }
                     if let Some(g) = grad.get_mut(i) {
@@ -1044,15 +1169,22 @@ impl Solver<'_> {
             }
             let mut moved = false;
             for _ in 0..12 {
-                budget.spend(cube / 3 + 1)?;
+                budget.spend(self.pattern.map_or(cube / 3, |p| p.flops) + 1)?;
                 let mut a = gram.clone();
                 for i in 0..n {
-                    if let Some(d) = a.get_mut(i * n + i) {
+                    if let Some(d) = self.diagonal(&mut a, i) {
                         *d += lambda * (*d + 1e-12);
                     }
                 }
                 let mut b: Vec<f64> = grad.iter().map(|g| -g).collect();
-                if solve_dense(&mut a, &mut b, n).is_some() {
+                let solved = match self.pattern {
+                    Some(p) => p
+                        .factor(&mut a, None)
+                        .and_then(|_| p.solve(&a, &b))
+                        .map(|x| b = x),
+                    None => solve_dense(&mut a, &mut b, n),
+                };
+                if solved.is_some() {
                     let trial: Vec<f64> = x.iter().zip(&b).map(|(x, d)| x + d).collect();
                     // A trial whose motions are not finite is no better.
                     let tried = match rows(
@@ -1152,7 +1284,24 @@ fn solve_dense(a: &mut [f64], b: &mut [f64], n: usize) -> Option<()> {
 /// The unknowns the derivative leaves free: a symmetric pivoted
 /// elimination of the normal equations with their columns scaled to unit
 /// length, the columns never pivoted.
-fn undetermined(rows: &[Row], n: usize, budget: &mut Budget) -> Result<Vec<usize>, FoldError> {
+fn undetermined(
+    rows: &[Row],
+    n: usize,
+    pattern: Option<&Pattern>,
+    budget: &mut Budget,
+) -> Result<Vec<usize>, FoldError> {
+    if let Some(p) = pattern {
+        // The skyline in its fixed order: for a positive semi-definite
+        // matrix a zero pivot in any symmetric order is a dependent
+        // column (sparse.rs).
+        budget.spend(p.flops.saturating_add(n as u64))?;
+        let (mut vals, _) = p.normal(rows, n);
+        let diag: Vec<f64> = (0..n)
+            .map(|i| p.diagonal_mut(&mut vals, i).map_or(0.0, |d| *d))
+            .collect();
+        p.scale(&mut vals, &diag);
+        return p.factor(&mut vals, Some(RANK_PIVOT)).ok_or(BROKEN);
+    }
     budget.spend((n as u64).saturating_pow(3))?;
     let (mut gram, _) = normal(rows, n);
     let diag: Vec<f64> = (0..n)

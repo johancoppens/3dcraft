@@ -29,6 +29,7 @@ mod flat;
 mod layers;
 mod sheet;
 mod solve;
+mod sparse;
 
 pub use arrange::{Arrangement, Edge, EdgeKind, Facet, Hinge, arrange};
 pub use checks::{VertexCheck, vertex_checks};
@@ -36,7 +37,8 @@ pub use collide::{FacetMeeting, Meeting, first_meeting};
 pub use flat::{fold_flat, folds_flat};
 pub use layers::{Layers, MAX_LAYER_CONSTRAINTS, MAX_LAYER_WORK, layer_order};
 pub use sheet::folded_sheet;
-pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage};
+pub use solve::{Angle, Folded, Joint, Linkage, MAX_WORK, fold_linkage, fold_linkage_with};
+pub use sparse::MAX_PROFILE;
 
 pub(crate) use crate::profile::{P2, cross, distance as dist, dot, sub};
 use craft3d_math::{Bbox3, Transform, Vec3};
@@ -47,9 +49,13 @@ use std::fmt;
 pub const MAX_CREASES: usize = 4096;
 /// The most straight boundary segments one sheet may have.
 pub const MAX_BOUNDARY: usize = 4096;
-/// The most fold angles one fold solves for at once (a dense solve:
-/// docs/design/origami.md › Limits).
-pub const MAX_FREE: usize = 400;
+/// The most fold angles one fold solves for at once (the work budget and
+/// the skyline's size bound the solve further: docs/design/origami.md ›
+/// *A sparse solve*).
+pub const MAX_FREE: usize = 16_384;
+/// Up to this many fold angles the normal equations are solved dense,
+/// with full pivoting in the rank test; past it, sparse.
+pub const MAX_DENSE: usize = 400;
 
 /// How a crease folds. Seen from the side the sheet's normal points to, a
 /// valley folds the paper towards the viewer (the crease sinks), a
@@ -350,6 +356,19 @@ pub fn fold(
     tol: f64,
     angular: f64,
 ) -> Result<Folded, FoldError> {
+    fold_with(arr, angles, fixed, tol, angular, MAX_DENSE)
+}
+
+/// [`fold`], with the dense solve up to `dense_up_to` fold angles and the
+/// sparse one past it ([`fold_linkage_with`]).
+pub fn fold_with(
+    arr: &Arrangement,
+    angles: &[Angle],
+    fixed: usize,
+    tol: f64,
+    angular: f64,
+    dense_up_to: usize,
+) -> Result<Folded, FoldError> {
     let box_ = Bbox3::from_points(arr.vertices.iter().map(|&p| lift(p)));
     let centre = box_.center().unwrap_or(Vec3::ZERO);
     let mut joints = Vec::with_capacity(arr.hinges.len());
@@ -381,7 +400,7 @@ pub fn fold(
         joints,
         size: box_.diagonal(),
     };
-    let mut folded = fold_linkage(&link, angles, fixed, tol, angular)?;
+    let mut folded = fold_linkage_with(&link, angles, fixed, tol, angular, dense_up_to)?;
     let (from, to) = (
         Transform::translation(-centre),
         Transform::translation(centre),
