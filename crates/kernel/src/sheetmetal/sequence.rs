@@ -51,7 +51,7 @@ pub fn stage_worlds(
         }
         // The joint's side (where the axis lies) is the bend's own, also
         // at 0, where its motion is the identity either way.
-        b.angle = if a == 0.0 { 0.0 } else { a };
+        b.angle = a;
     }
     let folded = fold(&part.flats, &bends, tolerance)?;
     let plane = Transform::from_frame(&part.plane);
@@ -153,7 +153,7 @@ pub fn prism(
         .collect();
     let profiles = detect_profiles(&curves, tolerance)?;
     match profiles.as_slice() {
-        [one] if one.holes.is_empty() && one.outer.segments.len() == n => {}
+        [one] if one.holes.is_empty() => {}
         _ => {
             return Err(refuse(
                 None,
