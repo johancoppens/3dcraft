@@ -19,7 +19,7 @@ after every change.
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
 | `measure.symmetry {"of", "plane"}` | How far the bodies are from symmetric in a plane |
 | `document.interference` | For each pair of bodies: clear, touch or overlap (with the common volume) |
-| `measure.below`, `measure.section`, `measure.levelFor` | The volume below a plane, a section's area and second moments, the level for a volume ([below](#below-a-plane-sections-and-levels)) |
+| `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating` | The volume below a plane, a section's area and second moments, the level for a volume, the level and tilt a body floats at ([below](#below-a-plane-sections-and-levels)) |
 
 A subject (`of`, `from`, `to`) is a body by its feature's name, a list of them, or a query as
 `select.query` takes it ([chapter 11](11-selection.md)): `{"hole": true, "radius": "4 mm"}` for the 8 mm holes,
@@ -43,6 +43,7 @@ away from.
 | `measure.below {"of", "plane", "offset"}` | The `volume` below, its `centroid`, the `surface` below, and the `section` |
 | `measure.section {"of", "plane", "offset"}` | The section: `area`, `centroid`, `ix` and `iy` (second moments about its centroid along `xAxis` and `yAxis`), `ixy`, the principal `major` and `minor` with `majorAxis` |
 | `measure.levelFor {"of", "plane", "volume"}` | The `offset` at which the volume below is `volume`, and what `measure.below` gives there |
+| `measure.floating {"of", "plane", "volume", "centerOfGravity"}` | The level and tilt a body floats at: the equilibria, each stable, unstable or neutral ([floating free](#below-a-plane-sections-and-levels)) |
 
 ```json
 [
@@ -66,6 +67,29 @@ the third, the cross-section square to x: `area` 1.3e6, with `xAxis` y and `yAxi
 - Floating objects: a body of mass m in a liquid of density ρ settles where `levelFor` of m/ρ puts the
   plane; a Jig computes what it needs from the centroid and the section's moments (the worked example
   is in [`design/sections-and-levels.md`](../design/sections-and-levels.md)).
+
+**Floating free.** `measure.floating` finds the plane a floating body settles at when its centre of
+gravity is known too: the level *and* the tilt at which the volume below is `volume` (or `mass` /
+`density`, kg and kg/m³) and the centroid below lies straight under the centre of gravity. `plane` is the
+upright waterplane (default xy, up +z); `heel` and `trim` tilt the start.
+
+```json
+[
+ ["feature.block", {"size": [1000, 200, 200], "position": [-500, -100, 0], "name": "Pontoon"}],
+ ["measure.floating", {"of": "Pontoon", "mass": 20, "density": 1000, "centerOfGravity": [0, 0, 50]}],
+ ["measure.floating", {"of": "Pontoon", "mass": 20, "density": 1000, "centerOfGravity": [0, 0, 90]}]
+]
+```
+
+The first answers one equilibrium, upright at `offset` 100, `stable`, with its two metacentric heights
+under `principal` (`gm` 33.3 mm about the length, 833 mm about the width). The second has its centre of
+gravity too high: upright is an equilibrium but `unstable`, and the two it falls to follow, heeled 32.3°
+to each side (the box's angle of loll); `floats` is the index of the first stable one. Each equilibrium
+gives `heel`, `trim` and `tilt` in degrees, `normal`, `centroid`, `arm` (how far the centre of gravity is
+off the vertical through the centroid) and what `measure.below` gives there. The search starts from the
+upright plane (or `heel`, `trim`), finds the nearest equilibrium by Newton's method and, where that one is
+unstable, the ones the body falls to from it; other equilibria are not searched. `neutral` says that the
+first one turns freely in some direction (a sphere with its centre of gravity at its centre).
 
 As assertions: `volumeBelow`, `centroidBelow` (with `axis`), `sectionArea`, `sectionCentroid` (with
 `axis`), `sectionInertia` (with `about`: `x`, `y`, `xy`, `major` or `minor`), `sectionExtent` (with

@@ -171,8 +171,9 @@ As commands:
 From the command line: `craft3d-cli convert bracket.3dcraft bracket-front.dxf --view front`
 ([chapter 13](13-command-line.md#converting-files-convert)).
 
-The layers are `visible`, `silhouette` and `hidden`. Curved edges are written as fine straight pieces in
-this version. The section and a rewound timeline are not applied: the drawing shows the whole model as it
+The layers are `visible`, `silhouette` and `hidden`. Edges are written as the curves they are: lines,
+circles and arcs (where they face the view), ellipses and elliptic arcs, splines; a circle seen edge on
+is a line. The outlines of curved faces are fine straight pieces. The section and a rewound timeline are not applied: the drawing shows the whole model as it
 is.
 
 ## Files in the web version
