@@ -218,9 +218,10 @@ from the virtual sharp), `holeToBend` (the least distance from a hole to a bend'
 for a material and a thickness are yours, as expressions or a table, as above. `file.export` with
 `sheetMetal` writes the flat pattern (.dxf or .svg): the outline on the layer `outline`, the bend lines
 on `bendUp` (dashed) and `bendDown` (dash-dot). `sheetMetal.edit` changes a part (flanges as a whole
-list). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported), a K-factor
+list). Refused, with the flange: a radius below zero or of zero (a sharp bend is not supported: give the radius the tooling makes), a K-factor
 outside 0 to 1, an angle outside 0 to 180 degrees, an edge that is not a straight line of the base's
-outline, flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into
+outline (a flange on a curved edge is a formed flange, not a bend: it has no flat pattern that keeps
+lengths), flanged edges meeting at an inside corner, a relief that does not fit, and flanges that run into
 each other or into the base when bent. With a K-factor of ½ the part's volume is the flat area times the
 thickness; with another K-factor the part (whose bends keep the skins at the two radii) differs from that
 by angle × width × thickness² × (½ − K) per bend.
@@ -230,11 +231,14 @@ profiles (beside the base) are holes and cut-outs of the flange whose flat each 
 starts the bend allowance beyond its edge. `cutouts` adds the closed profiles of other sketches in the same
 plane (any origin and axes) the same way, and each sketch switches with its own `when`, so a vent or a
 cable hole can be an option. The holes are cut in the flat pattern and in the folded part, and
-`holeToBend` measures each from the bends beside its own flat. A hole across a bend's strip or past the
-pattern's edge is refused, and so is the part when a `cutouts` sketch fails (fix the sketch, or switch it
-off). A hole cut later by another feature (a boolean) is not in the flat pattern
-(the bend table and the export say which feature took the part as `changedBy`): draw it in the part's
-sketch or in a `cutouts` sketch instead. A panel with a hole in its flange and an optional vent:
+`holeToBend` measures each from the bends beside its own flat. A hole drawn across a bend's strip (a slot
+through the bend) is cut through the bend where the bend allowance puts it; one that only touches a
+bend's tangent line, crosses it with a spline, or runs past the pattern's edge is refused, and so is the
+part when a `cutouts` sketch fails (fix the sketch, or switch it off). A hole cut later by another feature
+(a boolean) is carried back onto the exported flat pattern when it goes through the sheet square to it
+(`laterCuts` in the export's result); one cut at a slant fails the export with the reason, and a pocket, a
+part joined on or a notch at the edge is listed in `notCarried` (the bend table and the export say which
+feature took the part as `changedBy`). A panel with a hole in its flange and an optional vent:
 
 ```json
 [

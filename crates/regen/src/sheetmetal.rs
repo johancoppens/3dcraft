@@ -38,19 +38,25 @@ pub struct SheetMetalPart {
     pub sketch: String,
 }
 
-/// The name of a face of the folded bottom skin.
-pub fn sheet_face_name(feature: FeatureId, face: SheetFace) -> PersistentName {
-    let number = |face: SheetFace| match face {
-        SheetFace::Flat(i) | SheetFace::FlatPiece(i, _) => 2 * i as u64,
-        SheetFace::Bend(i) | SheetFace::BendPiece(i, _) => 2 * i as u64 + 1,
+/// The name of a face of the folded bottom skin: the base `F9:face(0)`,
+/// bend `i` `F9:face(2i + 1)`, flange `i`'s flat `F9:face(2i + 2)`; the
+/// further faces a hole across a bend leaves (`further`: their place among
+/// those, in the order of the sheet's faces) after them all,
+/// `F9:face(2n + 1 + further)` for `n` bends.
+pub fn sheet_face_name(
+    feature: FeatureId,
+    face: SheetFace,
+    bends: usize,
+    further: usize,
+) -> PersistentName {
+    let number = match face {
+        SheetFace::Flat(i) => 2 * i as u64,
+        SheetFace::Bend(i) => 2 * i as u64 + 1,
+        SheetFace::FlatPiece(..) | SheetFace::BendPiece(..) => {
+            2 * bends as u64 + 1 + further as u64
+        }
     };
-    // The further faces a hole across a bend leaves a flat or a bend in
-    // are numbered after it: `F9:face(k, j)`.
-    let numbers = match face {
-        SheetFace::FlatPiece(_, j) | SheetFace::BendPiece(_, j) => vec![number(face), j as u64],
-        _ => vec![number(face)],
-    };
-    PersistentName::new(feature, NameRole::Face, numbers)
+    PersistentName::new(feature, NameRole::Face, vec![number])
 }
 
 fn explain(error: KernelError) -> String {
@@ -407,8 +413,14 @@ pub(crate) fn build(
     let built = analyse(doc, variables, made, earlier)?;
     let (part, tolerance) = (&built.part, built.tolerance);
     let mut sheet_names = Names::default();
+    let mut further = 0;
     for face in &part.sheet_faces {
-        sheet_names.faces.push(sheet_face_name(id, *face));
+        sheet_names
+            .faces
+            .push(sheet_face_name(id, *face, part.bends.len(), further));
+        if matches!(face, SheetFace::FlatPiece(..) | SheetFace::BendPiece(..)) {
+            further += 1;
+        }
     }
     let none = vec![None; part.sheet.edges.len()];
     let no_vertices = vec![None; part.sheet.vertices.len()];

@@ -316,7 +316,7 @@ fn chain(mut segs: Vec<Segment>, reach: f64) -> (Vec<Vec<Segment>>, usize) {
     let mut open = 0;
     while let Some(first) = segs.pop() {
         if distance(first.start, first.end) <= reach && !matches!(first.shape, Shape::Line) {
-            loops.push(vec![first]);
+            loops.push(clockwise(vec![first]));
             continue;
         }
         let start = first.start;
@@ -347,19 +347,25 @@ fn chain(mut segs: Vec<Segment>, reach: f64) -> (Vec<Vec<Segment>>, usize) {
             if let Some(last) = ring.last_mut() {
                 last.end = start;
             }
-            let area = Loop2 {
-                segments: ring.clone(),
-            }
-            .signed_area();
-            if area > 0.0 {
-                ring = Loop2 { segments: ring }.flipped().segments;
-            }
-            loops.push(ring);
+            loops.push(clockwise(ring));
         } else {
             open += 1;
         }
     }
     (loops, open)
+}
+
+/// The loop run clockwise, as a hole's is.
+fn clockwise(ring: Vec<Segment>) -> Vec<Segment> {
+    let area = Loop2 {
+        segments: ring.clone(),
+    }
+    .signed_area();
+    if area > 0.0 {
+        Loop2 { segments: ring }.flipped().segments
+    } else {
+        ring
+    }
 }
 
 fn opposite(seg: &Segment) -> Segment {

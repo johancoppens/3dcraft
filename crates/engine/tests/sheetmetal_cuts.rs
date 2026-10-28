@@ -63,7 +63,7 @@ fn a_slot_across_a_bend_by_command() {
         assert!(
             names
                 .iter()
-                .any(|n| n.as_str().unwrap().contains("face(1,1)")),
+                .any(|n| n.as_str().unwrap().contains("face(3)")),
             "the bend's second face has a name of its own: {names:?}"
         );
         let out = run(
