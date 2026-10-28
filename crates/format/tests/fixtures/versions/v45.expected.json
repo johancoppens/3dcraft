@@ -1,0 +1,307 @@
+{
+  "format_version": 45,
+  "written_by": "2837627710f10b5aba7eb25d9baeb0dd4d7ba0f7",
+  "how": "the engine of that commit (on the Strix, Check run 40635333218, by a temporary test, crates/engine/tests/zz_write_fixture_v45.rs, that ran v45.steps.json in a session as craft3d-cli run --new '{\"units\": \"mm\"}' --script does, saved v45.3dcraft and printed it), then document.inspect of the file opened again",
+  "bodies": [
+    {
+      "area": 3600.000000000002,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          30.0,
+          30.0,
+          0.0
+        ]
+      ],
+      "bboxTolerance": 0.06000000000000002,
+      "centroid": null,
+      "edges": 13,
+      "faceNames": [
+        "F2:startCap(e5,e7,e8,e11)",
+        "F2:startCap(e5,e7,e11,e11[1])",
+        "F2:startCap(e5,e7,e11[1],e11[2])",
+        "F2:startCap(e5,e6,e7,e11[2])"
+      ],
+      "faces": 4,
+      "feature": "F2",
+      "kind": "sheet",
+      "name": "Pleats",
+      "shells": 1,
+      "valid": true,
+      "vertices": 10,
+      "volume": 0.0
+    }
+  ],
+  "features": [
+    {
+      "dof": 0,
+      "id": "F1",
+      "name": "Strip",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "point": 1,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 2,
+            "kind": {
+              "point": 1,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 3,
+            "kind": {
+              "point": 2,
+              "type": "x",
+              "value": "n * a"
+            }
+          },
+          {
+            "id": 4,
+            "kind": {
+              "point": 2,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 5,
+            "kind": {
+              "point": 3,
+              "type": "x",
+              "value": "n * a"
+            }
+          },
+          {
+            "id": 6,
+            "kind": {
+              "point": 3,
+              "type": "y",
+              "value": "a"
+            }
+          },
+          {
+            "id": 7,
+            "kind": {
+              "point": 4,
+              "type": "x",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 8,
+            "kind": {
+              "point": 4,
+              "type": "y",
+              "value": "a"
+            }
+          },
+          {
+            "id": 9,
+            "kind": {
+              "point": 9,
+              "type": "x",
+              "value": "a"
+            }
+          },
+          {
+            "id": 10,
+            "kind": {
+              "point": 9,
+              "type": "y",
+              "value": "0 mm"
+            }
+          },
+          {
+            "id": 11,
+            "kind": {
+              "point": 10,
+              "type": "x",
+              "value": "a"
+            }
+          },
+          {
+            "id": 12,
+            "kind": {
+              "point": 10,
+              "type": "y",
+              "value": "a"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 120.0,
+              "y": 0.0
+            },
+            "id": 2
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 120.0,
+              "y": 30.0
+            },
+            "id": 3
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 30.0
+            },
+            "id": 4
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 2,
+              "start": 1,
+              "type": "line"
+            },
+            "id": 5
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 3,
+              "start": 2,
+              "type": "line"
+            },
+            "id": 6
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 4,
+              "start": 3,
+              "type": "line"
+            },
+            "id": 7
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "end": 1,
+              "start": 4,
+              "type": "line"
+            },
+            "id": 8
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 30.0,
+              "y": 0.0
+            },
+            "id": 9
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 30.0,
+              "y": 30.0
+            },
+            "id": 10
+          },
+          {
+            "construction": true,
+            "geometry": {
+              "end": 10,
+              "start": 9,
+              "type": "line"
+            },
+            "id": 11
+          }
+        ],
+        "next_constraint_id": 13,
+        "next_entity_id": 12,
+        "next_pattern_id": 2,
+        "patterns": [
+          {
+            "count": "n - 1",
+            "id": 1,
+            "layout": {
+              "step": [
+                "a",
+                "0 mm"
+              ],
+              "type": "linear"
+            },
+            "seed": [
+              11
+            ]
+          }
+        ],
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Pleats",
+      "params": {
+        "creases": [
+          {
+            "alternate": true,
+            "angle": "fold",
+            "index": "All",
+            "kind": "valley",
+            "line": 11
+          },
+          {
+            "alternate": false,
+            "angle": "fold",
+            "index": {
+              "At": 2
+            },
+            "kind": "mountain",
+            "line": 11
+          }
+        ],
+        "fixed": [
+          "15",
+          "15"
+        ],
+        "sketch": 1,
+        "type": "fold"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "rollback": null
+}

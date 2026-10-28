@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "n", "expr": "4"}],
+ ["variable.set", {"name": "a", "expr": "30 mm"}],
+ ["variable.set", {"name": "fold", "expr": "180 deg"}],
+ ["sketch.create", {"plane": "xy", "name": "Strip"}],
+ ["sketch.polyline", {"sketch": "Strip", "points": [["0 mm", "0 mm"], ["n * a", "0 mm"], ["n * a", "a"], ["0 mm", "a"]], "closed": true}],
+ ["sketch.line", {"sketch": "Strip", "from": ["a", "0 mm"], "to": ["a", "a"], "construction": true}],
+ ["sketch.pattern", {"sketch": "Strip", "entities": ["e11"], "count": "n - 1", "step": ["a", "0 mm"]}],
+ ["feature.fold", {"sketch": "Strip", "name": "Pleats", "fixed": [15, 15], "creases": [
+   {"line": "e11[*]", "kind": "valley", "angle": "fold", "alternate": true},
+   {"line": "e11[2]", "kind": "mountain", "angle": "fold"}]}]
+]

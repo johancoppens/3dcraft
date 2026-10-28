@@ -35,7 +35,7 @@ const STEPS: &[Step] = &[
     v18_to_v19, v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
     v26_to_v27, v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34,
     v34_to_v35, v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42,
-    v42_to_v43, v43_to_v44,
+    v42_to_v43, v43_to_v44, v44_to_v45,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -765,6 +765,21 @@ fn v42_to_v43(manifest: Value) -> Result<Value, String> {
 /// before, so nothing changes; the version was raised so that an older
 /// build says a newer 3DCraft is needed instead of refusing the fields.
 fn v43_to_v44(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 45 lets a fold's crease be a copy a sketch pattern made of its
+/// line: `instance` (`{"at": 2}`, `{"grid": [1, 3]}` or `"all"`) and
+/// `alternate` on a crease, written only when set
+/// (docs/design/origami.md › *Creases from a sketch pattern*). A file of
+/// version 44 has neither, so nothing in it changes; the version was
+/// raised so that an older build says a newer 3DCraft is needed instead
+/// of refusing the field. One thing regenerates differently, not from
+/// the file but from the rule that came with it: a fold of version 38 to
+/// 44 whose crease line has copies made by a sketch pattern, which those
+/// versions dropped without a word, now fails, naming the copies left out
+/// (name them as creases, or the line with `[*]`).
+fn v44_to_v45(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
