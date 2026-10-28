@@ -14,7 +14,7 @@ use craft3d_doc::{
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Circle, Curve3, Line, NurbsCurve};
 use craft3d_kernel::developable::{Piece, Rail, RailPiece, connect};
-use craft3d_kernel::profile::{Shape, open_chain};
+use craft3d_kernel::profile::{Shape, detect_profiles, open_chain};
 use craft3d_kernel::unfold::{Development, develop};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, FaceId};
@@ -25,7 +25,8 @@ fn tolerance_of(doc: &Document) -> Result<Tolerance, String> {
         .ok_or("the document's tolerance is not positive and finite".to_string())
 }
 
-/// The rail of a sketch: its one open chain, lifted onto its plane.
+/// The rail of a sketch: its one open chain, or its one closed loop (a
+/// tube's rail, 2026-10-28), lifted onto its plane.
 fn sketch_rail(
     doc: &Document,
     earlier: &[FeatureResult],
@@ -34,9 +35,24 @@ fn sketch_rail(
 ) -> Result<Rail, String> {
     let made = drawn(doc, earlier, sketch).map_err(|e| format!("{role}: {e}"))?;
     let name = made.name;
-    let chain = open_chain(&made.curves, &made.tolerance).map_err(|e| {
-        format!("{role}: the curves of sketch `{name}` are not one open chain: {e}")
-    })?;
+    let chain = match open_chain(&made.curves, &made.tolerance) {
+        Ok(chain) => chain,
+        Err(open) => match detect_profiles(&made.curves, &made.tolerance) {
+            Ok(profiles) => match profiles.as_slice() {
+                [one] if one.holes.is_empty() => one.outer.clone(),
+                _ => {
+                    return Err(format!(
+                        "{role}: the curves of sketch `{name}` are neither one open chain ({open}) nor one closed loop"
+                    ));
+                }
+            },
+            Err(_) => {
+                return Err(format!(
+                    "{role}: the curves of sketch `{name}` are not one open chain: {open}"
+                ));
+            }
+        },
+    };
     let plane = made.plane;
     let lift = |p: [f64; 2]| plane.point(p[0], p[1], 0.0);
     let mut pieces = Vec::with_capacity(chain.segments.len());
