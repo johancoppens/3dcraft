@@ -249,9 +249,52 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
     }
 }
 
+/// The length of the elliptic arc of semi-axes `a` and `a ratio` from
+/// parameter `t0` to `t1`, by Simpson's rule on 4000 panels.
+fn elliptic_arc(a: f64, ratio: f64, t0: f64, t1: f64) -> f64 {
+    let b = a * ratio;
+    let speed = |t: f64| (a * t.sin()).hypot(b * t.cos());
+    let n = 4000;
+    let h = (t1 - t0) / f64::from(n);
+    let mut sum = speed(t0) + speed(t1);
+    for i in 1..n {
+        sum += speed(t0 + h * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * h / 3.0
+}
+
+/// The ELLIPSE entities of a DXF file that are arcs: (a, ratio, start,
+/// end).
+fn elliptic_arcs(dxf: &str) -> Vec<(f64, f64, f64, f64)> {
+    let start = dxf.find("  2\nENTITIES\n").unwrap();
+    let mut out = Vec::new();
+    for entity in dxf[start..].split("  0\n").skip(1) {
+        if !entity.starts_with("ELLIPSE\n") {
+            continue;
+        }
+        let groups: Vec<&str> = entity.lines().collect();
+        let value = |code: &str| -> f64 {
+            let at = groups.iter().position(|g| g.trim() == code).unwrap();
+            groups[at + 1].trim().parse().unwrap()
+        };
+        let (t0, t1) = (value("41"), value("42"));
+        if (t1 - t0 - std::f64::consts::TAU).abs() > 1e-12 {
+            out.push((value("11").hypot(value("21")), value("40"), t0, t1));
+        }
+    }
+    out
+}
+
 /// The model as seen (`view_export.rs`): FreeCAD reads the visible,
-/// silhouette and dashed hidden lines of a drilled block in iso and of a
-/// cylinder from the front, as long as ours and in the same box.
+/// silhouette and dashed hidden lines of a drilled block in iso, from the
+/// front and from the top, and a D of a cubic and a line extruded, from
+/// the top and in iso: lines, circles, ellipses, elliptic arcs and
+/// splines (since 2026-10-28; polylines before), as long as ours and in
+/// the same box. FreeCAD's DXF reader (1.1) draws every ELLIPSE whole,
+/// whatever its start and end parameters (groups 41 and 42; see the
+/// writers' own FreeCAD test): from a DXF with elliptic arcs it gets each
+/// arc's whole ellipse, so its length is ours with every elliptic arc
+/// made whole, and its box is not compared. The SVG it reads as written.
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
 fn freecad_reads_a_projected_view() {
@@ -290,17 +333,58 @@ fn freecad_reads_a_projected_view() {
             cases.push((file, result));
         }
     }
+    // A spline edge: the D of the sketch tests, extruded.
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "D"}));
+    run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "D", "degree": 3, "control": [[0, 0], [10, 0], [10, 10], [0, 10]]}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "D", "from": [0, 10], "to": [0, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "D", "distance": 5}),
+    );
+    for (view, hidden) in [("top", "omit"), ("iso", "dashed")] {
+        for format in ["dxf", "svg"] {
+            let file = format!("d-{view}.{format}");
+            let result = run(
+                &mut s,
+                "file.export",
+                json!({"path": file, "view": view, "hidden": hidden}),
+            );
+            cases.push((file, result));
+        }
+    }
     let reports = freecad_reads(&dir);
     assert_eq!(reports.len(), cases.len());
     for (file, ours) in &cases {
         let report = &reports[file];
         let number = |key: &str| -> f64 { report[key].parse().unwrap() };
-        let length = ours["length"].as_f64().unwrap();
+        let mut length = ours["length"].as_f64().unwrap();
+        let mut whole = false;
+        if file.ends_with(".dxf") {
+            let text = std::fs::read_to_string(dir.join(file)).unwrap();
+            for (a, ratio, t0, t1) in elliptic_arcs(&text) {
+                let full = elliptic_arc(a, ratio, 0.0, std::f64::consts::TAU);
+                length += full - elliptic_arc(a, ratio, t0, t1);
+                whole = true;
+            }
+        }
         println!(
-            "{file}: length {} (ours {length}), bbox {}, {} edges ({})",
-            report["length"], report["bbox"], report["edges"], report["kinds"]
+            "{file}: length {} (ours {length}), bbox {} (ours {}), {} edges ({})",
+            report["length"], report["bbox"], ours["bbox"], report["edges"], report["kinds"]
         );
         assert!(near(number("length"), length, 1e-9), "{file}");
+        if whole {
+            continue;
+        }
         let bbox: Vec<f64> = report["bbox"]
             .split(' ')
             .map(|v| v.parse().unwrap())
