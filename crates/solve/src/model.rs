@@ -167,6 +167,23 @@ pub enum Constraint {
         point: EntityId,
         spline: usize,
     },
+    /// The line or round `curve` tangent to the spline `spline` of
+    /// [`Sketch::splines`]. With `at`, at that end of the spline, which
+    /// the curve shares: a line runs along the spline's direction there
+    /// (the sine of the angle between them), a round's radius to the end
+    /// is square to it. Without, touching it somewhere: a line at no
+    /// distance from the place of the spline where the spline runs
+    /// parallel to it (of several such places the one nearest to the
+    /// line), a round with its centre at its radius from the spline,
+    /// measured at the centre's foot as [`Constraint::PointOnSpline`]
+    /// measures, on the side of the spline the centre starts on. One
+    /// equation; the parameter of the place where they touch is
+    /// eliminated, as the foot's is.
+    TangentToSpline {
+        curve: EntityId,
+        spline: usize,
+        at: Option<SplineEnd>,
+    },
     /// A line parallel to the x axis.
     Horizontal {
         line: EntityId,
@@ -288,12 +305,34 @@ pub enum Constraint {
 /// starts at the first control point and ends at the last. It has no
 /// unknowns of its own and is not an entity: only
 /// [`Constraint::PointOnSpline`] refers to it.
+///
+/// Two more forms, for curves the sketch fits rather than solves: a spline
+/// whose control points are fixed coordinates (`fixed`, with `control`
+/// empty: a curve given by formulas, fitted before the solve), and a
+/// spline that passes through points of the sketch at given parameters
+/// (`through`): each is a built-in equation of two rows, `C(u) = p`, like
+/// an arc's, so a spline interpolated through points has its control
+/// points as unknowns that those equations determine (they add no degree
+/// of freedom).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spline {
     /// From 1 to [`crate::MAX_SPLINE_DEGREE`].
     pub degree: usize,
     pub knots: Vec<f64>,
     pub control: Vec<EntityId>,
+    /// The control points of a spline without unknowns, when `control` is
+    /// empty.
+    pub fixed: Vec<[f64; 2]>,
+    /// Points the spline passes through, each at its parameter (within
+    /// the knots' domain).
+    pub through: Vec<(EntityId, f64)>,
+}
+
+/// An end of a spline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplineEnd {
+    Start,
+    End,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -385,10 +424,43 @@ impl Sketch {
     /// Adds a spline for [`Constraint::PointOnSpline`] and returns its
     /// index.
     pub fn add_spline(&mut self, degree: usize, knots: Vec<f64>, control: Vec<EntityId>) -> usize {
+        self.add_spline_through(degree, knots, control, Vec::new())
+    }
+
+    /// Adds a spline on the points `control` that passes through each
+    /// point of `through` at its parameter ([`Spline::through`]), and
+    /// returns its index.
+    pub fn add_spline_through(
+        &mut self,
+        degree: usize,
+        knots: Vec<f64>,
+        control: Vec<EntityId>,
+        through: Vec<(EntityId, f64)>,
+    ) -> usize {
         self.splines.push(Spline {
             degree,
             knots,
             control,
+            fixed: Vec::new(),
+            through,
+        });
+        self.splines.len() - 1
+    }
+
+    /// Adds a spline whose control points are the fixed coordinates
+    /// `fixed` ([`Spline::fixed`]), and returns its index.
+    pub fn add_fixed_spline(
+        &mut self,
+        degree: usize,
+        knots: Vec<f64>,
+        fixed: Vec<[f64; 2]>,
+    ) -> usize {
+        self.splines.push(Spline {
+            degree,
+            knots,
+            control: Vec::new(),
+            fixed,
+            through: Vec::new(),
         });
         self.splines.len() - 1
     }

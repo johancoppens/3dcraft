@@ -105,7 +105,7 @@ pub use equations::{CROWDED, MAX_IMAGE_DEPTH};
 pub use error::{Site, SolveError};
 pub use model::{
     Carried, Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind,
-    ImageMap, ImageStart, Sketch, Solution, SolveOptions, Spline,
+    ImageMap, ImageStart, Sketch, Solution, SolveOptions, Spline, SplineEnd,
 };
 
 /// The highest degree of a spline a point can be constrained onto.

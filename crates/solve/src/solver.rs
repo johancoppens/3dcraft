@@ -944,9 +944,16 @@ fn pass(
         }
     }
 
+    // Without the arcs' own equations (not the built-in equations of
+    // splines through points: they only make control points of their own,
+    // which no person's constraint can make redundant).
     let mut solve_arcs_last = active(count, &blamed);
-    for (on, site) in solve_arcs_last.iter_mut().zip(&prep.source) {
-        if matches!(site, Site::Entity(_)) {
+    for ((on, site), eq) in solve_arcs_last
+        .iter_mut()
+        .zip(&prep.source)
+        .zip(&prep.equations)
+    {
+        if matches!(site, Site::Entity(_)) && matches!(eq, Equation::ArcClosure { .. }) {
             *on = false;
         }
     }
@@ -1018,9 +1025,9 @@ fn pinned_arc_ends(
         .collect();
     let has_arcs = system
         .prep
-        .source
+        .equations
         .iter()
-        .any(|site| matches!(site, Site::Entity(_)));
+        .any(|eq| matches!(eq, Equation::ArcClosure { .. }));
     if candidates.is_empty() || !has_arcs {
         return;
     }

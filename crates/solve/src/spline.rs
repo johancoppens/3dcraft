@@ -79,6 +79,8 @@ pub(crate) struct At {
     pub first: usize,
     /// The basis functions of `first ..= first + degree`.
     pub basis: [f64; MAX_SPLINE_DEGREE + 1],
+    /// Their derivatives with respect to the parameter.
+    pub slopes: [f64; MAX_SPLINE_DEGREE + 1],
     pub point: [f64; 2],
     /// The derivative with respect to the parameter.
     pub tangent: [f64; 2],
@@ -153,6 +155,7 @@ impl SplineVars {
         #[allow(clippy::cast_precision_loss)]
         let degree = p as f64;
         let (mut point, mut tangent) = ([0.0; 2], [0.0; 2]);
+        let mut slopes = [0.0; MAX_SPLINE_DEGREE + 1];
         for r in 0..=p {
             let i = first + r;
             let control = points.get(i)?;
@@ -168,6 +171,7 @@ impl SplineVars {
             let before = share(i, r.checked_sub(1).and_then(|j| lower.get(j)))?;
             let after = share(i + 1, if r < p { lower.get(r) } else { None })?;
             let slope = degree * (before - after);
+            *slopes.get_mut(r)? = slope;
             let weight = *values.get(r)?;
             for axis in 0..2 {
                 *point.get_mut(axis)? += weight * control.get(axis)?;
@@ -177,26 +181,32 @@ impl SplineVars {
         Some(At {
             first,
             basis: values,
+            slopes,
             point,
             tangent,
         })
     }
 
-    /// The foot of `target` on the curve: the nearest of the places looked
-    /// at, [`SAMPLES`] per knot span, and from there the place between its
-    /// neighbours where the curve stops coming nearer (by bisection: every
-    /// loop here is bounded). `None` when the numbers are not finite.
-    pub(crate) fn foot(&self, points: &[[f64; 2]], target: [f64; 2]) -> Option<Foot> {
+    /// The parameter of an end of the curve.
+    pub(crate) fn end(&self, end: crate::model::SplineEnd) -> Option<f64> {
+        let (start, stop) = self.domain()?;
+        Some(match end {
+            crate::model::SplineEnd::Start => start,
+            crate::model::SplineEnd::End => stop,
+        })
+    }
+
+    /// Whether `u` lies in the curve's domain.
+    pub(crate) fn covers(&self, u: f64) -> bool {
+        self.domain()
+            .is_some_and(|(start, end)| u.is_finite() && start <= u && u <= end)
+    }
+
+    /// The places [`SplineVars::foot`] and [`SplineVars::parallel`] look
+    /// at: the start, then [`SAMPLES`] per knot span.
+    fn places(&self) -> Option<Vec<f64>> {
         let (p, n) = (self.degree, self.control.len());
         let (start, _) = self.domain()?;
-        // How fast the distance grows along the curve: negative while the
-        // curve still comes nearer.
-        let approach = |u: f64| -> Option<f64> {
-            let at = self.at(points, u)?;
-            let value = (at.point[0] - target[0]) * at.tangent[0]
-                + (at.point[1] - target[1]) * at.tangent[1];
-            value.is_finite().then_some(value)
-        };
         let mut places = vec![start];
         for k in p..n {
             let (low, high) = (*self.knots.get(k)?, *self.knots.get(k + 1)?);
@@ -206,6 +216,81 @@ impl SplineVars {
                 }
             }
         }
+        Some(places)
+    }
+
+    /// Where the curve runs parallel to the direction `along`, nearest to
+    /// the line through `origin` along it: of the places where the cross
+    /// product of `along` and the curve's tangent changes sign between two
+    /// of the places looked at (or is zero at one), each found by
+    /// bisection, the one at the least distance from that line. A corner
+    /// of the curve where the tangent jumps across `along` is such a place
+    /// too (a line touching a polyline at a corner). `None` when there is
+    /// none: the curve never runs along `along`. Every loop is bounded.
+    pub(crate) fn parallel(
+        &self,
+        points: &[[f64; 2]],
+        along: [f64; 2],
+        origin: [f64; 2],
+    ) -> Option<Option<At>> {
+        let turn = |u: f64| -> Option<f64> {
+            let at = self.at(points, u)?;
+            let value = along[0] * at.tangent[1] - along[1] * at.tangent[0];
+            value.is_finite().then_some(value)
+        };
+        let off = |at: &At| {
+            (along[0] * (at.point[1] - origin[1]) - along[1] * (at.point[0] - origin[0])).abs()
+        };
+        let places = self.places()?;
+        let mut best: Option<(f64, At)> = None;
+        let mut consider = |at: At| {
+            let d = off(&at);
+            if d.is_finite() && best.as_ref().is_none_or(|(least, _)| d < *least) {
+                best = Some((d, at));
+            }
+        };
+        let mut before: Option<(f64, f64)> = None;
+        for &u in &places {
+            let value = turn(u)?;
+            if value == 0.0 {
+                consider(self.at(points, u)?);
+            } else if let Some((low_u, low)) = before
+                && low != 0.0
+                && (low < 0.0) != (value < 0.0)
+            {
+                let (mut a, mut b) = (low_u, u);
+                for _ in 0..80 {
+                    let middle = a + (b - a) / 2.0;
+                    if !(middle > a && middle < b) {
+                        break;
+                    }
+                    if (turn(middle)? < 0.0) == (low < 0.0) {
+                        a = middle;
+                    } else {
+                        b = middle;
+                    }
+                }
+                consider(self.at(points, a + (b - a) / 2.0)?);
+            }
+            before = Some((u, value));
+        }
+        Some(best.map(|(_, at)| at))
+    }
+
+    /// The foot of `target` on the curve: the nearest of the places looked
+    /// at, [`SAMPLES`] per knot span, and from there the place between its
+    /// neighbours where the curve stops coming nearer (by bisection: every
+    /// loop here is bounded). `None` when the numbers are not finite.
+    pub(crate) fn foot(&self, points: &[[f64; 2]], target: [f64; 2]) -> Option<Foot> {
+        // How fast the distance grows along the curve: negative while the
+        // curve still comes nearer.
+        let approach = |u: f64| -> Option<f64> {
+            let at = self.at(points, u)?;
+            let value = (at.point[0] - target[0]) * at.tangent[0]
+                + (at.point[1] - target[1]) * at.tangent[1];
+            value.is_finite().then_some(value)
+        };
+        let places = self.places()?;
         let mut best: Option<(usize, f64)> = None;
         for (index, &u) in places.iter().enumerate() {
             let at = self.at(points, u)?;
