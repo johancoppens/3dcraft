@@ -479,7 +479,9 @@ pub(crate) fn trace(
             .iter()
             .map(|row| fit(&params, row))
             .collect::<Result<_, _>>()?;
-        let mut added: Vec<(usize, f64, Vec<Vec3>)> = Vec::new();
+        // Per step: its middle, the points there and how far the fits are
+        // off at worst.
+        let mut checked: Vec<(usize, f64, Vec<Vec3>, f64)> = Vec::new();
         worst = (0.0, 0.0, Vec3::ZERO);
         for (k, pair) in params.windows(2).enumerate() {
             let [a, b] = pair else { continue };
@@ -490,18 +492,29 @@ pub(crate) fn trace(
                 Some(points) => points,
                 None => at_param(middle)?,
             };
-            let mut off = false;
+            let mut most = 0.0_f64;
             for (curve, p) in fitted.iter().zip(&points) {
                 let misfit = curve.eval(middle).distance(*p);
-                if !(misfit <= SHARE * tol) {
-                    off = true;
-                    if !(misfit <= worst.0) {
-                        worst = (misfit, middle, *p);
-                    }
+                if !(misfit <= most) {
+                    most = misfit;
+                }
+                if !(misfit <= SHARE * tol) && !(misfit <= worst.0) {
+                    worst = (misfit, middle, *p);
                 }
             }
-            if off {
-                added.push((k + 1, middle, points));
+            checked.push((k + 1, middle, points, most));
+        }
+        // When any step is off, every step off by more than half the share
+        // is halved too: steps all near the share (a circle whose first
+        // steps are just too long for its radius) would otherwise be halved
+        // one or two a round, each moving the global spline's misfit on to
+        // its neighbours, and the rounds run out with the misfit just over
+        // the share everywhere.
+        let any_off = checked.iter().any(|c| !(c.3 <= SHARE * tol));
+        let mut added: Vec<(usize, f64, Vec<Vec3>)> = Vec::new();
+        for (index, middle, points, most) in checked {
+            if any_off && !(most <= 0.5 * SHARE * tol) {
+                added.push((index, middle, points));
             } else {
                 middles.insert(middle.to_bits(), points);
             }

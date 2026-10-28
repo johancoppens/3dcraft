@@ -531,3 +531,63 @@ fn holes_across_a_bend_refused_by_reason() {
         );
     }
 }
+
+/// A round hole of the thickness's radius centred on the base's tangent
+/// line, and the same half circle as a notch of the base's own outline:
+/// both failed the plate at 1e3 and 1e6 before 2026-10-28 ("the rim could
+/// not be traced ... 0.285 of the share off"), because the first steps of
+/// a circle of that radius are just too long for the share, the refinement
+/// halved one or two a round and the misfit crept along the circle until
+/// the rounds ran out (`plate::trace` halves every step past half the share
+/// now). Built, by their closed forms, at four scales.
+#[test]
+fn a_hole_of_the_thickness_radius_on_the_tangent_line() {
+    for k in [1e-3, 1.0, 1e3, 1e6] {
+        let tol = tolerance(k);
+        for kf in [0.33, 0.5] {
+            let across = circle([40.0, 22.0], 1.0, k);
+            let part = build(&part_spec(k, kf, vec![across]), &tol).unwrap();
+            healthy(&part, &tol);
+            let half = 0.5 * PI * k * k;
+            let want = whole_volume(k) - half * k - half * strip_factor(k, kf);
+            near(volume(&part), want, 1e-7 * want, "the volume");
+            one_sheet(&part, &tol);
+            round_trip(&part, &tol);
+        }
+        // The half circle as a notch of the base's outline, flange below.
+        let s = |p: [f64; 2]| [p[0] * k, p[1] * k];
+        let mut curves: Vec<SketchCurve> = [
+            [40.0, 23.0],
+            [40.0, 30.0],
+            [0.0, 30.0],
+            [0.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 21.0],
+        ]
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| line(i as u64 + 1, s(w[0]), s(w[1])))
+        .collect();
+        curves.push(SketchCurve {
+            id: 9,
+            curve: Curve2::Arc {
+                center: s([40.0, 22.0]),
+                start: s([40.0, 23.0]),
+                end: s([40.0, 21.0]),
+            },
+        });
+        let notched = detect_profiles(&curves, &tol).unwrap().remove(0);
+        let mut spec = part_spec(k, 0.5, Vec::new());
+        spec.base = notched;
+        spec.flanges[0].on = On::Base(4);
+        let part = build(&spec, &tol).unwrap();
+        healthy(&part, &tol);
+        let want = flat_area(&part) * k;
+        near(
+            volume(&part),
+            want,
+            1e-7 * want,
+            "the notched part at K = ½",
+        );
+    }
+}
