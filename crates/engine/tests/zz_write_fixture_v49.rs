@@ -42,7 +42,9 @@ fn write_fixture_v49() {
     );
     let bytes = std::fs::read(dir.join("v49.3dcraft")).unwrap();
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    println!("FIXTURE-HEX {hex}");
+    for (i, chunk) in hex.as_bytes().chunks(2000).enumerate() {
+        println!("FIXTURE-HEX {i} {}", String::from_utf8_lossy(chunk));
+    }
     run(&mut s, "file.open", json!({"path": "v49.3dcraft"}));
     let inspect = run(&mut s, "document.inspect", json!({}));
     let out = json!({"features": inspect["features"], "bodies": inspect["bodies"], "rollback": inspect["rollback"], "assertions": inspect["assertions"], "outputs": inspect["outputs"]});

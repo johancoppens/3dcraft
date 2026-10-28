@@ -20,12 +20,11 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_kernel::profile::{Curve2, SketchCurve};
 use craft3d_kernel::sheetmetal::{
-    self, Closing, CornerSpec, Cutout, Direction, EdgeKey, FlangeSpec, LengthFrom, On, Part,
-    Relief, ReliefKind, SheetFace, Spec,
+    self, Closing, CornerSpec, Cutout, Direction, FlangeSpec, LengthFrom, On, Part, Relief,
+    ReliefKind, SheetFace, Spec,
 };
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, FaceId};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// A sheet-metal part as regeneration built it, for the commands that
@@ -484,43 +483,19 @@ pub(crate) fn build(
     let made_by = doc
         .feature(id)
         .map_or_else(|| id.to_string(), |f| f.name.clone());
-    // With a corner closed, every edge is named as its counterpart in the
-    // part with every corner open (an extension's end as the side it
-    // replaces), so a rim keeps its name, and a reference its target, when
-    // a corner opens or closes; a piece an extension adds is
-    // `F9:edge(flat, segment)`.
-    let open_names = match &part.open_sheet {
-        None => None,
-        Some((open, keys)) => {
-            let mut named = Names {
-                faces: sheet_names.faces.clone(),
-                ..Names::default()
-            };
-            let none = vec![None; open.edges.len()];
-            let no_vertices = vec![None; open.vertices.len()];
-            named.name_entities(id, open, tolerance.linear, &none, &no_vertices, |_| None)?;
-            let at: BTreeMap<EdgeKey, usize> =
-                keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
-            Some((named, at))
-        }
-    };
+    // Every edge is named by what it is (`sheetmetal::edge_numbers`), not
+    // by the faces round it: a flange added elsewhere, a corner closed or
+    // opened, leaves every other edge's name, and so every rim's, as it
+    // was (rule 4; docs/design/sheetmetal.md › *Names*). With a corner
+    // closed an extension's end is named as the side it replaces, a piece
+    // an extension adds `F9:edge(6, flat, segment)`.
     let edge_name = |edge: usize| -> Option<PersistentName> {
-        let Some((named, at)) = &open_names else {
-            return sheet_names.edge_name(edge);
-        };
-        match part.edge_keys.get(edge)? {
-            EdgeKey::Piece { flat, seg } => Some(PersistentName::new(
-                id,
-                NameRole::Edge,
-                vec![*flat as u64, *seg as u64],
-            )),
-            // A piece of a hole across a bend that the open pattern does
-            // not have is named as it is.
-            key => match at.get(key) {
-                Some(&i) => named.edge_name(i),
-                None => sheet_names.edge_name(edge),
-            },
-        }
+        let key = *part.edge_keys.get(edge)?;
+        Some(PersistentName::new(
+            id,
+            NameRole::Edge,
+            sheetmetal::edge_numbers(part, key),
+        ))
     };
     let names = crate::plate::plate_names_with(
         id,

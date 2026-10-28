@@ -271,6 +271,17 @@ pub struct Bend {
     pub flat_length: f64,
 }
 
+/// What a segment of a flat's outline is, as four numbers that stay the
+/// same when flanges are added elsewhere: `[1, curve, piece, part]` a
+/// piece of a sketch curve of the base (its `part`-th after the edge is
+/// split at the bends on it), `[2, a, b, j]` piece `j` of the relief at
+/// the corner of flanges `a` and `b`, `[3, i, side, part]` a side of
+/// flange `i`'s rectangle (0 its tangent line, 1 the side at its bend's
+/// start, 2 its tip, 3 the side at its end), `[4, i, curve, piece]` a
+/// curve of flange `i`'s own outline, `[5, flat, hole, segment]` a hole
+/// placed in a flat.
+pub type SegId = [u64; 4];
+
 /// Where a bend starts: the segment of its parent flat's outer loop (or
 /// of a hole of it) that is its tangent line on the parent's side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +355,11 @@ pub struct Flat {
     pub was: Vec<Option<usize>>,
     /// The bends that start from this flat's edges.
     pub seats: Vec<Seat>,
+    /// Per segment of the outline with every corner open (as `was`
+    /// counts them), and per segment of each hole, what it is, the same
+    /// whatever else the part has ([`edge_numbers`]).
+    pub ids: Vec<SegId>,
+    pub hole_ids: Vec<Vec<SegId>>,
     /// Whether the flat is a flange's outline of its own (not the
     /// rectangle of its length).
     pub outlined: bool,
@@ -432,11 +448,6 @@ pub struct Part {
     pub sheet: Body,
     /// Per edge of `sheet`, what it is.
     pub edge_keys: Vec<EdgeKey>,
-    /// With a closed corner, the bottom skin the part would have with
-    /// every corner open (holes and all, not checked) and its edges' keys:
-    /// the part's edges are named as their open counterparts are, so a
-    /// reference keeps its target when a corner opens or closes.
-    pub open_sheet: Option<(Body, Vec<EdgeKey>)>,
     pub sheet_faces: Vec<SheetFace>,
     pub solid: Plate,
 }
@@ -696,6 +707,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     }
     let r = spec.relief.map_or(0.0, |relief| relief.size);
     let mut base_outer: Vec<Segment> = Vec::with_capacity(n + 2 * corners.len());
+    let mut base_ids: Vec<SegId> = Vec::with_capacity(n + 2 * corners.len());
     let mut base_edge: BTreeMap<usize, usize> = BTreeMap::new();
     for (k, seg) in outer.iter().enumerate() {
         let before = (k + n - 1) % n;
@@ -729,6 +741,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         if on_base.contains_key(&(None, k)) {
             base_edge.insert(k, base_outer.len());
         }
+        base_ids.push([1, seg.source, u64::from(seg.piece), 0]);
         base_outer.push(s);
         if let (Some(&c), Some(relief)) = (corner_at_end.get(&k), spec.relief) {
             let next = outer.get((k + 1) % n);
@@ -739,7 +752,10 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                 continue;
             };
             let p = corners.get(c).map_or(seg.end, |c| c.point);
-            base_outer.extend(notch(p, scale(d, -1.0), dn, relief)?);
+            let [fa, fb] = corners.get(c).map_or([0, 0], |c| c.bends);
+            let pieces = notch(p, scale(d, -1.0), dn, relief)?;
+            base_ids.extend((0..pieces.len()).map(|j| [2, fa as u64, fb as u64, j as u64]));
+            base_outer.extend(pieces);
         }
     }
     let base_holes: Vec<Vec<Segment>> =
@@ -760,6 +776,18 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         ends: Vec::new(),
         was: (0..n_base).map(Some).collect(),
         seats: Vec::new(),
+        ids: base_ids,
+        hole_ids: spec
+            .base
+            .holes
+            .iter()
+            .map(|h| {
+                h.segments
+                    .iter()
+                    .map(|g| [1, g.source, u64::from(g.piece), 0])
+                    .collect()
+            })
+            .collect(),
         outlined: false,
     });
     // Per flange, the edge it sits on before the edges are split at the
@@ -797,7 +825,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         let neutral = f.radius + f.k * t;
         let allowance = theta * neutral;
         let shift = scale(across, allowance);
-        let (start, end, outer, holes, flat_length) = match &f.outline {
+        let rect: Vec<SegId> = (0..4).map(|side| [3, i as u64, side, 0]).collect();
+        let (start, end, outer, holes, flat_length, (ids, hole_ids)) = match &f.outline {
             None => {
                 let [i0, i1] = f.inset;
                 if !(i0 + i1 < len - tol) {
@@ -841,6 +870,7 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                     vec![line(a1, a0), line(a0, b0), line(b0, b1), line(b1, a1)],
                     Vec::new(),
                     flat_length,
+                    (rect, Vec::new()),
                 )
             }
             Some(profile) => {
@@ -856,7 +886,27 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
                         "a flange with an outline of its own spans the outline's line on its edge, which gives its insets; give it no insets",
                     ));
                 }
-                own_outline(i, profile, (s, e), shift, tol)?
+                let (start, end, outer, holes, flat_length) =
+                    own_outline(i, profile, (s, e), shift, tol)?;
+                // Its curves by their sketch's ids, its tangent line as a
+                // rectangle's is, its holes by their place.
+                let mut ids: Vec<SegId> = outer
+                    .iter()
+                    .map(|g| [4, i as u64, g.source, u64::from(g.piece)])
+                    .collect();
+                if let Some(first) = ids.first_mut() {
+                    *first = [3, i as u64, 0, 0];
+                }
+                let hole_ids = holes
+                    .iter()
+                    .enumerate()
+                    .map(|(h, l)| {
+                        (0..l.len())
+                            .map(|j| [5, i as u64 + 1, h as u64, j as u64])
+                            .collect()
+                    })
+                    .collect();
+                (start, end, outer, holes, flat_length, (ids, hole_ids))
             }
         };
         let signed = match f.direction {
@@ -885,6 +935,8 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
             ends: Vec::new(),
             was: (0..m).map(Some).collect(),
             seats: Vec::new(),
+            ids,
+            hole_ids,
             outlined: f.outline.is_some(),
         });
         seated.push((parent, hole, k));
@@ -903,45 +955,6 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
     let cuts = place_cuts(&flats, &bends, &across, tolerance)?;
     let (sheet, sheet_faces, ends, edge_keys) =
         folded_sheet(spec, &flats, &bends, &cuts, tolerance, true)?;
-    let open_sheet = if flats.iter().any(|f| !f.ends.is_empty()) {
-        let open: Vec<Flat> = flats
-            .iter()
-            .enumerate()
-            .map(
-                |(f, flat)| match f.checked_sub(1).and_then(|i| bends.get(i)) {
-                    Some(b) if !flat.ends.is_empty() => {
-                        let (a0, a1) = b.far_line();
-                        let (b0, b1) = tip(b);
-                        Flat {
-                            outer: vec![line(a1, a0), line(a0, b0), line(b0, b1), line(b1, a1)],
-                            tip: Some(2),
-                            ends: Vec::new(),
-                            was: (0..4).map(Some).collect(),
-                            // Only a tip carries a flange on a flange whose
-                            // corner closes (close_corners).
-                            seats: flat.seats.iter().map(|s| Seat { seg: 2, ..*s }).collect(),
-                            ..flat.clone()
-                        }
-                    }
-                    _ => flat.clone(),
-                },
-            )
-            .collect();
-        // Only named: with the cuts if they lie in the open pattern too,
-        // else without them (their edges are then named as they are).
-        let (body, _, _, keys) = match folded_sheet(spec, &open, &bends, &cuts, tolerance, false) {
-            // A cut that lies in no face of the open pattern (in an
-            // extension) is a refusal of the cuts' own; anything else
-            // is the part's error.
-            Err(KernelError::SheetMetal { .. }) if !cuts.is_empty() => {
-                folded_sheet(spec, &open, &bends, &[], tolerance, false)?
-            }
-            other => other?,
-        };
-        Some((body, keys))
-    } else {
-        None
-    };
     let faces: Vec<FaceId> = (0..sheet.faces.len())
         .filter_map(|f| u32::try_from(f).ok().map(FaceId))
         .collect();
@@ -960,7 +973,6 @@ pub fn build(spec: &Spec, tolerance: &Tolerance) -> Result<Part, KernelError> {
         cuts,
         sheet,
         edge_keys,
-        open_sheet,
         sheet_faces,
         solid,
     })
@@ -1716,14 +1728,24 @@ fn split_at_seats(
             if !groups.keys().any(|&(gf, gh, _)| gf == f && gh == hole) {
                 continue;
             }
+            let ids_of = match hole {
+                None => flat.ids.clone(),
+                Some(h) => flat.hole_ids.get(h).cloned().unwrap_or_default(),
+            };
             let mut out: Vec<Segment> = Vec::with_capacity(segs.len() + 2);
+            let mut out_ids: Vec<SegId> = Vec::with_capacity(segs.len() + 2);
             let mut first_piece: Vec<usize> = Vec::with_capacity(segs.len());
             for (k, seg) in segs.iter().enumerate() {
                 first_piece.push(out.len());
+                let id = ids_of.get(k).copied().unwrap_or([0; 4]);
                 let Some(list) = groups.get(&(f, hole, k)) else {
                     out.push(seg.clone());
+                    out_ids.push(id);
                     continue;
                 };
+                // The pieces of the edge, numbered along it.
+                let part = |j: usize| [id[0], id[1], id[2], j as u64];
+                let first = out.len();
                 let d = unit(sub(seg.end, seg.start))
                     .ok_or_else(|| refuse(list.first().copied(), "the edge has no length"))?;
                 let along = |p: P2| dot(sub(p, seg.start), d);
@@ -1749,6 +1771,7 @@ fn split_at_seats(
                         .get(b)
                         .ok_or_else(|| refuse(Some(b), "a bend is missing"))?;
                     if cursor != bd.start {
+                        out_ids.push(part(out.len() - first));
                         out.push(piece(seg, cursor, bd.start));
                     }
                     flat.seats.push(Seat {
@@ -1756,11 +1779,13 @@ fn split_at_seats(
                         hole,
                         seg: out.len(),
                     });
+                    out_ids.push(part(out.len() - first));
                     out.push(piece(seg, bd.start, bd.end));
                     cursor = bd.end;
                     last = Some((to, b));
                 }
                 if cursor != seg.end {
+                    out_ids.push(part(out.len() - first));
                     out.push(piece(seg, cursor, seg.end));
                 }
             }
@@ -1769,10 +1794,14 @@ fn split_at_seats(
                     flat.tip = flat.tip.and_then(|t| first_piece.get(t).copied());
                     flat.was = (0..out.len()).map(Some).collect();
                     flat.outer = out;
+                    flat.ids = out_ids;
                 }
                 Some(h) => {
                     if let Some(l) = flat.holes.get_mut(h) {
                         *l = out;
+                    }
+                    if let Some(l) = flat.hole_ids.get_mut(h) {
+                        *l = out_ids;
                     }
                 }
             }
@@ -1951,6 +1980,69 @@ fn own_outline(
         ));
     }
     Ok((start, end, outer, holes, flat_length))
+}
+
+/// The numbers that name an edge of the folded sheet (and the rim along
+/// it), from what the edge is: the same when flanges are added elsewhere,
+/// a corner is closed or opened, or a hole is cut elsewhere (rule 4,
+/// docs/design/sheetmetal.md › *Names*). `[7, bend, 0]` and `[7, bend, 1]`
+/// a bend's tangent lines on its parent's side and its flange's, `[8,
+/// bend, end]` the arcs at its ends, `[6, flat, segment]` a piece a closed
+/// corner's extension adds, `[9, …, piece]` a piece of a tangent line a
+/// hole across a bend crosses, `[10, cut, segment, piece]` a piece of such
+/// a hole; any other segment of a flat's outline or hole is its
+/// [`SegId`] (`[12, flat, segment]` or `[13, flat, hole, segment]` should
+/// a flat not know it).
+pub fn edge_numbers(part: &Part, key: EdgeKey) -> Vec<u64> {
+    let outline = |flat: usize, seg: usize| -> Vec<u64> {
+        let Some(f) = part.flats.get(flat) else {
+            return vec![12, flat as u64, seg as u64];
+        };
+        if flat > 0 && seg == 0 {
+            return vec![7, flat as u64 - 1, 1];
+        }
+        // A closed flat's key counts its open rectangle's sides: its tip is
+        // side 2, wherever the extensions put it now.
+        let closed = !f.ends.is_empty();
+        if let Some(s) = f
+            .seats
+            .iter()
+            .find(|s| s.hole.is_none() && if closed { seg == 2 } else { s.seg == seg })
+        {
+            return vec![7, s.bend as u64, 0];
+        }
+        f.ids
+            .get(seg)
+            .map_or_else(|| vec![12, flat as u64, seg as u64], |id| id.to_vec())
+    };
+    match key {
+        EdgeKey::Outline { flat, seg } => outline(flat, seg),
+        EdgeKey::Piece { flat, seg } => vec![6, flat as u64, seg as u64],
+        EdgeKey::Hole { flat, hole, seg } => {
+            let f = part.flats.get(flat);
+            if let Some(s) = f.and_then(|f| {
+                f.seats
+                    .iter()
+                    .find(|s| s.hole == Some(hole) && s.seg == seg)
+            }) {
+                return vec![7, s.bend as u64, 0];
+            }
+            f.and_then(|f| f.hole_ids.get(hole))
+                .and_then(|h| h.get(seg))
+                .map_or_else(
+                    || vec![13, flat as u64, hole as u64, seg as u64],
+                    |id| id.to_vec(),
+                )
+        }
+        EdgeKey::Arc { bend, end } => vec![8, bend as u64, end as u64],
+        EdgeKey::Split { flat, seg, piece } => {
+            let mut out = vec![9];
+            out.extend(outline(flat, seg));
+            out.push(piece as u64);
+            out
+        }
+        EdgeKey::Cut { cut, seg, piece } => vec![10, cut as u64, seg as u64, piece as u64],
+    }
 }
 
 /// The tip of a flange's flat: from `b0` to `b1`, the flange on its left.
@@ -2394,11 +2486,8 @@ fn folded_sheet(
         }
     }
     // A cut-out placed inside an extension has a key no part with its
-    // corners open has: with the corners open it lies in no flat and that
-    // part is refused. The open sheet built only for naming
-    // (`Part::open_sheet`) keeps every hole, unchecked, so the cut-out's
-    // edges are still named there and keep their names while the corner
-    // stays closed; there is nothing to keep across opening it.
+    // corners open has (with the corners open it lies in no flat and that
+    // part is refused): it is named while the corner stays closed.
     for (flat, holes) in flange_holes.iter().enumerate() {
         for (hole, edges) in holes.iter().enumerate() {
             for (seg, (edge, _)) in edges.iter().enumerate() {
