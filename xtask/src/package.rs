@@ -132,6 +132,16 @@ fn arch_of(target: Option<&str>) -> String {
 }
 
 /// An MSI version is three numbers: `0.1.0-beta.2` becomes `0.1.0`.
+/// The zip's file name: the staging folder's name with `.zip` added.
+/// Not `set_extension`, which takes everything after the version's first
+/// dot for an extension (`3dcraft-0.1.0-x86_64-windows` became
+/// `3dcraft-0.1.zip`).
+fn zip_name(folder: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut name = folder.to_os_string();
+    name.push(".zip");
+    name
+}
+
 fn msi_version(version: &str) -> Result<String, String> {
     let core = version.split(['-', '+']).next().unwrap_or_default();
     let parts: Vec<&str> = core.split('.').collect();
@@ -610,8 +620,7 @@ impl Packer {
             .ok_or("the staging folder has no name")?
             .to_os_string();
         mkdir(&self.out)?;
-        let mut file = self.out.join(&name);
-        file.set_extension("zip");
+        let file = self.out.join(zip_name(&name));
         // bsdtar (Windows 10 and later, macOS) writes a zip for `-a` and a
         // `.zip` name.
         tool(
@@ -883,6 +892,45 @@ mod tests {
             newest.starts_with(&format!("<release version=\"{version}\"")),
             "the metainfo's first <release> is not {version}"
         );
+    }
+
+    #[test]
+    fn the_zip_keeps_the_whole_folder_name() {
+        assert_eq!(
+            zip_name(std::ffi::OsStr::new("3dcraft-0.1.0-x86_64-windows")),
+            "3dcraft-0.1.0-x86_64-windows.zip"
+        );
+    }
+
+    /// WiX takes only A-Z, a-z, digits, `_` and `.` in an identifier (and
+    /// a letter or `_` first): an `Icon` id with a hyphen fails the `.msi`
+    /// build (WIX0014), and the Linux runner never builds one.
+    #[test]
+    fn the_wix_icon_ids_are_legal_identifiers() {
+        let wxs =
+            std::fs::read_to_string(repo_root().join("packaging/windows/craft3d.wxs")).unwrap();
+        let legal = |id: &str| {
+            id.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        };
+        let mut seen = 0;
+        for key in [
+            "<Icon Id=\"",
+            " Icon=\"",
+            "Property Id=\"ARPPRODUCTICON\" Value=\"",
+        ] {
+            for (at, _) in wxs.match_indices(key) {
+                let rest = wxs.get(at + key.len()..).unwrap();
+                let id = rest.split('"').next().unwrap();
+                assert!(legal(id), "the icon id {id:?} is not a WiX identifier");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "found only {seen} icon ids");
     }
 
     #[test]

@@ -22,7 +22,7 @@
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="craft3d.ico" SourceFile="$(var.Icon)" />
-    <Icon Id="craft3d-jig.ico" SourceFile="$(var.JigIcon)" />
+    <Icon Id="craft3d_jig.ico" SourceFile="$(var.JigIcon)" />
     <Property Id="ARPPRODUCTICON" Value="craft3d.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/johancoppens/3dcraft" />
 
@@ -44,7 +44,7 @@
               <Verb Id="open" Command="Open" Argument="&quot;%1&quot;" />
             </Extension>
           </ProgId>
-          <ProgId Id="Craft3D.Jig.1" Description="3DCraft Jig" Icon="craft3d-jig.ico" Advertise="yes">
+          <ProgId Id="Craft3D.Jig.1" Description="3DCraft Jig" Icon="craft3d_jig.ico" Advertise="yes">
             <Extension Id="3dcraftjig" ContentType="application/x-craft3d-jig">
               <Verb Id="open" Command="Open" Argument="&quot;%1&quot;" />
             </Extension>
