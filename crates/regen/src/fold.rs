@@ -362,10 +362,6 @@ fn described(error: &FoldError, arr: Option<&Arrangement>) -> String {
             "the crease {} ends inside a facet without dividing it: a crease runs from the boundary, a cut or another crease to the boundary, a cut or another crease",
             curve(*id)
         ),
-        FoldError::Slit { id } => format!(
-            "the cut {} ends inside a facet: a cut must divide the sheet (a slit that ends inside a facet is not built yet)",
-            curve(*id)
-        ),
         FoldError::Sliver { facet } => match arr {
             Some(arr) => format!("{} is thinner than the tolerance", facet_name(arr, *facet)),
             None => "a facet is thinner than the tolerance".to_string(),

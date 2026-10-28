@@ -11,7 +11,7 @@
 
 use craft3d_kernel::origami::{
     Angle, Arrangement, BoundarySegment, Crease, CreaseKind, FacetMeeting, FoldError, Folded,
-    arrange, first_meeting, fold, fold_with, folded_sheet, vertex_checks,
+    arrange, first_meeting, fold, fold_flat, fold_with, folded_sheet, layer_order, vertex_checks,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::PI;
@@ -747,13 +747,15 @@ fn what_a_crease_pattern_must_be() {
     assert!(matches!(e, Err(FoldError::Overlap { .. })), "{e:?}");
     let e = arrange(&square(s), &[crease(10, [0.2, 0.0], [0.8, 0.0], v)], t);
     assert!(matches!(e, Err(FoldError::Overlap { .. })), "{e:?}");
-    // A slit.
+    // A slit is a cut inside one facet (built since 2026-10-28:
+    // `slits_and_slots_are_cuts_with_one_facet_on_both_sides`).
     let e = arrange(
         &square(s),
         &[crease(10, [0.5, 0.0], [0.5, 0.6], CreaseKind::Cut)],
         t,
-    );
-    assert!(matches!(e, Err(FoldError::Slit { id: 10 })), "{e:?}");
+    )
+    .unwrap();
+    assert_eq!((e.facets.len(), e.hinges.len()), (1, 0));
     // Too short, not finite.
     let e = arrange(&square(s), &[crease(10, [0.5, 0.0], [0.5, 1e-12], v)], t);
     assert!(matches!(e, Err(FoldError::TooShort { id: 10 })), "{e:?}");
@@ -1420,4 +1422,79 @@ fn a_large_miura_sheet_folds_by_the_sparse_solve() {
             assert!(close(area, flat, 1e-10 * flat));
         }
     }
+}
+
+/// A cut with one facet on both sides: a slit from the boundary, a slit
+/// from a fold crease, and a slot (a cut that touches nothing) folded with
+/// the facets they lie in. The cuts take no area, each is two edges of the
+/// sheet (one per side), the mouth of the boundary slit two vertices, and
+/// the slot moves with its facet; folded flat the two facets are layered.
+#[test]
+fn slits_and_slots_are_cuts_with_one_facet_on_both_sides() {
+    use CreaseKind::{Cut, Valley as V};
+    for scale in SCALES {
+        let s = scale;
+        let t = tol(scale);
+        let creases = [
+            crease(10, [0.5 * s, 0.0], [0.5 * s, s], V),
+            // From the boundary into the left facet.
+            crease(11, [0.25 * s, 0.0], [0.25 * s, 0.6 * s], Cut),
+            // From the crease into the left facet.
+            crease(12, [0.5 * s, 0.8 * s], [0.3 * s, 0.8 * s], Cut),
+            // Inside the right facet, touching nothing.
+            crease(13, [0.7 * s, 0.3 * s], [0.7 * s, 0.7 * s], Cut),
+        ];
+        let arr = arrange(&square(s), &creases, t).unwrap();
+        assert_eq!(arr.facets.len(), 2);
+        // The crease is split where the slit starts on it.
+        assert_eq!(arr.hinges.len(), 2);
+        for f in &arr.facets {
+            assert!(close(f.area, 0.5 * s * s, 1e-12 * s * s), "{}", f.area);
+        }
+        let right = arr.facet_at([0.9 * s, 0.5 * s]).unwrap();
+        assert_eq!(arr.facets[right].holes.len(), 1);
+        let left = arr.facet_at([0.1 * s, 0.5 * s]).unwrap();
+        let folded = fold(&arr, &angles(&arr, &[(10, PI / 2.0)]), left, t, ANGULAR).unwrap();
+        let made = folded_sheet(&arr, &folded, &frame(), &tolerance(scale)).unwrap();
+        let body = &made.body;
+        assert_eq!(body.faces.len(), 2);
+        // Boundary 7 pieces (the bottom split at the slit's mouth and the
+        // crease, the top at the crease), the crease 2, each cut 2.
+        assert_eq!(body.edges.len(), 7 + 2 + 2 * 3);
+        // Corners 4, the crease's ends 2, the slit's mouth 2 and tip 1,
+        // the crease slit's two ends 2, the slot's 2.
+        assert_eq!(body.vertices.len(), 4 + 2 + 3 + 2 + 2);
+        let area = craft3d_topo::mass_properties(body).unwrap().area;
+        assert!(close(area, s * s, 1e-12 * s * s), "{area}");
+        // The slot turned with the right facet: its ends at x = s/2,
+        // z = 0.2 s.
+        for y in [0.3, 0.7] {
+            let want = Vec3::new(0.5 * s, y * s, 0.2 * s);
+            assert!(
+                body.vertices
+                    .iter()
+                    .any(|v| v.point.distance(want) <= 1e-12 * s),
+                "{want:?}"
+            );
+        }
+        assert!(first_meeting(&arr, &folded, t, ANGULAR).unwrap().is_none());
+        // The vertex where the slit leaves the crease lies on a cut: not
+        // asked of Kawasaki and Maekawa.
+        let (checks, on_cuts) = vertex_checks(&arr, ANGULAR);
+        assert!(checks.is_empty());
+        assert!(!on_cuts.is_empty());
+        // Folded flat: two layers.
+        let flat = fold_flat(&arr, &angles(&arr, &[(10, PI)]), left, t).unwrap();
+        let layers = layer_order(&arr, &flat, t).unwrap();
+        assert_ne!(layers.layer[0], layers.layer[1]);
+        let flat_body = folded_sheet(&arr, &flat, &frame(), &tolerance(scale)).unwrap();
+        assert_eq!(flat_body.body.edges.len(), body.edges.len());
+    }
+    // A fold crease that ends inside a facet still dangles; a slot outside
+    // the sheet is outside.
+    let t = tol(1.0);
+    let e = arrange(&square(1.0), &[crease(10, [0.5, 0.0], [0.5, 0.6], V)], t);
+    assert!(matches!(e, Err(FoldError::Dangling { id: 10 })), "{e:?}");
+    let e = arrange(&square(1.0), &[crease(13, [1.5, 0.3], [1.5, 0.7], Cut)], t);
+    assert!(matches!(e, Err(FoldError::Outside { id: 13 })), "{e:?}");
 }

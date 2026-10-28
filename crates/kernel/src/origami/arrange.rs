@@ -456,8 +456,24 @@ pub fn arrange(
         })
         .collect();
     let mut holes_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    // A cycle of no area made of cuts alone is a slot: a cut (or a tree of
+    // cuts) inside a facet that touches nothing else. It is a hole of that
+    // facet, of no area: the facet's loop round it runs along both sides
+    // of every cut.
+    let is_cut = |h: usize| {
+        edges.get(h / 2).is_some_and(|e| match e.kind {
+            EdgeKind::Crease(c) => creases.get(c).is_some_and(|c| c.kind == CreaseKind::Cut),
+            EdgeKind::Boundary => false,
+        })
+    };
+    let slot: Vec<bool> = cycles
+        .iter()
+        .zip(&measures)
+        .map(|(c, (area, length))| area.abs() <= tol * length && c.iter().all(|&h| is_cut(h)))
+        .collect();
     for (i, (area, length)) in measures.iter().enumerate() {
-        if area.abs() <= tol * length {
+        let is_slot = slot.get(i).copied().unwrap_or(false);
+        if area.abs() <= tol * length && !is_slot {
             let crease =
                 cycles
                     .get(i)
@@ -474,7 +490,7 @@ pub fn arrange(
                 },
             });
         }
-        if *area > 0.0 {
+        if *area > 0.0 && !is_slot {
             continue;
         }
         let Some(&first) = cycles.get(i).and_then(|c| c.first()) else {
@@ -506,8 +522,17 @@ pub fn arrange(
                 best = Some((j, *outer));
             }
         }
-        if let Some((j, _)) = best {
-            holes_of.entry(j).or_default().push(i);
+        match best {
+            Some((j, _)) => holes_of.entry(j).or_default().push(i),
+            None if is_slot => {
+                let id = cycles
+                    .get(i)
+                    .and_then(|c| c.first())
+                    .and_then(|&h| edges.get(h / 2))
+                    .map_or(0, |e| e.source);
+                return Err(FoldError::Outside { id });
+            }
+            None => {}
         }
     }
 
@@ -515,7 +540,7 @@ pub fn arrange(
     let mut facets = Vec::new();
     let mut face_of: Vec<Option<usize>> = vec![None; halves];
     for (i, (area, length)) in measures.iter().enumerate() {
-        if *area <= 0.0 {
+        if *area <= 0.0 || slot.get(i).copied().unwrap_or(false) {
             continue;
         }
         let holes: Vec<usize> = holes_of.get(&i).cloned().unwrap_or_default();
@@ -583,11 +608,12 @@ pub fn arrange(
             return Err(FoldError::Outside { id: edge.source });
         };
         let kind = creases.get(c).map(|c| c.kind);
-        if left == right {
-            return Err(match kind {
-                Some(CreaseKind::Cut) => FoldError::Slit { id: edge.source },
-                _ => FoldError::Dangling { id: edge.source },
-            });
+        // A cut with one facet on both sides is a slit (from the boundary,
+        // a crease or another cut into the facet) or a slot: the facet's
+        // loop runs along both its sides, and nothing is joined across it.
+        // A fold crease so is joined to nothing: it dangles.
+        if left == right && kind != Some(CreaseKind::Cut) {
+            return Err(FoldError::Dangling { id: edge.source });
         }
         if kind != Some(CreaseKind::Cut) {
             hinges.push(Hinge {

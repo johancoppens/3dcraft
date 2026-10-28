@@ -135,9 +135,6 @@ pub enum FoldError {
     /// A crease that ends inside a facet without dividing it (it would
     /// have the same facet on both sides).
     Dangling { id: u64 },
-    /// A cut that does not divide the sheet between two facets: a slit
-    /// that ends inside a facet.
-    Slit { id: u64 },
     /// A facet thinner than the tolerance, or one that encloses no area.
     Sliver { facet: usize },
     /// The pattern could not be divided into facets (a bug, or input at
@@ -214,9 +211,6 @@ impl fmt::Display for FoldError {
             FoldError::Outside { id } => write!(f, "crease {id} reaches outside the sheet"),
             FoldError::Dangling { id } => {
                 write!(f, "crease {id} ends inside a facet without dividing it")
-            }
-            FoldError::Slit { id } => {
-                write!(f, "cut {id} ends inside a facet without dividing the sheet")
             }
             FoldError::Sliver { facet } => write!(f, "facet {facet} is thinner than the tolerance"),
             FoldError::Broken { reason } => write!(
