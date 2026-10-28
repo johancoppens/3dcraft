@@ -1,0 +1,6 @@
+[
+ ["feature.block", {"name": "Box", "size": [10, 20, 30]}],
+ ["sketch.create", {"face": "F1:face(0)", "xAxis": [1, 0, 0], "name": "Under"}],
+ ["sketch.polyline", {"sketch": "Under", "closed": true, "points": [[1, -1], [4, -1], [4, -3], [1, -3]]}],
+ ["feature.extrude", {"sketch": "Under", "distance": 5, "name": "Foot"}]
+]
