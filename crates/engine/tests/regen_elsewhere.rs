@@ -269,10 +269,27 @@ fn a_worker_that_stops_leaves_errors_and_the_next_state_goes_on() {
         .execute("variable.set", &json!({"name": "w", "expr": "43 mm"}))
         .unwrap();
     let token = session.scene_job(SceneQuality::display()).unwrap();
-    for junk in [&b""[..], b"\x00S", b"\x01Sjunk", b"\x09\x09"] {
+    // Two scenes that do not read: each an error, the job goes on.
+    for junk in [&b"\x00S"[..], b"\x01Sjunk"] {
         assert!(session.scene_answered(token, Ok(junk)));
     }
+    assert!(session.scene_with(SceneQuality::Preview).is_err());
     assert!(session.scene_with(SceneQuality::display()).is_err());
+    assert!(session.scene_done(token));
+    // A part that is no part at all ends the job.
+    for (w, junk) in [(45, &b""[..]), (46, b"\x09\x09")] {
+        session
+            .execute(
+                "variable.set",
+                &json!({"name": "w", "expr": format!("{w} mm")}),
+            )
+            .unwrap();
+        let token = session.scene_job(SceneQuality::display()).unwrap();
+        assert!(session.scene_answered(token, Ok(junk)));
+        assert!(!session.scene_answered(token, Ok(junk)));
+        assert_eq!(session.scene_job(SceneQuality::display()), None);
+        assert!(session.scene_with(SceneQuality::display()).is_err());
+    }
     // Given up (it took too long): errors that say so, no bug label.
     session
         .execute("variable.set", &json!({"name": "w", "expr": "44 mm"}))
