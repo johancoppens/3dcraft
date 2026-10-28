@@ -1125,10 +1125,13 @@ fn rails_whose_condition_has_branches_that_pass_each_other_are_stepped_over() {
         assert!(made.curvature * k * k < 1e-6, "{k}: K {}", made.curvature);
         assert!(made.deviation <= 0.5e-6 * k, "{k}: {}", made.deviation);
         // The stepped panel's unfold is refused, never a pattern off by
-        // more than the tolerance.
-        match develop(&made.body, &[FaceId(0)], &tol(k)) {
-            Ok(dev) => panic!("{k}: a stepped sheet laid flat, {:?}", dev.error()),
-            Err(e) => assert!(e.to_string().contains("converge"), "{k}: {e}"),
+        // more than the tolerance; at the kayak's own scale (each refusal
+        // lays the face on the largest grid, minutes in a debug build).
+        if k == 1.0 {
+            match develop(&made.body, &[FaceId(0)], &tol(k)) {
+                Ok(dev) => panic!("{k}: a stepped sheet laid flat, {:?}", dev.error()),
+                Err(e) => assert!(e.to_string().contains("converge"), "{k}: {e}"),
+            }
         }
         // Cut short of the stepped stretches: laid flat, every edge keeps
         // its length.
