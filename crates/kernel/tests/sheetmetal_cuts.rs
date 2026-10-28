@@ -117,6 +117,8 @@ fn part_spec(k: f64, kf: f64, cutouts: Vec<Cutout>) -> Spec {
             radius: 2.0 * k,
             k: kf,
             from: LengthFrom::Tangent,
+            inset: [0.0; 2],
+            outline: None,
         }],
         relief: None,
         corner: Closing::OPEN,
@@ -608,7 +610,7 @@ fn a_slot_across_two_bends_one_down() {
         let slot = polygon(&[[37.0, 12.0], [x1, 12.0], [x1, 18.0], [37.0, 18.0]], k);
         let mut spec = part_spec(k, kf, vec![slot]);
         spec.flanges[0].length = 6.0 * k;
-        let mut down = spec.flanges[0];
+        let mut down = spec.flanges[0].clone();
         down.on = On::Tip(0);
         down.direction = Direction::Down;
         down.length = 10.0 * k;

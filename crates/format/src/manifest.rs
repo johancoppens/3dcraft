@@ -808,6 +808,33 @@ pub struct SheetFlange {
     pub k_factor: Option<String>,
     #[serde(default, skip_serializing_if = "FlangeFrom::is_tangent")]
     pub from: FlangeFrom,
+    /// On a side of flange `flange` (format version 49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SheetFlangeSide>,
+    /// How far the bend stands back from its edge's start and end, and
+    /// the sketch of the flange's own outline (format version 49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<u64>,
+}
+
+/// The side of an earlier flange a flange sits on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SheetFlangeSide {
+    pub flange: u32,
+    pub end: FlangeSideEnd,
+}
+
+/// The start or the end of a flange's bend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FlangeSideEnd {
+    Start,
+    End,
 }
 
 /// Which way a bend turns.

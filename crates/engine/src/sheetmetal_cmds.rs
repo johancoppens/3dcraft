@@ -13,8 +13,8 @@ use crate::verify_cmds::{Ctx, Dim, Outcome};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     BendDirection, CornerClose, CornerKind, CornerRelief, Document, Expr, FeatureId, FeatureKind,
-    Flange, FlangeFrom, FlangeOn, Geometry, MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner,
-    SheetMetal,
+    Flange, FlangeFrom, FlangeOn, FlangeSide, Geometry, MAX_SHEET_FLANGES, Pick, ReliefShape,
+    SheetCorner, SheetMetal,
 };
 use craft3d_kernel::profile::{Segment, Shape};
 use craft3d_kernel::sheetmetal::{
@@ -23,9 +23,13 @@ use craft3d_kernel::sheetmetal::{
 };
 use serde_json::{Map, Value, json};
 
-const FLANGE_KEYS: [&str; 8] = [
+const FLANGE_KEYS: [&str; 12] = [
     "edge",
     "tip",
+    "side",
+    "insetStart",
+    "insetEnd",
+    "outline",
     "length",
     "angle",
     "direction",
@@ -43,11 +47,16 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "The bend table of a sheet-metal part, measured on the part as built: per bend (one per flange, in order) what it is on, direction, angle (degrees, between the planes of its two flats as folded), radius (the inner skin's), kFactor, thickness, allowance (the bend allowance angle * (radius + kFactor * thickness)), developed (the width of the bend's neutral band laid flat by the unfold, which must agree with allowance), setback ((radius + thickness) tan(angle/2), the outside setback; null at 180 degrees), deduction (2 setback - allowance, the bend deduction; null at 180 degrees), flangeLength (the flange's flat beyond the bend) and toMould (flangeLength + setback). For the part: flatArea, flatSize (the flat pattern's width and height in the sketch's axes), corners (where two flanged edges meet: point, bends, relief, size, kind (open, butt, overlap, miter), gap (null when open), over (the covering flange of a butt or overlap)), holes (per hole of the base and of each flange's flat, its curves, flange (null for the base), the nearest bend beside that flat and the distance from the hole to that bend's tangent line on the flat's side). Read-only.", doc: true, sheet_metal_bends),
 ];
 
-fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, CommandError> {
+fn flange_value(
+    p: &Params,
+    doc: &Document,
+    index: usize,
+    value: &Value,
+) -> Result<Flange, CommandError> {
     let id = p.command();
     let Value::Object(map) = value else {
         return fail(format!(
-            "{id}: flanges.{index} is an object {{\"edge\" or \"tip\", \"length\", \"angle\", ...}}"
+            "{id}: flanges.{index} is an object {{\"edge\", \"tip\" or \"side\", \"length\", \"angle\", ...}}"
         ));
     };
     if let Some(unknown) = map.keys().find(|k| !FLANGE_KEYS.contains(&k.as_str())) {
@@ -57,26 +66,60 @@ fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, Comma
             FLANGE_KEYS.join(", ")
         ));
     }
-    let on = match (map.get("edge"), map.get("tip")) {
-        (Some(edge), None) => FlangeOn::Base(crate::sketch_cmds::entity_id(id, "edge", edge)?),
-        (None, Some(tip)) => {
-            let Some(n) = tip.as_u64().filter(|&n| (n as usize) < index) else {
-                return fail(format!(
-                    "{id}: flanges.{index}.tip is the place of an earlier flange in the list (0 to {})",
-                    index.saturating_sub(1)
-                ));
+    let earlier = |key: &str, n: Option<u64>| -> Result<u32, CommandError> {
+        let Some(n) = n.filter(|&n| (n as usize) < index) else {
+            return fail(format!(
+                "{id}: flanges.{index}.{key} is the place of an earlier flange in the list (0 to {})",
+                index.saturating_sub(1)
+            ));
+        };
+        if index == 0 {
+            return fail(format!(
+                "{id}: flanges.0 sits on an edge of the base; only a later flange sits on a tip or a side"
+            ));
+        }
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    let on = match (map.get("edge"), map.get("tip"), map.get("side")) {
+        (Some(edge), None, None) => {
+            FlangeOn::Base(crate::sketch_cmds::entity_id(id, "edge", edge)?)
+        }
+        (None, Some(tip), None) => FlangeOn::Tip(earlier("tip", tip.as_u64())?),
+        (None, None, Some(side)) => {
+            let bad = || {
+                CommandError::new(format!(
+                    "{id}: flanges.{index}.side is {{\"flange\": the place of an earlier flange, \"end\": start or end (the side at its bend's start or end)}}"
+                ))
             };
-            if index == 0 {
-                return fail(format!(
-                    "{id}: flanges.0 sits on an edge of the base; only a later flange sits on a tip"
-                ));
+            let Value::Object(side) = side else {
+                return Err(bad());
+            };
+            if side.keys().any(|k| k != "flange" && k != "end") {
+                return Err(bad());
             }
-            FlangeOn::Tip(u32::try_from(n).unwrap_or(u32::MAX))
+            let flange = earlier("side.flange", side.get("flange").and_then(Value::as_u64))?;
+            let end = side
+                .get("end")
+                .and_then(Value::as_str)
+                .and_then(FlangeSide::from_name)
+                .ok_or_else(bad)?;
+            FlangeOn::Side(flange, end)
         }
         _ => {
             return fail(format!(
-                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id) or on the `tip` of an earlier flange: give one of them"
+                "{id}: flanges.{index} sits on an `edge` of the base (a line's entity id), on the `tip` of an earlier flange or on a `side` of one: give one of them"
             ));
+        }
+    };
+    let outline = match map.get("outline") {
+        None | Some(Value::Null) => None,
+        Some(item) => {
+            let Some(sketch) = sketch_ref(doc, item) else {
+                return fail(format!(
+                    "{id}: flanges.{index}.outline names no sketch: give a sketch's id or name"
+                ));
+            };
+            Some(sketch)
         }
     };
     let expr = |key: &str| -> Result<Option<Expr>, CommandError> {
@@ -103,9 +146,21 @@ fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, Comma
         })?,
         Some(_) => return fail(format!("{id}: flanges.{index}.from is tangent or mould")),
     };
+    if outline.is_some() && map.contains_key("length") {
+        return fail(format!(
+            "{id}: flanges.{index} has an outline of its own, which gives its size: give no `length`"
+        ));
+    }
     Ok(Flange {
         on,
-        length: required("length")?,
+        length: if outline.is_some() {
+            Expr::new("0")
+        } else {
+            required("length")?
+        },
+        inset_start: expr("insetStart")?,
+        inset_end: expr("insetEnd")?,
+        outline,
         angle: required("angle")?,
         direction,
         radius: expr("radius")?,
@@ -114,7 +169,7 @@ fn flange_value(p: &Params, index: usize, value: &Value) -> Result<Flange, Comma
     })
 }
 
-fn flanges_value(p: &Params) -> Result<Option<Vec<Flange>>, CommandError> {
+fn flanges_value(p: &Params, doc: &Document) -> Result<Option<Vec<Flange>>, CommandError> {
     let id = p.command();
     let Some(value) = p.get("flanges") else {
         return Ok(None);
@@ -128,7 +183,7 @@ fn flanges_value(p: &Params) -> Result<Option<Vec<Flange>>, CommandError> {
     items
         .iter()
         .enumerate()
-        .map(|(i, v)| flange_value(p, i, v))
+        .map(|(i, v)| flange_value(p, doc, i, v))
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
 }
@@ -352,6 +407,23 @@ fn relief_value(p: &Params) -> Result<Option<Option<CornerRelief>>, CommandError
     }
 }
 
+/// The feature a parameter names by its id (`F3` or 3) or name, if any.
+fn sketch_ref(doc: &Document, item: &Value) -> Option<FeatureId> {
+    match item {
+        Value::String(text) => doc.feature_by_name(text).map(|f| f.id).or_else(|| {
+            text.strip_prefix('F')
+                .and_then(|d| d.parse::<u64>().ok())
+                .and_then(|n| doc.feature(FeatureId(n)))
+                .map(|f| f.id)
+        }),
+        Value::Number(n) => n
+            .as_u64()
+            .and_then(|n| doc.feature(FeatureId(n)))
+            .map(|f| f.id),
+        _ => None,
+    }
+}
+
 /// The sketches `cutouts` names (a list of sketch ids or names), when it
 /// is given: each a sketch, none twice, at most [`MAX_SHEET_FLANGES`].
 fn cutouts_value(p: &Params, doc: &Document) -> Result<Option<Vec<FeatureId>>, CommandError> {
@@ -375,20 +447,7 @@ fn cutouts_value(p: &Params, doc: &Document) -> Result<Option<Vec<FeatureId>>, C
     }
     let mut out: Vec<FeatureId> = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
-        let found = match item {
-            Value::String(text) => doc.feature_by_name(text).map(|f| f.id).or_else(|| {
-                text.strip_prefix('F')
-                    .and_then(|d| d.parse::<u64>().ok())
-                    .and_then(|n| doc.feature(FeatureId(n)))
-                    .map(|f| f.id)
-            }),
-            Value::Number(n) => n
-                .as_u64()
-                .and_then(|n| doc.feature(FeatureId(n)))
-                .map(|f| f.id),
-            _ => None,
-        };
-        let Some(sketch) = found else {
+        let Some(sketch) = sketch_ref(doc, item) else {
             return fail(format!(
                 "{id}: cutouts.{i} names no feature: give a sketch's id or name"
             ));
@@ -444,10 +503,10 @@ fn check_flanges(
                     ));
                 }
             }
-            FlangeOn::Tip(j) => {
+            FlangeOn::Tip(j) | FlangeOn::Side(j, _) => {
                 if j as usize >= i {
                     return fail(format!(
-                        "{id}: flanges.{i}.tip: flange {j} is not an earlier one"
+                        "{id}: flanges.{i}: flange {j} is not an earlier one"
                     ));
                 }
             }
@@ -480,7 +539,7 @@ fn feature_sheet_metal(session: &mut Session, params: &Value) -> Run {
     let thickness = Expr::new(p.expr("thickness")?.ok_or_else(|| p.missing("thickness"))?);
     let radius = Expr::new(p.expr("radius")?.ok_or_else(|| p.missing("radius"))?);
     let k_factor = Expr::new(p.expr("kFactor")?.ok_or_else(|| p.missing("kFactor"))?);
-    let flanges = flanges_value(&p)?.unwrap_or_default();
+    let flanges = flanges_value(&p, doc)?.unwrap_or_default();
     check_flanges(doc, ID, sketch, &flanges)?;
     let relief = relief_value(&p)?.flatten();
     let corner = corner_value(&p)?.flatten();
@@ -515,9 +574,9 @@ fn check_corners(
         for f in c.flanges {
             match flanges.get(f as usize).map(|f| f.on) {
                 Some(FlangeOn::Base(_)) => {}
-                Some(FlangeOn::Tip(_)) => {
+                Some(FlangeOn::Tip(_) | FlangeOn::Side(..)) => {
                     return fail(format!(
-                        "{id}: corners.{i}: flange {f} sits on a tip; a corner is where two flanges on edges of the base meet"
+                        "{id}: corners.{i}: flange {f} sits on a tip or a side; a corner is where two flanges on edges of the base meet"
                     ));
                 }
                 None => {
@@ -583,7 +642,7 @@ fn sheet_metal_edit(session: &mut Session, params: &Value) -> Run {
             *slot = Expr::new(e);
         }
     }
-    if let Some(flanges) = flanges_value(&p)? {
+    if let Some(flanges) = flanges_value(&p, session.document()?.history.current())? {
         part.flanges = flanges;
     }
     if let Some(relief) = relief_value(&p)? {
@@ -616,6 +675,7 @@ fn on_text(made: &SheetMetal, i: usize) -> String {
     match made.flanges.get(i).map(|f| f.on) {
         Some(FlangeOn::Base(line)) => line.to_string(),
         Some(FlangeOn::Tip(j)) => format!("tip of flange {j}"),
+        Some(FlangeOn::Side(j, side)) => format!("{} side of flange {j}", side.name()),
         None => "?".to_string(),
     }
 }

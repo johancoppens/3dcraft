@@ -1409,14 +1409,32 @@ fn flange_to_manifest(flange: &doc::Flange) -> manifest::SheetFlange {
         radius,
         k_factor,
         from,
+        inset_start,
+        inset_end,
+        outline,
     } = flange;
-    let (base, tip) = match on {
-        doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None),
-        doc::FlangeOn::Tip(i) => (None, Some(*i)),
+    let (base, tip, side) = match on {
+        doc::FlangeOn::Base(doc::EntityId(id)) => (Some(*id), None, None),
+        doc::FlangeOn::Tip(i) => (None, Some(*i), None),
+        doc::FlangeOn::Side(i, end) => (
+            None,
+            None,
+            Some(manifest::SheetFlangeSide {
+                flange: *i,
+                end: match end {
+                    doc::FlangeSide::Start => manifest::FlangeSideEnd::Start,
+                    doc::FlangeSide::End => manifest::FlangeSideEnd::End,
+                },
+            }),
+        ),
     };
     manifest::SheetFlange {
         base,
         tip,
+        side,
+        inset_start: inset_start.as_ref().map(expr_to_manifest),
+        inset_end: inset_end.as_ref().map(expr_to_manifest),
+        outline: outline.map(|o| o.0),
         length: expr_to_manifest(length),
         angle: expr_to_manifest(angle),
         direction: match direction {
@@ -1444,13 +1462,27 @@ fn flange_to_doc(flange: manifest::SheetFlange) -> doc::Flange {
         radius,
         k_factor,
         from,
+        side,
+        inset_start,
+        inset_end,
+        outline,
     } = flange;
     doc::Flange {
-        on: match (base, tip) {
-            (Some(id), None) => doc::FlangeOn::Base(doc::EntityId(id)),
-            (None, Some(i)) => doc::FlangeOn::Tip(i),
+        on: match (base, tip, side) {
+            (Some(id), None, None) => doc::FlangeOn::Base(doc::EntityId(id)),
+            (None, Some(i), None) => doc::FlangeOn::Tip(i),
+            (None, None, Some(side)) => doc::FlangeOn::Side(
+                side.flange,
+                match side.end {
+                    manifest::FlangeSideEnd::Start => doc::FlangeSide::Start,
+                    manifest::FlangeSideEnd::End => doc::FlangeSide::End,
+                },
+            ),
             _ => doc::FlangeOn::Tip(u32::MAX),
         },
+        inset_start: inset_start.map(doc::Expr),
+        inset_end: inset_end.map(doc::Expr),
+        outline: outline.map(doc::FeatureId),
         length: doc::Expr(length),
         angle: doc::Expr(angle),
         direction: match direction {

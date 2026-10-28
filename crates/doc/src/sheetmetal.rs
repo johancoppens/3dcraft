@@ -72,6 +72,35 @@ pub enum FlangeOn {
     Base(EntityId),
     /// The tip of the flange at this place in the list (an earlier one).
     Tip(u32),
+    /// A side of the flange at this place in the list (an earlier one):
+    /// its edge at the start or at the end of its bend.
+    Side(u32, FlangeSide),
+}
+
+/// Which side of a flange's flat another flange sits on: the one at the
+/// start of its bend (its edge's start) or at the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FlangeSide {
+    Start,
+    End,
+}
+
+impl FlangeSide {
+    pub fn name(self) -> &'static str {
+        match self {
+            FlangeSide::Start => "start",
+            FlangeSide::End => "end",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "start" => Some(FlangeSide::Start),
+            "end" => Some(FlangeSide::End),
+            _ => None,
+        }
+    }
 }
 
 /// One flange: a flat bent from an edge.
@@ -87,6 +116,15 @@ pub struct Flange {
     /// The bend's K-factor; `None`: the part's.
     pub k_factor: Option<Expr>,
     pub from: FlangeFrom,
+    /// How far the bend stands back from its edge's start and end (`None`:
+    /// 0, the bend spans the edge).
+    pub inset_start: Option<Expr>,
+    pub inset_end: Option<Expr>,
+    /// A sketch whose closed profile is the flange's flat, drawn in the
+    /// base sketch's plane as if the bend had no width: one line of it on
+    /// the edge's line, the rest beyond (`None`: the rectangle `length`
+    /// long). Comes before the part in the history.
+    pub outline: Option<FeatureId>,
 }
 
 /// The shape of a corner relief.
@@ -265,6 +303,12 @@ impl SheetMetal {
             if let Some(k) = &f.k_factor {
                 out.push((format!("flanges.{i}.kFactor"), k));
             }
+            if let Some(e) = &f.inset_start {
+                out.push((format!("flanges.{i}.insetStart"), e));
+            }
+            if let Some(e) = &f.inset_end {
+                out.push((format!("flanges.{i}.insetEnd"), e));
+            }
         }
         if let Some(relief) = &self.relief {
             if let Some(e) = relief.shape.expr() {
@@ -302,6 +346,12 @@ impl SheetMetal {
             }
             if let Some(k) = &mut f.k_factor {
                 out.push(k);
+            }
+            if let Some(e) = &mut f.inset_start {
+                out.push(e);
+            }
+            if let Some(e) = &mut f.inset_end {
+                out.push(e);
             }
         }
         if let Some(relief) = &mut self.relief {

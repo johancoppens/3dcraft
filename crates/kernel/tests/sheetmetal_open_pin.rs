@@ -61,6 +61,8 @@ fn flange(on: On, direction: Direction) -> FlangeSpec {
         radius: 1.0,
         k: 0.4,
         from: LengthFrom::Tangent,
+        inset: [0.0; 2],
+        outline: None,
     }
 }
 

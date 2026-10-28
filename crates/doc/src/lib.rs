@@ -48,7 +48,7 @@ pub use public::{
 };
 pub use sets::{MAX_SET_QUERY_BYTES, MAX_SETS, NamedSet};
 pub use sheetmetal::{
-    BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn,
+    BendDirection, CornerClose, CornerKind, CornerRelief, Flange, FlangeFrom, FlangeOn, FlangeSide,
     MAX_SHEET_FLANGES, Pick, ReliefShape, SheetCorner, SheetMetal,
 };
 pub use table::{MAX_TABLES, Table, TableCell, TableColumn};
@@ -1377,9 +1377,14 @@ impl FeatureKind {
             FeatureKind::Fold(f) => vec![f.sketch],
             FeatureKind::SheetMetal(m) => {
                 let mut out = vec![m.sketch];
-                for id in &m.cutouts {
-                    if !out.contains(id) {
-                        out.push(*id);
+                let more = m
+                    .cutouts
+                    .iter()
+                    .copied()
+                    .chain(m.flanges.iter().filter_map(|f| f.outline));
+                for id in more {
+                    if !out.contains(&id) {
+                        out.push(id);
                     }
                 }
                 out

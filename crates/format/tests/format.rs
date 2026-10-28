@@ -4943,6 +4943,9 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
                     radius: None,
                     k_factor: None,
                     from: FlangeFrom::Tangent,
+                    inset_start: None,
+                    inset_end: None,
+                    outline: None,
                 },
                 Flange {
                     on: FlangeOn::Tip(0),
@@ -4952,6 +4955,9 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
                     radius: Some(Expr::new("3 mm")),
                     k_factor: Some(Expr::new("0.5")),
                     from: FlangeFrom::Mould,
+                    inset_start: None,
+                    inset_end: None,
+                    outline: None,
                 },
             ],
             relief: Some(CornerRelief {
@@ -4986,6 +4992,73 @@ fn a_sheet_metal_part_is_written_like_this_and_round_trips() {
     let extra = json.replacen("\"tip\": 0,", "\"tip\": 0, \"width\": 1,", 1);
     assert_ne!(extra, json);
     assert!(from_manifest_json(extra.as_bytes()).is_err());
+}
+
+/// A flange's insets, its outline of its own and a flange on a side
+/// (format 49, TEMPORARY number) are written only when set, like this, and
+/// load back the same; a side's end is start or end, nothing else.
+#[test]
+fn sheet_metal_insets_sides_and_outlines_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{
+        BendDirection, EntityId, Expr, Flange, FlangeFrom, FlangeOn, FlangeSide, SheetMetal,
+    };
+    let flange = |on: FlangeOn| Flange {
+        on,
+        length: Expr::new("20 mm"),
+        angle: Expr::new("90 deg"),
+        direction: BendDirection::Up,
+        radius: None,
+        k_factor: None,
+        from: FlangeFrom::Tangent,
+        inset_start: None,
+        inset_end: None,
+        outline: None,
+    };
+    let mut doc = small();
+    let inset = Flange {
+        inset_start: Some(Expr::new("5 mm")),
+        inset_end: Some(Expr::new("w / 4")),
+        ..flange(FlangeOn::Base(EntityId(5)))
+    };
+    let outlined = Flange {
+        length: Expr::new("0"),
+        outline: Some(FeatureId(7)),
+        ..flange(FlangeOn::Base(EntityId(6)))
+    };
+    doc.add_feature(
+        Some("Tray"),
+        FeatureKind::SheetMetal(SheetMetal {
+            sketch: FeatureId(7),
+            thickness: Expr::new("1 mm"),
+            radius: Expr::new("1 mm"),
+            k_factor: Expr::new("0.4"),
+            flanges: vec![inset, outlined, flange(FlangeOn::Side(0, FlangeSide::End))],
+            relief: None,
+            cutouts: Vec::new(),
+            corner: None,
+            corners: Vec::new(),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features.last().unwrap()["kind"]["flanges"],
+        serde_json::json!([
+            {"base": 5, "length": "20 mm", "angle": "90 deg", "direction": "up",
+             "inset_start": "5 mm", "inset_end": "w / 4"},
+            {"base": 6, "length": "0", "angle": "90 deg", "direction": "up", "outline": 7},
+            {"side": {"flange": 0, "end": "end"}, "length": "20 mm", "angle": "90 deg",
+             "direction": "up"}
+        ])
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    let odd = json.replacen("\"end\": \"end\"", "\"end\": \"middle\"", 1);
+    assert_ne!(odd, json);
+    assert!(from_manifest_json(odd.as_bytes()).is_err());
 }
 
 /// Outputs (format 43) are saved as written, in their order, a measure as
@@ -5058,6 +5131,9 @@ fn closed_sheet_metal_corners_are_written_like_this_and_round_trip() {
         radius: None,
         k_factor: None,
         from: FlangeFrom::Tangent,
+        inset_start: None,
+        inset_end: None,
+        outline: None,
     };
     let mut doc = small();
     doc.add_feature(

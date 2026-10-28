@@ -12,8 +12,8 @@
 use crate::extrude::{drawn, profile_error};
 use crate::{FeatureResult, Names, angle, face_ops, length, number};
 use craft3d_doc::{
-    BendDirection, CornerKind, Document, FeatureId, FeatureKind, FlangeFrom, FlangeOn, NameRole,
-    PersistentName, Pick, ReliefShape, SheetMetal,
+    BendDirection, CornerKind, Document, FeatureId, FeatureKind, FlangeFrom, FlangeOn, FlangeSide,
+    NameRole, PersistentName, Pick, ReliefShape, SheetMetal,
 };
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
@@ -103,7 +103,7 @@ pub(crate) fn analyse(
         .iter()
         .filter_map(|f| match f.on {
             FlangeOn::Base(line) => profiles.iter().position(|p| holds(p, line.0)),
-            FlangeOn::Tip(_) => None,
+            FlangeOn::Tip(_) | FlangeOn::Side(..) => None,
         })
         .collect();
     on.sort_unstable();
@@ -182,10 +182,40 @@ pub(crate) fn analyse(
                 On::Base(line.0)
             }
             FlangeOn::Tip(j) => On::Tip(usize::try_from(j).unwrap_or(usize::MAX)),
+            FlangeOn::Side(j, side) => On::Side(
+                usize::try_from(j).unwrap_or(usize::MAX),
+                match side {
+                    FlangeSide::Start => 0,
+                    FlangeSide::End => 1,
+                },
+            ),
+        };
+        let inset = |what: &str, e: &Option<craft3d_doc::Expr>| -> Result<f64, String> {
+            match e {
+                None => Ok(0.0),
+                Some(expr) => length(doc, variables, &param(what), expr),
+            }
+        };
+        let outline = match f.outline {
+            None => None,
+            Some(sketch) => Some(
+                own_outline(doc, earlier, sketch, &drawn.plane, &tol)
+                    .map_err(|e| format!("{}: {e}", param("outline")))?,
+            ),
         };
         flanges.push(FlangeSpec {
             on,
-            length: length(doc, variables, &param("length"), &f.length)?,
+            inset: [
+                inset("insetStart", &f.inset_start)?,
+                inset("insetEnd", &f.inset_end)?,
+            ],
+            // A flange with an outline of its own takes its size from it.
+            length: if outline.is_some() {
+                0.0
+            } else {
+                length(doc, variables, &param("length"), &f.length)?
+            },
+            outline,
             angle: angle(doc, variables, &param("angle"), &f.angle)?,
             direction: match f.direction {
                 BendDirection::Up => Direction::Up,
@@ -287,6 +317,33 @@ pub(crate) fn analyse(
         tolerance: tol,
         sketch: name,
     })
+}
+
+/// The closed profile of sketch `sketch` (holes allowed) in the axes of
+/// the base's plane `to`: a flange's own outline.
+fn own_outline(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    sketch: FeatureId,
+    to: &Frame,
+    tol: &Tolerance,
+) -> Result<craft3d_kernel::profile::Profile, String> {
+    let drawn = drawn(doc, earlier, sketch)?;
+    let name = drawn.name.to_string();
+    let curves = carried(&drawn.curves, &drawn.plane, to, tol)
+        .map_err(|e| format!("sketch `{name}` {e}"))?;
+    let mut found = detect_profiles(&curves, tol).map_err(|e| {
+        format!(
+            "sketch `{name}`: {}",
+            profile_error(&e, &drawn.solved.curve_ids)
+        )
+    })?;
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        n => Err(format!(
+            "sketch `{name}` has {n} closed profiles; a flange's outline is one (holes inside it allowed)"
+        )),
+    }
 }
 
 /// The name a [`Pick`] picks: as written, or the expression's value, a

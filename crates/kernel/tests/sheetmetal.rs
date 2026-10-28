@@ -87,6 +87,8 @@ fn flange(
         radius,
         k,
         from: LengthFrom::Tangent,
+        inset: [0.0; 2],
+        outline: None,
     }
 }
 

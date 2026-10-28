@@ -285,23 +285,17 @@ struct Analysis {
 
 /// The tangent lines of the pattern: per bend its parent's edge and the
 /// flange's segment 0.
-fn tangents(
-    flats: &[Flat],
-    bends: &[Bend],
-    base_edge: &BTreeMap<usize, usize>,
-) -> Result<Vec<Tangent>, KernelError> {
+fn tangents(flats: &[Flat], bends: &[Bend]) -> Result<Vec<Tangent>, KernelError> {
     let mut out = Vec::with_capacity(2 * bends.len());
     for (i, b) in bends.iter().enumerate() {
-        let k = if b.parent == 0 {
-            *base_edge
-                .get(&i)
-                .ok_or_else(|| refuse(Some(i), "a flange lost its edge"))?
-        } else {
-            flats
-                .get(b.parent)
-                .and_then(|f| f.tip)
-                .ok_or_else(|| refuse(Some(i), "a flange's parent has no tip"))?
-        };
+        let seat = super::seat_of(flats, i, b)?;
+        if seat.hole.is_some() {
+            return Err(refuse(
+                Some(i),
+                "a hole across a bend in a part with a flange on a hole's edge is not supported (owed: the tangent lines of such a bend are a hole's, which the cells do not trace)",
+            ));
+        }
+        let k = seat.seg;
         out.push(Tangent {
             flat: b.parent,
             seg: k,
@@ -330,12 +324,11 @@ fn flange_name(bend: usize) -> String {
 fn analyse(
     flats: &[Flat],
     bends: &[Bend],
-    base_edge: &BTreeMap<usize, usize>,
     cuts: &[Cut],
     tolerance: &Tolerance,
 ) -> Result<Analysis, KernelError> {
     let tol = tolerance.linear;
-    let tangents = tangents(flats, bends, base_edge)?;
+    let tangents = tangents(flats, bends)?;
     let mut crossings: Vec<(P2, usize)> = Vec::new();
     // Per tangent line: the crossings on it (along, point, vertex).
     let mut on_line: Vec<Vec<(f64, P2, VRef)>> = vec![Vec::new(); tangents.len()];
@@ -900,13 +893,12 @@ pub(super) fn folded_sheet(
     plane: &Frame,
     flats: &[Flat],
     bends: &[Bend],
-    base_edge: &BTreeMap<usize, usize>,
     cuts: &[Cut],
     tolerance: &Tolerance,
     checked: bool,
 ) -> Result<(Body, Vec<SheetFace>, Ends, Vec<EdgeKey>), KernelError> {
     let tol = tolerance.linear;
-    let found = analyse(flats, bends, base_edge, cuts, tolerance)?;
+    let found = analyse(flats, bends, cuts, tolerance)?;
     let worlds: Vec<Transform> = flats.iter().map(|f| world(plane, f)).collect();
     let w_of = |i: usize| -> Result<Transform, KernelError> {
         worlds
