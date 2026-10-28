@@ -1327,7 +1327,8 @@ fn turned_axes(
     let [x, y, z] = d;
     let wanted = Vec3::new(x, y, z);
     let along = wanted - normal * wanted.dot(normal);
-    if !(along.length() > 1e-9 * wanted.length()) {
+    let projected = along.length();
+    if projected.is_nan() || projected <= 1e-9 * wanted.length() {
         return Err(format!(
             "plane.xAxis: [{x}, {y}, {z}] is along the face's normal (or zero), so it gives the sketch no x axis on the face"
         ));
