@@ -198,11 +198,17 @@ or the pressure angle `alpha`, and every flank is computed again:
 - A formula that fails somewhere in the range (`1 / (t - 1)`), is not finite, gives a single point, or
   jumps cannot be fitted: the command, or later the sketch, says why and near which `t`. A kink is
   rounded within the tolerance or refused; split the curve there into two for a sharp corner.
-- A formula curve has no unknowns and takes no `tangent` or `pointOn` constraint yet.
+- A formula curve has no unknowns of its own, but takes `pointOn` (a point held on the curve as fitted, so
+  within half the tolerance of the formulas) and `tangent`: with a line, an arc, a spline or a live
+  spline that ends on one of its end points, the other curve leaves that point along it; without a
+  shared end, a line or a circle touches it anywhere (a line where the curve runs parallel to it, the
+  place nearest the line; a circle at the foot of its centre, on the side the centre starts on). Two
+  formula curves take no `tangent`: nothing moves either.
 
 **A spline through computed points.** `sketch.spline` with `"live": true` and `through` keeps the points
 as they are and fits the spline through them again at every regeneration, so points held by expressions
 (`["r * cos(30 deg)", "r * sin(30 deg)"]`) or by constraints move it; without `live` the spline is fitted
-once and then shaped by its control points.
+once and then shaped by its control points. A live spline takes `pointOn` and `tangent` as a formula curve
+does, and what hangs on it follows its points.
 
 **Next:** [Modelling features](09-features.md).

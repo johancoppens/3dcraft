@@ -522,6 +522,8 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - A feature's name in a face name (`Cube:face(2)`) in every parameter that holds names (since 2026-10-25, every command's list checked by a test), and a script by names pinned to build the same part with a step added before it or inserted at the marker, where ids shift or stay (2026-10-28).
 - `document.setUnit {units, keep: numbers|sizes}`: the length unit changed after `file.new`, the sizes kept by writing the old unit on every plain length and proven by regenerating, or refused ([`design/document.md`](design/document.md) › *Changing the length unit*) (2026-10-28).
 - A sketch on a face with its x axis turned to a world direction (`sketch.create {face, xAxis}`) ([`design/document.md`](design/document.md) › *A sketch on a face with turned axes*) (2026-10-28).
+- `pointOn` and `tangent` on formula curves and live splines: a fitted spline or one through its points for the solver, tangent at a shared end or touching a line or circle anywhere ([`design/document.md`](design/document.md) › *Constraints on them*) (2026-10-28)
+- A unit after a parenthesis, a call or `pi` (`(360 / n) deg`, `2 * pi rad / n`), every expression of the repository's files unchanged; a plain angle with a bare `pi` is a `plainAngle` warning of `document.check`, its value kept ([`design/document.md`](design/document.md) › *A unit after a parenthesis*) (2026-10-28)
 
 #### Open
 - [ ] Sheet metal, what is not built: flanges on holes' edges, on flanges' sides, inset or with outlines of their own, curved bends, sharp bends, mitred corners at reflex corners, holes across a bend, a later boolean's cut carried onto the flat pattern, bend sequence and press-brake collision ([`design/sheetmetal.md`](design/sheetmetal.md) › *Limits*)
@@ -531,10 +533,8 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] Developables: rails that close on themselves (a tube) or have a corner, a connection split where the rulings would cross, an approximate flatten of a doubly curved face, marks drawn on a pattern carried onto the part as geometry ([`design/developable.md`](design/developable.md) › *Open*)
 - [ ] Projected views: edges written as the arcs, circles and ellipses they are instead of fine polylines
 - [ ] The web build's regeneration and meshing off the page's thread: the shell over a session in the worker, or bodies that cross to the page (the checks are there since 2026-10-28; [`design/engine.md`](design/engine.md) › *Checks in a Web Worker*)
-- [ ] A formula curve or live spline takes no `tangent` or `pointOn` constraint yet
 - [ ] A re-point at the rollback marker is made once, when the feature is inserted: editing or deleting the inserted feature later does not redo or undo it ([`design/names.md`](design/names.md) › *A feature inserted at the marker*)
 - [ ] `document.setUnit` keeping the sizes refuses outputs, formula curves, numbers in sets and subjects, measures with numbers of their own and `value` assertions ([`design/document.md`](design/document.md) › *Changing the length unit*)
-- [ ] Plain numbers as angles are degrees in parameters but radians inside `sin`/`cos`, and `pi` is a plain number, so `2 * pi / n` is a few degrees (kept, as files rely on it; `sin(30)` warns since 2026-10-23); a unit after a parenthesis is refused
 
 #### Acceptance
 Every task of the set is built by an agent over MCP and `document.inspect` reports its known volume (✅ 2026-10-22: `crates/engine/tests/task_acceptance.rs`); a file saved by this version loads in the next; a killed app recovers the document on restart (✅ 2026-10-13: `apps/craft3d/tests/killed_window.rs` and `apps/craft3d-cli/tests/recovery.rs`, both with SIGKILL); FreeCAD or another independent reader opens the DXF and SVG exports with the same outline.
