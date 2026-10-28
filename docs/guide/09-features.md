@@ -98,10 +98,13 @@ faces into a solid layer. `feature.fold` folds a sheet along a crease pattern ([
 
 A **developable** surface is one a flat sheet bends onto without stretching: plywood panels of a boat,
 sheet metal, paper, a lampshade. `feature.developable` makes the developable sheet between two curves
-(`a` and `b`): each a sketch whose curves make one open chain, or `{"edges": [...]}`, edges of earlier
-bodies in order (the chines of a hull, for instance). Straight lines (*rulings*) join the two curves where
-both curves' tangents and the line lie in one plane, which is what makes the sheet developable; where the
-ruling from an end does not reach the other curve's end, a fan (a cone from that end) fills the corner.
+(`a` and `b`): each a sketch whose curves make one open chain (or one closed loop), or `{"edges": [...]}`,
+edges of earlier bodies in order (the chines of a hull, for instance). Straight lines (*rulings*) join the
+two curves where both curves' tangents and the line lie in one plane, which is what makes the sheet
+developable; where the ruling from an end does not reach the other curve's end, a fan (a cone from that
+end) fills the corner. Where a curve has a corner, a fan from the corner turns it, so the sheet stays smooth
+(where both curves have a corner on one ruling, the sheet is creased along it). Two closed curves give a
+tube, cut open along one ruling when it is unfolded.
 The sheet's edges are the curves themselves, so two panels on one curve meet edge to edge. `feature.unfold`
 lays faces flat as one piece, the pattern to cut, with every length, angle and area kept:
 
@@ -131,7 +134,9 @@ on the panel, and the other way round.
   panels at a chine, a fold) do not lie flat as one piece: unfold each on its own.
 - A developable is refused, with where, when its rulings would cross (an inflection of a curve, a curve
   that winds about the other), when the curves lie in one plane over a stretch only, when they meet
-  between their ends, and for closed curves and curves with a corner (not supported yet).
+  between their ends, when a curve turns back on itself, and when one curve is closed and the other is
+  not. The fans at the ends and at the corners unfold; a strip beside a fan where the rulings turned back
+  does not yet (unfold the faces one by one).
 ## Plates and joints
 
 `feature.plate` gives faces a thickness: a sheet (a fill, a loft of open sections, a developable) becomes a
