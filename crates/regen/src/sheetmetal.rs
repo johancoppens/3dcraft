@@ -7,7 +7,9 @@
 //! `F9:face(2i + 1)` (the bend of flange `i`) and `F9:face(2i + 2)` (flange
 //! `i`'s flat); the part's faces are a plate's of that skin: the top skin
 //! of a face `F9:copy(0)/F9:face(k)`, the bottom skin `F9:copy(1)/…`, the
-//! rim along an edge `F9:rim(h)/F9:face(k)` (`regen::plate`).
+//! rim along an edge `F9:rim(h)/F9:face(k)` (`regen::plate`), its edge
+//! named by what it is (`sheetmetal::edge_numbers`), so a flange added
+//! later renames only the rim along the edge it is bent from.
 
 use crate::extrude::{drawn, profile_error};
 use crate::{FeatureResult, Names, angle, face_ops, length, number};
