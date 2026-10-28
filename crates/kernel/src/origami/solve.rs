@@ -180,6 +180,9 @@ pub struct Folded {
     pub piece: Vec<usize>,
     /// The work the solve did, in the units of [`MAX_WORK`].
     pub work: u64,
+    /// How many of the first step's guesses were solved (every guess of
+    /// every first step tried, halved ones included).
+    pub guesses: usize,
 }
 
 /// The largest step of the given angles (10 degrees), and the first one
@@ -203,7 +206,7 @@ struct Candidate {
     /// The largest gap of `solved`.
     gap: f64,
     /// Its error bound ([`error_bound`]), `None` not measured yet.
-    bound: Option<f64>,
+    bound: Option<Bound>,
 }
 /// Unknowns without a kind whose sign patterns are all tried at the first
 /// step, at most (2^6 patterns); beyond, all one way and all the other.
@@ -634,10 +637,12 @@ pub(super) fn fold_linkage_within(
     // Past `dense_up_to` unknowns the sparse solve: a short cycle basis, its
     // loops in their own frames, the normal equations as a skyline. Below
     // it, from `SPARSE_FROM` unknowns, the sparse solve too where its
-    // factor costs less than a quarter of the dense one (a Miura sheet:
-    // the first step's guesses, every sign pattern of kinds left open,
-    // each a solve, fit the budget only so); `dense_up_to = usize::MAX`
-    // is the dense solve always.
+    // factor costs less than a quarter of the dense one: the dense solve
+    // eliminates with pivoting, the skyline in a fixed order, so the
+    // quarter is a margin in favour of the pivoted dense solve, taken
+    // over only where the sparse one is clearly cheaper, not a number
+    // fitted to a pattern. `dense_up_to = usize::MAX` is the dense solve
+    // always.
     let sparse = |budget: &mut Budget| -> Result<(Vec<Chain>, Pattern), FoldError> {
         let fundamental: Vec<Chain> = loops
             .iter()
@@ -698,6 +703,15 @@ pub(super) fn fold_linkage_within(
         1.0
     };
     let goal = (tol * 1e-3).max(size * 1e-13);
+    // A body's size plus the largest bend radius: what the derivative's
+    // Lipschitz constant is measured in ([`error_bound`]).
+    let reach = size
+        + link
+            .joints
+            .iter()
+            .map(|j| j.radius.abs())
+            .filter(|r| r.is_finite())
+            .fold(0.0, f64::max);
     let solver = Solver {
         link,
         forest: &forest,
@@ -715,8 +729,8 @@ pub(super) fn fold_linkage_within(
     // sheet the loops' derivative is near singular, and two solves of one
     // branch that each stop at the rule can differ by more than the
     // tolerances' angle. Solved on, each lies within its own error bound
-    // ([`error_bound`]) of the solution, and two solves of one branch lie
-    // within the sum of theirs.
+    // ([`error_bound`]) of a solution, and two solves of one branch are
+    // one where uniqueness is proven too ([`merge_radius`]).
     let fine = Solver {
         polish: true,
         ..solver
@@ -763,6 +777,7 @@ pub(super) fn fold_linkage_within(
     // tangent predictor and a corrector.
     let mut x = vec![0.0; free.len()];
     let mut exhausted = false;
+    let mut guesses = 0usize;
     if largest > 0.0 && !free.is_empty() {
         let mut done = 0.0f64;
         let mut h = (FIRST_STEP / largest).min(1.0);
@@ -788,28 +803,28 @@ pub(super) fn fold_linkage_within(
                 let same = 10.0 * (angular + tol / size);
                 // How far a candidate may lie from the solution it stands
                 // for, in radians ([`error_bound`]), measured once.
-                let bound_of = |c: &mut Candidate, budget: &mut Budget| -> Result<f64, FoldError> {
-                    if let Some(b) = c.bound {
-                        return Ok(b);
-                    }
-                    // Valid only near the solution: a solve that ran out or
-                    // stopped above the goal explains no difference.
-                    if !bound_usable(c.ran_out, c.gap, goal) {
-                        c.bound = Some(0.0);
-                        return Ok(0.0);
-                    }
-                    let here = rows(
-                        link,
-                        &forest,
-                        &loops,
-                        &solver.with(&base, &c.solved),
-                        Some(&column),
-                        budget,
-                    )?;
-                    let b = error_bound(&here, free.len(), size, pattern.as_ref(), budget)?;
-                    c.bound = Some(b);
-                    Ok(b)
-                };
+                let bound_of =
+                    |c: &mut Candidate, budget: &mut Budget| -> Result<Bound, FoldError> {
+                        if let Some(b) = c.bound {
+                            return Ok(b);
+                        }
+                        // Valid only near the solution: a solve that ran out
+                        // or stopped above the goal explains no difference.
+                        let solved = &c.solved;
+                        let b = candidate_bound(c.ran_out, c.gap, goal, || {
+                            let here = rows(
+                                link,
+                                &forest,
+                                &loops,
+                                &solver.with(&base, solved),
+                                Some(&column),
+                                budget,
+                            )?;
+                            error_bound(&here, free.len(), reach, pattern.as_ref(), budget)
+                        })?;
+                        c.bound = Some(b);
+                        Ok(b)
+                    };
                 // A candidate solved again at a quarter of the step, from a
                 // quarter of its solution (as its half is from half of
                 // it): `None` when that solve does not close or does not
@@ -837,7 +852,7 @@ pub(super) fn fold_linkage_within(
                     let diff = |x: &[f64], y: &[f64]| -> Vec<f64> {
                         x.iter().zip(y).map(|(p, q)| p - q).collect()
                     };
-                    let apart = same.max(bound_of(a, budget)? + bound_of(b, budget)?);
+                    let apart = same.max(merge_radius(bound_of(a, budget)?, bound_of(b, budget)?));
                     let d = diff(&a.solved, &b.solved);
                     let h = diff(&a.half, &b.half);
                     let mut quarter = || -> Result<Option<Vec<f64>>, FoldError> {
@@ -851,6 +866,7 @@ pub(super) fn fold_linkage_within(
                 let mut passed: Vec<Candidate> = Vec::new();
                 let mut parted: Option<Vec<usize>> = None;
                 for guess in first_guesses(&signs, step) {
+                    guesses += 1;
                     let Some((solved, ran_out, first_gap)) =
                         first_attempt(&base, guess, &mut *budget)?
                     else {
@@ -873,14 +889,17 @@ pub(super) fn fold_linkage_within(
                     // loops' derivative is near singular, so two solves of
                     // one branch can differ by more than the tolerance's
                     // angle (a Miura sheet of 3 × 12 cells: 4.5e-8 rad at a
-                    // 1-degree step, stopped at the goal). Each solve lies
-                    // within its error bound of the solution, so two within
-                    // the sum of their bounds may be one solution and are
-                    // taken as one; two further apart are two solutions.
+                    // 1-degree step, stopped at the goal). Two are one
+                    // solution only where that is proven: each within its
+                    // error bound of a solution, and the other's inside the
+                    // ball where that solution is unique ([`merge_radius`]);
+                    // otherwise two solutions.
                     let mut duplicate = false;
                     for p in &mut passed {
-                        let apart =
-                            bound_of(p, &mut *budget)? + bound_of(&mut candidate, &mut *budget)?;
+                        let apart = merge_radius(
+                            bound_of(p, &mut *budget)?,
+                            bound_of(&mut candidate, &mut *budget)?,
+                        );
                         if max_diff(&p.solved, &candidate.solved) <= apart {
                             duplicate = true;
                             break;
@@ -1012,7 +1031,16 @@ pub(super) fn fold_linkage_within(
             .chunks(3)
             .zip(loops.closing())
             .map(|(r, k)| (largest_gap(r), k))
-            .fold((0.0, 0usize), |a, b| if b.0 > a.0 { b } else { a });
+            // A loop whose gap is not a number is the worst.
+            .fold((0.0f64, 0usize), |a, b| {
+                if a.0.is_nan() {
+                    a
+                } else if b.0.is_nan() || b.0 > a.0 {
+                    b
+                } else {
+                    a
+                }
+            });
         return Err(FoldError::NotClosing {
             id: source(worst.1),
             gap,
@@ -1098,6 +1126,7 @@ pub(super) fn fold_linkage_within(
         roots: forest.roots,
         piece: forest.piece,
         work: budget.0,
+        guesses,
     })
 }
 
@@ -1637,29 +1666,51 @@ fn name_free(
     Ok(())
 }
 
-/// How far, in radians, a solution of the loops may lie from the solution
-/// it stands for, valid only near that solution: twice the Gauss–Newton
-/// step it would still take, `2 ‖r‖ / σ_min(J)`, with `r` the gaps of
-/// `rows` and `σ_min(J) ≥ √λ_min · min_i ‖J e_i‖` (`λ_min` the smallest
-/// eigenvalue of the normal equations scaled to unit diagonal, as the rank
-/// test scales them), and only where Kantorovich's condition
-/// `h = L ‖r‖ / σ² ≤ ½` holds for a Lipschitz constant `L` of `J` taken
-/// from above (below), so that a solution lies within it whatever way the
-/// solve stopped. It is 0, explaining no difference, where `λ_min` is at
-/// most the rank pivot, where inverse iteration did not settle, where `h`
-/// is above a half, and where anything is not finite; the caller also
-/// takes 0 for a solve that ran out or stopped above its goal. A
-/// difference it does not explain is two solutions (refused, never
-/// merged).
+/// A solve's error bound and what proves it: `radius` (radians; 0 when
+/// nothing is proven), `sigma` the derivative's smallest singular value
+/// from below and `lipschitz` its Lipschitz constant from above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bound {
+    radius: f64,
+    sigma: f64,
+    lipschitz: f64,
+}
+
+impl Bound {
+    /// Nothing proven: explains no difference.
+    const NONE: Bound = Bound {
+        radius: 0.0,
+        sigma: 0.0,
+        lipschitz: f64::INFINITY,
+    };
+}
+
+/// How far, in radians, a solve of the loops may lie from a solution,
+/// valid only near it: twice the Gauss–Newton step it would still take,
+/// `2 ‖r‖ / σ_min(J)`, with `r` the gaps of `rows` and
+/// `σ_min(J) ≥ √λ_min · min_i ‖J e_i‖` (`λ_min` the smallest eigenvalue of
+/// the normal equations scaled to unit diagonal, as the rank test scales
+/// them, divided by 1.01 since inverse iteration estimates it from above),
+/// and only where Kantorovich's condition `h = L ‖r‖ / σ² ≤ ½` holds for a
+/// Lipschitz constant `L` of `J` taken from above. The loops' rows are
+/// redundant but consistent (every loop closes at a solution), so the
+/// zero-residual Gauss–Newton form of the theorem applies: a solution lies
+/// within the radius, whatever way the solve stopped, and it is the only
+/// one within `σ / L` ([`merge_radius`]). Nothing is proven
+/// ([`Bound::NONE`]) where `λ_min` is at most the rank pivot, where
+/// inverse iteration did not settle, where `h` is above a half and where
+/// anything is not finite; the caller also takes none for a solve that ran
+/// out or stopped above its goal ([`candidate_bound`]). `reach` bounds a
+/// body's size plus a bend's radius.
 fn error_bound(
     rows: &[Row],
     n: usize,
-    size: f64,
+    reach: f64,
     pattern: Option<&Pattern>,
     budget: &mut Budget,
-) -> Result<f64, FoldError> {
+) -> Result<Bound, FoldError> {
     if n == 0 {
-        return Ok(0.0);
+        return Ok(Bound::NONE);
     }
     let owned;
     let p = match pattern {
@@ -1678,25 +1729,27 @@ fn error_bound(
         .collect();
     let column = diag.iter().copied().fold(f64::INFINITY, f64::min);
     if !(column.is_finite() && column > 0.0) {
-        return Ok(0.0);
+        return Ok(Bound::NONE);
     }
     p.scale(&mut vals, &diag);
     let Some(lambda) = smallest_eigenvalue(p, &vals, budget)? else {
-        return Ok(0.0);
+        return Ok(Bound::NONE);
     };
     if lambda.is_nan() || lambda <= RANK_PIVOT {
-        return Ok(0.0);
+        return Ok(Bound::NONE);
     }
     // The derivative's Lipschitz constant, from above: an entry of row
-    // `r` is a point's velocity about a joint on its loop, `D × (X − P)`;
-    // turning another joint of the loop moves `D`, `P` and `X`, each by at
-    // most the distance along the loop, which crosses at most `k + 1`
-    // bodies of diameter at most the sheet's size (`k` the row's
-    // unknowns). So each entry changes by at most `3 (k + 1) size` per
-    // radian of each of the `k`, and in the Frobenius norm
-    // `L ≤ 3 size √Σ_r k_r² (k_r + 1)²`.
+    // `r` is a point's velocity about a joint on its loop, `D × (X − C)`
+    // and, for a bend, `−sign(ρ) r rot(û)`; turning another joint of the
+    // loop moves `D`, `C`, `X` and `rot(û)`, each by at most the distance
+    // along the loop plus the bend's radius, and the loop crosses at most
+    // `k + 1` bodies of diameter at most the sheet's size (`k` the row's
+    // unknowns). So each entry changes by at most `3 (k + 1) reach` per
+    // radian of each of the `k` (one-sided at a bend's ρ = 0, where the
+    // velocity is continuous), and in the Frobenius norm
+    // `L ≤ 3 reach √Σ_r k_r² (k_r + 1)²`.
     let lipschitz = 3.0
-        * size
+        * reach
         * rows
             .iter()
             .map(|r| {
@@ -1705,9 +1758,9 @@ fn error_bound(
             })
             .sum::<f64>()
             .sqrt();
-    Ok(kantorovich_bound(
+    Ok(kantorovich(
         cost(rows).sqrt(),
-        lambda * column,
+        lambda / 1.01 * column,
         lipschitz,
     ))
 }
@@ -1719,19 +1772,66 @@ fn bound_usable(ran_out: bool, gap: f64, goal: f64) -> bool {
     !ran_out && gap <= goal
 }
 
+/// A candidate's bound: [`Bound::NONE`] without measuring when the solve
+/// ran out or stopped above its goal, else what `measure` proves.
+fn candidate_bound(
+    ran_out: bool,
+    gap: f64,
+    goal: f64,
+    measure: impl FnOnce() -> Result<Bound, FoldError>,
+) -> Result<Bound, FoldError> {
+    if bound_usable(ran_out, gap, goal) {
+        measure()
+    } else {
+        Ok(Bound::NONE)
+    }
+}
+
 /// Twice the Gauss–Newton step `‖r‖ / σ` (`sigma2 = σ²`, from below)
 /// when Kantorovich's condition `h = L ‖r‖ / σ² ≤ ½` holds, so that a
-/// solution lies within it; 0 otherwise (and for anything not finite):
-/// the bound is valid only near the solution, and where that is not
-/// shown it explains no difference.
-fn kantorovich_bound(residual: f64, sigma2: f64, lipschitz: f64) -> f64 {
-    if !(residual.is_finite() && sigma2 > 0.0 && sigma2.is_finite() && lipschitz.is_finite()) {
-        return 0.0;
+/// solution lies within it; [`Bound::NONE`] otherwise (and for anything
+/// not finite).
+fn kantorovich(residual: f64, sigma2: f64, lipschitz: f64) -> Bound {
+    if !(residual.is_finite()
+        && sigma2 > 0.0
+        && sigma2.is_finite()
+        && lipschitz.is_finite()
+        && lipschitz > 0.0)
+    {
+        return Bound::NONE;
     }
     let h = lipschitz * residual / sigma2;
-    let bound = 2.0 * residual / sigma2.sqrt();
-    if h <= 0.5 && bound.is_finite() {
-        bound
+    let sigma = sigma2.sqrt();
+    let radius = 2.0 * residual / sigma;
+    if h <= 0.5 && radius.is_finite() {
+        Bound {
+            radius,
+            sigma,
+            lipschitz,
+        }
+    } else {
+        Bound::NONE
+    }
+}
+
+/// How far apart two solves may be and still be one solution, proven: the
+/// sum of their radii when that is shown, else 0. Each lies within its
+/// radius of a solution (existence); for those two to be one, the other's
+/// solution must lie in the ball where the solution near `a` is unique,
+/// which Kantorovich's theorem makes at least `σ_a / L` round `a`. With
+/// `a` the solve of the larger `σ`, the other's solution lies within
+/// `d + r_b ≤ r_a + 2 r_b` of `a` when `d ≤ r_a + r_b`, so the sum is
+/// proven only where `r_a + 2 r_b < σ_a / L` (`L` the larger of the two).
+/// Both radii from `h ≤ ½` alone can add up to `2 σ / L`, the least
+/// distance two solutions may lie apart: existence alone merges nothing.
+fn merge_radius(a: Bound, b: Bound) -> f64 {
+    if !(a.radius > 0.0 && b.radius > 0.0) {
+        return 0.0;
+    }
+    let (big, small) = if a.sigma >= b.sigma { (a, b) } else { (b, a) };
+    let l = a.lipschitz.max(b.lipschitz);
+    if big.radius + 2.0 * small.radius < big.sigma / l {
+        a.radius + b.radius
     } else {
         0.0
     }
@@ -1902,26 +2002,57 @@ mod tests {
     /// so the two are never one solution; Kantorovich's condition refuses
     /// a bound far from the solution and keeps one near it.
     #[test]
-    fn a_solve_that_ran_out_never_merges_two_branches() {
+    fn a_solve_that_ran_out_never_merges_two_branches_and_existence_alone_merges_nothing() {
         let (a, b) = ([0.1, 0.2], [0.1, 0.2 + 1e-6]);
         let goal = 1e-13;
         for (ran_out, gap) in [(true, 1e-14), (false, 1e-9), (false, f64::NAN)] {
             assert!(!bound_usable(ran_out, gap, goal));
         }
         assert!(bound_usable(false, 1e-14, goal));
-        // σ² of 1e-12 (σ_min 1e-6), L of 1e3: a residual of 1e-9 has
-        // h = 1e3 · 1e-9 / 1e-12 = 1e6, no bound (it would be 2e-3, past
-        // the branches' 1e-6); a residual of 1e-17 has h = 1e-2, bound 2e-11.
-        assert_eq!(kantorovich_bound(1e-9, 1e-12, 1e3), 0.0);
-        let near = kantorovich_bound(1e-17, 1e-12, 1e3);
-        assert!((near - 2e-11).abs() <= 1e-24, "{near}");
-        assert!(max_diff(&a, &b) > near + near);
-        for bad in [f64::NAN, f64::INFINITY] {
-            assert_eq!(kantorovich_bound(bad, 1e-12, 1e3), 0.0);
-            assert_eq!(kantorovich_bound(1e-17, bad, 1e3), 0.0);
-            assert_eq!(kantorovich_bound(1e-17, 1e-12, bad), 0.0);
+        // The seam: a ran-out solve is not measured, whatever it would show.
+        let wide = Bound {
+            radius: 1.0,
+            sigma: 1.0,
+            lipschitz: 1e-6,
+        };
+        for (ran_out, gap) in [(true, 1e-14), (false, 1e-9)] {
+            let got = candidate_bound(ran_out, gap, goal, || Ok(wide)).unwrap();
+            assert_eq!(got, Bound::NONE);
+            assert_eq!(merge_radius(got, wide), 0.0);
+            assert!(max_diff(&a, &b) > merge_radius(got, wide));
         }
-        assert_eq!(kantorovich_bound(1e-17, 0.0, 1e3), 0.0);
+        assert_eq!(
+            candidate_bound(false, 1e-14, goal, || Ok(wide)).unwrap(),
+            wide
+        );
+        // σ² of 1e-12 (σ_min 1e-6), L of 1e3: a residual of 1e-9 has
+        // h = 1e3 · 1e-9 / 1e-12 = 1e6, nothing proven (it would be 2e-3,
+        // past the branches' 1e-6); a residual of 1e-17 has h = 1e-2,
+        // radius 2e-11.
+        assert_eq!(kantorovich(1e-9, 1e-12, 1e3), Bound::NONE);
+        let near = kantorovich(1e-17, 1e-12, 1e3);
+        assert!((near.radius - 2e-11).abs() <= 1e-24, "{near:?}");
+        // Unique within σ / L = 1e-9 of each: 2e-11 + 4e-11 < 1e-9, so the
+        // sum of the radii is proven one solution, and 1e-6 is past it.
+        assert!((merge_radius(near, near) - 4e-11).abs() <= 1e-24);
+        assert!(max_diff(&a, &b) > merge_radius(near, near));
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert_eq!(kantorovich(bad, 1e-12, 1e3), Bound::NONE);
+            assert_eq!(kantorovich(1e-17, bad, 1e3), Bound::NONE);
+            assert_eq!(kantorovich(1e-17, 1e-12, bad), Bound::NONE);
+        }
+        assert_eq!(kantorovich(1e-17, 0.0, 1e3), Bound::NONE);
+        // h = 0.4 on both (σ = L = 1, residual 0.4): each radius 0.8 is
+        // proven, but two solutions may lie 2σ/L = 2 apart and the radii
+        // add to 1.6: not proven one (0.8 + 1.6 is past σ/L = 1).
+        let h4 = kantorovich(0.4, 1.0, 1.0);
+        assert!((h4.radius - 0.8).abs() <= 1e-15, "{h4:?}");
+        assert_eq!(merge_radius(h4, h4), 0.0);
+        // And with σ apart: the larger σ's ball is the one asked.
+        let small = kantorovich(1e-4, 1.0, 1.0);
+        let large = kantorovich(1e-4, 4.0, 1.0);
+        assert!(merge_radius(small, large) > 0.0);
+        assert_eq!(merge_radius(small, large), merge_radius(large, small));
     }
 
     /// One pair of solutions per way of parting: linear, quadratic

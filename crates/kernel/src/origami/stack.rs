@@ -453,6 +453,7 @@ pub fn fold_stacked(
             roots,
             piece,
             work: budget.0,
+            guesses: moved.guesses,
         },
         stack,
         layers,

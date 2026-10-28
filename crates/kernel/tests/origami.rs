@@ -1499,13 +1499,14 @@ fn slits_and_slots_are_cuts_with_one_facet_on_both_sides() {
     assert!(matches!(e, Err(FoldError::Outside { id: 13 })), "{e:?}");
 }
 
-/// A Miura sheet of 13 × 13 cells, 311 solved angles: the dense solve
-/// (at most 400 unknowns) folds it by its closed form within the work
-/// budget, at the sheet's own size and at a million times it, where the
-/// first step's solves stop on stagnation, not on an absolute goal below
-/// the rounding of long loops. The time is printed (`--nocapture`).
+/// A Miura sheet of 13 × 13 cells, 311 solved angles, forced through the
+/// dense solve (which the sparse one, cheaper here, would replace): it
+/// folds by its closed form within the work budget, at the sheet's own
+/// size and at a million times it, where the first step's solves stop on
+/// stagnation, not on an absolute goal below the rounding of long loops.
+/// The time and the work are printed (`--nocapture`).
 #[test]
-fn a_dense_sheet_of_three_hundred_angles_folds_within_the_budget_at_any_scale() {
+fn a_dense_solve_of_three_hundred_angles_folds_within_the_budget_at_any_scale() {
     let (l, d, h): (f64, f64, f64) = (1.0, 0.5, 1.0);
     let gamma = (h / d).atan();
     for scale in [1.0, 1e6] {
@@ -1521,17 +1522,19 @@ fn a_dense_sheet_of_three_hundred_angles_folds_within_the_budget_at_any_scale() 
         for degrees in [20.0f64, 60.0] {
             let rho = degrees.to_radians();
             let clock = std::time::Instant::now();
-            let folded = fold(
+            let folded = fold_with(
                 &arr,
                 &angles(&arr, &[(driver, rho)]),
                 0,
                 tol(scale),
                 ANGULAR,
+                usize::MAX,
             )
             .unwrap();
             println!(
-                "Miura 13 x 13 at scale {scale:e}, dense: {solved} angles at {degrees} degrees in {:.3} s",
-                clock.elapsed().as_secs_f64()
+                "Miura 13 x 13 at scale {scale:e}, dense: {solved} angles at {degrees} degrees in {:.3} s, work {}",
+                clock.elapsed().as_secs_f64(),
+                folded.work
             );
             let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
             for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {
@@ -1626,6 +1629,8 @@ fn the_first_steps_worst_case_on_a_dense_sheet_stays_within_half_the_budget() {
         clock.elapsed().as_secs_f64()
     );
     assert!(folded.work <= MAX_WORK / 2, "{}", folded.work);
+    // Every guess solved: 5 magnitudes times 2⁶ sign patterns at least.
+    assert!(folded.guesses >= 5 * 64, "{}", folded.guesses);
     let zig = 2.0 * ((rho / 2.0).tan() / gamma.cos()).atan();
     let holds = |folded: &Folded| {
         for (hinge, a) in arr.hinges.iter().zip(&folded.angles) {

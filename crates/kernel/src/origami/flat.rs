@@ -183,6 +183,7 @@ pub fn fold_flat(
         roots,
         piece,
         work: 0,
+        guesses: 0,
     })
 }
 

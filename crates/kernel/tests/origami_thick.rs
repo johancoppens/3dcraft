@@ -348,6 +348,7 @@ fn a_panel_inside_another_is_found_by_its_corner() {
         roots: vec![big],
         piece: vec![0; arr.facets.len()],
         work: 0,
+        guesses: 0,
     };
     let e = thick_panels(&arr, &folded, &frame(), &panels, &tolerance);
     let mut want = [big, small];
