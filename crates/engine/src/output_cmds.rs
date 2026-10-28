@@ -63,6 +63,16 @@ pub(crate) struct Resolved {
 }
 
 impl Resolved {
+    /// The outputs as far as they are computed, by name.
+    pub(crate) fn entries(&self) -> &BTreeMap<String, OutputValue> {
+        &self.values
+    }
+
+    /// Outputs as [`Resolved::entries`] gives them.
+    pub(crate) fn from_entries(values: BTreeMap<String, OutputValue>) -> Self {
+        Self { values }
+    }
+
     /// For [`Evaluation::evaluate_with`]: `None` for a name that is no
     /// output, `Some(None)` for one without a value.
     pub fn lookup(&self, name: &str) -> Option<Option<Quantity>> {

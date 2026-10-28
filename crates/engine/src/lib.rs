@@ -20,6 +20,7 @@ mod base64;
 mod below_cmds;
 mod blend_cmds;
 mod body_cmds;
+mod checks_elsewhere;
 mod commands;
 mod datum_cmds;
 mod develop_cmds;
@@ -87,6 +88,7 @@ mod when_cmds;
 mod workspace;
 
 pub use assert_cmds::{AssertionState, AssertionStatus};
+pub use checks_elsewhere::{CheckRequest, measure_checks};
 pub use commands::{DARK_BACKGROUND, EXPORT_QUALITIES, VIEWPORT_BACKGROUND};
 pub use craft3d_regen::progress::Progress;
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};
@@ -380,6 +382,11 @@ pub struct Session {
     /// The document (its id) and the state in which the last call of
     /// [`Session::prepare_some`] panicked: nothing more is done for it.
     pub(crate) prepare_broken: Option<(u64, u64)>,
+    /// The host has the assertions and outputs measured elsewhere (a Web
+    /// Worker: `checks_elsewhere.rs`) and hands their jobs over.
+    pub(crate) checks_elsewhere: bool,
+    /// The last number a job of checks was handed out under.
+    pub(crate) checks_token: u64,
 }
 
 /// Most documents open at once.
@@ -404,6 +411,8 @@ impl Session {
             stepwise: false,
             reached: None,
             prepare_broken: None,
+            checks_elsewhere: false,
+            checks_token: 0,
         }
     }
 

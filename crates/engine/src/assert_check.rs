@@ -31,7 +31,7 @@ use serde_json::{Map, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -56,8 +56,8 @@ pub(crate) enum Wait {
 /// What an assertion depends on, and the bodies that key holds alive (so
 /// that their addresses in it cannot be taken by other bodies).
 #[derive(Clone)]
-struct Key {
-    text: String,
+pub(crate) struct Key {
+    pub(crate) text: String,
     _held: Vec<Arc<Body>>,
 }
 
@@ -75,20 +75,23 @@ const MAX_THREADS: usize = 2;
 /// The assertions being measured on other threads (or a piece at a time
 /// by a host with one thread: [`Session::assertions_some`]), against the
 /// document state and regeneration they were asked for.
-struct Job {
-    work: Vec<(Key, Assertion)>,
-    results: Mutex<Vec<Option<Checked>>>,
-    done: AtomicBool,
+pub(crate) struct Job {
+    pub(crate) work: Vec<(Key, Assertion)>,
+    pub(crate) results: Mutex<Vec<Option<Checked>>>,
+    pub(crate) done: AtomicBool,
+    /// The number it was handed out under to be measured elsewhere
+    /// (`checks_elsewhere.rs`), 0 while it was not.
+    pub(crate) token: AtomicU64,
     /// The next assertion to take.
     next: AtomicUsize,
     /// The pairs of bodies the next assertion measured so far, taken a
     /// piece at a time ([`measure_some`]): which assertion, and its pairs.
     pieces: Mutex<Option<(usize, Vec<PairAnswer>)>>,
-    doc: Arc<Document>,
+    pub(crate) doc: Arc<Document>,
     regen: Arc<Regen>,
     /// The outputs as far as they were computed when the job was made:
     /// every one its work uses.
-    outputs: Arc<Resolved>,
+    pub(crate) outputs: Arc<Resolved>,
 }
 
 /// The keys of one revision: of its measured outputs and of its
@@ -116,7 +119,7 @@ pub(crate) struct Checks {
     keys: Option<(u64, Stage)>,
     /// Answers by key.
     memo: BTreeMap<String, (Checked, Vec<Arc<Body>>)>,
-    job: Option<Arc<Job>>,
+    pub(crate) job: Option<Arc<Job>>,
     /// How many assertions were measured, in all.
     measured: usize,
 }
@@ -257,7 +260,7 @@ fn key_of(doc: &Document, regen: &Regen, assertion: &Assertion, outputs: &Resolv
 }
 
 /// A placeholder for an assertion still being measured.
-fn pending(assertion: &Assertion) -> Checked {
+pub(crate) fn pending(assertion: &Assertion) -> Checked {
     let params: Map<String, Value> = serde_json::from_str(&assertion.measure).unwrap_or_default();
     Checked {
         state: AssertionState {
@@ -605,6 +608,7 @@ impl Session {
                     results: Mutex::new(vec![None; missing.len()]),
                     work: missing,
                     done: AtomicBool::new(false),
+                    token: AtomicU64::new(0),
                     next: AtomicUsize::new(0),
                     pieces: Mutex::new(None),
                     doc: Arc::clone(&doc),
@@ -675,6 +679,11 @@ impl Session {
         stop: impl FnMut() -> bool + 'static,
     ) -> Option<(usize, usize)> {
         let checked = self.checks_and_outputs(Wait::No).ok()?;
+        // Measured elsewhere (`checks_elsewhere.rs`): nothing to do here,
+        // the host hands the job over and its answers come back.
+        if self.checks_elsewhere && self.stepwise {
+            return None;
+        }
         let job = self.document_mut().ok()?.assertions.job.clone();
         if let Some(job) = &job
             && !job.done.load(Ordering::Acquire)
