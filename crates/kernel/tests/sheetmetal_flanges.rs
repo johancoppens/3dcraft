@@ -469,7 +469,8 @@ fn a_flange_with_an_outline_of_its_own() {
         // The hole in the outline is a hole beside the bend: 10 − 3 from
         // the tangent line.
         let found = holes_to_bends(&part, &tol);
-        assert_eq!(found.len(), 1);
+        let per_flat: Vec<usize> = part.flats.iter().map(|f| f.holes.len()).collect();
+        assert_eq!(found.len(), 1, "{found:?}, holes per flat {per_flat:?}");
         near(found[0].distance, 7.0 * k, 1e-9 * k, "the hole to the bend");
 
         // Refused: off the edge's line, past its end, reaching back across
