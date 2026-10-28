@@ -223,19 +223,34 @@ fn numeric(
     {
         return Ok(SurfaceMeeting::Coincident { same_normal });
     }
-    let Some(chart) = Chart::new(walked, within, tol, &field)? else {
+    let march = |bounded: bool| -> Result<Option<Meeting>, GeomError> {
+        let (field, back) = (Field::new(other)?, Field::new(walked)?);
+        let Some(chart) = Chart::new(walked, within, tol, &field)? else {
+            return Ok(None);
+        };
+        let mut marcher = Marcher::new(chart, field, within, tol)?;
+        if bounded {
+            marcher = marcher.bounded();
+        }
+        // A freeform surface the other is measured against has borders
+        // that are edges: where they cross the walked surface a piece of
+        // the curve may end. (Without a chart of it, nothing is added.)
+        if matches!(other, Surface::Bezier(_) | Surface::Nurbs(_))
+            && let Ok(Some(edges)) = Chart::new(other, within, tol, &back)
+        {
+            marcher = marcher.with_field_chart(edges);
+        }
+        marcher.solve(within).map(Some)
+    };
+    // Where the cells ran out, once more with the bound that leaves out
+    // the cells of surfaces side by side (`Marcher::bounded`).
+    let meeting = match march(false) {
+        Err(e) if e == super::march::too_many() => march(true)?,
+        other => other?,
+    };
+    let Some(meeting) = meeting else {
         return Ok(SurfaceMeeting::None);
     };
-    let mut marcher = Marcher::new(chart, field, within, tol)?;
-    // A freeform surface the other is measured against has borders that
-    // are edges: where they cross the walked surface a piece of the curve
-    // may end. (Without a chart of it, nothing is added.)
-    if matches!(other, Surface::Bezier(_) | Surface::Nurbs(_))
-        && let Ok(Some(edges)) = Chart::new(other, within, tol, &back)
-    {
-        marcher = marcher.with_field_chart(edges);
-    }
-    let meeting = marcher.solve(within)?;
     Ok(if meeting.curves.is_empty() && meeting.points.is_empty() {
         SurfaceMeeting::None
     } else {

@@ -49,6 +49,7 @@
 
 mod chart;
 mod classify;
+mod coincide;
 mod contact;
 mod corner;
 mod cover;

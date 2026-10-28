@@ -42,7 +42,14 @@
 //!     part of it, was continued a whole edge length past its end by
 //!     evaluating the spline there, which scattered its points by 1e-5
 //!     mm. Now a spline edge is continued as the same function evaluated
-//!     inside a longer domain of its own.
+//!     inside a longer domain of its own. And `Ov3D` (the steps of repro
+//!     12 that it needs): the sheer plate against the deck over it was
+//!     refused, "tangent or nearly coincident over too large an area":
+//!     the sheer plate's inner skin runs a plate's thickness beside the
+//!     deck's rim over five metres, and the marcher ran out of cells.
+//!     Now cells are left out by a bound on the field's second
+//!     derivative where they ran out, and faces that lie on one another
+//!     where one is over the other are coincident: the plates touch.
 //! 14. Plates on the developable panels (`onto` the end planes, `touch`
 //!     along the chines): refused, "the offset of the freeform face could
 //!     not be approximated", as the panel's surface was continued across
@@ -370,4 +377,76 @@ fn the_sheer_plate_on_the_hull_face_is_built() {
         volume < plain && volume > 0.9 * plain,
         "{plate} against {square}"
     );
+}
+
+#[test]
+fn the_sheer_plate_and_the_deck_over_it_share_no_volume() {
+    // `Ov3D` of repro 12: the sheer plate (holes cut) against the deck
+    // over it. Refused, "tangent or nearly coincident over too large an
+    // area": the sheer plate's inner skin runs a plate's thickness from
+    // the deck's rim (which lies on the sheer plate's outer skin) over
+    // five metres. Now the intersection is empty, the interference a
+    // touch, and the plates' union and difference hold what they should.
+    let (mut s, failed) = steps("sea_kayak_12_ov3d.steps.json");
+    let failed: Vec<&String> = failed.iter().filter(|f| !f.contains("\"Ov3D\"")).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    let document = s.execute("document.inspect", &json!({})).unwrap();
+    let ov = document["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Ov3D")
+        .unwrap();
+    assert!(
+        ov["error"]
+            .as_str()
+            .unwrap()
+            .contains("the result is empty"),
+        "{ov}"
+    );
+    let found = s
+        .execute(
+            "document.interference",
+            &json!({"pairs": [["Top4Sh", "Deck4Sh"]], "details": false}),
+        )
+        .unwrap();
+    let summary = &found["summary"];
+    assert_eq!(summary["overlap"], 0, "{found}");
+    assert_eq!(summary["unknown"], 0, "{found}");
+    assert_eq!(summary["touch"], 1, "{found}");
+    let volume = |s: &mut Session, name: &str| {
+        let document = s.execute("document.inspect", &json!({})).unwrap();
+        document["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no body {name}"))["volume"]
+            .as_f64()
+            .unwrap()
+    };
+    let (top, deck) = (volume(&mut s, "Top4Sh"), volume(&mut s, "Deck4Sh"));
+    for (op, name) in [("union", "Both"), ("subtract", "Less")] {
+        let copy = format!("{name}Top");
+        s.execute(
+            "feature.transform",
+            &json!({"source": "Top4Sh", "keep": true, "name": copy}),
+        )
+        .unwrap();
+        let made = s
+            .execute(
+                "feature.boolean",
+                &json!({"op": op, "target": copy, "tool": "Deck4Sh", "keepTool": true, "name": name}),
+            )
+            .unwrap();
+        assert_ne!(made["status"], "failed", "{made}");
+    }
+    let close = |found: f64, expected: f64, what: &str| {
+        assert!(
+            (found - expected).abs() <= 1e-6 * expected,
+            "{what}: {found} against {expected}"
+        );
+    };
+    close(volume(&mut s, "Both"), top + deck, "the union");
+    close(volume(&mut s, "Less"), top, "the sheer plate less the deck");
 }

@@ -76,7 +76,7 @@
 
 mod tacnode;
 
-use super::field::{Chart, Cusp, Field, Sample, TOUCH};
+use super::field::{Bounds, Chart, Cusp, Field, Sample, TOUCH};
 use super::meet::{Meeting, MeetingCurve};
 use crate::{Curve3, GeomError, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
@@ -143,7 +143,7 @@ fn halved(h: f64, hmin: f64) -> Result<f64, GeomError> {
     }
 }
 
-fn too_many() -> GeomError {
+pub(super) fn too_many() -> GeomError {
     GeomError::NoConvergence(
         "the surfaces are tangent or nearly coincident over too large an area to intersect",
     )
@@ -329,6 +329,9 @@ pub(super) struct Marcher {
     field_chart: Option<Chart>,
     /// The box the intersection is asked in.
     within: Bbox3,
+    /// Cells are also left out where a bound on the field's second
+    /// derivative over them proves it clear of zero ([`Marcher::bounded`]).
+    bounded: bool,
 }
 
 impl Marcher {
@@ -365,7 +368,72 @@ impl Marcher {
             tacnodes: Vec::new(),
             field_chart: None,
             within: *within,
+            bounded: false,
         })
+    }
+
+    /// Also leaves out a cell where the field is proven clear of zero by
+    /// its value, its gradient and a bound on its second derivative at
+    /// the cell's centre (Taylor's theorem), not by its value and the
+    /// cell's reach alone: two surfaces that run side by side a little
+    /// apart over a large area (a plate's skin beside the skin of the
+    /// plate over it, a few millimetres away over metres) need cells no
+    /// smaller than the gap allows by the first rule, and far fewer by
+    /// this one (docs/design/booleans.md › *Surfaces side by side*). Asked
+    /// for only where the first rule ran out of cells, so what was traced
+    /// before is traced the same way.
+    pub(super) fn bounded(mut self) -> Self {
+        self.bounded = true;
+        self
+    }
+
+    /// True when the field has no zero in the cell of half-widths
+    /// `hu`, `hv` about `(u, v)`, whose centre is `e`, by the bound of
+    /// [`Marcher::bounded`]. Only where the field is the signed distance
+    /// to its surface throughout (the feet of the centre and the corners
+    /// are not on a border of a freeform surface, past which the field is
+    /// the distance to the border, with a bend of its own).
+    #[allow(clippy::too_many_arguments)]
+    fn clear_by_bound(
+        &mut self,
+        e: &Eval,
+        u: f64,
+        v: f64,
+        hu: f64,
+        hv: f64,
+        reach: f64,
+        b: &Bounds,
+    ) -> bool {
+        if !((e.f.abs() - e.dist).abs() <= self.on) {
+            return false;
+        }
+        let Some(k) = self.field.bend_at(e.p, reach, e.dist) else {
+            return false;
+        };
+        let (muu, muv, mvv) = (
+            k * b.lu * b.lu + b.muu,
+            k * b.lu * b.lv + b.muv,
+            k * b.lv * b.lv + b.mvv,
+        );
+        let change = e.gu.abs() * hu
+            + e.gv.abs() * hv
+            + 0.5 * (muu * hu * hu + 2.0 * muv * hu * hv + mvv * hv * hv);
+        if !(e.f.abs() > 1.01 * change + self.tol.linear) {
+            return false;
+        }
+        if let Field::Free(projector) = &self.field {
+            if projector.on_border(e.p) {
+                return false;
+            }
+            for (du, dv) in [(-hu, -hv), (hu, -hv), (-hu, hv), (hu, hv)] {
+                self.evals += 1;
+                let (p, ..) = self.chart.at(u + du, v + dv);
+                if !p.is_finite() || projector.on_border(p) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Tells the marcher the chart of the field's surface, when that is a
@@ -1434,6 +1502,12 @@ impl Marcher {
             // changed nothing on 612 cases tried and was taken out), but it
             // is not ruled out: geometry.md › *Only the box is walked*.)
             if here.as_ref().is_some_and(away) {
+                continue;
+            }
+            if self.bounded
+                && let Some(e) = &here
+                && self.clear_by_bound(e, u, v, hu, hv, reach, &b)
+            {
                 continue;
             }
             let simple = match here {

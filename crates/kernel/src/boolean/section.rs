@@ -2,6 +2,7 @@
 //! in which two surfaces meet, cut down to the stretches that are within
 //! both faces.
 
+use super::coincide::{Coincidence, PARTLY, coincide};
 use super::cover::{Cover, Face as CoverFace, clear_of_surface};
 use super::facetree::FaceTree;
 use super::freeform::is_freeform;
@@ -1262,10 +1263,24 @@ pub(super) fn section(
             crate::work::face_pairs(1);
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
-            let met = in_room(box_a, box_b, &within, room, tol, |room| {
+            let met = match in_room(box_a, box_b, &within, room, tol, |room| {
                 meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
-            })
-            .map_err(|error| geometry(error, &named))?;
+            }) {
+                Ok(met) => met,
+                // Surfaces that cannot be traced may be faces that lie on
+                // one another where one is over the other, though the
+                // surfaces part beyond them (`coincide`).
+                Err(error @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+                    match coincide(a, fa, b, fb, tol).map_err(|s| s.at(&named))? {
+                        Coincidence::Faces(same_normal) => {
+                            SurfaceMeeting::Coincident { same_normal }
+                        }
+                        Coincidence::Partly => return Err(Stop::of(PARTLY).at(&named)),
+                        Coincidence::Unknown => return Err(geometry(error, &named)),
+                    }
+                }
+                Err(error) => return Err(geometry(error, &named)),
+            };
             // Faces on one surface, or on two that never cross: the same
             // surface when they are within half the tolerance of each
             // other where one is over the other, apart when twice the
