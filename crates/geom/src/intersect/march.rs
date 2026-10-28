@@ -381,7 +381,11 @@ impl Marcher {
     /// smaller than the gap allows by the first rule, and far fewer by
     /// this one (docs/design/booleans.md › *Surfaces side by side*). Asked
     /// for only where the first rule ran out of cells, so what was traced
-    /// before is traced the same way.
+    /// before is traced the same way. A proof where the walked chart is
+    /// analytic or a Bézier patch and the field analytic (their bounds are
+    /// bounds); an estimate where the chart is a NURBS surface (its bounds
+    /// are sampled) or the field freeform (its bend is estimated from the
+    /// projector's grid), as the simple-cell test is.
     pub(super) fn bounded(mut self) -> Self {
         self.bounded = true;
         self

@@ -615,14 +615,22 @@ fn faces_that_part_inside_both_are_refused() {
 /// A block from z = −0.3 up to `roof` (a surface with x and y linear in
 /// u and v, as the skin's) over `rect`, its edges iso-curves of `roof`.
 fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
+    block_on(k, roof, rect, -0.3)
+}
+
+/// A block between the plane z = `plane` (scale 1) and `roof` (a surface
+/// with x and y linear in u and v, as the skin's, above or below the
+/// plane) over `rect`, its edges iso-curves of `roof`.
+fn block_on(k: f64, roof: &NurbsSurface, rect: Rect, plane: f64) -> Body {
     // (`hexahedron` takes its edges from the skin, which the bent roof
     // leaves.)
     let ((ua, ub), (va, vb)) = rect;
     let piece = roof.restricted(rect.0, rect.1).unwrap();
     let (nu, nv) = piece.counts();
     let c = piece.control_points().to_vec();
+    let wt = piece.weights().to_vec();
     let mut body = Body::new(BodyKind::Solid);
-    let floor = |u: f64, v: f64| Vec3::new(L * u * k, W * v * k, -0.3 * k);
+    let floor = |u: f64, v: f64| Vec3::new(L * u * k, W * v * k, plane * k);
     let top = |u: f64, v: f64| roof.eval(u, v);
     let us = [ua, ub];
     let vs = [va, vb];
@@ -649,8 +657,8 @@ fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
         );
         let j = if iv == 0 { 0 } else { nv - 1 };
         let pts: Vec<Vec3> = (0..nu).map(|i| c[i * nv + j]).collect();
-        let curve =
-            Curve3::Nurbs(NurbsCurve::polynomial(3, piece.knots_u().to_vec(), pts).unwrap());
+        let ws: Vec<f64> = (0..nu).map(|i| wt[i * nv + j]).collect();
+        let curve = Curve3::Nurbs(NurbsCurve::new(3, piece.knots_u().to_vec(), pts, ws).unwrap());
         edges.insert(
             ((0, iv, 1), (1, iv, 1)),
             body.add_edge(curve, (ua, ub), corner[&(0, iv, 1)], corner[&(1, iv, 1)]),
@@ -664,8 +672,8 @@ fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
         );
         let i = if iu == 0 { 0 } else { nu - 1 };
         let pts: Vec<Vec3> = (0..nv).map(|j| c[i * nv + j]).collect();
-        let curve =
-            Curve3::Nurbs(NurbsCurve::polynomial(3, piece.knots_v().to_vec(), pts).unwrap());
+        let ws: Vec<f64> = (0..nv).map(|j| wt[i * nv + j]).collect();
+        let curve = Curve3::Nurbs(NurbsCurve::new(3, piece.knots_v().to_vec(), pts, ws).unwrap());
         edges.insert(
             ((iu, 0, 1), (iu, 1, 1)),
             body.add_edge(curve, (va, vb), corner[&(iu, 0, 1)], corner[&(iu, 1, 1)]),
@@ -687,9 +695,15 @@ fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
             top(us[c.0], vs[c.1])
         }
     };
+    let middle = roof.eval(0.5 * (ua + ub), 0.5 * (va + vb));
+    let up = if middle.z > plane * k {
+        Vec3::Z
+    } else {
+        -Vec3::Z
+    };
     let quads: [([(usize, usize, usize); 4], Vec3); 6] = [
-        ([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], -Vec3::Z),
-        ([(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)], Vec3::Z),
+        ([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], -up),
+        ([(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)], up),
         ([(0, 0, 0), (0, 1, 0), (0, 1, 1), (0, 0, 1)], -Vec3::X),
         ([(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)], Vec3::X),
         ([(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)], -Vec3::Y),
@@ -723,10 +737,14 @@ fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
         let l = body.add_loop(coedges);
         let (surface, reversed) = match index {
             0 => {
-                let frame = Frame::new(Vec3::new(0.0, 0.0, -0.3 * k), -Vec3::Z, Vec3::X).unwrap();
+                let frame = Frame::new(Vec3::new(0.0, 0.0, plane * k), *outward, Vec3::X).unwrap();
                 (Surface::Plane(Plane::new(frame)), false)
             }
-            1 => (Surface::Nurbs(roof.clone()), false),
+            1 => {
+                let surface = Surface::Nurbs(roof.clone());
+                let n = surface.normal(0.5 * (ua + ub), 0.5 * (va + vb)).unwrap();
+                (surface, n.dot(*outward) < 0.0)
+            }
             _ => {
                 let hint = if outward.x != 0.0 { Vec3::Y } else { Vec3::X };
                 let frame = Frame::new(point(quad[0]), *outward, hint).unwrap();
@@ -742,4 +760,81 @@ fn bent_block(k: f64, roof: &NurbsSurface, rect: Rect) -> Body {
         "the bent block at scale {k}"
     );
     body
+}
+
+/// A flat bicubic B-spline over [0, 1]² at z = 0 with `count` control
+/// points each way (x and y at the Greville abscissae), the middle one
+/// lifted by `lift` (scale 1) and given the weight `weight`.
+fn flat(k: f64, count: usize, lift: f64, weight: f64) -> NurbsSurface {
+    let spans = count - 3;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+    knots.extend([1.0; 4]);
+    let greville = |i: usize| (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+    let middle = count / 2;
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for i in 0..count {
+        for j in 0..count {
+            let spike = (i, j) == (middle, middle);
+            let z = if spike { lift } else { 0.0 };
+            ctrl.push(Vec3::new(L * greville(i) * k, W * greville(j) * k, z * k));
+            weights.push(if spike { weight } else { 1.0 });
+        }
+    }
+    NurbsSurface::new(
+        3,
+        3,
+        knots.clone(),
+        knots.clone(),
+        count,
+        count,
+        ctrl,
+        weights,
+    )
+    .unwrap()
+}
+
+/// A block whose floor is a flat rational patch with a narrow spike (the
+/// middle control point lifted by ten tolerances with a weight of 10⁴:
+/// in space the patch is pulled into a spike at that point, a dent in the
+/// block ten tolerances high), standing on a block with a flat top: a
+/// plane, or a coarse flat patch (one span). Away from the spike the two
+/// lie on one another; at the spike they are apart, and the dent is a
+/// cavity of the union. That must be refused, or told apart (the union
+/// keeps the cavity, the intersection is empty), never taken for faces
+/// on one another (the review's negative case).
+#[test]
+fn a_narrow_spike_on_a_face_is_not_taken_for_coincidence() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let spike = flat(k, 11, 10.0 * 1e-6, 1e4);
+        // The spike's support is u, v in [1/4, 3/4]: the block's walls,
+        // at 0.15 and 0.85, are clear of it and planar.
+        let upper = block_on(k, &spike, ((0.15, 0.85), (0.15, 0.85)), 0.3);
+        let below = [
+            hexahedron(
+                k,
+                &Level::Plane(-0.5),
+                &Level::Plane(0.0),
+                ((0.1, 0.9), (0.1, 0.9)),
+            ),
+            block_on(k, &flat(k, 4, 0.0, 1.0), ((0.1, 0.9), (0.1, 0.9)), -0.5),
+        ];
+        for (n, lower) in below.iter().enumerate() {
+            let what = format!("at scale {k}, lower block {n}");
+            match craft3d_kernel::boolean::boolean(lower, &upper, Union, &tol) {
+                Ok(r) => assert!(
+                    r.body.shells.len() >= 2,
+                    "{what}: the union lost the dent ({} shells)",
+                    r.body.shells.len()
+                ),
+                Err(e) => eprintln!("{what}: union refused: {e}"),
+            }
+            match craft3d_kernel::boolean::boolean(lower, &upper, Intersect, &tol) {
+                Ok(r) => panic!("{what}: an intersection of volume {}", mass(&r.body).volume),
+                Err(e) => eprintln!("{what}: intersection: {e}"),
+            }
+        }
+    }
 }

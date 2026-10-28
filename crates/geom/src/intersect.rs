@@ -37,6 +37,13 @@ pub fn forget_kept() -> usize {
     meet::forget_shelf().saturating_add(field::forget_shelves())
 }
 
+/// How many intersections this thread marched a second time with the
+/// bound that leaves out the cells of surfaces side by side, after the
+/// first march ran out of cells (for tests to tell that path was taken).
+pub fn bounded_marches() -> u64 {
+    meet::bounded_marches()
+}
+
 /// How many intersections, projectors and pieces of surfaces are kept.
 pub fn kept() -> usize {
     meet::shelf_len().saturating_add(field::shelves_len())

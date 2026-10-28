@@ -15,7 +15,7 @@
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use craft3d_geom::intersect::{SurfaceMeeting, meet_surfaces};
+use craft3d_geom::intersect::{SurfaceMeeting, bounded_marches, meet_surfaces};
 use craft3d_geom::{NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
@@ -75,6 +75,7 @@ fn around(k: f64) -> Bbox3 {
 #[test]
 fn surfaces_a_little_apart_over_a_large_area_do_not_meet() {
     for k in SCALES {
+        let before = bounded_marches();
         let met = meet_surfaces(
             &skin(k, 0.0, 0.0),
             &skin(k, 2e-3, 0.0),
@@ -82,6 +83,8 @@ fn surfaces_a_little_apart_over_a_large_area_do_not_meet() {
             &tolerance(k),
         );
         assert_eq!(met, Ok(SurfaceMeeting::None), "at scale {k}");
+        // The first march ran out of cells; the second one answered.
+        assert_eq!(bounded_marches(), before + 1, "at scale {k}");
     }
 }
 
@@ -91,7 +94,9 @@ fn surfaces_that_cross_at_a_shallow_angle_meet_along_the_curve() {
     for k in SCALES {
         let tol = tolerance(k);
         let (a, b) = (skin(k, 0.0, 0.0), skin(k, 0.0, 1e-3));
+        let before = bounded_marches();
         let met = meet_surfaces(&a, &b, &around(k), &tol).unwrap();
+        assert_eq!(bounded_marches(), before + 1, "at scale {k}");
         let SurfaceMeeting::Meets(meeting) = met else {
             panic!("at scale {k}: {met:?}");
         };
@@ -130,6 +135,86 @@ fn surfaces_that_cross_at_a_shallow_angle_meet_along_the_curve() {
         assert!(
             (length - iso).abs() <= 1e-4 * iso,
             "at scale {k}: {length} against {iso}"
+        );
+    }
+}
+
+/// Uniform clamped cubic knots for `count` control points over [0, 1].
+fn uniform(count: usize) -> Vec<f64> {
+    let spans = count - 3;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+    knots.extend([1.0; 4]);
+    knots
+}
+
+/// A finer skin (15 × 13 control points, x and y at the Greville
+/// abscissae), lifted by `lift`, with the control point (7, 6) moved down
+/// by `dip` (scale 1).
+fn fine(k: f64, lift: f64, dip: f64) -> Surface {
+    let (nu, nv) = (15, 13);
+    let (ku, kv) = (uniform(nu), uniform(nv));
+    let greville = |knots: &[f64], i: usize| (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+    let mut ctrl = Vec::new();
+    for i in 0..nu {
+        for j in 0..nv {
+            let (x, y) = (L * greville(&ku, i), W * greville(&kv, j));
+            let mut z = 0.5 + 0.2 * (1.1 * x + 0.3).sin() * (0.8 * y - 0.2).cos() + lift;
+            if (i, j) == (7, 6) {
+                z -= dip;
+            }
+            ctrl.push(Vec3::new(x * k, y * k, z * k));
+        }
+    }
+    Surface::Nurbs(NurbsSurface::new(3, 3, ku, kv, nu, nv, ctrl, vec![1.0; nu * nv]).unwrap())
+}
+
+/// Side by side 2000 tolerances apart, except where one control point of
+/// the upper surface is pulled down by three times the gap: there it dips
+/// through the lower one in a small closed loop (where the dip's basis
+/// function, at most 4/9, exceeds a third), which the second march, that
+/// leaves out the cells of the surfaces side by side, must keep. Every
+/// point of it is where the two surfaces' heights at the same parameters
+/// agree (they differ only in z, by the gap less the dip).
+#[test]
+fn a_small_loop_where_surfaces_side_by_side_dip_through_is_kept() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let gap = 2e-3;
+        let (a, b) = (fine(k, 0.0, 0.0), fine(k, gap, 3.0 * gap));
+        let before = bounded_marches();
+        let met = meet_surfaces(&a, &b, &around(k), &tol).unwrap();
+        assert_eq!(bounded_marches(), before + 1, "at scale {k}");
+        let SurfaceMeeting::Meets(meeting) = met else {
+            panic!("at scale {k}: {met:?}");
+        };
+        assert_eq!(meeting.curves.len(), 1, "at scale {k}: {meeting:?}");
+        let c = &meeting.curves[0];
+        assert!(c.closed, "at scale {k}: the loop is not closed");
+        let mut length = 0.0;
+        let mut last: Option<Vec3> = None;
+        for i in 0..=400 {
+            let t = c.range.0 + (c.range.1 - c.range.0) * f64::from(i) / 400.0;
+            let p = c.curve.eval(t);
+            let (u, v) = (p.x / (L * k), p.y / (W * k));
+            let gap_here = b.eval(u, v).z - a.eval(u, v).z;
+            // Within the tolerance of both surfaces, which cross at a
+            // slope of about a hundredth here: the heights agree to a few
+            // hundred tolerances.
+            assert!(
+                gap_here.abs() <= 500.0 * tol.linear,
+                "at scale {k}: {p:?} where the surfaces are {gap_here} apart"
+            );
+            if let Some(q) = last {
+                length += p.distance(q);
+            }
+            last = Some(p);
+        }
+        // A small loop: longer than the tolerance by far, within the dip's
+        // support (four spans each way).
+        assert!(
+            length > 1e4 * tol.linear && length < 4.0 * k,
+            "at scale {k}: the loop is {length} long"
         );
     }
 }

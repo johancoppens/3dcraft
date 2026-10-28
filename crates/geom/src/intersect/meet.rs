@@ -204,6 +204,15 @@ fn chart_rank(s: &Surface) -> u8 {
     }
 }
 
+std::thread_local! {
+    /// Intersections marched again with `Marcher::bounded`, on this thread.
+    static BOUNDED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn bounded_marches() -> u64 {
+    BOUNDED.with(std::cell::Cell::get)
+}
+
 fn numeric(
     a: &Surface,
     b: &Surface,
@@ -245,7 +254,10 @@ fn numeric(
     // Where the cells ran out, once more with the bound that leaves out
     // the cells of surfaces side by side (`Marcher::bounded`).
     let meeting = match march(false) {
-        Err(e) if e == super::march::too_many() => march(true)?,
+        Err(e) if e == super::march::too_many() => {
+            BOUNDED.with(|n| n.set(n.get().saturating_add(1)));
+            march(true)?
+        }
         other => other?,
     };
     let Some(meeting) = meeting else {

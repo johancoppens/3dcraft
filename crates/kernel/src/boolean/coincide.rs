@@ -235,14 +235,10 @@ fn sample((solid, face): (&Solid, usize), (twin, of_twin): (&Solid, usize), tol:
             // Only a sample of this face whose foot is inside the other
             // face is over it.
             let near = d <= 0.25 * tol;
-            if near && count >= EVIDENCE && !apart {
-                // Enough are known to be over the other face; this one
-                // only needs to be on it, and is wherever it is.
-                if let Some(last) = row.last_mut() {
-                    *last = d;
-                }
-                continue;
-            }
+            // Every sample near the other surface is asked whether it is
+            // over the other face and how its normal lies there, not only
+            // the first few: a fold or a turned patch further on must not
+            // be taken for the same orientation.
             // (The other face's cover proves most feet outside it at no
             // cost: a foot further than four tolerances from the face.)
             if !twin.may_hold(of_twin, q, tol) {
