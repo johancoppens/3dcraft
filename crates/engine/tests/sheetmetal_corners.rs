@@ -383,6 +383,29 @@ fn the_guide_closed_corners_run_as_it_says() {
     assert!(dir.join("box.dxf").exists());
 }
 
+/// Every planar rim of the tray by name: its outward unit normal and its
+/// offset along it (`n · p` for a point of the plane).
+fn rim_planes(s: &mut Session) -> std::collections::BTreeMap<String, ([f64; 3], f64)> {
+    let found = run(
+        s,
+        "select.query",
+        json!({"kind": "face", "where": [{"in": "Tray"}, {"name": "*rim(*"}], "context": true}),
+    );
+    let v = |x: &Value| -> [f64; 3] { [number(&x[0]), number(&x[1]), number(&x[2])] };
+    let mut out = std::collections::BTreeMap::new();
+    for item in found["items"].as_array().unwrap() {
+        let surface = &item["surface"];
+        if surface["type"] != "plane" {
+            continue;
+        }
+        let (n, p) = (v(&surface["normal"]), v(&surface["point"]));
+        let d = n[0] * p[0] + n[1] * p[1] + n[2] * p[2];
+        out.insert(item["name"].as_str().unwrap().to_string(), (n, d));
+    }
+    assert!(out.len() >= 12, "{found}");
+    out
+}
+
 /// The area of the one face the name names.
 fn face_area(s: &mut Session, name: &str) -> f64 {
     let check = assertion(
@@ -431,6 +454,7 @@ fn names_keep_their_targets_when_corners_open_and_close() {
         .collect();
     assert!(rims.len() >= 12, "{open:?}");
     let before: Vec<f64> = rims.iter().map(|n| face_area(&mut s, n)).collect();
+    let planes_before = rim_planes(&mut s);
     for how in ["3", "2", "4"] {
         run(&mut s, "variable.set", json!({"name": "how", "expr": how}));
         let closed = names(&mut s);
@@ -445,6 +469,29 @@ fn names_keep_their_targets_when_corners_open_and_close() {
             for (name, area) in rims.iter().zip(&before) {
                 let now = face_area(&mut s, name);
                 assert!((now - area).abs() <= 1e-6 * area, "{name}: {area} -> {now}");
+            }
+            // Each rim is the same plane, or (a side, now an extension's
+            // end) the same normal moved out along it by the extension:
+            // R + T + s = 5 for the covering flange, s + R - g = 3.8 for
+            // the other. Two rims that swapped names would not be.
+            let planes = rim_planes(&mut s);
+            let mut moved = Vec::new();
+            for (name, (n0, d0)) in &planes_before {
+                let (n1, d1) = planes
+                    .get(name)
+                    .unwrap_or_else(|| panic!("{name} is no plane now"));
+                let turn = (0..3).map(|i| (n0[i] - n1[i]).abs()).fold(0.0, f64::max);
+                assert!(turn <= 1e-9, "{name}: normal {n0:?} -> {n1:?}");
+                let shift = d1 - d0;
+                if shift.abs() > 1e-6 {
+                    moved.push(shift);
+                }
+            }
+            moved.sort_by(f64::total_cmp);
+            assert_eq!(moved.len(), 8, "{moved:?}");
+            for (i, m) in moved.iter().enumerate() {
+                let want = if i < 4 { 3.8 } else { 5.0 };
+                assert!((m - want).abs() <= 1e-6, "{moved:?}");
             }
         }
     }

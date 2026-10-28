@@ -1883,6 +1883,12 @@ fn folded_sheet(
             put(*edge, EdgeKey::Hole { flat: 0, hole, seg });
         }
     }
+    // A cut-out placed inside an extension has a key no part with its
+    // corners open has: with the corners open it lies in no flat and that
+    // part is refused. The open sheet built only for naming
+    // (`Part::open_sheet`) keeps every hole, unchecked, so the cut-out's
+    // edges are still named there and keep their names while the corner
+    // stays closed; there is nothing to keep across opening it.
     for (flat, holes) in flange_holes.iter().enumerate() {
         for (hole, edges) in holes.iter().enumerate() {
             for (seg, (edge, _)) in edges.iter().enumerate() {
