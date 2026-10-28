@@ -2825,6 +2825,37 @@ fn build(
                     });
                 bad.push(off > 0.5 * tol && span > tol);
             }
+            // The face's end rulings are where it meets the next face of
+            // the sheet (or ends): its tangent plane there is held to the
+            // developable's (the plane of the ruling and its rails'
+            // tangents, on the face's side of a corner), the turn between
+            // them over the ruling's length within half the tolerance, so
+            // that faces meeting there are tangent to within the tolerance
+            // (an interpolation's end derivatives are its least accurate).
+            let last = rulings.len().saturating_sub(1);
+            let fitted = Surface::Nurbs(surface.clone());
+            for (end, interval, before) in [(0, 0, false), (last, last.saturating_sub(1), true)] {
+                let (Some(&(s, t)), Some(&u)) = (rulings.get(end), params.get(end)) else {
+                    continue;
+                };
+                let moving = [!strip.lower.is_point(), !strip.upper.is_point()];
+                let Some(off) = end_turn(pair, &fitted, (s, t), u, before, moving) else {
+                    continue;
+                };
+                worst = worst.max(off);
+                let span = points
+                    .get(interval)
+                    .zip(points.get(interval + 1))
+                    .map_or(0.0, |((a0, b0), (a1, b1))| {
+                        a0.distance(*a1) + b0.distance(*b1)
+                    });
+                if off > 0.5 * tol
+                    && span > tol
+                    && let Some(b) = bad.get_mut(interval)
+                {
+                    *b = true;
+                }
+            }
             // Refined where off and beside it, so that neighbouring
             // intervals stay within a factor of two of each other (an
             // interpolation through rulings spaced very unevenly
@@ -2894,6 +2925,41 @@ fn build(
     )?;
     made.stepped = stepped_stretches;
     Ok(made)
+}
+
+/// How far the fitted face's tangent plane along its end ruling `(s, t)`
+/// (rail parameters, at `u` on the face) strays from the developable's:
+/// at each row, the angle between the fitted normal there and the normal
+/// of the plane of the ruling and that row's rail tangent (at a joint, on
+/// the side given; a developable's tangent plane holds both, a ruling
+/// snapped to a corner within the tolerance holds each at its own end),
+/// the larger times the ruling's length. A row that stands still along
+/// the face (a fan's apex, `moving` false) has no tangent and the face no
+/// normal there: only the moving rows count. `None` where a normal has no
+/// direction.
+fn end_turn(
+    pair: &Pair,
+    fitted: &Surface,
+    (s, t): (f64, f64),
+    u: f64,
+    before: bool,
+    moving: [bool; 2],
+) -> Option<f64> {
+    let (pa, da) = pair.a.at_side(s, before)?;
+    let (pb, db) = pair.b.at_side(t, before)?;
+    let d = pb - pa;
+    let ud = d.normalized()?;
+    let mut angle: f64 = 0.0;
+    for (v, row, tangent) in [(0.0, moving[0], da), (1.0, moving[1], db)] {
+        if !row {
+            continue;
+        }
+        let expected = tangent.normalized()?.cross(ud).normalized()?;
+        let n = fitted.normal(u, v)?.normalized()?;
+        angle = angle.max(n.cross(expected).length().min(1.0).asin());
+    }
+    let off = angle * d.length();
+    off.is_finite().then_some(off)
 }
 
 /// Vertices and edges of the sheet, shared where the faces meet.
